@@ -31,6 +31,7 @@ class EncoderConfig:
     name: str = "uni2"
     precision: str = "fp16"
     batch_size: int = 32
+    adaptive_batching: bool = False
     num_workers: int = 4
     input_size: int | None = None
     spacing_um: float | None = None

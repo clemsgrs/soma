@@ -200,6 +200,7 @@ def _build_loader(
     tiling_result: TilingResult,
     *,
     batch_size: int,
+    adaptive_batching: bool,
     num_workers: int,
     use_supertiles: bool,
 ) -> DataLoader:
@@ -217,7 +218,7 @@ def _build_loader(
         st_index,
         num_workers=num_workers,
     )
-    if st_index is not None:
+    if st_index is not None and adaptive_batching:
         groups = _build_sampler_groups(dataset_indices, st_index.tile_to_st)
         sampler = SuperTileBatchSampler(groups, batch_size)
         return DataLoader(
@@ -244,6 +245,7 @@ def extract_tile_features(
     tiling_result: TilingResult,
     *,
     batch_size: int = 32,
+    adaptive_batching: bool = False,
     num_workers: int = 4,
     precision: str = "fp16",
     use_supertiles: bool = True,
@@ -258,6 +260,7 @@ def extract_tile_features(
         reader,
         tiling_result,
         batch_size=batch_size,
+        adaptive_batching=adaptive_batching,
         num_workers=num_workers,
         use_supertiles=use_supertiles,
     )
@@ -283,6 +286,7 @@ def extract_slide_features(
     tiling_result: TilingResult,
     *,
     batch_size: int = 32,
+    adaptive_batching: bool = False,
     num_workers: int = 4,
     precision: str = "fp16",
     use_supertiles: bool = True,
@@ -294,6 +298,7 @@ def extract_slide_features(
         reader,
         tiling_result,
         batch_size=batch_size,
+        adaptive_batching=adaptive_batching,
         num_workers=num_workers,
         precision=precision,
         use_supertiles=use_supertiles,

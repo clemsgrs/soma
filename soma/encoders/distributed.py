@@ -50,6 +50,7 @@ class _WorkerConfig:
     encoder_name: str
     output_dir: str
     batch_size: int
+    adaptive_batching: bool
     num_workers: int
     precision: str
     use_supertiles: bool
@@ -65,6 +66,7 @@ def extract_dataset(
     output_dir: Path,
     *,
     batch_size: int = 32,
+    adaptive_batching: bool = False,
     num_workers: int = 4,
     precision: str = "fp16",
     use_supertiles: bool = True,
@@ -107,6 +109,7 @@ def extract_dataset(
         encoder_name=encoder_name,
         output_dir=str(output_dir),
         batch_size=batch_size,
+        adaptive_batching=adaptive_batching,
         num_workers=num_workers,
         precision=precision,
         use_supertiles=use_supertiles,
@@ -225,6 +228,7 @@ def _worker_fn(
                         reader,
                         task.tiling_result,
                         batch_size=config.batch_size,
+                        adaptive_batching=config.adaptive_batching,
                         num_workers=config.num_workers,
                         precision=config.precision,
                         use_supertiles=config.use_supertiles,
@@ -244,6 +248,7 @@ def _worker_fn(
                         reader,
                         task.tiling_result,
                         batch_size=config.batch_size,
+                        adaptive_batching=config.adaptive_batching,
                         num_workers=config.num_workers,
                         precision=config.precision,
                         use_supertiles=config.use_supertiles,

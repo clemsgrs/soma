@@ -274,6 +274,7 @@ class TestExtractTileFeatures:
             RecordingBatchReader(),
             tiling,
             batch_size=64,
+            adaptive_batching=False,
             num_workers=0,
             use_supertiles=True,
         )
@@ -282,13 +283,43 @@ class TestExtractTileFeatures:
         assert batch_indices.tolist() == st_index.ordered_indices[:64].tolist()
         assert batch_indices.tolist() != list(range(64))
 
-    def test_supertile_batching_keeps_large_group_intact(self):
+    def test_supertile_batching_defaults_to_fixed_batch_size(self):
         reader = RecordingBatchReader()
         features = extract_tile_features(
             PixelValueTileEncoder(),
             reader,
             _make_grid_tiling(4, 4, tile_size_lv0=256),
             batch_size=8,
+            num_workers=0,
+            use_supertiles=True,
+        )
+
+        assert features.shape == (16, 1)
+        assert reader.read_region_calls == []
+        assert len(reader.read_regions_calls) == 2
+        assert reader.read_regions_calls == [
+            {
+                "locations": [(0, 0)],
+                "level": 0,
+                "size": (1024, 1024),
+                "num_workers": 0,
+            },
+            {
+                "locations": [(0, 0)],
+                "level": 0,
+                "size": (1024, 1024),
+                "num_workers": 0,
+            },
+        ]
+
+    def test_adaptive_batching_keeps_large_group_intact(self):
+        reader = RecordingBatchReader()
+        features = extract_tile_features(
+            PixelValueTileEncoder(),
+            reader,
+            _make_grid_tiling(4, 4, tile_size_lv0=256),
+            batch_size=8,
+            adaptive_batching=True,
             num_workers=0,
             use_supertiles=True,
         )
@@ -389,6 +420,7 @@ class TestExtractTileFeatures:
             reader,
             _make_grid_tiling(2, 2, tile_size_lv0=256),
             batch_size=4,
+            adaptive_batching=True,
             num_workers=0,
             use_supertiles=True,
         )
