@@ -1,0 +1,41 @@
+"""BagDataset — maps sample records to feature bags for MIL training."""
+
+from __future__ import annotations
+
+from torch import Tensor
+from torch.utils.data import Dataset
+
+from soma.dataset import SampleRecord
+from soma.features import FeatureStore
+
+
+class BagDataset(Dataset):
+    """PyTorch Dataset that loads tile features per sample.
+
+    Each item returns (features, label, sample_id) where features
+    is a variable-length tensor of shape (N_tiles, D).
+
+    Args:
+        records: List of SampleRecords with sample_id and label.
+        feature_store: FeatureStore for loading precomputed embeddings.
+        label_map: Mapping from raw labels to integer indices.
+    """
+
+    def __init__(
+        self,
+        records: list[SampleRecord],
+        feature_store: FeatureStore,
+        label_map: dict[str | int, int],
+    ) -> None:
+        self._records = records
+        self._store = feature_store
+        self._label_map = label_map
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def __getitem__(self, idx: int) -> tuple[Tensor, int, str]:
+        record = self._records[idx]
+        features = self._store.load(record.sample_id)
+        label = self._label_map[record.label]
+        return features, label, record.sample_id

@@ -1,0 +1,140 @@
+"""Frozen dataclass configurations for soma experiments."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+@dataclass(frozen=True)
+class PreprocessingConfig:
+    """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
+
+    requested_tile_size_px: int = 256
+    requested_spacing_um: float = 0.5
+    tissue_method: str = "hsv"
+    min_tissue_fraction: float = 0.5
+    overlap: float = 0.0
+    seg_downsample: int = 64
+    tolerance: float = 0.05
+    ref_tile_size_px: int = 16
+    a_t: int = 4
+    a_h: int = 2
+    max_holes_per_contour: int = 8
+
+
+@dataclass(frozen=True)
+class EncoderConfig:
+    """Configuration for foundation model encoding."""
+
+    name: str = "uni2"
+    precision: str = "fp16"
+    batch_size: int = 32
+    num_workers: int = 4
+    input_size: int | None = None
+    spacing_um: float | None = None
+
+
+@dataclass(frozen=True)
+class AggregatorConfig:
+    """Configuration for the MIL aggregator."""
+
+    name: str = "abmil"
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TaskConfig:
+    """Configuration for the task head."""
+
+    name: str = "classification"
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TrainingConfig:
+    """Configuration for the training loop."""
+
+    seed: int = 0
+    epochs: int = 50
+    learning_rate: float = 1e-4
+    weight_decay: float = 1e-5
+    optimizer: str = "adam"
+    scheduler: str = "cosine"
+    patience: int = 10
+    batch_size: int = 1
+
+
+@dataclass(frozen=True)
+class PipelineConfig:
+    """Complete specification for a pipeline run."""
+
+    dataset_csv: str | Path
+    splits_csv: str | Path
+    output_dir: str | Path
+    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    aggregator: AggregatorConfig = field(default_factory=AggregatorConfig)
+    task: TaskConfig = field(default_factory=TaskConfig)
+    training: TrainingConfig = field(default_factory=TrainingConfig)
+    tags: list[str] = field(default_factory=list)
+
+
+# --- YAML serialization ---
+
+
+def _config_to_dict(config: PipelineConfig) -> dict[str, Any]:
+    """Convert a PipelineConfig to a plain dict suitable for YAML."""
+    data = asdict(config)
+    _convert_paths(data)
+    return data
+
+
+def _convert_paths(obj: Any) -> None:
+    """Recursively convert Path objects to strings in a dict."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(value, Path):
+                obj[key] = str(value)
+            elif isinstance(value, (dict, list)):
+                _convert_paths(value)
+    elif isinstance(obj, list):
+        for i, value in enumerate(obj):
+            if isinstance(value, Path):
+                obj[i] = str(value)
+            elif isinstance(value, (dict, list)):
+                _convert_paths(value)
+
+
+def save_config(config: PipelineConfig, path: Path | str) -> None:
+    """Serialize a PipelineConfig to a YAML file."""
+    data = _config_to_dict(config)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+
+def load_config(path: Path | str) -> PipelineConfig:
+    """Load a PipelineConfig from a YAML file."""
+    with open(path) as f:
+        data = yaml.safe_load(f)
+    return _dict_to_config(data)
+
+
+def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
+    """Reconstruct a PipelineConfig from a plain dict."""
+    return PipelineConfig(
+        dataset_csv=data["dataset_csv"],
+        splits_csv=data["splits_csv"],
+        output_dir=data["output_dir"],
+        preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
+        encoder=EncoderConfig(**data.get("encoder", {})),
+        aggregator=AggregatorConfig(**data.get("aggregator", {})),
+        task=TaskConfig(**data.get("task", {})),
+        training=TrainingConfig(**data.get("training", {})),
+        tags=data.get("tags", []),
+    )

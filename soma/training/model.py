@@ -1,0 +1,47 @@
+"""MILModel — composes an aggregator with a task head."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from torch import Tensor, nn
+
+from soma.aggregators.base import Aggregator
+from soma.tasks.base import TaskHead
+
+
+@dataclass
+class MILModelOutput:
+    """Structured output from a MIL model.
+
+    Attributes:
+        logits: Task predictions, shape (B, num_classes) or (B, 1).
+        tile_attention: Per-tile attention weights from the aggregator,
+            shape (B, N). None if the aggregator has no attention.
+    """
+
+    logits: Tensor
+    tile_attention: Tensor | None = None
+
+
+class MILModel(nn.Module):
+    """Composes an aggregator and a task head into a full MIL model.
+
+    The aggregator maps (B, N, D) → AggregatorOutput, and the task head
+    maps the bag representation to predictions. Tile attention (if available)
+    is passed through for interpretability and heatmap generation.
+
+    Args:
+        aggregator: MIL aggregator (e.g. ABMIL, MeanPool).
+        task_head: Task head (e.g. ClassificationHead).
+    """
+
+    def __init__(self, aggregator: Aggregator, task_head: TaskHead) -> None:
+        super().__init__()
+        self.aggregator = aggregator
+        self.task_head = task_head
+
+    def forward(self, X: Tensor, mask: Tensor | None = None) -> MILModelOutput:
+        agg_out = self.aggregator(X, mask=mask)
+        logits = self.task_head(agg_out.bag_representation)
+        return MILModelOutput(logits=logits, tile_attention=agg_out.tile_attention)
