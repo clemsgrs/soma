@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 from torchvision.transforms import v2
 
-from soma.encoders.base import TimmEncoder
+from soma.encoders.base import TimmTileEncoder
 from soma.encoders.registry import register_encoder
 
 # Shared normalization for H-Optimus models
@@ -35,7 +35,7 @@ def _hoptimus_transform(input_size: int = 224) -> Callable:
     precision="fp16",
     source="bioptimus/H-optimus-0",
 )
-class HOptimus0(TimmEncoder):
+class HOptimus0(TimmTileEncoder):
     def __init__(self, *, token: str | None = None):
         super().__init__(
             "hf-hub:bioptimus/H-optimus-0",
@@ -56,7 +56,7 @@ class HOptimus0(TimmEncoder):
     precision="fp16",
     source="bioptimus/H-optimus-1",
 )
-class HOptimus1(TimmEncoder):
+class HOptimus1(TimmTileEncoder):
     def __init__(self, *, token: str | None = None):
         super().__init__(
             "hf-hub:bioptimus/H-optimus-1",
@@ -77,7 +77,7 @@ class HOptimus1(TimmEncoder):
     precision="fp16",
     source="bioptimus/H0-mini",
 )
-class H0Mini(TimmEncoder):
+class H0Mini(TimmTileEncoder):
     def __init__(self, *, token: str | None = None):
         super().__init__(
             "hf-hub:bioptimus/H0-mini",
@@ -89,7 +89,7 @@ class H0Mini(TimmEncoder):
     def get_transform(self) -> Callable:
         return _hoptimus_transform()
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         output = self._model.forward_features(batch)
         cls_token = output[:, 0]
         patch_tokens = output[:, self._model.num_prefix_tokens :]

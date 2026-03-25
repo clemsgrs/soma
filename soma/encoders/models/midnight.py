@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 from torchvision.transforms import v2
 
-from soma.encoders.base import Encoder
+from soma.encoders.base import TileEncoder
 from soma.encoders.registry import register_encoder
 
 
@@ -23,7 +23,7 @@ from soma.encoders.registry import register_encoder
     precision="fp16",
     source="kaiko-ai/midnight",
 )
-class Midnight(Encoder):
+class Midnight(TileEncoder):
     def __init__(self, *, token: str | None = None):
         from transformers import AutoModel
 
@@ -42,7 +42,7 @@ class Midnight(Encoder):
             v2.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)),
         ])
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         output = self._model(batch).last_hidden_state
         cls_token = output[:, 0, :]
         patch_tokens = output[:, 1:, :].mean(dim=1)

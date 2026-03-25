@@ -1,21 +1,21 @@
-"""Distributed multi-GPU feature extraction with slide-level sharding.
-
-Each GPU processes different slides independently. Uses ``mp.spawn``
-internally — no external scripts or torchrun needed.
-"""
+"""Distributed multi-GPU feature extraction with slide-level sharding."""
 
 from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import torch
 import torch.multiprocessing as mp
 
-from soma.encoders.extraction import extract_features, save_features
+import soma.encoders.models  # noqa: F401
+from soma.encoders.extraction import (
+    extract_slide_features,
+    extract_tile_features,
+    save_features,
+)
 from soma.encoders.progress import (
     JsonlProgressReporter,
     NullProgressReporter,
@@ -26,16 +26,11 @@ from soma.preprocessing.tiling import TilingResult
 from soma.wsi.reader import open_slide
 
 
-# ---------------------------------------------------------------------------
-# Public data classes
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class SlideTask:
     """Picklable unit of work for one slide."""
 
-    slide_path: str  # str not Path (pickling safety)
+    slide_path: str
     tiling_result: TilingResult
     slide_id: str
 
@@ -50,11 +45,6 @@ class ExtractionSummary:
     duration_s: float
 
 
-# ---------------------------------------------------------------------------
-# Internal config (picklable, passed to workers via mp.spawn)
-# ---------------------------------------------------------------------------
-
-
 @dataclass(frozen=True)
 class _WorkerConfig:
     encoder_name: str
@@ -66,11 +56,7 @@ class _WorkerConfig:
     backend: str
     progress: bool
     error_handling: str
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+    save_tile_features: bool
 
 
 def extract_dataset(
@@ -87,34 +73,13 @@ def extract_dataset(
     progress: bool = True,
     num_gpus: int | None = None,
     error_handling: str = "skip",
+    save_tile_features: bool = False,
 ) -> ExtractionSummary:
-    """Extract features for a dataset of slides, optionally across multiple GPUs.
-
-    Each GPU processes different slides (slide-level sharding). GPU partitioning
-    across models is the caller's responsibility via ``CUDA_VISIBLE_DEVICES``.
-
-    Args:
-        encoder_name: Registered encoder name (e.g. "uni2").
-        slides: List of SlideTask (slide_path, tiling_result, slide_id).
-        output_dir: Directory to save ``{slide_id}.pt`` feature files.
-        batch_size: Tiles per batch (per GPU).
-        num_workers: DataLoader workers (per GPU).
-        precision: "fp16" or "fp32".
-        use_supertiles: Whether to use super-tile reading optimization.
-        backend: Slide reader backend ("auto", "openslide").
-        skip_existing: Skip slides with existing ``.pt`` files.
-        progress: Emit structured JsonL progress events.
-        num_gpus: Number of GPUs. None = auto-detect.
-        error_handling: "skip" (continue on error) or "raise".
-
-    Returns:
-        ExtractionSummary with completed, skipped, and failed slide IDs.
-    """
+    """Extract features for a dataset of slides, optionally across multiple GPUs."""
     t0 = time.monotonic()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Skip existing
     skipped: list[str] = []
     remaining: list[SlideTask] = []
     if skip_existing:
@@ -134,7 +99,6 @@ def extract_dataset(
             duration_s=time.monotonic() - t0,
         )
 
-    # Detect GPUs
     if num_gpus is None:
         num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 1
     num_gpus = max(1, num_gpus)
@@ -149,22 +113,15 @@ def extract_dataset(
         backend=backend,
         progress=progress,
         error_handling=error_handling,
+        save_tile_features=save_tile_features,
     )
 
     if num_gpus == 1:
-        # Direct call — no spawn overhead
-        assignments = [remaining]
-        _worker_fn(0, assignments, config)
+        _worker_fn(0, [remaining], config)
     else:
         assignments = _assign_slides_to_ranks(remaining, num_gpus)
-        mp.spawn(
-            _worker_fn,
-            args=(assignments, config),
-            nprocs=num_gpus,
-            join=True,
-        )
+        mp.spawn(_worker_fn, args=(assignments, config), nprocs=num_gpus, join=True)
 
-    # Collect results from per-rank summaries
     completed: list[str] = []
     failed: list[str] = []
     progress_dir = Path(output_dir) / ".progress"
@@ -183,39 +140,20 @@ def extract_dataset(
     )
 
 
-# ---------------------------------------------------------------------------
-# Slide assignment
-# ---------------------------------------------------------------------------
-
-
 def _assign_slides_to_ranks(
     slides: list[SlideTask], num_ranks: int
 ) -> list[list[SlideTask]]:
-    """Load-balanced bin-packing: assign slides to ranks.
-
-    Sorts by descending tile count, greedily assigns each to the rank
-    with the fewest accumulated tiles. Tie-breaks by lowest rank index.
-    """
+    """Load-balanced bin-packing by tile count."""
     assignments: list[list[SlideTask]] = [[] for _ in range(num_ranks)]
     rank_loads = [0] * num_ranks
-
-    # Sort: heaviest first, then alphabetically for determinism
     sorted_slides = sorted(
         slides, key=lambda s: (-len(s.tiling_result.coordinates), s.slide_id)
     )
-
     for task in sorted_slides:
-        # Assign to rank with lowest load (ties go to lower rank)
         target_rank = min(range(num_ranks), key=lambda r: (rank_loads[r], r))
         assignments[target_rank].append(task)
         rank_loads[target_rank] += len(task.tiling_result.coordinates)
-
     return assignments
-
-
-# ---------------------------------------------------------------------------
-# Worker function
-# ---------------------------------------------------------------------------
 
 
 def _worker_fn(
@@ -223,8 +161,6 @@ def _worker_fn(
     assignments: list[list[SlideTask]],
     config: _WorkerConfig,
 ) -> None:
-    """Per-rank worker: create encoder, process assigned slides."""
-    # Device
     if torch.cuda.is_available() and torch.cuda.device_count() > rank:
         device = torch.device(f"cuda:{rank}")
         torch.cuda.set_device(device)
@@ -232,19 +168,22 @@ def _worker_fn(
         device = torch.device("cpu")
 
     output_dir = Path(config.output_dir)
-
-    # Progress reporter
     reporter = (
         JsonlProgressReporter(output_dir, rank)
         if config.progress
         else NullProgressReporter()
     )
-
     my_slides = assignments[rank] if rank < len(assignments) else []
 
-    # Create encoder
+    metadata = encoder_registry.info(config.encoder_name)
+    level = metadata.get("level", "tile")
     encoder_cls = encoder_registry.get(config.encoder_name)
     encoder = encoder_cls().to(device)
+    tile_encoder = None
+    if level == "slide":
+        tile_encoder_name = metadata["tile_encoder"]
+        tile_encoder_cls = encoder_registry.get(tile_encoder_name)
+        tile_encoder = tile_encoder_cls().to(device)
 
     reporter.emit(
         ProgressEvent(
@@ -255,6 +194,7 @@ def _worker_fn(
                 "num_slides": len(my_slides),
                 "num_ranks": len(assignments),
                 "encoder_name": config.encoder_name,
+                "level": level,
             },
         )
     )
@@ -273,21 +213,41 @@ def _worker_fn(
                 payload={"slide_id": task.slide_id, "num_tiles": num_tiles},
             )
         )
-
         slide_t0 = time.monotonic()
         try:
             reader = open_slide(task.slide_path, backend=config.backend)
             try:
-                features = extract_features(
-                    encoder,
-                    reader,
-                    task.tiling_result,
-                    batch_size=config.batch_size,
-                    num_workers=config.num_workers,
-                    precision=config.precision,
-                    use_supertiles=config.use_supertiles,
-                )
-                save_features(features, output_dir, task.slide_id)
+                if level == "slide":
+                    assert tile_encoder is not None
+                    result = extract_slide_features(
+                        encoder,
+                        tile_encoder,
+                        reader,
+                        task.tiling_result,
+                        batch_size=config.batch_size,
+                        num_workers=config.num_workers,
+                        precision=config.precision,
+                        use_supertiles=config.use_supertiles,
+                        return_tile_features=config.save_tile_features,
+                    )
+                    save_features(result.slide_features, output_dir, task.slide_id)
+                    if config.save_tile_features and result.tile_features is not None:
+                        save_features(
+                            result.tile_features,
+                            output_dir / "tile_features",
+                            task.slide_id,
+                        )
+                else:
+                    features = extract_tile_features(
+                        encoder,
+                        reader,
+                        task.tiling_result,
+                        batch_size=config.batch_size,
+                        num_workers=config.num_workers,
+                        precision=config.precision,
+                        use_supertiles=config.use_supertiles,
+                    )
+                    save_features(features, output_dir, task.slide_id)
             finally:
                 reader.close()
 
@@ -332,12 +292,11 @@ def _worker_fn(
         )
     )
 
-    # Write summary for parent process to collect
     progress_dir = output_dir / ".progress"
     progress_dir.mkdir(parents=True, exist_ok=True)
-    summary = {"completed": completed, "failed": failed}
-    summary_path = progress_dir / f"rank_{rank}_summary.json"
-    summary_path.write_text(json.dumps(summary))
+    (progress_dir / f"rank_{rank}_summary.json").write_text(
+        json.dumps({"completed": completed, "failed": failed})
+    )
 
     if hasattr(reporter, "close"):
         reporter.close()

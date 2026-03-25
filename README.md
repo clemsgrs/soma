@@ -31,12 +31,13 @@ fold,sample_id,split
 Run a full experiment:
 
 ```python
-from soma import Pipeline, PipelineConfig, EncoderConfig, AggregatorConfig, TrainingConfig
+from soma import Pipeline, PipelineConfig, CacheConfig, EncoderConfig, AggregatorConfig, TrainingConfig
 
 config = PipelineConfig(
     dataset_csv="dataset.csv",
     splits_csv="splits.csv",
     output_dir="experiments/run1",
+    cache=CacheConfig(),  # shared cache enabled by default
     encoder=EncoderConfig(name="uni2", batch_size=64),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
@@ -63,6 +64,8 @@ store = extractor.run("features/uni2")
 extractor.preprocess("output/tiling")
 store = extractor.extract("features/uni2", tiling_dir="output/tiling")
 ```
+
+When the shared cache is enabled, `soma` stores canonical reusable artifacts under a stable cache root instead of treating each run-local feature directory as the only source of truth. This means a slide-model run can populate a shared tile-feature cache, and a later tile-model run with matching preprocessing and encoder settings can reuse those tile features directly.
 
 ### Training
 

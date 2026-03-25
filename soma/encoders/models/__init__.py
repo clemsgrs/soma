@@ -7,6 +7,8 @@ from soma.encoders.models import (
     hoptimus,
     midnight,
     phikon,
+    prism,
+    titan,
     uni,
     virchow,
 )

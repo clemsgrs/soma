@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
+import torch
 
-from soma.config import EncoderConfig, PreprocessingConfig
+from soma.cache import (
+    record_feature_dim,
+    resolve_cache_root,
+    resolve_slide_cache,
+    resolve_tile_cache,
+)
+from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.encoders.distributed import SlideTask, extract_dataset
+from soma.encoders.base import SlideEncoder
+import soma.encoders.models  # noqa: F401
+from soma.encoders.registry import encoder_registry
+from soma.encoders.validation import validate_encoder_config
 from soma.features import FeatureStore
 from soma.preprocessing.io import load_tiling_result, save_tiling_result
 from soma.preprocessing.tiling import generate_tiles
@@ -28,10 +40,12 @@ class FeatureExtractor:
         dataset: Dataset,
         encoder: EncoderConfig,
         preprocessing: PreprocessingConfig = PreprocessingConfig(),
+        cache: CacheConfig = CacheConfig(),
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
         self._preprocessing = preprocessing
+        self._cache = cache
 
     def preprocess(
         self,
@@ -117,13 +131,28 @@ class FeatureExtractor:
             self.preprocess(tiling_dir, skip_existing=skip_existing, backend=backend)
 
         tiling_dir = Path(tiling_dir)
+        encoder_info = encoder_registry.info(self._encoder.name)
+        for warning in validate_encoder_config(
+            self._encoder,
+            encoder_info,
+            preprocessing_config=self._preprocessing,
+        ):
+            warnings.warn(warning, stacklevel=2)
 
-        # Build SlideTask list from tiling artifacts
         slide_tasks = []
+        tilings: dict[str, object] = {}
         for record in self._dataset.samples.values():
             npz_path = tiling_dir / f"{record.sample_id}.coordinates.npz"
             meta_path = tiling_dir / f"{record.sample_id}.coordinates.meta.json"
             tiling = load_tiling_result(npz_path, meta_path)
+            tilings[record.sample_id] = tiling
+            for warning in validate_encoder_config(
+                self._encoder,
+                encoder_info,
+                preprocessing_config=self._preprocessing,
+                tiling_result=tiling,
+            ):
+                warnings.warn(warning, stacklevel=2)
             slide_tasks.append(
                 SlideTask(
                     slide_path=str(record.image_path),
@@ -132,19 +161,72 @@ class FeatureExtractor:
                 )
             )
 
-        extract_dataset(
-            encoder_name=self._encoder.name,
-            slides=slide_tasks,
-            output_dir=output_dir,
-            batch_size=self._encoder.batch_size,
-            num_workers=self._encoder.num_workers,
-            precision=self._encoder.precision,
+        if not self._cache.enabled:
+            extract_dataset(
+                encoder_name=self._encoder.name,
+                slides=slide_tasks,
+                output_dir=output_dir,
+                batch_size=self._encoder.batch_size,
+                num_workers=self._encoder.num_workers,
+                precision=self._encoder.precision,
+                skip_existing=skip_existing,
+                num_gpus=num_gpus,
+                backend=backend,
+                save_tile_features=self._encoder.save_tile_features,
+            )
+            return FeatureStore(output_dir)
+
+        cache_root = resolve_cache_root(self._cache, output_dir=output_dir)
+        level = encoder_info.get("level", "tile")
+        if level == "tile":
+            cache_resolution = resolve_tile_cache(
+                cache_root=cache_root,
+                dataset=self._dataset,
+                tile_encoder_name=self._encoder.name,
+                preprocessing=self._preprocessing,
+                execution=self._encoder,
+            )
+            self._populate_tile_cache(
+                cache_resolution,
+                slide_tasks,
+                skip_existing=skip_existing,
+                num_gpus=num_gpus,
+                backend=backend,
+            )
+            return FeatureStore(cache_resolution.cache_dir)
+
+        tile_encoder_name = str(encoder_info["tile_encoder"])
+        tile_cache = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            tile_encoder_name=tile_encoder_name,
+            preprocessing=self._preprocessing,
+            execution=self._encoder,
+        )
+        self._populate_tile_cache(
+            tile_cache,
+            slide_tasks,
             skip_existing=skip_existing,
             num_gpus=num_gpus,
             backend=backend,
         )
 
-        return FeatureStore(output_dir)
+        slide_cache = resolve_slide_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            slide_encoder_name=self._encoder.name,
+            tile_encoder_name=tile_encoder_name,
+            tile_cache_key=tile_cache.key,
+            execution=self._encoder,
+        )
+        self._populate_slide_cache(
+            slide_cache,
+            tile_cache,
+            slide_tasks,
+            tilings=tilings,
+            backend=backend,
+        )
+        return FeatureStore(slide_cache.cache_dir)
 
     def run(
         self,
@@ -169,3 +251,89 @@ class FeatureExtractor:
             num_gpus=num_gpus,
             backend=backend,
         )
+
+    def _populate_tile_cache(
+        self,
+        cache_resolution,
+        slide_tasks: list[SlideTask],
+        *,
+        skip_existing: bool,
+        num_gpus: int | None,
+        backend: str,
+    ) -> None:
+        missing = set(cache_resolution.missing_sample_ids())
+        if not missing:
+            return
+        tasks_to_run = [task for task in slide_tasks if task.slide_id in missing]
+        extract_dataset(
+            encoder_name=cache_resolution.metadata["encoder_name"],
+            slides=tasks_to_run,
+            output_dir=cache_resolution.features_dir,
+            batch_size=self._encoder.batch_size,
+            num_workers=self._encoder.num_workers,
+            precision=self._encoder.precision,
+            skip_existing=skip_existing,
+            num_gpus=num_gpus,
+            backend=backend,
+            save_tile_features=False,
+        )
+        sample_path = cache_resolution.features_dir / f"{tasks_to_run[0].slide_id}.pt"
+        tensor = torch.load(sample_path, weights_only=True, map_location="cpu")
+        record_feature_dim(
+            cache_resolution,
+            tensor.shape[1] if tensor.ndim == 2 else tensor.shape[0],
+        )
+
+    def _populate_slide_cache(
+        self,
+        slide_cache,
+        tile_cache,
+        slide_tasks: list[SlideTask],
+        *,
+        tilings: dict[str, object],
+        backend: str,
+    ) -> None:
+        missing = set(slide_cache.missing_sample_ids())
+        if not missing:
+            return
+        encoder_cls = encoder_registry.get(self._encoder.name)
+        slide_encoder = encoder_cls().to(
+            torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        )
+        assert isinstance(slide_encoder, SlideEncoder)
+
+        feature_dim: int | None = None
+        for task in slide_tasks:
+            if task.slide_id not in missing:
+                continue
+            tile_features = torch.load(
+                tile_cache.features_dir / f"{task.slide_id}.pt",
+                weights_only=True,
+                map_location="cpu",
+            )
+            tiling = tilings[task.slide_id]
+            coordinates = torch.as_tensor(
+                tiling.coordinates,  # type: ignore[attr-defined]
+                dtype=torch.long,
+            )
+            base_spacing = getattr(tiling, "effective_spacing_um")
+            if self._encoder.name == "gigapath-slide":
+                with open_slide(task.slide_path, backend) as slide:
+                    base_spacing = slide.spacing
+            prepared = slide_encoder.prepare_coordinates(
+                coordinates,
+                base_spacing_um=float(base_spacing),
+                target_spacing_um=float(tiling.effective_spacing_um),  # type: ignore[attr-defined]
+            )
+            slide_features = slide_encoder.encode_slide(
+                tile_features.to(slide_encoder.device),
+                prepared.to(slide_encoder.device),
+                tile_size_lv0=int(tiling.tile_size_lv0),  # type: ignore[attr-defined]
+            ).detach().float().cpu()
+            if slide_features.ndim > 1:
+                slide_features = slide_features.squeeze(0)
+            torch.save(slide_features, slide_cache.features_dir / f"{task.slide_id}.pt")
+            feature_dim = slide_features.shape[0]
+
+        if feature_dim is not None:
+            record_feature_dim(slide_cache, feature_dim)

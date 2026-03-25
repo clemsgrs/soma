@@ -6,12 +6,15 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 import torch
 import pytest
 
 from soma.config import (
     AggregatorConfig,
+    CacheConfig,
+    EncoderConfig,
     PipelineConfig,
     TaskConfig,
     TrainingConfig,
@@ -211,6 +214,55 @@ class TestTrainOneFold:
         assert len(result.test_report.predictions[0].probabilities) == 2
 
 
+    def test_slide_level_features_no_aggregator(self, tmp_path: Path):
+        """train_one_fold with 1-D features and aggregator=None uses SlideModel."""
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+
+        # Slide-level: one (D,) tensor per sample
+        slide_dir = tmp_path / "slide_feats"
+        slide_dir.mkdir()
+        for i in range(NUM_SAMPLES):
+            torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
+        store = FeatureStore(slide_dir)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=None,
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            output_dir=tmp_path / "fold_slide",
+        )
+
+        assert isinstance(result, FoldResult)
+        assert result.test_report is not None
+        assert "accuracy" in result.test_report.metrics
+
+    def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        slide_dir = tmp_path / "slide_feats"
+        slide_dir.mkdir()
+        for i in range(NUM_SAMPLES):
+            torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
+        store = FeatureStore(slide_dir)
+
+        with pytest.raises(ValueError, match="aggregator must be None"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="classification"),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+                output_dir=tmp_path / "fold_slide",
+            )
+
+
 # ---------------------------------------------------------------------------
 # train (Layer 1 — all folds)
 # ---------------------------------------------------------------------------
@@ -378,6 +430,208 @@ class TestPipeline:
         summary = json.loads((output_dir / "summary.json").read_text())
         assert "accuracy_mean" in summary
         assert "accuracy_std" in summary
+
+    def test_run_slide_level_features(self, tmp_path: Path):
+        """Pipeline with aggregator=None should work with slide-level (1-D) features."""
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+
+        # Create slide-level features (1-D per sample)
+        slide_feature_dir = tmp_path / "slide_features"
+        slide_feature_dir.mkdir()
+        torch.manual_seed(7)
+        for i in range(NUM_SAMPLES):
+            torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
+
+        output_dir = tmp_path / "output_slide"
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=output_dir,
+            aggregator=None,
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        result = Pipeline(config, feature_dir=slide_feature_dir).run()
+
+        assert isinstance(result, PipelineResult)
+        assert len(result.fold_results) == 1
+        assert result.fold_results[0].test_report is not None
+        assert "accuracy" in result.fold_results[0].test_report.metrics
+
+    def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+        output_dir = tmp_path / "output_prism"
+
+        def _fake_run(self, output_dir_arg, **kwargs):
+            out = Path(output_dir_arg)
+            out.mkdir(parents=True, exist_ok=True)
+            for i in range(NUM_SAMPLES):
+                torch.save(torch.randn(D), out / f"s{i}.pt")
+            return FeatureStore(out)
+
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=output_dir,
+            encoder=EncoderConfig(name="prism"),
+            aggregator=None,
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+
+        with patch("soma.extraction.FeatureExtractor.run", new=_fake_run):
+            result = Pipeline(config).run()
+
+        assert isinstance(result, PipelineResult)
+        assert (output_dir / "features" / "s0.pt").exists()
+
+    def test_pipeline_rejects_aggregator_for_slide_features(self, tmp_path: Path):
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+        slide_feature_dir = tmp_path / "slide_features"
+        slide_feature_dir.mkdir()
+        for i in range(NUM_SAMPLES):
+            torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
+
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=tmp_path / "output_slide_error",
+            aggregator=AggregatorConfig(name="mean_pool"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        with pytest.raises(ValueError, match="aggregator must be None"):
+            Pipeline(config, feature_dir=slide_feature_dir).run()
+
+    def test_pipeline_reuses_shared_cache_for_sibling_runs(self, tmp_path: Path):
+        from soma.encoders.base import SlideEncoder, TileEncoder
+        from soma.encoders.registry import encoder_registry
+
+        test_tile = "_test_pipeline_cache_tile"
+        test_slide = "_test_pipeline_cache_slide"
+
+        class _PipelineTileEncoder(TileEncoder):
+            def __init__(self, **kwargs):
+                self._device = torch.device("cpu")
+
+            def get_transform(self):
+                return lambda x: x
+
+            def encode_tiles(self, batch):
+                return torch.ones(batch.shape[0], D)
+
+            @property
+            def encode_dim(self):
+                return D
+
+            @property
+            def device(self):
+                return self._device
+
+            def to(self, device):
+                self._device = torch.device(device)
+                return self
+
+        class _PipelineSlideEncoder(SlideEncoder):
+            def __init__(self, **kwargs):
+                self._device = torch.device("cpu")
+
+            def encode_slide(self, tile_features, coordinates=None, *, tile_size_lv0: int | None = None):
+                return tile_features.mean(dim=0)
+
+            @property
+            def encode_dim(self):
+                return D
+
+            @property
+            def device(self):
+                return self._device
+
+            def to(self, device):
+                self._device = torch.device(device)
+                return self
+
+        if test_tile not in encoder_registry:
+            encoder_registry.register(
+                test_tile,
+                _PipelineTileEncoder,
+                metadata={
+                    "level": "tile",
+                    "encode_dim": D,
+                    "input_size": 256,
+                    "recommended_tile_size_px": 256,
+                    "recommended_spacing_um": 0.5,
+                    "precision": "fp16",
+                },
+            )
+        if test_slide not in encoder_registry:
+            encoder_registry.register(
+                test_slide,
+                _PipelineSlideEncoder,
+                metadata={
+                    "level": "slide",
+                    "tile_encoder": test_tile,
+                    "encode_dim": D,
+                    "recommended_tile_size_px": 256,
+                    "recommended_spacing_um": 0.5,
+                    "precision": "fp16",
+                },
+            )
+
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+        shared_cache = tmp_path / "shared-cache"
+
+        def _fake_extract_dataset(encoder_name, slides, output_dir, **kwargs):
+            from soma.encoders.distributed import ExtractionSummary
+
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for task in slides:
+                torch.save(torch.randn(len(task.tiling_result.coordinates), D), output_dir / f"{task.slide_id}.pt")
+            return ExtractionSummary(
+                completed=[task.slide_id for task in slides],
+                skipped=[],
+                failed=[],
+                duration_s=0.1,
+            )
+
+        def _fake_open_slide(*args, **kwargs):
+            reader = type("Reader", (), {})()
+            reader.dimensions = (1000, 800)
+            reader.spacing = 0.5
+            reader.level_count = 3
+            reader.level_dimensions = [(1000, 800), (500, 400), (250, 200)]
+            reader.level_downsamples = [1.0, 2.0, 4.0]
+            thumb = np.full((100, 125, 3), 255, dtype=np.uint8)
+            thumb[10:90, 10:115] = np.array([150, 80, 100], dtype=np.uint8)
+            reader.get_thumbnail = lambda size: thumb
+            reader.close = lambda: None
+            return reader
+
+        slide_config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=tmp_path / "slide_run",
+            cache=CacheConfig(root_dir=shared_cache),
+            encoder=EncoderConfig(name=test_slide),
+            aggregator=None,
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        tile_config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=tmp_path / "tile_run",
+            cache=CacheConfig(root_dir=shared_cache),
+            encoder=EncoderConfig(name=test_tile),
+            aggregator=AggregatorConfig(name="mean_pool"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+
+        with patch("soma.extraction.extract_dataset", side_effect=_fake_extract_dataset) as mock_extract:
+            with patch("soma.extraction.open_slide", side_effect=_fake_open_slide):
+                Pipeline(slide_config).run()
+            assert mock_extract.called
+
+        with patch("soma.extraction.extract_dataset", side_effect=AssertionError("tile extraction should be reused")):
+            with patch("soma.extraction.open_slide", side_effect=_fake_open_slide):
+                Pipeline(tile_config).run()
 
     def test_dataset_and_splits_properties(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
