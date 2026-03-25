@@ -81,8 +81,6 @@ class FeatureExtractor:
                     ref_tile_size_px=cfg.ref_tile_size_px,
                     requested_spacing_um=cfg.requested_spacing_um,
                     a_t=cfg.a_t,
-                    a_h=cfg.a_h,
-                    max_holes_per_contour=cfg.max_holes_per_contour,
                 )
 
                 tiling = generate_tiles(

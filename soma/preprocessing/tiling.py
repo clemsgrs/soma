@@ -34,8 +34,58 @@ class TilingResult:
     tile_size_lv0: int
     is_within_tolerance: bool
 
+    tile_index: np.ndarray | None = None  # (N,) contiguous saved-artifact ids
     tissue_mask: np.ndarray | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        n_tiles = int(self.coordinates.shape[0])
+        if self.coordinates.ndim != 2 or self.coordinates.shape[1] != 2:
+            raise ValueError(
+                f"coordinates must have shape (N, 2), got {self.coordinates.shape}"
+            )
+        if self.tissue_fractions.ndim != 1 or self.tissue_fractions.shape[0] != n_tiles:
+            raise ValueError(
+                "tissue_fractions must be a 1D array aligned with coordinates"
+            )
+        if self.tile_index is None:
+            object.__setattr__(self, "tile_index", np.arange(n_tiles, dtype=np.int32))
+            return
+        tile_index = np.asarray(self.tile_index, dtype=np.int32)
+        if tile_index.ndim != 1 or tile_index.shape[0] != n_tiles:
+            raise ValueError("tile_index must be a 1D array aligned with coordinates")
+        object.__setattr__(self, "tile_index", tile_index)
+
+
+def canonicalize_tiling_result(result: TilingResult) -> TilingResult:
+    """Deduplicate and sort a tiling result into canonical x-then-y order."""
+    coords = result.coordinates
+    fracs = result.tissue_fractions
+
+    if len(coords) > 1:
+        _, unique_idx = np.unique(coords, axis=0, return_index=True)
+        unique_idx.sort()  # preserve first occurrence during deduplication
+        coords = coords[unique_idx]
+        fracs = fracs[unique_idx]
+
+        order = np.lexsort((coords[:, 1], coords[:, 0]))
+        coords = coords[order]
+        fracs = fracs[order]
+
+    return TilingResult(
+        coordinates=coords,
+        tissue_fractions=fracs,
+        requested_tile_size_px=result.requested_tile_size_px,
+        requested_spacing_um=result.requested_spacing_um,
+        read_level=result.read_level,
+        effective_tile_size_px=result.effective_tile_size_px,
+        effective_spacing_um=result.effective_spacing_um,
+        tile_size_lv0=result.tile_size_lv0,
+        is_within_tolerance=result.is_within_tolerance,
+        tile_index=np.arange(len(coords), dtype=np.int32),
+        tissue_mask=result.tissue_mask,
+        metadata=dict(result.metadata),
+    )
 
 
 def generate_tiles(
@@ -109,10 +159,8 @@ def generate_tiles(
     # Process each contour
     def _process_contour(idx: int) -> tuple[np.ndarray, np.ndarray]:
         contour = contours.contours[idx]
-        holes = contours.holes[idx]
         return _tiles_for_contour(
             contour=contour,
-            holes=holes,
             tissue_mask=contours.mask,
             slide_dimensions=slide_dimensions,
             tile_size_lv0=tile_size_lv0,
@@ -140,14 +188,8 @@ def generate_tiles(
     merged_coords = np.concatenate(all_coords, axis=0)
     merged_fracs = np.concatenate(all_fracs, axis=0)
 
-    # Deduplicate by (x, y)
-    if len(merged_coords) > 1:
-        _, unique_idx = np.unique(merged_coords, axis=0, return_index=True)
-        unique_idx.sort()  # preserve original order
-        merged_coords = merged_coords[unique_idx]
-        merged_fracs = merged_fracs[unique_idx]
-
-    return TilingResult(
+    return canonicalize_tiling_result(
+        TilingResult(
         coordinates=merged_coords,
         tissue_fractions=merged_fracs,
         requested_tile_size_px=requested_tile_size_px,
@@ -158,12 +200,12 @@ def generate_tiles(
         tile_size_lv0=tile_size_lv0,
         is_within_tolerance=level_sel.is_within_tolerance,
         tissue_mask=contours.mask,
+        )
     )
 
 
 def _tiles_for_contour(
     contour: np.ndarray,
-    holes: list[np.ndarray],
     tissue_mask: np.ndarray,
     slide_dimensions: tuple[int, int],
     tile_size_lv0: int,

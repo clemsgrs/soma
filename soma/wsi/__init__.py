@@ -1,3 +1,15 @@
-from soma.wsi.reader import LevelSelection, OpenSlideReader, SlideReader, open_slide, select_level
+from soma.wsi.reader import (
+    BatchRegionReader,
+    LevelSelection,
+    SlideReader,
+    open_slide,
+    select_level,
+)
 
-__all__ = ["SlideReader", "OpenSlideReader", "open_slide", "select_level", "LevelSelection"]
+__all__ = [
+    "SlideReader",
+    "BatchRegionReader",
+    "open_slide",
+    "select_level",
+    "LevelSelection",
+]

@@ -236,6 +236,7 @@ def _worker_fn(
                             result.tile_features,
                             output_dir / "tile_features",
                             task.slide_id,
+                            tile_index=task.tiling_result.tile_index,
                         )
                 else:
                     features = extract_tile_features(
@@ -247,7 +248,12 @@ def _worker_fn(
                         precision=config.precision,
                         use_supertiles=config.use_supertiles,
                     )
-                    save_features(features, output_dir, task.slide_id)
+                    save_features(
+                        features,
+                        output_dir,
+                        task.slide_id,
+                        tile_index=task.tiling_result.tile_index,
+                    )
             finally:
                 reader.close()
 

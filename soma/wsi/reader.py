@@ -1,20 +1,17 @@
-"""SlideReader protocol and concrete backends for whole-slide image I/O."""
+"""Public WSI reader protocols, backend factory, and level selection helpers."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Iterable, Protocol, runtime_checkable
 
 import numpy as np
 
 
 @runtime_checkable
 class SlideReader(Protocol):
-    """Protocol for reading whole-slide images.
-
-    All backends must conform to this interface.
-    """
+    """Protocol for reading whole-slide images."""
 
     @property
     def dimensions(self) -> tuple[int, int]:
@@ -44,27 +41,11 @@ class SlideReader(Protocol):
     def read_region(
         self, location: tuple[int, int], level: int, size: tuple[int, int]
     ) -> np.ndarray:
-        """Read a region from the slide.
-
-        Args:
-            location: (x, y) top-left corner in level-0 coordinates.
-            level: Pyramid level to read from.
-            size: (width, height) in pixels at the target level.
-
-        Returns:
-            RGB array of shape (height, width, 3), dtype uint8.
-        """
+        """Read a single region from the slide."""
         ...
 
     def get_thumbnail(self, size: tuple[int, int]) -> np.ndarray:
-        """Get a thumbnail of the slide.
-
-        Args:
-            size: Maximum (width, height) of the thumbnail.
-
-        Returns:
-            RGB array of shape (h, w, 3), dtype uint8.
-        """
+        """Get a thumbnail of the slide."""
         ...
 
     def close(self) -> None:
@@ -75,76 +56,70 @@ class SlideReader(Protocol):
     def __exit__(self, *args: Any) -> None: ...
 
 
-class OpenSlideReader:
-    """SlideReader backed by openslide-python."""
+@runtime_checkable
+class BatchRegionReader(SlideReader, Protocol):
+    """Optional capability for batch reading multiple regions in one call."""
 
-    def __init__(
-        self, path: str | Path, *, spacing_override: float | None = None
-    ) -> None:
-        try:
-            import openslide
-        except ImportError:
-            msg = (
-                "openslide-python is required for OpenSlideReader. "
-                "Install it with: pip install openslide-python"
-            )
-            raise ImportError(msg)
+    def read_regions(
+        self,
+        locations: list[tuple[int, int]],
+        level: int,
+        size: tuple[int, int],
+        *,
+        num_workers: int | None = None,
+    ) -> Iterable[np.ndarray]:
+        """Read multiple same-sized regions from one pyramid level."""
+        ...
 
-        self._slide = openslide.OpenSlide(str(path))
-        self._spacing = (
-            spacing_override
-            if spacing_override is not None
-            else self._extract_spacing()
-        )
 
-    def _extract_spacing(self) -> float:
-        """Extract µm/px from slide properties (MPP or objective power)."""
-        props = self._slide.properties
-        mpp_x = props.get("openslide.mpp-x")
-        if mpp_x is not None:
-            return float(mpp_x)
-        objective = props.get("openslide.objective-power")
-        if objective is not None:
-            return 10.0 / float(objective)
-        return 0.5
+@dataclass(frozen=True)
+class _BackendSpec:
+    name: str
+    opener: Callable[[str | Path], SlideReader]
+    supports_path: Callable[[str | Path], bool]
 
-    @property
-    def dimensions(self) -> tuple[int, int]:
-        return self._slide.dimensions
 
-    @property
-    def spacing(self) -> float:
-        return self._spacing
+_CUCIM_SUPPORTED_SUFFIXES = {".svs", ".tif", ".tiff"}
 
-    @property
-    def level_count(self) -> int:
-        return self._slide.level_count
 
-    @property
-    def level_dimensions(self) -> list[tuple[int, int]]:
-        return list(self._slide.level_dimensions)
+def _supports_all_paths(path: str | Path) -> bool:
+    return True
 
-    @property
-    def level_downsamples(self) -> list[float]:
-        return list(self._slide.level_downsamples)
 
-    def read_region(
-        self, location: tuple[int, int], level: int, size: tuple[int, int]
-    ) -> np.ndarray:
-        pil_image = self._slide.read_region(location, level, size)
-        return np.array(pil_image.convert("RGB"))
+def _supports_cucim_path(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in _CUCIM_SUPPORTED_SUFFIXES
 
-    def get_thumbnail(self, size: tuple[int, int]) -> np.ndarray:
-        return np.array(self._slide.get_thumbnail(size).convert("RGB"))
 
-    def close(self) -> None:
-        self._slide.close()
+def _open_openslide(
+    path: str | Path, *, spacing_override: float | None = None
+) -> SlideReader:
+    from soma.wsi.backends.openslide import OpenSlideReader
 
-    def __enter__(self) -> OpenSlideReader:
-        return self
+    return OpenSlideReader(path, spacing_override=spacing_override)
 
-    def __exit__(self, *args: Any) -> None:
-        self.close()
+
+def _open_cucim(
+    path: str | Path, *, spacing_override: float | None = None
+) -> SlideReader:
+    from soma.wsi.backends.cucim import CuCIMReader
+
+    return CuCIMReader(path, spacing_override=spacing_override)
+
+
+_BACKENDS: dict[str, _BackendSpec] = {
+    "openslide": _BackendSpec(
+        name="openslide",
+        opener=_open_openslide,
+        supports_path=_supports_all_paths,
+    ),
+    "cucim": _BackendSpec(
+        name="cucim",
+        opener=_open_cucim,
+        supports_path=_supports_cucim_path,
+    ),
+}
+
+_AUTO_BACKEND_ORDER = ("cucim", "openslide")
 
 
 def open_slide(
@@ -153,40 +128,39 @@ def open_slide(
     *,
     spacing_override: float | None = None,
 ) -> SlideReader:
-    """Open a whole-slide image with the specified backend.
-
-    Args:
-        path: Path to the WSI file.
-        backend: "openslide", "cucim", or "auto" (tries cucim first, then openslide).
-        spacing_override: If set, use this spacing (µm/px) instead of reading from metadata.
-    """
+    """Open a whole-slide image with the requested backend."""
+    backend = (backend or "auto").strip().lower()
     if backend == "auto":
-        try:
-            return _open_cucim(path, spacing_override=spacing_override)
-        except ImportError:
-            return OpenSlideReader(path, spacing_override=spacing_override)
-    elif backend == "openslide":
-        return OpenSlideReader(path, spacing_override=spacing_override)
-    elif backend == "cucim":
-        return _open_cucim(path, spacing_override=spacing_override)
-    else:
-        msg = f"Unknown backend: '{backend}'. Available: openslide, cucim, auto"
-        raise ValueError(msg)
+        return _open_slide_auto(path, spacing_override=spacing_override)
+
+    spec = _BACKENDS.get(backend)
+    if spec is None:
+        available = ", ".join(["auto", *_BACKENDS])
+        raise ValueError(f"Unknown backend: '{backend}'. Available: {available}")
+    return spec.opener(path, spacing_override=spacing_override)
 
 
-def _open_cucim(
+def _open_slide_auto(
     path: str | Path, *, spacing_override: float | None = None
 ) -> SlideReader:
-    """Open a slide with cucim. Raises ImportError if cucim is not available."""
-    try:
-        import cucim  # noqa: F401
-    except ImportError:
-        msg = "cucim is required for the cucim backend. Install it with: pip install cucim"
-        raise ImportError(msg)
-    raise NotImplementedError("cucim backend not yet implemented")
+    errors: list[ImportError] = []
+    attempted = False
 
+    for backend_name in _AUTO_BACKEND_ORDER:
+        spec = _BACKENDS.get(backend_name)
+        if spec is None or not spec.supports_path(path):
+            continue
+        attempted = True
+        try:
+            return spec.opener(path, spacing_override=spacing_override)
+        except ImportError as exc:
+            errors.append(exc)
 
-# --- Level selection ---
+    if errors:
+        raise errors[-1]
+    if attempted:
+        raise RuntimeError(f"Unable to open slide with auto backend: {path}")
+    raise RuntimeError(f"No registered backend can open slide path: {path}")
 
 
 @dataclass(frozen=True)
@@ -205,22 +179,7 @@ def select_level(
     *,
     tolerance: float = 0.05,
 ) -> LevelSelection:
-    """Select the best pyramid level for a requested spacing.
-
-    Finds the level whose effective spacing is closest to but does not exceed
-    the requested spacing (never upsamples). If no level has spacing ≤ requested,
-    falls back to level 0.
-
-    Args:
-        requested_spacing_um: Target spacing in µm/px.
-        level_downsamples: Downsample factor at each pyramid level.
-        base_spacing_um: Native spacing at level 0 in µm/px.
-        tolerance: Fraction within which effective ≈ requested (default 5%).
-
-    Returns:
-        LevelSelection with the chosen level, its effective spacing,
-        and whether it is within tolerance of the requested spacing.
-    """
+    """Select the best pyramid level for a requested spacing."""
     best_level = 0
     best_spacing = base_spacing_um
 

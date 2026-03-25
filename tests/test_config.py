@@ -48,8 +48,6 @@ def test_preprocessing_config_defaults():
     assert cfg.tolerance == 0.05
     assert cfg.ref_tile_size_px == 16
     assert cfg.a_t == 4
-    assert cfg.a_h == 2
-    assert cfg.max_holes_per_contour == 8
 
 
 def test_training_config_defaults():

@@ -22,8 +22,6 @@ class PreprocessingConfig:
     tolerance: float = 0.05
     ref_tile_size_px: int = 16
     a_t: int = 4
-    a_h: int = 2
-    max_holes_per_contour: int = 8
 
 
 @dataclass(frozen=True)
