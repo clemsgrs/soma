@@ -14,20 +14,20 @@ from torch.utils.data import DataLoader, Dataset
 from soma.encoders.base import SlideEncoder, TileEncoder
 from soma.encoders.tile_reader import SuperTileIndex, build_supertile_index
 from soma.preprocessing.tiling import TilingResult
-from soma.wsi.reader import SlideReader
+from soma.wsi.reader import BatchRegionReader, SlideReader
 
 
 class TileIndexDataset(Dataset):
     """Yields tile indices. Actual reading happens in the collator."""
 
-    def __init__(self, num_tiles: int):
-        self._num_tiles = num_tiles
+    def __init__(self, tile_indices: np.ndarray):
+        self._tile_indices = np.asarray(tile_indices, dtype=np.int64)
 
     def __len__(self) -> int:
-        return self._num_tiles
+        return int(len(self._tile_indices))
 
     def __getitem__(self, idx: int) -> int:
-        return idx
+        return int(self._tile_indices[idx])
 
 
 class TileBatchCollator:
@@ -39,6 +39,7 @@ class TileBatchCollator:
         tiling_result: TilingResult,
         transform,
         st_index: SuperTileIndex | None = None,
+        num_workers: int = 0,
     ):
         self._reader = reader
         self._coords = tiling_result.coordinates
@@ -51,60 +52,103 @@ class TileBatchCollator:
         )
         self._transform = transform
         self._st_index = st_index
+        self._num_workers = num_workers
 
     def __call__(self, batch_indices: list[int]) -> tuple[Tensor, Tensor]:
         indices_t = torch.tensor(batch_indices, dtype=torch.long)
-        images = (
-            self._read_with_supertiles(batch_indices)
-            if self._st_index is not None
-            else self._read_individually(batch_indices)
-        )
+        requests = self._build_read_requests(batch_indices)
+        images = self._read_requests(requests, len(batch_indices))
         return indices_t, torch.stack(images)
 
-    def _read_individually(self, batch_indices: list[int]) -> list[Tensor]:
-        images = []
-        for idx in batch_indices:
-            x, y = int(self._coords[idx, 0]), int(self._coords[idx, 1])
-            region = self._reader.read_region(
-                (x, y), self._read_level, (self._tile_size_px, self._tile_size_px)
-            )
-            images.append(self._transform(region))
-        return images
-
-    def _read_with_supertiles(self, batch_indices: list[int]) -> list[Tensor]:
-        st_index = self._st_index
-        assert st_index is not None
+    def _build_read_requests(self, batch_indices: list[int]) -> list[_ReadRequest]:
+        position_by_idx = {tile_idx: pos for pos, tile_idx in enumerate(batch_indices)}
+        if self._st_index is None:
+            return [
+                _ReadRequest(
+                    location=(int(self._coords[idx, 0]), int(self._coords[idx, 1])),
+                    size=(self._tile_size_px, self._tile_size_px),
+                    crops=(_TileCrop(pos=position_by_idx[idx], crop_x=0, crop_y=0),),
+                )
+                for idx in batch_indices
+            ]
 
         st_groups: dict[int, list[int]] = {}
         for idx in batch_indices:
-            st_id = int(st_index.tile_to_st[idx])
+            st_id = int(self._st_index.tile_to_st[idx])
             st_groups.setdefault(st_id, []).append(idx)
 
-        region_cache: dict[int, np.ndarray] = {}
-        images: list[tuple[int, Tensor]] = []
-
+        requests: list[_ReadRequest] = []
         for st_id, tile_indices in st_groups.items():
-            if st_id not in region_cache:
-                st = st_index.supertiles[st_id]
-                read_size = max(1, int(st.read_size_lv0 / self._downsample))
-                region_cache[st_id] = self._reader.read_region(
-                    (st.x_lv0, st.y_lv0),
-                    self._read_level,
-                    (read_size, read_size),
+            st = self._st_index.supertiles[st_id]
+            read_size = max(1, int(round(st.read_size_lv0 / self._downsample)))
+            crops = tuple(
+                _TileCrop(
+                    pos=position_by_idx[tile_idx],
+                    crop_x=int(round(self._st_index.tile_crop_x[tile_idx] / self._downsample)),
+                    crop_y=int(round(self._st_index.tile_crop_y[tile_idx] / self._downsample)),
                 )
+                for tile_idx in tile_indices
+            )
+            requests.append(
+                _ReadRequest(
+                    location=(int(st.x_lv0), int(st.y_lv0)),
+                    size=(read_size, read_size),
+                    crops=crops,
+                )
+            )
+        return requests
 
-            region = region_cache[st_id]
-            ts = self._tile_size_px
+    def _read_requests(
+        self, requests: list[_ReadRequest], num_images: int
+    ) -> list[Tensor]:
+        if isinstance(self._reader, BatchRegionReader):
+            return self._read_requests_batched(requests, num_images)
+        return self._read_requests_sequential(requests, num_images)
 
-            for tile_idx in tile_indices:
-                cx = int(st_index.tile_crop_x[tile_idx] / self._downsample)
-                cy = int(st_index.tile_crop_y[tile_idx] / self._downsample)
-                tile_img = region[cy : cy + ts, cx : cx + ts]
-                pos = batch_indices.index(tile_idx)
-                images.append((pos, self._transform(tile_img)))
+    def _read_requests_sequential(
+        self, requests: list[_ReadRequest], num_images: int
+    ) -> list[Tensor]:
+        images: list[Tensor | None] = [None] * num_images
+        for request in requests:
+            region = self._reader.read_region(
+                request.location,
+                self._read_level,
+                request.size,
+            )
+            self._store_request_images(images, request, region)
+        return [image for image in images if image is not None]
 
-        images.sort(key=lambda x: x[0])
-        return [img for _, img in images]
+    def _read_requests_batched(
+        self, requests: list[_ReadRequest], num_images: int
+    ) -> list[Tensor]:
+        images: list[Tensor | None] = [None] * num_images
+        grouped: dict[tuple[int, tuple[int, int]], list[_ReadRequest]] = {}
+        for request in requests:
+            grouped.setdefault((self._read_level, request.size), []).append(request)
+
+        for (level, size), grouped_requests in grouped.items():
+            locations = [request.location for request in grouped_requests]
+            regions = self._reader.read_regions(
+                locations,
+                level,
+                size,
+                num_workers=self._num_workers,
+            )
+            for request, region in zip(grouped_requests, regions):
+                self._store_request_images(images, request, region)
+
+        return [image for image in images if image is not None]
+
+    def _store_request_images(
+        self,
+        images: list[Tensor | None],
+        request: _ReadRequest,
+        region: np.ndarray,
+    ) -> None:
+        ts = self._tile_size_px
+        for crop in request.crops:
+            tile_img = region[crop.crop_y : crop.crop_y + ts, crop.crop_x : crop.crop_x + ts]
+            images[crop.pos] = self._transform(tile_img)
 
 
 class SuperTileBatchSampler:
@@ -136,38 +180,56 @@ class SlideExtractionResult:
     tile_features: Tensor | None = None
 
 
+@dataclass(frozen=True)
+class _TileCrop:
+    pos: int
+    crop_x: int
+    crop_y: int
+
+
+@dataclass(frozen=True)
+class _ReadRequest:
+    location: tuple[int, int]
+    size: tuple[int, int]
+    crops: tuple[_TileCrop, ...]
+
+
 def _build_loader(
     tile_encoder: TileEncoder,
     reader: SlideReader,
     tiling_result: TilingResult,
     *,
     batch_size: int,
+    adaptive_batching: bool,
     num_workers: int,
     use_supertiles: bool,
 ) -> DataLoader:
     num_tiles = len(tiling_result.coordinates)
     st_index: SuperTileIndex | None = None
+    dataset_indices = np.arange(num_tiles, dtype=np.int64)
     if use_supertiles and num_tiles >= 2:
         st_index = build_supertile_index(tiling_result)
+        dataset_indices = st_index.ordered_indices
 
     collator = TileBatchCollator(
         reader,
         tiling_result,
         tile_encoder.get_transform(),
         st_index,
+        num_workers=num_workers,
     )
-    if st_index is not None:
-        groups = _build_sampler_groups(st_index)
+    if st_index is not None and adaptive_batching:
+        groups = _build_sampler_groups(dataset_indices, st_index.tile_to_st)
         sampler = SuperTileBatchSampler(groups, batch_size)
         return DataLoader(
-            TileIndexDataset(num_tiles),
+            TileIndexDataset(dataset_indices),
             batch_sampler=sampler,
             collate_fn=collator,
             num_workers=num_workers,
             pin_memory=False,
         )
     return DataLoader(
-        TileIndexDataset(num_tiles),
+        TileIndexDataset(dataset_indices),
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collator,
@@ -183,6 +245,7 @@ def extract_tile_features(
     tiling_result: TilingResult,
     *,
     batch_size: int = 32,
+    adaptive_batching: bool = False,
     num_workers: int = 4,
     precision: str = "fp16",
     use_supertiles: bool = True,
@@ -197,6 +260,7 @@ def extract_tile_features(
         reader,
         tiling_result,
         batch_size=batch_size,
+        adaptive_batching=adaptive_batching,
         num_workers=num_workers,
         use_supertiles=use_supertiles,
     )
@@ -222,6 +286,7 @@ def extract_slide_features(
     tiling_result: TilingResult,
     *,
     batch_size: int = 32,
+    adaptive_batching: bool = False,
     num_workers: int = 4,
     precision: str = "fp16",
     use_supertiles: bool = True,
@@ -233,6 +298,7 @@ def extract_slide_features(
         reader,
         tiling_result,
         batch_size=batch_size,
+        adaptive_batching=adaptive_batching,
         num_workers=num_workers,
         precision=precision,
         use_supertiles=use_supertiles,
@@ -257,31 +323,51 @@ def extract_slide_features(
     )
 
 
-def _build_sampler_groups(st_index: SuperTileIndex) -> list[np.ndarray]:
+def _build_sampler_groups(
+    dataset_indices: np.ndarray,
+    tile_to_st: np.ndarray,
+) -> list[np.ndarray]:
     groups: list[np.ndarray] = []
     current_st = -1
     start = 0
 
-    for pos, tile_idx in enumerate(st_index.ordered_indices):
-        st_id = int(st_index.tile_to_st[tile_idx])
+    for pos, tile_idx in enumerate(dataset_indices):
+        st_id = int(tile_to_st[tile_idx])
         if st_id != current_st:
             if pos > start:
                 groups.append(np.arange(start, pos, dtype=np.int64))
             current_st = st_id
             start = pos
 
-    if start < len(st_index.ordered_indices):
-        groups.append(np.arange(start, len(st_index.ordered_indices), dtype=np.int64))
+    if start < len(dataset_indices):
+        groups.append(np.arange(start, len(dataset_indices), dtype=np.int64))
 
     return groups
 
 
-def save_features(features: Tensor, output_dir: Path, slide_id: str) -> Path:
-    """Atomically save features tensor. Returns the ``.pt`` path."""
+def save_features(
+    features: Tensor,
+    output_dir: Path,
+    slide_id: str,
+    *,
+    tile_index: Tensor | np.ndarray | None = None,
+) -> Path:
+    """Atomically save features, normalizing tile rows by tile_index when provided."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     pt_path = output_dir / f"{slide_id}.pt"
     tmp_path = output_dir / f"{slide_id}.pt.tmp"
+    if tile_index is not None:
+        if features.ndim != 2:
+            raise ValueError("tile_index can only be used when saving tile-level features")
+        tile_index_t = torch.as_tensor(tile_index, dtype=torch.long)
+        if tile_index_t.ndim != 1 or tile_index_t.numel() != features.shape[0]:
+            raise ValueError("tile_index must align with the first dimension of features")
+        sorted_index, order = torch.sort(tile_index_t)
+        expected = torch.arange(features.shape[0], dtype=torch.long)
+        if not torch.equal(sorted_index.cpu(), expected):
+            raise ValueError("tile_index must be a permutation of 0..num_tiles-1")
+        features = features[order]
     torch.save(features, tmp_path)
     os.replace(tmp_path, pt_path)
     return pt_path

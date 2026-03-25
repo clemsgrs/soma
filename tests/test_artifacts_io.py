@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from soma.preprocessing.io import load_tiling_result, save_tiling_result
-from soma.preprocessing.tiling import TilingResult
+from soma.preprocessing.tiling import TilingResult, canonicalize_tiling_result
 
 
 def _make_tiling_result(n_tiles: int = 10) -> TilingResult:
@@ -42,10 +42,14 @@ def test_save_npz_contains_arrays(tmp_path):
     result = _make_tiling_result()
     paths = save_tiling_result(result, tmp_path, "slide_001")
     data = np.load(paths["npz"])
+    assert "tile_index" in data
     assert "coordinates" in data
     assert "tissue_fractions" in data
-    np.testing.assert_array_equal(data["coordinates"], result.coordinates)
-    np.testing.assert_array_almost_equal(data["tissue_fractions"], result.tissue_fractions)
+    np.testing.assert_array_equal(data["tile_index"], np.arange(len(result.coordinates), dtype=np.int32))
+    np.testing.assert_array_equal(data["coordinates"], canonicalize_tiling_result(result).coordinates)
+    np.testing.assert_array_almost_equal(
+        data["tissue_fractions"], canonicalize_tiling_result(result).tissue_fractions
+    )
 
 
 def test_save_meta_contains_fields(tmp_path):
@@ -69,16 +73,18 @@ def test_roundtrip(tmp_path):
     original = _make_tiling_result()
     paths = save_tiling_result(original, tmp_path, "slide_001")
     loaded = load_tiling_result(paths["npz"], paths["meta"])
+    canonical = canonicalize_tiling_result(original)
 
-    np.testing.assert_array_equal(loaded.coordinates, original.coordinates)
-    np.testing.assert_array_almost_equal(loaded.tissue_fractions, original.tissue_fractions)
-    assert loaded.requested_tile_size_px == original.requested_tile_size_px
-    assert loaded.requested_spacing_um == original.requested_spacing_um
-    assert loaded.read_level == original.read_level
-    assert loaded.effective_tile_size_px == original.effective_tile_size_px
-    assert loaded.effective_spacing_um == original.effective_spacing_um
-    assert loaded.tile_size_lv0 == original.tile_size_lv0
-    assert loaded.is_within_tolerance == original.is_within_tolerance
+    np.testing.assert_array_equal(loaded.tile_index, canonical.tile_index)
+    np.testing.assert_array_equal(loaded.coordinates, canonical.coordinates)
+    np.testing.assert_array_almost_equal(loaded.tissue_fractions, canonical.tissue_fractions)
+    assert loaded.requested_tile_size_px == canonical.requested_tile_size_px
+    assert loaded.requested_spacing_um == canonical.requested_spacing_um
+    assert loaded.read_level == canonical.read_level
+    assert loaded.effective_tile_size_px == canonical.effective_tile_size_px
+    assert loaded.effective_spacing_um == canonical.effective_spacing_um
+    assert loaded.tile_size_lv0 == canonical.tile_size_lv0
+    assert loaded.is_within_tolerance == canonical.is_within_tolerance
 
 
 def test_roundtrip_empty(tmp_path):
@@ -98,6 +104,60 @@ def test_roundtrip_empty(tmp_path):
     loaded = load_tiling_result(paths["npz"], paths["meta"])
     assert len(loaded.coordinates) == 0
     assert len(loaded.tissue_fractions) == 0
+    assert len(loaded.tile_index) == 0
+
+
+def test_save_canonicalizes_coordinates_and_tissue_fractions(tmp_path):
+    result = TilingResult(
+        coordinates=np.array([[10, 5], [1, 9], [10, 5], [2, 2]], dtype=np.int64),
+        tissue_fractions=np.array([0.1, 0.4, 0.3, 0.2], dtype=np.float32),
+        requested_tile_size_px=256,
+        requested_spacing_um=0.5,
+        read_level=1,
+        effective_tile_size_px=256,
+        effective_spacing_um=0.5,
+        tile_size_lv0=512,
+        is_within_tolerance=True,
+    )
+
+    paths = save_tiling_result(result, tmp_path, "slide_001")
+    data = np.load(paths["npz"])
+
+    np.testing.assert_array_equal(
+        data["coordinates"],
+        np.array([[1, 9], [2, 2], [10, 5]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(
+        data["tissue_fractions"],
+        np.array([0.4, 0.2, 0.1], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(data["tile_index"], np.array([0, 1, 2], dtype=np.int32))
+
+def test_load_requires_tile_index(tmp_path):
+    npz_path = tmp_path / "legacy.coordinates.npz"
+    meta_path = tmp_path / "legacy.coordinates.meta.json"
+    np.savez_compressed(
+        npz_path,
+        coordinates=np.array([[1, 2], [3, 4]], dtype=np.int64),
+        tissue_fractions=np.array([0.5, 0.75], dtype=np.float32),
+    )
+    meta_path.write_text(
+        json.dumps(
+            {
+                "requested_tile_size_px": 256,
+                "requested_spacing_um": 0.5,
+                "read_level": 1,
+                "effective_tile_size_px": 256,
+                "effective_spacing_um": 0.5,
+                "tile_size_lv0": 512,
+                "is_within_tolerance": True,
+                "n_tiles": 2,
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="missing tile_index"):
+        load_tiling_result(npz_path, meta_path)
 
 
 # --- Atomicity ---

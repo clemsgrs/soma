@@ -119,7 +119,6 @@ class ContourResult:
     """
 
     contours: list[np.ndarray]
-    holes: list[list[np.ndarray]]
     mask: np.ndarray
 
 
@@ -130,14 +129,12 @@ def detect_contours(
     ref_tile_size_px: int = 16,
     requested_spacing_um: float = 0.5,
     a_t: int = 4,
-    a_h: int = 2,
-    max_holes_per_contour: int = 8,
 ) -> ContourResult:
-    """Detect tissue contours and holes from a binary mask.
+    """Detect tissue contours from a binary mask.
 
-    Uses cv2.findContours with RETR_CCOMP to get a two-level hierarchy:
-    foreground contours and their holes. Contours and holes are filtered
-    by area relative to a reference tile size (following hs2p).
+    Uses cv2.findContours with RETR_CCOMP to identify foreground contours.
+    Contours are filtered by area relative to a reference tile size
+    (following hs2p).
 
     Args:
         tissue_mask: Binary mask (H, W), dtype uint8, 255=tissue.
@@ -145,14 +142,12 @@ def detect_contours(
         ref_tile_size_px: Reference tile size in pixels for area filtering.
         requested_spacing_um: Requested spacing for ref_area computation.
         a_t: Minimum foreground contour area as multiple of ref_area.
-        a_h: Minimum hole area as multiple of ref_area.
-        max_holes_per_contour: Maximum number of holes to keep per contour.
 
     Returns:
-        ContourResult with contours and holes in level-0 coordinates.
+        ContourResult with contours in level-0 coordinates.
     """
     if tissue_mask.max() == 0:
-        return ContourResult(contours=[], holes=[], mask=tissue_mask)
+        return ContourResult(contours=[], mask=tissue_mask)
 
     # Scale factors: mask space → level-0 space
     mask_h, mask_w = tissue_mask.shape[:2]
@@ -172,28 +167,20 @@ def detect_contours(
     )
 
     if hierarchy is None or len(raw_contours) == 0:
-        return ContourResult(contours=[], holes=[], mask=tissue_mask)
+        return ContourResult(contours=[], mask=tissue_mask)
 
     hierarchy = hierarchy[0]  # shape (N, 4): [next, prev, child, parent]
 
-    # Separate foreground contours (parent == -1) and holes (parent != -1)
+    # Separate foreground contours (parent == -1)
     foreground_indices = []
-    hole_map: dict[int, list[int]] = {}  # parent_idx → [hole_indices]
 
     for i, h in enumerate(hierarchy):
         if h[3] == -1:  # no parent → foreground contour
             foreground_indices.append(i)
-            hole_map[i] = []
-        else:
-            parent = h[3]
-            if parent not in hole_map:
-                hole_map[parent] = []
-            hole_map[parent].append(i)
 
     # Filter foreground contours by area
     min_fg_area = a_t * ref_area
     filtered_contours = []
-    filtered_holes: list[list[np.ndarray]] = []
 
     for fg_idx in foreground_indices:
         area = cv2.contourArea(raw_contours[fg_idx])
@@ -207,31 +194,7 @@ def detect_contours(
         contour_lv0 = contour_lv0.astype(np.int32)
         filtered_contours.append(contour_lv0)
 
-        # Process holes for this contour
-        min_hole_area = a_h * ref_area
-        contour_holes = []
-        for hole_idx in hole_map.get(fg_idx, []):
-            hole_area = cv2.contourArea(raw_contours[hole_idx])
-            if hole_area < min_hole_area:
-                continue
-            contour_holes.append((hole_area, raw_contours[hole_idx]))
-
-        # Sort by area descending, keep top max_holes_per_contour
-        contour_holes.sort(key=lambda x: x[0], reverse=True)
-        contour_holes = contour_holes[:max_holes_per_contour]
-
-        # Scale holes to level-0
-        scaled_holes = []
-        for _, hole_contour in contour_holes:
-            hole_lv0 = hole_contour.copy().astype(np.float64)
-            hole_lv0[:, 0, 0] *= scale_x
-            hole_lv0[:, 0, 1] *= scale_y
-            scaled_holes.append(hole_lv0.astype(np.int32))
-
-        filtered_holes.append(scaled_holes)
-
     return ContourResult(
         contours=filtered_contours,
-        holes=filtered_holes,
         mask=tissue_mask,
     )

@@ -81,8 +81,6 @@ class FeatureExtractor:
                     ref_tile_size_px=cfg.ref_tile_size_px,
                     requested_spacing_um=cfg.requested_spacing_um,
                     a_t=cfg.a_t,
-                    a_h=cfg.a_h,
-                    max_holes_per_contour=cfg.max_holes_per_contour,
                 )
 
                 tiling = generate_tiles(
@@ -167,6 +165,7 @@ class FeatureExtractor:
                 slides=slide_tasks,
                 output_dir=output_dir,
                 batch_size=self._encoder.batch_size,
+                adaptive_batching=self._encoder.adaptive_batching,
                 num_workers=self._encoder.num_workers,
                 precision=self._encoder.precision,
                 skip_existing=skip_existing,
@@ -270,6 +269,7 @@ class FeatureExtractor:
             slides=tasks_to_run,
             output_dir=cache_resolution.features_dir,
             batch_size=self._encoder.batch_size,
+            adaptive_batching=self._encoder.adaptive_batching,
             num_workers=self._encoder.num_workers,
             precision=self._encoder.precision,
             skip_existing=skip_existing,

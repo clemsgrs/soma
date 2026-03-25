@@ -1,9 +1,10 @@
 """Tests for soma.wsi — SlideReader protocol and backends."""
 
+import types
 import numpy as np
 import pytest
 
-from soma.wsi.reader import OpenSlideReader, SlideReader
+from soma.wsi.reader import BatchRegionReader, SlideReader
 
 
 # --- Protocol conformance via a synthetic test backend ---
@@ -87,6 +88,18 @@ class SyntheticSlideReader:
         self.close()
 
 
+class SyntheticBatchSlideReader(SyntheticSlideReader):
+    def read_regions(
+        self,
+        locations: list[tuple[int, int]],
+        level: int,
+        size: tuple[int, int],
+        *,
+        num_workers: int | None = None,
+    ):
+        return [self.read_region(location, level, size) for location in locations]
+
+
 # --- Tests ---
 
 
@@ -138,11 +151,21 @@ def test_synthetic_reader_level_count():
     assert reader.level_count == 4
 
 
+def test_synthetic_batch_reader_conforms_to_optional_batch_protocol():
+    reader = SyntheticBatchSlideReader()
+    assert isinstance(reader, BatchRegionReader)
+    regions = list(reader.read_regions([(0, 0), (32, 32)], 0, (16, 16), num_workers=2))
+    assert len(regions) == 2
+    assert all(region.shape == (16, 16, 3) for region in regions)
+
+
 # --- OpenSlideReader import guard ---
 
 
 def test_openslide_reader_raises_without_library(tmp_path):
     """OpenSlideReader should raise ImportError if openslide is not installed."""
+    from soma.wsi.backends.openslide import OpenSlideReader
+
     try:
         import openslide  # noqa: F401
 
@@ -162,3 +185,168 @@ def test_open_slide_with_unknown_backend():
 
     with pytest.raises(ValueError, match="backend"):
         open_slide("fake.svs", backend="nonexistent")
+
+
+def test_soma_wsi_exports_protocols_and_factory_only():
+    import soma.wsi as wsi
+
+    assert wsi.__all__ == [
+        "SlideReader",
+        "BatchRegionReader",
+        "open_slide",
+        "select_level",
+        "LevelSelection",
+    ]
+
+
+def test_open_slide_with_explicit_backend_uses_registered_opener(monkeypatch):
+    import soma.wsi.reader as reader_mod
+
+    sentinel = SyntheticSlideReader()
+
+    monkeypatch.setattr(
+        reader_mod,
+        "_BACKENDS",
+        {
+            "openslide": reader_mod._BackendSpec(
+                name="openslide",
+                opener=lambda path, *, spacing_override=None: sentinel,
+                supports_path=lambda path: True,
+            )
+        },
+    )
+    opened = reader_mod.open_slide("fake.svs", backend="openslide")
+    assert opened is sentinel
+
+
+def test_open_slide_with_auto_prefers_first_supported_backend(monkeypatch):
+    import soma.wsi.reader as reader_mod
+
+    seen: list[str] = []
+    cucim_reader = SyntheticSlideReader()
+
+    monkeypatch.setattr(
+        reader_mod,
+        "_BACKENDS",
+        {
+            "cucim": reader_mod._BackendSpec(
+                name="cucim",
+                opener=lambda path, *, spacing_override=None: seen.append("cucim") or cucim_reader,
+                supports_path=lambda path: True,
+            ),
+            "openslide": reader_mod._BackendSpec(
+                name="openslide",
+                opener=lambda path, *, spacing_override=None: seen.append("openslide") or SyntheticSlideReader(),
+                supports_path=lambda path: True,
+            ),
+        },
+    )
+    monkeypatch.setattr(reader_mod, "_AUTO_BACKEND_ORDER", ("cucim", "openslide"))
+
+    opened = reader_mod.open_slide("fake.svs", backend="auto")
+    assert opened is cucim_reader
+    assert seen == ["cucim"]
+
+
+def test_open_slide_with_auto_skips_unsupported_backend(monkeypatch):
+    import soma.wsi.reader as reader_mod
+
+    seen: list[str] = []
+    openslide_reader = SyntheticSlideReader()
+
+    monkeypatch.setattr(
+        reader_mod,
+        "_BACKENDS",
+        {
+            "cucim": reader_mod._BackendSpec(
+                name="cucim",
+                opener=lambda path, *, spacing_override=None: seen.append("cucim") or SyntheticSlideReader(),
+                supports_path=lambda path: False,
+            ),
+            "openslide": reader_mod._BackendSpec(
+                name="openslide",
+                opener=lambda path, *, spacing_override=None: seen.append("openslide") or openslide_reader,
+                supports_path=lambda path: True,
+            ),
+        },
+    )
+    monkeypatch.setattr(reader_mod, "_AUTO_BACKEND_ORDER", ("cucim", "openslide"))
+
+    opened = reader_mod.open_slide("fake.svs", backend="auto")
+    assert opened is openslide_reader
+    assert seen == ["openslide"]
+
+
+def test_cucim_reader_raises_without_library(tmp_path):
+    from soma.wsi.backends.cucim import CuCIMReader
+
+    with pytest.raises(ImportError, match="cucim"):
+        CuCIMReader(tmp_path / "fake.svs")
+
+
+def test_cucim_reader_normalizes_arrays_and_supports_batch_reads(monkeypatch, tmp_path):
+    from soma.wsi.backends.cucim import CuCIMReader
+
+    metadata = {
+        "cucim": {
+            "shape": [512, 1024, 4],
+            "resolutions": {
+                "level_count": 2,
+                "level_dimensions": [(1024, 512), (512, 256)],
+                "level_downsamples": [1.0, 2.0],
+            },
+        },
+        "aperio": {"MPP": "0.25"},
+    }
+
+    class FakeCuImage:
+        def __init__(self, path):
+            self.path = path
+            self.metadata = metadata
+            self.calls = []
+
+        def read_region(self, location=None, size=None, level=0, num_workers=None):
+            self.calls.append(
+                {
+                    "location": location,
+                    "size": size,
+                    "level": level,
+                    "num_workers": num_workers,
+                }
+            )
+            if isinstance(location, list):
+                return iter(
+                    [
+                        np.full((size[1], size[0], 4), fill_value=10 + idx, dtype=np.uint8)
+                        for idx, _ in enumerate(location)
+                    ]
+                )
+            return np.full((size[1], size[0], 4), fill_value=7, dtype=np.uint8)
+
+    fake_module = types.SimpleNamespace(CuImage=FakeCuImage)
+    monkeypatch.setattr(
+        "soma.wsi.backends.cucim.importlib.import_module",
+        lambda name: fake_module if name == "cucim" else __import__(name),
+    )
+
+    reader = CuCIMReader(tmp_path / "slide.svs")
+    assert isinstance(reader, BatchRegionReader)
+    assert reader.dimensions == (1024, 512)
+    assert reader.spacing == pytest.approx(0.25)
+    assert reader.level_count == 2
+    assert reader.level_dimensions == [(1024, 512), (512, 256)]
+    assert reader.level_downsamples == [1.0, 2.0]
+
+    region = reader.read_region((0, 0), 0, (8, 6))
+    assert region.shape == (6, 8, 3)
+    assert np.all(region[..., 0] == 7)
+
+    regions = list(reader.read_regions([(0, 0), (16, 16)], 1, (4, 5), num_workers=3))
+    assert len(regions) == 2
+    assert regions[0].shape == (5, 4, 3)
+    assert regions[1].shape == (5, 4, 3)
+
+    thumbnail = reader.get_thumbnail((32, 32))
+    assert thumbnail.ndim == 3
+    assert thumbnail.shape[-1] == 3
+    assert reader._slide.path == str(tmp_path / "slide.svs")

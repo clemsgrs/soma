@@ -86,8 +86,6 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "tolerance": config.tolerance,
         "ref_tile_size_px": config.ref_tile_size_px,
         "a_t": config.a_t,
-        "a_h": config.a_h,
-        "max_holes_per_contour": config.max_holes_per_contour,
     }
 
 

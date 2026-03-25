@@ -15,11 +15,18 @@ from soma.encoders.extraction import (
     SuperTileBatchSampler,
     TileBatchCollator,
     TileIndexDataset,
+    _build_loader,
     extract_slide_features,
     extract_tile_features,
     save_features,
 )
+from soma.encoders.tile_reader import build_supertile_index
 from soma.preprocessing.tiling import TilingResult
+from soma.wsi.reader import BatchRegionReader
+
+
+def _pixel_value_transform(img: np.ndarray) -> Tensor:
+    return torch.from_numpy(img.astype(np.float32)).permute(2, 0, 1)
 
 
 class MockTileEncoder(TileEncoder):
@@ -78,6 +85,30 @@ class MockSlideEncoder(SlideEncoder):
         return self
 
 
+class PixelValueTileEncoder(TileEncoder):
+    def __init__(self):
+        self._device = torch.device("cpu")
+
+    def get_transform(self):
+        return _pixel_value_transform
+
+    def encode_tiles(self, batch: Tensor) -> Tensor:
+        values = batch[:, 0, 0, 0].unsqueeze(1)
+        return values
+
+    @property
+    def encode_dim(self) -> int:
+        return 1
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    def to(self, device):
+        self._device = torch.device(device)
+        return self
+
+
 def _make_grid_tiling(nx: int, ny: int, tile_size_lv0: int = 512) -> TilingResult:
     coords = []
     for y in range(ny):
@@ -109,14 +140,114 @@ def _mock_reader() -> MagicMock:
     return reader
 
 
+class RecordingBatchReader:
+    def __init__(self):
+        self.dimensions = (1024, 1024)
+        self.level_downsamples = [1.0]
+        self.level_count = 1
+        self.level_dimensions = [(1024, 1024)]
+        self.spacing = 0.5
+        self.read_region_calls: list[tuple[tuple[int, int], int, tuple[int, int]]] = []
+        self.read_regions_calls: list[dict[str, object]] = []
+
+    def read_region(self, location, level, size):
+        self.read_region_calls.append((location, level, size))
+        w, h = size
+        value = int(location[0] // 512) + 10 * int(location[1] // 512)
+        return np.full((h, w, 3), value, dtype=np.uint8)
+
+    def read_regions(self, locations, level, size, *, num_workers=None):
+        self.read_regions_calls.append(
+            {
+                "locations": list(locations),
+                "level": level,
+                "size": size,
+                "num_workers": num_workers,
+            }
+        )
+        w, h = size
+        for location in locations:
+            value = int(location[0] // 512) + 10 * int(location[1] // 512)
+            yield np.full((h, w, 3), value, dtype=np.uint8)
+
+    def get_thumbnail(self, size):
+        w, h = size
+        return np.zeros((h, w, 3), dtype=np.uint8)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+assert isinstance(RecordingBatchReader(), BatchRegionReader)
+
+
+class PatternBatchReader:
+    def __init__(self, tile_span: int = 256):
+        self.dimensions = (4096, 4096)
+        self.level_downsamples = [1.0]
+        self.level_count = 1
+        self.level_dimensions = [self.dimensions]
+        self.spacing = 0.5
+        self.tile_span = tile_span
+        self.read_region_calls: list[tuple[tuple[int, int], int, tuple[int, int]]] = []
+        self.read_regions_calls: list[dict[str, object]] = []
+
+    def _region(self, location, size):
+        w, h = size
+        xs = location[0] + np.arange(w, dtype=np.int64)
+        ys = location[1] + np.arange(h, dtype=np.int64)
+        grid_x = (xs // self.tile_span).astype(np.uint8)
+        grid_y = (ys // self.tile_span).astype(np.uint8)
+        values = grid_y[:, None] * 10 + grid_x[None, :]
+        return np.repeat(values[:, :, None], 3, axis=2)
+
+    def read_region(self, location, level, size):
+        self.read_region_calls.append((location, level, size))
+        return self._region(location, size)
+
+    def read_regions(self, locations, level, size, *, num_workers=None):
+        self.read_regions_calls.append(
+            {
+                "locations": list(locations),
+                "level": level,
+                "size": size,
+                "num_workers": num_workers,
+            }
+        )
+        for location in locations:
+            yield self._region(location, size)
+
+    def get_thumbnail(self, size):
+        w, h = size
+        return np.zeros((h, w, 3), dtype=np.uint8)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+assert isinstance(PatternBatchReader(), BatchRegionReader)
+
+
 class TestTileIndexDataset:
     def test_len(self):
-        assert len(TileIndexDataset(100)) == 100
+        assert len(TileIndexDataset(np.arange(100, dtype=np.int64))) == 100
 
     def test_getitem(self):
-        ds = TileIndexDataset(10)
-        assert ds[0] == 0
-        assert ds[9] == 9
+        ds = TileIndexDataset(np.array([7, 3, 11], dtype=np.int64))
+        assert ds[0] == 7
+        assert ds[2] == 11
 
 
 class TestSuperTileBatchSampler:
@@ -134,6 +265,93 @@ class TestSuperTileBatchSampler:
 
 
 class TestExtractTileFeatures:
+    def test_supertile_loader_reorders_dataset_indices(self):
+        tiling = _make_grid_tiling(9, 9, tile_size_lv0=256)
+        st_index = build_supertile_index(tiling)
+
+        loader = _build_loader(
+            PixelValueTileEncoder(),
+            RecordingBatchReader(),
+            tiling,
+            batch_size=64,
+            adaptive_batching=False,
+            num_workers=0,
+            use_supertiles=True,
+        )
+
+        batch_indices, _ = next(iter(loader))
+        assert batch_indices.tolist() == st_index.ordered_indices[:64].tolist()
+        assert batch_indices.tolist() != list(range(64))
+
+    def test_supertile_batching_defaults_to_fixed_batch_size(self):
+        reader = RecordingBatchReader()
+        features = extract_tile_features(
+            PixelValueTileEncoder(),
+            reader,
+            _make_grid_tiling(4, 4, tile_size_lv0=256),
+            batch_size=8,
+            num_workers=0,
+            use_supertiles=True,
+        )
+
+        assert features.shape == (16, 1)
+        assert reader.read_region_calls == []
+        assert len(reader.read_regions_calls) == 2
+        assert reader.read_regions_calls == [
+            {
+                "locations": [(0, 0)],
+                "level": 0,
+                "size": (1024, 1024),
+                "num_workers": 0,
+            },
+            {
+                "locations": [(0, 0)],
+                "level": 0,
+                "size": (1024, 1024),
+                "num_workers": 0,
+            },
+        ]
+
+    def test_adaptive_batching_keeps_large_group_intact(self):
+        reader = RecordingBatchReader()
+        features = extract_tile_features(
+            PixelValueTileEncoder(),
+            reader,
+            _make_grid_tiling(4, 4, tile_size_lv0=256),
+            batch_size=8,
+            adaptive_batching=True,
+            num_workers=0,
+            use_supertiles=True,
+        )
+
+        assert features.shape == (16, 1)
+        assert reader.read_region_calls == []
+        assert len(reader.read_regions_calls) == 1
+        assert reader.read_regions_calls[0] == {
+            "locations": [(0, 0)],
+            "level": 0,
+            "size": (1024, 1024),
+            "num_workers": 0,
+        }
+
+    def test_supertile_reordering_preserves_feature_positions_for_mixed_sizes(self):
+        reader = PatternBatchReader(tile_span=256)
+        features = extract_tile_features(
+            PixelValueTileEncoder(),
+            reader,
+            _make_grid_tiling(10, 10, tile_size_lv0=256),
+            batch_size=32,
+            num_workers=0,
+            use_supertiles=True,
+        )
+
+        expected = [
+            float(x + 10 * y)
+            for y in range(10)
+            for x in range(10)
+        ]
+        assert features.squeeze(1).tolist() == expected
+
     def test_output_shape(self):
         features = extract_tile_features(
             MockTileEncoder(dim=8),
@@ -175,6 +393,47 @@ class TestExtractTileFeatures:
         )
         assert features.shape == (0, 8)
 
+    def test_batch_capable_reader_uses_read_regions_and_preserves_order(self):
+        reader = RecordingBatchReader()
+        features = extract_tile_features(
+            PixelValueTileEncoder(),
+            reader,
+            _make_grid_tiling(2, 2, tile_size_lv0=512),
+            batch_size=4,
+            num_workers=0,
+            use_supertiles=False,
+        )
+        assert reader.read_region_calls == []
+        assert len(reader.read_regions_calls) == 1
+        assert reader.read_regions_calls[0] == {
+            "locations": [(0, 0), (512, 0), (0, 512), (512, 512)],
+            "level": 0,
+            "size": (256, 256),
+            "num_workers": 0,
+        }
+        assert features.squeeze(1).tolist() == [0.0, 1.0, 10.0, 11.0]
+
+    def test_batch_capable_reader_batches_supertile_reads(self):
+        reader = RecordingBatchReader()
+        features = extract_tile_features(
+            PixelValueTileEncoder(),
+            reader,
+            _make_grid_tiling(2, 2, tile_size_lv0=256),
+            batch_size=4,
+            adaptive_batching=True,
+            num_workers=0,
+            use_supertiles=True,
+        )
+        assert features.shape == (4, 1)
+        assert reader.read_region_calls == []
+        assert len(reader.read_regions_calls) == 1
+        assert reader.read_regions_calls[0] == {
+            "locations": [(0, 0)],
+            "level": 0,
+            "size": (512, 512),
+            "num_workers": 0,
+        }
+
 
 class TestExtractSlideFeatures:
     def test_returns_slide_result(self):
@@ -215,3 +474,24 @@ class TestSaveFeatures:
     def test_atomic_save(self, tmp_path: Path):
         save_features(torch.randn(5, 32), tmp_path, "slide_002")
         assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_save_reorders_tile_features_by_tile_index(self, tmp_path: Path):
+        features = torch.tensor(
+            [[30.0, 300.0], [10.0, 100.0], [20.0, 200.0]],
+            dtype=torch.float32,
+        )
+        tile_index = torch.tensor([2, 0, 1], dtype=torch.long)
+
+        path = save_features(
+            features,
+            tmp_path,
+            "slide_003",
+            tile_index=tile_index,
+        )
+
+        loaded = torch.load(path, weights_only=True)
+        expected = torch.tensor(
+            [[10.0, 100.0], [20.0, 200.0], [30.0, 300.0]],
+            dtype=torch.float32,
+        )
+        assert torch.equal(loaded, expected)
