@@ -6,7 +6,7 @@ import timm
 import timm.layers
 import torch
 
-from soma.encoders.base import TimmEncoder
+from soma.encoders.base import TimmTileEncoder
 from soma.encoders.registry import register_encoder
 
 
@@ -18,7 +18,7 @@ from soma.encoders.registry import register_encoder
     precision="fp16",
     source="MahmoodLab/UNI",
 )
-class UNI(TimmEncoder):
+class UNI(TimmTileEncoder):
     def __init__(self, *, token: str | None = None):
         super().__init__(
             "hf-hub:MahmoodLab/UNI",
@@ -36,7 +36,7 @@ class UNI(TimmEncoder):
     precision="fp16",
     source="MahmoodLab/UNI2-h",
 )
-class UNI2(TimmEncoder):
+class UNI2(TimmTileEncoder):
     def __init__(self, *, token: str | None = None):
         super().__init__(
             "hf-hub:MahmoodLab/UNI2-h",

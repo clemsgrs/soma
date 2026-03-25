@@ -12,7 +12,7 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from soma.encoders.base import Encoder
+from soma.encoders.base import TileEncoder
 from soma.encoders.registry import register_encoder
 
 
@@ -24,7 +24,7 @@ from soma.encoders.registry import register_encoder
     precision="fp32",
     source="MahmoodLab/conch",
 )
-class CONCH(Encoder):
+class CONCH(TileEncoder):
     def __init__(self, *, token: str | None = None):
         from conch.open_clip_custom import create_model_from_pretrained
 
@@ -37,7 +37,7 @@ class CONCH(Encoder):
     def get_transform(self) -> Callable:
         return self._transform
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         return self._model.encode_image(batch, proj_contrast=False, normalize=False)
 
     @property
@@ -62,7 +62,7 @@ class CONCH(Encoder):
     precision="fp16",
     source="MahmoodLab/TITAN",
 )
-class CONCHv15(Encoder):
+class CONCHv15(TileEncoder):
     def __init__(self, *, token: str | None = None):
         from transformers import AutoModel
 
@@ -74,7 +74,7 @@ class CONCHv15(Encoder):
     def get_transform(self) -> Callable:
         return self._transform
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         return self._model(batch)
 
     @property

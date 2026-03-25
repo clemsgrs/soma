@@ -1,12 +1,20 @@
-"""Encoder module — tile-level feature extraction with foundation models."""
+"""Encoder module — tile-level and slide-level feature extraction."""
 
-from soma.encoders.base import Encoder, TimmEncoder
+from soma.encoders import models as _models  # noqa: F401
+from soma.encoders.base import (
+    Encoder,
+    SlideEncoder,
+    TileEncoder,
+    TimmTileEncoder,
+)
 from soma.encoders.distributed import ExtractionSummary, SlideTask, extract_dataset
 from soma.encoders.extraction import (
+    SlideExtractionResult,
     SuperTileBatchSampler,
     TileBatchCollator,
     TileIndexDataset,
-    extract_features,
+    extract_slide_features,
+    extract_tile_features,
     save_features,
 )
 from soma.encoders.progress import (
@@ -22,7 +30,9 @@ from soma.encoders.validation import validate_encoder_config
 __all__ = [
     # Base classes
     "Encoder",
-    "TimmEncoder",
+    "TileEncoder",
+    "SlideEncoder",
+    "TimmTileEncoder",
     # Registry
     "encoder_registry",
     "register_encoder",
@@ -34,7 +44,9 @@ __all__ = [
     "TileIndexDataset",
     "TileBatchCollator",
     "SuperTileBatchSampler",
-    "extract_features",
+    "SlideExtractionResult",
+    "extract_tile_features",
+    "extract_slide_features",
     "save_features",
     # Distributed extraction (multi-slide, multi-GPU)
     "SlideTask",

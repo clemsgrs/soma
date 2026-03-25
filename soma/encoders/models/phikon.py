@@ -10,11 +10,11 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from soma.encoders.base import Encoder
+from soma.encoders.base import TileEncoder
 from soma.encoders.registry import register_encoder
 
 
-class _PhikonBase(Encoder):
+class _PhikonBase(TileEncoder):
     """Base for Phikon models using HuggingFace transformers."""
 
     _encode_dim: int
@@ -40,7 +40,7 @@ class _PhikonBase(Encoder):
 
         return _transform
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         output = self._model(pixel_values=batch)
         return output.last_hidden_state[:, 0, :]  # CLS token
 

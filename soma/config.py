@@ -36,6 +36,17 @@ class EncoderConfig:
     num_workers: int = 4
     input_size: int | None = None
     spacing_um: float | None = None
+    save_tile_features: bool = False
+
+
+@dataclass(frozen=True)
+class CacheConfig:
+    """Configuration for the shared feature cache."""
+
+    enabled: bool = True
+    root_dir: str | Path | None = None
+    reuse_policy: str = "strict"
+    save_tile_features_for_slide: bool = True
 
 
 @dataclass(frozen=True)
@@ -76,8 +87,9 @@ class PipelineConfig:
     splits_csv: str | Path
     output_dir: str | Path
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
-    aggregator: AggregatorConfig = field(default_factory=AggregatorConfig)
+    aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
     task: TaskConfig = field(default_factory=TaskConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     tags: list[str] = field(default_factory=list)
@@ -132,8 +144,9 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
         splits_csv=data["splits_csv"],
         output_dir=data["output_dir"],
         preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
+        cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**data.get("encoder", {})),
-        aggregator=AggregatorConfig(**data.get("aggregator", {})),
+        aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
         task=TaskConfig(**data.get("task", {})),
         training=TrainingConfig(**data.get("training", {})),
         tags=data.get("tags", []),

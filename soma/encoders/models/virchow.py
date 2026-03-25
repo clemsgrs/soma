@@ -6,16 +6,16 @@ import timm.layers
 import torch
 from torch import Tensor
 
-from soma.encoders.base import TimmEncoder
+from soma.encoders.base import TimmTileEncoder
 from soma.encoders.registry import register_encoder
 
 
-class _VirchowBase(TimmEncoder):
+class _VirchowBase(TimmTileEncoder):
     """Base for Virchow models that concat CLS + mean-pooled patch tokens."""
 
     _num_prefix_tokens: int = 1  # Override in subclass if needed
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         output = self._model.forward_features(batch)
         cls_token = output[:, 0]
         patch_tokens = output[:, self._num_prefix_tokens :]

@@ -1,4 +1,4 @@
-"""Encoder ABC and TimmEncoder base class for tile-level feature extraction."""
+"""Encoder abstractions for tile-level and slide-level feature extraction."""
 
 from __future__ import annotations
 
@@ -10,17 +10,7 @@ from torch import Tensor
 
 
 class Encoder(ABC):
-    """Base class for tile-level encoders."""
-
-    @abstractmethod
-    def get_transform(self) -> Callable:
-        """Image transform pipeline (PIL Image -> Tensor)."""
-        ...
-
-    @abstractmethod
-    def encode(self, batch: Tensor) -> Tensor:
-        """Encode a batch of images. (B, C, H, W) -> (B, D)."""
-        ...
+    """Shared lifecycle contract for all encoders."""
 
     @property
     @abstractmethod
@@ -40,13 +30,47 @@ class Encoder(ABC):
         ...
 
 
-class TimmEncoder(Encoder):
-    """Convenience base for timm-backed encoders.
+class TileEncoder(Encoder):
+    """Base class for encoders that operate directly on image tiles."""
 
-    Handles model creation, default transforms via ``resolve_data_config``,
-    and the standard encode path. Most foundation models subclass this
-    with only ``__init__`` overrides (5-10 lines).
-    """
+    @abstractmethod
+    def get_transform(self) -> Callable:
+        """Image transform pipeline (PIL Image or ndarray -> Tensor)."""
+        ...
+
+    @abstractmethod
+    def encode_tiles(self, batch: Tensor) -> Tensor:
+        """Encode a batch of tiles. (B, C, H, W) -> (B, D)."""
+        ...
+
+
+class SlideEncoder(Encoder):
+    """Base class for encoders that pool tile features into slide features."""
+
+    @abstractmethod
+    def encode_slide(
+        self,
+        tile_features: Tensor,
+        coordinates: Tensor | None = None,
+        *,
+        tile_size_lv0: int | None = None,
+    ) -> Tensor:
+        """Pool tile-level features into a single slide-level embedding."""
+        ...
+
+    def prepare_coordinates(
+        self,
+        coordinates: Tensor,
+        *,
+        base_spacing_um: float,
+        target_spacing_um: float,
+    ) -> Tensor:
+        """Hook for model-specific coordinate normalization."""
+        return coordinates
+
+
+class TimmTileEncoder(TileEncoder):
+    """Convenience base for timm-backed tile encoders."""
 
     def __init__(self, model_name: str, *, token: str | None = None, **timm_kwargs):
         import timm
@@ -64,7 +88,7 @@ class TimmEncoder(Encoder):
         data_config = resolve_data_config(self._model.pretrained_cfg, model=self._model)
         return create_transform(**data_config)
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         return self._model(batch)
 
     @property
@@ -75,7 +99,7 @@ class TimmEncoder(Encoder):
     def device(self) -> torch.device:
         return self._device
 
-    def to(self, device: torch.device | str) -> TimmEncoder:
+    def to(self, device: torch.device | str) -> TimmTileEncoder:
         self._device = torch.device(device)
         self._model = self._model.to(self._device)
         return self

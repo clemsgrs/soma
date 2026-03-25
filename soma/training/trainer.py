@@ -11,8 +11,6 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 
 from soma.config import TrainingConfig
-from soma.training.collate import BagBatch
-from soma.training.model import MILModel
 
 
 @dataclass(frozen=True)
@@ -38,14 +36,17 @@ class TrainResult:
 
 
 class Trainer:
-    """MIL model trainer with early stopping and checkpointing.
+    """Model trainer with early stopping and checkpointing.
+
+    Supports both MILModel (tile-level, batches have a `mask` attribute)
+    and SlideModel (slide-level, batches have no mask).
 
     Pure PyTorch training loop — no external frameworks needed.
 
     Args:
-        model: MILModel to train.
-        train_loader: Training DataLoader yielding BagBatch.
-        val_loader: Validation DataLoader yielding BagBatch.
+        model: nn.Module with a `task_head` attribute to train.
+        train_loader: Training DataLoader.
+        val_loader: Validation DataLoader.
         config: Training configuration.
         output_dir: Directory for checkpoints.
         device: torch.device for training.
@@ -53,7 +54,7 @@ class Trainer:
 
     def __init__(
         self,
-        model: MILModel,
+        model: torch.nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader,
         config: TrainingConfig,
@@ -128,13 +129,14 @@ class Trainer:
         num_batches = 0
 
         for batch in self._train_loader:
-            batch: BagBatch
             features = batch.features.to(self._device)
-            mask = batch.mask.to(self._device)
             labels = batch.labels.to(self._device)
 
             self._optimizer.zero_grad()
-            out = self._model(features, mask=mask)
+            if hasattr(batch, "mask"):
+                out = self._model(features, mask=batch.mask.to(self._device))
+            else:
+                out = self._model(features)
             loss = self._model.task_head.compute_loss(out.logits, labels)
             loss.backward()
             self._optimizer.step()
@@ -152,12 +154,13 @@ class Trainer:
         num_batches = 0
 
         for batch in self._val_loader:
-            batch: BagBatch
             features = batch.features.to(self._device)
-            mask = batch.mask.to(self._device)
             labels = batch.labels.to(self._device)
 
-            out = self._model(features, mask=mask)
+            if hasattr(batch, "mask"):
+                out = self._model(features, mask=batch.mask.to(self._device))
+            else:
+                out = self._model(features)
             loss = self._model.task_head.compute_loss(out.logits, labels)
             total_loss += loss.item()
             num_batches += 1
@@ -171,7 +174,7 @@ class Trainer:
 # ---------------------------------------------------------------------------
 
 
-def _build_optimizer(model: MILModel, config: TrainingConfig) -> torch.optim.Optimizer:
+def _build_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim.Optimizer:
     params = model.parameters()
     if config.optimizer == "adam":
         return torch.optim.Adam(params, lr=config.learning_rate, weight_decay=config.weight_decay)
@@ -197,7 +200,7 @@ def _build_scheduler(
 
 
 def _save_checkpoint(
-    model: MILModel,
+    model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     val_loss: float,

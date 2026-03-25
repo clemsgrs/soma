@@ -11,7 +11,7 @@ Layer 2 (orchestrator):
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -35,6 +35,8 @@ from soma.training.bag_dataset import BagDataset
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
 from soma.training.seed import seed_everything
+from soma.training.slide_dataset import SlideDataset, slide_collate_fn
+from soma.training.slide_model import SlideModel
 from soma.training.trainer import Trainer, TrainResult
 
 
@@ -71,7 +73,7 @@ def train_one_fold(
     feature_store: FeatureStore,
     dataset: Dataset,
     fold_split: FoldSplit,
-    aggregator: AggregatorConfig,
+    aggregator: AggregatorConfig | None,
     task: TaskConfig,
     training: TrainingConfig,
     output_dir: str | Path,
@@ -81,10 +83,10 @@ def train_one_fold(
     """Train and evaluate a single fold.
 
     Args:
-        feature_store: Precomputed tile embeddings.
+        feature_store: Precomputed embeddings (tile-level or slide-level).
         dataset: Dataset with sample records and label_map.
         fold_split: Train/tune/test sample IDs for this fold.
-        aggregator: Aggregator configuration.
+        aggregator: Aggregator configuration, or None for slide-level features.
         task: Task head configuration.
         training: Training loop configuration.
         output_dir: Directory for checkpoint, metrics, predictions.
@@ -106,34 +108,61 @@ def train_one_fold(
     tune_records = [dataset.samples[sid] for sid in fold_split.tune]
     test_records = [dataset.samples[sid] for sid in fold_split.test]
 
-    train_loader = DataLoader(
-        BagDataset(train_records, feature_store, label_map),
-        batch_size=training.batch_size,
-        shuffle=True,
-        collate_fn=bag_collate_fn,
-    )
-    tune_loader = DataLoader(
-        BagDataset(tune_records, feature_store, label_map),
-        batch_size=training.batch_size,
-        shuffle=False,
-        collate_fn=bag_collate_fn,
-    )
-    test_loader = DataLoader(
-        BagDataset(test_records, feature_store, label_map),
-        batch_size=training.batch_size,
-        shuffle=False,
-        collate_fn=bag_collate_fn,
-    )
-
-    # Construct model
-    aggregator_cls = aggregator_registry.get(aggregator.name)
-    agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
-
     task_cls = task_registry.get(task.name)
     task_params = {"num_classes": dataset.num_classes, **task.params}
-    head = task_cls(input_dim=agg.output_dim, **task_params)
 
-    model = MILModel(aggregator=agg, task_head=head)
+    if feature_store.is_slide_level:
+        # Slide-level path: skip aggregator, pass (B, D) directly to task head
+        if aggregator is not None:
+            msg = "aggregator must be None for slide-level features"
+            raise ValueError(msg)
+        train_loader = DataLoader(
+            SlideDataset(train_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=True,
+            collate_fn=slide_collate_fn,
+        )
+        tune_loader = DataLoader(
+            SlideDataset(tune_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=slide_collate_fn,
+        )
+        test_loader = DataLoader(
+            SlideDataset(test_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=slide_collate_fn,
+        )
+        head = task_cls(input_dim=feature_dim, **task_params)
+        model: torch.nn.Module = SlideModel(task_head=head)
+    else:
+        # Tile-level MIL path
+        train_loader = DataLoader(
+            BagDataset(train_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=True,
+            collate_fn=bag_collate_fn,
+        )
+        tune_loader = DataLoader(
+            BagDataset(tune_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=bag_collate_fn,
+        )
+        test_loader = DataLoader(
+            BagDataset(test_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=bag_collate_fn,
+        )
+        if aggregator is None:
+            msg = "aggregator must be provided for tile-level features"
+            raise ValueError(msg)
+        aggregator_cls = aggregator_registry.get(aggregator.name)
+        agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
+        head = task_cls(input_dim=agg.output_dim, **task_params)
+        model = MILModel(aggregator=agg, task_head=head)
 
     # Train
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -174,7 +203,7 @@ def train(
     feature_store: FeatureStore,
     dataset: Dataset,
     splits: Splits,
-    aggregator: AggregatorConfig,
+    aggregator: AggregatorConfig | None,
     task: TaskConfig,
     training: TrainingConfig,
     output_dir: str | Path,
@@ -182,10 +211,10 @@ def train(
     """Train and evaluate all folds, then summarize.
 
     Args:
-        feature_store: Precomputed tile embeddings.
+        feature_store: Precomputed embeddings (tile-level or slide-level).
         dataset: Dataset with sample records and label_map.
         splits: Cross-validation splits (1 or more folds).
-        aggregator: Aggregator configuration.
+        aggregator: Aggregator configuration, or None for slide-level features.
         task: Task head configuration.
         training: Training loop configuration.
         output_dir: Root directory — each fold gets a fold_N/ subdirectory.
@@ -283,8 +312,17 @@ class Pipeline:
         else:
             from soma.extraction import FeatureExtractor
 
+            cache_config = self._config.cache
+            if cache_config.root_dir is None:
+                cache_config = replace(
+                    cache_config,
+                    root_dir=Path(self._config.output_dir).parent / "feature_cache",
+                )
             extractor = FeatureExtractor(
-                self._dataset, self._config.encoder, self._config.preprocessing
+                self._dataset,
+                self._config.encoder,
+                self._config.preprocessing,
+                cache=cache_config,
             )
             store = extractor.run(Path(self._config.output_dir) / "features")
         store.validate_coverage(self._dataset.sample_ids)
@@ -298,7 +336,7 @@ class Pipeline:
 
 @torch.inference_mode()
 def _evaluate(
-    model: MILModel,
+    model: torch.nn.Module,
     loader: DataLoader,
     split_name: str,
     label_map: dict[str | int, int],
@@ -314,8 +352,10 @@ def _evaluate(
 
     for batch in loader:
         features = batch.features.to(device)
-        mask = batch.mask.to(device)
-        out = model(features, mask=mask)
+        if hasattr(batch, "mask"):
+            out = model(features, mask=batch.mask.to(device))
+        else:
+            out = model(features)
         all_logits.append(out.logits.cpu())
         all_labels.append(batch.labels)
         all_sample_ids.extend(batch.sample_ids)

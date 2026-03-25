@@ -139,6 +139,38 @@ class TestTrainer:
         assert "model_state_dict" in checkpoint
 
 
+class TestTrainerWithSlideModel:
+    def test_fit_with_slide_model(self, tmp_path: Path):
+        """Trainer should work with SlideModel and SlideBatch (no mask)."""
+        from torch.utils.data import DataLoader
+        from soma.training.slide_dataset import slide_collate_fn
+        from soma.training.slide_model import SlideModel
+
+        seed_everything(42)
+        D = 16
+        model = SlideModel(task_head=ClassificationHead(input_dim=D, num_classes=2))
+
+        # Build slide-level batches: (D,) tensors
+        slides = [(torch.randn(D), i % 2, f"s{i}") for i in range(8)]
+        train_loader = DataLoader(slides[:6], batch_size=2, collate_fn=slide_collate_fn)
+        val_loader = DataLoader(slides[6:], batch_size=2, collate_fn=slide_collate_fn)
+
+        config = TrainingConfig(epochs=3, learning_rate=1e-3, patience=10)
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+            output_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        result = trainer.fit()
+
+        assert isinstance(result, TrainResult)
+        assert len(result.history) == 3
+        assert result.checkpoint_path.exists()
+
+
 class TestSeedEverything:
     def test_deterministic(self):
         """Same seed should produce same random numbers."""

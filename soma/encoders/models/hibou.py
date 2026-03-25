@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 from torchvision.transforms import v2
 
-from soma.encoders.base import Encoder
+from soma.encoders.base import TileEncoder
 from soma.encoders.registry import register_encoder
 
 _HIBOU_MEAN = (0.7068, 0.5755, 0.722)
@@ -28,7 +28,7 @@ def _hibou_transform(input_size: int = 224) -> Callable:
     ])
 
 
-class _HibouBase(Encoder):
+class _HibouBase(TileEncoder):
     """Base for Hibou models using HuggingFace transformers."""
 
     _encode_dim: int
@@ -45,7 +45,7 @@ class _HibouBase(Encoder):
     def get_transform(self) -> Callable:
         return _hibou_transform()
 
-    def encode(self, batch: Tensor) -> Tensor:
+    def encode_tiles(self, batch: Tensor) -> Tensor:
         output = self._model(pixel_values=batch)
         return output.pooler_output
 
