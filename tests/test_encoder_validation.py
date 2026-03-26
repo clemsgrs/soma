@@ -13,24 +13,24 @@ from soma.preprocessing.tiling import TilingResult
 
 def _metadata(
     *,
-    encode_dim: int = 1536,
+    output_variants: dict | None = None,
+    default_output_variant: str = "default",
     level: str = "tile",
     input_size: int | None = 224,
     tile_encoder: str | None = None,
-    recommended_tile_size_px: int | None = None,
-    recommended_spacing_um: float | list[float] = 0.5,
+    tile_encoder_output_variant: str | None = None,
+    supported_spacing_um: float | list[float] = 0.5,
     precision: str = "fp16",
     source: str = "",
 ) -> dict:
     return {
-        "encode_dim": encode_dim,
+        "output_variants": output_variants or {"default": {"encode_dim": 1536}},
+        "default_output_variant": default_output_variant,
         "level": level,
         "input_size": input_size,
         "tile_encoder": tile_encoder,
-        "recommended_tile_size_px": (
-            input_size if recommended_tile_size_px is None else recommended_tile_size_px
-        ),
-        "recommended_spacing_um": recommended_spacing_um,
+        "tile_encoder_output_variant": tile_encoder_output_variant,
+        "supported_spacing_um": supported_spacing_um,
         "precision": precision,
         "source": source,
     }
@@ -69,14 +69,14 @@ class TestValidateEncoderConfig:
     def test_spacing_mismatch(self):
         warnings = validate_encoder_config(
             EncoderConfig(name="uni2", spacing_um=1.0),
-            _metadata(recommended_spacing_um=0.5),
+            _metadata(supported_spacing_um=0.5),
         )
         assert any("spacing" in w.lower() for w in warnings)
 
     def test_spacing_matches_one_of_multiple(self):
         warnings = validate_encoder_config(
             EncoderConfig(name="model", spacing_um=1.0),
-            _metadata(recommended_spacing_um=[0.5, 1.0]),
+            _metadata(supported_spacing_um=[0.5, 1.0]),
         )
         assert not any("spacing" in w.lower() for w in warnings)
 
@@ -84,7 +84,7 @@ class TestValidateEncoderConfig:
         with pytest.raises(ValueError, match="spacing"):
             validate_encoder_config(
                 EncoderConfig(name="model"),
-                _metadata(recommended_spacing_um=[0.5, 1.0]),
+                _metadata(supported_spacing_um=[0.5, 1.0]),
             )
 
     def test_input_size_mismatch(self):
@@ -97,18 +97,47 @@ class TestValidateEncoderConfig:
     def test_effective_spacing_mismatch_with_tiling(self):
         warnings = validate_encoder_config(
             EncoderConfig(name="uni2", spacing_um=0.5),
-            _metadata(recommended_spacing_um=0.5),
+            _metadata(supported_spacing_um=0.5),
             tiling_result=_tiling_result(effective_spacing_um=0.75),
         )
         assert any("effective" in w.lower() for w in warnings)
 
     def test_preprocessing_tile_size_mismatch(self):
+        if "test-validate-slide-base" not in encoder_registry:
+            encoder_registry.register(
+                "test-validate-slide-base",
+                object,
+                metadata={
+                    "level": "tile",
+                    "input_size": 224,
+                    "output_variants": {"default": {"encode_dim": 224}},
+                    "default_output_variant": "default",
+                    "supported_spacing_um": 0.5,
+                },
+            )
         warnings = validate_encoder_config(
             EncoderConfig(name="prism"),
-            _metadata(level="slide", tile_encoder="virchow", recommended_tile_size_px=224),
+            _metadata(
+                level="slide",
+                tile_encoder="test-validate-slide-base",
+                tile_encoder_output_variant="default",
+                input_size=None,
+            ),
             preprocessing_config=PreprocessingConfig(requested_tile_size_px=256),
         )
         assert any("tile size" in w.lower() for w in warnings)
+
+    def test_slide_encoder_rejects_output_variant_override(self):
+        with pytest.raises(ValueError, match="output_variant"):
+            validate_encoder_config(
+                EncoderConfig(name="prism", output_variant="cls"),
+                _metadata(
+                    level="slide",
+                    tile_encoder="test-validate-slide-base",
+                    tile_encoder_output_variant="default",
+                    input_size=None,
+                ),
+            )
 
     def test_slide_encoder_requires_tile_encoder_metadata(self):
         with pytest.raises(ValueError, match="tile_encoder"):
@@ -140,3 +169,17 @@ class TestValidateEncoderConfig:
                 EncoderConfig(name="prism"),
                 _metadata(level="slide", tile_encoder="test-slide-validation-dep"),
             )
+
+    def test_hoptimus_models_reject_non_default_output_variants(self):
+        with pytest.raises(ValueError, match="output_variant"):
+            validate_encoder_config(
+                EncoderConfig(name="h-optimus-1", output_variant="cls"),
+                encoder_registry.info("h-optimus-1"),
+            )
+
+    def test_h0_mini_allows_cls_output_variant(self):
+        warnings = validate_encoder_config(
+            EncoderConfig(name="h0-mini", output_variant="cls"),
+            encoder_registry.info("h0-mini"),
+        )
+        assert warnings == []

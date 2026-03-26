@@ -18,7 +18,8 @@ from soma.encoders.distributed import SlideTask, extract_dataset
 from soma.encoders.base import SlideEncoder
 import soma.encoders.models  # noqa: F401
 from soma.encoders.registry import encoder_registry
-from soma.encoders.validation import validate_encoder_config
+from soma.encoders.registry import resolve_encoder_output, resolve_tile_dependency_output
+from soma.encoders.validation import resolve_preprocessing_config, validate_encoder_config
 from soma.features import FeatureStore
 from soma.preprocessing.io import load_tiling_result, save_tiling_result
 from soma.preprocessing.tiling import generate_tiles
@@ -47,6 +48,22 @@ class FeatureExtractor:
         self._preprocessing = preprocessing
         self._cache = cache
 
+    def _resolved_preprocessing(self) -> PreprocessingConfig:
+        encoder_info = encoder_registry.info(self._encoder.name)
+        return resolve_preprocessing_config(
+            self._encoder,
+            self._preprocessing,
+            model_metadata=encoder_info,
+        )
+
+    def _resolved_output(self) -> dict[str, object]:
+        encoder_info = encoder_registry.info(self._encoder.name)
+        return resolve_encoder_output(
+            self._encoder.name,
+            requested_output_variant=self._encoder.output_variant,
+            metadata=encoder_info,
+        )
+
     def preprocess(
         self,
         output_dir: str | Path,
@@ -60,7 +77,7 @@ class FeatureExtractor:
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        cfg = self._preprocessing
+        cfg = self._resolved_preprocessing()
 
         for record in self._dataset.samples.values():
             npz_path = output_dir / f"{record.sample_id}.coordinates.npz"
@@ -130,10 +147,24 @@ class FeatureExtractor:
 
         tiling_dir = Path(tiling_dir)
         encoder_info = encoder_registry.info(self._encoder.name)
+        resolved_output = resolve_encoder_output(
+            self._encoder.name,
+            requested_output_variant=self._encoder.output_variant,
+            metadata=encoder_info,
+        )
+        tile_dependency_output = resolve_tile_dependency_output(
+            self._encoder.name,
+            metadata=encoder_info,
+        )
+        resolved_preprocessing = resolve_preprocessing_config(
+            self._encoder,
+            self._preprocessing,
+            model_metadata=encoder_info,
+        )
         for warning in validate_encoder_config(
             self._encoder,
             encoder_info,
-            preprocessing_config=self._preprocessing,
+            preprocessing_config=resolved_preprocessing,
         ):
             warnings.warn(warning, stacklevel=2)
 
@@ -147,7 +178,7 @@ class FeatureExtractor:
             for warning in validate_encoder_config(
                 self._encoder,
                 encoder_info,
-                preprocessing_config=self._preprocessing,
+                preprocessing_config=resolved_preprocessing,
                 tiling_result=tiling,
             ):
                 warnings.warn(warning, stacklevel=2)
@@ -162,6 +193,12 @@ class FeatureExtractor:
         if not self._cache.enabled:
             extract_dataset(
                 encoder_name=self._encoder.name,
+                output_variant=str(resolved_output["output_variant"]),
+                tile_output_variant=(
+                    str(tile_dependency_output["output_variant"])
+                    if encoder_info.get("level", "tile") == "slide"
+                    else None
+                ),
                 slides=slide_tasks,
                 output_dir=output_dir,
                 batch_size=self._encoder.batch_size,
@@ -182,8 +219,9 @@ class FeatureExtractor:
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
-                preprocessing=self._preprocessing,
+                preprocessing=resolved_preprocessing,
                 execution=self._encoder,
+                output_variant=str(resolved_output["output_variant"]),
             )
             self._populate_tile_cache(
                 cache_resolution,
@@ -199,8 +237,9 @@ class FeatureExtractor:
             cache_root=cache_root,
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
-            preprocessing=self._preprocessing,
+            preprocessing=resolved_preprocessing,
             execution=self._encoder,
+            output_variant=str(tile_dependency_output["output_variant"]),
         )
         self._populate_tile_cache(
             tile_cache,
@@ -217,6 +256,7 @@ class FeatureExtractor:
             tile_encoder_name=tile_encoder_name,
             tile_cache_key=tile_cache.key,
             execution=self._encoder,
+            output_variant=str(resolved_output["output_variant"]),
         )
         self._populate_slide_cache(
             slide_cache,
@@ -266,6 +306,7 @@ class FeatureExtractor:
         tasks_to_run = [task for task in slide_tasks if task.slide_id in missing]
         extract_dataset(
             encoder_name=cache_resolution.metadata["encoder_name"],
+            output_variant=cache_resolution.metadata["execution"].get("output_variant"),
             slides=tasks_to_run,
             output_dir=cache_resolution.features_dir,
             batch_size=self._encoder.batch_size,
@@ -297,7 +338,9 @@ class FeatureExtractor:
         if not missing:
             return
         encoder_cls = encoder_registry.get(self._encoder.name)
-        slide_encoder = encoder_cls().to(
+        slide_encoder = encoder_cls(
+            output_variant=slide_cache.metadata["execution"].get("output_variant")
+        ).to(
             torch.device("cuda" if torch.cuda.is_available() else "cpu")
         )
         assert isinstance(slide_encoder, SlideEncoder)

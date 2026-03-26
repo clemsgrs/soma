@@ -17,10 +17,13 @@ class AggregatorOutput:
         bag_representation: Slide-level representation, shape (B, D_out).
         tile_attention: Per-tile attention weights, shape (B, N).
             None for non-attention methods (e.g. MeanPool, MaxPool).
+        auxiliary: Optional dict of auxiliary tensors for training-time
+            losses (e.g. instance logits for DSMIL, embeddings for CLAM).
     """
 
     bag_representation: Tensor
     tile_attention: Tensor | None = None
+    auxiliary: dict[str, Tensor] | None = None
 
 
 class Aggregator(ABC, nn.Module):
@@ -48,3 +51,24 @@ class Aggregator(ABC, nn.Module):
     def output_dim(self) -> int:
         """Dimensionality of the bag representation."""
         ...
+
+    def compute_auxiliary_loss(
+        self,
+        auxiliary: dict[str, Tensor],
+        labels: Tensor,
+        mask: Tensor | None = None,
+    ) -> Tensor | None:
+        """Compute auxiliary training loss from auxiliary output.
+
+        Override in subclasses that produce auxiliary data
+        (e.g. CLAM, DSMIL, DTFD-MIL). Returns None by default.
+
+        Args:
+            auxiliary: Dict of auxiliary tensors from forward().
+            labels: Bag labels, shape (B,).
+            mask: Boolean mask, shape (B, N). True = valid tile.
+
+        Returns:
+            Scalar auxiliary loss, or None if no auxiliary loss.
+        """
+        return None

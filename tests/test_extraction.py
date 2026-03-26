@@ -15,6 +15,7 @@ from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.encoders.base import SlideEncoder, TileEncoder
 from soma.encoders.registry import encoder_registry
+from soma.preprocessing.tiling import TilingResult
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 
@@ -70,13 +71,15 @@ def _mock_extract_dataset(encoder_name, slides, output_dir, **kwargs):
     output_dir.mkdir(parents=True, exist_ok=True)
     completed = []
     skipped = []
+    output_variant = kwargs.get("output_variant")
+    dim = 8 if output_variant == "cls" else D
     for task in slides:
         pt_path = output_dir / f"{task.slide_id}.pt"
         if kwargs.get("skip_existing", True) and pt_path.exists():
             skipped.append(task.slide_id)
             continue
         n_tiles = len(task.tiling_result.coordinates)
-        torch.save(torch.randn(n_tiles, D), pt_path)
+        torch.save(torch.randn(n_tiles, dim), pt_path)
         completed.append(task.slide_id)
     return ExtractionSummary(
         completed=completed, skipped=skipped, failed=[], duration_s=0.1
@@ -105,6 +108,7 @@ def _mock_extract_dataset_slide(encoder_name, slides, output_dir, **kwargs):
 class _CacheTileEncoder(TileEncoder):
     def __init__(self, **kwargs):
         self._device = torch.device("cpu")
+        self._output_variant = kwargs.get("output_variant") or "default"
 
     def get_transform(self):
         return lambda x: x
@@ -128,6 +132,7 @@ class _CacheTileEncoder(TileEncoder):
 class _CacheSlideEncoder(SlideEncoder):
     def __init__(self, **kwargs):
         self._device = torch.device("cpu")
+        self._output_variant = kwargs.get("output_variant") or "default"
 
     def encode_slide(self, tile_features, coordinates=None, *, tile_size_lv0: int | None = None):
         return tile_features.mean(dim=0)
@@ -151,10 +156,10 @@ if _TEST_CACHE_TILE not in encoder_registry:
         _CacheTileEncoder,
         metadata={
             "level": "tile",
-            "encode_dim": D,
             "input_size": 256,
-            "recommended_tile_size_px": 256,
-            "recommended_spacing_um": 0.5,
+            "output_variants": {"default": {"encode_dim": D}},
+            "default_output_variant": "default",
+            "supported_spacing_um": 0.5,
             "precision": "fp16",
             "source": "test/cache-tile",
         },
@@ -167,9 +172,10 @@ if _TEST_CACHE_SLIDE not in encoder_registry:
         metadata={
             "level": "slide",
             "tile_encoder": _TEST_CACHE_TILE,
-            "encode_dim": D,
-            "recommended_tile_size_px": 256,
-            "recommended_spacing_um": 0.5,
+            "tile_encoder_output_variant": "default",
+            "output_variants": {"default": {"encode_dim": D}},
+            "default_output_variant": "default",
+            "supported_spacing_um": 0.5,
             "precision": "fp16",
             "source": "test/cache-slide",
         },
@@ -226,6 +232,125 @@ class TestPreprocess:
 
         assert mock_open.call_count == NUM_SAMPLES
 
+    @staticmethod
+    def _empty_tiling_result() -> TilingResult:
+        return TilingResult(
+            coordinates=np.empty((0, 2), dtype=np.int64),
+            tissue_fractions=np.empty(0, dtype=np.float32),
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            read_level=0,
+            effective_tile_size_px=224,
+            effective_spacing_um=0.5,
+            tile_size_lv0=224,
+            is_within_tolerance=True,
+            tissue_mask=np.ones((10, 10), dtype=np.uint8),
+        )
+
+    @patch("soma.extraction.generate_tiles")
+    @patch("soma.extraction.detect_contours")
+    @patch("soma.extraction.segment_tissue")
+    @patch("soma.extraction.open_slide")
+    def test_infers_preprocessing_defaults_from_tile_encoder(
+        self,
+        mock_open,
+        mock_segment,
+        mock_detect,
+        mock_generate,
+        tmp_path: Path,
+    ):
+        reader = _make_synthetic_reader()
+        mock_open.return_value = reader
+        mock_segment.return_value = np.ones((10, 10), dtype=np.uint8)
+        mock_detect.return_value = MagicMock(contours=[], mask=np.ones((10, 10), dtype=np.uint8))
+        mock_generate.return_value = self._empty_tiling_result()
+        dataset = _make_dataset(tmp_path)
+
+        extractor = FeatureExtractor(
+            dataset,
+            EncoderConfig(name="h0-mini"),
+            PreprocessingConfig(
+                requested_tile_size_px=None,
+                requested_spacing_um=None,
+            ),
+        )
+        extractor.preprocess(tmp_path / "tiling")
+
+        detect_kwargs = mock_detect.call_args.kwargs
+        generate_kwargs = mock_generate.call_args.kwargs
+        assert detect_kwargs["ref_tile_size_px"] == 224
+        assert detect_kwargs["requested_spacing_um"] == 0.5
+        assert generate_kwargs["requested_tile_size_px"] == 224
+        assert generate_kwargs["requested_spacing_um"] == 0.5
+
+    @patch("soma.extraction.generate_tiles")
+    @patch("soma.extraction.detect_contours")
+    @patch("soma.extraction.segment_tissue")
+    @patch("soma.extraction.open_slide")
+    def test_infers_preprocessing_defaults_from_slide_encoder_tile_dependency(
+        self,
+        mock_open,
+        mock_segment,
+        mock_detect,
+        mock_generate,
+        tmp_path: Path,
+    ):
+        reader = _make_synthetic_reader()
+        mock_open.return_value = reader
+        mock_segment.return_value = np.ones((10, 10), dtype=np.uint8)
+        mock_detect.return_value = MagicMock(contours=[], mask=np.ones((10, 10), dtype=np.uint8))
+        mock_generate.return_value = self._empty_tiling_result()
+        dataset = _make_dataset(tmp_path)
+
+        extractor = FeatureExtractor(
+            dataset,
+            EncoderConfig(name="prism"),
+            PreprocessingConfig(
+                requested_tile_size_px=None,
+                requested_spacing_um=None,
+            ),
+        )
+        extractor.preprocess(tmp_path / "tiling")
+
+        detect_kwargs = mock_detect.call_args.kwargs
+        generate_kwargs = mock_generate.call_args.kwargs
+        assert detect_kwargs["ref_tile_size_px"] == 224
+        assert generate_kwargs["requested_tile_size_px"] == 224
+        assert generate_kwargs["requested_spacing_um"] == 0.5
+
+    @patch("soma.extraction.generate_tiles")
+    @patch("soma.extraction.detect_contours")
+    @patch("soma.extraction.segment_tissue")
+    @patch("soma.extraction.open_slide")
+    def test_preserves_explicit_ref_tile_size_override(
+        self,
+        mock_open,
+        mock_segment,
+        mock_detect,
+        mock_generate,
+        tmp_path: Path,
+    ):
+        reader = _make_synthetic_reader()
+        mock_open.return_value = reader
+        mock_segment.return_value = np.ones((10, 10), dtype=np.uint8)
+        mock_detect.return_value = MagicMock(contours=[], mask=np.ones((10, 10), dtype=np.uint8))
+        mock_generate.return_value = self._empty_tiling_result()
+        dataset = _make_dataset(tmp_path)
+
+        extractor = FeatureExtractor(
+            dataset,
+            EncoderConfig(name="h0-mini"),
+            PreprocessingConfig(
+                requested_tile_size_px=None,
+                requested_spacing_um=None,
+                ref_tile_size_px=32,
+            ),
+        )
+        extractor.preprocess(tmp_path / "tiling")
+
+        detect_kwargs = mock_detect.call_args.kwargs
+        assert detect_kwargs["ref_tile_size_px"] == 32
+
 
 # ---------------------------------------------------------------------------
 # FeatureExtractor.extract()
@@ -251,6 +376,23 @@ class TestExtract:
         for i in range(NUM_SAMPLES):
             features = store.load(f"s{i}")
             assert features.shape[1] == D
+
+    @patch("soma.extraction.extract_dataset", side_effect=_mock_extract_dataset)
+    @patch("soma.extraction.open_slide")
+    def test_passes_output_variant_to_tile_extraction(
+        self, mock_open, mock_extract, tmp_path: Path
+    ):
+        mock_open.return_value = _make_synthetic_reader()
+        dataset = _make_dataset(tmp_path)
+        tiling_dir = tmp_path / "tiling"
+        feature_dir = tmp_path / "features"
+
+        extractor = FeatureExtractor(dataset, EncoderConfig(name="h0-mini", output_variant="cls"))
+        extractor.preprocess(tiling_dir)
+        store = extractor.extract(feature_dir, tiling_dir=tiling_dir)
+
+        assert mock_extract.call_args.kwargs["output_variant"] == "cls"
+        assert store.feature_dim == 8
 
     @patch("soma.extraction.extract_dataset", side_effect=_mock_extract_dataset_slide)
     @patch("soma.extraction.open_slide")

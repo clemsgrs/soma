@@ -48,6 +48,8 @@ class ExtractionSummary:
 @dataclass(frozen=True)
 class _WorkerConfig:
     encoder_name: str
+    output_variant: str | None
+    tile_output_variant: str | None
     output_dir: str
     batch_size: int
     adaptive_batching: bool
@@ -65,6 +67,8 @@ def extract_dataset(
     slides: list[SlideTask],
     output_dir: Path,
     *,
+    output_variant: str | None = None,
+    tile_output_variant: str | None = None,
     batch_size: int = 32,
     adaptive_batching: bool = False,
     num_workers: int = 4,
@@ -107,6 +111,8 @@ def extract_dataset(
 
     config = _WorkerConfig(
         encoder_name=encoder_name,
+        output_variant=output_variant,
+        tile_output_variant=tile_output_variant,
         output_dir=str(output_dir),
         batch_size=batch_size,
         adaptive_batching=adaptive_batching,
@@ -181,12 +187,12 @@ def _worker_fn(
     metadata = encoder_registry.info(config.encoder_name)
     level = metadata.get("level", "tile")
     encoder_cls = encoder_registry.get(config.encoder_name)
-    encoder = encoder_cls().to(device)
+    encoder = encoder_cls(output_variant=config.output_variant).to(device)
     tile_encoder = None
     if level == "slide":
         tile_encoder_name = metadata["tile_encoder"]
         tile_encoder_cls = encoder_registry.get(tile_encoder_name)
-        tile_encoder = tile_encoder_cls().to(device)
+        tile_encoder = tile_encoder_cls(output_variant=config.tile_output_variant).to(device)
 
     reporter.emit(
         ProgressEvent(
@@ -197,6 +203,7 @@ def _worker_fn(
                 "num_slides": len(my_slides),
                 "num_ranks": len(assignments),
                 "encoder_name": config.encoder_name,
+                "output_variant": config.output_variant,
                 "level": level,
             },
         )

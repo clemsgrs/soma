@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 from torchvision.transforms import v2
 
-from soma.encoders.base import TimmTileEncoder
+from soma.encoders.base import TimmTileEncoder, resolve_requested_output_variant
 from soma.encoders.registry import register_encoder
 
 # Shared normalization for H-Optimus models
@@ -26,20 +26,61 @@ def _hoptimus_transform(input_size: int = 224) -> Callable:
         v2.Normalize(mean=_HOPTIMUS_MEAN, std=_HOPTIMUS_STD),
     ])
 
+_HOPTIMUS_OUTPUT_DIMS = {
+    "cls": 768,
+    "cls_patch_mean": 1536,
+}
+
+
+class _HOptimusBase(TimmTileEncoder):
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        token: str | None = None,
+        output_variant: str | None = None,
+        **timm_kwargs,
+    ):
+        self._output_variant = resolve_requested_output_variant(
+            output_variant,
+            default="cls_patch_mean",
+            allowed=("cls", "cls_patch_mean"),
+        )
+        super().__init__(
+            model_name,
+            token=token,
+            output_variant="default",
+            **timm_kwargs,
+        )
+
+    @property
+    def encode_dim(self) -> int:
+        return _HOPTIMUS_OUTPUT_DIMS[self._output_variant]
+
+    def encode_tiles(self, batch: Tensor) -> Tensor:
+        output = self._model.forward_features(batch)
+        cls_token = output[:, 0]
+        if self._output_variant == "cls":
+            return cls_token
+        patch_tokens = output[:, self._model.num_prefix_tokens :]
+        return torch.cat([cls_token, patch_tokens.mean(dim=1)], dim=-1)
+
 
 @register_encoder(
     "h-optimus-0",
-    encode_dim=1536,
+    output_variants={"default": {"encode_dim": 1536}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="bioptimus/H-optimus-0",
 )
 class HOptimus0(TimmTileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         super().__init__(
             "hf-hub:bioptimus/H-optimus-0",
             token=token,
+            output_variant=output_variant,
             init_values=1e-5,
             dynamic_img_size=False,
         )
@@ -50,17 +91,19 @@ class HOptimus0(TimmTileEncoder):
 
 @register_encoder(
     "h-optimus-1",
-    encode_dim=1536,
+    output_variants={"default": {"encode_dim": 1536}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="bioptimus/H-optimus-1",
 )
 class HOptimus1(TimmTileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         super().__init__(
             "hf-hub:bioptimus/H-optimus-1",
             token=token,
+            output_variant=output_variant,
             init_values=1e-5,
             dynamic_img_size=False,
         )
@@ -71,26 +114,25 @@ class HOptimus1(TimmTileEncoder):
 
 @register_encoder(
     "h0-mini",
-    encode_dim=1536,
+    output_variants={
+        "cls": {"encode_dim": 768},
+        "cls_patch_mean": {"encode_dim": 1536},
+    },
+    default_output_variant="cls_patch_mean",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="bioptimus/H0-mini",
 )
-class H0Mini(TimmTileEncoder):
-    def __init__(self, *, token: str | None = None):
+class H0Mini(_HOptimusBase):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         super().__init__(
             "hf-hub:bioptimus/H0-mini",
             token=token,
+            output_variant=output_variant,
             mlp_layer=timm.layers.SwiGLUPacked,
             act_layer=torch.nn.SiLU,
         )
 
     def get_transform(self) -> Callable:
         return _hoptimus_transform()
-
-    def encode_tiles(self, batch: Tensor) -> Tensor:
-        output = self._model.forward_features(batch)
-        cls_token = output[:, 0]
-        patch_tokens = output[:, self._model.num_prefix_tokens :]
-        return torch.cat([cls_token, patch_tokens.mean(dim=1)], dim=-1)

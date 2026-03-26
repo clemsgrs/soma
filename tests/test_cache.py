@@ -81,6 +81,23 @@ def test_tile_cache_key_changes_with_precision(tmp_path: Path):
     assert key_a != key_b
 
 
+def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    key_a = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="h0-mini",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="h0-mini", output_variant="cls"),
+    )
+    key_b = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="h0-mini",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
+    )
+    assert key_a != key_b
+
+
 def test_slide_cache_key_changes_with_upstream_tile_cache_key(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     key_a = build_slide_cache_key(

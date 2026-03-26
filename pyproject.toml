@@ -33,6 +33,7 @@ dependencies = [
     "timm>=1.0",
     "huggingface-hub>=0.20",
     "safetensors>=0.4",
+    "opencv-python-headless",
 ]
 
 [project.urls]
@@ -42,7 +43,8 @@ Issues = "https://github.com/clemsgrs/soma/issues"
 
 [project.optional-dependencies]
 wsi = [
-    "openslide-python>=1.3",
+    "openslide-python",
+    "openslide-bin",
 ]
 cucim = [
     "cucim>=24.0",

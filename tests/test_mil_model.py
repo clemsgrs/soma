@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.pooling import MeanPool
 from soma.aggregators.mil.abmil import ABMIL
 from soma.tasks.classification import ClassificationHead
@@ -43,6 +44,46 @@ class TestMILModel:
         X = torch.randn(1, 5, 8)
         out = model(X)
         assert out.tile_attention is None
+
+    def test_auxiliary_passthrough(self):
+        """Auxiliary dict from aggregator should be forwarded through MILModel."""
+
+        class DummyAggregator(Aggregator):
+            def __init__(self):
+                super().__init__()
+                self._dim = 8
+
+            def forward(self, X, mask=None):
+                bag_rep = X.mean(dim=1)
+                aux = {"instance_logits": X.sum(dim=-1)}
+                return AggregatorOutput(
+                    bag_representation=bag_rep, auxiliary=aux
+                )
+
+            @property
+            def output_dim(self):
+                return self._dim
+
+        model = MILModel(
+            aggregator=DummyAggregator(),
+            task_head=ClassificationHead(input_dim=8, num_classes=2),
+        )
+        X = torch.randn(2, 5, 8)
+        out = model(X)
+        assert out.auxiliary is not None
+        assert "instance_logits" in out.auxiliary
+        assert out.auxiliary["instance_logits"].shape == (2, 5)
+
+    def test_auxiliary_none_for_abmil(self):
+        """ABMIL has no auxiliary — should be None."""
+        torch.manual_seed(0)
+        model = MILModel(
+            aggregator=ABMIL(input_dim=8, hidden_dim=4),
+            task_head=ClassificationHead(input_dim=8, num_classes=2),
+        )
+        X = torch.randn(1, 5, 8)
+        out = model(X)
+        assert out.auxiliary is None
 
     def test_gradient_flows_end_to_end(self):
         """Loss gradient should flow back to input through aggregator."""

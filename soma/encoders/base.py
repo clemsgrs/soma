@@ -9,6 +9,22 @@ import torch
 from torch import Tensor
 
 
+def resolve_requested_output_variant(
+    output_variant: str | None,
+    *,
+    default: str = "default",
+    allowed: tuple[str, ...] = ("default",),
+) -> str:
+    """Normalize and validate a requested encoder output variant."""
+    resolved = output_variant or default
+    if resolved not in allowed:
+        available = ", ".join(allowed)
+        raise ValueError(
+            f"Unsupported output_variant '{resolved}'. Available: {available}"
+        )
+    return resolved
+
+
 class Encoder(ABC):
     """Shared lifecycle contract for all encoders."""
 
@@ -72,7 +88,14 @@ class SlideEncoder(Encoder):
 class TimmTileEncoder(TileEncoder):
     """Convenience base for timm-backed tile encoders."""
 
-    def __init__(self, model_name: str, *, token: str | None = None, **timm_kwargs):
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        token: str | None = None,
+        output_variant: str | None = None,
+        **timm_kwargs,
+    ):
         import timm
 
         defaults = {"pretrained": True, "num_classes": 0}
@@ -81,6 +104,8 @@ class TimmTileEncoder(TileEncoder):
             defaults["hf_token"] = token
         self._model = timm.create_model(model_name, **defaults).eval()
         self._device = torch.device("cpu")
+        if not hasattr(self, "_output_variant"):
+            self._output_variant = resolve_requested_output_variant(output_variant)
 
     def get_transform(self) -> Callable:
         from timm.data import create_transform, resolve_data_config

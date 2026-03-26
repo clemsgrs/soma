@@ -5,7 +5,7 @@ from soma.aggregators.registry import aggregator_registry
 
 # Import to trigger registration
 from soma.aggregators.pooling import MaxPool, MeanPool
-from soma.aggregators.mil import ABMIL
+from soma.aggregators.mil import ABMIL, CLAM, DSMIL, DTFDMIL, TransMIL
 
 __all__ = [
     "Aggregator",
@@ -14,4 +14,8 @@ __all__ = [
     "MeanPool",
     "MaxPool",
     "ABMIL",
+    "CLAM",
+    "DSMIL",
+    "DTFDMIL",
+    "TransMIL",
 ]

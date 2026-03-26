@@ -13,14 +13,14 @@ import yaml
 class PreprocessingConfig:
     """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
 
-    requested_tile_size_px: int = 256
-    requested_spacing_um: float = 0.5
+    requested_tile_size_px: int | None = None
+    requested_spacing_um: float | None = None
     tissue_method: str = "hsv"
-    min_tissue_fraction: float = 0.5
+    min_tissue_fraction: float = 0.1
     overlap: float = 0.0
     seg_downsample: int = 64
     tolerance: float = 0.05
-    ref_tile_size_px: int = 16
+    ref_tile_size_px: int | None = None
     a_t: int = 4
 
 
@@ -35,6 +35,7 @@ class EncoderConfig:
     num_workers: int = 4
     input_size: int | None = None
     spacing_um: float | None = None
+    output_variant: str | None = None
     save_tile_features: bool = False
 
 

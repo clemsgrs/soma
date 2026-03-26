@@ -82,7 +82,7 @@ RUN python -m pip install \
     --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
     -c /opt/app/constraints-cu128.txt \
     --no-build-isolation \
-    /opt/app \
+    "/opt/app[wsi,cucim,transformers]" \
     && python -m pip install \
         --no-cache-dir \
         --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \

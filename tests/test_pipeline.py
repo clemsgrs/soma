@@ -510,6 +510,7 @@ class TestPipeline:
         class _PipelineTileEncoder(TileEncoder):
             def __init__(self, **kwargs):
                 self._device = torch.device("cpu")
+                self._output_variant = kwargs.get("output_variant") or "default"
 
             def get_transform(self):
                 return lambda x: x
@@ -532,6 +533,7 @@ class TestPipeline:
         class _PipelineSlideEncoder(SlideEncoder):
             def __init__(self, **kwargs):
                 self._device = torch.device("cpu")
+                self._output_variant = kwargs.get("output_variant") or "default"
 
             def encode_slide(self, tile_features, coordinates=None, *, tile_size_lv0: int | None = None):
                 return tile_features.mean(dim=0)
@@ -554,10 +556,10 @@ class TestPipeline:
                 _PipelineTileEncoder,
                 metadata={
                     "level": "tile",
-                    "encode_dim": D,
                     "input_size": 256,
-                    "recommended_tile_size_px": 256,
-                    "recommended_spacing_um": 0.5,
+                    "output_variants": {"default": {"encode_dim": D}},
+                    "default_output_variant": "default",
+                    "supported_spacing_um": 0.5,
                     "precision": "fp16",
                 },
             )
@@ -568,9 +570,10 @@ class TestPipeline:
                 metadata={
                     "level": "slide",
                     "tile_encoder": test_tile,
-                    "encode_dim": D,
-                    "recommended_tile_size_px": 256,
-                    "recommended_spacing_um": 0.5,
+                    "tile_encoder_output_variant": "default",
+                    "output_variants": {"default": {"encode_dim": D}},
+                    "default_output_variant": "default",
+                    "supported_spacing_um": 0.5,
                     "precision": "fp16",
                 },
             )

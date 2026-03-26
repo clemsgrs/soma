@@ -28,6 +28,7 @@ _TEST_SLIDE_DIM = 4
 class _TestTileEncoder(TileEncoder):
     def __init__(self, **kwargs):
         self._device = torch.device("cpu")
+        self._output_variant = kwargs.get("output_variant") or "default"
 
     def get_transform(self):
         def _t(img):
@@ -54,6 +55,7 @@ class _TestTileEncoder(TileEncoder):
 class _TestSlideEncoder(SlideEncoder):
     def __init__(self, **kwargs):
         self._device = torch.device("cpu")
+        self._output_variant = kwargs.get("output_variant") or "default"
 
     def encode_slide(self, tile_features, coordinates=None, *, tile_size_lv0: int | None = None):
         return torch.arange(_TEST_SLIDE_DIM, dtype=torch.float32, device=tile_features.device)
@@ -78,10 +80,10 @@ if _TEST_TILE_ENCODER_NAME not in encoder_registry:
         metadata={
             "level": "tile",
             "input_size": 224,
-            "recommended_tile_size_px": 224,
-            "recommended_spacing_um": 0.5,
+            "output_variants": {"default": {"encode_dim": _TEST_DIM}},
+            "default_output_variant": "default",
+            "supported_spacing_um": 0.5,
             "precision": "fp16",
-            "encode_dim": _TEST_DIM,
         },
     )
 
@@ -92,10 +94,11 @@ if _TEST_SLIDE_ENCODER_NAME not in encoder_registry:
         metadata={
             "level": "slide",
             "tile_encoder": _TEST_TILE_ENCODER_NAME,
-            "recommended_tile_size_px": 224,
-            "recommended_spacing_um": 0.5,
+            "tile_encoder_output_variant": "default",
+            "output_variants": {"default": {"encode_dim": _TEST_SLIDE_DIM}},
+            "default_output_variant": "default",
+            "supported_spacing_um": 0.5,
             "precision": "fp16",
-            "encode_dim": _TEST_SLIDE_DIM,
         },
     )
 
