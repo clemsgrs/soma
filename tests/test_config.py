@@ -44,10 +44,12 @@ def test_preprocessing_config_defaults():
     assert cfg.tissue_method == "hsv"
     assert cfg.min_tissue_fraction == 0.1
     assert cfg.overlap == 0.0
+    assert cfg.use_padding is True
     assert cfg.seg_downsample == 64
     assert cfg.tolerance == 0.05
     assert cfg.ref_tile_size_px is None
     assert cfg.a_t == 4
+    assert cfg.tissue_mask_tissue_value == 1
 
 
 def test_training_config_defaults():
@@ -117,7 +119,9 @@ def test_task_config_with_params():
 
 
 def test_save_and_load_config_roundtrip(tmp_path: Path):
-    original = _make_pipeline_config()
+    original = _make_pipeline_config(
+        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=7)
+    )
     yaml_path = tmp_path / "config.yaml"
 
     save_config(original, yaml_path)
@@ -128,6 +132,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.dataset_csv == original.dataset_csv
     assert loaded.splits_csv == original.splits_csv
     assert loaded.output_dir == original.output_dir
+    assert loaded.preprocessing.tissue_mask_tissue_value == 7
     assert loaded.cache.enabled == original.cache.enabled
     assert loaded.encoder.name == original.encoder.name
     assert loaded.aggregator.name == original.aggregator.name

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from soma.encoders.base import SlideEncoder, TileEncoder
 from soma.encoders.tile_reader import SuperTileIndex, build_supertile_index
-from soma.preprocessing.tiling import TilingResult
+from soma.preprocessing.tiling import TilingResult, resolve_base_spacing_um
 from soma.wsi.reader import BatchRegionReader, SlideReader
 
 
@@ -45,11 +45,8 @@ class TileBatchCollator:
         self._coords = tiling_result.coordinates
         self._read_level = tiling_result.read_level
         self._tile_size_px = tiling_result.effective_tile_size_px
-        self._downsample = (
-            reader.level_downsamples[tiling_result.read_level]
-            if hasattr(reader, "level_downsamples")
-            else 1.0
-        )
+        self._use_padding = tiling_result.use_padding
+        self._downsample = reader.level_downsamples[tiling_result.read_level]
         self._transform = transform
         self._st_index = st_index
         self._num_workers = num_workers
@@ -114,6 +111,7 @@ class TileBatchCollator:
                 request.location,
                 self._read_level,
                 request.size,
+                pad_missing=self._use_padding,
             )
             self._store_request_images(images, request, region)
         return [image for image in images if image is not None]
@@ -133,6 +131,7 @@ class TileBatchCollator:
                 level,
                 size,
                 num_workers=self._num_workers,
+                pad_missing=self._use_padding,
             )
             for request, region in zip(grouped_requests, regions):
                 self._store_request_images(images, request, region)
@@ -306,8 +305,8 @@ def extract_slide_features(
     coordinates = torch.as_tensor(tiling_result.coordinates, dtype=torch.long)
     prepared = slide_encoder.prepare_coordinates(
         coordinates,
-        base_spacing_um=float(getattr(reader, "spacing", tiling_result.effective_spacing_um)),
-        target_spacing_um=float(tiling_result.effective_spacing_um),
+        base_spacing_um=resolve_base_spacing_um(tiling_result),
+        target_spacing_um=float(tiling_result.requested_spacing_um),
     )
     slide_features = slide_encoder.encode_slide(
         tile_features.to(slide_encoder.device),

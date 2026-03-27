@@ -16,11 +16,25 @@ import cv2
 import numpy as np
 
 
+def _masked_fraction(mask: np.ndarray, valid_mask: np.ndarray | None) -> float:
+    if valid_mask is None:
+        return float(np.mean(mask))
+
+    valid = np.asarray(valid_mask, dtype=bool)
+    if valid.shape != mask.shape:
+        raise ValueError("valid_mask must match the tile height and width")
+    valid_count = int(valid.sum())
+    if valid_count == 0:
+        return 0.0
+    return float(mask[valid].mean())
+
+
 def filter_whitespace(
     tile: np.ndarray,
     *,
     threshold: int = 230,
     max_fraction: float = 0.8,
+    valid_mask: np.ndarray | None = None,
 ) -> bool:
     """Check if a tile has acceptable whitespace levels.
 
@@ -34,7 +48,7 @@ def filter_whitespace(
     """
     # A pixel is "white" if its mean RGB value exceeds the threshold
     mean_rgb = np.mean(tile, axis=-1)
-    white_fraction = np.mean(mean_rgb > threshold)
+    white_fraction = _masked_fraction(mean_rgb > threshold, valid_mask)
     return bool(white_fraction <= max_fraction)
 
 
@@ -43,6 +57,7 @@ def filter_grayspace(
     *,
     saturation_threshold: float = 0.05,
     max_fraction: float = 0.6,
+    valid_mask: np.ndarray | None = None,
 ) -> bool:
     """Check if a tile has acceptable grayspace levels.
 
@@ -60,7 +75,7 @@ def filter_grayspace(
     hsv = cv2.cvtColor(tile, cv2.COLOR_RGB2HSV)
     # OpenCV HSV saturation is 0-255, normalize to 0-1
     saturation = hsv[:, :, 1].astype(np.float32) / 255.0
-    gray_fraction = np.mean(saturation < saturation_threshold)
+    gray_fraction = _masked_fraction(saturation < saturation_threshold, valid_mask)
     return bool(gray_fraction <= max_fraction)
 
 

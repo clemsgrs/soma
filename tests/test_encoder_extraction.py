@@ -85,6 +85,28 @@ class MockSlideEncoder(SlideEncoder):
         return self
 
 
+class RecordingSlideEncoder(MockSlideEncoder):
+    def __init__(self, dim: int = 4):
+        super().__init__(dim=dim)
+        self.prepare_calls: list[dict[str, object]] = []
+
+    def prepare_coordinates(
+        self,
+        coordinates: Tensor,
+        *,
+        base_spacing_um: float,
+        target_spacing_um: float,
+    ) -> Tensor:
+        self.prepare_calls.append(
+            {
+                "coordinates": coordinates.clone(),
+                "base_spacing_um": base_spacing_um,
+                "target_spacing_um": target_spacing_um,
+            }
+        )
+        return coordinates
+
+
 class PixelValueTileEncoder(TileEncoder):
     def __init__(self):
         self._device = torch.device("cpu")
@@ -109,7 +131,13 @@ class PixelValueTileEncoder(TileEncoder):
         return self
 
 
-def _make_grid_tiling(nx: int, ny: int, tile_size_lv0: int = 512) -> TilingResult:
+def _make_grid_tiling(
+    nx: int,
+    ny: int,
+    tile_size_lv0: int = 512,
+    *,
+    base_spacing_um: float = 0.5,
+) -> TilingResult:
     coords = []
     for y in range(ny):
         for x in range(nx):
@@ -124,13 +152,14 @@ def _make_grid_tiling(nx: int, ny: int, tile_size_lv0: int = 512) -> TilingResul
         effective_spacing_um=0.5,
         tile_size_lv0=tile_size_lv0,
         is_within_tolerance=True,
+        base_spacing_um=base_spacing_um,
     )
 
 
 def _mock_reader() -> MagicMock:
     reader = MagicMock()
 
-    def _read_region(location, level, size):
+    def _read_region(location, level, size, *, pad_missing=False):
         w, h = size
         return np.full((h, w, 3), 128, dtype=np.uint8)
 
@@ -142,27 +171,36 @@ def _mock_reader() -> MagicMock:
 
 class RecordingBatchReader:
     def __init__(self):
+        self.backend_name = "recording"
         self.dimensions = (1024, 1024)
         self.level_downsamples = [1.0]
         self.level_count = 1
         self.level_dimensions = [(1024, 1024)]
         self.spacing = 0.5
-        self.read_region_calls: list[tuple[tuple[int, int], int, tuple[int, int]]] = []
+        self.read_region_calls: list[dict[str, object]] = []
         self.read_regions_calls: list[dict[str, object]] = []
 
-    def read_region(self, location, level, size):
-        self.read_region_calls.append((location, level, size))
+    def read_region(self, location, level, size, *, pad_missing=False):
+        self.read_region_calls.append(
+            {
+                "location": location,
+                "level": level,
+                "size": size,
+                "pad_missing": pad_missing,
+            }
+        )
         w, h = size
         value = int(location[0] // 512) + 10 * int(location[1] // 512)
         return np.full((h, w, 3), value, dtype=np.uint8)
 
-    def read_regions(self, locations, level, size, *, num_workers=None):
+    def read_regions(self, locations, level, size, *, num_workers=None, pad_missing=False):
         self.read_regions_calls.append(
             {
                 "locations": list(locations),
                 "level": level,
                 "size": size,
                 "num_workers": num_workers,
+                "pad_missing": pad_missing,
             }
         )
         w, h = size
@@ -189,13 +227,14 @@ assert isinstance(RecordingBatchReader(), BatchRegionReader)
 
 class PatternBatchReader:
     def __init__(self, tile_span: int = 256):
+        self.backend_name = "pattern"
         self.dimensions = (4096, 4096)
         self.level_downsamples = [1.0]
         self.level_count = 1
         self.level_dimensions = [self.dimensions]
         self.spacing = 0.5
         self.tile_span = tile_span
-        self.read_region_calls: list[tuple[tuple[int, int], int, tuple[int, int]]] = []
+        self.read_region_calls: list[dict[str, object]] = []
         self.read_regions_calls: list[dict[str, object]] = []
 
     def _region(self, location, size):
@@ -207,17 +246,25 @@ class PatternBatchReader:
         values = grid_y[:, None] * 10 + grid_x[None, :]
         return np.repeat(values[:, :, None], 3, axis=2)
 
-    def read_region(self, location, level, size):
-        self.read_region_calls.append((location, level, size))
+    def read_region(self, location, level, size, *, pad_missing=False):
+        self.read_region_calls.append(
+            {
+                "location": location,
+                "level": level,
+                "size": size,
+                "pad_missing": pad_missing,
+            }
+        )
         return self._region(location, size)
 
-    def read_regions(self, locations, level, size, *, num_workers=None):
+    def read_regions(self, locations, level, size, *, num_workers=None, pad_missing=False):
         self.read_regions_calls.append(
             {
                 "locations": list(locations),
                 "level": level,
                 "size": size,
                 "num_workers": num_workers,
+                "pad_missing": pad_missing,
             }
         )
         for location in locations:
@@ -303,12 +350,14 @@ class TestExtractTileFeatures:
                 "level": 0,
                 "size": (1024, 1024),
                 "num_workers": 0,
+                "pad_missing": True,
             },
             {
                 "locations": [(0, 0)],
                 "level": 0,
                 "size": (1024, 1024),
                 "num_workers": 0,
+                "pad_missing": True,
             },
         ]
 
@@ -332,6 +381,7 @@ class TestExtractTileFeatures:
             "level": 0,
             "size": (1024, 1024),
             "num_workers": 0,
+            "pad_missing": True,
         }
 
     def test_supertile_reordering_preserves_feature_positions_for_mixed_sizes(self):
@@ -410,6 +460,7 @@ class TestExtractTileFeatures:
             "level": 0,
             "size": (256, 256),
             "num_workers": 0,
+            "pad_missing": True,
         }
         assert features.squeeze(1).tolist() == [0.0, 1.0, 10.0, 11.0]
 
@@ -432,7 +483,27 @@ class TestExtractTileFeatures:
             "level": 0,
             "size": (512, 512),
             "num_workers": 0,
+            "pad_missing": True,
         }
+
+    def test_sequential_reader_forwards_use_padding_to_read_region(self):
+        reader = _mock_reader()
+        tiling = _make_grid_tiling(1, 1, tile_size_lv0=256)
+        collator = TileBatchCollator(
+            reader,
+            tiling,
+            MockTileEncoder().get_transform(),
+            num_workers=0,
+        )
+
+        collator([0])
+
+        reader.read_region.assert_called_once_with(
+            (0, 0),
+            0,
+            (256, 256),
+            pad_missing=True,
+        )
 
 
 class TestExtractSlideFeatures:
@@ -462,6 +533,44 @@ class TestExtractSlideFeatures:
         assert result.slide_features.shape == (4,)
         assert result.tile_features is not None
         assert result.tile_features.shape == (4, 8)
+
+    def test_prepare_coordinates_uses_requested_spacing_not_effective_read_spacing(self):
+        reader = _mock_reader()
+        reader.spacing = 0.25
+        tiling = _make_grid_tiling(2, 2, base_spacing_um=0.2)
+        tiling = TilingResult(
+            coordinates=tiling.coordinates,
+            tissue_fractions=tiling.tissue_fractions,
+            requested_tile_size_px=tiling.requested_tile_size_px,
+            requested_spacing_um=0.75,
+            read_level=tiling.read_level,
+            effective_tile_size_px=384,
+            effective_spacing_um=0.5,
+            tile_size_lv0=tiling.tile_size_lv0,
+            is_within_tolerance=False,
+            use_padding=tiling.use_padding,
+            tissue_mask=tiling.tissue_mask,
+            base_spacing_um=tiling.base_spacing_um,
+        )
+        slide_encoder = RecordingSlideEncoder(dim=4)
+
+        extract_slide_features(
+            slide_encoder,
+            MockTileEncoder(dim=8),
+            reader,
+            tiling,
+            batch_size=4,
+            num_workers=0,
+        )
+
+        assert len(slide_encoder.prepare_calls) == 1
+        prepare_call = slide_encoder.prepare_calls[0]
+        assert torch.equal(
+            prepare_call["coordinates"],
+            torch.as_tensor(tiling.coordinates, dtype=torch.long),
+        )
+        assert prepare_call["base_spacing_um"] == 0.2
+        assert prepare_call["target_spacing_um"] == 0.75
 
 
 class TestSaveFeatures:

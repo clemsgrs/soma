@@ -32,7 +32,7 @@ class CacheResolution:
     metadata: dict[str, Any]
 
     def missing_sample_ids(self) -> list[str]:
-        expected = self.metadata.get("sample_ids", [])
+        expected = self.metadata["sample_ids"]
         missing: list[str] = []
         for sample_id in expected:
             if not (self.features_dir / f"{sample_id}.pt").is_file():
@@ -80,6 +80,7 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "requested_tile_size_px": config.requested_tile_size_px,
         "requested_spacing_um": config.requested_spacing_um,
         "tissue_method": config.tissue_method,
+        "tissue_mask_tissue_value": config.tissue_mask_tissue_value,
         "min_tissue_fraction": config.min_tissue_fraction,
         "overlap": config.overlap,
         "seg_downsample": config.seg_downsample,

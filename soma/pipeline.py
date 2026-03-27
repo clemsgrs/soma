@@ -312,6 +312,8 @@ class Pipeline:
         else:
             from soma.extraction import FeatureExtractor
 
+            preprocessing = self._resolve_preprocessing()
+
             cache_config = self._config.cache
             if cache_config.root_dir is None:
                 cache_config = replace(
@@ -321,12 +323,43 @@ class Pipeline:
             extractor = FeatureExtractor(
                 self._dataset,
                 self._config.encoder,
-                self._config.preprocessing,
+                preprocessing,
                 cache=cache_config,
             )
             store = extractor.run(Path(self._config.output_dir) / "features")
         store.validate_coverage(self._dataset.sample_ids)
         return store
+
+    def _resolve_preprocessing(self) -> "PreprocessingConfig":
+        """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
+        from soma.config import PreprocessingConfig  # noqa: F811
+
+        preprocessing = self._config.preprocessing
+        if self._config.aggregator and self._config.aggregator.name == "hipt":
+            params = self._config.aggregator.params
+            region_size = params.get("region_size")
+            patch_size = params.get("patch_size")
+            if region_size is None or patch_size is None:
+                msg = "HIPT aggregator requires 'region_size' and 'patch_size' in params"
+                raise ValueError(msg)
+            region_size = int(region_size)
+            patch_size = int(patch_size)
+            if region_size % patch_size != 0:
+                msg = f"region_size ({region_size}) must be divisible by patch_size ({patch_size})"
+                raise ValueError(msg)
+            if region_size < 2 * patch_size:
+                msg = f"region_size ({region_size}) must be >= 2 * patch_size ({patch_size})"
+                raise ValueError(msg)
+            npatch = region_size // patch_size
+            overrides: dict = {
+                "hierarchical": True,
+                "npatch": npatch,
+                "hierarchical_patch_size_px": patch_size,
+            }
+            if preprocessing.requested_tile_size_px is None:
+                overrides["requested_tile_size_px"] = region_size
+            preprocessing = replace(preprocessing, **overrides)
+        return preprocessing
 
 
 # ---------------------------------------------------------------------------

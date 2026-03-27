@@ -11,6 +11,7 @@ from soma.encoders.registry import (
     register_encoder,
     resolve_encoder_output,
     resolve_preprocessing_requirements,
+    resolve_tile_dependency_output,
 )
 
 
@@ -250,3 +251,42 @@ def test_resolve_encoder_output_accepts_explicit_variant():
     )
     assert resolved["output_variant"] == "cls"
     assert resolved["encode_dim"] == 32
+
+
+def test_resolve_preprocessing_requirements_requires_level_metadata():
+    with pytest.raises(ValueError, match="level metadata"):
+        resolve_preprocessing_requirements(
+            "strict-missing-level",
+            metadata={
+                "input_size": 224,
+                "supported_spacing_um": 0.5,
+                "output_variants": {"default": {"encode_dim": 1}},
+                "default_output_variant": "default",
+            },
+        )
+
+
+def test_resolve_encoder_output_requires_level_metadata():
+    with pytest.raises(ValueError, match="level metadata"):
+        resolve_encoder_output(
+            "strict-missing-level-output",
+            metadata={
+                "output_variants": {"default": {"encode_dim": 1}},
+                "default_output_variant": "default",
+            },
+        )
+
+
+def test_resolve_tile_dependency_output_requires_fixed_tile_output_variant_for_slide():
+    with pytest.raises(ValueError, match="tile_encoder_output_variant"):
+        resolve_tile_dependency_output(
+            "strict-slide-missing-tile-output",
+            metadata={
+                "level": "slide",
+                "tile_encoder": "test-model-a",
+                "output_variants": {"default": {"encode_dim": 1}},
+                "default_output_variant": "default",
+                "precision": "fp16",
+                "source": "test",
+            },
+        )

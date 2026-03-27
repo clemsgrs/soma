@@ -8,7 +8,9 @@ from dataclasses import replace
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.encoders.registry import (
     encoder_registry,
+    require_encoder_metadata_field,
     resolve_encoder_output,
+    resolve_encoder_level,
     resolve_preprocessing_requirements,
     resolve_tile_dependency_output,
 )
@@ -74,21 +76,22 @@ def validate_encoder_config(
     """
     warnings: list[str] = []
 
-    level = model_metadata.get("level", "tile")
-    if level not in {"tile", "slide"}:
-        raise ValueError(f"Unsupported encoder level '{level}'")
+    level = resolve_encoder_level(config.name, model_metadata)
 
     tile_encoder_name = model_metadata.get("tile_encoder")
     if level == "slide":
         if not tile_encoder_name:
             raise ValueError("Slide encoder metadata must declare a tile_encoder")
         tile_metadata = encoder_registry.info(tile_encoder_name)
-        if tile_metadata.get("level") != "tile":
+        tile_level = resolve_encoder_level(tile_encoder_name, tile_metadata)
+        if tile_level != "tile":
             raise ValueError(
                 f"Slide encoder dependency '{tile_encoder_name}' must resolve to a tile encoder"
             )
 
-    rec_precision = model_metadata.get("precision", "fp16")
+    rec_precision = str(
+        require_encoder_metadata_field(config.name, model_metadata, "precision")
+    )
     if config.precision != rec_precision:
         warnings.append(
             f"Precision mismatch: config uses '{config.precision}', "
@@ -132,11 +135,21 @@ def validate_encoder_config(
     rec_spacing = rec_requirements["spacing_um"]
     if preprocessing_config is not None and rec_tile_size is not None:
         if preprocessing_config.requested_tile_size_px != rec_tile_size:
-            warnings.append(
-                f"Tile size mismatch: preprocessing uses "
-                f"{preprocessing_config.requested_tile_size_px}px, model recommends "
-                f"{rec_tile_size}px."
-            )
+            if preprocessing_config.hierarchical:
+                # In hierarchical mode (HIPT), tile_size is the region size,
+                # which is intentionally larger than the encoder's tile_size.
+                if preprocessing_config.requested_tile_size_px < 2 * rec_tile_size:
+                    warnings.append(
+                        f"Hierarchical tile size "
+                        f"{preprocessing_config.requested_tile_size_px}px is less than "
+                        f"2× the encoder tile size ({rec_tile_size}px)."
+                    )
+            else:
+                warnings.append(
+                    f"Tile size mismatch: preprocessing uses "
+                    f"{preprocessing_config.requested_tile_size_px}px, model recommends "
+                    f"{rec_tile_size}px."
+                )
         requested_spacing = config.spacing_um or preprocessing_config.requested_spacing_um
         valid_spacings = rec_spacing if isinstance(rec_spacing, list) else [rec_spacing]
         if requested_spacing not in valid_spacings:
@@ -150,10 +163,10 @@ def validate_encoder_config(
             rec_spacing if isinstance(rec_spacing, (int, float)) else None
         )
         if target_spacing is not None:
-            eff = tiling_result.effective_spacing_um
-            if abs(eff - target_spacing) / target_spacing > 0.05:
+            requested_spacing = tiling_result.requested_spacing_um
+            if abs(requested_spacing - target_spacing) / target_spacing > 0.05:
                 warnings.append(
-                    f"Effective spacing ({eff:.4f} µm/px) differs from "
+                    f"Requested tiling spacing ({requested_spacing:.4f} µm/px) differs from "
                     f"target ({target_spacing} µm/px) by more than 5%."
                 )
 

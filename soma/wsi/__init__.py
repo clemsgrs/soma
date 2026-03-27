@@ -4,6 +4,7 @@ from soma.wsi.reader import (
     SlideReader,
     open_slide,
     select_level,
+    select_level_for_downsample,
 )
 
 __all__ = [
@@ -11,5 +12,6 @@ __all__ = [
     "BatchRegionReader",
     "open_slide",
     "select_level",
+    "select_level_for_downsample",
     "LevelSelection",
 ]

@@ -602,9 +602,11 @@ class TestPipeline:
             reader.level_count = 3
             reader.level_dimensions = [(1000, 800), (500, 400), (250, 200)]
             reader.level_downsamples = [1.0, 2.0, 4.0]
-            thumb = np.full((100, 125, 3), 255, dtype=np.uint8)
-            thumb[10:90, 10:115] = np.array([150, 80, 100], dtype=np.uint8)
-            reader.get_thumbnail = lambda size: thumb
+            reader.read_region = lambda location, level, size, **_: np.full(
+                (size[1], size[0], 3),
+                np.array([150, 80, 100], dtype=np.uint8),
+                dtype=np.uint8,
+            )
             reader.close = lambda: None
             return reader
 

@@ -8,13 +8,15 @@ import cv2
 import numpy as np
 
 from soma.preprocessing.tiling import TilingResult
+from soma.wsi.reader import SlideReader, select_level_for_downsample
 
 
 def render_preview(
-    slide_thumbnail: np.ndarray,
+    slide: SlideReader,
     tissue_mask: np.ndarray,
-    tiling_result: TilingResult | None = None,
+    tiling_result: TilingResult,
     *,
+    preview_downsample: int = 32,
     mask_alpha: float = 0.3,
     mask_color: tuple[int, int, int] = (0, 200, 0),
     grid_color: tuple[int, int, int] = (0, 0, 0),
@@ -23,24 +25,40 @@ def render_preview(
     """Combined preview: tissue mask overlay + tiling grid.
 
     Args:
-        slide_thumbnail: RGB image (H, W, 3), uint8.
+        slide: Whole-slide reader used to render the true visualization level.
         tissue_mask: Binary mask (H, W), uint8, 255=tissue.
-        tiling_result: If provided, draw tile grid on the preview.
+        tiling_result: Tiling metadata used for segmentation geometry and grid drawing.
+        preview_downsample: Requested downsample for visualization rendering.
         mask_alpha: Opacity of the mask overlay (0=invisible, 1=opaque).
         mask_color: RGB color for the tissue mask overlay.
         grid_color: RGB color for tile grid lines.
         grid_thickness: Thickness of grid lines in pixels.
 
-    Returns:
+        Returns:
         RGB preview image (H, W, 3), uint8.
     """
-    preview = slide_thumbnail.copy()
-    thumb_h, thumb_w = preview.shape[:2]
+    vis_level = select_level_for_downsample(
+        preview_downsample, slide.level_downsamples
+    )
+    vis_size = slide.level_dimensions[vis_level]
+    preview = slide.read_region((0, 0), vis_level, vis_size, pad_missing=False).copy()
+    vis_h, vis_w = preview.shape[:2]
 
-    # Resize mask to match thumbnail if needed
-    if tissue_mask.shape[:2] != (thumb_h, thumb_w):
+    if tiling_result.seg_level is None:
+        raise ValueError("render_preview requires tiling_result.seg_level")
+
+    mask_level = int(tiling_result.seg_level)
+    mask_size = slide.level_dimensions[mask_level]
+    if tissue_mask.shape[:2] != (mask_size[1], mask_size[0]):
+        msg = (
+            "tissue_mask shape does not match tiling_result.seg_level "
+            f"dimensions: got {tissue_mask.shape[:2]}, expected {(mask_size[1], mask_size[0])}"
+        )
+        raise ValueError(msg)
+
+    if tissue_mask.shape[:2] != (vis_h, vis_w):
         mask_resized = cv2.resize(
-            tissue_mask, (thumb_w, thumb_h), interpolation=cv2.INTER_NEAREST
+            tissue_mask, (vis_w, vis_h), interpolation=cv2.INTER_NEAREST
         )
     else:
         mask_resized = tissue_mask
@@ -51,12 +69,13 @@ def render_preview(
     cv2.addWeighted(overlay, mask_alpha, preview, 1 - mask_alpha, 0, preview)
 
     # Tiling grid
-    if tiling_result is not None and len(tiling_result.coordinates) > 0:
+    if len(tiling_result.coordinates) > 0:
         _draw_tile_grid(
             preview,
             tiling_result=tiling_result,
-            thumb_w=thumb_w,
-            thumb_h=thumb_h,
+            preview_width=vis_w,
+            preview_height=vis_h,
+            slide_dimensions=slide.dimensions,
             grid_color=grid_color,
             grid_thickness=grid_thickness,
         )
@@ -67,24 +86,18 @@ def render_preview(
 def _draw_tile_grid(
     preview: np.ndarray,
     tiling_result: TilingResult,
-    thumb_w: int,
-    thumb_h: int,
+    preview_width: int,
+    preview_height: int,
+    slide_dimensions: tuple[int, int],
     grid_color: tuple[int, int, int],
     grid_thickness: int,
 ) -> None:
     """Draw tile rectangles on the preview image."""
-    # We need the slide dimensions to compute scale
-    # Use tile_size_lv0 and coordinates (in level-0 space)
-    # Estimate slide dimensions from coordinate range + tile_size_lv0
     coords = tiling_result.coordinates
     tile_lv0 = tiling_result.tile_size_lv0
-
-    # Estimate slide dimensions (max coord + tile_size)
-    slide_w_est = int(coords[:, 0].max()) + tile_lv0
-    slide_h_est = int(coords[:, 1].max()) + tile_lv0
-
-    scale_x = thumb_w / max(slide_w_est, 1)
-    scale_y = thumb_h / max(slide_h_est, 1)
+    slide_w, slide_h = slide_dimensions
+    scale_x = preview_width / max(slide_w, 1)
+    scale_y = preview_height / max(slide_h, 1)
 
     for x_lv0, y_lv0 in coords:
         x1 = int(x_lv0 * scale_x)
@@ -92,8 +105,6 @@ def _draw_tile_grid(
         x2 = int((x_lv0 + tile_lv0) * scale_x)
         y2 = int((y_lv0 + tile_lv0) * scale_y)
         cv2.rectangle(preview, (x1, y1), (x2, y2), grid_color, grid_thickness)
-
-
 def save_preview(preview: np.ndarray, path: Path) -> None:
     """Save a preview image to disk."""
     path = Path(path)

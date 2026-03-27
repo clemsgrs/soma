@@ -18,10 +18,17 @@ class PreprocessingConfig:
     tissue_method: str = "hsv"
     min_tissue_fraction: float = 0.1
     overlap: float = 0.0
+    use_padding: bool = True
     seg_downsample: int = 64
     tolerance: float = 0.05
     ref_tile_size_px: int | None = None
     a_t: int = 4
+    tissue_mask_tissue_value: int = 1
+
+    # Hierarchical (HIPT-style) fields — auto-derived from aggregator config
+    hierarchical: bool = False
+    npatch: int | None = None
+    hierarchical_patch_size_px: int | None = None
 
 
 @dataclass(frozen=True)

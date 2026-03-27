@@ -9,6 +9,31 @@ from soma.registry import Registry
 encoder_registry = Registry("encoders")
 
 
+def require_encoder_metadata_field(
+    encoder_name: str,
+    metadata: dict[str, Any],
+    field: str,
+) -> Any:
+    """Return one required encoder metadata field or raise a contract error."""
+    value = metadata.get(field)
+    if value is None:
+        raise ValueError(
+            f"Encoder '{encoder_name}' must declare {field} metadata"
+        )
+    return value
+
+
+def resolve_encoder_level(
+    encoder_name: str,
+    metadata: dict[str, Any],
+) -> str:
+    """Resolve and validate one encoder level contract."""
+    level = str(require_encoder_metadata_field(encoder_name, metadata, "level"))
+    if level not in {"tile", "slide"}:
+        raise ValueError(f"Unsupported encoder level '{level}'")
+    return level
+
+
 def register_encoder(
     name: str,
     *,
@@ -64,34 +89,28 @@ def resolve_preprocessing_requirements(
     Slide encoders inherit both values from their declared tile encoder.
     """
     info = metadata if metadata is not None else encoder_registry.info(encoder_name)
-    level = info.get("level", "tile")
+    level = resolve_encoder_level(encoder_name, info)
 
     if level == "tile":
-        input_size = info.get("input_size")
-        if input_size is None:
-            raise ValueError(
-                f"Tile encoder '{encoder_name}' must declare input_size metadata"
-            )
-        if info.get("supported_spacing_um") is None:
-            raise ValueError(
-                f"Tile encoder '{encoder_name}' must declare supported_spacing_um metadata"
-            )
+        input_size = require_encoder_metadata_field(encoder_name, info, "input_size")
+        spacing_um = require_encoder_metadata_field(
+            encoder_name,
+            info,
+            "supported_spacing_um",
+        )
         return {
             "tile_size_px": input_size,
-            "spacing_um": info["supported_spacing_um"],
+            "spacing_um": spacing_um,
             "source_encoder": encoder_name,
         }
 
     if level == "slide":
-        tile_encoder_name = info.get("tile_encoder")
-        if not tile_encoder_name:
-            raise ValueError(
-                f"Slide encoder '{encoder_name}' must declare tile_encoder metadata"
-            )
+        tile_encoder_name = str(
+            require_encoder_metadata_field(encoder_name, info, "tile_encoder")
+        )
         tile_metadata = encoder_registry.info(tile_encoder_name)
         return resolve_preprocessing_requirements(tile_encoder_name, tile_metadata)
-
-    raise ValueError(f"Unsupported encoder level '{level}'")
+    raise AssertionError("unreachable")
 
 
 def resolve_encoder_output(
@@ -102,9 +121,13 @@ def resolve_encoder_output(
 ) -> dict[str, Any]:
     """Resolve one concrete encoder output contract."""
     info = metadata if metadata is not None else encoder_registry.info(encoder_name)
-    level = info.get("level", "tile")
+    level = resolve_encoder_level(encoder_name, info)
     output_variants = info.get("output_variants")
-    default_output_variant = info.get("default_output_variant")
+    default_output_variant = require_encoder_metadata_field(
+        encoder_name,
+        info,
+        "default_output_variant",
+    )
     if not isinstance(output_variants, dict) or not output_variants:
         raise ValueError(f"Encoder '{encoder_name}' must declare output_variants metadata")
     if default_output_variant not in output_variants:
@@ -138,20 +161,22 @@ def resolve_tile_dependency_output(
 ) -> dict[str, Any]:
     """Resolve the tile-encoder output contract required by an encoder."""
     info = metadata if metadata is not None else encoder_registry.info(encoder_name)
-    level = info.get("level", "tile")
+    level = resolve_encoder_level(encoder_name, info)
     if level == "tile":
         resolved = resolve_encoder_output(encoder_name, metadata=info)
         resolved["encoder_name"] = encoder_name
         return resolved
-    if level != "slide":
-        raise ValueError(f"Unsupported encoder level '{level}'")
 
-    tile_encoder_name = info.get("tile_encoder")
-    if not tile_encoder_name:
-        raise ValueError(
-            f"Slide encoder '{encoder_name}' must declare tile_encoder metadata"
+    tile_encoder_name = str(
+        require_encoder_metadata_field(encoder_name, info, "tile_encoder")
+    )
+    tile_encoder_output_variant = str(
+        require_encoder_metadata_field(
+            encoder_name,
+            info,
+            "tile_encoder_output_variant",
         )
-    tile_encoder_output_variant = info.get("tile_encoder_output_variant")
+    )
     tile_info = encoder_registry.info(tile_encoder_name)
     resolved = resolve_encoder_output(
         tile_encoder_name,

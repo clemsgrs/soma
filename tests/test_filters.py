@@ -38,6 +38,22 @@ def test_whitespace_filter_mixed_tile():
     assert filter_whitespace(tile, threshold=230, max_fraction=0.3) is False
 
 
+def test_whitespace_filter_ignores_masked_padding():
+    tile = np.full((256, 256, 3), 180, dtype=np.uint8)
+    tile[:128, :, :] = 250
+    valid_mask = np.zeros((256, 256), dtype=bool)
+    valid_mask[128:, :] = True
+    assert (
+        filter_whitespace(
+            tile,
+            threshold=230,
+            max_fraction=0.1,
+            valid_mask=valid_mask,
+        )
+        is True
+    )
+
+
 # --- Grayspace filtering ---
 
 
@@ -54,6 +70,25 @@ def test_grayspace_filter_accepts_colored_tile():
     tile[:, :, 1] = 130  # G
     tile[:, :, 2] = 170  # B
     assert filter_grayspace(tile, saturation_threshold=0.05, max_fraction=0.6) is True
+
+
+def test_grayspace_filter_ignores_masked_padding():
+    tile = np.zeros((256, 256, 3), dtype=np.uint8)
+    tile[:, :, 0] = 200
+    tile[:, :, 1] = 130
+    tile[:, :, 2] = 170
+    tile[:128, :, :] = 150
+    valid_mask = np.zeros((256, 256), dtype=bool)
+    valid_mask[128:, :] = True
+    assert (
+        filter_grayspace(
+            tile,
+            saturation_threshold=0.05,
+            max_fraction=0.1,
+            valid_mask=valid_mask,
+        )
+        is True
+    )
 
 
 # --- Blur detection ---

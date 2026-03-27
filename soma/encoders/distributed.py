@@ -22,6 +22,7 @@ from soma.encoders.progress import (
     ProgressEvent,
 )
 from soma.encoders.registry import encoder_registry
+from soma.encoders.registry import resolve_encoder_level
 from soma.preprocessing.tiling import TilingResult
 from soma.wsi.reader import open_slide
 
@@ -138,8 +139,8 @@ def extract_dataset(
         summary_path = progress_dir / f"rank_{rank}_summary.json"
         if summary_path.exists():
             data = json.loads(summary_path.read_text())
-            completed.extend(data.get("completed", []))
-            failed.extend(data.get("failed", []))
+            completed.extend(data["completed"])
+            failed.extend(data["failed"])
 
     return ExtractionSummary(
         completed=completed,
@@ -185,7 +186,7 @@ def _worker_fn(
     my_slides = assignments[rank] if rank < len(assignments) else []
 
     metadata = encoder_registry.info(config.encoder_name)
-    level = metadata.get("level", "tile")
+    level = resolve_encoder_level(config.encoder_name, metadata)
     encoder_cls = encoder_registry.get(config.encoder_name)
     encoder = encoder_cls(output_variant=config.output_variant).to(device)
     tile_encoder = None
