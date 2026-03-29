@@ -138,6 +138,16 @@ class Trainer:
             else:
                 out = self._model(features)
             loss = self._model.task_head.compute_loss(out.logits, labels)
+
+            # Auxiliary loss from aggregator (CLAM, DSMIL, DTFD-MIL)
+            if getattr(out, "auxiliary", None) is not None and hasattr(self._model, "aggregator"):
+                mask_tensor = batch.mask.to(self._device) if hasattr(batch, "mask") else None
+                aux_loss = self._model.aggregator.compute_auxiliary_loss(
+                    out.auxiliary, labels, mask=mask_tensor
+                )
+                if aux_loss is not None:
+                    loss = loss + aux_loss
+
             loss.backward()
             self._optimizer.step()
 

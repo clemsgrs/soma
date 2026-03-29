@@ -29,6 +29,37 @@ def _as_rgb_uint8(region: Any) -> np.ndarray:
     return arr
 
 
+def _read_bounds_with_padding(
+    *,
+    location: tuple[int, int],
+    size: tuple[int, int],
+    level_dimensions: tuple[int, int],
+    downsample: float,
+) -> tuple[np.ndarray, tuple[int, int], tuple[int, int], tuple[int, int]] | None:
+    width, height = int(size[0]), int(size[1])
+    canvas = np.full((height, width, 3), 255, dtype=np.uint8)
+    if width <= 0 or height <= 0:
+        return canvas, (0, 0), (0, 0), (0, 0)
+
+    x_level = int(np.floor(location[0] / downsample))
+    y_level = int(np.floor(location[1] / downsample))
+    x1 = max(x_level, 0)
+    y1 = max(y_level, 0)
+    x2 = min(x_level + width, int(level_dimensions[0]))
+    y2 = min(y_level + height, int(level_dimensions[1]))
+    if x2 <= x1 or y2 <= y1:
+        return canvas, (0, 0), (0, 0), (0, 0)
+
+    read_width = x2 - x1
+    read_height = y2 - y1
+    read_location = (
+        int(round(x1 * downsample)),
+        int(round(y1 * downsample)),
+    )
+    paste_offset = (x1 - x_level, y1 - y_level)
+    return canvas, read_location, (read_width, read_height), paste_offset
+
+
 def _extract_spacing_from_metadata(metadata: dict[str, Any]) -> float:
     for entry in metadata.values():
         if not isinstance(entry, dict):
@@ -62,7 +93,10 @@ def _extract_spacing_from_metadata(metadata: dict[str, Any]) -> float:
         }.get(str(units).lower() if units is not None else "")
         if factor is not None:
             return float(spacing) * factor
-    return 0.5
+    raise ValueError(
+        "Unable to infer slide spacing from cuCIM metadata. "
+        "Provide spacing_override or use a slide with valid spacing metadata."
+    )
 
 
 class CuCIMReader:
@@ -90,6 +124,10 @@ class CuCIMReader:
             if spacing_override is not None
             else _extract_spacing_from_metadata(self._metadata)
         )
+
+    @property
+    def backend_name(self) -> str:
+        return "cucim"
 
     def _resolve_dimensions(self) -> tuple[int, int]:
         if self._level_dimensions:
@@ -135,8 +173,15 @@ class CuCIMReader:
         return list(self._level_downsamples)
 
     def read_region(
-        self, location: tuple[int, int], level: int, size: tuple[int, int]
+        self,
+        location: tuple[int, int],
+        level: int,
+        size: tuple[int, int],
+        *,
+        pad_missing: bool = False,
     ) -> np.ndarray:
+        if pad_missing:
+            return self._read_region_with_padding(location, level, size)
         region = self._slide.read_region(
             (int(location[0]), int(location[1])),
             (int(size[0]), int(size[1])),
@@ -151,7 +196,12 @@ class CuCIMReader:
         size: tuple[int, int],
         *,
         num_workers: int | None = None,
+        pad_missing: bool = False,
     ) -> Iterable[np.ndarray]:
+        if pad_missing:
+            for location in locations:
+                yield self.read_region(location, level, size, pad_missing=True)
+            return
         normalized_locations = [
             (int(location[0]), int(location[1])) for location in locations
         ]
@@ -165,6 +215,36 @@ class CuCIMReader:
 
         for region in regions:
             yield _as_rgb_uint8(region)
+
+    def _read_region_with_padding(
+        self,
+        location: tuple[int, int],
+        level: int,
+        size: tuple[int, int],
+    ) -> np.ndarray:
+        level_dimensions = self.level_dimensions[level]
+        downsample = float(self.level_downsamples[level])
+        padded = _read_bounds_with_padding(
+            location=location,
+            size=size,
+            level_dimensions=level_dimensions,
+            downsample=downsample,
+        )
+        assert padded is not None
+        canvas, read_location, read_size, paste_offset = padded
+        read_width, read_height = read_size
+        if read_width <= 0 or read_height <= 0:
+            return canvas
+
+        region = self._slide.read_region(
+            (int(read_location[0]), int(read_location[1])),
+            (int(read_width), int(read_height)),
+            level=int(level),
+        )
+        region_rgb = _as_rgb_uint8(region)
+        paste_x, paste_y = paste_offset
+        canvas[paste_y : paste_y + read_height, paste_x : paste_x + read_width] = region_rgb
+        return canvas
 
     def get_thumbnail(self, size: tuple[int, int]) -> np.ndarray:
         if not self._level_dimensions:

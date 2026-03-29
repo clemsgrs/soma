@@ -1,0 +1,93 @@
+# CI-only image: Ubuntu 22.04, no CUDA
+FROM ubuntu:22.04
+
+ARG USER_UID=1001
+ARG USER_GID=1001
+
+ENV PYTHONUNBUFFERED=1
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Amsterdam
+ENV PATH="/home/user/.local/bin:${PATH}"
+
+USER root
+
+RUN groupadd --gid ${USER_GID} user \
+    && useradd -m --no-log-init --uid ${USER_UID} --gid ${USER_GID} user \
+    && mkdir /input /output \
+    && chown user:user /input /output
+
+WORKDIR /opt/app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libtiff-dev \
+    zlib1g-dev \
+    libnuma1 \
+    curl \
+    cmake \
+    vim screen \
+    zip unzip \
+    git \
+    openssh-server \
+    build-essential \
+    ninja-build \
+    gnupg \
+    gpg-agent \
+    software-properties-common \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN add-apt-repository -y ppa:deadsnakes/ppa \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        python3.11 \
+        python3.11-dev \
+        python3.11-venv \
+        python3.11-distutils \
+    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
+    && rm -rf /var/lib/apt/lists/*
+
+# libjpeg-turbo 3.x (required by PyTurboJPEG>=2)
+ARG LIBJPEG_TURBO_VERSION=3.1.0
+RUN curl -fsSL https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${LIBJPEG_TURBO_VERSION}/libjpeg-turbo-${LIBJPEG_TURBO_VERSION}.tar.gz \
+      | tar xz -C /tmp \
+    && cd /tmp/libjpeg-turbo-${LIBJPEG_TURBO_VERSION} \
+    && cmake -G"Unix Makefiles" -DCMAKE_INSTALL_PREFIX=/usr/local . \
+    && make -j"$(nproc)" && make install \
+    && ldconfig \
+    && rm -rf /tmp/libjpeg-turbo-${LIBJPEG_TURBO_VERSION}
+
+# ASAP
+ARG ASAP_URL=https://github.com/computationalpathologygroup/ASAP/releases/download/ASAP-2.2-(Nightly)/ASAP-2.2-Ubuntu2204.deb
+RUN set -eux; \
+    apt-get update; \
+    curl -L "${ASAP_URL}" -o /tmp/ASAP.deb; \
+    apt-get install -y --no-install-recommends /tmp/ASAP.deb; \
+    SITE_PACKAGES=$(python3.11 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"); \
+    printf "/opt/ASAP/bin/\n" > "${SITE_PACKAGES}/asap.pth"; \
+    rm -f /tmp/ASAP.deb; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN python -m ensurepip --upgrade \
+    && python -m pip install --upgrade pip setuptools wheel hatchling psutil \
+    && rm -rf /root/.cache/pip
+
+COPY --chown=user:user soma /opt/app/soma
+COPY --chown=user:user pyproject.toml /opt/app/pyproject.toml
+COPY --chown=user:user README.md /opt/app/README.md
+COPY --chown=user:user LICENSE /opt/app/LICENSE
+COPY --chown=user:user constraints-cu128.txt /opt/app/constraints-cu128.txt
+
+RUN python -m pip install \
+    --no-cache-dir \
+    --no-color \
+    --no-build-isolation \
+    --constraint /opt/app/constraints-cu128.txt \
+    "/opt/app[dev]"
+
+COPY --chown=user:user . /opt/app
+
+USER user
+WORKDIR /opt/app
+
+CMD ["python", "-m", "pytest", "-q"]

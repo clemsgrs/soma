@@ -7,7 +7,6 @@ in TaskHead, making ABMIL composable with any task.
 
 from __future__ import annotations
 
-import torch
 from torch import Tensor, nn
 
 from soma.aggregators.base import Aggregator, AggregatorOutput

@@ -32,7 +32,7 @@ class CacheResolution:
     metadata: dict[str, Any]
 
     def missing_sample_ids(self) -> list[str]:
-        expected = self.metadata.get("sample_ids", [])
+        expected = self.metadata["sample_ids"]
         missing: list[str] = []
         for sample_id in expected:
             if not (self.features_dir / f"{sample_id}.pt").is_file():
@@ -80,6 +80,7 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "requested_tile_size_px": config.requested_tile_size_px,
         "requested_spacing_um": config.requested_spacing_um,
         "tissue_method": config.tissue_method,
+        "tissue_mask_tissue_value": config.tissue_mask_tissue_value,
         "min_tissue_fraction": config.min_tissue_fraction,
         "overlap": config.overlap,
         "seg_downsample": config.seg_downsample,
@@ -89,11 +90,16 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
     }
 
 
-def execution_signature(encoder_config: EncoderConfig) -> dict[str, Any]:
+def execution_signature(
+    encoder_config: EncoderConfig,
+    *,
+    output_variant: str | None = None,
+) -> dict[str, Any]:
     return {
         "precision": encoder_config.precision,
         "input_size": encoder_config.input_size,
         "spacing_um": encoder_config.spacing_um,
+        "output_variant": output_variant if output_variant is not None else encoder_config.output_variant,
     }
 
 
@@ -103,6 +109,7 @@ def build_tile_cache_key(
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
+    output_variant: str | None = None,
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -110,7 +117,7 @@ def build_tile_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution),
+        "execution": execution_signature(execution, output_variant=output_variant),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -121,6 +128,7 @@ def build_slide_cache_key(
     slide_encoder_name: str,
     tile_cache_key: str,
     execution: EncoderConfig,
+    output_variant: str | None = None,
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -128,7 +136,7 @@ def build_slide_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "slide_encoder_name": slide_encoder_name,
         "tile_cache_key": tile_cache_key,
-        "execution": execution_signature(execution),
+        "execution": execution_signature(execution, output_variant=output_variant),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -162,12 +170,14 @@ def _build_tile_cache_metadata(
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
+    output_variant: str | None = None,
 ) -> dict[str, Any]:
     key = build_tile_cache_key(
         dataset=dataset,
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
+        output_variant=output_variant,
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -178,7 +188,7 @@ def _build_tile_cache_metadata(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution),
+        "execution": execution_signature(execution, output_variant=output_variant),
         "feature_rank": 2,
         "feature_dim": None,
     }
@@ -191,12 +201,14 @@ def _build_slide_cache_metadata(
     tile_encoder_name: str,
     tile_cache_key: str,
     execution: EncoderConfig,
+    output_variant: str | None = None,
 ) -> dict[str, Any]:
     key = build_slide_cache_key(
         dataset=dataset,
         slide_encoder_name=slide_encoder_name,
         tile_cache_key=tile_cache_key,
         execution=execution,
+        output_variant=output_variant,
     )
     return {
         "schema_version": SCHEMA_VERSION,
@@ -208,7 +220,7 @@ def _build_slide_cache_metadata(
         "tile_cache_key": tile_cache_key,
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
-        "execution": execution_signature(execution),
+        "execution": execution_signature(execution, output_variant=output_variant),
         "feature_rank": 1,
         "feature_dim": None,
     }
@@ -316,12 +328,14 @@ def resolve_tile_cache(
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
+    output_variant: str | None = None,
 ) -> CacheResolution:
     metadata = _build_tile_cache_metadata(
         dataset=dataset,
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
+        output_variant=output_variant,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -340,6 +354,7 @@ def resolve_slide_cache(
     tile_encoder_name: str,
     tile_cache_key: str,
     execution: EncoderConfig,
+    output_variant: str | None = None,
 ) -> CacheResolution:
     metadata = _build_slide_cache_metadata(
         dataset=dataset,
@@ -347,6 +362,7 @@ def resolve_slide_cache(
         tile_encoder_name=tile_encoder_name,
         tile_cache_key=tile_cache_key,
         execution=execution,
+        output_variant=output_variant,
     )
     return _resolve_cache(
         cache_root=cache_root,

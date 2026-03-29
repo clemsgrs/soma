@@ -48,6 +48,15 @@ def test_outside_tolerance():
     assert sel.is_within_tolerance is False
 
 
+def test_prefers_slightly_coarser_level_when_within_tolerance():
+    # Request 0.95 µm/px with 6% tolerance: 1.00 is within tolerance and should
+    # be preferred over the much finer 0.50 level.
+    sel = select_level(0.95, DOWNSAMPLES, BASE_SPACING, tolerance=0.06)
+    assert sel.level == 2
+    assert sel.effective_spacing_um == pytest.approx(1.0)
+    assert sel.is_within_tolerance is True
+
+
 def test_never_upsamples():
     # Request 0.1 µm/px: nothing below, must pick level 0 (0.25)
     sel = select_level(0.1, DOWNSAMPLES, BASE_SPACING)

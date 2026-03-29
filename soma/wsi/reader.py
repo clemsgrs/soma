@@ -14,6 +14,11 @@ class SlideReader(Protocol):
     """Protocol for reading whole-slide images."""
 
     @property
+    def backend_name(self) -> str:
+        """Concrete backend name used to open the slide."""
+        ...
+
+    @property
     def dimensions(self) -> tuple[int, int]:
         """(width, height) at level 0."""
         ...
@@ -39,7 +44,12 @@ class SlideReader(Protocol):
         ...
 
     def read_region(
-        self, location: tuple[int, int], level: int, size: tuple[int, int]
+        self,
+        location: tuple[int, int],
+        level: int,
+        size: tuple[int, int],
+        *,
+        pad_missing: bool = False,
     ) -> np.ndarray:
         """Read a single region from the slide."""
         ...
@@ -67,6 +77,7 @@ class BatchRegionReader(SlideReader, Protocol):
         size: tuple[int, int],
         *,
         num_workers: int | None = None,
+        pad_missing: bool = False,
     ) -> Iterable[np.ndarray]:
         """Read multiple same-sized regions from one pyramid level."""
         ...
@@ -172,6 +183,18 @@ class LevelSelection:
     is_within_tolerance: bool
 
 
+def select_level_for_downsample(
+    requested_downsample: float,
+    level_downsamples: list[float],
+) -> int:
+    """Select the stored pyramid level closest to a requested downsample."""
+    if len(level_downsamples) == 0:
+        raise ValueError("level_downsamples must not be empty")
+    return int(
+        np.argmin([abs(float(downsample) - requested_downsample) for downsample in level_downsamples])
+    )
+
+
 def select_level(
     requested_spacing_um: float,
     level_downsamples: list[float],
@@ -180,20 +203,25 @@ def select_level(
     tolerance: float = 0.05,
 ) -> LevelSelection:
     """Select the best pyramid level for a requested spacing."""
-    best_level = 0
-    best_spacing = base_spacing_um
-
-    for level, downsample in enumerate(level_downsamples):
-        effective = base_spacing_um * downsample
-        if effective <= requested_spacing_um and effective >= best_spacing:
-            best_level = level
-            best_spacing = effective
+    effective_spacings = [base_spacing_um * downsample for downsample in level_downsamples]
+    level = int(
+        np.argmin(
+            [abs(effective_spacing - requested_spacing_um) for effective_spacing in effective_spacings]
+        )
+    )
+    best_spacing = effective_spacings[level]
 
     relative_error = abs(best_spacing - requested_spacing_um) / requested_spacing_um
     is_within_tolerance = relative_error <= tolerance
+    if not is_within_tolerance:
+        while level > 0 and best_spacing > requested_spacing_um:
+            level -= 1
+            best_spacing = effective_spacings[level]
+            relative_error = abs(best_spacing - requested_spacing_um) / requested_spacing_um
+            is_within_tolerance = relative_error <= tolerance
 
     return LevelSelection(
-        level=best_level,
+        level=level,
         effective_spacing_um=best_spacing,
         is_within_tolerance=is_within_tolerance,
     )

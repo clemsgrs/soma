@@ -11,20 +11,21 @@ import torch
 from torch import Tensor
 from torchvision.transforms import v2
 
-from soma.encoders.base import TileEncoder
+from soma.encoders.base import TileEncoder, resolve_requested_output_variant
 from soma.encoders.registry import register_encoder
 
 
 @register_encoder(
     "midnight",
-    encode_dim=3072,
+    output_variants={"default": {"encode_dim": 3072}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=[0.25, 0.5, 1.0, 2.0],
+    supported_spacing_um=[0.25, 0.5, 1.0, 2.0],
     precision="fp16",
     source="kaiko-ai/midnight",
 )
 class Midnight(TileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         from transformers import AutoModel
 
         kwargs = {}
@@ -32,6 +33,7 @@ class Midnight(TileEncoder):
             kwargs["token"] = token
         self._model = AutoModel.from_pretrained("kaiko-ai/midnight", **kwargs).eval()
         self._device = torch.device("cpu")
+        self._output_variant = resolve_requested_output_variant(output_variant)
 
     def get_transform(self) -> Callable:
         return v2.Compose([

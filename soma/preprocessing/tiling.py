@@ -8,8 +8,7 @@ Per-contour processing enables parallelism via ThreadPoolExecutor.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 import cv2
 import numpy as np
@@ -33,10 +32,38 @@ class TilingResult:
     effective_spacing_um: float
     tile_size_lv0: int
     is_within_tolerance: bool
+    use_padding: bool = True
 
     tile_index: np.ndarray | None = None  # (N,) contiguous saved-artifact ids
     tissue_mask: np.ndarray | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+
+    sample_id: str | None = None
+    image_path: str | None = None
+    backend: str | None = None
+    requested_backend: str | None = None
+    base_spacing_um: float | None = None
+    slide_dimensions: list[int] | None = None
+    level_downsamples: list[float] | None = None
+    overlap: float | None = None
+    min_tissue_fraction: float | None = None
+    step_px_lv0: int | None = None
+    tissue_method: str | None = None
+    seg_downsample: int | None = None
+    seg_level: int | None = None
+    seg_spacing_um: float | None = None
+    ref_tile_size_px: int | None = None
+    a_t: float | None = None
+    tissue_mask_path: str | None = None
+    tissue_mask_tissue_value: int | None = None
+    mask_level: int | None = None
+    mask_spacing_um: float | None = None
+
+    # Hierarchical (HIPT-style) fields — set by expand_regions_to_subtiles()
+    hierarchical: bool = False
+    npatch: int | None = None  # grid dim per region (e.g., 16 → 16×16 subtiles/region)
+    region_index: np.ndarray | None = None  # (N,) maps each subtile to parent region
+    region_coordinates: np.ndarray | None = None  # (M, 2) original region coordinates
+    requested_region_size_px: int | None = None  # original region tile size
 
     def __post_init__(self) -> None:
         n_tiles = int(self.coordinates.shape[0])
@@ -55,6 +82,33 @@ class TilingResult:
         if tile_index.ndim != 1 or tile_index.shape[0] != n_tiles:
             raise ValueError("tile_index must be a 1D array aligned with coordinates")
         object.__setattr__(self, "tile_index", tile_index)
+
+
+def _context_kwargs(result: TilingResult) -> dict[str, object | None]:
+    return {
+        "sample_id": result.sample_id,
+        "image_path": result.image_path,
+        "backend": result.backend,
+        "requested_backend": result.requested_backend,
+        "base_spacing_um": result.base_spacing_um,
+        "slide_dimensions": None if result.slide_dimensions is None else list(result.slide_dimensions),
+        "level_downsamples": None
+        if result.level_downsamples is None
+        else list(result.level_downsamples),
+        "overlap": result.overlap,
+        "min_tissue_fraction": result.min_tissue_fraction,
+        "step_px_lv0": result.step_px_lv0,
+        "tissue_method": result.tissue_method,
+        "seg_downsample": result.seg_downsample,
+        "seg_level": result.seg_level,
+        "seg_spacing_um": result.seg_spacing_um,
+        "ref_tile_size_px": result.ref_tile_size_px,
+        "a_t": result.a_t,
+        "tissue_mask_path": result.tissue_mask_path,
+        "tissue_mask_tissue_value": result.tissue_mask_tissue_value,
+        "mask_level": result.mask_level,
+        "mask_spacing_um": result.mask_spacing_um,
+    }
 
 
 def canonicalize_tiling_result(result: TilingResult) -> TilingResult:
@@ -82,9 +136,103 @@ def canonicalize_tiling_result(result: TilingResult) -> TilingResult:
         effective_spacing_um=result.effective_spacing_um,
         tile_size_lv0=result.tile_size_lv0,
         is_within_tolerance=result.is_within_tolerance,
+        use_padding=result.use_padding,
         tile_index=np.arange(len(coords), dtype=np.int32),
         tissue_mask=result.tissue_mask,
-        metadata=dict(result.metadata),
+        **_context_kwargs(result),
+    )
+
+
+def resolve_base_spacing_um(result: TilingResult) -> float:
+    """Resolve level-0 spacing stored alongside a tiling artifact."""
+    if result.base_spacing_um is None:
+        raise ValueError("TilingResult is missing base_spacing_um metadata")
+    return float(result.base_spacing_um)
+
+
+def expand_regions_to_subtiles(
+    tiling_result: TilingResult, npatch: int
+) -> TilingResult:
+    """Expand region-level coordinates into subtile coordinates for hierarchical MIL.
+
+    Each region of size ``tile_size_lv0`` is subdivided into an ``npatch × npatch``
+    grid of subtiles in **row-major order** (matching VisionTransformer4K's
+    ``flatten(2, 3)`` on ``(D, npatch, npatch)`` input).
+
+    Args:
+        tiling_result: Region-level TilingResult (coordinates are region top-lefts).
+        npatch: Grid dimension per region (e.g., 16 → 256 subtiles per region).
+
+    Returns:
+        New TilingResult with ``M * npatch²`` subtile coordinates and hierarchical
+        metadata (``hierarchical=True``, ``npatch``, ``region_index``,
+        ``region_coordinates``, ``requested_region_size_px``).
+    """
+    if tiling_result.tile_size_lv0 % npatch != 0:
+        msg = (
+            f"tile_size_lv0 ({tiling_result.tile_size_lv0}) must be divisible "
+            f"by npatch ({npatch})"
+        )
+        raise ValueError(msg)
+
+    subtile_size_lv0 = tiling_result.tile_size_lv0 // npatch
+    m = len(tiling_result.coordinates)
+    p = npatch * npatch
+
+    if m == 0:
+        return TilingResult(
+            coordinates=np.empty((0, 2), dtype=np.int64),
+            tissue_fractions=np.empty(0, dtype=np.float32),
+            requested_tile_size_px=tiling_result.requested_tile_size_px // npatch,
+            requested_spacing_um=tiling_result.requested_spacing_um,
+            read_level=tiling_result.read_level,
+            effective_tile_size_px=tiling_result.effective_tile_size_px // npatch,
+            effective_spacing_um=tiling_result.effective_spacing_um,
+            tile_size_lv0=subtile_size_lv0,
+            is_within_tolerance=tiling_result.is_within_tolerance,
+            use_padding=tiling_result.use_padding,
+            hierarchical=True,
+            npatch=npatch,
+            region_index=np.empty(0, dtype=np.int32),
+            region_coordinates=tiling_result.coordinates.copy(),
+            requested_region_size_px=tiling_result.requested_tile_size_px,
+            **_context_kwargs(tiling_result),
+        )
+
+    # Build subtile offsets: row-major (i=row, j=col)
+    # Flat index i*npatch + j → offset (j * subtile_size, i * subtile_size)
+    rows, cols = np.divmod(np.arange(p), npatch)
+    offsets_x = cols * subtile_size_lv0  # (P,)
+    offsets_y = rows * subtile_size_lv0  # (P,)
+
+    # Broadcast: (M, 1) + (1, P) → (M, P) for both x and y
+    region_x = tiling_result.coordinates[:, 0:1]  # (M, 1)
+    region_y = tiling_result.coordinates[:, 1:2]  # (M, 1)
+    subtile_x = region_x + offsets_x[np.newaxis, :]  # (M, P)
+    subtile_y = region_y + offsets_y[np.newaxis, :]  # (M, P)
+
+    coords = np.stack([subtile_x.ravel(), subtile_y.ravel()], axis=1).astype(np.int64)
+    tissue_fracs = np.repeat(tiling_result.tissue_fractions, p)
+    region_index = np.repeat(np.arange(m, dtype=np.int32), p)
+
+    return TilingResult(
+        coordinates=coords,
+        tissue_fractions=tissue_fracs,
+        requested_tile_size_px=tiling_result.requested_tile_size_px // npatch,
+        requested_spacing_um=tiling_result.requested_spacing_um,
+        read_level=tiling_result.read_level,
+        effective_tile_size_px=tiling_result.effective_tile_size_px // npatch,
+        effective_spacing_um=tiling_result.effective_spacing_um,
+        tile_size_lv0=subtile_size_lv0,
+        is_within_tolerance=tiling_result.is_within_tolerance,
+        use_padding=tiling_result.use_padding,
+        tile_index=np.arange(m * p, dtype=np.int32),
+        hierarchical=True,
+        npatch=npatch,
+        region_index=region_index,
+        region_coordinates=tiling_result.coordinates.copy(),
+        requested_region_size_px=tiling_result.requested_tile_size_px,
+        **_context_kwargs(tiling_result),
     )
 
 
@@ -97,6 +245,7 @@ def generate_tiles(
     base_spacing_um: float,
     level_downsamples: list[float],
     overlap: float = 0.0,
+    use_padding: bool = True,
     min_tissue_fraction: float = 0.5,
     tolerance: float = 0.05,
     num_workers: int = 1,
@@ -118,15 +267,29 @@ def generate_tiles(
     Returns:
         TilingResult with coordinates in level-0 pixel space.
     """
+    if requested_spacing_um < base_spacing_um:
+        relative_diff = abs(base_spacing_um - requested_spacing_um) / requested_spacing_um
+        if relative_diff > tolerance:
+            raise ValueError(
+                f"Desired spacing ({requested_spacing_um}) is smaller than the "
+                f"whole-slide image starting spacing ({base_spacing_um}) and does not "
+                f"fall within tolerance ({tolerance:.0%})"
+            )
+
     # Resolve pyramid level
     level_sel = select_level(
         requested_spacing_um, level_downsamples, base_spacing_um, tolerance=tolerance
     )
 
     # Compute effective tile size and level-0 footprint
-    effective_tile_size_px = round(
-        requested_tile_size_px * requested_spacing_um / level_sel.effective_spacing_um
-    )
+    if level_sel.is_within_tolerance:
+        effective_tile_size_px = requested_tile_size_px
+    else:
+        effective_tile_size_px = round(
+            requested_tile_size_px
+            * requested_spacing_um
+            / level_sel.effective_spacing_um
+        )
     tile_size_lv0 = round(requested_tile_size_px * requested_spacing_um / base_spacing_um)
 
     # Step size in level-0 pixels
@@ -146,14 +309,20 @@ def generate_tiles(
             effective_spacing_um=level_sel.effective_spacing_um,
             tile_size_lv0=tile_size_lv0,
             is_within_tolerance=level_sel.is_within_tolerance,
+            use_padding=use_padding,
             tissue_mask=contours.mask,
+            base_spacing_um=base_spacing_um,
+            slide_dimensions=list(slide_dimensions),
+            level_downsamples=list(level_downsamples),
+            overlap=overlap,
+            min_tissue_fraction=min_tissue_fraction,
         )
 
     if len(contours.contours) == 0:
         return _empty_result()
 
     # Tile can't fit in slide
-    if tile_size_lv0 > slide_w or tile_size_lv0 > slide_h:
+    if not use_padding and (tile_size_lv0 > slide_w or tile_size_lv0 > slide_h):
         return _empty_result()
 
     # Process each contour
@@ -161,10 +330,12 @@ def generate_tiles(
         contour = contours.contours[idx]
         return _tiles_for_contour(
             contour=contour,
+            contour_holes=contours.holes[idx],
             tissue_mask=contours.mask,
             slide_dimensions=slide_dimensions,
             tile_size_lv0=tile_size_lv0,
             step_lv0=step_lv0,
+            use_padding=use_padding,
             min_tissue_fraction=min_tissue_fraction,
         )
 
@@ -190,26 +361,34 @@ def generate_tiles(
 
     return canonicalize_tiling_result(
         TilingResult(
-        coordinates=merged_coords,
-        tissue_fractions=merged_fracs,
-        requested_tile_size_px=requested_tile_size_px,
-        requested_spacing_um=requested_spacing_um,
-        read_level=level_sel.level,
-        effective_tile_size_px=effective_tile_size_px,
-        effective_spacing_um=level_sel.effective_spacing_um,
-        tile_size_lv0=tile_size_lv0,
-        is_within_tolerance=level_sel.is_within_tolerance,
-        tissue_mask=contours.mask,
+            coordinates=merged_coords,
+            tissue_fractions=merged_fracs,
+            requested_tile_size_px=requested_tile_size_px,
+            requested_spacing_um=requested_spacing_um,
+            read_level=level_sel.level,
+            effective_tile_size_px=effective_tile_size_px,
+            effective_spacing_um=level_sel.effective_spacing_um,
+            tile_size_lv0=tile_size_lv0,
+            is_within_tolerance=level_sel.is_within_tolerance,
+            use_padding=use_padding,
+            tissue_mask=contours.mask,
+            base_spacing_um=base_spacing_um,
+            slide_dimensions=list(slide_dimensions),
+            level_downsamples=list(level_downsamples),
+            overlap=overlap,
+            min_tissue_fraction=min_tissue_fraction,
         )
     )
 
 
 def _tiles_for_contour(
     contour: np.ndarray,
+    contour_holes: list[np.ndarray],
     tissue_mask: np.ndarray,
     slide_dimensions: tuple[int, int],
     tile_size_lv0: int,
     step_lv0: int,
+    use_padding: bool,
     min_tissue_fraction: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate tiles within a single contour's bounding box."""
@@ -221,8 +400,12 @@ def _tiles_for_contour(
     # Grid within bounding box, clipped to slide
     x_start = max(x_cont, 0)
     y_start = max(y_cont, 0)
-    x_end = min(x_cont + w_cont, slide_w - tile_size_lv0 + 1)
-    y_end = min(y_cont + h_cont, slide_h - tile_size_lv0 + 1)
+    if use_padding:
+        x_end = min(x_cont + w_cont, slide_w)
+        y_end = min(y_cont + h_cont, slide_h)
+    else:
+        x_end = min(x_cont + w_cont, slide_w - tile_size_lv0 + 1)
+        y_end = min(y_cont + h_cont, slide_h - tile_size_lv0 + 1)
 
     if x_end <= x_start or y_end <= y_start:
         return np.empty((0, 2), dtype=np.int64), np.empty(0, dtype=np.float32)
@@ -237,16 +420,54 @@ def _tiles_for_contour(
     grid_x, grid_y = np.meshgrid(xs, ys, indexing="ij")
     candidates = np.stack([grid_x.ravel(), grid_y.ravel()], axis=1)
 
+    contour_mask = _build_contour_tissue_mask(
+        contour=contour,
+        contour_holes=contour_holes,
+        tissue_mask=tissue_mask,
+        slide_dimensions=slide_dimensions,
+    )
+
     # Compute tissue fractions via integral image on the mask
     fractions = _compute_tissue_fractions(
         candidates=candidates,
-        tissue_mask=tissue_mask,
+        tissue_mask=contour_mask,
         tile_size_lv0=tile_size_lv0,
         slide_dimensions=slide_dimensions,
+        use_padding=use_padding,
     )
 
     keep = fractions >= min_tissue_fraction
     return candidates[keep], fractions[keep]
+
+
+def _build_contour_tissue_mask(
+    contour: np.ndarray,
+    contour_holes: list[np.ndarray],
+    tissue_mask: np.ndarray,
+    slide_dimensions: tuple[int, int],
+) -> np.ndarray:
+    mask_h, mask_w = tissue_mask.shape[:2]
+    slide_w, slide_h = slide_dimensions
+    scale_x = mask_w / slide_w
+    scale_y = mask_h / slide_h
+
+    contour_mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
+    contour_mask_scaled = contour.copy().astype(np.float64)
+    contour_mask_scaled[:, 0, 0] *= scale_x
+    contour_mask_scaled[:, 0, 1] *= scale_y
+    contour_mask_scaled = np.round(contour_mask_scaled).astype(np.int32)
+    cv2.drawContours(contour_mask, [contour_mask_scaled], -1, 1, thickness=-1)
+
+    if contour_holes:
+        holes_scaled = []
+        for hole in contour_holes:
+            hole_scaled = hole.copy().astype(np.float64)
+            hole_scaled[:, 0, 0] *= scale_x
+            hole_scaled[:, 0, 1] *= scale_y
+            holes_scaled.append(np.round(hole_scaled).astype(np.int32))
+        cv2.drawContours(contour_mask, holes_scaled, -1, 0, thickness=-1)
+
+    return contour_mask * (tissue_mask > 0).astype(np.uint8)
 
 
 def _compute_tissue_fractions(
@@ -254,6 +475,7 @@ def _compute_tissue_fractions(
     tissue_mask: np.ndarray,
     tile_size_lv0: int,
     slide_dimensions: tuple[int, int],
+    use_padding: bool,
 ) -> np.ndarray:
     """Compute tissue fraction per tile using an integral image for O(1) queries."""
     mask_h, mask_w = tissue_mask.shape[:2]
@@ -281,5 +503,9 @@ def _compute_tissue_fractions(
         integral[y2, x2] - integral[y1, x2] - integral[y2, x1] + integral[y1, x1]
     )
 
-    fractions = (tissue_sum / tile_area).astype(np.float32)
+    if use_padding:
+        valid_area = np.maximum(1, (x2 - x1) * (y2 - y1))
+        fractions = (tissue_sum / valid_area).astype(np.float32)
+    else:
+        fractions = (tissue_sum / tile_area).astype(np.float32)
     return np.clip(fractions, 0.0, 1.0)

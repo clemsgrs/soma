@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import warnings
+from dataclasses import replace
 from pathlib import Path
+
+import cv2
+import numpy as np
 import torch
+from PIL import Image
 
 from soma.cache import (
     record_feature_dim,
@@ -18,12 +23,139 @@ from soma.encoders.distributed import SlideTask, extract_dataset
 from soma.encoders.base import SlideEncoder
 import soma.encoders.models  # noqa: F401
 from soma.encoders.registry import encoder_registry
-from soma.encoders.validation import validate_encoder_config
+from soma.encoders.registry import (
+    resolve_encoder_level,
+    resolve_encoder_output,
+    resolve_tile_dependency_output,
+)
+from soma.encoders.validation import resolve_preprocessing_config, validate_encoder_config
 from soma.features import FeatureStore
-from soma.preprocessing.io import load_tiling_result, save_tiling_result
-from soma.preprocessing.tiling import generate_tiles
+from soma.preprocessing.io import (
+    load_tiling_result,
+    save_tiling_result,
+    validate_tiling_result_provenance,
+)
+from soma.preprocessing.tiling import (
+    expand_regions_to_subtiles,
+    generate_tiles,
+    resolve_base_spacing_um,
+)
 from soma.preprocessing.tissue import detect_contours, segment_tissue
-from soma.wsi.reader import open_slide
+from soma.wsi.reader import open_slide, select_level_for_downsample
+
+
+def _reduce_mask_channels(mask: np.ndarray) -> np.ndarray:
+    """Normalize backend mask reads to a single discrete label channel."""
+    if mask.ndim == 3:
+        return np.asarray(mask[..., 0])
+    return np.asarray(mask)
+
+
+def _is_discrete_binary_mask(mask: np.ndarray, *, tissue_value: int) -> bool:
+    """Return True when the raw mask contains at most one background label."""
+    values = np.unique(mask.astype(np.int64, copy=False))
+    non_tissue = [int(value) for value in values.tolist() if int(value) != tissue_value]
+    return len(values) <= 2 and len(non_tissue) <= 1
+
+
+def _read_exact_tiff_mask_level(mask_path: str | Path, *, mask_level: int) -> np.ndarray:
+    """Read a mask pyramid page exactly as stored on disk."""
+    path = Path(mask_path)
+    with Image.open(path) as image:
+        n_frames = int(getattr(image, "n_frames", 1))
+        if mask_level >= n_frames:
+            raise ValueError(
+                f"Mask level {mask_level} is unavailable in TIFF mask {path} (n_frames={n_frames})"
+            )
+        image.seek(mask_level)
+        return np.asarray(image)
+
+
+def _read_mask_level(
+    *,
+    mask_path: str | Path,
+    mask_slide,
+    mask_level: int,
+    tissue_value: int,
+) -> np.ndarray:
+    """Read a discrete mask level with exact-page fallback for TIFF masks."""
+    mask_size = mask_slide.level_dimensions[mask_level]
+    backend_mask = mask_slide.read_region((0, 0), mask_level, mask_size)
+    backend_mask = _reduce_mask_channels(backend_mask)
+    if _is_discrete_binary_mask(backend_mask, tissue_value=tissue_value):
+        return backend_mask.astype(np.uint8, copy=False)
+
+    suffix = Path(mask_path).suffix.lower()
+    if suffix in {".tif", ".tiff"}:
+        exact_mask = _reduce_mask_channels(
+            _read_exact_tiff_mask_level(mask_path, mask_level=mask_level)
+        )
+        if _is_discrete_binary_mask(exact_mask, tissue_value=tissue_value):
+            return exact_mask.astype(np.uint8, copy=False)
+
+    values = np.unique(backend_mask.astype(np.int64, copy=False))
+    raise ValueError(
+        "Precomputed tissue mask read produced non-discrete labels "
+        f"at level {mask_level}: {values.tolist()[:16]}"
+    )
+
+
+def _select_mask_level(
+    *,
+    mask_slide,
+    target_spacing_um: float,
+) -> tuple[int, float]:
+    """Choose the closest mask level, preferring a finer level over upsampling."""
+    effective_spacings = [
+        float(mask_slide.spacing) * float(downsample)
+        for downsample in mask_slide.level_downsamples
+    ]
+    level = int(
+        np.argmin(
+            [abs(spacing_um - target_spacing_um) for spacing_um in effective_spacings]
+        )
+    )
+    spacing_um = effective_spacings[level]
+    while level > 0 and spacing_um > target_spacing_um:
+        level -= 1
+        spacing_um = effective_spacings[level]
+    return level, spacing_um
+
+
+def _load_precomputed_tissue_mask(
+    *,
+    mask_path: str | Path,
+    slide,
+    seg_level: int,
+    tissue_value: int,
+) -> tuple[np.ndarray, int, float]:
+    """Load a precomputed tissue mask through the same backend stack as the slide."""
+    mask_slide = open_slide(mask_path, slide.backend_name)
+    try:
+        seg_size = slide.level_dimensions[seg_level]
+        seg_spacing_um = float(slide.spacing) * float(slide.level_downsamples[seg_level])
+        mask_level, mask_spacing_um = _select_mask_level(
+            mask_slide=mask_slide,
+            target_spacing_um=seg_spacing_um,
+        )
+        raw_mask = _read_mask_level(
+            mask_path=mask_path,
+            mask_slide=mask_slide,
+            mask_level=mask_level,
+            tissue_value=tissue_value,
+        )
+    finally:
+        mask_slide.close()
+
+    if raw_mask.shape[:2] != (int(seg_size[1]), int(seg_size[0])):
+        raw_mask = cv2.resize(
+            raw_mask.astype(np.uint8, copy=False),
+            (int(seg_size[0]), int(seg_size[1])),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+    mask = np.where(raw_mask == tissue_value, 255, 0).astype(np.uint8)
+    return mask, mask_level, mask_spacing_um
 
 
 class FeatureExtractor:
@@ -47,6 +179,22 @@ class FeatureExtractor:
         self._preprocessing = preprocessing
         self._cache = cache
 
+    def _resolved_preprocessing(self) -> PreprocessingConfig:
+        encoder_info = encoder_registry.info(self._encoder.name)
+        return resolve_preprocessing_config(
+            self._encoder,
+            self._preprocessing,
+            model_metadata=encoder_info,
+        )
+
+    def _resolved_output(self) -> dict[str, object]:
+        encoder_info = encoder_registry.info(self._encoder.name)
+        return resolve_encoder_output(
+            self._encoder.name,
+            requested_output_variant=self._encoder.output_variant,
+            metadata=encoder_info,
+        )
+
     def preprocess(
         self,
         output_dir: str | Path,
@@ -60,20 +208,48 @@ class FeatureExtractor:
         """
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        cfg = self._preprocessing
+        cfg = self._resolved_preprocessing()
 
         for record in self._dataset.samples.values():
             npz_path = output_dir / f"{record.sample_id}.coordinates.npz"
-            if skip_existing and npz_path.exists():
+            meta_path = output_dir / f"{record.sample_id}.coordinates.meta.json"
+            expected_mask_value = (
+                int(cfg.tissue_mask_tissue_value)
+                if record.tissue_mask_path is not None
+                else None
+            )
+            if skip_existing and npz_path.exists() and meta_path.exists():
+                existing = load_tiling_result(npz_path, meta_path)
+                validate_tiling_result_provenance(
+                    existing,
+                    sample_id=record.sample_id,
+                    image_path=record.image_path,
+                    tissue_mask_path=record.tissue_mask_path,
+                    tissue_mask_tissue_value=expected_mask_value,
+                )
                 continue
 
             slide = open_slide(record.image_path, backend)
             try:
-                w, h = slide.dimensions
-                ds = cfg.seg_downsample
-                thumb = slide.get_thumbnail((w // ds, h // ds))
-
-                mask = segment_tissue(thumb, method=cfg.tissue_method)
+                seg_level = select_level_for_downsample(
+                    cfg.seg_downsample, slide.level_downsamples
+                )
+                if record.tissue_mask_path is not None:
+                    mask, mask_level, mask_spacing_um = _load_precomputed_tissue_mask(
+                        mask_path=record.tissue_mask_path,
+                        slide=slide,
+                        seg_level=seg_level,
+                        tissue_value=int(cfg.tissue_mask_tissue_value),
+                    )
+                    tissue_method = "precomputed_mask"
+                else:
+                    seg_size = slide.level_dimensions[seg_level]
+                    seg_image = slide.read_region((0, 0), seg_level, seg_size)
+                    mask = segment_tissue(seg_image, method=cfg.tissue_method)
+                    mask_level = None
+                    mask_spacing_um = None
+                    tissue_method = cfg.tissue_method
+                seg_spacing_um = slide.spacing * slide.level_downsamples[seg_level]
 
                 contours = detect_contours(
                     mask,
@@ -81,6 +257,9 @@ class FeatureExtractor:
                     ref_tile_size_px=cfg.ref_tile_size_px,
                     requested_spacing_um=cfg.requested_spacing_um,
                     a_t=cfg.a_t,
+                    base_spacing_um=slide.spacing,
+                    level_downsamples=slide.level_downsamples,
+                    tolerance=cfg.tolerance,
                 )
 
                 tiling = generate_tiles(
@@ -91,8 +270,38 @@ class FeatureExtractor:
                     base_spacing_um=slide.spacing,
                     level_downsamples=slide.level_downsamples,
                     overlap=cfg.overlap,
+                    use_padding=cfg.use_padding,
                     min_tissue_fraction=cfg.min_tissue_fraction,
                     tolerance=cfg.tolerance,
+                )
+                step_px_lv0 = max(1, round(tiling.tile_size_lv0 * (1.0 - cfg.overlap)))
+                tiling = replace(
+                    tiling,
+                    sample_id=record.sample_id,
+                    image_path=str(record.image_path),
+                    backend=slide.backend_name,
+                    requested_backend=backend,
+                    base_spacing_um=slide.spacing,
+                    slide_dimensions=list(slide.dimensions),
+                    level_downsamples=list(slide.level_downsamples),
+                    overlap=cfg.overlap,
+                    use_padding=cfg.use_padding,
+                    min_tissue_fraction=cfg.min_tissue_fraction,
+                    step_px_lv0=step_px_lv0,
+                    tissue_method=tissue_method,
+                    seg_downsample=cfg.seg_downsample,
+                    seg_level=seg_level,
+                    seg_spacing_um=seg_spacing_um,
+                    ref_tile_size_px=cfg.ref_tile_size_px,
+                    a_t=cfg.a_t,
+                    tissue_mask_path=(
+                        None
+                        if record.tissue_mask_path is None
+                        else str(record.tissue_mask_path)
+                    ),
+                    tissue_mask_tissue_value=expected_mask_value,
+                    mask_level=mask_level,
+                    mask_spacing_um=mask_spacing_um,
                 )
 
                 save_tiling_result(tiling, output_dir, record.sample_id)
@@ -130,10 +339,24 @@ class FeatureExtractor:
 
         tiling_dir = Path(tiling_dir)
         encoder_info = encoder_registry.info(self._encoder.name)
+        resolved_output = resolve_encoder_output(
+            self._encoder.name,
+            requested_output_variant=self._encoder.output_variant,
+            metadata=encoder_info,
+        )
+        tile_dependency_output = resolve_tile_dependency_output(
+            self._encoder.name,
+            metadata=encoder_info,
+        )
+        resolved_preprocessing = resolve_preprocessing_config(
+            self._encoder,
+            self._preprocessing,
+            model_metadata=encoder_info,
+        )
         for warning in validate_encoder_config(
             self._encoder,
             encoder_info,
-            preprocessing_config=self._preprocessing,
+            preprocessing_config=resolved_preprocessing,
         ):
             warnings.warn(warning, stacklevel=2)
 
@@ -143,11 +366,25 @@ class FeatureExtractor:
             npz_path = tiling_dir / f"{record.sample_id}.coordinates.npz"
             meta_path = tiling_dir / f"{record.sample_id}.coordinates.meta.json"
             tiling = load_tiling_result(npz_path, meta_path)
+            validate_tiling_result_provenance(
+                tiling,
+                sample_id=record.sample_id,
+                image_path=record.image_path,
+                tissue_mask_path=record.tissue_mask_path,
+                tissue_mask_tissue_value=(
+                    int(resolved_preprocessing.tissue_mask_tissue_value)
+                    if record.tissue_mask_path is not None
+                    else None
+                ),
+            )
+            # Hierarchical mode: expand region coordinates into subtile coordinates
+            if self._preprocessing.hierarchical and self._preprocessing.npatch is not None:
+                tiling = expand_regions_to_subtiles(tiling, self._preprocessing.npatch)
             tilings[record.sample_id] = tiling
             for warning in validate_encoder_config(
                 self._encoder,
                 encoder_info,
-                preprocessing_config=self._preprocessing,
+                preprocessing_config=resolved_preprocessing,
                 tiling_result=tiling,
             ):
                 warnings.warn(warning, stacklevel=2)
@@ -162,6 +399,12 @@ class FeatureExtractor:
         if not self._cache.enabled:
             extract_dataset(
                 encoder_name=self._encoder.name,
+                output_variant=str(resolved_output["output_variant"]),
+                tile_output_variant=(
+                    str(tile_dependency_output["output_variant"])
+                    if resolve_encoder_level(self._encoder.name, encoder_info) == "slide"
+                    else None
+                ),
                 slides=slide_tasks,
                 output_dir=output_dir,
                 batch_size=self._encoder.batch_size,
@@ -176,14 +419,15 @@ class FeatureExtractor:
             return FeatureStore(output_dir)
 
         cache_root = resolve_cache_root(self._cache, output_dir=output_dir)
-        level = encoder_info.get("level", "tile")
+        level = resolve_encoder_level(self._encoder.name, encoder_info)
         if level == "tile":
             cache_resolution = resolve_tile_cache(
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
-                preprocessing=self._preprocessing,
+                preprocessing=resolved_preprocessing,
                 execution=self._encoder,
+                output_variant=str(resolved_output["output_variant"]),
             )
             self._populate_tile_cache(
                 cache_resolution,
@@ -199,8 +443,9 @@ class FeatureExtractor:
             cache_root=cache_root,
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
-            preprocessing=self._preprocessing,
+            preprocessing=resolved_preprocessing,
             execution=self._encoder,
+            output_variant=str(tile_dependency_output["output_variant"]),
         )
         self._populate_tile_cache(
             tile_cache,
@@ -217,6 +462,7 @@ class FeatureExtractor:
             tile_encoder_name=tile_encoder_name,
             tile_cache_key=tile_cache.key,
             execution=self._encoder,
+            output_variant=str(resolved_output["output_variant"]),
         )
         self._populate_slide_cache(
             slide_cache,
@@ -266,6 +512,7 @@ class FeatureExtractor:
         tasks_to_run = [task for task in slide_tasks if task.slide_id in missing]
         extract_dataset(
             encoder_name=cache_resolution.metadata["encoder_name"],
+            output_variant=cache_resolution.metadata["execution"].get("output_variant"),
             slides=tasks_to_run,
             output_dir=cache_resolution.features_dir,
             batch_size=self._encoder.batch_size,
@@ -297,7 +544,9 @@ class FeatureExtractor:
         if not missing:
             return
         encoder_cls = encoder_registry.get(self._encoder.name)
-        slide_encoder = encoder_cls().to(
+        slide_encoder = encoder_cls(
+            output_variant=slide_cache.metadata["execution"].get("output_variant")
+        ).to(
             torch.device("cuda" if torch.cuda.is_available() else "cpu")
         )
         assert isinstance(slide_encoder, SlideEncoder)
@@ -313,17 +562,13 @@ class FeatureExtractor:
             )
             tiling = tilings[task.slide_id]
             coordinates = torch.as_tensor(
-                tiling.coordinates,  # type: ignore[attr-defined]
+                tiling.coordinates,
                 dtype=torch.long,
             )
-            base_spacing = getattr(tiling, "effective_spacing_um")
-            if self._encoder.name == "gigapath-slide":
-                with open_slide(task.slide_path, backend) as slide:
-                    base_spacing = slide.spacing
             prepared = slide_encoder.prepare_coordinates(
                 coordinates,
-                base_spacing_um=float(base_spacing),
-                target_spacing_um=float(tiling.effective_spacing_um),  # type: ignore[attr-defined]
+                base_spacing_um=resolve_base_spacing_um(tiling),  # type: ignore[arg-type]
+                target_spacing_um=float(tiling.requested_spacing_um),  # type: ignore[attr-defined]
             )
             slide_features = slide_encoder.encode_slide(
                 tile_features.to(slide_encoder.device),

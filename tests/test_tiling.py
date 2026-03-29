@@ -33,6 +33,32 @@ def _make_full_tissue_contour(
     return detect_contours(mask, slide_dimensions=(slide_w, slide_h), a_t=0)
 
 
+def _make_ring_contour_result(
+    mask_h: int = 100,
+    mask_w: int = 100,
+    slide_w: int = 1000,
+    slide_h: int = 1000,
+) -> ContourResult:
+    """ContourResult where tissue forms a ring with a central hole."""
+    mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
+    mask[10:90, 10:90] = 255
+    mask[30:70, 30:70] = 0
+    return detect_contours(mask, slide_dimensions=(slide_w, slide_h), a_t=0)
+
+
+def _make_adjacent_contours_result(
+    mask_h: int = 100,
+    mask_w: int = 100,
+    slide_w: int = 1000,
+    slide_h: int = 1000,
+) -> ContourResult:
+    """Two nearby contours that should not borrow tissue from each other."""
+    mask = np.zeros((mask_h, mask_w), dtype=np.uint8)
+    mask[10:20, 10:20] = 255
+    mask[10:20, 22:32] = 255
+    return detect_contours(mask, slide_dimensions=(slide_w, slide_h), a_t=0)
+
+
 # Standard pyramid: 0.25 µm/px base, 4 levels
 BASE_SPACING = 0.25
 DOWNSAMPLES = [1.0, 2.0, 4.0, 16.0]
@@ -52,6 +78,19 @@ def test_returns_tiling_result():
         level_downsamples=DOWNSAMPLES,
     )
     assert isinstance(result, TilingResult)
+
+
+def test_records_base_spacing_on_tiling_result():
+    contours = _make_contour_result()
+    result = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.5,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+    )
+    assert result.base_spacing_um == BASE_SPACING
 
 
 def test_coordinates_shape():
@@ -133,6 +172,22 @@ def test_effective_fields_from_level_selection():
     assert result.is_within_tolerance is True
 
 
+def test_level_selection_can_choose_slightly_coarser_level_within_tolerance():
+    contours = _make_contour_result()
+    result = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.95,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        tolerance=0.06,
+    )
+    assert result.read_level == 2
+    assert result.effective_spacing_um == pytest.approx(1.0)
+    assert result.is_within_tolerance is True
+
+
 def test_effective_tile_size_when_exact():
     """When effective == requested spacing, effective_tile_size == requested."""
     contours = _make_contour_result()
@@ -144,6 +199,40 @@ def test_effective_tile_size_when_exact():
         base_spacing_um=BASE_SPACING,
         level_downsamples=DOWNSAMPLES,
     )
+    assert result.effective_tile_size_px == 256
+
+
+def test_effective_tile_size_stays_requested_when_within_tolerance_on_finer_level():
+    contours = _make_contour_result()
+    result = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.51,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        tolerance=0.05,
+    )
+    assert result.read_level == 1
+    assert result.effective_spacing_um == pytest.approx(0.5)
+    assert result.is_within_tolerance is True
+    assert result.effective_tile_size_px == 256
+
+
+def test_effective_tile_size_stays_requested_when_within_tolerance_on_coarser_level():
+    contours = _make_contour_result()
+    result = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.95,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        tolerance=0.06,
+    )
+    assert result.read_level == 2
+    assert result.effective_spacing_um == pytest.approx(1.0)
+    assert result.is_within_tolerance is True
     assert result.effective_tile_size_px == 256
 
 
@@ -300,7 +389,7 @@ def test_coordinates_are_in_canonical_x_then_y_order():
 
 def test_empty_contours():
     mask = np.zeros((100, 100), dtype=np.uint8)
-    contours = ContourResult(contours=[], mask=mask)
+    contours = ContourResult(contours=[], holes=[], mask=mask)
     result = generate_tiles(
         slide_dimensions=(1000, 1000),
         contours=contours,
@@ -323,8 +412,70 @@ def test_tile_larger_than_slide():
         requested_spacing_um=0.5,
         base_spacing_um=BASE_SPACING,
         level_downsamples=DOWNSAMPLES,
+        use_padding=False,
     )
     assert len(result.coordinates) == 0
+
+
+def test_tile_larger_than_slide_with_padding_keeps_origin_tile():
+    contours = _make_full_tissue_contour(slide_w=100, slide_h=100)
+    result = generate_tiles(
+        slide_dimensions=(100, 100),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.5,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        use_padding=True,
+        min_tissue_fraction=0.1,
+    )
+    np.testing.assert_array_equal(result.coordinates, np.array([[0, 0]], dtype=np.int64))
+
+
+def test_use_padding_keeps_contour_local_edge_tiles():
+    contours = _make_full_tissue_contour(slide_w=1000, slide_h=1000)
+
+    no_padding = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.5,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        use_padding=False,
+    )
+    with_padding = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=256,
+        requested_spacing_um=0.5,
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        use_padding=True,
+    )
+
+    np.testing.assert_array_equal(
+        no_padding.coordinates,
+        np.array([[0, 0]], dtype=np.int64),
+    )
+    np.testing.assert_array_equal(
+        with_padding.coordinates,
+        np.array([[0, 0], [0, 512], [512, 0], [512, 512]], dtype=np.int64),
+    )
+
+
+def test_raises_when_requested_spacing_is_finer_than_level0_beyond_tolerance():
+    contours = _make_full_tissue_contour()
+    with pytest.raises(ValueError, match="Desired spacing"):
+        generate_tiles(
+            slide_dimensions=(1000, 1000),
+            contours=contours,
+            requested_tile_size_px=256,
+            requested_spacing_um=0.10,
+            base_spacing_um=BASE_SPACING,
+            level_downsamples=DOWNSAMPLES,
+            tolerance=0.05,
+        )
 
 
 # --- Parallel processing ---
@@ -362,3 +513,34 @@ def test_tissue_mask_stored():
         level_downsamples=DOWNSAMPLES,
     )
     assert result.tissue_mask is not None
+
+
+def test_tile_acceptance_is_contour_local_for_ring_shape():
+    contours = _make_adjacent_contours_result()
+    result = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=150,
+        requested_spacing_um=0.5,
+        base_spacing_um=0.5,
+        level_downsamples=[1.0],
+        min_tissue_fraction=0.8,
+        use_padding=False,
+    )
+    assert len(result.coordinates) == 0
+
+
+def test_hole_pixels_reduce_tissue_fraction_naturally():
+    contours = _make_ring_contour_result()
+    result = generate_tiles(
+        slide_dimensions=(1000, 1000),
+        contours=contours,
+        requested_tile_size_px=20,
+        requested_spacing_um=0.5,
+        base_spacing_um=0.5,
+        level_downsamples=[1.0],
+        min_tissue_fraction=0.0,
+        use_padding=False,
+    )
+    assert len(result.coordinates) > 0
+    assert float(result.tissue_fractions.min()) == pytest.approx(0.0)

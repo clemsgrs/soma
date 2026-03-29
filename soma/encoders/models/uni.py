@@ -12,17 +12,19 @@ from soma.encoders.registry import register_encoder
 
 @register_encoder(
     "uni",
-    encode_dim=1024,
+    output_variants={"default": {"encode_dim": 1024}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="MahmoodLab/UNI",
 )
 class UNI(TimmTileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         super().__init__(
             "hf-hub:MahmoodLab/UNI",
             token=token,
+            output_variant=output_variant,
             init_values=1e-5,
             dynamic_img_size=True,
         )
@@ -30,17 +32,19 @@ class UNI(TimmTileEncoder):
 
 @register_encoder(
     "uni2",
-    encode_dim=1536,
+    output_variants={"default": {"encode_dim": 1536}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="MahmoodLab/UNI2-h",
 )
 class UNI2(TimmTileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         super().__init__(
             "hf-hub:MahmoodLab/UNI2-h",
             token=token,
+            output_variant=output_variant,
             img_size=224,
             patch_size=14,
             depth=24,

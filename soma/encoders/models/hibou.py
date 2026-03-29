@@ -11,7 +11,7 @@ import torch
 from torch import Tensor
 from torchvision.transforms import v2
 
-from soma.encoders.base import TileEncoder
+from soma.encoders.base import TileEncoder, resolve_requested_output_variant
 from soma.encoders.registry import register_encoder
 
 _HIBOU_MEAN = (0.7068, 0.5755, 0.722)
@@ -33,7 +33,13 @@ class _HibouBase(TileEncoder):
 
     _encode_dim: int
 
-    def __init__(self, model_name: str, *, token: str | None = None):
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        token: str | None = None,
+        output_variant: str | None = None,
+    ):
         from transformers import AutoModel
 
         kwargs = {"trust_remote_code": True}
@@ -41,6 +47,7 @@ class _HibouBase(TileEncoder):
             kwargs["token"] = token
         self._model = AutoModel.from_pretrained(model_name, **kwargs).eval()
         self._device = torch.device("cpu")
+        self._output_variant = resolve_requested_output_variant(output_variant)
 
     def get_transform(self) -> Callable:
         return _hibou_transform()
@@ -65,29 +72,31 @@ class _HibouBase(TileEncoder):
 
 @register_encoder(
     "hibou-b",
-    encode_dim=768,
+    output_variants={"default": {"encode_dim": 768}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="histai/hibou-b",
 )
 class HibouB(_HibouBase):
     _encode_dim = 768
 
-    def __init__(self, *, token: str | None = None):
-        super().__init__("histai/hibou-b", token=token)
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
+        super().__init__("histai/hibou-b", token=token, output_variant=output_variant)
 
 
 @register_encoder(
     "hibou-l",
-    encode_dim=1024,
+    output_variants={"default": {"encode_dim": 1024}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="histai/hibou-L",
 )
 class HibouL(_HibouBase):
     _encode_dim = 1024
 
-    def __init__(self, *, token: str | None = None):
-        super().__init__("histai/hibou-L", token=token)
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
+        super().__init__("histai/hibou-L", token=token, output_variant=output_variant)

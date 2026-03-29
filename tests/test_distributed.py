@@ -28,6 +28,7 @@ _TEST_SLIDE_DIM = 4
 class _TestTileEncoder(TileEncoder):
     def __init__(self, **kwargs):
         self._device = torch.device("cpu")
+        self._output_variant = kwargs.get("output_variant") or "default"
 
     def get_transform(self):
         def _t(img):
@@ -54,6 +55,7 @@ class _TestTileEncoder(TileEncoder):
 class _TestSlideEncoder(SlideEncoder):
     def __init__(self, **kwargs):
         self._device = torch.device("cpu")
+        self._output_variant = kwargs.get("output_variant") or "default"
 
     def encode_slide(self, tile_features, coordinates=None, *, tile_size_lv0: int | None = None):
         return torch.arange(_TEST_SLIDE_DIM, dtype=torch.float32, device=tile_features.device)
@@ -78,10 +80,10 @@ if _TEST_TILE_ENCODER_NAME not in encoder_registry:
         metadata={
             "level": "tile",
             "input_size": 224,
-            "recommended_tile_size_px": 224,
-            "recommended_spacing_um": 0.5,
+            "output_variants": {"default": {"encode_dim": _TEST_DIM}},
+            "default_output_variant": "default",
+            "supported_spacing_um": 0.5,
             "precision": "fp16",
-            "encode_dim": _TEST_DIM,
         },
     )
 
@@ -92,10 +94,11 @@ if _TEST_SLIDE_ENCODER_NAME not in encoder_registry:
         metadata={
             "level": "slide",
             "tile_encoder": _TEST_TILE_ENCODER_NAME,
-            "recommended_tile_size_px": 224,
-            "recommended_spacing_um": 0.5,
+            "tile_encoder_output_variant": "default",
+            "output_variants": {"default": {"encode_dim": _TEST_SLIDE_DIM}},
+            "default_output_variant": "default",
+            "supported_spacing_um": 0.5,
             "precision": "fp16",
-            "encode_dim": _TEST_SLIDE_DIM,
         },
     )
 
@@ -117,6 +120,7 @@ def _make_slide_task(
         effective_spacing_um=0.5,
         tile_size_lv0=tile_size_lv0,
         is_within_tolerance=True,
+        base_spacing_um=0.5,
     )
     return SlideTask(
         slide_path=f"/fake/path/{slide_id}.svs",
@@ -128,7 +132,7 @@ def _make_slide_task(
 def _mock_open_slide(*args, **kwargs):
     reader = MagicMock()
 
-    def _read_region(location, level, size):
+    def _read_region(location, level, size, *, pad_missing=False):
         w, h = size
         return np.full((h, w, 3), 128, dtype=np.uint8)
 
@@ -154,6 +158,32 @@ class TestAssignSlidesToRanks:
 
 
 class TestExtractDataset:
+    def test_requires_level_metadata(self, tmp_path: Path):
+        encoder_name = "_test_distributed_missing_level"
+        if encoder_name not in encoder_registry:
+            encoder_registry.register(
+                encoder_name,
+                _TestTileEncoder,
+                metadata={
+                    "input_size": 224,
+                    "output_variants": {"default": {"encode_dim": _TEST_DIM}},
+                    "default_output_variant": "default",
+                    "supported_spacing_um": 0.5,
+                    "precision": "fp16",
+                },
+            )
+
+        with pytest.raises(ValueError, match="level metadata"):
+            extract_dataset(
+                encoder_name,
+                [_make_slide_task("missing_level", 2, 2)],
+                tmp_path,
+                num_gpus=1,
+                batch_size=4,
+                num_workers=0,
+                progress=False,
+            )
+
     @patch("soma.encoders.distributed.open_slide", side_effect=_mock_open_slide)
     def test_creates_tile_files(self, mock_open, tmp_path: Path):
         slides = [_make_slide_task(f"slide_{i}", 2, 2) for i in range(3)]

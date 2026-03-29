@@ -18,10 +18,12 @@ class MILModelOutput:
         logits: Task predictions, shape (B, num_classes) or (B, 1).
         tile_attention: Per-tile attention weights from the aggregator,
             shape (B, N). None if the aggregator has no attention.
+        auxiliary: Optional dict of auxiliary tensors from the aggregator.
     """
 
     logits: Tensor
     tile_attention: Tensor | None = None
+    auxiliary: dict[str, Tensor] | None = None
 
 
 class MILModel(nn.Module):
@@ -44,4 +46,8 @@ class MILModel(nn.Module):
     def forward(self, X: Tensor, mask: Tensor | None = None) -> MILModelOutput:
         agg_out = self.aggregator(X, mask=mask)
         logits = self.task_head(agg_out.bag_representation)
-        return MILModelOutput(logits=logits, tile_attention=agg_out.tile_attention)
+        return MILModelOutput(
+            logits=logits,
+            tile_attention=agg_out.tile_attention,
+            auxiliary=agg_out.auxiliary,
+        )

@@ -1,4 +1,4 @@
-"""Tissue segmentation from WSI thumbnails.
+"""Tissue segmentation from WSI RGB pyramid levels.
 
 Default method is HSV thresholding (following hs2p), which works better than
 Otsu for H&E-stained pathology images by targeting the hue/saturation/value
@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 import cv2
 import numpy as np
+
+from soma.wsi.reader import select_level
 
 
 def segment_tissue(
@@ -119,6 +121,7 @@ class ContourResult:
     """
 
     contours: list[np.ndarray]
+    holes: list[list[np.ndarray]]
     mask: np.ndarray
 
 
@@ -129,6 +132,9 @@ def detect_contours(
     ref_tile_size_px: int = 16,
     requested_spacing_um: float = 0.5,
     a_t: int = 4,
+    base_spacing_um: float | None = None,
+    level_downsamples: list[float] | None = None,
+    tolerance: float = 0.05,
 ) -> ContourResult:
     """Detect tissue contours from a binary mask.
 
@@ -142,12 +148,15 @@ def detect_contours(
         ref_tile_size_px: Reference tile size in pixels for area filtering.
         requested_spacing_um: Requested spacing for ref_area computation.
         a_t: Minimum foreground contour area as multiple of ref_area.
+        base_spacing_um: Native level-0 spacing in um/px.
+        level_downsamples: Pyramid downsample factors.
+        tolerance: Tolerance used for requested spacing resolution.
 
     Returns:
         ContourResult with contours in level-0 coordinates.
     """
     if tissue_mask.max() == 0:
-        return ContourResult(contours=[], mask=tissue_mask)
+        return ContourResult(contours=[], holes=[], mask=tissue_mask)
 
     # Scale factors: mask space → level-0 space
     mask_h, mask_w = tissue_mask.shape[:2]
@@ -155,36 +164,51 @@ def detect_contours(
     scale_x = slide_w / mask_w
     scale_y = slide_h / mask_h
 
-    # Reference area in mask pixels for filtering
-    # ref_tile_size_px is in requested-spacing pixels; convert to mask pixels
-    mask_spacing_um_x = (slide_w * 0.5) / mask_w  # approximate
-    ref_tile_mask_px = ref_tile_size_px * (requested_spacing_um / max(mask_spacing_um_x, 1e-9))
-    ref_area = ref_tile_mask_px * ref_tile_mask_px
+    min_fg_area = 0
+    if a_t > 0:
+        if base_spacing_um is None or level_downsamples is None:
+            raise ValueError(
+                "base_spacing_um and level_downsamples are required when a_t > 0 "
+                "so contour filtering can use actual slide geometry."
+            )
+        level_sel = select_level(
+            requested_spacing_um,
+            level_downsamples,
+            base_spacing_um,
+            tolerance=tolerance,
+        )
+        current_scale = level_sel.effective_spacing_um / base_spacing_um
+        ref_tile_mask_w = ref_tile_size_px * current_scale / scale_x
+        ref_tile_mask_h = ref_tile_size_px * current_scale / scale_y
+        scaled_ref_tile_area = int(ref_tile_mask_w * ref_tile_mask_h)
+        min_fg_area = a_t * scaled_ref_tile_area
 
     # Find contours with two-level hierarchy (RETR_CCOMP)
+    if tissue_mask.ndim == 3:
+        tissue_mask = cv2.cvtColor(tissue_mask, cv2.COLOR_BGR2GRAY)
     raw_contours, hierarchy = cv2.findContours(
         tissue_mask, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE
     )
 
     if hierarchy is None or len(raw_contours) == 0:
-        return ContourResult(contours=[], mask=tissue_mask)
+        return ContourResult(contours=[], holes=[], mask=tissue_mask)
 
     hierarchy = hierarchy[0]  # shape (N, 4): [next, prev, child, parent]
 
-    # Separate foreground contours (parent == -1)
-    foreground_indices = []
-
-    for i, h in enumerate(hierarchy):
-        if h[3] == -1:  # no parent → foreground contour
-            foreground_indices.append(i)
-
-    # Filter foreground contours by area
-    min_fg_area = a_t * ref_area
     filtered_contours = []
+    filtered_holes: list[list[np.ndarray]] = []
 
-    for fg_idx in foreground_indices:
+    for fg_idx, h in enumerate(hierarchy):
+        if h[3] != -1:
+            continue
+        child_hole_indices = np.flatnonzero(hierarchy[:, 3] == fg_idx)
         area = cv2.contourArea(raw_contours[fg_idx])
-        if area < min_fg_area:
+        if child_hole_indices.size > 0:
+            hole_areas = [cv2.contourArea(raw_contours[idx]) for idx in child_hole_indices]
+            area -= float(np.sum(hole_areas))
+        if area == 0:
+            continue
+        if area <= min_fg_area:
             continue
 
         # Scale contour to level-0
@@ -193,8 +217,16 @@ def detect_contours(
         contour_lv0[:, 0, 1] *= scale_y
         contour_lv0 = contour_lv0.astype(np.int32)
         filtered_contours.append(contour_lv0)
+        hole_contours_lv0 = []
+        for hole_idx in child_hole_indices.tolist():
+            hole_lv0 = raw_contours[hole_idx].copy().astype(np.float64)
+            hole_lv0[:, 0, 0] *= scale_x
+            hole_lv0[:, 0, 1] *= scale_y
+            hole_contours_lv0.append(hole_lv0.astype(np.int32))
+        filtered_holes.append(hole_contours_lv0)
 
     return ContourResult(
         contours=filtered_contours,
+        holes=filtered_holes,
         mask=tissue_mask,
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from soma.encoders.base import SlideEncoder
+from soma.encoders.base import SlideEncoder, resolve_requested_output_variant
 from soma.encoders.registry import register_encoder
 
 
@@ -13,14 +13,15 @@ from soma.encoders.registry import register_encoder
     "titan",
     level="slide",
     tile_encoder="conchv15",
-    encode_dim=768,
-    recommended_tile_size_px=512,
-    recommended_spacing_um=0.5,
+    tile_encoder_output_variant="default",
+    output_variants={"default": {"encode_dim": 768}},
+    default_output_variant="default",
+    supported_spacing_um=0.5,
     precision="fp16",
     source="MahmoodLab/TITAN",
 )
 class TitanSlideEncoder(SlideEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         from transformers import AutoModel
 
         kwargs = {"trust_remote_code": True}
@@ -28,6 +29,7 @@ class TitanSlideEncoder(SlideEncoder):
             kwargs["token"] = token
         self._model = AutoModel.from_pretrained("MahmoodLab/TITAN", **kwargs).eval()
         self._device = torch.device("cpu")
+        self._output_variant = resolve_requested_output_variant(output_variant)
 
     @property
     def encode_dim(self) -> int:

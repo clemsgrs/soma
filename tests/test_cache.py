@@ -64,6 +64,23 @@ def test_tile_cache_key_changes_with_preprocessing(tmp_path: Path):
     assert key_a != key_b
 
 
+def test_tile_cache_key_changes_with_tissue_mask_value(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    key_a = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=1),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    key_b = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=2),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    assert key_a != key_b
+
+
 def test_tile_cache_key_changes_with_precision(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     key_a = build_tile_cache_key(
@@ -77,6 +94,23 @@ def test_tile_cache_key_changes_with_precision(tmp_path: Path):
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="virchow", precision="fp32"),
+    )
+    assert key_a != key_b
+
+
+def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    key_a = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="h0-mini",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="h0-mini", output_variant="cls"),
+    )
+    key_b = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="h0-mini",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
     )
     assert key_a != key_b
 

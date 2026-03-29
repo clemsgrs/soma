@@ -5,6 +5,10 @@ import numpy as np
 from soma.preprocessing.tissue import ContourResult, detect_contours
 
 
+BASE_SPACING = 0.25
+DOWNSAMPLES = [1.0, 2.0, 4.0, 16.0]
+
+
 def _make_mask_with_blob(
     mask_h: int = 100,
     mask_w: int = 100,
@@ -24,25 +28,45 @@ def _make_mask_with_blob(
 
 def test_returns_contour_result():
     mask = _make_mask_with_blob()
-    result = detect_contours(mask, slide_dimensions=(1000, 1000))
+    result = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+    )
     assert isinstance(result, ContourResult)
 
 
 def test_detects_single_contour():
     mask = _make_mask_with_blob()
-    result = detect_contours(mask, slide_dimensions=(1000, 1000))
+    result = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+    )
     assert len(result.contours) == 1
 
 
 def test_contour_result_has_mask():
     mask = _make_mask_with_blob()
-    result = detect_contours(mask, slide_dimensions=(1000, 1000))
+    result = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+    )
     np.testing.assert_array_equal(result.mask, mask)
 
 
 def test_empty_mask_returns_empty():
     mask = np.zeros((100, 100), dtype=np.uint8)
-    result = detect_contours(mask, slide_dimensions=(1000, 1000))
+    result = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+    )
     assert len(result.contours) == 0
 
 
@@ -53,7 +77,12 @@ def test_contours_scaled_to_level0():
     """Contour coords should be scaled from mask space to level-0 space."""
     # 100x100 mask for a 1000x1000 slide → scale factor = 10
     mask = _make_mask_with_blob(mask_h=100, mask_w=100)
-    result = detect_contours(mask, slide_dimensions=(1000, 1000))
+    result = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+    )
 
     contour = result.contours[0]
     # The blob spans x=[20,80), y=[20,80) in mask space
@@ -80,6 +109,8 @@ def test_small_contour_filtered_out():
     result = detect_contours(
         mask,
         slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
         ref_tile_size_px=16,
         requested_spacing_um=0.5,
         a_t=4,  # min area = 4 * (16 * scale)^2 in mask pixels
@@ -97,6 +128,53 @@ def test_multiple_contours():
     result = detect_contours(
         mask,
         slide_dimensions=(2000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
         a_t=0,  # don't filter by area
     )
     assert len(result.contours) == 2
+
+
+def test_area_threshold_scales_with_selected_level_geometry():
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[20:30, 20:30] = 255  # 10x10 blob -> area 100 mask px
+
+    fine = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        ref_tile_size_px=16,
+        requested_spacing_um=0.5,
+        a_t=4,
+    )
+    coarse = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        ref_tile_size_px=16,
+        requested_spacing_um=1.0,
+        a_t=4,
+    )
+
+    assert len(fine.contours) == 1
+    assert len(coarse.contours) == 0
+
+
+def test_hole_area_is_subtracted_before_applying_a_t():
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[10:90, 10:90] = 255
+    mask[15:85, 15:85] = 0
+
+    result = detect_contours(
+        mask,
+        slide_dimensions=(1000, 1000),
+        base_spacing_um=BASE_SPACING,
+        level_downsamples=DOWNSAMPLES,
+        ref_tile_size_px=16,
+        requested_spacing_um=0.5,
+        a_t=200,
+    )
+
+    assert len(result.contours) == 0

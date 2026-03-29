@@ -10,7 +10,7 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from soma.encoders.base import TileEncoder
+from soma.encoders.base import TileEncoder, resolve_requested_output_variant
 from soma.encoders.registry import register_encoder
 
 
@@ -19,7 +19,13 @@ class _PhikonBase(TileEncoder):
 
     _encode_dim: int
 
-    def __init__(self, model_name: str, *, token: str | None = None):
+    def __init__(
+        self,
+        model_name: str,
+        *,
+        token: str | None = None,
+        output_variant: str | None = None,
+    ):
         from transformers import AutoImageProcessor, AutoModel
 
         kwargs = {}
@@ -30,6 +36,7 @@ class _PhikonBase(TileEncoder):
             model_name, use_fast=True, **kwargs
         )
         self._device = torch.device("cpu")
+        self._output_variant = resolve_requested_output_variant(output_variant)
 
     def get_transform(self) -> Callable:
         processor = self._processor
@@ -60,29 +67,31 @@ class _PhikonBase(TileEncoder):
 
 @register_encoder(
     "phikon",
-    encode_dim=768,
+    output_variants={"default": {"encode_dim": 768}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp32",
     source="owkin/phikon",
 )
 class Phikon(_PhikonBase):
     _encode_dim = 768
 
-    def __init__(self, *, token: str | None = None):
-        super().__init__("owkin/phikon", token=token)
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
+        super().__init__("owkin/phikon", token=token, output_variant=output_variant)
 
 
 @register_encoder(
     "phikonv2",
-    encode_dim=1024,
+    output_variants={"default": {"encode_dim": 1024}},
+    default_output_variant="default",
     input_size=224,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp32",
     source="owkin/phikon-v2",
 )
 class PhikonV2(_PhikonBase):
     _encode_dim = 1024
 
-    def __init__(self, *, token: str | None = None):
-        super().__init__("owkin/phikon-v2", token=token)
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
+        super().__init__("owkin/phikon-v2", token=token, output_variant=output_variant)

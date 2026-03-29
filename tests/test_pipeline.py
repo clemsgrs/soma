@@ -510,6 +510,7 @@ class TestPipeline:
         class _PipelineTileEncoder(TileEncoder):
             def __init__(self, **kwargs):
                 self._device = torch.device("cpu")
+                self._output_variant = kwargs.get("output_variant") or "default"
 
             def get_transform(self):
                 return lambda x: x
@@ -532,6 +533,7 @@ class TestPipeline:
         class _PipelineSlideEncoder(SlideEncoder):
             def __init__(self, **kwargs):
                 self._device = torch.device("cpu")
+                self._output_variant = kwargs.get("output_variant") or "default"
 
             def encode_slide(self, tile_features, coordinates=None, *, tile_size_lv0: int | None = None):
                 return tile_features.mean(dim=0)
@@ -554,10 +556,10 @@ class TestPipeline:
                 _PipelineTileEncoder,
                 metadata={
                     "level": "tile",
-                    "encode_dim": D,
                     "input_size": 256,
-                    "recommended_tile_size_px": 256,
-                    "recommended_spacing_um": 0.5,
+                    "output_variants": {"default": {"encode_dim": D}},
+                    "default_output_variant": "default",
+                    "supported_spacing_um": 0.5,
                     "precision": "fp16",
                 },
             )
@@ -568,9 +570,10 @@ class TestPipeline:
                 metadata={
                     "level": "slide",
                     "tile_encoder": test_tile,
-                    "encode_dim": D,
-                    "recommended_tile_size_px": 256,
-                    "recommended_spacing_um": 0.5,
+                    "tile_encoder_output_variant": "default",
+                    "output_variants": {"default": {"encode_dim": D}},
+                    "default_output_variant": "default",
+                    "supported_spacing_um": 0.5,
                     "precision": "fp16",
                 },
             )
@@ -599,9 +602,11 @@ class TestPipeline:
             reader.level_count = 3
             reader.level_dimensions = [(1000, 800), (500, 400), (250, 200)]
             reader.level_downsamples = [1.0, 2.0, 4.0]
-            thumb = np.full((100, 125, 3), 255, dtype=np.uint8)
-            thumb[10:90, 10:115] = np.array([150, 80, 100], dtype=np.uint8)
-            reader.get_thumbnail = lambda size: thumb
+            reader.read_region = lambda location, level, size, **_: np.full(
+                (size[1], size[0], 3),
+                np.array([150, 80, 100], dtype=np.uint8),
+                dtype=np.uint8,
+            )
             reader.close = lambda: None
             return reader
 

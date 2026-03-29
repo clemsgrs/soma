@@ -12,20 +12,21 @@ from typing import Callable
 import torch
 from torch import Tensor
 
-from soma.encoders.base import TileEncoder
+from soma.encoders.base import TileEncoder, resolve_requested_output_variant
 from soma.encoders.registry import register_encoder
 
 
 @register_encoder(
     "conch",
-    encode_dim=512,
+    output_variants={"default": {"encode_dim": 512}},
+    default_output_variant="default",
     input_size=448,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp32",
     source="MahmoodLab/conch",
 )
 class CONCH(TileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         from conch.open_clip_custom import create_model_from_pretrained
 
         self._model, self._transform = create_model_from_pretrained(
@@ -33,6 +34,7 @@ class CONCH(TileEncoder):
         )
         self._model.eval()
         self._device = torch.device("cpu")
+        self._output_variant = resolve_requested_output_variant(output_variant)
 
     def get_transform(self) -> Callable:
         return self._transform
@@ -56,20 +58,22 @@ class CONCH(TileEncoder):
 
 @register_encoder(
     "conchv15",
-    encode_dim=768,
+    output_variants={"default": {"encode_dim": 768}},
+    default_output_variant="default",
     input_size=448,
-    recommended_spacing_um=0.5,
+    supported_spacing_um=0.5,
     precision="fp16",
     source="MahmoodLab/TITAN",
 )
 class CONCHv15(TileEncoder):
-    def __init__(self, *, token: str | None = None):
+    def __init__(self, *, token: str | None = None, output_variant: str | None = None):
         from transformers import AutoModel
 
         titan = AutoModel.from_pretrained("MahmoodLab/TITAN", trust_remote_code=True)
         self._model, self._transform = titan.return_conch()
         self._model.eval()
         self._device = torch.device("cpu")
+        self._output_variant = resolve_requested_output_variant(output_variant)
 
     def get_transform(self) -> Callable:
         return self._transform
