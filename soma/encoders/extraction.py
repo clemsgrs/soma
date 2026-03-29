@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader, Dataset
 from soma.encoders.base import SlideEncoder, TileEncoder
 from soma.encoders.tile_reader import SuperTileIndex, build_supertile_index
 from soma.preprocessing.tiling import TilingResult, resolve_base_spacing_um
-from soma.wsi.reader import BatchRegionReader, SlideReader
+from soma.wsi.reader import BatchRegionReader, SlideReader, open_slide
 
 
 class TileIndexDataset(Dataset):
@@ -40,6 +40,9 @@ class TileBatchCollator:
         transform,
         st_index: SuperTileIndex | None = None,
         num_workers: int = 0,
+        *,
+        slide_path: str | Path | None = None,
+        backend: str = "auto",
     ):
         self._reader = reader
         self._coords = tiling_result.coordinates
@@ -50,12 +53,44 @@ class TileBatchCollator:
         self._transform = transform
         self._st_index = st_index
         self._num_workers = num_workers
+        self._slide_path = None if slide_path is None else str(slide_path)
+        self._backend = backend
+        self._owns_reader = False
 
     def __call__(self, batch_indices: list[int]) -> tuple[Tensor, Tensor]:
         indices_t = torch.tensor(batch_indices, dtype=torch.long)
         requests = self._build_read_requests(batch_indices)
         images = self._read_requests(requests, len(batch_indices))
         return indices_t, torch.stack(images)
+
+    def __getstate__(self) -> dict[str, object]:
+        state = dict(self.__dict__)
+        if self._slide_path is not None:
+            state["_reader"] = None
+            state["_owns_reader"] = False
+        return state
+
+    def _get_reader(self) -> SlideReader:
+        if self._reader is None:
+            if self._slide_path is None:
+                raise RuntimeError(
+                    "TileBatchCollator cannot reopen a slide reader without slide_path metadata"
+                )
+            self._reader = open_slide(self._slide_path, backend=self._backend)
+            self._owns_reader = True
+        return self._reader
+
+    def close(self) -> None:
+        if self._owns_reader and self._reader is not None:
+            self._reader.close()
+            self._reader = None
+            self._owns_reader = False
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _build_read_requests(self, batch_indices: list[int]) -> list[_ReadRequest]:
         position_by_idx = {tile_idx: pos for pos, tile_idx in enumerate(batch_indices)}
@@ -98,16 +133,18 @@ class TileBatchCollator:
     def _read_requests(
         self, requests: list[_ReadRequest], num_images: int
     ) -> list[Tensor]:
-        if isinstance(self._reader, BatchRegionReader):
+        reader = self._get_reader()
+        if isinstance(reader, BatchRegionReader):
             return self._read_requests_batched(requests, num_images)
         return self._read_requests_sequential(requests, num_images)
 
     def _read_requests_sequential(
         self, requests: list[_ReadRequest], num_images: int
     ) -> list[Tensor]:
+        reader = self._get_reader()
         images: list[Tensor | None] = [None] * num_images
         for request in requests:
-            region = self._reader.read_region(
+            region = reader.read_region(
                 request.location,
                 self._read_level,
                 request.size,
@@ -119,6 +156,7 @@ class TileBatchCollator:
     def _read_requests_batched(
         self, requests: list[_ReadRequest], num_images: int
     ) -> list[Tensor]:
+        reader = self._get_reader()
         images: list[Tensor | None] = [None] * num_images
         grouped: dict[tuple[int, tuple[int, int]], list[_ReadRequest]] = {}
         for request in requests:
@@ -126,7 +164,7 @@ class TileBatchCollator:
 
         for (level, size), grouped_requests in grouped.items():
             locations = [request.location for request in grouped_requests]
-            regions = self._reader.read_regions(
+            regions = reader.read_regions(
                 locations,
                 level,
                 size,
@@ -202,6 +240,8 @@ def _build_loader(
     adaptive_batching: bool,
     num_workers: int,
     use_supertiles: bool,
+    slide_path: str | Path | None = None,
+    backend: str = "auto",
 ) -> DataLoader:
     num_tiles = len(tiling_result.coordinates)
     st_index: SuperTileIndex | None = None
@@ -216,6 +256,8 @@ def _build_loader(
         tile_encoder.get_transform(),
         st_index,
         num_workers=num_workers,
+        slide_path=slide_path,
+        backend=backend,
     )
     if st_index is not None and adaptive_batching:
         groups = _build_sampler_groups(dataset_indices, st_index.tile_to_st)
@@ -248,6 +290,8 @@ def extract_tile_features(
     num_workers: int = 4,
     precision: str = "fp16",
     use_supertiles: bool = True,
+    slide_path: str | Path | None = None,
+    slide_backend: str = "auto",
 ) -> Tensor:
     """Extract tile features for one slide. Returns an ``(N, D)`` float32 tensor."""
     num_tiles = len(tiling_result.coordinates)
@@ -262,6 +306,8 @@ def extract_tile_features(
         adaptive_batching=adaptive_batching,
         num_workers=num_workers,
         use_supertiles=use_supertiles,
+        slide_path=slide_path,
+        backend=slide_backend,
     )
 
     features = torch.empty(num_tiles, tile_encoder.encode_dim, dtype=torch.float32)
@@ -290,6 +336,8 @@ def extract_slide_features(
     precision: str = "fp16",
     use_supertiles: bool = True,
     return_tile_features: bool = False,
+    slide_path: str | Path | None = None,
+    slide_backend: str = "auto",
 ) -> SlideExtractionResult:
     """Extract one pooled slide embedding, optionally returning tile features too."""
     tile_features = extract_tile_features(
@@ -301,6 +349,8 @@ def extract_slide_features(
         num_workers=num_workers,
         precision=precision,
         use_supertiles=use_supertiles,
+        slide_path=slide_path,
+        slide_backend=slide_backend,
     )
     coordinates = torch.as_tensor(tiling_result.coordinates, dtype=torch.long)
     prepared = slide_encoder.prepare_coordinates(

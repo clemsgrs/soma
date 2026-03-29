@@ -241,6 +241,8 @@ def _worker_fn(
                         precision=config.precision,
                         use_supertiles=config.use_supertiles,
                         return_tile_features=config.save_tile_features,
+                        slide_path=task.slide_path,
+                        slide_backend=reader.backend_name,
                     )
                     save_features(result.slide_features, output_dir, task.slide_id)
                     if config.save_tile_features and result.tile_features is not None:
@@ -260,6 +262,8 @@ def _worker_fn(
                         num_workers=config.num_workers,
                         precision=config.precision,
                         use_supertiles=config.use_supertiles,
+                        slide_path=task.slide_path,
+                        slide_backend=reader.backend_name,
                     )
                     save_features(
                         features,

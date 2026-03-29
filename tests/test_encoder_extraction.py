@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ctypes
+import pickle
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import torch
@@ -287,6 +289,34 @@ class PatternBatchReader:
 assert isinstance(PatternBatchReader(), BatchRegionReader)
 
 
+class CtypesReader:
+    def __init__(self):
+        self.backend_name = "ctypes"
+        self.dimensions = (1024, 1024)
+        self.level_downsamples = [1.0]
+        self.level_count = 1
+        self.level_dimensions = [self.dimensions]
+        self.spacing = 0.5
+        self._pointer = ctypes.pointer(ctypes.c_int(1))
+
+    def read_region(self, location, level, size, *, pad_missing=False):
+        w, h = size
+        return np.full((h, w, 3), 7, dtype=np.uint8)
+
+    def get_thumbnail(self, size):
+        w, h = size
+        return np.zeros((h, w, 3), dtype=np.uint8)
+
+    def close(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 class TestTileIndexDataset:
     def test_len(self):
         assert len(TileIndexDataset(np.arange(100, dtype=np.int64))) == 100
@@ -504,6 +534,40 @@ class TestExtractTileFeatures:
             (256, 256),
             pad_missing=True,
         )
+
+    @patch("soma.encoders.extraction.open_slide")
+    def test_collator_pickle_reopens_reader_without_serializing_ctypes_handles(
+        self,
+        mock_open,
+    ):
+        reopened_reader = RecordingBatchReader()
+        mock_open.return_value = reopened_reader
+        tiling = _make_grid_tiling(1, 1, tile_size_lv0=256)
+        collator = TileBatchCollator(
+            CtypesReader(),
+            tiling,
+            _pixel_value_transform,
+            num_workers=1,
+            slide_path="/tmp/test-wsi.svs",
+            backend="openslide",
+        )
+
+        restored = pickle.loads(pickle.dumps(collator))
+        indices, images = restored([0])
+
+        mock_open.assert_called_once_with("/tmp/test-wsi.svs", backend="openslide")
+        assert indices.tolist() == [0]
+        assert images.shape == (1, 3, 256, 256)
+        assert reopened_reader.read_region_calls == []
+        assert reopened_reader.read_regions_calls == [
+            {
+                "locations": [(0, 0)],
+                "level": 0,
+                "size": (256, 256),
+                "num_workers": 1,
+                "pad_missing": True,
+            }
+        ]
 
 
 class TestExtractSlideFeatures:
