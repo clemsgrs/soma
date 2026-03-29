@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import torch
 from torch import Tensor
+from torchvision import transforms
 
 from soma.encoders.base import SlideEncoder, TileEncoder
 from soma.encoders.extraction import (
@@ -534,6 +535,25 @@ class TestExtractTileFeatures:
             (256, 256),
             pad_missing=True,
         )
+
+    def test_collator_retries_with_pil_for_torchvision_resize_transforms(self):
+        tiling = _make_grid_tiling(1, 1, tile_size_lv0=256)
+        collator = TileBatchCollator(
+            _mock_reader(),
+            tiling,
+            transforms.Compose(
+                [
+                    transforms.Resize(32),
+                    transforms.ToTensor(),
+                ]
+            ),
+            num_workers=0,
+        )
+
+        indices, images = collator([0])
+
+        assert indices.tolist() == [0]
+        assert images.shape == (1, 3, 32, 32)
 
     @patch("soma.encoders.extraction.open_slide")
     def test_collator_pickle_reopens_reader_without_serializing_ctypes_handles(

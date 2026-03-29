@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from PIL import Image
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
@@ -185,7 +186,16 @@ class TileBatchCollator:
         ts = self._tile_size_px
         for crop in request.crops:
             tile_img = region[crop.crop_y : crop.crop_y + ts, crop.crop_x : crop.crop_x + ts]
-            images[crop.pos] = self._transform(tile_img)
+            images[crop.pos] = self._apply_transform(tile_img)
+
+    def _apply_transform(self, tile_img: np.ndarray) -> Tensor:
+        try:
+            return self._transform(tile_img)
+        except TypeError as exc:
+            if "Unexpected type" not in str(exc):
+                raise
+            pil_image = Image.fromarray(np.ascontiguousarray(tile_img))
+            return self._transform(pil_image)
 
 
 class SuperTileBatchSampler:
