@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import replace
 from pathlib import Path
 
-import cv2
-import numpy as np
 import torch
-from PIL import Image
+import hs2p.preprocessing as _shared_preprocessing
 
 from soma.cache import (
     record_feature_dim,
@@ -36,90 +33,13 @@ from soma.preprocessing.io import (
     validate_tiling_result_provenance,
 )
 from soma.preprocessing.tiling import (
-    expand_regions_to_subtiles,
+    TilingResult,
     generate_tiles,
+    expand_regions_to_subtiles,
     resolve_base_spacing_um,
 )
 from soma.preprocessing.tissue import detect_contours, segment_tissue
 from soma.wsi.reader import open_slide, select_level_for_downsample
-
-
-def _reduce_mask_channels(mask: np.ndarray) -> np.ndarray:
-    """Normalize backend mask reads to a single discrete label channel."""
-    if mask.ndim == 3:
-        return np.asarray(mask[..., 0])
-    return np.asarray(mask)
-
-
-def _is_discrete_binary_mask(mask: np.ndarray, *, tissue_value: int) -> bool:
-    """Return True when the raw mask contains at most one background label."""
-    values = np.unique(mask.astype(np.int64, copy=False))
-    non_tissue = [int(value) for value in values.tolist() if int(value) != tissue_value]
-    return len(values) <= 2 and len(non_tissue) <= 1
-
-
-def _read_exact_tiff_mask_level(mask_path: str | Path, *, mask_level: int) -> np.ndarray:
-    """Read a mask pyramid page exactly as stored on disk."""
-    path = Path(mask_path)
-    with Image.open(path) as image:
-        n_frames = int(getattr(image, "n_frames", 1))
-        if mask_level >= n_frames:
-            raise ValueError(
-                f"Mask level {mask_level} is unavailable in TIFF mask {path} (n_frames={n_frames})"
-            )
-        image.seek(mask_level)
-        return np.asarray(image)
-
-
-def _read_mask_level(
-    *,
-    mask_path: str | Path,
-    mask_slide,
-    mask_level: int,
-    tissue_value: int,
-) -> np.ndarray:
-    """Read a discrete mask level with exact-page fallback for TIFF masks."""
-    mask_size = mask_slide.level_dimensions[mask_level]
-    backend_mask = mask_slide.read_region((0, 0), mask_level, mask_size)
-    backend_mask = _reduce_mask_channels(backend_mask)
-    if _is_discrete_binary_mask(backend_mask, tissue_value=tissue_value):
-        return backend_mask.astype(np.uint8, copy=False)
-
-    suffix = Path(mask_path).suffix.lower()
-    if suffix in {".tif", ".tiff"}:
-        exact_mask = _reduce_mask_channels(
-            _read_exact_tiff_mask_level(mask_path, mask_level=mask_level)
-        )
-        if _is_discrete_binary_mask(exact_mask, tissue_value=tissue_value):
-            return exact_mask.astype(np.uint8, copy=False)
-
-    values = np.unique(backend_mask.astype(np.int64, copy=False))
-    raise ValueError(
-        "Precomputed tissue mask read produced non-discrete labels "
-        f"at level {mask_level}: {values.tolist()[:16]}"
-    )
-
-
-def _select_mask_level(
-    *,
-    mask_slide,
-    target_spacing_um: float,
-) -> tuple[int, float]:
-    """Choose the closest mask level, preferring a finer level over upsampling."""
-    effective_spacings = [
-        float(mask_slide.spacing) * float(downsample)
-        for downsample in mask_slide.level_downsamples
-    ]
-    level = int(
-        np.argmin(
-            [abs(spacing_um - target_spacing_um) for spacing_um in effective_spacings]
-        )
-    )
-    spacing_um = effective_spacings[level]
-    while level > 0 and spacing_um > target_spacing_um:
-        level -= 1
-        spacing_um = effective_spacings[level]
-    return level, spacing_um
 
 
 def _load_precomputed_tissue_mask(
@@ -128,34 +48,20 @@ def _load_precomputed_tissue_mask(
     slide,
     seg_level: int,
     tissue_value: int,
-) -> tuple[np.ndarray, int, float]:
-    """Load a precomputed tissue mask through the same backend stack as the slide."""
-    mask_slide = open_slide(mask_path, slide.backend_name)
+) -> tuple[object, int, float]:
+    original_open_slide = _shared_preprocessing.open_slide
+    _shared_preprocessing.open_slide = (
+        lambda path, backend="auto", **kwargs: open_slide(path, backend, **kwargs)
+    )
     try:
-        seg_size = slide.level_dimensions[seg_level]
-        seg_spacing_um = float(slide.spacing) * float(slide.level_downsamples[seg_level])
-        mask_level, mask_spacing_um = _select_mask_level(
-            mask_slide=mask_slide,
-            target_spacing_um=seg_spacing_um,
-        )
-        raw_mask = _read_mask_level(
+        return _shared_preprocessing.load_precomputed_tissue_mask(
             mask_path=mask_path,
-            mask_slide=mask_slide,
-            mask_level=mask_level,
+            slide=slide,
+            seg_level=seg_level,
             tissue_value=tissue_value,
         )
     finally:
-        mask_slide.close()
-
-    if raw_mask.shape[:2] != (int(seg_size[1]), int(seg_size[0])):
-        raw_mask = cv2.resize(
-            raw_mask.astype(np.uint8, copy=False),
-            (int(seg_size[0]), int(seg_size[1])),
-            interpolation=cv2.INTER_NEAREST,
-        )
-
-    mask = np.where(raw_mask == tissue_value, 255, 0).astype(np.uint8)
-    return mask, mask_level, mask_spacing_um
+        _shared_preprocessing.open_slide = original_open_slide
 
 
 class FeatureExtractor:
@@ -275,8 +181,19 @@ class FeatureExtractor:
                     tolerance=cfg.tolerance,
                 )
                 step_px_lv0 = max(1, round(tiling.tile_size_lv0 * (1.0 - cfg.overlap)))
-                tiling = replace(
-                    tiling,
+                tiling = TilingResult(
+                    coordinates=tiling.coordinates,
+                    tissue_fractions=tiling.tissue_fractions,
+                    requested_tile_size_px=tiling.requested_tile_size_px,
+                    requested_spacing_um=tiling.requested_spacing_um,
+                    read_level=tiling.read_level,
+                    effective_tile_size_px=tiling.effective_tile_size_px,
+                    effective_spacing_um=tiling.effective_spacing_um,
+                    tile_size_lv0=tiling.tile_size_lv0,
+                    is_within_tolerance=tiling.is_within_tolerance,
+                    use_padding=tiling.use_padding,
+                    tile_index=tiling.tile_index,
+                    tissue_mask=tiling.tissue_mask,
                     sample_id=record.sample_id,
                     image_path=str(record.image_path),
                     backend=slide.backend_name,
@@ -285,7 +202,6 @@ class FeatureExtractor:
                     slide_dimensions=list(slide.dimensions),
                     level_downsamples=list(slide.level_downsamples),
                     overlap=cfg.overlap,
-                    use_padding=cfg.use_padding,
                     min_tissue_fraction=cfg.min_tissue_fraction,
                     step_px_lv0=step_px_lv0,
                     tissue_method=tissue_method,
@@ -303,10 +219,9 @@ class FeatureExtractor:
                     mask_level=mask_level,
                     mask_spacing_um=mask_spacing_um,
                 )
-
-                save_tiling_result(tiling, output_dir, record.sample_id)
             finally:
                 slide.close()
+            save_tiling_result(tiling, output_dir, record.sample_id)
 
     def extract(
         self,
