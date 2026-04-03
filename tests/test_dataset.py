@@ -35,7 +35,7 @@ def test_sample_record_fields(dataset_csv: Path):
     assert rec.sample_id == "s1"
     assert rec.image_path == Path("/slides/s1.svs")
     assert rec.label == "tumor"
-    assert rec.tissue_mask_path is None
+    assert rec.mask_path is None
     assert rec.metadata == {}
 
 
@@ -69,7 +69,22 @@ def test_num_classes(dataset_csv: Path):
     assert ds.num_classes == 2
 
 
-def test_optional_tissue_mask_path(tmp_path: Path):
+def test_optional_mask_path(tmp_path: Path):
+    df = pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "image_path": ["/slides/s1.svs"],
+            "label": [0],
+            "mask_path": ["/masks/s1.tif"],
+        }
+    )
+    path = tmp_path / "dataset.csv"
+    df.to_csv(path, index=False)
+    ds = Dataset(path)
+    assert ds.samples["s1"].mask_path == Path("/masks/s1.tif")
+
+
+def test_legacy_tissue_mask_path_is_rejected(tmp_path: Path):
     df = pd.DataFrame(
         {
             "sample_id": ["s1"],
@@ -80,8 +95,8 @@ def test_optional_tissue_mask_path(tmp_path: Path):
     )
     path = tmp_path / "dataset.csv"
     df.to_csv(path, index=False)
-    ds = Dataset(path)
-    assert ds.samples["s1"].tissue_mask_path == Path("/masks/s1.tif")
+    with pytest.raises(ValueError, match="mask_path"):
+        Dataset(path)
 
 
 def test_extra_columns_go_to_metadata(tmp_path: Path):

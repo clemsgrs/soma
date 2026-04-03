@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hs2p.preprocessing import (
+from hs2p import (
     load_tiling_result as _load_core_tiling_result,
-    normalize_artifact_path,
     save_tiling_result as _save_core_tiling_result,
+)
+from hs2p.preprocessing import (
+    normalize_artifact_path,
     validate_tiling_result_provenance as _validate_core_tiling_result_provenance,
 )
 

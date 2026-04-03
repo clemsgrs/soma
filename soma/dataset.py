@@ -10,7 +10,7 @@ import pandas as pd
 
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
-KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"tissue_mask_path"}
+KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"mask_path"}
 REQUIRED_SPLITS_COLUMNS = {"fold", "sample_id", "split"}
 VALID_SPLIT_NAMES = {"train", "tune", "test"}
 
@@ -22,14 +22,14 @@ class SampleRecord:
     sample_id: str
     image_path: Path
     label: str | int
-    tissue_mask_path: Path | None = None
+    mask_path: Path | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class Dataset:
     """Loads a dataset from a CSV with columns: sample_id, image_path, label.
 
-    Optional columns: tissue_mask_path. Extra columns become metadata.
+    Optional columns: mask_path. Extra columns become metadata.
     """
 
     def __init__(self, dataset_csv: str | Path) -> None:
@@ -40,6 +40,8 @@ class Dataset:
         self._label_map = self._build_label_map()
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
+        if "tissue_mask_path" in df.columns:
+            raise ValueError("Use 'mask_path' instead of 'tissue_mask_path'.")
         for col in REQUIRED_DATASET_COLUMNS:
             if col not in df.columns:
                 msg = f"Required column '{col}' not found. Available: {list(df.columns)}"
@@ -55,9 +57,8 @@ class Dataset:
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
             mask_path = (
-                Path(str(row["tissue_mask_path"]))
-                if "tissue_mask_path" in row.index
-                and pd.notna(row.get("tissue_mask_path"))
+                Path(str(row["mask_path"]))
+                if "mask_path" in row.index and pd.notna(row.get("mask_path"))
                 else None
             )
             metadata = {c: row[c] for c in meta_columns}
@@ -65,7 +66,7 @@ class Dataset:
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
                 label=row["label"],
-                tissue_mask_path=mask_path,
+                mask_path=mask_path,
                 metadata=metadata,
             )
         return samples

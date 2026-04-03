@@ -30,6 +30,7 @@ from soma.dataset import Dataset, FoldSplit, Splits
 from soma.evaluation.metrics import compute_classification_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
+from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset
 from soma.training.collate import bag_collate_fn
@@ -332,34 +333,10 @@ class Pipeline:
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
-        from soma.config import PreprocessingConfig  # noqa: F811
-
-        preprocessing = self._config.preprocessing
-        if self._config.aggregator and self._config.aggregator.name == "hipt":
-            params = self._config.aggregator.params
-            region_size = params.get("region_size")
-            patch_size = params.get("patch_size")
-            if region_size is None or patch_size is None:
-                msg = "HIPT aggregator requires 'region_size' and 'patch_size' in params"
-                raise ValueError(msg)
-            region_size = int(region_size)
-            patch_size = int(patch_size)
-            if region_size % patch_size != 0:
-                msg = f"region_size ({region_size}) must be divisible by patch_size ({patch_size})"
-                raise ValueError(msg)
-            if region_size < 2 * patch_size:
-                msg = f"region_size ({region_size}) must be >= 2 * patch_size ({patch_size})"
-                raise ValueError(msg)
-            npatch = region_size // patch_size
-            overrides: dict = {
-                "hierarchical": True,
-                "npatch": npatch,
-                "hierarchical_patch_size_px": patch_size,
-            }
-            if preprocessing.requested_tile_size_px is None:
-                overrides["requested_tile_size_px"] = region_size
-            preprocessing = replace(preprocessing, **overrides)
-        return preprocessing
+        return derive_preprocessing_for_aggregator(
+            self._config.preprocessing,
+            self._config.aggregator,
+        )
 
 
 # ---------------------------------------------------------------------------

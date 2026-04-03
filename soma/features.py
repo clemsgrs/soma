@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from soma.cache import resolve_feature_payload_dir
+from slide2vec.artifacts import load_array
 
 
 class FeatureStore:
@@ -25,7 +26,12 @@ class FeatureStore:
         self._build_index()
 
     def _build_index(self) -> None:
-        for path in sorted(self._feature_dir.glob("*.pt")):
+        for path in sorted(
+            [
+                *self._feature_dir.glob("*.pt"),
+                *self._feature_dir.glob("*.npz"),
+            ]
+        ):
             sample_id = path.stem
             self._index[sample_id] = path
 
@@ -52,7 +58,9 @@ class FeatureStore:
             msg = "Cannot determine feature_dim: no features found"
             raise ValueError(msg)
         first_path = next(iter(self._index.values()))
-        tensor = torch.load(first_path, weights_only=True, map_location="cpu")
+        tensor = load_array(first_path)
+        if not torch.is_tensor(tensor):
+            tensor = torch.as_tensor(tensor)
         self._is_slide_level = tensor.ndim == 1
         self._feature_dim = tensor.shape[0] if self._is_slide_level else tensor.shape[1]
 
@@ -64,9 +72,10 @@ class FeatureStore:
         if sample_id not in self._index:
             msg = f"Sample '{sample_id}' not found in feature store. Available: {sorted(self._index)}"
             raise KeyError(msg)
-        return torch.load(
-            self._index[sample_id], weights_only=True, map_location="cpu"
-        )
+        tensor = load_array(self._index[sample_id])
+        if torch.is_tensor(tensor):
+            return tensor
+        return torch.as_tensor(tensor)
 
     def validate_coverage(self, sample_ids: list[str]) -> None:
         """Check that all requested sample IDs have features on disk."""

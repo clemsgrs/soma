@@ -40,7 +40,7 @@ def test_manifest_digest_stable_under_row_order(tmp_path: Path):
         {
             "sample_id": sample.sample_id,
             "image_path": str(sample.image_path),
-            "tissue_mask_path": None,
+            "mask_path": None,
         }
         for sample in dataset.samples.values()
     ]
@@ -218,3 +218,10 @@ def test_resolve_feature_payload_dir_understands_cache_dir(tmp_path: Path):
     plain_dir = tmp_path / "plain_features"
     plain_dir.mkdir()
     assert resolve_feature_payload_dir(plain_dir) == plain_dir
+
+
+def test_resolve_feature_payload_dir_understands_slide2vec_root(tmp_path: Path):
+    artifact_root = tmp_path / "artifacts"
+    slide_dir = artifact_root / "slide_embeddings"
+    slide_dir.mkdir(parents=True)
+    assert resolve_feature_payload_dir(artifact_root) == slide_dir

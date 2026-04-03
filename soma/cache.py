@@ -13,6 +13,7 @@ import torch
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
+from soma.slide2vec_adapter import SLIDE2VEC_ARTIFACT_ADAPTER
 
 CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
@@ -52,8 +53,8 @@ def dataset_manifest_rows(dataset: Dataset) -> list[dict[str, object]]:
             {
                 "sample_id": sample.sample_id,
                 "image_path": str(sample.image_path),
-                "tissue_mask_path": str(sample.tissue_mask_path)
-                if sample.tissue_mask_path is not None
+                "mask_path": str(sample.mask_path)
+                if sample.mask_path is not None
                 else None,
             }
         )
@@ -66,7 +67,7 @@ def manifest_digest(manifest_rows: Iterable[dict[str, object]]) -> str:
             {
                 "sample_id": row["sample_id"],
                 "image_path": row["image_path"],
-                "tissue_mask_path": row.get("tissue_mask_path"),
+                "mask_path": row.get("mask_path"),
             }
             for row in manifest_rows
         ],
@@ -152,12 +153,7 @@ def resolve_cache_root(
 
 
 def resolve_feature_payload_dir(path: Path | str) -> Path:
-    root = Path(path)
-    metadata_path = root / CACHE_METADATA_NAME
-    features_dir = root / "features"
-    if metadata_path.is_file() and features_dir.is_dir():
-        return features_dir
-    return root
+    return SLIDE2VEC_ARTIFACT_ADAPTER.resolve_feature_payload_dir(path)
 
 
 def _cache_dir(cache_root: Path, kind: str, key: str) -> Path:
@@ -237,7 +233,7 @@ def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["sample_id", "image_path", "tissue_mask_path"],
+            fieldnames=["sample_id", "image_path", "mask_path"],
         )
         writer.writeheader()
         for row in rows:
