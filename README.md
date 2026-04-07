@@ -16,9 +16,9 @@ Define your data in two CSV files:
 
 **dataset.csv**
 ```
-sample_id,image_path,label
-TCGA-A1,/slides/A1.svs,tumor
-TCGA-A2,/slides/A2.svs,normal
+sample_id,image_path,label,mask_path
+TCGA-A1,/slides/A1.svs,tumor,/masks/A1.png
+TCGA-A2,/slides/A2.svs,normal,
 ```
 
 **splits.csv**
@@ -57,7 +57,7 @@ from soma import Dataset, FeatureExtractor, EncoderConfig
 dataset = Dataset("dataset.csv")
 extractor = FeatureExtractor(dataset, EncoderConfig(name="uni2"))
 
-# Full pipeline: tissue segmentation → tiling → encoding
+# Full pipeline: slide2vec/hs2p tiling → slide2vec encoding
 store = extractor.run("features/uni2")
 
 # Or step by step
@@ -66,6 +66,8 @@ store = extractor.extract("features/uni2", tiling_dir="output/tiling")
 ```
 
 When the shared cache is enabled, `soma` stores canonical reusable artifacts under a stable cache root instead of treating each run-local feature directory as the only source of truth. This means a slide-model run can populate a shared tile-feature cache, and a later tile-model run with matching preprocessing and encoder settings can reuse those tile features directly.
+
+Outside the cache, soma now writes native `slide2vec` artifact roots (`tile_embeddings/` and optionally `slide_embeddings/`) and reads them back through `FeatureStore`.
 
 ### Training
 

@@ -6,9 +6,9 @@ import numpy as np
 import pytest
 
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.encoders.registry import encoder_registry
+from slide2vec.encoders.registry import encoder_registry
 from soma.encoders.validation import validate_encoder_config
-from soma.preprocessing.tiling import TilingResult
+from hs2p.preprocessing import TileGeometry
 
 
 def _metadata(
@@ -40,9 +40,10 @@ def _tiling_result(
     effective_spacing_um: float = 0.5,
     requested_tile_size_px: int = 256,
     requested_spacing_um: float = 0.5,
-) -> TilingResult:
-    return TilingResult(
-        coordinates=np.array([[0, 0]], dtype=np.int64),
+) -> TileGeometry:
+    return TileGeometry(
+        x=np.array([0], dtype=np.int64),
+        y=np.array([0], dtype=np.int64),
         tissue_fractions=np.array([1.0], dtype=np.float32),
         requested_tile_size_px=requested_tile_size_px,
         requested_spacing_um=requested_spacing_um,
@@ -51,6 +52,11 @@ def _tiling_result(
         effective_spacing_um=effective_spacing_um,
         tile_size_lv0=requested_tile_size_px,
         is_within_tolerance=True,
+        base_spacing_um=0.25,
+        slide_dimensions=[1000, 1000],
+        level_downsamples=[1.0],
+        overlap=0.0,
+        min_tissue_fraction=0.5,
     )
 
 
@@ -163,7 +169,7 @@ class TestValidateEncoderConfig:
                 tile_encoder_output_variant="default",
                 input_size=None,
             ),
-            preprocessing_config=PreprocessingConfig(requested_tile_size_px=256),
+            preprocessing_config=PreprocessingConfig(target_tile_size_px=256),
         )
         assert any("tile size" in w.lower() for w in warnings)
 

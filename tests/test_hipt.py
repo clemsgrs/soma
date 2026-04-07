@@ -70,6 +70,17 @@ class TestHIPT:
         assert isinstance(out, AggregatorOutput)
         assert out.bag_representation.shape == (2, 12)
 
+    def test_returns_aggregator_output_from_native_hierarchical_input(self):
+        """(B=2, M=8, P=4, D=16) hierarchical input should run directly."""
+        hipt = self._make_hipt()
+        X = torch.randn(2, 8, 4, 16)
+        mask = torch.ones(2, 8, dtype=torch.bool)
+        mask[0, 6:] = False
+        out = hipt(X, mask=mask)
+
+        assert isinstance(out, AggregatorOutput)
+        assert out.bag_representation.shape == (2, 12)
+
     def test_output_dim(self):
         """output_dim matches embed_dim_slide."""
         hipt = self._make_hipt(embed_dim_slide=18)

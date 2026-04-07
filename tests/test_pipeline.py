@@ -16,6 +16,7 @@ from soma.config import (
     CacheConfig,
     EncoderConfig,
     PipelineConfig,
+    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -95,6 +96,37 @@ def _setup_multifold_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     torch.manual_seed(42)
     for i in range(NUM_SAMPLES):
         torch.save(torch.randn(5 + i, D), feature_dir / f"s{i}.pt")
+
+    return dataset_csv, splits_csv, feature_dir
+
+
+def _setup_hierarchical_data(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create a small dataset with hierarchical (3-D) feature tensors."""
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s0", "s1", "s2", "s3"],
+            "image_path": [f"/slides/s{i}.svs" for i in range(4)],
+            "label": ["tumor", "normal", "tumor", "normal"],
+        }
+    ).to_csv(dataset_csv, index=False)
+
+    splits_csv = tmp_path / "splits.csv"
+    pd.DataFrame(
+        {
+            "fold": [0] * 4,
+            "sample_id": ["s0", "s1", "s2", "s3"],
+            "split": ["train", "train", "tune", "test"],
+        }
+    ).to_csv(splits_csv, index=False)
+
+    feature_dir = tmp_path / "hier_features"
+    feature_dir.mkdir()
+    torch.manual_seed(21)
+    torch.save(torch.randn(2, 4, D), feature_dir / "s0.pt")
+    torch.save(torch.randn(3, 4, D), feature_dir / "s1.pt")
+    torch.save(torch.randn(1, 4, D), feature_dir / "s2.pt")
+    torch.save(torch.randn(2, 4, D), feature_dir / "s3.pt")
 
     return dataset_csv, splits_csv, feature_dir
 
@@ -260,6 +292,63 @@ class TestTrainOneFold:
                 task=TaskConfig(name="classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
                 output_dir=tmp_path / "fold_slide",
+            )
+
+    def test_hierarchical_features_use_hipt(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(
+                name="hipt",
+                params={
+                    "embed_dim_region": 12,
+                    "embed_dim_slide": 12,
+                    "num_heads": 2,
+                    "dropout": 0.0,
+                },
+            ),
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            output_dir=tmp_path / "fold_hier",
+            preprocessing=PreprocessingConfig(
+                target_tile_size_px=224,
+                target_spacing_um=0.5,
+                target_region_size_px=448,
+                region_tile_multiple=2,
+            ),
+        )
+
+        assert isinstance(result, FoldResult)
+        assert store.is_hierarchical is True
+        assert (tmp_path / "fold_hier" / "best_model.pt").exists()
+
+    def test_hierarchical_features_reject_non_hipt_aggregator(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="hierarchical features require the hipt aggregator"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="classification"),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+                output_dir=tmp_path / "fold_hier_error",
+                preprocessing=PreprocessingConfig(
+                    target_tile_size_px=224,
+                    target_spacing_um=0.5,
+                    target_region_size_px=448,
+                    region_tile_multiple=2,
+                ),
             )
 
 
@@ -457,6 +546,39 @@ class TestPipeline:
         assert result.fold_results[0].test_report is not None
         assert "accuracy" in result.fold_results[0].test_report.metrics
 
+    def test_run_hierarchical_features_with_hipt(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
+        output_dir = tmp_path / "output_hier"
+
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=output_dir,
+            encoder=EncoderConfig(name="uni2"),
+            preprocessing=PreprocessingConfig(
+                target_tile_size_px=224,
+                target_spacing_um=0.5,
+                target_region_size_px=448,
+                region_tile_multiple=2,
+            ),
+            aggregator=AggregatorConfig(
+                name="hipt",
+                params={
+                    "embed_dim_region": 12,
+                    "embed_dim_slide": 12,
+                    "num_heads": 2,
+                    "dropout": 0.0,
+                },
+            ),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        result = Pipeline(config, feature_dir=feature_dir).run()
+
+        assert isinstance(result, PipelineResult)
+        assert len(result.fold_results) == 1
+        assert (output_dir / "fold_0" / "best_model.pt").exists()
+        assert "accuracy" in result.fold_results[0].test_report.metrics
+
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         output_dir = tmp_path / "output_prism"
@@ -501,8 +623,14 @@ class TestPipeline:
             Pipeline(config, feature_dir=slide_feature_dir).run()
 
     def test_pipeline_reuses_shared_cache_for_sibling_runs(self, tmp_path: Path):
-        from soma.encoders.base import SlideEncoder, TileEncoder
-        from soma.encoders.registry import encoder_registry
+        from types import SimpleNamespace
+
+        from hs2p import SlideSpec
+        from slide2vec.encoders.base import SlideEncoder, TileEncoder
+        from slide2vec.encoders.registry import encoder_registry
+        from soma.slide2vec_adapter import LoadedTiling
+        from soma.cache import record_feature_dim
+        from soma.extraction import FeatureExtractor
 
         test_tile = "_test_pipeline_cache_tile"
         test_slide = "_test_pipeline_cache_slide"
@@ -581,34 +709,33 @@ class TestPipeline:
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         shared_cache = tmp_path / "shared-cache"
 
-        def _fake_extract_dataset(encoder_name, slides, output_dir, **kwargs):
-            from soma.encoders.distributed import ExtractionSummary
-
-            output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            for task in slides:
-                torch.save(torch.randn(len(task.tiling_result.coordinates), D), output_dir / f"{task.slide_id}.pt")
-            return ExtractionSummary(
-                completed=[task.slide_id for task in slides],
-                skipped=[],
-                failed=[],
-                duration_s=0.1,
+        loaded_tilings = [
+            LoadedTiling(
+                slide=SlideSpec(
+                    sample_id=f"s{i}",
+                    image_path=Path(f"/slides/s{i}.svs"),
+                    mask_path=None,
+                    spacing_at_level_0=None,
+                ),
+                tiling_result=SimpleNamespace(
+                    x=np.array([0, 256], dtype=np.int64),
+                    y=np.array([0, 256], dtype=np.int64),
+                    tissue_fractions=np.array([1.0, 1.0], dtype=np.float32),
+                    requested_tile_size_px=256,
+                    requested_spacing_um=0.5,
+                    effective_tile_size_px=256,
+                    effective_spacing_um=0.5,
+                    tile_size_lv0=256,
+                    read_level=0,
+                    use_padding=True,
+                    is_within_tolerance=True,
+                    sample_id=f"s{i}",
+                    coordinates_npz_path=Path(f"/tmp/s{i}.npz"),
+                    coordinates_meta_path=Path(f"/tmp/s{i}.meta.json"),
+                ),
             )
-
-        def _fake_open_slide(*args, **kwargs):
-            reader = type("Reader", (), {})()
-            reader.dimensions = (1000, 800)
-            reader.spacing = 0.5
-            reader.level_count = 3
-            reader.level_dimensions = [(1000, 800), (500, 400), (250, 200)]
-            reader.level_downsamples = [1.0, 2.0, 4.0]
-            reader.read_region = lambda location, level, size, **_: np.full(
-                (size[1], size[0], 3),
-                np.array([150, 80, 100], dtype=np.uint8),
-                dtype=np.uint8,
-            )
-            reader.close = lambda: None
-            return reader
+            for i in range(NUM_SAMPLES)
+        ]
 
         slide_config = PipelineConfig(
             dataset_csv=dataset_csv,
@@ -629,14 +756,78 @@ class TestPipeline:
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
-        with patch("soma.extraction.extract_dataset", side_effect=_fake_extract_dataset) as mock_extract:
-            with patch("soma.extraction.open_slide", side_effect=_fake_open_slide):
-                Pipeline(slide_config).run()
-            assert mock_extract.called
+        def _fake_preprocess(self_, output_dir, *, skip_existing=True, backend="auto"):
+            output_dir = Path(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "process_list.csv").write_text("sample_id,tiling_status\n", encoding="utf-8")
 
-        with patch("soma.extraction.extract_dataset", side_effect=AssertionError("tile extraction should be reused")):
-            with patch("soma.extraction.open_slide", side_effect=_fake_open_slide):
-                Pipeline(tile_config).run()
+        def _fake_populate_tile_cache(
+            self_,
+            *,
+            cache_resolution,
+            loaded_tilings,
+            prepared_tilings,
+            tiling_dir,
+            preprocessing,
+            encoder_name,
+            output_variant,
+            num_gpus,
+        ):
+            cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(NUM_SAMPLES):
+                torch.save(torch.ones(2, D), cache_resolution.features_dir / f"s{i}.pt")
+            record_feature_dim(cache_resolution, D)
+
+        def _fake_populate_slide_cache(
+            self_,
+            *,
+            slide_cache,
+            tile_cache,
+            loaded_tilings,
+            model_name,
+            output_variant,
+            num_gpus,
+        ):
+            slide_cache.features_dir.mkdir(parents=True, exist_ok=True)
+            for i in range(NUM_SAMPLES):
+                torch.save(torch.ones(D), slide_cache.features_dir / f"s{i}.pt")
+            record_feature_dim(slide_cache, D)
+
+        with patch.object(
+            FeatureExtractor,
+            "preprocess",
+            autospec=True,
+            side_effect=_fake_preprocess,
+        ), patch(
+            "soma.extraction.load_tilings", return_value=loaded_tilings
+        ), patch("soma.extraction._validate_runtime"), patch.object(
+            FeatureExtractor,
+            "_populate_tile_cache",
+            autospec=True,
+            side_effect=_fake_populate_tile_cache,
+        ) as populate_tile_cache, patch.object(
+            FeatureExtractor,
+            "_populate_slide_cache",
+            autospec=True,
+            side_effect=_fake_populate_slide_cache,
+        ) as populate_slide_cache:
+            Pipeline(slide_config).run()
+            assert populate_tile_cache.called
+            assert populate_slide_cache.called
+
+        with patch.object(
+            FeatureExtractor,
+            "preprocess",
+            autospec=True,
+            side_effect=_fake_preprocess,
+        ), patch(
+            "soma.extraction.load_tilings", return_value=loaded_tilings
+        ), patch("soma.extraction._validate_runtime"), patch.object(
+            FeatureExtractor,
+            "_populate_tile_cache",
+            side_effect=AssertionError("tile extraction should be reused"),
+        ):
+            Pipeline(tile_config).run()
 
     def test_dataset_and_splits_properties(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)

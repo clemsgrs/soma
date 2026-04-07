@@ -22,6 +22,7 @@ from soma.aggregators.registry import aggregator_registry
 from soma.config import (
     AggregatorConfig,
     PipelineConfig,
+    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
     save_config,
@@ -30,9 +31,10 @@ from soma.dataset import Dataset, FoldSplit, Splits
 from soma.evaluation.metrics import compute_classification_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
+from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 from soma.tasks.registry import task_registry
-from soma.training.bag_dataset import BagDataset
-from soma.training.collate import bag_collate_fn
+from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
+from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
 from soma.training.model import MILModel
 from soma.training.seed import seed_everything
 from soma.training.slide_dataset import SlideDataset, slide_collate_fn
@@ -79,6 +81,7 @@ def train_one_fold(
     output_dir: str | Path,
     *,
     fold: int = 0,
+    preprocessing: PreprocessingConfig | None = None,
 ) -> FoldResult:
     """Train and evaluate a single fold.
 
@@ -136,6 +139,36 @@ def train_one_fold(
         )
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = SlideModel(task_head=head)
+    elif feature_store.is_hierarchical:
+        if aggregator is None:
+            raise ValueError("aggregator must be provided for hierarchical features")
+        if aggregator.name != "hipt":
+            raise ValueError("hierarchical features require the hipt aggregator")
+        if preprocessing is None:
+            raise ValueError("hierarchical features require resolved preprocessing")
+        hipt_params = _resolve_hipt_params(preprocessing, aggregator)
+        train_loader = DataLoader(
+            HierarchicalBagDataset(train_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=True,
+            collate_fn=hierarchical_bag_collate_fn,
+        )
+        tune_loader = DataLoader(
+            HierarchicalBagDataset(tune_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=hierarchical_bag_collate_fn,
+        )
+        test_loader = DataLoader(
+            HierarchicalBagDataset(test_records, feature_store, label_map),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=hierarchical_bag_collate_fn,
+        )
+        aggregator_cls = aggregator_registry.get(aggregator.name)
+        agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
+        head = task_cls(input_dim=agg.output_dim, **task_params)
+        model = MILModel(aggregator=agg, task_head=head)
     else:
         # Tile-level MIL path
         train_loader = DataLoader(
@@ -207,6 +240,7 @@ def train(
     task: TaskConfig,
     training: TrainingConfig,
     output_dir: str | Path,
+    preprocessing: PreprocessingConfig | None = None,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
 
@@ -236,6 +270,7 @@ def train(
             training=training,
             output_dir=output_dir / f"fold_{fold_idx}",
             fold=fold_idx,
+            preprocessing=preprocessing,
         )
         fold_results.append(result)
 
@@ -252,6 +287,41 @@ def train(
 # ---------------------------------------------------------------------------
 # Layer 2 — Pipeline orchestrator
 # ---------------------------------------------------------------------------
+
+
+def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: AggregatorConfig) -> dict[str, object]:
+    patch_size = preprocessing.target_tile_size_px or preprocessing.effective_tile_size_px
+    region_size = preprocessing.target_region_size_px or preprocessing.effective_region_size_px
+    tile_multiple = preprocessing.region_tile_multiple
+    if patch_size is None or region_size is None:
+        raise ValueError("hierarchical preprocessing must resolve patch and region sizes")
+    patch_size = int(patch_size)
+    region_size = int(region_size)
+    if tile_multiple is None:
+        if region_size % patch_size != 0:
+            raise ValueError(
+                "hierarchical preprocessing requires target_region_size_px to be divisible by target_tile_size_px"
+            )
+        tile_multiple = region_size // patch_size
+    tile_multiple = int(tile_multiple)
+    if region_size != patch_size * tile_multiple:
+        raise ValueError(
+            "hierarchical preprocessing requires target_region_size_px to equal "
+            "target_tile_size_px × region_tile_multiple"
+        )
+
+    params = {
+        key: value
+        for key, value in aggregator.params.items()
+        if key not in {"region_size", "patch_size", "tile_multiple"}
+    }
+    params.update(
+        {
+            "region_size": region_size,
+            "patch_size": patch_size,
+        }
+    )
+    return params
 
 
 class Pipeline:
@@ -304,6 +374,7 @@ class Pipeline:
             task=self._config.task,
             training=self._config.training,
             output_dir=output_dir,
+            preprocessing=self._resolve_preprocessing(),
         )
 
     def _get_feature_store(self) -> FeatureStore:
@@ -332,34 +403,10 @@ class Pipeline:
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
-        from soma.config import PreprocessingConfig  # noqa: F811
-
-        preprocessing = self._config.preprocessing
-        if self._config.aggregator and self._config.aggregator.name == "hipt":
-            params = self._config.aggregator.params
-            region_size = params.get("region_size")
-            patch_size = params.get("patch_size")
-            if region_size is None or patch_size is None:
-                msg = "HIPT aggregator requires 'region_size' and 'patch_size' in params"
-                raise ValueError(msg)
-            region_size = int(region_size)
-            patch_size = int(patch_size)
-            if region_size % patch_size != 0:
-                msg = f"region_size ({region_size}) must be divisible by patch_size ({patch_size})"
-                raise ValueError(msg)
-            if region_size < 2 * patch_size:
-                msg = f"region_size ({region_size}) must be >= 2 * patch_size ({patch_size})"
-                raise ValueError(msg)
-            npatch = region_size // patch_size
-            overrides: dict = {
-                "hierarchical": True,
-                "npatch": npatch,
-                "hierarchical_patch_size_px": patch_size,
-            }
-            if preprocessing.requested_tile_size_px is None:
-                overrides["requested_tile_size_px"] = region_size
-            preprocessing = replace(preprocessing, **overrides)
-        return preprocessing
+        return derive_preprocessing_for_aggregator(
+            self._config.preprocessing,
+            self._config.aggregator,
+        )
 
 
 # ---------------------------------------------------------------------------

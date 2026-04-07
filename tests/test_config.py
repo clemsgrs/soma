@@ -25,7 +25,7 @@ from soma.config import (
 def test_preprocessing_config_is_frozen():
     cfg = PreprocessingConfig()
     with pytest.raises(FrozenInstanceError):
-        cfg.requested_tile_size_px = 512
+        cfg.target_tile_size_px = 512
 
 
 def test_pipeline_config_is_frozen():
@@ -39,12 +39,16 @@ def test_pipeline_config_is_frozen():
 
 def test_preprocessing_config_defaults():
     cfg = PreprocessingConfig()
-    assert cfg.requested_tile_size_px is None
-    assert cfg.requested_spacing_um is None
+    assert cfg.target_tile_size_px is None
+    assert cfg.target_spacing_um is None
+    assert cfg.target_region_size_px is None
+    assert cfg.region_tile_multiple is None
+    assert cfg.effective_tile_size_px is None
+    assert cfg.effective_region_size_px is None
+    assert cfg.has_hierarchical_geometry is False
     assert cfg.tissue_method == "hsv"
-    assert cfg.min_tissue_fraction == 0.1
+    assert cfg.tissue_threshold == 0.1
     assert cfg.overlap == 0.0
-    assert cfg.use_padding is True
     assert cfg.seg_downsample == 64
     assert cfg.tolerance == 0.05
     assert cfg.ref_tile_size_px is None
@@ -133,6 +137,8 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.splits_csv == original.splits_csv
     assert loaded.output_dir == original.output_dir
     assert loaded.preprocessing.tissue_mask_tissue_value == 7
+    assert loaded.preprocessing.target_tile_size_px == original.preprocessing.target_tile_size_px
+
     assert loaded.cache.enabled == original.cache.enabled
     assert loaded.encoder.name == original.encoder.name
     assert loaded.aggregator.name == original.aggregator.name
@@ -142,6 +148,32 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.training.epochs == original.training.epochs
     assert loaded.training.learning_rate == original.training.learning_rate
     assert loaded.tags == original.tags
+
+
+def test_load_config_with_target_fields(tmp_path: Path):
+    raw = {
+        "dataset_csv": "dataset.csv",
+        "splits_csv": "splits.csv",
+        "output_dir": "out",
+        "preprocessing": {
+            "target_tile_size_px": 256,
+            "target_spacing_um": 0.5,
+        },
+        "cache": {},
+        "encoder": {},
+        "aggregator": None,
+        "task": {},
+        "training": {},
+        "tags": [],
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as handle:
+        yaml.safe_dump(raw, handle)
+
+    loaded = load_config(yaml_path)
+
+    assert loaded.preprocessing.target_tile_size_px == 256
+    assert loaded.preprocessing.target_spacing_um == 0.5
 
 
 def test_save_config_produces_valid_yaml(tmp_path: Path):
