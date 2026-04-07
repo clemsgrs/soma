@@ -270,7 +270,8 @@ class HIPT(Aggregator):
     region, then a global transformer + gated attention pools M region
     embeddings into a slide-level representation.
 
-    Features are stored flat as ``(B, N, D)`` where ``N = M × P`` and
+    Features are stored either flat as ``(B, N, D)`` where ``N = M × P``,
+    or natively hierarchical as ``(B, M, P, D)`` where
     ``P = (region_size / patch_size)²``. HIPT reshapes internally.
 
     Args:
@@ -379,50 +380,58 @@ class HIPT(Aggregator):
         """Forward pass.
 
         Args:
-            X: Tile features ``(B, N, D)`` where ``N = M × P``.
-            mask: Boolean mask ``(B, N)``. True = valid tile.
+            X: Tile features ``(B, N, D)`` where ``N = M × P``, or
+                hierarchical features ``(B, M, P, D)``.
+            mask: Boolean mask ``(B, N)`` for flat inputs or ``(B, M)`` for
+                hierarchical inputs. True = valid tile/region.
 
         Returns:
             AggregatorOutput with slide-level representation ``(B, D_slide)``.
         """
-        B, N, D = X.shape
         P = self._P
         npatch = self._npatch
 
-        # Default mask: all valid
-        if mask is None:
-            mask = torch.ones(B, N, dtype=torch.bool, device=X.device)
+        if X.ndim == 4:
+            B, M, P_in, D = X.shape
+            if P_in != P:
+                raise ValueError(f"Expected P={P} tiles per region, got {P_in}")
+            if mask is None:
+                region_mask = torch.ones(B, M, dtype=torch.bool, device=X.device)
+            else:
+                if mask.shape != (B, M):
+                    raise ValueError(
+                        f"Hierarchical mask must have shape (B, M), got {tuple(mask.shape)}"
+                    )
+                region_mask = mask
+            X_vit = X.reshape(B * M, P, D).transpose(1, 2).reshape(B * M, D, npatch, npatch)
+            region_embeds = self.vit_region(X_vit).reshape(B, M, -1)
+        elif X.ndim == 3:
+            B, N, D = X.shape
 
-        # Pad N to next multiple of P
-        remainder = N % P
-        if remainder != 0:
-            pad_n = P - remainder
-            X = torch.nn.functional.pad(X, (0, 0, 0, pad_n))  # (B, N_pad, D)
-            mask = torch.nn.functional.pad(mask, (0, pad_n), value=False)
-            N = N + pad_n
+            if mask is None:
+                mask = torch.ones(B, N, dtype=torch.bool, device=X.device)
 
-        M = N // P
+            remainder = N % P
+            if remainder != 0:
+                pad_n = P - remainder
+                X = torch.nn.functional.pad(X, (0, 0, 0, pad_n))
+                mask = torch.nn.functional.pad(mask, (0, pad_n), value=False)
+                N = N + pad_n
 
-        # Reshape to regions: (B, M, P, D)
-        X_regions = X.reshape(B, M, P, D)
-        tile_mask = mask.reshape(B, M, P)
+            M = N // P
+            X_regions = X.reshape(B, M, P, D)
+            tile_mask = mask.reshape(B, M, P)
+            X_vit = X_regions.reshape(B * M, P, D)
+            X_vit = X_vit.transpose(1, 2).reshape(B * M, D, npatch, npatch)
+            region_embeds = self.vit_region(X_vit).reshape(B, M, -1)
+            region_mask = tile_mask.any(dim=2)
+        else:
+            raise ValueError(f"HIPT expects rank-3 or rank-4 input, got rank {X.ndim}")
 
-        # Region ViT expects (*, D_in, npatch, npatch)
-        X_vit = X_regions.reshape(B * M, P, D)
-        X_vit = X_vit.transpose(1, 2).reshape(B * M, D, npatch, npatch)
-        region_embeds = self.vit_region(X_vit)  # (B*M, D_region)
-        region_embeds = region_embeds.reshape(B, M, -1)  # (B, M, D_region)
-
-        # Region mask: a region is valid if any of its tiles are valid
-        region_mask = tile_mask.any(dim=2)  # (B, M)
-
-        # Global aggregation
-        z = self.global_phi(region_embeds)  # (B, M, D_slide)
-        z = self.global_transformer(
-            z, src_key_padding_mask=~region_mask,
-        )  # (B, M, D_slide)
-        z, _attn_logits = self.global_attn_pool(z, mask=region_mask)  # (B, D_slide)
-        z = self.global_rho(z)  # (B, D_slide)
+        z = self.global_phi(region_embeds)
+        z = self.global_transformer(z, src_key_padding_mask=~region_mask)
+        z, _attn_logits = self.global_attn_pool(z, mask=region_mask)
+        z = self.global_rho(z)
 
         return AggregatorOutput(bag_representation=z, tile_attention=None)
 

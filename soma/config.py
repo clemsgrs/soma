@@ -13,12 +13,15 @@ import yaml
 class PreprocessingConfig:
     """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
 
-    requested_tile_size_px: int | None = None
-    requested_spacing_um: float | None = None
+    target_tile_size_px: int | None = None
+    target_spacing_um: float | None = None
+    target_region_size_px: int | None = None
+    region_tile_multiple: int | None = None
+    effective_tile_size_px: int | None = None
+    effective_region_size_px: int | None = None
     tissue_method: str = "hsv"
-    min_tissue_fraction: float = 0.1
+    tissue_threshold: float = 0.1
     overlap: float = 0.0
-    use_padding: bool = True
     seg_downsample: int = 64
     tolerance: float = 0.05
     ref_tile_size_px: int | None = None
@@ -29,6 +32,10 @@ class PreprocessingConfig:
     hierarchical: bool = False
     npatch: int | None = None
     hierarchical_patch_size_px: int | None = None
+
+    @property
+    def has_hierarchical_geometry(self) -> bool:
+        return self.region_tile_multiple is not None or self.target_region_size_px is not None
 
 
 @dataclass(frozen=True)

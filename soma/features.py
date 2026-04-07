@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from soma.cache import resolve_feature_payload_dir
+
 from slide2vec.artifacts import load_array
 
 
@@ -15,6 +16,8 @@ class FeatureStore:
 
     Expects a directory of .pt files, one per sample. Each file contains either:
     - a tensor of shape (num_tiles, feature_dim) for tile-level features, or
+    - a tensor of shape (num_regions, num_tiles_per_region, feature_dim) for
+      hierarchical features, or
     - a tensor of shape (feature_dim,) for slide-level features.
     """
 
@@ -23,6 +26,8 @@ class FeatureStore:
         self._index: dict[str, Path] = {}
         self._feature_dim: int | None = None
         self._is_slide_level: bool | None = None
+        self._is_hierarchical: bool | None = None
+        self._feature_rank: int | None = None
         self._build_index()
 
     def _build_index(self) -> None:
@@ -46,6 +51,18 @@ class FeatureStore:
         return self._is_slide_level
 
     @property
+    def is_hierarchical(self) -> bool:
+        """True if features are hierarchical (3-D per sample)."""
+        self._ensure_metadata()
+        return self._is_hierarchical
+
+    @property
+    def feature_rank(self) -> int:
+        """Rank of the stored feature tensors."""
+        self._ensure_metadata()
+        return self._feature_rank
+
+    @property
     def feature_dim(self) -> int:
         """Feature dimensionality (inferred from the first file)."""
         self._ensure_metadata()
@@ -61,13 +78,20 @@ class FeatureStore:
         tensor = load_array(first_path)
         if not torch.is_tensor(tensor):
             tensor = torch.as_tensor(tensor)
+        if tensor.ndim not in {1, 2, 3}:
+            raise ValueError(
+                f"Unsupported feature tensor rank {tensor.ndim} in {first_path}; "
+                "expected 1-D, 2-D, or 3-D tensors."
+            )
+        self._feature_rank = int(tensor.ndim)
         self._is_slide_level = tensor.ndim == 1
-        self._feature_dim = tensor.shape[0] if self._is_slide_level else tensor.shape[1]
+        self._is_hierarchical = tensor.ndim == 3
+        self._feature_dim = tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1]
 
     def load(self, sample_id: str) -> torch.Tensor:
         """Load tile embeddings for a single sample.
 
-        Returns a tensor of shape (num_tiles, feature_dim).
+        Returns the stored feature tensor unchanged.
         """
         if sample_id not in self._index:
             msg = f"Sample '{sample_id}' not found in feature store. Available: {sorted(self._index)}"

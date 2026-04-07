@@ -7,8 +7,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from soma.preprocessing.tiling import TilingResult
-from soma.wsi.reader import SlideReader, select_level_for_downsample
+from hs2p.preprocessing import TilingResult
+from hs2p.wsi.geometry import select_level_for_downsample
+from hs2p.wsi.reader import SlideReader
 
 
 def render_preview(
@@ -41,11 +42,8 @@ def render_preview(
         preview_downsample, slide.level_downsamples
     )
     vis_size = slide.level_dimensions[vis_level]
-    preview = slide.read_region((0, 0), vis_level, vis_size, pad_missing=False).copy()
+    preview = slide.read_region((0, 0), vis_level, vis_size).copy()
     vis_h, vis_w = preview.shape[:2]
-
-    if tiling_result.seg_level is None:
-        raise ValueError("render_preview requires tiling_result.seg_level")
 
     mask_level = int(tiling_result.seg_level)
     mask_size = slide.level_dimensions[mask_level]
@@ -69,7 +67,7 @@ def render_preview(
     cv2.addWeighted(overlay, mask_alpha, preview, 1 - mask_alpha, 0, preview)
 
     # Tiling grid
-    if len(tiling_result.coordinates) > 0:
+    if tiling_result.num_tiles > 0:
         _draw_tile_grid(
             preview,
             tiling_result=tiling_result,
@@ -93,18 +91,18 @@ def _draw_tile_grid(
     grid_thickness: int,
 ) -> None:
     """Draw tile rectangles on the preview image."""
-    coords = tiling_result.coordinates
     tile_lv0 = tiling_result.tile_size_lv0
     slide_w, slide_h = slide_dimensions
     scale_x = preview_width / max(slide_w, 1)
     scale_y = preview_height / max(slide_h, 1)
 
-    for x_lv0, y_lv0 in coords:
+    for x_lv0, y_lv0 in zip(tiling_result.x, tiling_result.y):
         x1 = int(x_lv0 * scale_x)
         y1 = int(y_lv0 * scale_y)
         x2 = int((x_lv0 + tile_lv0) * scale_x)
         y2 = int((y_lv0 + tile_lv0) * scale_y)
         cv2.rectangle(preview, (x1, y1), (x2, y2), grid_color, grid_thickness)
+
 def save_preview(preview: np.ndarray, path: Path) -> None:
     """Save a preview image to disk."""
     path = Path(path)

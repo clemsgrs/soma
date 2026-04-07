@@ -16,11 +16,7 @@ def test_pyproject_has_publish_ready_metadata():
         {"name": "Clement Grisi", "email": "clement.grisi@radboudumc.nl"}
     ]
     assert "classifiers" in project
-    assert "opencv-python-headless" in project["dependencies"]
-    assert project["optional-dependencies"]["wsi"] == [
-        "openslide-python",
-        "openslide-bin",
-    ]
+    assert any("slide2vec" in dep for dep in project["dependencies"])
 
     urls = project["urls"]
     assert urls["Homepage"] == "https://github.com/clemsgrs/soma"

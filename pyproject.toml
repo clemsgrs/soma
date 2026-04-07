@@ -25,7 +25,6 @@ classifiers = [
 ]
 requires-python = ">=3.11"
 dependencies = [
-    "hs2p[cucim,openslide]>=3.1.1",
     "numpy",
     "pandas",
     "torch",
@@ -35,11 +34,7 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "opencv-python-headless",
-    "openslide-python",
-    "openslide-bin",
-    "cucim-cu12>=26.2.0",
-    "slide2vec>=3.2.1",
+    "slide2vec[asap]>=3.2.1",
 ]
 
 [project.urls]

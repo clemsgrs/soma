@@ -9,7 +9,8 @@ import torch
 from hs2p import SlideSpec
 
 from soma.features import FeatureStore
-from soma.slide2vec_adapter import LoadedTiling, Slide2VecArtifactAdapter
+from soma.cache import build_tile_artifacts_from_cache_payload
+from soma.slide2vec_adapter import LoadedTiling
 
 
 @pytest.fixture()
@@ -73,6 +74,32 @@ def test_len(feature_dir: Path):
 def test_is_slide_level_false_for_tile_features(feature_dir: Path):
     store = FeatureStore(feature_dir)
     assert store.is_slide_level is False
+    assert store.is_hierarchical is False
+    assert store.feature_rank == 2
+
+
+@pytest.fixture()
+def hierarchical_feature_dir(tmp_path: Path) -> Path:
+    """Create a feature directory with hierarchical (3-D) embeddings."""
+    d = tmp_path / "hier_features"
+    d.mkdir()
+    torch.save(torch.randn(4, 9, 512), d / "s1.pt")
+    torch.save(torch.randn(2, 9, 512), d / "s2.pt")
+    return d
+
+
+def test_is_hierarchical_true(hierarchical_feature_dir: Path):
+    store = FeatureStore(hierarchical_feature_dir)
+    assert store.is_slide_level is False
+    assert store.is_hierarchical is True
+    assert store.feature_rank == 3
+    assert store.feature_dim == 512
+
+
+def test_load_hierarchical_features(hierarchical_feature_dir: Path):
+    store = FeatureStore(hierarchical_feature_dir)
+    features = store.load("s1")
+    assert features.shape == (4, 9, 512)
 
 
 # --- Slide-level features ---
@@ -119,14 +146,31 @@ def test_cache_directory_resolves_to_features_payload(tmp_path: Path):
 def test_slide2vec_artifact_root_prefers_slide_embeddings(tmp_path: Path):
     artifact_root = tmp_path / "artifacts"
     tile_dir = artifact_root / "tile_embeddings"
+    hier_dir = artifact_root / "hierarchical_embeddings"
     slide_dir = artifact_root / "slide_embeddings"
     tile_dir.mkdir(parents=True)
+    hier_dir.mkdir(parents=True)
     slide_dir.mkdir(parents=True)
     torch.save(torch.randn(5, 8), tile_dir / "s1.pt")
+    torch.save(torch.randn(4, 9, 8), hier_dir / "s1.pt")
     torch.save(torch.randn(8), slide_dir / "s1.pt")
 
     store = FeatureStore(artifact_root)
     assert store.is_slide_level is True
+    assert store.feature_dim == 8
+
+
+def test_slide2vec_artifact_root_prefers_hierarchical_embeddings_when_no_slide_dir(tmp_path: Path):
+    artifact_root = tmp_path / "artifacts"
+    tile_dir = artifact_root / "tile_embeddings"
+    hier_dir = artifact_root / "hierarchical_embeddings"
+    tile_dir.mkdir(parents=True)
+    hier_dir.mkdir(parents=True)
+    torch.save(torch.randn(5, 8), tile_dir / "s1.pt")
+    torch.save(torch.randn(4, 9, 8), hier_dir / "s1.pt")
+
+    store = FeatureStore(artifact_root)
+    assert store.is_hierarchical is True
     assert store.feature_dim == 8
 
 
@@ -150,8 +194,7 @@ def test_artifact_adapter_rebuilds_tile_artifacts_from_cache_payload(tmp_path: P
         )
     ]
 
-    adapter = Slide2VecArtifactAdapter()
-    artifacts = adapter.build_tile_artifacts_from_cache_payload(
+    artifacts = build_tile_artifacts_from_cache_payload(
         features_dir=features_dir,
         loaded_tilings=loaded,
         work_dir=tmp_path / "tile_metadata",
