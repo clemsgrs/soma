@@ -37,7 +37,7 @@ jobs:
           python -m pytest -q \
             tests/test_config.py \
             tests/test_cache.py \
-            tests/test_artifacts_io.py \
+            tests/test_features.py \
             tests/test_extraction.py \
             tests/test_regression_fixtures.py \
             -k "not prism_slide_feature_matches_slide2vec_gt"
