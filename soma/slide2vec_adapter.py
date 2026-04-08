@@ -12,12 +12,7 @@ from slide2vec import (
     ExecutionOptions,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
-from slide2vec.utils.tiling_io import load_tiling_result_from_row
-
-try:
-    from slide2vec.utils.tiling_io import load_tiling_process_df
-except ImportError:  # pragma: no cover - compatibility with older slide2vec exports
-    from slide2vec.utils.tiling_io import load_process_df as load_tiling_process_df
+from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
