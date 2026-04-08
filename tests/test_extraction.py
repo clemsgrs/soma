@@ -236,6 +236,61 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
     assert store.load("s0").shape == (8,)
 
 
+def test_cached_extract_writes_marker_file(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_embed_tiles(*, model_name, output_variant, slides, tiling_results, preprocessing, execution):
+        artifacts = []
+        output_dir = Path(execution.output_dir) / "tile_embeddings"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for slide in slides:
+            artifacts.append(
+                _artifact(
+                    sample_id=slide.sample_id,
+                    output_dir=Path(execution.output_dir),
+                    kind="tile_embeddings",
+                    tensor=torch.ones(2, 8),
+                )
+            )
+        return artifacts
+
+    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
+        "soma.extraction._validate_runtime"
+    ), patch(
+        "soma.extraction._embed_tiles",
+        side_effect=_fake_embed_tiles,
+    ):
+        store = extractor.extract(tmp_path / "features", tiling_dir=tmp_path / "tiling")
+
+    assert store.available_samples == ["s0"]
+    marker = tmp_path / "features" / "README.txt"
+    assert marker.is_file()
+    marker_text = marker.read_text(encoding="utf-8")
+    assert "cache-backed feature location placeholder" in marker_text
+    assert str(store.feature_dir.parent) in marker_text
+    process_list = tmp_path / "features" / "process_list.csv"
+    assert process_list.is_file()
+    recorded = pd.read_csv(process_list).set_index("sample_id")
+    assert list(recorded.index) == ["s0"]
+    assert recorded.loc["s0", "feature_status"] == "success"
+    assert recorded.loc["s0", "feature_path"] == str((store.feature_dir / "s0.pt").resolve())
+    assert recorded.loc["s0", "cache_dir"] == str(store.feature_dir.parent.resolve())
+    assert recorded.loc["s0", "cache_kind"] == "tile"
+
+
 def test_multi_gpu_uncached_extraction_uses_slide2vec_pipeline(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(

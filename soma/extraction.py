@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import csv
 import tempfile
 from pathlib import Path
 from typing import Sequence
@@ -23,6 +25,7 @@ from slide2vec.encoders.validation import (
 )
 
 from soma.cache import (
+    CacheResolution,
     build_tile_artifacts_from_cache_payload,
     record_feature_dim,
     resolve_cache_root,
@@ -43,6 +46,78 @@ from soma.slide2vec_adapter import (
     ensure_supported_mask_value,
     load_tilings,
 )
+
+
+class _SomaExtractionReporter:
+    """
+    Progress reporter wrapper for soma's extraction step.
+
+    Wraps a slide2vec reporter to:
+    - Deduplicate identical write_log messages (suppresses the N-repeated
+      "Batched preprocessing is disabled" lines down to one)
+    - Show a spinner while extraction is in-flight
+    - Show an "Embedding Summary" panel when extraction finishes
+    """
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self._seen_logs: set[str] = set()
+        self._extraction_task_id: int | None = None
+
+    def emit(self, event) -> None:
+        from slide2vec.progress import RichCliProgressReporter
+
+        kind = event.kind
+        payload = event.payload
+
+        if kind == "embedding.started":
+            if isinstance(self._inner, RichCliProgressReporter):
+                n = payload.get("slide_count", "?")
+                self._extraction_task_id = self._inner.progress.add_task(
+                    f"Extracting features[dim] ({n} slides)[/dim]",
+                    total=None,
+                )
+            # Do not forward to _inner — we replaced its handling entirely.
+            return
+
+        if kind == "embedding.finished":
+            if isinstance(self._inner, RichCliProgressReporter):
+                if self._extraction_task_id is not None:
+                    self._inner.progress.remove_task(self._extraction_task_id)
+                    self._extraction_task_id = None
+            # Fall through so _inner prints the "Embedding Summary" panel.
+
+        self._inner.emit(event)
+
+    def write_log(self, message: str, *, stream=None) -> None:
+        if message in self._seen_logs:
+            return
+        self._seen_logs.add(message)
+        self._inner.write_log(message, stream=stream)
+
+    def close(self) -> None:
+        self._inner.close()
+
+
+def _make_extraction_reporter_ctx(output_dir: Path) -> object:
+    """
+    Return a context manager that activates a *SomaExtractionReporter* when no
+    reporter is already active, or a no-op context when one is.
+    """
+    from slide2vec.progress import (
+        NullProgressReporter,
+        activate_progress_reporter,
+        create_api_progress_reporter,
+        get_progress_reporter,
+    )
+
+    active = get_progress_reporter()
+    if not isinstance(active, NullProgressReporter):
+        return contextlib.nullcontext()
+    inner = create_api_progress_reporter(output_dir=output_dir)
+    if isinstance(inner, NullProgressReporter):
+        return contextlib.nullcontext()
+    return activate_progress_reporter(_SomaExtractionReporter(inner))
 
 
 def _validate_runtime(
@@ -186,6 +261,8 @@ class FeatureExtractor:
         backend: str = "auto",
     ) -> FeatureStore:
         """Extract features using slide2vec and adapt outputs for soma."""
+        from slide2vec.progress import emit_progress
+
         del skip_existing
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -223,57 +300,147 @@ class FeatureExtractor:
             tiling_results=prepared_tilings,
         )
 
-        if not self._cache.enabled:
-            self._extract_uncached(
-                output_dir=output_dir,
-                loaded_tilings=loaded_tilings,
-                prepared_tilings=prepared_tilings,
-                tiling_dir=tiling_dir,
-                preprocessing=s2v_preprocessing,
-                level=level,
-                output_variant=output_variant,
-                num_gpus=num_gpus,
-                hierarchical=is_hierarchical,
-            )
-            return FeatureStore(output_dir)
+        n_slides = len(loaded_tilings)
+        with _make_extraction_reporter_ctx(output_dir):
+            emit_progress("embedding.started", slide_count=n_slides)
 
-        cache_root = resolve_cache_root(self._cache, output_dir=output_dir)
-        if is_hierarchical:
-            return self._extract_hierarchical_cached(
-                cache_root=cache_root,
-                loaded_tilings=loaded_tilings,
-                prepared_tilings=prepared_tilings,
-                tiling_dir=tiling_dir,
-                preprocessing=s2v_preprocessing,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
-                num_gpus=num_gpus,
+            if not self._cache.enabled:
+                self._extract_uncached(
+                    output_dir=output_dir,
+                    loaded_tilings=loaded_tilings,
+                    prepared_tilings=prepared_tilings,
+                    tiling_dir=tiling_dir,
+                    preprocessing=s2v_preprocessing,
+                    level=level,
+                    output_variant=output_variant,
+                    num_gpus=num_gpus,
+                    hierarchical=is_hierarchical,
+                )
+                store = FeatureStore(output_dir)
+            else:
+                cache_root = resolve_cache_root(self._cache, output_dir=output_dir)
+                if is_hierarchical:
+                    store = self._extract_hierarchical_cached(
+                        output_dir=output_dir,
+                        cache_root=cache_root,
+                        loaded_tilings=loaded_tilings,
+                        prepared_tilings=prepared_tilings,
+                        tiling_dir=tiling_dir,
+                        preprocessing=s2v_preprocessing,
+                        resolved_preprocessing=resolved_preprocessing,
+                        output_variant=output_variant,
+                        num_gpus=num_gpus,
+                    )
+                elif level == "tile":
+                    store = self._extract_tile_cached(
+                        output_dir=output_dir,
+                        cache_root=cache_root,
+                        loaded_tilings=loaded_tilings,
+                        prepared_tilings=prepared_tilings,
+                        tiling_dir=tiling_dir,
+                        preprocessing=s2v_preprocessing,
+                        resolved_preprocessing=resolved_preprocessing,
+                        output_variant=output_variant,
+                        num_gpus=num_gpus,
+                    )
+                else:
+                    store = self._extract_slide_cached(
+                        output_dir=output_dir,
+                        cache_root=cache_root,
+                        encoder_info=encoder_info,
+                        loaded_tilings=loaded_tilings,
+                        prepared_tilings=prepared_tilings,
+                        tiling_dir=tiling_dir,
+                        preprocessing=s2v_preprocessing,
+                        resolved_preprocessing=resolved_preprocessing,
+                        resolved_output=resolved_output,
+                        output_variant=output_variant,
+                        num_gpus=num_gpus,
+                    )
+
+            emit_progress(
+                "embedding.finished",
+                slide_count=n_slides,
+                slides_completed=n_slides,
+                tile_artifacts=n_slides,
+                slide_artifacts=0,
             )
 
-        if level == "tile":
-            return self._extract_tile_cached(
-                cache_root=cache_root,
-                loaded_tilings=loaded_tilings,
-                prepared_tilings=prepared_tilings,
-                tiling_dir=tiling_dir,
-                preprocessing=s2v_preprocessing,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
-                num_gpus=num_gpus,
-            )
+        return store
 
-        return self._extract_slide_cached(
-            cache_root=cache_root,
-            encoder_info=encoder_info,
-            loaded_tilings=loaded_tilings,
-            prepared_tilings=prepared_tilings,
-            tiling_dir=tiling_dir,
-            preprocessing=s2v_preprocessing,
-            resolved_preprocessing=resolved_preprocessing,
-            resolved_output=resolved_output,
-            output_variant=output_variant,
-            num_gpus=num_gpus,
+    def _write_cache_marker(
+        self,
+        output_dir: Path,
+        *,
+        cache_resolution: CacheResolution,
+    ) -> None:
+        """Leave a short marker in the requested feature directory when cache is used."""
+        marker_path = output_dir / "README.txt"
+        if marker_path.exists():
+            return
+        cache_dir = cache_resolution.cache_dir.resolve()
+        marker_path.write_text(
+            (
+                "This directory is a cache-backed feature location placeholder.\n"
+                f"Actual embedding payloads are stored under: {cache_dir}\n"
+                "Configure CacheConfig.root_dir to control the cache location.\n"
+            ),
+            encoding="utf-8",
         )
+
+    def _write_cached_process_list(
+        self,
+        output_dir: Path,
+        *,
+        cache_resolution: CacheResolution,
+    ) -> None:
+        """Write a run-local manifest that points back to the shared cache payloads."""
+        process_list_path = output_dir / "process_list.csv"
+        metadata = cache_resolution.metadata
+        sample_ids = [str(sample_id) for sample_id in metadata["sample_ids"]]
+        artifact_kind = {
+            "tile": "tile_embeddings",
+            "slide": "slide_embeddings",
+            "hierarchical": "hierarchical_embeddings",
+        }[cache_resolution.kind]
+        cache_dir = cache_resolution.cache_dir.resolve()
+        feature_rank = int(metadata["feature_rank"])
+        feature_dim = metadata.get("feature_dim")
+        output_variant = metadata.get("execution", {}).get("output_variant")
+        with process_list_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "sample_id",
+                    "feature_status",
+                    "feature_path",
+                    "artifact_kind",
+                    "cache_kind",
+                    "cache_key",
+                    "cache_dir",
+                    "encoder_name",
+                    "output_variant",
+                    "feature_rank",
+                    "feature_dim",
+                ],
+            )
+            writer.writeheader()
+            for sample_id in sample_ids:
+                writer.writerow(
+                    {
+                        "sample_id": sample_id,
+                        "feature_status": "success",
+                        "feature_path": str((cache_resolution.features_dir / f"{sample_id}.pt").resolve()),
+                        "artifact_kind": artifact_kind,
+                        "cache_kind": cache_resolution.kind,
+                        "cache_key": metadata["cache_key"],
+                        "cache_dir": str(cache_dir),
+                        "encoder_name": metadata["encoder_name"],
+                        "output_variant": output_variant,
+                        "feature_rank": feature_rank,
+                        "feature_dim": feature_dim,
+                    }
+                )
 
     def _extract_uncached(
         self,
@@ -377,6 +544,7 @@ class FeatureExtractor:
     def _extract_tile_cached(
         self,
         *,
+        output_dir: Path,
         cache_root: Path,
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
@@ -394,7 +562,9 @@ class FeatureExtractor:
             execution=self._encoder,
             output_variant=output_variant,
         )
+        self._write_cache_marker(output_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
+            self._write_cached_process_list(output_dir, cache_resolution=cache_resolution)
             return FeatureStore(cache_resolution.cache_dir)
 
         self._populate_tile_cache(
@@ -407,11 +577,13 @@ class FeatureExtractor:
             output_variant=output_variant,
             num_gpus=num_gpus,
         )
+        self._write_cached_process_list(output_dir, cache_resolution=cache_resolution)
         return FeatureStore(cache_resolution.cache_dir)
 
     def _extract_hierarchical_cached(
         self,
         *,
+        output_dir: Path,
         cache_root: Path,
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
@@ -429,7 +601,9 @@ class FeatureExtractor:
             execution=self._encoder,
             output_variant=output_variant,
         )
+        self._write_cache_marker(output_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
+            self._write_cached_process_list(output_dir, cache_resolution=cache_resolution)
             return FeatureStore(cache_resolution.cache_dir)
 
         self._populate_hierarchical_cache(
@@ -442,11 +616,13 @@ class FeatureExtractor:
             output_variant=output_variant,
             num_gpus=num_gpus,
         )
+        self._write_cached_process_list(output_dir, cache_resolution=cache_resolution)
         return FeatureStore(cache_resolution.cache_dir)
 
     def _extract_slide_cached(
         self,
         *,
+        output_dir: Path,
         cache_root: Path,
         encoder_info: dict,
         loaded_tilings: list[LoadedTiling],
@@ -480,7 +656,9 @@ class FeatureExtractor:
             execution=self._encoder,
             output_variant=output_variant,
         )
+        self._write_cache_marker(output_dir, cache_resolution=slide_cache)
         if tile_cache.complete and slide_cache.complete:
+            self._write_cached_process_list(output_dir, cache_resolution=slide_cache)
             return FeatureStore(slide_cache.cache_dir)
 
         if num_gpus is not None and num_gpus > 1:
@@ -514,6 +692,7 @@ class FeatureExtractor:
             output_variant=str(slide_cache.metadata["execution"]["output_variant"]),
             num_gpus=num_gpus,
         )
+        self._write_cached_process_list(output_dir, cache_resolution=slide_cache)
         return FeatureStore(slide_cache.cache_dir)
 
     def _populate_tile_cache(
