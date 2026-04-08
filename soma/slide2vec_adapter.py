@@ -12,7 +12,12 @@ from slide2vec import (
     ExecutionOptions,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
-from slide2vec.utils.tiling_io import load_process_df, load_tiling_result_from_row
+from slide2vec.utils.tiling_io import load_tiling_result_from_row
+
+try:
+    from slide2vec.utils.tiling_io import load_tiling_process_df
+except ImportError:  # pragma: no cover - compatibility with older slide2vec exports
+    from slide2vec.utils.tiling_io import load_process_df as load_tiling_process_df
 
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
@@ -127,7 +132,7 @@ def load_tilings(
         raise ValueError(
             f"Tiling directory '{tiling_dir}' is missing process_list.csv"
         )
-    process_df = load_process_df(process_list_path)
+    process_df = load_tiling_process_df(process_list_path)
     rows_by_sample_id = {
         str(row["sample_id"]): row
         for row in process_df.to_dict("records")

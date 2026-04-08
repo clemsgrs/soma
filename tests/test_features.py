@@ -4,13 +4,15 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 import torch
 from hs2p import SlideSpec
 
 from soma.features import FeatureStore
 from soma.cache import build_tile_artifacts_from_cache_payload
-from soma.slide2vec_adapter import LoadedTiling
+from soma.dataset import Dataset
+from soma.slide2vec_adapter import LoadedTiling, load_tilings
 
 
 @pytest.fixture()
@@ -205,3 +207,52 @@ def test_artifact_adapter_rebuilds_tile_artifacts_from_cache_payload(tmp_path: P
     metadata = json.loads(artifacts[0].metadata_path.read_text(encoding="utf-8"))
     assert metadata["coordinates_npz_path"] == "/coords/s1.npz"
     assert metadata["mask_path"] == "/masks/s1.tif"
+
+
+def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "image_path": [str(tmp_path / "slides" / "s1.svs")],
+            "label": ["tumor"],
+            "mask_path": [str(tmp_path / "masks" / "s1.tif")],
+        }
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    process_list_path = tiling_dir / "process_list.csv"
+    process_list_path.write_text("sample_id\n", encoding="utf-8")
+
+    row = {
+        "sample_id": "s1",
+        "tiling_status": "success",
+        "error": None,
+    }
+    loader_calls: list[Path] = []
+
+    def _fake_process_loader(path: Path):
+        loader_calls.append(Path(path))
+        return pd.DataFrame([row])
+
+    tiling_result = SimpleNamespace(sample_id="s1")
+
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", _fake_process_loader)
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: tiling_result)
+    monkeypatch.setattr(
+        "soma.slide2vec_adapter.validate_tiling_result_provenance",
+        lambda *args, **kwargs: None,
+    )
+
+    loaded = load_tilings(
+        dataset=dataset,
+        tiling_dir=tiling_dir,
+        tissue_mask_tissue_value=1,
+    )
+
+    assert loader_calls == [process_list_path]
+    assert len(loaded) == 1
+    assert loaded[0].slide.sample_id == "s1"
+    assert loaded[0].tiling_result is tiling_result
