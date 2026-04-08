@@ -88,7 +88,6 @@ RUN python -m pip install \
     --constraint /opt/app/constraints-cu128.txt \
     "/opt/app[dev]"
 
-COPY --chown=user:user . /opt/app
 
 USER user
 WORKDIR /opt/app
