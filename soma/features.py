@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import torch
@@ -24,11 +25,14 @@ class FeatureStore:
     def __init__(self, feature_dir: Path | str) -> None:
         self._feature_dir = resolve_feature_payload_dir(feature_dir)
         self._index: dict[str, Path] = {}
+        self._sample_statuses: dict[str, str] = {}
+        self._feature_manifest_path: Path | None = None
         self._feature_dim: int | None = None
         self._is_slide_level: bool | None = None
         self._is_hierarchical: bool | None = None
         self._feature_rank: int | None = None
         self._build_index()
+        self._load_feature_manifest()
 
     def _build_index(self) -> None:
         for path in sorted(
@@ -40,9 +44,54 @@ class FeatureStore:
             sample_id = path.stem
             self._index[sample_id] = path
 
+    def _load_feature_manifest(self) -> None:
+        candidate_paths = [
+            self._feature_dir / "process_list.csv",
+            self._feature_dir.parent / "process_list.csv",
+        ]
+        for path in candidate_paths:
+            if not path.is_file():
+                continue
+            self._feature_manifest_path = path
+            with path.open(newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    sample_id = str(row["sample_id"])
+                    if sample_id in self._sample_statuses:
+                        raise ValueError(f"Duplicate sample_id in feature manifest: {sample_id}")
+                    status = str(row.get("feature_status", "")).strip().lower()
+                    if not status:
+                        raise ValueError(
+                            f"Missing feature_status for sample_id={sample_id} in {path}"
+                        )
+                    self._sample_statuses[sample_id] = status
+            return
+
     @property
     def available_samples(self) -> list[str]:
         return list(self._index.keys())
+
+    @property
+    def has_feature_manifest(self) -> bool:
+        return self._feature_manifest_path is not None
+
+    @property
+    def feature_manifest_path(self) -> Path | None:
+        return self._feature_manifest_path
+
+    @property
+    def feature_statuses(self) -> dict[str, str]:
+        return dict(self._sample_statuses)
+
+    @property
+    def expected_feature_samples(self) -> list[str]:
+        if not self._sample_statuses:
+            return self.available_samples
+        return [sample_id for sample_id, status in self._sample_statuses.items() if status == "success"]
+
+    @property
+    def empty_feature_samples(self) -> list[str]:
+        return [sample_id for sample_id, status in self._sample_statuses.items() if status == "empty"]
 
     @property
     def is_slide_level(self) -> bool:
@@ -103,7 +152,7 @@ class FeatureStore:
 
     def validate_coverage(self, sample_ids: list[str]) -> None:
         """Check that all requested sample IDs have features on disk."""
-        available = set(self._index)
+        available = set(self.expected_feature_samples)
         missing = sorted(set(sample_ids) - available)
         if missing:
             msg = f"Missing features for {len(missing)} samples: {missing}"

@@ -145,6 +145,39 @@ def test_cache_directory_resolves_to_features_payload(tmp_path: Path):
     assert store.feature_dim == 32
 
 
+def test_feature_manifest_tracks_success_and_empty_samples(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.save(torch.randn(10, 32), feature_dir / "s1.pt")
+    torch.save(torch.randn(10, 32), feature_dir / "s2.pt")
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "s1",
+                "feature_status": "success",
+                "feature_path": str((feature_dir / "s1.pt").resolve()),
+                "num_tiles": 10,
+                "feature_rank": 2,
+                "feature_dim": 32,
+            },
+            {
+                "sample_id": "s2",
+                "feature_status": "empty",
+                "feature_path": "",
+                "num_tiles": 0,
+                "feature_rank": 2,
+                "feature_dim": 32,
+            },
+        ]
+    ).to_csv(feature_dir / "process_list.csv", index=False)
+
+    store = FeatureStore(feature_dir)
+    assert store.has_feature_manifest is True
+    assert store.feature_statuses == {"s1": "success", "s2": "empty"}
+    assert store.expected_feature_samples == ["s1"]
+    assert store.empty_feature_samples == ["s2"]
+
+
 def test_slide2vec_artifact_root_prefers_slide_embeddings(tmp_path: Path):
     artifact_root = tmp_path / "artifacts"
     tile_dir = artifact_root / "tile_embeddings"

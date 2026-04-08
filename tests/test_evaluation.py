@@ -44,6 +44,14 @@ class TestClassificationMetrics:
             assert key in metrics
             assert isinstance(metrics[key], float)
 
+    def test_single_class_validation_split_is_safe(self):
+        y_true = np.array([1, 1, 1])
+        y_prob = np.array([[0.2, 0.8], [0.1, 0.9], [0.4, 0.6]])
+        y_pred = np.array([1, 1, 1])
+        metrics = compute_classification_metrics(y_true, y_prob, y_pred)
+        assert metrics["auc"] == 0.5
+        assert metrics["accuracy"] == 1.0
+
 
 # ---------------------------------------------------------------------------
 # Report

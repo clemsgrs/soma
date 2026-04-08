@@ -39,6 +39,8 @@ def test_pipeline_config_is_frozen():
 
 def test_preprocessing_config_defaults():
     cfg = PreprocessingConfig()
+    assert cfg.backend == "auto"
+    assert cfg.requested_backend == "auto"
     assert cfg.target_tile_size_px is None
     assert cfg.target_spacing_um is None
     assert cfg.target_region_size_px is None
@@ -124,7 +126,7 @@ def test_task_config_with_params():
 
 def test_save_and_load_config_roundtrip(tmp_path: Path):
     original = _make_pipeline_config(
-        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=7)
+        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=7, backend="openslide")
     )
     yaml_path = tmp_path / "config.yaml"
 
@@ -136,6 +138,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.dataset_csv == original.dataset_csv
     assert loaded.splits_csv == original.splits_csv
     assert loaded.output_dir == original.output_dir
+    assert loaded.preprocessing.backend == "openslide"
     assert loaded.preprocessing.tissue_mask_tissue_value == 7
     assert loaded.preprocessing.target_tile_size_px == original.preprocessing.target_tile_size_px
 
@@ -156,6 +159,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
         "splits_csv": "splits.csv",
         "output_dir": "out",
         "preprocessing": {
+            "backend": "cucim",
             "target_tile_size_px": 256,
             "target_spacing_um": 0.5,
         },
@@ -172,6 +176,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
 
     loaded = load_config(yaml_path)
 
+    assert loaded.preprocessing.backend == "cucim"
     assert loaded.preprocessing.target_tile_size_px == 256
     assert loaded.preprocessing.target_spacing_um == 0.5
 

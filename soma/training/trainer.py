@@ -7,10 +7,16 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch import Tensor
+from rich import box
 from torch.utils.data import DataLoader
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 from soma.config import TrainingConfig
+from soma.evaluation.metrics import compute_classification_metrics
 
 
 @dataclass(frozen=True)
@@ -60,6 +66,7 @@ class Trainer:
         config: TrainingConfig,
         output_dir: Path,
         device: torch.device,
+        console: Console | None = None,
     ) -> None:
         self._model = model.to(device)
         self._train_loader = train_loader
@@ -67,6 +74,7 @@ class Trainer:
         self._config = config
         self._output_dir = Path(output_dir)
         self._device = device
+        self._console = console
 
         self._optimizer = _build_optimizer(model, config)
         self._scheduler = _build_scheduler(self._optimizer, config)
@@ -86,33 +94,108 @@ class Trainer:
         best_val_metrics: dict[str, float] = {}
         patience_counter = 0
 
-        for epoch in range(self._config.epochs):
-            train_loss = self._train_epoch()
-            val_loss, val_metrics = self._validate()
+        console = self._console or Console()
 
-            lr = self._optimizer.param_groups[0]["lr"]
-            if self._scheduler is not None:
-                self._scheduler.step()
+        with Live(
+            _build_training_panel(
+                title="Training progress",
+                subtitle="starting",
+                log=None,
+                total_epochs=self._config.epochs,
+                best_epoch=best_epoch,
+                best_val_loss=best_val_loss,
+                best_val_metrics=best_val_metrics,
+                patience_counter=patience_counter,
+                patience_limit=self._config.patience,
+                checkpoint_path=checkpoint_path,
+                status="waiting for epoch 1",
+            ),
+            console=console,
+            refresh_per_second=8,
+            transient=False,
+        ) as live:
+            for epoch in range(self._config.epochs):
+                train_loss = self._train_epoch()
+                val_loss, val_metrics = self._validate()
 
-            log = EpochLog(
-                epoch=epoch,
-                train_loss=train_loss,
-                val_loss=val_loss,
-                val_metrics=val_metrics,
-                lr=lr,
-            )
-            history.append(log)
+                lr = self._optimizer.param_groups[0]["lr"]
+                if self._scheduler is not None:
+                    self._scheduler.step()
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_epoch = epoch
-                best_val_metrics = val_metrics
-                patience_counter = 0
-                _save_checkpoint(self._model, self._optimizer, epoch, val_loss, checkpoint_path)
-            else:
-                patience_counter += 1
-                if patience_counter >= self._config.patience:
+                log = EpochLog(
+                    epoch=epoch,
+                    train_loss=train_loss,
+                    val_loss=val_loss,
+                    val_metrics=val_metrics,
+                    lr=lr,
+                )
+                history.append(log)
+
+                improved = val_loss < best_val_loss
+                status: str
+                if improved:
+                    best_val_loss = val_loss
+                    best_epoch = epoch
+                    best_val_metrics = val_metrics
+                    patience_counter = 0
+                    _save_checkpoint(self._model, self._optimizer, epoch, val_loss, checkpoint_path)
+                    status = f"new best checkpoint saved at epoch {epoch + 1}"
+                else:
+                    patience_counter += 1
+                    status = f"no improvement ({patience_counter}/{self._config.patience})"
+
+                live.update(
+                    _build_training_panel(
+                        title="Training progress",
+                        subtitle=f"epoch {epoch + 1}/{self._config.epochs}",
+                        log=log,
+                        total_epochs=self._config.epochs,
+                        best_epoch=best_epoch,
+                        best_val_loss=best_val_loss,
+                        best_val_metrics=best_val_metrics,
+                        patience_counter=patience_counter,
+                        patience_limit=self._config.patience,
+                        checkpoint_path=checkpoint_path,
+                        status=status,
+                    ),
+                    refresh=True,
+                )
+
+                if not improved and patience_counter >= self._config.patience:
+                    live.update(
+                        _build_training_panel(
+                            title="Training progress",
+                            subtitle=f"epoch {epoch + 1}/{self._config.epochs}",
+                            log=log,
+                            total_epochs=self._config.epochs,
+                            best_epoch=best_epoch,
+                            best_val_loss=best_val_loss,
+                            best_val_metrics=best_val_metrics,
+                            patience_counter=patience_counter,
+                            patience_limit=self._config.patience,
+                            checkpoint_path=checkpoint_path,
+                            status="early stopping triggered",
+                        ),
+                        refresh=True,
+                    )
                     break
+
+            live.update(
+                _build_training_panel(
+                    title="Training progress",
+                    subtitle="complete",
+                    log=history[-1] if history else None,
+                    total_epochs=self._config.epochs,
+                    best_epoch=best_epoch,
+                    best_val_loss=best_val_loss,
+                    best_val_metrics=best_val_metrics,
+                    patience_counter=patience_counter,
+                    patience_limit=self._config.patience,
+                    checkpoint_path=checkpoint_path,
+                    status="training complete",
+                ),
+                refresh=True,
+            )
 
         return TrainResult(
             best_epoch=best_epoch,
@@ -162,6 +245,9 @@ class Trainer:
         self._model.eval()
         total_loss = 0.0
         num_batches = 0
+        y_true_batches: list[np.ndarray] = []
+        y_pred_batches: list[np.ndarray] = []
+        y_prob_batches: list[np.ndarray] = []
 
         for batch in self._val_loader:
             features = batch.features.to(self._device)
@@ -174,9 +260,20 @@ class Trainer:
             loss = self._model.task_head.compute_loss(out.logits, labels)
             total_loss += loss.item()
             num_batches += 1
+            probs = torch.softmax(out.logits, dim=1)
+            y_true_batches.append(labels.detach().cpu().numpy())
+            y_pred_batches.append(probs.argmax(dim=1).detach().cpu().numpy())
+            y_prob_batches.append(probs.detach().cpu().numpy())
 
         avg_loss = total_loss / max(num_batches, 1)
-        return avg_loss, {"val_loss": avg_loss}
+        if y_true_batches:
+            y_true = np.concatenate(y_true_batches, axis=0)
+            y_pred = np.concatenate(y_pred_batches, axis=0)
+            y_prob = np.concatenate(y_prob_batches, axis=0)
+            metrics = compute_classification_metrics(y_true, y_prob, y_pred)
+        else:
+            metrics = {}
+        return avg_loss, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +322,81 @@ def _save_checkpoint(
         },
         path,
     )
+
+
+def _build_training_panel(
+    *,
+    title: str,
+    subtitle: str,
+    log: EpochLog | None,
+    total_epochs: int,
+    best_epoch: int,
+    best_val_loss: float,
+    best_val_metrics: dict[str, float],
+    patience_counter: int,
+    patience_limit: int,
+    checkpoint_path: Path,
+    status: str,
+) -> Panel:
+    table = Table.grid(padding=(0, 1))
+    table.add_column(style="dim", no_wrap=True)
+    table.add_column(justify="left")
+
+    if log is not None:
+        table.add_row("epoch", Text(f"{log.epoch + 1:02d}/{total_epochs:02d}", style="bold cyan"))
+        table.add_row("train", Text(f"{log.train_loss:.4f}", style="white"))
+        table.add_row("val", Text(f"{log.val_loss:.4f}", style="white"))
+        table.add_row("lr", Text(f"{log.lr:.2e}", style="white"))
+        for label, key in (
+            ("acc", "accuracy"),
+            ("bal", "balanced_accuracy"),
+            ("f1", "f1_macro"),
+            ("auc", "auc"),
+        ):
+            if key in log.val_metrics:
+                table.add_row(label, Text(f"{log.val_metrics[key]:.4f}", style="white"))
+    else:
+        table.add_row("epoch", Text(f"0/{total_epochs:02d}", style="bold cyan"))
+        table.add_row("train", Text("-", style="dim"))
+        table.add_row("val", Text("-", style="dim"))
+        table.add_row("lr", Text("-", style="dim"))
+
+    best_metrics_text = _format_metrics(best_val_metrics)
+    best_loss_text = _format_finite(best_val_loss)
+    best_epoch_text = f"{best_epoch + 1:02d}" if np.isfinite(best_val_loss) else "n/a"
+    table.add_row(
+        "best",
+        Text.assemble((best_loss_text, "green"), (" @ ", "dim"), (best_epoch_text, "green")),
+    )
+    if best_metrics_text:
+        table.add_row("best metrics", Text(best_metrics_text, style="green"))
+    table.add_row("patience", Text(f"{patience_counter}/{patience_limit}", style="white"))
+    table.add_row("status", Text(status, style="bold yellow" if "best" not in status else "bold green"))
+    table.add_row("checkpoint", Text(str(checkpoint_path), style="cyan"))
+
+    return Panel.fit(
+        table,
+        title=title,
+        subtitle=subtitle,
+        border_style="cyan",
+        box=box.ROUNDED,
+    )
+
+
+def _format_metrics(metrics: dict[str, float]) -> str:
+    if not metrics:
+        return ""
+
+    preferred_order = ("accuracy", "balanced_accuracy", "f1_macro", "auc")
+    items: list[str] = []
+    for key in preferred_order:
+        if key in metrics:
+            items.append(f"{key}={metrics[key]:.4f}")
+    for key in sorted(metrics):
+        if key not in preferred_order:
+            items.append(f"{key}={metrics[key]:.4f}")
+    return " | ".join(items)
+
+
+def _format_finite(value: float) -> str:
+    return f"{value:.4f}" if np.isfinite(value) else "n/a"

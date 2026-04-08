@@ -49,6 +49,7 @@ def _build_dataset(tmp_path: Path) -> Dataset:
 
 def _regression_preprocessing() -> PreprocessingConfig:
     return PreprocessingConfig(
+        backend="openslide",
         target_tile_size_px=224,
         target_spacing_um=0.5,
         tolerance=0.07,
@@ -92,7 +93,7 @@ def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
         cache=CacheConfig(enabled=False),
     )
 
-    extractor.preprocess(output_dir, backend="openslide")
+    extractor.preprocess(output_dir)
 
     tiling = load_tiling_result(
         output_dir / "test-wsi.coordinates.npz",
@@ -141,7 +142,7 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
     )
 
     try:
-        extractor.run(output_dir, backend="openslide")
+        extractor.run(output_dir)
     except (ImportError, OSError) as exc:
         pytest.skip(f"PRISM regression unavailable in this environment: {exc}")
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-
 import pandas as pd
 import pytest
 import torch
@@ -115,6 +114,49 @@ def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
         execution=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
     )
     assert key_a != key_b
+
+
+def test_tile_cache_key_changes_with_backend(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    key_a = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(backend="auto"),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    key_b = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(backend="openslide"),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    assert key_a != key_b
+
+
+def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    provenance = {
+        "requested_backend": "auto",
+        "backend": "openslide",
+        "backend_by_sample_id": {
+            "s1": "openslide",
+            "s2": "openslide",
+        },
+    }
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(backend="auto"),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+        backend_provenance=provenance,
+    )
+
+    metadata = json.loads(resolution.metadata_path.read_text())
+    assert metadata["requested_backend"] == "auto"
+    assert metadata["backend"] == "openslide"
+    assert metadata["backend_by_sample_id"] == {"s1": "openslide", "s2": "openslide"}
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):

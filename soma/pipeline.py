@@ -10,6 +10,7 @@ Layer 2 (orchestrator):
 
 from __future__ import annotations
 
+import logging
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -27,7 +28,7 @@ from soma.config import (
     TrainingConfig,
     save_config,
 )
-from soma.dataset import Dataset, FoldSplit, Splits
+from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.metrics import compute_classification_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
@@ -40,6 +41,9 @@ from soma.training.seed import seed_everything
 from soma.training.slide_dataset import SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel
 from soma.training.trainer import Trainer, TrainResult
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +68,25 @@ class PipelineResult:
     fold_results: list[FoldResult]
     summary: dict[str, float]
     output_dir: Path
+
+
+def _format_fold_summary(
+    fold: int,
+    train_count: int,
+    tune_count: int,
+    test_count: int,
+    dropped_by_split: dict[str, list[str]] | None = None,
+) -> str:
+    base = f"Fold {fold}: train={train_count} tune={tune_count} test={test_count}"
+    if not dropped_by_split:
+        return base
+
+    dropped_counts = {split: len(sample_ids) for split, sample_ids in dropped_by_split.items()}
+    if not any(dropped_counts.values()):
+        return base
+
+    dropped_text = ", ".join(f"{split}={count}" for split, count in dropped_counts.items())
+    return f"{base} | dropped empty: {dropped_text}"
 
 
 # ---------------------------------------------------------------------------
@@ -105,11 +128,67 @@ def train_one_fold(
 
     label_map = dataset.label_map
     feature_dim = feature_store.feature_dim
+    if feature_store.has_feature_manifest:
+        manifest_statuses = feature_store.feature_statuses
+        manifest_sample_ids = set(manifest_statuses)
+        split_sample_ids = set(fold_split.train) | set(fold_split.tune) | set(fold_split.test)
+        missing_manifest_ids = sorted(split_sample_ids - manifest_sample_ids)
+        if missing_manifest_ids:
+            msg = (
+                f"Feature manifest is missing sample(s) required by fold {fold}: "
+                f"{missing_manifest_ids}"
+            )
+            raise ValueError(msg)
 
-    # Build datasets
-    train_records = [dataset.samples[sid] for sid in fold_split.train]
-    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-    test_records = [dataset.samples[sid] for sid in fold_split.test]
+        expected_feature_ids = {
+            sample_id for sample_id, status in manifest_statuses.items() if status == "success"
+        }
+        empty_sample_ids = {
+            sample_id for sample_id, status in manifest_statuses.items() if status == "empty"
+        }
+        unexpected_missing_ids = sorted(expected_feature_ids - set(feature_store.available_samples))
+        if unexpected_missing_ids:
+            msg = (
+                f"Feature store is missing expected sample(s) for fold {fold}: "
+                f"{unexpected_missing_ids}"
+            )
+            raise ValueError(msg)
+
+        dropped_by_split = {
+            "train": [sid for sid in fold_split.train if sid in empty_sample_ids],
+            "tune": [sid for sid in fold_split.tune if sid in empty_sample_ids],
+            "test": [sid for sid in fold_split.test if sid in empty_sample_ids],
+        }
+
+        # Build datasets from samples that are expected to have features.
+        train_records = _records_for_sample_ids(dataset, fold_split.train, expected_feature_ids)
+        tune_records = _records_for_sample_ids(dataset, fold_split.tune, expected_feature_ids)
+        test_records = _records_for_sample_ids(dataset, fold_split.test, expected_feature_ids)
+    else:
+        # Legacy path: no manifest, so every listed sample must have a feature file.
+        train_records = [dataset.samples[sid] for sid in fold_split.train]
+        tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+        test_records = [dataset.samples[sid] for sid in fold_split.test]
+        dropped_by_split = None
+
+    if not train_records:
+        msg = f"Fold {fold} has no training samples with available features"
+        raise ValueError(msg)
+    if not tune_records:
+        msg = f"Fold {fold} has no tuning samples with available features"
+        raise ValueError(msg)
+    if not test_records:
+        msg = f"Fold {fold} has no test samples with available features"
+        raise ValueError(msg)
+
+    summary = _format_fold_summary(
+        fold=fold,
+        train_count=len(train_records),
+        tune_count=len(tune_records),
+        test_count=len(test_records),
+        dropped_by_split=dropped_by_split,
+    )
+    logger.info(summary)
 
     task_cls = task_registry.get(task.name)
     task_params = {"num_classes": dataset.num_classes, **task.params}
@@ -398,7 +477,6 @@ class Pipeline:
                 cache=cache_config,
             )
             store = extractor.run(Path(self._config.output_dir) / "features")
-        store.validate_coverage(self._dataset.sample_ids)
         return store
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
@@ -465,6 +543,18 @@ def _evaluate(
         metrics=metrics,
         predictions=predictions,
     )
+
+
+def _records_for_sample_ids(
+    dataset: Dataset,
+    sample_ids: tuple[str, ...],
+    allowed_sample_ids: set[str],
+) -> list[SampleRecord]:
+    return [
+        dataset.samples[sample_id]
+        for sample_id in sample_ids
+        if sample_id in allowed_sample_ids
+    ]
 
 
 def _save_metrics(

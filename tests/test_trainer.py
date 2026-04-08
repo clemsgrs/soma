@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import torch
 import pytest
+from rich.console import Console
+from rich.panel import Panel
 
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
 from soma.tasks.classification import ClassificationHead
-from soma.training.collate import BagBatch, bag_collate_fn
+from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer, TrainResult
+from soma.training.trainer import Trainer, TrainResult, _build_training_panel
 from soma.training.seed import seed_everything
 
 
@@ -28,6 +31,32 @@ def _make_model() -> MILModel:
     return MILModel(
         aggregator=MeanPool(input_dim=D),
         task_head=ClassificationHead(input_dim=D, num_classes=NUM_CLASSES),
+    )
+
+
+def _make_epoch_log(
+    epoch: int,
+    train_loss: float,
+    val_loss: float,
+    accuracy: float,
+    balanced_accuracy: float,
+    f1_macro: float,
+    auc: float,
+    lr: float,
+):
+    from soma.training.trainer import EpochLog
+
+    return EpochLog(
+        epoch=epoch,
+        train_loss=train_loss,
+        val_loss=val_loss,
+        val_metrics={
+            "accuracy": accuracy,
+            "balanced_accuracy": balanced_accuracy,
+            "f1_macro": f1_macro,
+            "auc": auc,
+        },
+        lr=lr,
     )
 
 
@@ -51,6 +80,31 @@ def _make_synthetic_loader(num_slides: int, seed: int = 0):
 
 
 class TestTrainer:
+    def test_build_training_panel_returns_rich_panel(self):
+        log = _make_epoch_log(0, 1.2345, 0.9876, 0.75, 0.5, 0.25, 0.125, 1e-4)
+        panel = _build_training_panel(
+            title="Training progress",
+            subtitle="epoch 1/50",
+            log=log,
+            total_epochs=50,
+            best_epoch=0,
+            best_val_loss=0.9876,
+            best_val_metrics=log.val_metrics,
+            patience_counter=0,
+            patience_limit=10,
+            checkpoint_path=Path("/tmp/best_model.pt"),
+            status="new best checkpoint saved at epoch 1",
+        )
+
+        assert isinstance(panel, Panel)
+        buffer = io.StringIO()
+        console = Console(file=buffer, force_terminal=False, color_system=None, width=120, record=True)
+        console.print(panel)
+        rendered = console.export_text(clear=False)
+        assert "epoch" in rendered
+        assert "train" in rendered
+        assert "val" in rendered
+
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
         model = _make_model()
@@ -72,6 +126,38 @@ class TestTrainer:
         assert len(result.history) == 3
         assert result.best_epoch >= 0
         assert result.best_val_loss >= 0
+        assert set(result.best_val_metrics) >= {"accuracy", "balanced_accuracy", "f1_macro", "auc"}
+
+    def test_fit_renders_epoch_progress_with_rich_console(
+        self, tmp_path: Path
+    ):
+        seed_everything(42)
+        model = _make_model()
+        train_loader = _make_synthetic_loader(6, seed=0)
+        val_loader = _make_synthetic_loader(4, seed=1)
+        config = TrainingConfig(epochs=2, learning_rate=1e-3, patience=10)
+
+        buffer = io.StringIO()
+        console = Console(file=buffer, force_terminal=False, color_system=None, width=120)
+
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+            output_dir=tmp_path,
+            device=torch.device("cpu"),
+            console=console,
+        )
+        result = trainer.fit()
+
+        output = buffer.getvalue()
+        assert "Training progress" in output
+        assert "epoch" in output
+        assert "train" in output and "val" in output
+        assert "acc" in output and "bal" in output and "f1" in output and "auc" in output
+        assert "new best checkpoint" in output or "training complete" in output
+        assert result.history[-1].epoch == len(result.history) - 1
 
     def test_loss_decreases(self, tmp_path: Path):
         """Training loss should decrease over epochs on synthetic data."""

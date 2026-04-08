@@ -115,11 +115,20 @@ def compute_classification_metrics(
     }
 
     # AUC: binary uses column 1 probability, multi-class uses OvR
-    if num_classes == 2:
-        metrics["auc"] = float(roc_auc_score(y_true, y_prob[:, 1]))
-    else:
-        metrics["auc"] = float(
-            roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
-        )
+    try:
+        if num_classes == 2:
+            auc = float(roc_auc_score(y_true, y_prob[:, 1]))
+        else:
+            auc = float(
+                roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
+            )
+    except ValueError:
+        auc = float("nan")
+
+    if not np.isfinite(auc):
+        # Tiny debug folds can have a single class in the validation split.
+        auc = 0.5
+
+    metrics["auc"] = auc
 
     return metrics

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,6 +68,22 @@ def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
         torch.save(torch.randn(n_tiles, D), feature_dir / f"s{i}.pt")
 
     return dataset_csv, splits_csv, feature_dir
+
+
+def _write_feature_manifest(feature_dir: Path, statuses: dict[str, str]) -> None:
+    rows = []
+    for sample_id, status in statuses.items():
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "feature_status": status,
+                "feature_path": str((feature_dir / f"{sample_id}.pt").resolve()) if status == "success" else "",
+                "num_tiles": 1 if status == "success" else 0,
+                "feature_rank": 2,
+                "feature_dim": D,
+            }
+        )
+    pd.DataFrame(rows).to_csv(feature_dir / "process_list.csv", index=False)
 
 
 def _setup_multifold_data(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -158,6 +175,80 @@ class TestTrainOneFold:
         assert result.train_result is not None
         assert result.tune_report.split == "tune"
         assert result.test_report.split == "test"
+
+    def test_ignores_samples_without_features(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        (feature_dir / "s5.pt").unlink()
+        _write_feature_manifest(
+            feature_dir,
+            {
+                "s0": "success",
+                "s1": "success",
+                "s2": "success",
+                "s3": "success",
+                "s4": "success",
+                "s5": "empty",
+                "s6": "success",
+                "s7": "success",
+            },
+        )
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        fold_dir = tmp_path / "fold_missing_feature"
+
+        caplog.set_level(logging.INFO, logger="soma.pipeline")
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            output_dir=fold_dir,
+        )
+
+        assert isinstance(result, FoldResult)
+        assert (fold_dir / "best_model.pt").exists()
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(
+            message == "Fold 0: train=5 tune=1 test=1 | dropped empty: train=1, tune=0, test=0"
+            for message in messages
+        )
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+    def test_errors_when_expected_feature_is_missing(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        (feature_dir / "s5.pt").unlink()
+        _write_feature_manifest(
+            feature_dir,
+            {
+                "s0": "success",
+                "s1": "success",
+                "s2": "success",
+                "s3": "success",
+                "s4": "success",
+                "s5": "success",
+                "s6": "success",
+                "s7": "success",
+            },
+        )
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="s5"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="classification"),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+                output_dir=tmp_path / "fold_missing_feature",
+            )
 
     def test_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -465,6 +556,37 @@ class TestPipeline:
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
         assert result.output_dir == output_dir
+
+    def test_run_ignores_samples_without_features(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        (feature_dir / "s5.pt").unlink()
+        _write_feature_manifest(
+            feature_dir,
+            {
+                "s0": "success",
+                "s1": "success",
+                "s2": "success",
+                "s3": "success",
+                "s4": "success",
+                "s5": "empty",
+                "s6": "success",
+                "s7": "success",
+            },
+        )
+        output_dir = tmp_path / "output"
+
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=output_dir,
+            aggregator=AggregatorConfig(name="mean_pool"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        result = Pipeline(config, feature_dir=feature_dir).run()
+
+        assert isinstance(result, PipelineResult)
+        assert len(result.fold_results) == 1
+        assert (output_dir / "fold_0" / "best_model.pt").exists()
 
     def test_run_saves_config_yaml(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -793,7 +915,9 @@ class TestPipeline:
                 torch.save(torch.ones(D), slide_cache.features_dir / f"s{i}.pt")
             record_feature_dim(slide_cache, D)
 
-        with patch.object(
+        with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
+            "soma.extraction.torch.cuda.device_count", return_value=1
+        ), patch.object(
             FeatureExtractor,
             "preprocess",
             autospec=True,
@@ -815,7 +939,9 @@ class TestPipeline:
             assert populate_tile_cache.called
             assert populate_slide_cache.called
 
-        with patch.object(
+        with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
+            "soma.extraction.torch.cuda.device_count", return_value=1
+        ), patch.object(
             FeatureExtractor,
             "preprocess",
             autospec=True,

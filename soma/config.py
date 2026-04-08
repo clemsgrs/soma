@@ -13,6 +13,7 @@ import yaml
 class PreprocessingConfig:
     """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
 
+    backend: str = "auto"
     target_tile_size_px: int | None = None
     target_spacing_um: float | None = None
     target_region_size_px: int | None = None
@@ -32,6 +33,11 @@ class PreprocessingConfig:
     hierarchical: bool = False
     npatch: int | None = None
     hierarchical_patch_size_px: int | None = None
+
+    @property
+    def requested_backend(self) -> str:
+        """Backend requested by config before runtime auto-resolution."""
+        return self.backend
 
     @property
     def has_hierarchical_geometry(self) -> bool:
