@@ -76,14 +76,16 @@ COPY --chown=user:user soma /opt/app/soma
 COPY --chown=user:user pyproject.toml /opt/app/pyproject.toml
 COPY --chown=user:user README.md /opt/app/README.md
 COPY --chown=user:user LICENSE /opt/app/LICENSE
-COPY --chown=user:user constraints-cu128.txt /opt/app/constraints-cu128.txt
+RUN printf '%s\n' \
+    'torch' \
+    > /opt/app/constraints-cu128.txt
 
 RUN python -m pip install \
     --no-cache-dir \
     --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
     -c /opt/app/constraints-cu128.txt \
     --no-build-isolation \
-    "/opt/app[wsi,cucim,transformers]" \
+    "/opt/app[dev]" \
     && python -m pip install \
         --no-cache-dir \
         --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \

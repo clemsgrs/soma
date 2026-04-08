@@ -256,3 +256,52 @@ def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeyp
     assert len(loaded) == 1
     assert loaded[0].slide.sample_id == "s1"
     assert loaded[0].tiling_result is tiling_result
+
+
+def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    dataset_csv = tmp_path / "dataset.csv"
+    mask_path = tmp_path / "masks" / "s1.tif"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "image_path": [str(tmp_path / "slides" / "s1.svs")],
+            "label": ["tumor"],
+            "mask_path": [str(mask_path)],
+        }
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text("sample_id\n", encoding="utf-8")
+
+    row = {
+        "sample_id": "s1",
+        "tiling_status": "success",
+        "error": None,
+    }
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame([row]))
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: SimpleNamespace())
+
+    captured: dict[str, object] = {}
+
+    def _fake_validate(result, *, sample_id, image_path, mask_path, tissue_mask_tissue_value):
+        captured.update(
+            sample_id=sample_id,
+            image_path=image_path,
+            mask_path=mask_path,
+            tissue_mask_tissue_value=tissue_mask_tissue_value,
+        )
+
+    monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", _fake_validate)
+
+    load_tilings(
+        dataset=dataset,
+        tiling_dir=tiling_dir,
+        tissue_mask_tissue_value=1,
+    )
+
+    assert captured["sample_id"] == "s1"
+    assert captured["image_path"] == dataset.samples["s1"].image_path
+    assert captured["mask_path"] == mask_path
+    assert captured["tissue_mask_tissue_value"] == 1

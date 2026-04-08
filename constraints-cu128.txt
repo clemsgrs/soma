@@ -1,3 +1,0 @@
-# Keep the CUDA-enabled image on a torch range that still has prebuilt
-# flash-attn wheels for the cu128 family, similar to slide2vec.
-torch

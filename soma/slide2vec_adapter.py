@@ -146,7 +146,7 @@ def load_tilings(
             tiling_result,
             sample_id=record.sample_id,
             image_path=record.image_path,
-            tissue_mask_path=record.mask_path,
+            mask_path=record.mask_path,
             tissue_mask_tissue_value=(
                 int(tissue_mask_tissue_value) if record.mask_path is not None else None
             ),
