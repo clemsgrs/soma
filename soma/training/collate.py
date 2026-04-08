@@ -25,11 +25,16 @@ class BagBatch:
     sample_ids: tuple[str, ...]
 
 
-def bag_collate_fn(batch: list[tuple[Tensor, int, str]]) -> BagBatch:
+def bag_collate_fn(
+    batch: list[tuple[Tensor, int | float, str]],
+    label_dtype: torch.dtype = torch.long,
+) -> BagBatch:
     """Collate variable-length bags by padding to max length.
 
     Args:
         batch: List of (features, label, sample_id) tuples from BagDataset.
+        label_dtype: dtype for the labels tensor. Use torch.long for
+            classification and torch.float for regression.
 
     Returns:
         BagBatch with padded features and boolean mask.
@@ -50,7 +55,7 @@ def bag_collate_fn(batch: list[tuple[Tensor, int, str]]) -> BagBatch:
     return BagBatch(
         features=padded,
         mask=mask,
-        labels=torch.tensor(labels, dtype=torch.long),
+        labels=torch.tensor(labels, dtype=label_dtype),
         sample_ids=tuple(sample_ids),
     )
 
@@ -76,7 +81,10 @@ class HierarchicalBagBatch:
         return self.mask
 
 
-def hierarchical_bag_collate_fn(batch: list[tuple[Tensor, int, str]]) -> HierarchicalBagBatch:
+def hierarchical_bag_collate_fn(
+    batch: list[tuple[Tensor, int | float, str]],
+    label_dtype: torch.dtype = torch.long,
+) -> HierarchicalBagBatch:
     """Collate variable-length hierarchical bags by padding the region axis."""
     features_list, labels, sample_ids = zip(*batch)
 
@@ -104,6 +112,6 @@ def hierarchical_bag_collate_fn(batch: list[tuple[Tensor, int, str]]) -> Hierarc
     return HierarchicalBagBatch(
         features=padded,
         mask=mask,
-        labels=torch.tensor(labels, dtype=torch.long, device=features_list[0].device),
+        labels=torch.tensor(labels, dtype=label_dtype, device=features_list[0].device),
         sample_ids=tuple(sample_ids),
     )

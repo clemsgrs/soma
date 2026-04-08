@@ -91,6 +91,97 @@ except ModuleNotFoundError:  # pragma: no cover - lightweight fallback for tests
         return float(np.mean(aucs)) if aucs else 0.5
 
 
+def compute_regression_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> dict[str, float]:
+    """Compute standard regression metrics.
+
+    Args:
+        y_true: Ground truth values, shape (N,).
+        y_pred: Predicted values, shape (N,).
+
+    Returns:
+        Dictionary with mse, mae, r2.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    try:
+        from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+        mse = float(mean_squared_error(y_true, y_pred))
+        mae = float(mean_absolute_error(y_true, y_pred))
+        r2 = float(r2_score(y_true, y_pred))
+    except ModuleNotFoundError:
+        mse = float(np.mean((y_true - y_pred) ** 2))
+        mae = float(np.mean(np.abs(y_true - y_pred)))
+        ss_res = float(np.sum((y_true - y_pred) ** 2))
+        ss_tot = float(np.sum((y_true - y_true.mean()) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+
+    return {"mse": mse, "mae": mae, "r2": r2}
+
+
+def compute_ordinal_metrics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+) -> dict[str, float]:
+    """Compute metrics for ordinal classification (integer predictions).
+
+    Args:
+        y_true: Ground truth integer labels, shape (N,).
+        y_pred: Predicted integer labels, shape (N,).
+
+    Returns:
+        Dictionary with qwk, accuracy, balanced_accuracy.
+    """
+    y_true = np.asarray(y_true, dtype=int)
+    y_pred = np.asarray(y_pred, dtype=int)
+
+    metrics: dict[str, float] = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+    }
+
+    try:
+        from sklearn.metrics import cohen_kappa_score
+
+        qwk = float(cohen_kappa_score(y_true, y_pred, weights="quadratic"))
+    except ModuleNotFoundError:
+        qwk = _quadratic_weighted_kappa(y_true, y_pred)
+    except ValueError:
+        qwk = 0.0
+
+    metrics["qwk"] = qwk
+    return metrics
+
+
+def _quadratic_weighted_kappa(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Numpy fallback for quadratic weighted kappa."""
+    labels = np.union1d(y_true, y_pred)
+    n = len(labels)
+    if n <= 1:
+        return 0.0
+    label_to_idx = {label: idx for idx, label in enumerate(labels)}
+    O = np.zeros((n, n), dtype=float)
+    for t, p in zip(y_true, y_pred):
+        O[label_to_idx[t], label_to_idx[p]] += 1.0
+
+    w = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(n):
+            w[i, j] = (labels[i] - labels[j]) ** 2 / (labels[-1] - labels[0]) ** 2
+
+    hist_true = O.sum(axis=1)
+    hist_pred = O.sum(axis=0)
+    E = np.outer(hist_true, hist_pred) / O.sum()
+
+    num = float(np.sum(w * O))
+    den = float(np.sum(w * E))
+    return 1.0 - num / den if den > 0 else 0.0
+
+
 def compute_classification_metrics(
     y_true: np.ndarray,
     y_prob: np.ndarray,

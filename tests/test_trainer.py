@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+import functools
+
 import torch
 import pytest
 from rich.console import Console
@@ -13,6 +15,7 @@ from rich.panel import Panel
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
 from soma.tasks.classification import ClassificationHead
+from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
 from soma.training.trainer import Trainer, TrainResult, _build_training_panel
@@ -37,7 +40,7 @@ def _make_model() -> MILModel:
 def _make_epoch_log(
     epoch: int,
     train_loss: float,
-    val_loss: float,
+    tune_loss: float,
     accuracy: float,
     balanced_accuracy: float,
     f1_macro: float,
@@ -49,8 +52,8 @@ def _make_epoch_log(
     return EpochLog(
         epoch=epoch,
         train_loss=train_loss,
-        val_loss=val_loss,
-        val_metrics={
+        tune_loss=tune_loss,
+        tune_metrics={
             "accuracy": accuracy,
             "balanced_accuracy": balanced_accuracy,
             "f1_macro": f1_macro,
@@ -88,8 +91,8 @@ class TestTrainer:
             log=log,
             total_epochs=50,
             best_epoch=0,
-            best_val_loss=0.9876,
-            best_val_metrics=log.val_metrics,
+            best_tune_loss=0.9876,
+            best_tune_metrics=log.tune_metrics,
             patience_counter=0,
             patience_limit=10,
             checkpoint_path=Path("/tmp/best_model.pt"),
@@ -103,19 +106,19 @@ class TestTrainer:
         rendered = console.export_text(clear=False)
         assert "epoch" in rendered
         assert "train" in rendered
-        assert "val" in rendered
+        assert "tune" in rendered
 
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
         model = _make_model()
         train_loader = _make_synthetic_loader(6, seed=0)
-        val_loader = _make_synthetic_loader(4, seed=1)
+        tune_loader = _make_synthetic_loader(4, seed=1)
         config = TrainingConfig(epochs=3, learning_rate=1e-3, patience=10)
 
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
-            val_loader=val_loader,
+            tune_loader=tune_loader,
             config=config,
             output_dir=tmp_path,
             device=torch.device("cpu"),
@@ -125,8 +128,8 @@ class TestTrainer:
         assert isinstance(result, TrainResult)
         assert len(result.history) == 3
         assert result.best_epoch >= 0
-        assert result.best_val_loss >= 0
-        assert set(result.best_val_metrics) >= {"accuracy", "balanced_accuracy", "f1_macro", "auc"}
+        assert result.best_tune_loss >= 0
+        assert set(result.best_tune_metrics) >= {"accuracy", "balanced_accuracy", "f1_macro", "auc"}
 
     def test_fit_renders_epoch_progress_with_rich_console(
         self, tmp_path: Path
@@ -134,7 +137,7 @@ class TestTrainer:
         seed_everything(42)
         model = _make_model()
         train_loader = _make_synthetic_loader(6, seed=0)
-        val_loader = _make_synthetic_loader(4, seed=1)
+        tune_loader = _make_synthetic_loader(4, seed=1)
         config = TrainingConfig(epochs=2, learning_rate=1e-3, patience=10)
 
         buffer = io.StringIO()
@@ -143,7 +146,7 @@ class TestTrainer:
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
-            val_loader=val_loader,
+            tune_loader=tune_loader,
             config=config,
             output_dir=tmp_path,
             device=torch.device("cpu"),
@@ -154,7 +157,7 @@ class TestTrainer:
         output = buffer.getvalue()
         assert "Training progress" in output
         assert "epoch" in output
-        assert "train" in output and "val" in output
+        assert "train" in output and "tune" in output
         assert "acc" in output and "bal" in output and "f1" in output and "auc" in output
         assert "new best checkpoint" in output or "training complete" in output
         assert result.history[-1].epoch == len(result.history) - 1
@@ -164,13 +167,13 @@ class TestTrainer:
         seed_everything(42)
         model = _make_model()
         train_loader = _make_synthetic_loader(8, seed=0)
-        val_loader = _make_synthetic_loader(4, seed=1)
+        tune_loader = _make_synthetic_loader(4, seed=1)
         config = TrainingConfig(epochs=10, learning_rate=1e-2, patience=20)
 
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
-            val_loader=val_loader,
+            tune_loader=tune_loader,
             config=config,
             output_dir=tmp_path,
             device=torch.device("cpu"),
@@ -182,18 +185,18 @@ class TestTrainer:
         assert last_loss < first_loss
 
     def test_early_stopping(self, tmp_path: Path):
-        """Training should stop early if val_loss doesn't improve."""
+        """Training should stop early if tune_loss doesn't improve."""
         seed_everything(42)
         model = _make_model()
         train_loader = _make_synthetic_loader(4, seed=0)
-        val_loader = _make_synthetic_loader(4, seed=1)
+        tune_loader = _make_synthetic_loader(4, seed=1)
         # Patience=2, many epochs → should stop early
         config = TrainingConfig(epochs=100, learning_rate=1e-5, patience=2)
 
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
-            val_loader=val_loader,
+            tune_loader=tune_loader,
             config=config,
             output_dir=tmp_path,
             device=torch.device("cpu"),
@@ -207,13 +210,13 @@ class TestTrainer:
         seed_everything(42)
         model = _make_model()
         train_loader = _make_synthetic_loader(4, seed=0)
-        val_loader = _make_synthetic_loader(4, seed=1)
+        tune_loader = _make_synthetic_loader(4, seed=1)
         config = TrainingConfig(epochs=3, patience=10)
 
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
-            val_loader=val_loader,
+            tune_loader=tune_loader,
             config=config,
             output_dir=tmp_path,
             device=torch.device("cpu"),
@@ -239,13 +242,13 @@ class TestTrainerWithSlideModel:
         # Build slide-level batches: (D,) tensors
         slides = [(torch.randn(D), i % 2, f"s{i}") for i in range(8)]
         train_loader = DataLoader(slides[:6], batch_size=2, collate_fn=slide_collate_fn)
-        val_loader = DataLoader(slides[6:], batch_size=2, collate_fn=slide_collate_fn)
+        tune_loader = DataLoader(slides[6:], batch_size=2, collate_fn=slide_collate_fn)
 
         config = TrainingConfig(epochs=3, learning_rate=1e-3, patience=10)
         trainer = Trainer(
             model=model,
             train_loader=train_loader,
-            val_loader=val_loader,
+            tune_loader=tune_loader,
             config=config,
             output_dir=tmp_path,
             device=torch.device("cpu"),
@@ -255,6 +258,43 @@ class TestTrainerWithSlideModel:
         assert isinstance(result, TrainResult)
         assert len(result.history) == 3
         assert result.checkpoint_path.exists()
+
+
+class TestTrainerWithRegressionHead:
+    def test_fit_with_regression_model(self, tmp_path: Path):
+        """Trainer should work with RegressionHead and float labels."""
+        from torch.utils.data import DataLoader
+
+        seed_everything(42)
+        D = 16
+        model = MILModel(
+            aggregator=MeanPool(input_dim=D),
+            task_head=RegressionHead(input_dim=D),
+        )
+
+        # Build bags with continuous float labels
+        torch.manual_seed(0)
+        bags = [(torch.randn(5, D), float(i) * 0.5, f"slide_{i}") for i in range(8)]
+        _reg_collate = functools.partial(bag_collate_fn, label_dtype=torch.float)
+        train_loader = DataLoader(bags[:6], batch_size=2, collate_fn=_reg_collate)
+        tune_loader = DataLoader(bags[6:], batch_size=2, collate_fn=_reg_collate)
+
+        config = TrainingConfig(epochs=3, learning_rate=1e-3, patience=10)
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            tune_loader=tune_loader,
+            config=config,
+            output_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        result = trainer.fit()
+
+        assert isinstance(result, TrainResult)
+        assert len(result.history) == 3
+        assert result.checkpoint_path.exists()
+        for key in ["mse", "mae", "r2"]:
+            assert key in result.best_tune_metrics
 
 
 class TestSeedEverything:

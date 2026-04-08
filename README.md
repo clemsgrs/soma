@@ -19,6 +19,7 @@ from soma import (
     EncoderConfig,
     Pipeline,
     PipelineConfig,
+    TaskConfig,
     TrainingConfig,
 )
 
@@ -29,6 +30,7 @@ config = PipelineConfig(
     cache=CacheConfig(root_dir="shared/feature_cache"),
     encoder=EncoderConfig(name="uni2", batch_size=64),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
+    task=TaskConfig(name="classification"),
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
 )
 
@@ -41,6 +43,7 @@ result = Pipeline(config).run()
 - `FeatureExtractor` preprocesses slides and writes embeddings.
 - `FeatureStore` reads cached or plain feature directories.
 - `Pipeline`, `train()`, and `train_one_fold()` run experiments.
+- `TaskConfig` selects the task head: `classification` or `regression`.
 
 ## Docs
 

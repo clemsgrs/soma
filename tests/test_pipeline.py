@@ -548,6 +548,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=output_dir,
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
@@ -580,6 +581,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=output_dir,
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         result = Pipeline(config, feature_dir=feature_dir).run()
@@ -597,6 +599,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=output_dir,
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         Pipeline(config, feature_dir=feature_dir).run()
@@ -612,6 +615,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=output_dir,
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         Pipeline(config, feature_dir=feature_dir).run()
@@ -630,6 +634,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=output_dir,
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         result = Pipeline(config, feature_dir=feature_dir).run()
@@ -659,6 +664,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=output_dir,
             aggregator=None,
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         result = Pipeline(config, feature_dir=slide_feature_dir).run()
@@ -692,6 +698,7 @@ class TestPipeline:
                     "dropout": 0.0,
                 },
             ),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         result = Pipeline(config, feature_dir=feature_dir).run()
@@ -718,6 +725,7 @@ class TestPipeline:
             output_dir=output_dir,
             encoder=EncoderConfig(name="prism"),
             aggregator=None,
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
@@ -739,6 +747,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_dir=tmp_path / "output_slide_error",
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with pytest.raises(ValueError, match="aggregator must be None"):
@@ -866,6 +875,7 @@ class TestPipeline:
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_slide),
             aggregator=None,
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         tile_config = PipelineConfig(
@@ -875,6 +885,7 @@ class TestPipeline:
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_tile),
             aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
@@ -961,6 +972,7 @@ class TestPipeline:
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
             output_dir=tmp_path / "output",
+            task=TaskConfig(name="classification"),
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
 

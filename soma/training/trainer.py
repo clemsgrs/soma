@@ -16,7 +16,6 @@ from rich.table import Table
 from rich.text import Text
 
 from soma.config import TrainingConfig
-from soma.evaluation.metrics import compute_classification_metrics
 
 
 @dataclass(frozen=True)
@@ -25,8 +24,8 @@ class EpochLog:
 
     epoch: int
     train_loss: float
-    val_loss: float
-    val_metrics: dict[str, float]
+    tune_loss: float
+    tune_metrics: dict[str, float]
     lr: float
 
 
@@ -35,8 +34,8 @@ class TrainResult:
     """Result of a training run."""
 
     best_epoch: int
-    best_val_loss: float
-    best_val_metrics: dict[str, float]
+    best_tune_loss: float
+    best_tune_metrics: dict[str, float]
     history: list[EpochLog]
     checkpoint_path: Path
 
@@ -52,7 +51,7 @@ class Trainer:
     Args:
         model: nn.Module with a `task_head` attribute to train.
         train_loader: Training DataLoader.
-        val_loader: Validation DataLoader.
+        tune_loader: Tune DataLoader.
         config: Training configuration.
         output_dir: Directory for checkpoints.
         device: torch.device for training.
@@ -62,7 +61,7 @@ class Trainer:
         self,
         model: torch.nn.Module,
         train_loader: DataLoader,
-        val_loader: DataLoader,
+        tune_loader: DataLoader,
         config: TrainingConfig,
         output_dir: Path,
         device: torch.device,
@@ -70,7 +69,7 @@ class Trainer:
     ) -> None:
         self._model = model.to(device)
         self._train_loader = train_loader
-        self._val_loader = val_loader
+        self._tune_loader = tune_loader
         self._config = config
         self._output_dir = Path(output_dir)
         self._device = device
@@ -89,9 +88,9 @@ class Trainer:
         checkpoint_path = self._output_dir / "best_model.pt"
 
         history: list[EpochLog] = []
-        best_val_loss = float("inf")
+        best_tune_loss = float("inf")
         best_epoch = 0
-        best_val_metrics: dict[str, float] = {}
+        best_tune_metrics: dict[str, float] = {}
         patience_counter = 0
 
         console = self._console or Console()
@@ -103,8 +102,8 @@ class Trainer:
                 log=None,
                 total_epochs=self._config.epochs,
                 best_epoch=best_epoch,
-                best_val_loss=best_val_loss,
-                best_val_metrics=best_val_metrics,
+                best_tune_loss=best_tune_loss,
+                best_tune_metrics=best_tune_metrics,
                 patience_counter=patience_counter,
                 patience_limit=self._config.patience,
                 checkpoint_path=checkpoint_path,
@@ -116,7 +115,7 @@ class Trainer:
         ) as live:
             for epoch in range(self._config.epochs):
                 train_loss = self._train_epoch()
-                val_loss, val_metrics = self._validate()
+                tune_loss, tune_metrics = self._tune()
 
                 lr = self._optimizer.param_groups[0]["lr"]
                 if self._scheduler is not None:
@@ -125,20 +124,20 @@ class Trainer:
                 log = EpochLog(
                     epoch=epoch,
                     train_loss=train_loss,
-                    val_loss=val_loss,
-                    val_metrics=val_metrics,
+                    tune_loss=tune_loss,
+                    tune_metrics=tune_metrics,
                     lr=lr,
                 )
                 history.append(log)
 
-                improved = val_loss < best_val_loss
+                improved = tune_loss < best_tune_loss
                 status: str
                 if improved:
-                    best_val_loss = val_loss
+                    best_tune_loss = tune_loss
                     best_epoch = epoch
-                    best_val_metrics = val_metrics
+                    best_tune_metrics = tune_metrics
                     patience_counter = 0
-                    _save_checkpoint(self._model, self._optimizer, epoch, val_loss, checkpoint_path)
+                    _save_checkpoint(self._model, self._optimizer, epoch, tune_loss, checkpoint_path)
                     status = f"new best checkpoint saved at epoch {epoch + 1}"
                 else:
                     patience_counter += 1
@@ -151,8 +150,8 @@ class Trainer:
                         log=log,
                         total_epochs=self._config.epochs,
                         best_epoch=best_epoch,
-                        best_val_loss=best_val_loss,
-                        best_val_metrics=best_val_metrics,
+                        best_tune_loss=best_tune_loss,
+                        best_tune_metrics=best_tune_metrics,
                         patience_counter=patience_counter,
                         patience_limit=self._config.patience,
                         checkpoint_path=checkpoint_path,
@@ -169,8 +168,8 @@ class Trainer:
                             log=log,
                             total_epochs=self._config.epochs,
                             best_epoch=best_epoch,
-                            best_val_loss=best_val_loss,
-                            best_val_metrics=best_val_metrics,
+                            best_tune_loss=best_tune_loss,
+                            best_tune_metrics=best_tune_metrics,
                             patience_counter=patience_counter,
                             patience_limit=self._config.patience,
                             checkpoint_path=checkpoint_path,
@@ -187,8 +186,8 @@ class Trainer:
                     log=history[-1] if history else None,
                     total_epochs=self._config.epochs,
                     best_epoch=best_epoch,
-                    best_val_loss=best_val_loss,
-                    best_val_metrics=best_val_metrics,
+                    best_tune_loss=best_tune_loss,
+                    best_tune_metrics=best_tune_metrics,
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
                     checkpoint_path=checkpoint_path,
@@ -199,8 +198,8 @@ class Trainer:
 
         return TrainResult(
             best_epoch=best_epoch,
-            best_val_loss=best_val_loss,
-            best_val_metrics=best_val_metrics,
+            best_tune_loss=best_tune_loss,
+            best_tune_metrics=best_tune_metrics,
             history=history,
             checkpoint_path=checkpoint_path,
         )
@@ -240,16 +239,15 @@ class Trainer:
         return total_loss / max(num_batches, 1)
 
     @torch.inference_mode()
-    def _validate(self) -> tuple[float, dict[str, float]]:
-        """Run validation. Returns (average loss, metrics dict)."""
+    def _tune(self) -> tuple[float, dict[str, float]]:
+        """Run evaluation on tune set. Returns (average loss, metrics dict)."""
         self._model.eval()
         total_loss = 0.0
         num_batches = 0
-        y_true_batches: list[np.ndarray] = []
-        y_pred_batches: list[np.ndarray] = []
-        y_prob_batches: list[np.ndarray] = []
+        all_logits: list[torch.Tensor] = []
+        all_labels: list[torch.Tensor] = []
 
-        for batch in self._val_loader:
+        for batch in self._tune_loader:
             features = batch.features.to(self._device)
             labels = batch.labels.to(self._device)
 
@@ -260,17 +258,14 @@ class Trainer:
             loss = self._model.task_head.compute_loss(out.logits, labels)
             total_loss += loss.item()
             num_batches += 1
-            probs = torch.softmax(out.logits, dim=1)
-            y_true_batches.append(labels.detach().cpu().numpy())
-            y_pred_batches.append(probs.argmax(dim=1).detach().cpu().numpy())
-            y_prob_batches.append(probs.detach().cpu().numpy())
+            all_logits.append(out.logits)
+            all_labels.append(labels)
 
         avg_loss = total_loss / max(num_batches, 1)
-        if y_true_batches:
-            y_true = np.concatenate(y_true_batches, axis=0)
-            y_pred = np.concatenate(y_pred_batches, axis=0)
-            y_prob = np.concatenate(y_prob_batches, axis=0)
-            metrics = compute_classification_metrics(y_true, y_prob, y_pred)
+        if all_logits:
+            logits = torch.cat(all_logits, dim=0)
+            targets = torch.cat(all_labels, dim=0)
+            metrics = self._model.task_head.compute_metrics(logits, targets)
         else:
             metrics = {}
         return avg_loss, metrics
@@ -310,7 +305,7 @@ def _save_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
-    val_loss: float,
+    tune_loss: float,
     path: Path,
 ) -> None:
     torch.save(
@@ -318,7 +313,7 @@ def _save_checkpoint(
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch,
-            "val_loss": val_loss,
+            "tune_loss": tune_loss,
         },
         path,
     )
@@ -331,8 +326,8 @@ def _build_training_panel(
     log: EpochLog | None,
     total_epochs: int,
     best_epoch: int,
-    best_val_loss: float,
-    best_val_metrics: dict[str, float],
+    best_tune_loss: float,
+    best_tune_metrics: dict[str, float],
     patience_counter: int,
     patience_limit: int,
     checkpoint_path: Path,
@@ -345,25 +340,19 @@ def _build_training_panel(
     if log is not None:
         table.add_row("epoch", Text(f"{log.epoch + 1:02d}/{total_epochs:02d}", style="bold cyan"))
         table.add_row("train", Text(f"{log.train_loss:.4f}", style="white"))
-        table.add_row("val", Text(f"{log.val_loss:.4f}", style="white"))
+        table.add_row("tune", Text(f"{log.tune_loss:.4f}", style="white"))
         table.add_row("lr", Text(f"{log.lr:.2e}", style="white"))
-        for label, key in (
-            ("acc", "accuracy"),
-            ("bal", "balanced_accuracy"),
-            ("f1", "f1_macro"),
-            ("auc", "auc"),
-        ):
-            if key in log.val_metrics:
-                table.add_row(label, Text(f"{log.val_metrics[key]:.4f}", style="white"))
+        for key, value in log.tune_metrics.items():
+            table.add_row(key[:6], Text(f"{value:.4f}", style="white"))
     else:
         table.add_row("epoch", Text(f"0/{total_epochs:02d}", style="bold cyan"))
         table.add_row("train", Text("-", style="dim"))
-        table.add_row("val", Text("-", style="dim"))
+        table.add_row("tune", Text("-", style="dim"))
         table.add_row("lr", Text("-", style="dim"))
 
-    best_metrics_text = _format_metrics(best_val_metrics)
-    best_loss_text = _format_finite(best_val_loss)
-    best_epoch_text = f"{best_epoch + 1:02d}" if np.isfinite(best_val_loss) else "n/a"
+    best_metrics_text = _format_metrics(best_tune_metrics)
+    best_loss_text = _format_finite(best_tune_loss)
+    best_epoch_text = f"{best_epoch + 1:02d}" if np.isfinite(best_tune_loss) else "n/a"
     table.add_row(
         "best",
         Text.assemble((best_loss_text, "green"), (" @ ", "dim"), (best_epoch_text, "green")),

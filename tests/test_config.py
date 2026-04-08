@@ -76,9 +76,13 @@ def test_aggregator_config_defaults():
     assert cfg.params == {}
 
 
-def test_task_config_defaults():
-    cfg = TaskConfig()
-    assert cfg.name == "classification"
+def test_task_config_requires_name():
+    with pytest.raises(TypeError):
+        TaskConfig()  # name is required
+
+
+def test_task_config_params_default_empty():
+    cfg = TaskConfig(name="classification")
     assert cfg.params == {}
 
 
@@ -166,7 +170,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
         "cache": {},
         "encoder": {},
         "aggregator": None,
-        "task": {},
+        "task": {"name": "classification"},
         "training": {},
         "tags": [],
     }
@@ -220,6 +224,29 @@ def test_aggregator_none_yaml_output(tmp_path: Path):
 
     raw = yaml.safe_load(yaml_path.read_text())
     assert raw["aggregator"] is None
+
+
+def test_pipeline_config_requires_task():
+    with pytest.raises(TypeError, match="task"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_dir="out",
+        )
+
+
+def test_load_config_raises_without_task_name(tmp_path: Path):
+    raw = {
+        "dataset_csv": "dataset.csv",
+        "splits_csv": "splits.csv",
+        "output_dir": "out",
+        "task": {},
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+    with pytest.raises(ValueError, match="task"):
+        load_config(yaml_path)
 
 
 # --- Helpers ---

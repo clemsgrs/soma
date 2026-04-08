@@ -81,7 +81,7 @@ class AggregatorConfig:
 class TaskConfig:
     """Configuration for the task head."""
 
-    name: str = "classification"
+    name: str
     params: dict[str, Any] = field(default_factory=dict)
 
 
@@ -110,9 +110,13 @@ class PipelineConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
-    task: TaskConfig = field(default_factory=TaskConfig)
+    task: TaskConfig = field(default=None)  # type: ignore[assignment]
     training: TrainingConfig = field(default_factory=TrainingConfig)
     tags: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.task is None:
+            raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
 
 
 # --- YAML serialization ---
@@ -157,6 +161,15 @@ def load_config(path: Path | str) -> PipelineConfig:
     return _dict_to_config(data)
 
 
+def _load_task_config(data: dict[str, Any]) -> TaskConfig:
+    task_data = data.get("task")
+    if not task_data or "name" not in task_data:
+        raise ValueError(
+            "Config is missing required 'task.name' (e.g. task: {name: classification})"
+        )
+    return TaskConfig(**task_data)
+
+
 def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
     return PipelineConfig(
@@ -167,7 +180,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**data.get("encoder", {})),
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
-        task=TaskConfig(**data.get("task", {})),
+        task=_load_task_config(data),
         training=TrainingConfig(**data.get("training", {})),
         tags=data.get("tags", []),
     )

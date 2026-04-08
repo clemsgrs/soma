@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from soma.evaluation.metrics import compute_classification_metrics
+from soma.evaluation.metrics import compute_classification_metrics, compute_ordinal_metrics, compute_regression_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 
 
@@ -51,6 +51,83 @@ class TestClassificationMetrics:
         metrics = compute_classification_metrics(y_true, y_prob, y_pred)
         assert metrics["auc"] == 0.5
         assert metrics["accuracy"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Ordinal metrics
+# ---------------------------------------------------------------------------
+
+
+class TestOrdinalMetrics:
+    def test_perfect_predictions(self):
+        y_true = np.array([0, 1, 2, 3, 4, 5])
+        y_pred = np.array([0, 1, 2, 3, 4, 5])
+        metrics = compute_ordinal_metrics(y_true, y_pred)
+        assert metrics["qwk"] == pytest.approx(1.0, abs=1e-6)
+        assert metrics["accuracy"] == pytest.approx(1.0, abs=1e-6)
+        assert metrics["balanced_accuracy"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_all_metrics_present(self):
+        y_true = np.array([0, 1, 2, 3, 4, 5])
+        y_pred = np.array([0, 1, 2, 3, 4, 4])
+        metrics = compute_ordinal_metrics(y_true, y_pred)
+        for key in ["qwk", "accuracy", "balanced_accuracy"]:
+            assert key in metrics
+            assert isinstance(metrics[key], float)
+
+    def test_qwk_penalises_large_errors_more(self):
+        # One-off errors vs. large errors on same set of true labels
+        y_true = np.array([0, 0, 5, 5])
+        y_near = np.array([1, 1, 4, 4])   # off by 1
+        y_far  = np.array([5, 5, 0, 0])   # off by 5
+        qwk_near = compute_ordinal_metrics(y_true, y_near)["qwk"]
+        qwk_far  = compute_ordinal_metrics(y_true, y_far)["qwk"]
+        assert qwk_near > qwk_far
+
+    def test_single_class_is_safe(self):
+        y_true = np.array([2, 2, 2])
+        y_pred = np.array([2, 2, 2])
+        metrics = compute_ordinal_metrics(y_true, y_pred)
+        assert isinstance(metrics["qwk"], float)
+
+
+# ---------------------------------------------------------------------------
+# Regression metrics
+# ---------------------------------------------------------------------------
+
+
+class TestRegressionMetrics:
+    def test_perfect_predictions(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0])
+        y_pred = np.array([1.0, 2.0, 3.0, 4.0])
+        metrics = compute_regression_metrics(y_true, y_pred)
+        assert metrics["mse"] == pytest.approx(0.0, abs=1e-6)
+        assert metrics["mae"] == pytest.approx(0.0, abs=1e-6)
+        assert metrics["r2"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_known_values(self):
+        y_true = np.array([1.0, 2.0, 3.0, 4.0])
+        y_pred = np.array([2.0, 2.0, 2.0, 2.0])  # constant prediction = mean of [1,2,3,4] = 2.5... actually 2
+        metrics = compute_regression_metrics(y_true, y_pred)
+        # MSE = ((1-2)^2 + (2-2)^2 + (3-2)^2 + (4-2)^2) / 4 = (1+0+1+4)/4 = 1.5
+        assert metrics["mse"] == pytest.approx(1.5, abs=1e-6)
+        # MAE = (1+0+1+2)/4 = 1.0
+        assert metrics["mae"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_all_metrics_present(self):
+        y_true = np.array([1.0, 2.0, 3.0])
+        y_pred = np.array([1.1, 1.9, 3.2])
+        metrics = compute_regression_metrics(y_true, y_pred)
+        for key in ["mse", "mae", "r2"]:
+            assert key in metrics
+            assert isinstance(metrics[key], float)
+
+    def test_mse_and_mae_non_negative(self):
+        y_true = np.random.randn(20)
+        y_pred = np.random.randn(20)
+        metrics = compute_regression_metrics(y_true, y_pred)
+        assert metrics["mse"] >= 0
+        assert metrics["mae"] >= 0
 
 
 # ---------------------------------------------------------------------------

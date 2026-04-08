@@ -15,6 +15,8 @@ import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import functools
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -29,7 +31,6 @@ from soma.config import (
     save_config,
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
-from soma.evaluation.metrics import compute_classification_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
@@ -191,30 +192,38 @@ def train_one_fold(
     logger.info(summary)
 
     task_cls = task_registry.get(task.name)
-    task_params = {"num_classes": dataset.num_classes, **task.params}
+    task_params = {**task_cls.auto_params(dataset), **task.params}
+
+    # Derive label encoding from the task head class
+    label_dtype = task_cls.label_dtype
+    if label_dtype == torch.float:
+        label_fn = lambda record: float(record.label)  # noqa: E731
+    else:
+        label_fn = lambda record: label_map[record.label]  # noqa: E731
 
     if feature_store.is_slide_level:
         # Slide-level path: skip aggregator, pass (B, D) directly to task head
         if aggregator is not None:
             msg = "aggregator must be None for slide-level features"
             raise ValueError(msg)
+        _slide_collate = functools.partial(slide_collate_fn, label_dtype=label_dtype)
         train_loader = DataLoader(
-            SlideDataset(train_records, feature_store, label_map),
+            SlideDataset(train_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=True,
-            collate_fn=slide_collate_fn,
+            collate_fn=_slide_collate,
         )
         tune_loader = DataLoader(
-            SlideDataset(tune_records, feature_store, label_map),
+            SlideDataset(tune_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=slide_collate_fn,
+            collate_fn=_slide_collate,
         )
         test_loader = DataLoader(
-            SlideDataset(test_records, feature_store, label_map),
+            SlideDataset(test_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=slide_collate_fn,
+            collate_fn=_slide_collate,
         )
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = SlideModel(task_head=head)
@@ -226,23 +235,24 @@ def train_one_fold(
         if preprocessing is None:
             raise ValueError("hierarchical features require resolved preprocessing")
         hipt_params = _resolve_hipt_params(preprocessing, aggregator)
+        _hier_collate = functools.partial(hierarchical_bag_collate_fn, label_dtype=label_dtype)
         train_loader = DataLoader(
-            HierarchicalBagDataset(train_records, feature_store, label_map),
+            HierarchicalBagDataset(train_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=True,
-            collate_fn=hierarchical_bag_collate_fn,
+            collate_fn=_hier_collate,
         )
         tune_loader = DataLoader(
-            HierarchicalBagDataset(tune_records, feature_store, label_map),
+            HierarchicalBagDataset(tune_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=hierarchical_bag_collate_fn,
+            collate_fn=_hier_collate,
         )
         test_loader = DataLoader(
-            HierarchicalBagDataset(test_records, feature_store, label_map),
+            HierarchicalBagDataset(test_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=hierarchical_bag_collate_fn,
+            collate_fn=_hier_collate,
         )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
@@ -250,23 +260,24 @@ def train_one_fold(
         model = MILModel(aggregator=agg, task_head=head)
     else:
         # Tile-level MIL path
+        _bag_collate = functools.partial(bag_collate_fn, label_dtype=label_dtype)
         train_loader = DataLoader(
-            BagDataset(train_records, feature_store, label_map),
+            BagDataset(train_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=True,
-            collate_fn=bag_collate_fn,
+            collate_fn=_bag_collate,
         )
         tune_loader = DataLoader(
-            BagDataset(tune_records, feature_store, label_map),
+            BagDataset(tune_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=bag_collate_fn,
+            collate_fn=_bag_collate,
         )
         test_loader = DataLoader(
-            BagDataset(test_records, feature_store, label_map),
+            BagDataset(test_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=bag_collate_fn,
+            collate_fn=_bag_collate,
         )
         if aggregator is None:
             msg = "aggregator must be provided for tile-level features"
@@ -281,7 +292,7 @@ def train_one_fold(
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
-        val_loader=tune_loader,
+        tune_loader=tune_loader,
         config=training,
         output_dir=output_dir,
         device=device,
@@ -501,9 +512,6 @@ def _evaluate(
     device: torch.device,
 ) -> EvaluationReport:
     """Evaluate model on a split and build a report."""
-    # Invert label_map for decoding
-    idx_to_label = {v: k for k, v in label_map.items()}
-
     all_logits = []
     all_labels = []
     all_sample_ids: list[str] = []
@@ -521,22 +529,42 @@ def _evaluate(
     logits = torch.cat(all_logits, dim=0)
     labels = torch.cat(all_labels, dim=0)
 
-    probs = torch.softmax(logits, dim=1).numpy()
-    preds = logits.argmax(dim=1).numpy()
+    task_head = model.task_head
+    metrics = task_head.compute_metrics(logits, labels)
+    processed = task_head.postprocess(logits)
     y_true = labels.numpy()
-
-    metrics = compute_classification_metrics(y_true, probs, preds)
 
     predictions = []
     for i, sid in enumerate(all_sample_ids):
-        predictions.append(
-            SamplePrediction(
-                sample_id=sid,
-                true_label=int(y_true[i]),
-                predicted_label=int(preds[i]),
-                probabilities=probs[i].tolist(),
+        if "probabilities" in processed:
+            # Classification
+            predictions.append(
+                SamplePrediction(
+                    sample_id=sid,
+                    true_label=int(y_true[i]),
+                    predicted_label=int(processed["predicted_labels"][i]),
+                    probabilities=processed["probabilities"][i].tolist(),
+                )
             )
-        )
+        elif "raw_scores" in processed:
+            # Ordinal classification: integer prediction + raw continuous score
+            predictions.append(
+                SamplePrediction(
+                    sample_id=sid,
+                    true_label=int(y_true[i]),
+                    predicted_label=int(processed["predicted_labels"][i]),
+                    raw_score=float(processed["raw_scores"][i]),
+                )
+            )
+        else:
+            # Regression
+            predictions.append(
+                SamplePrediction(
+                    sample_id=sid,
+                    true_label=float(y_true[i]),
+                    predicted_value=float(processed["predictions"][i]),
+                )
+            )
 
     return EvaluationReport(
         split=split_name,
@@ -575,21 +603,48 @@ def _save_predictions(report: EvaluationReport, path: Path) -> None:
     with open(path, "w", newline="") as f:
         if not report.predictions:
             return
-        num_classes = len(report.predictions[0].probabilities)
-        fieldnames = ["sample_id", "true_label", "predicted_label"] + [
-            f"prob_{i}" for i in range(num_classes)
-        ]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for pred in report.predictions:
-            row = {
-                "sample_id": pred.sample_id,
-                "true_label": pred.true_label,
-                "predicted_label": pred.predicted_label,
-            }
-            for i, p in enumerate(pred.probabilities):
-                row[f"prob_{i}"] = f"{p:.6f}"
-            writer.writerow(row)
+
+        first = report.predictions[0]
+        if first.probabilities is not None:
+            # Classification: include class probabilities
+            num_classes = len(first.probabilities)
+            fieldnames = ["sample_id", "true_label", "predicted_label"] + [
+                f"prob_{i}" for i in range(num_classes)
+            ]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for pred in report.predictions:
+                row: dict = {
+                    "sample_id": pred.sample_id,
+                    "true_label": pred.true_label,
+                    "predicted_label": pred.predicted_label,
+                }
+                for i, p in enumerate(pred.probabilities):  # type: ignore[arg-type]
+                    row[f"prob_{i}"] = f"{p:.6f}"
+                writer.writerow(row)
+        elif first.raw_score is not None:
+            # Ordinal classification: integer prediction + raw continuous score
+            fieldnames = ["sample_id", "true_label", "predicted_label", "raw_score"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for pred in report.predictions:
+                writer.writerow({
+                    "sample_id": pred.sample_id,
+                    "true_label": pred.true_label,
+                    "predicted_label": pred.predicted_label,
+                    "raw_score": f"{pred.raw_score:.6f}",
+                })
+        else:
+            # Regression: predicted continuous value
+            fieldnames = ["sample_id", "true_label", "predicted_value"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for pred in report.predictions:
+                writer.writerow({
+                    "sample_id": pred.sample_id,
+                    "true_label": pred.true_label,
+                    "predicted_value": f"{pred.predicted_value:.6f}",
+                })
 
 
 def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
