@@ -236,6 +236,49 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
     assert store.load("s0").shape == (8,)
 
 
+def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_SLIDE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=False),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_embed_tiles(*, model_name, output_variant, slides, tiling_results, preprocessing, execution):
+        assert output_variant is None
+        artifacts = []
+        for slide in slides:
+            artifacts.append(
+                _artifact(sample_id=slide.sample_id, output_dir=Path(execution.output_dir), kind="tile_embeddings", tensor=torch.ones(2, 8))
+            )
+        return artifacts
+
+    def _fake_aggregate_tiles(*, model_name, output_variant, tile_artifacts, preprocessing, execution):
+        assert output_variant is None
+        for artifact in tile_artifacts:
+            _artifact(sample_id=artifact.sample_id, output_dir=Path(execution.output_dir), kind="slide_embeddings", tensor=torch.ones(8))
+
+    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
+        "soma.extraction._validate_runtime"
+    ) as validate_runtime, patch(
+        "soma.extraction._embed_tiles",
+        side_effect=_fake_embed_tiles,
+    ), patch(
+        "soma.extraction._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
+    ):
+        extractor.extract(tmp_path / "features", tiling_dir=tmp_path / "tiling")
+
+    assert validate_runtime.call_args.kwargs["output_variant"] is None
+
+
 def test_multi_gpu_uncached_extraction_uses_slide2vec_pipeline(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(

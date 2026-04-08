@@ -65,6 +65,12 @@ def _validate_runtime(
     )
 
 
+def _runtime_output_variant(*, level: str, resolved_output: dict[str, object]) -> str | None:
+    if level == "slide":
+        return None
+    return str(resolved_output["output_variant"])
+
+
 def _embed_tiles(
     *,
     model_name: str,
@@ -214,11 +220,15 @@ class FeatureExtractor:
 
         prepared_tilings: list[object] = [loaded.tiling_result for loaded in loaded_tilings]
         output_variant = str(resolved_output["output_variant"])
+        runtime_output_variant = _runtime_output_variant(
+            level=level,
+            resolved_output=resolved_output,
+        )
         s2v_preprocessing = build_preprocessing_config(resolved_preprocessing, backend=backend)
 
         _validate_runtime(
             encoder_name=self._encoder.name,
-            output_variant=output_variant,
+            output_variant=runtime_output_variant,
             encoder=self._encoder,
             tiling_results=prepared_tilings,
         )
@@ -231,7 +241,7 @@ class FeatureExtractor:
                 tiling_dir=tiling_dir,
                 preprocessing=s2v_preprocessing,
                 level=level,
-                output_variant=output_variant,
+                output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
                 hierarchical=is_hierarchical,
             )
@@ -246,7 +256,7 @@ class FeatureExtractor:
                 tiling_dir=tiling_dir,
                 preprocessing=s2v_preprocessing,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
             )
 
@@ -258,7 +268,7 @@ class FeatureExtractor:
                 tiling_dir=tiling_dir,
                 preprocessing=s2v_preprocessing,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
             )
 
@@ -271,7 +281,7 @@ class FeatureExtractor:
             preprocessing=s2v_preprocessing,
             resolved_preprocessing=resolved_preprocessing,
             resolved_output=resolved_output,
-            output_variant=output_variant,
+            output_variant=runtime_output_variant,
             num_gpus=num_gpus,
         )
 
