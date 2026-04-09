@@ -68,6 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm \
+            --shm-size=2g \
             -e HF_TOKEN="$HF_TOKEN" \
             -e SOMA_RUN_PRISM_REGRESSION="$SOMA_RUN_PRISM_REGRESSION" \
             -v "$GITHUB_WORKSPACE:/opt/app" \
