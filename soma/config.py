@@ -105,7 +105,7 @@ class PipelineConfig:
 
     dataset_csv: str | Path
     splits_csv: str | Path
-    output_dir: str | Path
+    output_root: str | Path
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
@@ -176,7 +176,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     return PipelineConfig(
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
-        output_dir=data["output_dir"],
+        output_root=data["output_root"],
         preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,

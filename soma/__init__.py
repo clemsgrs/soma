@@ -40,10 +40,10 @@ __all__ = [
     "TrainingConfig",
     # Data
     "Dataset",
-    "FeatureExtractor",
     "FoldSplit",
     "SampleRecord",
     "Splits",
+    "FeatureExtractor",
     "FeatureStore",
 ]
 
