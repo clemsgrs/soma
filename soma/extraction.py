@@ -29,7 +29,7 @@ from slide2vec.encoders.validation import (
 )
 
 from soma.cache import (
-    CacheResolution,
+    FeatureCacheResolution,
     build_tile_artifacts_from_cache_payload,
     probe_resolved_backends,
     record_feature_dim,
@@ -391,11 +391,13 @@ class FeatureExtractor:
         encoder: EncoderConfig,
         preprocessing: PreprocessingConfig = PreprocessingConfig(),
         cache: CacheConfig = CacheConfig(),
+        output_root: str | Path | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
         self._preprocessing = preprocessing
         self._cache = cache
+        self._output_root = Path(output_root).resolve() if output_root is not None else None
 
     def _resolved_preprocessing(self) -> PreprocessingConfig:
         encoder_info = encoder_registry.info(self._encoder.name)
@@ -451,7 +453,11 @@ class FeatureExtractor:
             requested_backend=cfg.backend,
             backend_by_sample_id=backend_by_sample_id,
         )
-        cache_root = resolve_tiling_cache_root(self._cache, output_dir=output_dir)
+        cache_root = resolve_tiling_cache_root(
+            self._cache,
+            output_dir=output_dir,
+            output_root=self._output_root,
+        )
         cache_resolution = resolve_tiling_cache(
             cache_root=cache_root,
             dataset=self._dataset,
@@ -575,7 +581,11 @@ class FeatureExtractor:
                     )
                     store = FeatureStore(output_dir)
                 else:
-                    cache_root = resolve_cache_root(self._cache, output_dir=output_dir)
+                    cache_root = resolve_cache_root(
+                        self._cache,
+                        output_dir=output_dir,
+                        output_root=self._output_root,
+                    )
                     if is_hierarchical:
                         store = self._extract_hierarchical_cached(
                             output_dir=output_dir,
@@ -699,7 +709,7 @@ class FeatureExtractor:
         self,
         output_dir: Path,
         *,
-        cache_resolution: CacheResolution,
+        cache_resolution: FeatureCacheResolution,
     ) -> None:
         """Leave a short marker in the requested feature directory when cache is used."""
         marker_path = output_dir / "README.txt"
@@ -719,7 +729,7 @@ class FeatureExtractor:
         self,
         output_dir: Path,
         *,
-        cache_resolution: CacheResolution,
+        cache_resolution: FeatureCacheResolution,
     ) -> None:
         """Write a run-local manifest that points back to the shared cache payloads."""
         process_list_path = output_dir / "process_list.csv"

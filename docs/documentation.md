@@ -200,6 +200,14 @@ The shared tiling cache is the canonical storage location for cached tiling
 artifacts. Run-local tiling directories are lightweight stubs that contain a
 `README.txt` plus a `process_list.csv` pointing at the shared cache paths.
 
+Feature and tiling cache resolution now share the same basic structure: a
+small shared resolution base plus explicit validation results so completeness
+checks are organized consistently across both cache families.
+
+When `FeatureExtractor` is used directly, passing `output_root` aligns both
+`feature_cache/` and `tiling_cache/` under that root when `CacheConfig.root_dir`
+is not set.
+
 For `backend="auto"`, cache reuse validates against the current runtime's
 actual resolved backend by probing `hs2p.wsi.resolve_backend(...)` per sample
 before accepting a cache hit.

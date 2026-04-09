@@ -58,6 +58,7 @@ dataset = Dataset("dataset.csv")
 extractor = FeatureExtractor(
     dataset=dataset,
     encoder=EncoderConfig(name="uni2"),
+    output_root="output",
     cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
 )
 

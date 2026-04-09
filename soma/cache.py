@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC
 import csv
 import contextlib
 import hashlib
@@ -47,16 +48,26 @@ def _resolve_encoder_precision(
 
 
 @dataclass(frozen=True)
-class CacheResolution:
-    kind: str
+class BaseCacheResolution(ABC):
     key: str
     cache_dir: Path
     metadata_path: Path
     manifest_path: Path
-    features_dir: Path
     reused: bool
     complete: bool
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CacheValidationResult:
+    complete: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FeatureCacheResolution(BaseCacheResolution):
+    kind: str
+    features_dir: Path
 
     def missing_sample_ids(self) -> list[str]:
         expected = self.metadata["sample_ids"]
@@ -68,16 +79,9 @@ class CacheResolution:
 
 
 @dataclass(frozen=True)
-class TilingCacheResolution:
-    key: str
-    cache_dir: Path
-    metadata_path: Path
-    manifest_path: Path
+class TilingCacheResolution(BaseCacheResolution):
     process_list_path: Path
     artifacts_dir: Path
-    reused: bool
-    complete: bool
-    metadata: dict[str, Any]
 
 
 def _canonical_json(payload: Any) -> str:
@@ -287,9 +291,12 @@ def resolve_cache_root(
     cache_config: CacheConfig,
     *,
     output_dir: Path | str,
+    output_root: Path | str | None = None,
 ) -> Path:
     if cache_config.root_dir is not None:
         return Path(cache_config.root_dir)
+    if output_root is not None:
+        return Path(output_root) / "feature_cache"
     return Path(output_dir).parent / "feature_cache"
 
 
@@ -297,8 +304,13 @@ def resolve_tiling_cache_root(
     cache_config: CacheConfig,
     *,
     output_dir: Path | str,
+    output_root: Path | str | None = None,
 ) -> Path:
-    feature_root = resolve_cache_root(cache_config, output_dir=output_dir)
+    feature_root = resolve_cache_root(
+        cache_config,
+        output_dir=output_dir,
+        output_root=output_root,
+    )
     return feature_root.parent / "tiling_cache"
 
 
@@ -495,13 +507,13 @@ def _validate_tiling_cache_contents(
     metadata: dict[str, Any],
     preprocessing: PreprocessingConfig,
     expected_backend_provenance: dict[str, Any] | None,
-) -> bool:
+) -> CacheValidationResult:
     if not process_list_path.is_file():
-        return False
+        return CacheValidationResult(complete=False, reason="missing process_list.csv")
     try:
         process_df = load_tiling_process_df(process_list_path)
     except Exception:
-        return False
+        return CacheValidationResult(complete=False, reason="process_list.csv could not be loaded")
     rows_by_sample_id = {
         str(row["sample_id"]): row
         for row in process_df.to_dict("records")
@@ -510,7 +522,7 @@ def _validate_tiling_cache_contents(
         sample = dataset.samples[str(sample_id)]
         row = rows_by_sample_id.get(str(sample_id))
         if row is None or row.get("tiling_status") != "success":
-            return False
+            return CacheValidationResult(complete=False, reason=f"invalid tiling row for {sample_id}")
         for column_name in (
             "coordinates_npz_path",
             "coordinates_meta_path",
@@ -522,11 +534,14 @@ def _validate_tiling_cache_contents(
             if candidate is None:
                 continue
             if not candidate.is_file():
-                return False
+                return CacheValidationResult(complete=False, reason=f"missing artifact for {sample_id}")
             try:
                 candidate.resolve().relative_to(artifacts_dir.resolve())
             except ValueError:
-                return False
+                return CacheValidationResult(
+                    complete=False,
+                    reason=f"artifact path escapes cache entry for {sample_id}",
+                )
         try:
             tiling_result = load_tiling_result_from_row(row)
             validate_tiling_result_provenance(
@@ -541,18 +556,20 @@ def _validate_tiling_cache_contents(
                 ),
             )
         except Exception:
-            return False
+            return CacheValidationResult(complete=False, reason=f"invalid tiling provenance for {sample_id}")
         if int(getattr(tiling_result, "requested_tile_size_px", -1)) != int(preprocessing.target_tile_size_px):
-            return False
+            return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
         if float(getattr(tiling_result, "requested_spacing_um", -1.0)) != float(preprocessing.target_spacing_um):
-            return False
+            return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
         expected_backend = metadata.get("backend_by_sample_id", {}).get(str(sample_id))
         actual_backend = str(getattr(tiling_result, "backend", row.get("backend")))
         if expected_backend is not None and str(expected_backend) != actual_backend:
-            return False
+            return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
     if expected_backend_provenance is None:
-        return True
-    return dict(metadata.get("backend_by_sample_id", {})) == dict(expected_backend_provenance["backend_by_sample_id"])
+        return CacheValidationResult(complete=True)
+    if dict(metadata.get("backend_by_sample_id", {})) != dict(expected_backend_provenance["backend_by_sample_id"]):
+        return CacheValidationResult(complete=False, reason="backend mapping mismatch")
+    return CacheValidationResult(complete=True)
 
 
 def resolve_tiling_cache(
@@ -582,7 +599,7 @@ def resolve_tiling_cache(
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)
         _compare_tiling_metadata(existing, metadata)
-        complete = _validate_tiling_cache_contents(
+        validation = _validate_tiling_cache_contents(
             dataset=dataset,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
@@ -595,11 +612,11 @@ def resolve_tiling_cache(
             cache_dir=cache_dir,
             metadata_path=metadata_path,
             manifest_path=manifest_path,
+            reused=validation.complete,
+            complete=validation.complete,
+            metadata=existing,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
-            reused=complete,
-            complete=complete,
-            metadata=existing,
         )
 
     _write_manifest(manifest_path, dataset_manifest_rows(dataset))
@@ -609,11 +626,11 @@ def resolve_tiling_cache(
         cache_dir=cache_dir,
         metadata_path=metadata_path,
         manifest_path=manifest_path,
-        process_list_path=process_list_path,
-        artifacts_dir=artifacts_dir,
         reused=False,
         complete=False,
         metadata=metadata,
+        process_list_path=process_list_path,
+        artifacts_dir=artifacts_dir,
     )
 
 
@@ -811,25 +828,29 @@ def _load_metadata(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _is_complete(features_dir: Path, metadata: dict[str, Any]) -> bool:
+def _validate_feature_cache_contents(
+    *,
+    features_dir: Path,
+    metadata: dict[str, Any],
+) -> CacheValidationResult:
     expected_rank = int(metadata["feature_rank"])
     sample_ids = metadata["sample_ids"]
     feature_dim = metadata.get("feature_dim")
     for sample_id in sample_ids:
         path = features_dir / f"{sample_id}.pt"
         if not path.is_file():
-            return False
+            return CacheValidationResult(complete=False, reason=f"missing feature for {sample_id}")
         try:
             tensor = torch.load(path, weights_only=True, map_location="cpu")
         except Exception:
-            return False
+            return CacheValidationResult(complete=False, reason=f"corrupt feature for {sample_id}")
         if tensor.ndim != expected_rank:
-            return False
+            return CacheValidationResult(complete=False, reason=f"rank mismatch for {sample_id}")
         if feature_dim is not None:
             inferred = tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1]
             if int(feature_dim) != int(inferred):
-                return False
-    return True
+                return CacheValidationResult(complete=False, reason=f"dim mismatch for {sample_id}")
+    return CacheValidationResult(complete=True)
 
 
 def _resolve_cache(
@@ -839,7 +860,7 @@ def _resolve_cache(
     key: str,
     metadata: dict[str, Any],
     manifest_rows: list[dict[str, object]],
-) -> CacheResolution:
+) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, kind, key)
     features_dir = cache_dir / "features"
     metadata_path = cache_dir / CACHE_METADATA_NAME
@@ -851,31 +872,31 @@ def _resolve_cache(
         existing = _load_metadata(metadata_path)
         if _comparable_metadata(existing) != _comparable_metadata(metadata):
             raise ValueError(f"Cache metadata mismatch for {cache_dir}")
-        complete = _is_complete(features_dir, existing)
-        return CacheResolution(
-            kind=kind,
+        validation = _validate_feature_cache_contents(features_dir=features_dir, metadata=existing)
+        return FeatureCacheResolution(
             key=key,
             cache_dir=cache_dir,
             metadata_path=metadata_path,
             manifest_path=manifest_path,
-            features_dir=features_dir,
-            reused=complete,
-            complete=complete,
+            reused=validation.complete,
+            complete=validation.complete,
             metadata=existing,
+            kind=kind,
+            features_dir=features_dir,
         )
 
     _write_manifest(manifest_path, manifest_rows)
     _write_metadata(metadata_path, metadata)
-    return CacheResolution(
-        kind=kind,
+    return FeatureCacheResolution(
         key=key,
         cache_dir=cache_dir,
         metadata_path=metadata_path,
         manifest_path=manifest_path,
-        features_dir=features_dir,
         reused=False,
         complete=False,
         metadata=metadata,
+        kind=kind,
+        features_dir=features_dir,
     )
 
 
@@ -888,7 +909,7 @@ def resolve_tile_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
-) -> CacheResolution:
+) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
         dataset=dataset,
         tile_encoder_name=tile_encoder_name,
@@ -916,7 +937,7 @@ def resolve_slide_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
-) -> CacheResolution:
+) -> FeatureCacheResolution:
     metadata = _build_slide_cache_metadata(
         dataset=dataset,
         slide_encoder_name=slide_encoder_name,
@@ -944,7 +965,7 @@ def resolve_hierarchical_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
-) -> CacheResolution:
+) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         dataset=dataset,
         tile_encoder_name=tile_encoder_name,
@@ -962,7 +983,7 @@ def resolve_hierarchical_cache(
     )
 
 
-def record_feature_dim(resolution: CacheResolution, feature_dim: int) -> None:
+def record_feature_dim(resolution: FeatureCacheResolution, feature_dim: int) -> None:
     metadata = dict(resolution.metadata)
     metadata["feature_dim"] = int(feature_dim)
     _write_metadata(resolution.metadata_path, metadata)

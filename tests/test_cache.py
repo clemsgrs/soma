@@ -19,6 +19,7 @@ from soma.cache import (
     build_tile_cache_key,
     manifest_digest,
     probe_resolved_backends,
+    resolve_cache_root,
     resolve_feature_payload_dir,
     resolve_tiling_cache,
     resolve_tiling_cache_root,
@@ -162,6 +163,24 @@ def test_resolve_tiling_cache_root_is_sibling_of_feature_cache(tmp_path: Path):
         output_dir=tmp_path / "run" / ".tiling",
     )
     assert root == tmp_path / "shared" / "tiling_cache"
+
+
+def test_resolve_cache_root_uses_output_root_when_provided(tmp_path: Path):
+    root = resolve_cache_root(
+        CacheConfig(),
+        output_dir=tmp_path / "run" / "features",
+        output_root=tmp_path / "outputs",
+    )
+    assert root == tmp_path / "outputs" / "feature_cache"
+
+
+def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path):
+    root = resolve_tiling_cache_root(
+        CacheConfig(),
+        output_dir=tmp_path / "run" / ".tiling",
+        output_root=tmp_path / "outputs",
+    )
+    assert root == tmp_path / "outputs" / "tiling_cache"
 
 
 def test_probe_resolved_backends_uses_explicit_backend_without_probe(tmp_path: Path):

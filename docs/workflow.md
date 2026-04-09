@@ -16,6 +16,7 @@ dataset = Dataset("dataset.csv")
 extractor = FeatureExtractor(
     dataset=dataset,
     encoder=EncoderConfig(name="uni2"),
+    output_root="output",
     preprocessing=PreprocessingConfig(
         backend="openslide",
         target_tile_size_px=224,

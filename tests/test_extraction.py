@@ -16,6 +16,7 @@ from slide2vec import ExecutionOptions
 from soma.cache import CacheConfig
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
+from soma.features import FeatureStore
 from slide2vec.encoders.registry import encoder_registry
 from soma.extraction import FeatureExtractor, _run_with_coordinates
 from soma.slide2vec_adapter import LoadedTiling
@@ -302,6 +303,62 @@ def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: P
     assert not MockPipeline.called
     recorded = pd.read_csv(tiling_dir / "process_list.csv").set_index("sample_id")
     assert Path(recorded.loc["s0", "coordinates_meta_path"]).parent == artifacts_dir
+
+
+def test_preprocess_uses_output_root_for_tiling_cache_when_cache_root_omitted(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
+    )
+
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
+    ) as resolve_tiling_cache, patch("soma.extraction.Pipeline", autospec=True):
+        extractor.preprocess(tmp_path / "run" / "tiling")
+
+    assert resolve_tiling_cache.call_args.kwargs["cache_root"] == tmp_path / "outputs" / "tiling_cache"
+
+
+def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+    fake_store_dir = tmp_path / "outputs" / "feature_cache" / "tile" / "abc123"
+    (fake_store_dir / "features").mkdir(parents=True, exist_ok=True)
+    (fake_store_dir / "cache_metadata.json").write_text(
+        '{"feature_rank": 2, "feature_dim": 8, "sample_ids": ["s0"], "cache_key": "abc123", "encoder_name": "_cutover_tile", "execution": {"output_variant": "default"}}',
+        encoding="utf-8",
+    )
+    torch.save(torch.ones(2, 8), fake_store_dir / "features" / "s0.pt")
+
+    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
+        "soma.extraction._validate_runtime"
+    ), patch.object(
+        FeatureExtractor,
+        "_extract_tile_cached",
+        autospec=True,
+        return_value=FeatureStore(fake_store_dir),
+    ) as extract_tile_cached:
+        store = extractor.extract(tmp_path / "run" / "features", tiling_dir=tmp_path / "run" / "tiling")
+
+    assert extract_tile_cached.call_args.kwargs["cache_root"] == tmp_path / "outputs" / "feature_cache"
+    assert store.load("s0").shape == (2, 8)
 
 
 def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
