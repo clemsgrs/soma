@@ -86,12 +86,17 @@ def test_task_config_params_default_empty():
     assert cfg.params == {}
 
 
+def test_encoder_config_requires_name():
+    with pytest.raises(TypeError):
+        EncoderConfig()
+
+
 def test_encoder_config_defaults():
-    cfg = EncoderConfig()
+    cfg = EncoderConfig(name="uni2")
     assert cfg.name == "uni2"
-    assert cfg.precision == "fp16"
+    assert cfg.precision is None
     assert cfg.batch_size == 32
-    assert cfg.num_workers == 4
+    assert cfg.num_workers is None
     assert cfg.output_variant is None
     assert cfg.save_tile_features is False
 
@@ -104,6 +109,16 @@ def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.encoder.output_variant == "cls"
+
+
+def test_encoder_config_roundtrip_with_num_workers(tmp_path: Path):
+    cfg = _make_pipeline_config(encoder=EncoderConfig(name="h0-mini", num_workers=6))
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.encoder.num_workers == 6
 
 
 def test_cache_config_defaults():
@@ -148,6 +163,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
 
     assert loaded.cache.enabled == original.cache.enabled
     assert loaded.encoder.name == original.encoder.name
+    assert loaded.encoder.num_workers == original.encoder.num_workers
     assert loaded.aggregator.name == original.aggregator.name
     assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name
@@ -168,7 +184,6 @@ def test_load_config_with_target_fields(tmp_path: Path):
             "target_spacing_um": 0.5,
         },
         "cache": {},
-        "encoder": {},
         "aggregator": None,
         "task": {"name": "classification"},
         "training": {},
@@ -246,6 +261,21 @@ def test_load_config_raises_without_task_name(tmp_path: Path):
     with yaml_path.open("w") as f:
         yaml.safe_dump(raw, f)
     with pytest.raises(ValueError, match="task"):
+        load_config(yaml_path)
+
+
+def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
+    raw = {
+        "dataset_csv": "dataset.csv",
+        "splits_csv": "splits.csv",
+        "output_dir": "out",
+        "encoder": {},
+        "task": {"name": "classification"},
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+    with pytest.raises(TypeError):
         load_config(yaml_path)
 
 

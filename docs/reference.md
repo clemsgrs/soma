@@ -15,9 +15,18 @@
 
 ## Aggregators
 
-- `ABMIL` - attention-based MIL with gated attention.
-- `MeanPool` - simple mean pooling baseline.
-- `MaxPool` - simple max pooling baseline.
+Use the `aggregator.name` config key with the canonical lowercase names below.
+
+| Aggregator | Config name | Notes |
+|---|---|---|
+| `MeanPool` | `mean_pool` | Simple mean pooling baseline. |
+| `MaxPool` | `max_pool` | Simple max pooling baseline. |
+| `ABMIL` | `abmil` | Attention-based MIL with gated attention. |
+| `CLAM` | `clam` | Attention MIL with instance-level clustering loss. |
+| `DSMIL` | `dsmil` | Dual-stream MIL with critical-instance attention. |
+| `TransMIL` | `transmil` | Transformer-based MIL with Nyström attention. |
+| `DTFDMIL` | `dtfdmil` | Double-tier feature distillation MIL. |
+| `HIPT` | `hipt` | Hierarchical MIL over native hierarchical features. |
 
 ## Task Heads
 

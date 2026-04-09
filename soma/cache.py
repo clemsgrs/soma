@@ -14,6 +14,7 @@ from slide2vec.artifacts import TileEmbeddingArtifact, load_array
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
+from soma.encoders.validation import resolve_encoder_precision
 
 CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
@@ -127,10 +128,11 @@ def preprocessing_backend_provenance(
 def execution_signature(
     encoder_config: EncoderConfig,
     *,
+    encoder_name: str | None = None,
     output_variant: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "precision": encoder_config.precision,
+        "precision": resolve_encoder_precision(encoder_config, encoder_name=encoder_name),
         "input_size": encoder_config.input_size,
         "spacing_um": encoder_config.spacing_um,
         "output_variant": output_variant if output_variant is not None else encoder_config.output_variant,
@@ -151,7 +153,11 @@ def build_tile_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -170,7 +176,11 @@ def build_slide_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "slide_encoder_name": slide_encoder_name,
         "tile_cache_key": tile_cache_key,
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=slide_encoder_name,
+            output_variant=output_variant,
+        ),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -189,7 +199,11 @@ def build_hierarchical_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -311,7 +325,11 @@ def _build_tile_cache_metadata(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
         "feature_rank": 2,
         "feature_dim": None,
     }
@@ -337,7 +355,7 @@ def _build_slide_cache_metadata(
         execution=execution,
         output_variant=output_variant,
     )
-    return {
+    metadata = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "slide",
         "cache_key": key,
@@ -347,7 +365,11 @@ def _build_slide_cache_metadata(
         "tile_cache_key": tile_cache_key,
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=slide_encoder_name,
+            output_variant=output_variant,
+        ),
         "feature_rank": 1,
         "feature_dim": None,
     }
@@ -381,7 +403,11 @@ def _build_hierarchical_cache_metadata(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
         "feature_rank": 3,
         "feature_dim": None,
     }
