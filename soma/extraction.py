@@ -7,6 +7,7 @@ import csv
 import logging
 import shutil
 import tempfile
+from dataclasses import asdict
 from pathlib import Path
 from typing import Sequence
 
@@ -30,12 +31,17 @@ from slide2vec.encoders.validation import (
 from soma.cache import (
     CacheResolution,
     build_tile_artifacts_from_cache_payload,
+    probe_resolved_backends,
     record_feature_dim,
     preprocessing_backend_provenance,
     resolve_cache_root,
     resolve_hierarchical_cache,
     resolve_slide_cache,
+    resolve_tiling_cache,
+    resolve_tiling_cache_root,
     resolve_tile_cache,
+    write_tiling_cache_payload,
+    write_tiling_cache_stub,
     write_cache_payload,
 )
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
@@ -215,6 +221,19 @@ def _feature_kind_from_rank(feature_rank: int) -> str:
     if int(feature_rank) == 3:
         return "hierarchical"
     raise ValueError(f"Unsupported feature rank {feature_rank}")
+
+
+def _backend_provenance_from_mapping(
+    *,
+    requested_backend: str,
+    backend_by_sample_id: dict[str, str],
+) -> dict[str, object]:
+    unique_backends = sorted(set(backend_by_sample_id.values()))
+    return {
+        "requested_backend": str(requested_backend),
+        "backend": unique_backends[0] if len(unique_backends) == 1 else None,
+        "backend_by_sample_id": dict(backend_by_sample_id),
+    }
 
 
 def _resolve_num_gpus(num_gpus: int | None) -> int:
@@ -406,8 +425,45 @@ class FeatureExtractor:
         cfg = self._resolved_preprocessing()
         ensure_supported_mask_value(self._dataset, cfg)
         process_list_path = output_dir / "process_list.csv"
-        if skip_existing and process_list_path.is_file():
+        if not self._cache.enabled:
+            if skip_existing and process_list_path.is_file():
+                return
+            preprocessing = build_preprocessing_config(cfg)
+            pipeline = Pipeline(
+                Model.from_preset(self._encoder.name),
+                preprocessing,
+                execution=ExecutionOptions(
+                    output_dir=Path(output_dir),
+                    num_gpus=1,
+                    precision="fp32",
+                ),
+            )
+            with _suppress_logger_noise_ctx("cucim"):
+                with _forward_tiling_progress_ctx():
+                    pipeline.run(slides=build_slide_specs(self._dataset), tiling_only=True)
             return
+
+        backend_by_sample_id = probe_resolved_backends(
+            dataset=self._dataset,
+            requested_backend=cfg.backend,
+        )
+        backend_provenance = _backend_provenance_from_mapping(
+            requested_backend=cfg.backend,
+            backend_by_sample_id=backend_by_sample_id,
+        )
+        cache_root = resolve_tiling_cache_root(self._cache, output_dir=output_dir)
+        cache_resolution = resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            preprocessing=cfg,
+            backend_provenance=backend_provenance,
+            encoder_name=self._encoder.name,
+            raw_preprocessing=asdict(self._preprocessing),
+        )
+        if cache_resolution.complete:
+            write_tiling_cache_stub(output_dir, cache_resolution=cache_resolution)
+            return
+
         preprocessing = build_preprocessing_config(cfg)
         pipeline = Pipeline(
             Model.from_preset(self._encoder.name),
@@ -421,6 +477,25 @@ class FeatureExtractor:
         with _suppress_logger_noise_ctx("cucim"):
             with _forward_tiling_progress_ctx():
                 pipeline.run(slides=build_slide_specs(self._dataset), tiling_only=True)
+        can_publish = (
+            dict(cache_resolution.metadata.get("backend_by_sample_id", {}))
+            == dict(backend_provenance["backend_by_sample_id"])
+        )
+        if can_publish and process_list_path.is_file():
+            write_tiling_cache_payload(
+                live_dir=output_dir,
+                cache_resolution=cache_resolution,
+            )
+            refreshed = resolve_tiling_cache(
+                cache_root=cache_root,
+                dataset=self._dataset,
+                preprocessing=cfg,
+                backend_provenance=backend_provenance,
+                encoder_name=self._encoder.name,
+                raw_preprocessing=asdict(self._preprocessing),
+            )
+            if refreshed.complete:
+                write_tiling_cache_stub(output_dir, cache_resolution=refreshed)
 
     def extract(
         self,

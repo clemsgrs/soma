@@ -211,11 +211,97 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
     )
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
+    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
         mock_instance = MockPipeline.return_value
         extractor.preprocess(tmp_path / "tiling")
     MockPipeline.assert_called_once()
     mock_instance.run.assert_called_once()
+
+
+def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+    )
+    cache_dir = tmp_path / "tiling_cache" / "abc123"
+    artifacts_dir = cache_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    (cache_dir / "cache_metadata.json").write_text("{}", encoding="utf-8")
+    (cache_dir / "process_list.csv").write_text(
+        "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,error,traceback\n"
+        f"s0,/slides/s0.svs,,openslide,openslide,success,1,{artifacts_dir / 's0.npz'},{artifacts_dir / 's0.meta.json'},,\n",
+        encoding="utf-8",
+    )
+    (artifacts_dir / "s0.npz").write_bytes(b"npz")
+    (artifacts_dir / "s0.meta.json").write_text("{}", encoding="utf-8")
+
+    fake_resolution = SimpleNamespace(
+        cache_dir=cache_dir,
+        process_list_path=cache_dir / "process_list.csv",
+        artifacts_dir=artifacts_dir,
+        complete=True,
+        metadata={"cache_key": "abc123"},
+    )
+
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=fake_resolution,
+    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+        extractor.preprocess(tmp_path / "tiling")
+
+    assert not MockPipeline.called
+    assert (tmp_path / "tiling" / "README.txt").is_file()
+    recorded = pd.read_csv(tmp_path / "tiling" / "process_list.csv").set_index("sample_id")
+    assert Path(recorded.loc["s0", "coordinates_meta_path"]).parent == artifacts_dir
+
+
+def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+    )
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text("sample_id,tiling_status\ns0,success\n", encoding="utf-8")
+
+    cache_dir = tmp_path / "tiling_cache" / "abc123"
+    artifacts_dir = cache_dir / "artifacts"
+    artifacts_dir.mkdir(parents=True)
+    (cache_dir / "cache_metadata.json").write_text("{}", encoding="utf-8")
+    (cache_dir / "process_list.csv").write_text(
+        "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,error,traceback\n"
+        f"s0,/slides/s0.svs,,openslide,openslide,success,1,{artifacts_dir / 's0.npz'},{artifacts_dir / 's0.meta.json'},,\n",
+        encoding="utf-8",
+    )
+    (artifacts_dir / "s0.npz").write_bytes(b"npz")
+    (artifacts_dir / "s0.meta.json").write_text("{}", encoding="utf-8")
+
+    fake_resolution = SimpleNamespace(
+        cache_dir=cache_dir,
+        process_list_path=cache_dir / "process_list.csv",
+        artifacts_dir=artifacts_dir,
+        complete=True,
+        metadata={"cache_key": "abc123"},
+    )
+
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=fake_resolution,
+    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+        extractor.preprocess(tiling_dir, skip_existing=True)
+
+    assert not MockPipeline.called
+    recorded = pd.read_csv(tiling_dir / "process_list.csv").set_index("sample_id")
+    assert Path(recorded.loc["s0", "coordinates_meta_path"]).parent == artifacts_dir
 
 
 def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
@@ -321,7 +407,10 @@ def test_preprocess_forwards_live_tiling_progress_to_slide2vec_reporter(tmp_path
             zero_tile_successes=0,
         )
 
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
+    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
         "slide2vec.progress.get_progress_reporter",
         return_value=inner,
     ):
@@ -363,7 +452,10 @@ def test_preprocess_suppresses_cucim_logs(tmp_path: Path, caplog: pytest.LogCapt
         PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
     )
     caplog.set_level(logging.INFO)
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
+    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
         mock_instance = MockPipeline.return_value
 
         def _fake_run(*args, **kwargs):
