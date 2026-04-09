@@ -40,6 +40,7 @@ class MILModel(nn.Module):
 
     def __init__(self, aggregator: Aggregator, task_head: TaskHead) -> None:
         super().__init__()
+        aggregator.configure_for_task(task_head)
         self.aggregator = aggregator
         self.task_head = task_head
 

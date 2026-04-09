@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor, nn
+
+if TYPE_CHECKING:
+    from soma.tasks.base import TaskHead
 
 
 @dataclass
@@ -92,3 +96,11 @@ class Aggregator(ABC, nn.Module):
         if auxiliary_loss is None:
             return task_loss
         return task_loss + auxiliary_loss
+
+    def configure_for_task(self, task_head: "TaskHead") -> None:
+        """Configure aggregator behavior for a specific task head.
+
+        Aggregators can override this to validate compatibility or resolve
+        task-dependent behavior before training starts.
+        """
+        return None

@@ -1,0 +1,7 @@
+# Lessons
+
+- When exposing a Soma-side worker override for slide2vec-backed embedding, name the user-facing knob `num_workers` rather than `num_dataloader_workers`.
+- When bootstrapping a PPA in a minimal Ubuntu image, install the GPG tooling first. `add-apt-repository` can fail on missing `gpg-agent` even if `software-properties-common` is already present.
+- For hard cutovers in soma, avoid broad legacy-compatibility shims; prefer the simplest direct contract and only the minimal explicit failure needed for the deprecated field.
+- When a sibling dependency has clearly cut over and the project is aligned to that new boundary, do not add version-compatibility fallbacks unless explicitly requested.
+- In soma, treat `slide2vec` as a required dependency rather than adding local test-only import fallbacks; if it is unavailable in the current environment, report that and skip affected verification.

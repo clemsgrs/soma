@@ -18,6 +18,8 @@ from soma.aggregators.mil.dtfdmil import DTFDMIL
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
 from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
+from soma.tasks.regression import RegressionHead
 from soma.training.collate import BagBatch
 from soma.training.model import MILModel
 from soma.training.trainer import Trainer
@@ -78,6 +80,26 @@ def _train_one_epoch(aggregator: Aggregator, feat_dim: int = 16) -> float:
     return trainer._train_epoch()
 
 
+def _train_one_epoch_with_head(aggregator: Aggregator, head, feat_dim: int = 16, n_classes: int = 2) -> float:
+    """Build a MILModel with the given aggregator/head and train one epoch."""
+    torch.manual_seed(0)
+    model = MILModel(aggregator=aggregator, task_head=head)
+    batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim, n_classes=n_classes)
+    loader = _FakeBagLoader(batches)
+    config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
+    output_dir = Path("/tmp/test_trainer_aux")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    trainer = Trainer(
+        model=model,
+        train_loader=loader,
+        tune_loader=loader,
+        config=config,
+        output_dir=output_dir,
+        device=torch.device("cpu"),
+    )
+    return trainer._train_epoch()
+
+
 class TestAuxiliaryLossWiring:
     """Verify that auxiliary losses are added during training for aggregators that produce them."""
 
@@ -102,6 +124,30 @@ class TestAuxiliaryLossWiring:
         aux_loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
         assert aux_loss is not None
         assert aux_loss.item() > 0
+
+    def test_clam_ordinal_aux_loss_is_nonzero(self):
+        torch.manual_seed(0)
+        agg = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3)
+        head = OrdinalClassificationHead(input_dim=8, num_classes=6)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 10, 16)
+        labels = torch.tensor([1, 4])
+        out = model(X)
+        aux_loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        assert aux_loss is not None
+        assert aux_loss.item() >= 0
+
+    def test_clam_regression_aux_loss_is_nonzero(self):
+        torch.manual_seed(0)
+        agg = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3)
+        head = RegressionHead(input_dim=8)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 10, 16)
+        labels = torch.tensor([0.5, -1.0])
+        out = model(X)
+        aux_loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        assert aux_loss is not None
+        assert aux_loss.item() >= 0
 
     def test_dtfdmil_aux_loss_is_nonzero(self):
         """DTFD-MIL produces pseudo-bag predictions — aux loss should contribute."""
@@ -144,6 +190,20 @@ class TestAuxiliaryLossWiring:
     def test_clam_mb_trainer_epoch_runs(self):
         """Trainer epoch with CLAM-MB completes without error."""
         loss = _train_one_epoch(CLAM_MB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3))
+        assert loss > 0
+
+    def test_clam_ordinal_trainer_epoch_runs(self):
+        loss = _train_one_epoch_with_head(
+            CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3),
+            OrdinalClassificationHead(input_dim=8, num_classes=2),
+        )
+        assert loss > 0
+
+    def test_clam_regression_trainer_epoch_runs(self):
+        loss = _train_one_epoch_with_head(
+            CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3),
+            RegressionHead(input_dim=8),
+        )
         assert loss > 0
 
     def test_dtfdmil_trainer_epoch_runs(self):

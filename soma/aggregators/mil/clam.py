@@ -7,7 +7,6 @@ aggregator + task-head architecture.
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -52,7 +51,17 @@ class AttnNetGated(nn.Module):
 
 
 class _CLAMBase(Aggregator):
-    """Shared reference-style CLAM behavior."""
+    """Shared CLAM behavior."""
+
+    _CLASSIFICATION_MODE = "classification"
+    _ORDINAL_MODE = "ordinal"
+    _REGRESSION_MODE = "regression"
+    _VALID_INSTANCE_LOSS_MODES = {_CLASSIFICATION_MODE, _ORDINAL_MODE, _REGRESSION_MODE}
+    _TASK_TO_MODE = {
+        "classification": _CLASSIFICATION_MODE,
+        "ordinal_classification": _ORDINAL_MODE,
+        "regression": _REGRESSION_MODE,
+    }
 
     def __init__(
         self,
@@ -66,6 +75,9 @@ class _CLAMBase(Aggregator):
         inst_loss: str = "ce",
         use_negative_class_instance_loss: bool = False,
         bag_weight: float = 0.7,
+        instance_loss_mode: str | None = None,
+        low_attention_weight: float = 0.1,
+        topk_target_weight: float = 1.0,
         multi_branch: bool = False,
     ) -> None:
         super().__init__()
@@ -75,6 +87,10 @@ class _CLAMBase(Aggregator):
         self.use_negative_class_instance_loss = use_negative_class_instance_loss
         self.bag_weight = bag_weight
         self.multi_branch = multi_branch
+        self.instance_loss_mode = instance_loss_mode
+        self.low_attention_weight = low_attention_weight
+        self.topk_target_weight = topk_target_weight
+        self._resolved_instance_loss_mode: str | None = None
 
         fc: list[nn.Module] = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
         if dropout > 0:
@@ -89,39 +105,85 @@ class _CLAMBase(Aggregator):
             )
         )
         self.attention_net = nn.Sequential(*fc)
-        self.inst_classifiers = nn.ModuleList(
+        self.class_instance_classifiers = nn.ModuleList(
             [nn.Linear(hidden_dim, 2) for _ in range(n_classes)]
         )
+        self.instance_regressor = nn.Linear(hidden_dim, 1)
 
         if inst_loss == "svm":
-            self.inst_loss_fn = SmoothTop1SVM(n_classes=2)
+            self.classification_instance_loss_fn = SmoothTop1SVM(n_classes=2)
         elif inst_loss == "ce":
-            self.inst_loss_fn = nn.CrossEntropyLoss()
+            self.classification_instance_loss_fn = nn.CrossEntropyLoss()
         else:
             msg = f"inst_loss must be 'ce' or 'svm', got '{inst_loss}'"
             raise ValueError(msg)
 
-    def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
-        A, H = self.attention_net(X)
-        A = torch.transpose(A, 2, 1) if A.ndim == 3 else torch.transpose(A, 1, 0)
-        if X.ndim == 3:
-            # Batched path: (B, N, C_or_1) -> (B, C_or_1, N)
-            A_raw = A
-            if mask is not None:
-                A = A.masked_fill(~mask.unsqueeze(1), float("-inf"))
-            A = F.softmax(A, dim=-1)
-            M = torch.bmm(A, H)
+        if instance_loss_mode is not None and instance_loss_mode not in self._VALID_INSTANCE_LOSS_MODES:
+            msg = (
+                "instance_loss_mode must be one of "
+                f"{sorted(self._VALID_INSTANCE_LOSS_MODES)}, got '{instance_loss_mode}'"
+            )
+            raise ValueError(msg)
+
+    @property
+    def output_dim(self) -> int:
+        return self._output_dim
+
+    def configure_for_task(self, task_head) -> None:
+        task_family = getattr(task_head, "task_family", "generic")
+        if self.multi_branch:
+            if task_family != "classification":
+                raise ValueError("clam_mb only supports classification tasks.")
+            self._resolved_instance_loss_mode = self._CLASSIFICATION_MODE
+            return
+
+        if task_family not in self._TASK_TO_MODE:
+            raise ValueError(
+                "clam_sb only supports classification, ordinal_classification, "
+                f"and regression tasks, got '{task_family}'."
+            )
+
+        if task_family == "regression" and getattr(task_head, "num_targets", 1) != 1:
+            raise ValueError("clam_sb currently supports only single-target regression tasks.")
+
+        inferred_mode = self._TASK_TO_MODE[task_family]
+        if self.instance_loss_mode is None:
+            self._resolved_instance_loss_mode = inferred_mode
         else:
+            self._resolved_instance_loss_mode = self.instance_loss_mode
+            if self._resolved_instance_loss_mode != inferred_mode:
+                raise ValueError(
+                    f"instance_loss_mode='{self.instance_loss_mode}' is incompatible with "
+                    f"task family '{task_family}'."
+                )
+
+        if (
+            self._resolved_instance_loss_mode != self._CLASSIFICATION_MODE
+            and self.use_negative_class_instance_loss
+        ):
+            raise ValueError(
+                "use_negative_class_instance_loss is only supported for classification CLAM."
+            )
+
+    def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
+        if self._resolved_instance_loss_mode is None:
+            mode = self._CLASSIFICATION_MODE if self.multi_branch else self.instance_loss_mode
+            self._resolved_instance_loss_mode = mode or self._CLASSIFICATION_MODE
+
+        A, H = self.attention_net(X)
+        if X.ndim != 3:
             raise ValueError("CLAM aggregators expect batched input of shape (B, N, D)")
+        A = torch.transpose(A, 2, 1)
+        A_raw = A
+        if mask is not None:
+            A = A.masked_fill(~mask.unsqueeze(1), float("-inf"))
+        A = F.softmax(A, dim=-1)
+        M = torch.bmm(A, H)
         return AggregatorOutput(
             bag_representation=self._bag_representation(M),
             tile_attention=self._attention_output(A_raw),
             auxiliary={"embeddings": H, "attention": A_raw},
         )
-
-    @property
-    def output_dim(self) -> int:
-        return self._output_dim
 
     def compute_auxiliary_loss(
         self,
@@ -152,6 +214,20 @@ class _CLAMBase(Aggregator):
         labels: Tensor,
         mask: Tensor | None = None,
     ) -> Tensor:
+        mode = self._resolved_instance_loss_mode or self._CLASSIFICATION_MODE
+        if mode == self._CLASSIFICATION_MODE:
+            return self._compute_classification_instance_loss(attention, embeddings, labels, mask=mask)
+        if mode in {self._ORDINAL_MODE, self._REGRESSION_MODE}:
+            return self._compute_scalar_instance_loss(attention, embeddings, labels, mask=mask)
+        raise ValueError(f"Unsupported resolved CLAM instance loss mode '{mode}'")
+
+    def _compute_classification_instance_loss(
+        self,
+        attention: Tensor,
+        embeddings: Tensor,
+        labels: Tensor,
+        mask: Tensor | None = None,
+    ) -> Tensor:
         total_loss = embeddings.new_zeros(())
         batch_size = attention.shape[0]
 
@@ -161,54 +237,98 @@ class _CLAMBase(Aggregator):
             mask_i = mask[i] if mask is not None else None
             inst_labels = F.one_hot(labels[i], num_classes=self.n_classes).reshape(-1)
             bag_loss = embeddings.new_zeros(())
-            for class_idx, classifier in enumerate(self.inst_classifiers):
+            for class_idx, classifier in enumerate(self.class_instance_classifiers):
                 if inst_labels[class_idx].item() == 1:
-                    inst_loss, _, _ = self._inst_eval(att_i, emb_i, classifier, class_idx, mask_i)
+                    inst_loss = self._classification_inst_eval(
+                        att_i, emb_i, classifier, class_idx, mask_i
+                    )
                 elif self.use_negative_class_instance_loss:
-                    inst_loss, _, _ = self._inst_eval_out(att_i, emb_i, classifier, class_idx, mask_i)
+                    inst_loss = self._classification_inst_eval_out(
+                        att_i, emb_i, classifier, class_idx, mask_i
+                    )
                 else:
                     continue
                 bag_loss = bag_loss + inst_loss
             if self.use_negative_class_instance_loss:
-                bag_loss = bag_loss / len(self.inst_classifiers)
+                bag_loss = bag_loss / len(self.class_instance_classifiers)
             total_loss = total_loss + bag_loss
         return total_loss / max(batch_size, 1)
 
-    def _inst_eval(
+    def _compute_scalar_instance_loss(
+        self,
+        attention: Tensor,
+        embeddings: Tensor,
+        labels: Tensor,
+        mask: Tensor | None = None,
+    ) -> Tensor:
+        total_loss = embeddings.new_zeros(())
+        batch_size = attention.shape[0]
+
+        for i in range(batch_size):
+            att_i = attention[i]
+            emb_i = embeddings[i]
+            mask_i = mask[i] if mask is not None else None
+            top_instances, bottom_instances = self._select_top_and_bottom_instances(
+                att_i, emb_i, 0, mask_i
+            )
+
+            target = labels[i].float()
+            top_predictions = self.instance_regressor(top_instances).squeeze(-1)
+            target_value = target.expand_as(top_predictions)
+            positive_instance_loss = F.mse_loss(top_predictions, target_value)
+
+            if bottom_instances.shape[0] > 1:
+                bottom_predictions = self.instance_regressor(bottom_instances).squeeze(-1)
+                mean_prediction = bottom_predictions.mean()
+                low_attention_regularization = ((bottom_predictions - mean_prediction) ** 2).mean()
+            else:
+                low_attention_regularization = embeddings.new_zeros(())
+
+            bag_loss = (
+                self.topk_target_weight * positive_instance_loss
+                + self.low_attention_weight * low_attention_regularization
+            )
+            total_loss = total_loss + bag_loss
+
+        return total_loss / max(batch_size, 1)
+
+    def _classification_inst_eval(
         self,
         att: Tensor,
         emb: Tensor,
         classifier: nn.Module,
         branch_idx: int,
         mask: Tensor | None,
-    ) -> tuple[Tensor, Tensor, Tensor]:
-        att_branch = self._attention_branch(att, branch_idx)
-        bag_size = int(mask.sum().item()) if mask is not None else att_branch.shape[-1]
-        k = min(self.k_sample, bag_size)
-        if mask is not None:
-            att_branch = att_branch.masked_fill(~mask, float("-inf"))
-        top_p_ids = torch.topk(att_branch, k)[1]
-        top_p = emb[top_p_ids]
-        att_for_neg = att_branch.clone()
-        if mask is not None:
-            att_for_neg = att_for_neg.masked_fill(~mask, float("inf"))
-        top_n_ids = torch.topk(-att_for_neg, k, dim=0)[1]
-        top_n = emb[top_n_ids]
+    ) -> Tensor:
+        top_p, top_n = self._select_top_and_bottom_instances(att, emb, branch_idx, mask)
+        k = top_p.shape[0]
         p_targets = torch.ones(k, device=emb.device, dtype=torch.long)
         n_targets = torch.zeros(k, device=emb.device, dtype=torch.long)
         all_instances = torch.cat([top_p, top_n], dim=0)
         all_targets = torch.cat([p_targets, n_targets], dim=0)
         logits = classifier(all_instances)
-        return self.inst_loss_fn(logits.float(), all_targets), logits, all_targets
+        return self.classification_instance_loss_fn(logits.float(), all_targets)
 
-    def _inst_eval_out(
+    def _classification_inst_eval_out(
         self,
         att: Tensor,
         emb: Tensor,
         classifier: nn.Module,
         branch_idx: int,
         mask: Tensor | None,
-    ) -> tuple[Tensor, Tensor, Tensor]:
+    ) -> Tensor:
+        top_p, _ = self._select_top_and_bottom_instances(att, emb, branch_idx, mask)
+        targets = torch.zeros(top_p.shape[0], device=emb.device, dtype=torch.long)
+        logits = classifier(top_p)
+        return self.classification_instance_loss_fn(logits.float(), targets)
+
+    def _select_top_and_bottom_instances(
+        self,
+        att: Tensor,
+        emb: Tensor,
+        branch_idx: int,
+        mask: Tensor | None,
+    ) -> tuple[Tensor, Tensor]:
         att_branch = self._attention_branch(att, branch_idx)
         bag_size = int(mask.sum().item()) if mask is not None else att_branch.shape[-1]
         k = min(self.k_sample, bag_size)
@@ -216,9 +336,13 @@ class _CLAMBase(Aggregator):
             att_branch = att_branch.masked_fill(~mask, float("-inf"))
         top_p_ids = torch.topk(att_branch, k)[1]
         top_p = emb[top_p_ids]
-        targets = torch.zeros(k, device=emb.device, dtype=torch.long)
-        logits = classifier(top_p)
-        return self.inst_loss_fn(logits.float(), targets), logits, targets
+
+        att_for_neg = att_branch.clone()
+        if mask is not None:
+            att_for_neg = att_for_neg.masked_fill(~mask, float("inf"))
+        top_n_ids = torch.topk(-att_for_neg, k, dim=0)[1]
+        top_n = emb[top_n_ids]
+        return top_p, top_n
 
     def _attention_branch(self, attention: Tensor, branch_idx: int) -> Tensor:
         raise NotImplementedError
@@ -245,6 +369,9 @@ class CLAM_SB(_CLAMBase):
         inst_loss: str = "ce",
         use_negative_class_instance_loss: bool = False,
         bag_weight: float = 0.7,
+        instance_loss_mode: str | None = None,
+        low_attention_weight: float = 0.1,
+        topk_target_weight: float = 1.0,
     ) -> None:
         super().__init__(
             input_dim=input_dim,
@@ -257,6 +384,9 @@ class CLAM_SB(_CLAMBase):
             inst_loss=inst_loss,
             use_negative_class_instance_loss=use_negative_class_instance_loss,
             bag_weight=bag_weight,
+            instance_loss_mode=instance_loss_mode,
+            low_attention_weight=low_attention_weight,
+            topk_target_weight=topk_target_weight,
             multi_branch=False,
         )
 
@@ -297,6 +427,7 @@ class CLAM_MB(_CLAMBase):
             inst_loss=inst_loss,
             use_negative_class_instance_loss=use_negative_class_instance_loss,
             bag_weight=bag_weight,
+            instance_loss_mode=_CLAMBase._CLASSIFICATION_MODE,
             multi_branch=True,
         )
 

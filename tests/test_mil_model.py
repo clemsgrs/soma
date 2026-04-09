@@ -8,6 +8,7 @@ from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.pooling import MeanPool
 from soma.aggregators.mil.abmil import ABMIL
 from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.model import MILModel, MILModelOutput
 
@@ -128,13 +129,48 @@ class TestMILModel:
     def test_branch_aware_representation_rejected_for_regression(self):
         from soma.aggregators.mil.clam import CLAM_MB
 
-        model = MILModel(
-            aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
-            task_head=RegressionHead(input_dim=4),
-        )
         try:
-            model(torch.randn(2, 5, 8))
+            MILModel(
+                aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
+                task_head=RegressionHead(input_dim=4),
+            )
         except ValueError as exc:
-            assert "does not support branch-aware" in str(exc)
+            assert "classification tasks" in str(exc)
         else:
             raise AssertionError("Expected branch-aware CLAM_MB to be rejected for regression")
+
+    def test_clam_mb_rejected_for_ordinal(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        try:
+            MILModel(
+                aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
+                task_head=OrdinalClassificationHead(input_dim=4, num_classes=6),
+            )
+        except ValueError as exc:
+            assert "classification tasks" in str(exc)
+        else:
+            raise AssertionError("Expected clam_mb to be rejected for ordinal")
+
+    def test_clam_sb_accepts_regression(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = MILModel(
+            aggregator=CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3),
+            task_head=RegressionHead(input_dim=4),
+        )
+        out = model(torch.randn(2, 5, 8))
+        assert out.logits.shape == (2, 1)
+
+    def test_clam_sb_rejects_multitarget_regression(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        try:
+            MILModel(
+                aggregator=CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3),
+                task_head=RegressionHead(input_dim=4, num_targets=2),
+            )
+        except ValueError as exc:
+            assert "single-target regression" in str(exc)
+        else:
+            raise AssertionError("Expected clam_sb to reject multi-target regression")

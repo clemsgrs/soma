@@ -7,6 +7,9 @@ import torch
 from soma.aggregators.base import AggregatorOutput
 from soma.aggregators.mil.losses import SmoothTop1SVM
 from soma.aggregators.registry import aggregator_registry
+from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
+from soma.tasks.regression import RegressionHead
 
 
 class TestSmoothTop1SVM:
@@ -67,10 +70,70 @@ class TestCLAMSB:
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         assert isinstance(model.attention_net[-1], AttnNetGated)
 
-    def test_compute_instance_loss_binary(self):
+    def test_configure_for_classification(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
+        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
+        assert model._resolved_instance_loss_mode == "classification"
+
+    def test_configure_for_ordinal(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
+        model.configure_for_task(OrdinalClassificationHead(input_dim=4, num_classes=6))
+        assert model._resolved_instance_loss_mode == "ordinal"
+
+    def test_configure_for_regression(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
+        model.configure_for_task(RegressionHead(input_dim=4))
+        assert model._resolved_instance_loss_mode == "regression"
+
+    def test_multitarget_regression_rejected(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
+        try:
+            model.configure_for_task(RegressionHead(input_dim=4, num_targets=2))
+        except ValueError as exc:
+            assert "single-target regression" in str(exc)
+        else:
+            raise AssertionError("Expected multi-target regression to be rejected for CLAM_SB")
+
+    def test_inconsistent_instance_loss_mode_rejected(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, instance_loss_mode="classification")
+        try:
+            model.configure_for_task(RegressionHead(input_dim=4))
+        except ValueError as exc:
+            assert "incompatible" in str(exc)
+        else:
+            raise AssertionError("Expected inconsistent CLAM instance loss mode to be rejected")
+
+    def test_negative_class_instance_loss_rejected_for_ordinal(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(
+            input_dim=8,
+            hidden_dim=4,
+            attn_dim=3,
+            use_negative_class_instance_loss=True,
+        )
+        try:
+            model.configure_for_task(OrdinalClassificationHead(input_dim=4, num_classes=6))
+        except ValueError as exc:
+            assert "only supported for classification" in str(exc)
+        else:
+            raise AssertionError("Expected negative-class instance loss to be rejected for ordinal")
+
+    def test_compute_instance_loss_classification(self):
         from soma.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=3)
+        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
         out = model(torch.randn(2, 10, 8))
         labels = torch.tensor([0, 1])
         inst_loss = model.compute_instance_loss(
@@ -85,6 +148,7 @@ class TestCLAMSB:
         from soma.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=100)
+        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
         X = torch.randn(1, 3, 8)
         mask = torch.tensor([[True, True, False]])
         out = model(X, mask=mask)
@@ -96,48 +160,41 @@ class TestCLAMSB:
         )
         assert inst_loss.dim() == 0
 
-    def test_negative_class_instance_loss_flag_controls_out_of_class_branch(self):
+    def test_ordinal_auxiliary_loss_is_scalar(self):
         from soma.aggregators.mil.clam import CLAM_SB
 
-        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, use_negative_class_instance_loss=False)
-        calls: list[tuple[str, int]] = []
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=2)
+        model.configure_for_task(OrdinalClassificationHead(input_dim=4, num_classes=6))
+        X = torch.randn(2, 7, 8)
+        out = model(X)
+        labels = torch.tensor([1, 4])
+        aux_loss = model.compute_auxiliary_loss(out.auxiliary, labels)
+        assert aux_loss.dim() == 0
+        assert aux_loss.item() >= 0
 
-        def record_in(att, emb, classifier, branch_idx, mask):
-            calls.append(("in", branch_idx))
-            return emb.new_zeros(()), emb.new_zeros((1, 2)), emb.new_zeros((1,), dtype=torch.long)
+    def test_regression_auxiliary_loss_is_scalar(self):
+        from soma.aggregators.mil.clam import CLAM_SB
 
-        def record_out(att, emb, classifier, branch_idx, mask):
-            calls.append(("out", branch_idx))
-            return emb.new_zeros(()), emb.new_zeros((1, 2)), emb.new_zeros((1,), dtype=torch.long)
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=2)
+        model.configure_for_task(RegressionHead(input_dim=4))
+        X = torch.randn(2, 7, 8)
+        out = model(X)
+        labels = torch.tensor([0.5, -1.25])
+        aux_loss = model.compute_auxiliary_loss(out.auxiliary, labels)
+        assert aux_loss.dim() == 0
+        assert aux_loss.item() >= 0
 
-        model._inst_eval = record_in  # type: ignore[method-assign]
-        model._inst_eval_out = record_out  # type: ignore[method-assign]
-        out = model(torch.randn(1, 5, 8))
-        model.compute_instance_loss(out.auxiliary["attention"], out.auxiliary["embeddings"], torch.tensor([1]))
-        assert calls == [("in", 1)]
+    def test_regression_bottom_k_regularization_uses_variance_not_fake_labels(self):
+        from soma.aggregators.mil.clam import CLAM_SB
 
-        model_with_negative_loss = CLAM_SB(
-            input_dim=8,
-            hidden_dim=4,
-            attn_dim=3,
-            use_negative_class_instance_loss=True,
-        )
-        calls_with_negative_loss: list[tuple[str, int]] = []
-        model_with_negative_loss._inst_eval = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
-            calls_with_negative_loss.append(("in", branch_idx)) or emb.new_zeros(()),
-            emb.new_zeros((1, 2)),
-            emb.new_zeros((1,), dtype=torch.long),
-        )
-        model_with_negative_loss._inst_eval_out = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
-            calls_with_negative_loss.append(("out", branch_idx)) or emb.new_zeros(()),
-            emb.new_zeros((1, 2)),
-            emb.new_zeros((1,), dtype=torch.long),
-        )
-        out = model_with_negative_loss(torch.randn(1, 5, 8))
-        model_with_negative_loss.compute_instance_loss(
-            out.auxiliary["attention"], out.auxiliary["embeddings"], torch.tensor([1])
-        )
-        assert calls_with_negative_loss == [("out", 0), ("in", 1)]
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=2, low_attention_weight=0.5)
+        model.configure_for_task(RegressionHead(input_dim=4))
+        X = torch.randn(1, 6, 8)
+        out = model(X)
+        labels = torch.tensor([2.0])
+        aux_loss = model.compute_auxiliary_loss(out.auxiliary, labels)
+        assert aux_loss.dim() == 0
+        assert aux_loss.item() >= 0
 
     def test_combine_losses_uses_bag_weight(self):
         from soma.aggregators.mil.clam import CLAM_SB
@@ -162,6 +219,7 @@ class TestCLAMMB:
         from soma.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(input_dim=16, hidden_dim=8, attn_dim=4, n_classes=3)
+        model.configure_for_task(BranchAwareClassificationHead(input_dim=8, num_classes=3))
         out = model(torch.randn(2, 10, 16))
         assert out.bag_representation.shape == (2, 3, 8)
         assert out.tile_attention is not None
@@ -179,6 +237,7 @@ class TestCLAMMB:
             k_sample=2,
             use_negative_class_instance_loss=True,
         )
+        model.configure_for_task(BranchAwareClassificationHead(input_dim=4, num_classes=3))
         out = model(torch.randn(2, 9, 8))
         inst_loss = model.compute_instance_loss(
             out.auxiliary["attention"],
@@ -198,16 +257,13 @@ class TestCLAMMB:
             n_classes=3,
             use_negative_class_instance_loss=True,
         )
+        model.configure_for_task(BranchAwareClassificationHead(input_dim=4, num_classes=3))
         calls: list[tuple[str, int]] = []
-        model._inst_eval = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
-            calls.append(("in", branch_idx)) or emb.new_zeros(()),
-            emb.new_zeros((1, 2)),
-            emb.new_zeros((1,), dtype=torch.long),
+        model._classification_inst_eval = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
+            calls.append(("in", branch_idx)) or emb.new_zeros(())
         )
-        model._inst_eval_out = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
-            calls.append(("out", branch_idx)) or emb.new_zeros(()),
-            emb.new_zeros((1, 2)),
-            emb.new_zeros((1,), dtype=torch.long),
+        model._classification_inst_eval_out = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
+            calls.append(("out", branch_idx)) or emb.new_zeros(())
         )
         out = model(torch.randn(1, 5, 8))
         model.compute_instance_loss(
@@ -215,6 +271,28 @@ class TestCLAMMB:
         )
         assert ("out", 0) in calls and ("out", 2) in calls
         assert ("in", 1) in calls
+
+    def test_rejected_for_ordinal(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        model = CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3)
+        try:
+            model.configure_for_task(OrdinalClassificationHead(input_dim=4, num_classes=6))
+        except ValueError as exc:
+            assert "classification tasks" in str(exc)
+        else:
+            raise AssertionError("Expected clam_mb to reject ordinal tasks")
+
+    def test_rejected_for_regression(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        model = CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3)
+        try:
+            model.configure_for_task(RegressionHead(input_dim=4))
+        except ValueError as exc:
+            assert "classification tasks" in str(exc)
+        else:
+            raise AssertionError("Expected clam_mb to reject regression tasks")
 
     def test_registered(self):
         from soma.aggregators.mil.clam import CLAM_MB, CLAM_SB

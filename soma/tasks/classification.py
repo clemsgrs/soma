@@ -26,6 +26,7 @@ class ClassificationHead(TaskHead):
     """
 
     label_dtype = torch.long
+    task_family = "classification"
 
     def __init__(self, input_dim: int, num_classes: int) -> None:
         super().__init__()
@@ -68,6 +69,7 @@ class BranchAwareClassificationHead(TaskHead):
 
     label_dtype = torch.long
     supports_branch_representation = True
+    task_family = "classification"
 
     def __init__(self, input_dim: int, num_classes: int) -> None:
         super().__init__()
