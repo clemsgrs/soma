@@ -53,7 +53,7 @@ class Trainer:
         train_loader: Training DataLoader.
         tune_loader: Tune DataLoader.
         config: Training configuration.
-        output_dir: Directory for checkpoints.
+        fold_dir: Directory for checkpoints.
         device: torch.device for training.
     """
 
@@ -63,7 +63,7 @@ class Trainer:
         train_loader: DataLoader,
         tune_loader: DataLoader,
         config: TrainingConfig,
-        output_dir: Path,
+        fold_dir: Path,
         device: torch.device,
         console: Console | None = None,
     ) -> None:
@@ -71,7 +71,7 @@ class Trainer:
         self._train_loader = train_loader
         self._tune_loader = tune_loader
         self._config = config
-        self._output_dir = Path(output_dir)
+        self._fold_dir = Path(fold_dir)
         self._device = device
         self._console = console
 
@@ -84,8 +84,8 @@ class Trainer:
         Returns:
             TrainResult with best epoch, metrics, history, and checkpoint path.
         """
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = self._output_dir / "best_model.pt"
+        self._fold_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = self._fold_dir / "best_model.pt"
 
         history: list[EpochLog] = []
         best_tune_loss = float("inf")

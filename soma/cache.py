@@ -290,25 +290,25 @@ def build_tiling_cache_key(
 def resolve_cache_root(
     cache_config: CacheConfig,
     *,
-    output_dir: Path | str,
+    feature_dir: Path | str,
     output_root: Path | str | None = None,
 ) -> Path:
     if cache_config.root_dir is not None:
         return Path(cache_config.root_dir)
     if output_root is not None:
         return Path(output_root) / "feature_cache"
-    return Path(output_dir).parent / "feature_cache"
+    return Path(feature_dir).parent / "feature_cache"
 
 
 def resolve_tiling_cache_root(
     cache_config: CacheConfig,
     *,
-    output_dir: Path | str,
+    tiling_dir: Path | str,
     output_root: Path | str | None = None,
 ) -> Path:
     feature_root = resolve_cache_root(
         cache_config,
-        output_dir=output_dir,
+        feature_dir=Path(tiling_dir).parent / "features",
         output_root=output_root,
     )
     return feature_root.parent / "tiling_cache"
@@ -351,14 +351,14 @@ def _materialize_pt_artifact(*, artifact_path: Path, output_path: Path) -> torch
 def write_cache_payload(
     artifacts: Sequence[object],
     *,
-    output_dir: Path,
+    feature_dir: Path,
 ) -> int | None:
     """Write slide2vec artifacts to a soma cache directory as .pt files."""
-    output_dir.mkdir(parents=True, exist_ok=True)
+    feature_dir.mkdir(parents=True, exist_ok=True)
     feature_dim: int | None = None
     for artifact in artifacts:
         artifact_path = Path(artifact.path)
-        output_path = output_dir / f"{artifact.sample_id}.pt"
+        output_path = feature_dir / f"{artifact.sample_id}.pt"
         if artifact_path.suffix != ".pt" or not artifact_path.is_file():
             raise ValueError(f"Expected a .pt artifact for cache materialization, got: {artifact_path}")
         tensor = _materialize_pt_artifact(
@@ -477,9 +477,9 @@ def _copy_file_to_cache(*, source: Path, destination: Path) -> None:
     shutil.copyfile(source, destination)
 
 
-def _clear_directory_for_stub(output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for path in list(output_dir.iterdir()):
+def _clear_directory_for_stub(tiling_dir: Path) -> None:
+    tiling_dir.mkdir(parents=True, exist_ok=True)
+    for path in list(tiling_dir.iterdir()):
         if path.name in {PROCESS_LIST_NAME, "README.txt"}:
             continue
         if path.is_dir():
@@ -488,8 +488,8 @@ def _clear_directory_for_stub(output_dir: Path) -> None:
             path.unlink()
 
 
-def _write_tiling_stub_marker(*, output_dir: Path, cache_dir: Path) -> None:
-    (output_dir / "README.txt").write_text(
+def _write_tiling_stub_marker(*, tiling_dir: Path, cache_dir: Path) -> None:
+    (tiling_dir / "README.txt").write_text(
         (
             "This directory is a cache-backed tiling location placeholder.\n"
             f"Actual tiling payloads are stored under: {cache_dir.resolve()}\n"
@@ -671,14 +671,14 @@ def write_tiling_cache_payload(
 
 
 def write_tiling_cache_stub(
-    output_dir: Path | str,
+    tiling_dir: Path | str,
     *,
     cache_resolution: TilingCacheResolution,
 ) -> None:
-    output_dir = Path(output_dir).resolve()
-    _clear_directory_for_stub(output_dir)
-    shutil.copyfile(cache_resolution.process_list_path, output_dir / PROCESS_LIST_NAME)
-    _write_tiling_stub_marker(output_dir=output_dir, cache_dir=cache_resolution.cache_dir)
+    tiling_dir = Path(tiling_dir).resolve()
+    _clear_directory_for_stub(tiling_dir)
+    shutil.copyfile(cache_resolution.process_list_path, tiling_dir / PROCESS_LIST_NAME)
+    _write_tiling_stub_marker(tiling_dir=tiling_dir, cache_dir=cache_resolution.cache_dir)
 
 
 def _cache_dir(cache_root: Path, kind: str, key: str) -> Path:
