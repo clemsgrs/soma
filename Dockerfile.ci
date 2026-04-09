@@ -84,7 +84,6 @@ RUN printf '%s\n' \
 RUN python -m pip install \
     --no-cache-dir \
     --no-color \
-    --no-build-isolation \
     --constraint /opt/app/constraints-cu128.txt \
     "/opt/app[dev]"
 

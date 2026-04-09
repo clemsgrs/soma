@@ -9,6 +9,10 @@ def _load_workflow(path: str) -> dict:
     return yaml.load(Path(path).read_text(), Loader=yaml.BaseLoader)
 
 
+def _load_text(path: str) -> str:
+    return Path(path).read_text()
+
+
 def test_release_workflow_publishes_to_pypi_on_published_release():
     workflow = _load_workflow(".github/workflows/release.yaml")
 
@@ -38,3 +42,10 @@ def test_docker_workflow_pushes_version_and_latest_tags_on_published_release():
     assert "docker build -t $IMAGE_BASE:$VERSION -t $IMAGE_BASE:latest ." in push_step["run"]
     assert "docker push $IMAGE_BASE:$VERSION" in push_step["run"]
     assert "docker push $IMAGE_BASE:latest" in push_step["run"]
+
+
+def test_ci_dockerfile_keeps_build_isolation_enabled_for_project_install():
+    dockerfile = _load_text("Dockerfile.ci")
+
+    assert '"/opt/app[dev]"' in dockerfile
+    assert "--no-build-isolation" not in dockerfile
