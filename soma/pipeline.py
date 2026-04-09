@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import json
 from dataclasses import dataclass, replace
+from datetime import datetime
 from pathlib import Path
 
 import functools
@@ -33,6 +34,17 @@ from soma.config import (
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
+from soma.output_layout import (
+    count_run_directories,
+    create_run_metadata,
+    has_successful_run,
+    resolve_managed_output_paths,
+    update_experiment_index,
+    update_latest_pointer,
+    update_run_index,
+    write_experiment_metadata,
+    write_run_metadata,
+)
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
@@ -453,27 +465,87 @@ class Pipeline:
 
     def run(self) -> PipelineResult:
         """Run the full pipeline: save config → load features → train all folds → summarize."""
-        output_dir = Path(self._config.output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
+        layout = resolve_managed_output_paths(self._config)
+        layout.output_root.mkdir(parents=True, exist_ok=True)
+        layout.experiment_dir.mkdir(parents=True, exist_ok=True)
+        (layout.experiment_dir / "runs").mkdir(parents=True, exist_ok=True)
+        layout.run_dir.mkdir(parents=True, exist_ok=True)
+        layout.index_dir.mkdir(parents=True, exist_ok=True)
+        write_experiment_metadata(layout.experiment_dir, layout.experiment)
 
         # Save config snapshot
-        save_config(self._config, output_dir / "config.yaml")
-
-        # Load feature store
-        store = self._get_feature_store()
-
-        return train(
-            feature_store=store,
-            dataset=self._dataset,
-            splits=self._splits,
-            aggregator=self._config.aggregator,
-            task=self._config.task,
-            training=self._config.training,
-            output_dir=output_dir,
-            preprocessing=self._resolve_preprocessing(),
+        save_config(self._config, layout.run_dir / "config.yaml")
+        started_at = datetime.now().astimezone().isoformat()
+        run_metadata = create_run_metadata(
+            config=self._config,
+            experiment=layout.experiment,
+            run_dir=layout.run_dir,
+            run_id=layout.run_id,
+            status="running",
+            started_at=started_at,
+        )
+        write_run_metadata(layout.run_dir, run_metadata)
+        update_run_index(layout.index_dir / "runs.csv", run_metadata)
+        update_experiment_index(
+            layout.index_dir / "experiments.csv",
+            layout.experiment,
+            num_runs=count_run_directories(layout.experiment_dir),
+            latest_run_id=run_metadata.run_id,
+            latest_status=run_metadata.status,
         )
 
-    def _get_feature_store(self) -> FeatureStore:
+        try:
+            # Load feature store
+            store = self._get_feature_store(run_dir=layout.run_dir)
+
+            result = train(
+                feature_store=store,
+                dataset=self._dataset,
+                splits=self._splits,
+                aggregator=self._config.aggregator,
+                task=self._config.task,
+                training=self._config.training,
+                output_dir=layout.run_dir,
+                preprocessing=self._resolve_preprocessing(),
+            )
+        except Exception as exc:
+            failed_metadata = run_metadata.with_updates(
+                status="failed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                error=str(exc),
+            )
+            write_run_metadata(layout.run_dir, failed_metadata)
+            update_run_index(layout.index_dir / "runs.csv", failed_metadata)
+            update_experiment_index(
+                layout.index_dir / "experiments.csv",
+                layout.experiment,
+                num_runs=count_run_directories(layout.experiment_dir),
+                latest_run_id=failed_metadata.run_id,
+                latest_status=failed_metadata.status,
+            )
+            if not has_successful_run(layout.experiment_dir):
+                update_latest_pointer(layout.experiment_dir, layout.run_dir)
+            raise
+
+        completed_metadata = run_metadata.with_updates(
+            status="completed",
+            finished_at=datetime.now().astimezone().isoformat(),
+            summary_metrics=result.summary,
+        )
+        write_run_metadata(layout.run_dir, completed_metadata)
+        update_run_index(layout.index_dir / "runs.csv", completed_metadata)
+        update_experiment_index(
+            layout.index_dir / "experiments.csv",
+            layout.experiment,
+            num_runs=count_run_directories(layout.experiment_dir),
+            latest_run_id=completed_metadata.run_id,
+            latest_status=completed_metadata.status,
+        )
+        update_latest_pointer(layout.experiment_dir, layout.run_dir)
+
+        return result
+
+    def _get_feature_store(self, *, run_dir: Path) -> FeatureStore:
         if self._feature_dir is not None:
             store = FeatureStore(self._feature_dir)
         else:
@@ -489,7 +561,7 @@ class Pipeline:
             if cache_config.root_dir is None:
                 cache_config = replace(
                     cache_config,
-                    root_dir=Path(self._config.output_dir).parent / "feature_cache",
+                    root_dir=Path(self._config.output_root) / "feature_cache",
                 )
             extractor = FeatureExtractor(
                 self._dataset,
@@ -497,7 +569,7 @@ class Pipeline:
                 preprocessing,
                 cache=cache_config,
             )
-            store = extractor.run(Path(self._config.output_dir) / "features")
+            store = extractor.run(run_dir / "features")
         return store
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":

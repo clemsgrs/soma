@@ -106,7 +106,7 @@ from soma import EncoderConfig, AggregatorConfig, TaskConfig, TrainingConfig
 config = PipelineConfig(
     dataset_csv="dataset.csv",
     splits_csv="splits.csv",
-    output_dir="output/abmil/uni2",
+    output_root="output",
     encoder=EncoderConfig(name="uni2"),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
     task=TaskConfig(name="classification"),
@@ -120,7 +120,7 @@ The returned `PipelineResult` includes:
 
 - `fold_results`: one entry per fold, each with training, tune, and test reports
 - `summary`: aggregated metrics across folds
-- `output_dir`: the directory containing the saved artifacts
+- `output_dir`: the resolved run directory containing the saved artifacts
 
 More details about the generated artifacts are in [docs/outputs.md](docs/outputs.md).
 

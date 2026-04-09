@@ -6,11 +6,13 @@ import json
 import logging
 from pathlib import Path
 from unittest.mock import patch
+import csv
 
 import numpy as np
 import pandas as pd
 import torch
 import pytest
+import yaml
 
 from soma.config import (
     AggregatorConfig,
@@ -23,6 +25,7 @@ from soma.config import (
 )
 from soma.dataset import Dataset, FoldSplit, Splits
 from soma.features import FeatureStore
+from soma.output_layout import build_experiment_spec
 from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
 
 
@@ -32,6 +35,12 @@ from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one
 
 D = 16
 NUM_SAMPLES = 8
+FIXED_RUN_ID = "2026-04-09_16-22-10__local"
+
+
+def _expected_run_dir(config: PipelineConfig) -> Path:
+    experiment = build_experiment_spec(config)
+    return Path(config.output_root) / "experiments" / experiment.experiment_dirname / "runs" / FIXED_RUN_ID
 
 
 def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -564,22 +573,23 @@ class TestTrain:
 class TestPipeline:
     def test_run_single_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        output_dir = tmp_path / "output"
+        output_root = tmp_path / "output"
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
-        result = pipeline.run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = pipeline.run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert result.output_dir == output_dir
+        assert result.output_dir == _expected_run_dir(config)
 
     def test_run_ignores_samples_without_features(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -597,76 +607,80 @@ class TestPipeline:
                 "s7": "success",
             },
         )
-        output_dir = tmp_path / "output"
+        output_root = tmp_path / "output"
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert (output_dir / "fold_0" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
 
     def test_run_saves_config_yaml(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        output_dir = tmp_path / "output"
+        output_root = tmp_path / "output"
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            Pipeline(config, feature_dir=feature_dir).run()
 
-        assert (output_dir / "config.yaml").exists()
+        assert (_expected_run_dir(config) / "config.yaml").exists()
 
     def test_run_saves_summary_json(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        output_dir = tmp_path / "output"
+        output_root = tmp_path / "output"
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            Pipeline(config, feature_dir=feature_dir).run()
 
-        summary_path = output_dir / "summary.json"
+        summary_path = _expected_run_dir(config) / "summary.json"
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
         assert "accuracy_mean" in summary
 
     def test_run_multi_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-        output_dir = tmp_path / "output"
+        output_root = tmp_path / "output"
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert len(result.fold_results) == 2
-        assert (output_dir / "fold_0" / "best_model.pt").exists()
-        assert (output_dir / "fold_1" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "fold_1" / "best_model.pt").exists()
 
-        summary = json.loads((output_dir / "summary.json").read_text())
+        summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
         assert "accuracy_mean" in summary
         assert "accuracy_std" in summary
 
@@ -681,16 +695,17 @@ class TestPipeline:
         for i in range(NUM_SAMPLES):
             torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
 
-        output_dir = tmp_path / "output_slide"
+        output_root = tmp_path / "output_slide"
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=None,
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        result = Pipeline(config, feature_dir=slide_feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=slide_feature_dir).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
@@ -706,16 +721,17 @@ class TestPipeline:
         for i in range(NUM_SAMPLES):
             torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
 
-        output_dir = tmp_path / "output_slide_omitted"
+        output_root = tmp_path / "output_slide_omitted"
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             aggregator=None,
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        result = Pipeline(config, feature_dir=slide_feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=slide_feature_dir).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
@@ -723,12 +739,12 @@ class TestPipeline:
 
     def test_run_hierarchical_features_with_hipt(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
-        output_dir = tmp_path / "output_hier"
+        output_root = tmp_path / "output_hier"
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             encoder=EncoderConfig(name="uni2"),
             preprocessing=PreprocessingConfig(
                 target_tile_size_px=224,
@@ -748,16 +764,18 @@ class TestPipeline:
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert (output_dir / "fold_0" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
         assert "accuracy" in result.fold_results[0].test_report.metrics
 
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
+        pytest.importorskip("soma.extraction")
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        output_dir = tmp_path / "output_prism"
+        output_root = tmp_path / "output_prism"
 
         def _fake_run(self, output_dir_arg, **kwargs):
             out = Path(output_dir_arg)
@@ -769,7 +787,7 @@ class TestPipeline:
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=output_dir,
+            output_root=output_root,
             encoder=EncoderConfig(name="prism"),
             aggregator=None,
             task=TaskConfig(name="classification"),
@@ -777,10 +795,11 @@ class TestPipeline:
         )
 
         with patch("soma.extraction.FeatureExtractor.run", new=_fake_run):
-            result = Pipeline(config).run()
+            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+                result = Pipeline(config).run()
 
         assert isinstance(result, PipelineResult)
-        assert (output_dir / "features" / "s0.pt").exists()
+        assert (_expected_run_dir(config) / "features" / "s0.pt").exists()
 
     def test_pipeline_rejects_aggregator_for_slide_features(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -792,15 +811,26 @@ class TestPipeline:
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=tmp_path / "output_slide_error",
+            output_root=tmp_path / "output_slide_error",
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with pytest.raises(ValueError, match="aggregator must be None"):
-            Pipeline(config, feature_dir=slide_feature_dir).run()
+            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+                Pipeline(config, feature_dir=slide_feature_dir).run()
+
+        run_dir = _expected_run_dir(config)
+        latest = run_dir.parents[1] / "latest"
+        run_yaml = run_dir / "run.yaml"
+        payload = yaml.safe_load(run_yaml.read_text(encoding="utf-8"))
+
+        assert payload["status"] == "failed"
+        assert latest.is_symlink()
+        assert latest.resolve() == run_dir.resolve()
 
     def test_pipeline_reuses_shared_cache_for_sibling_runs(self, tmp_path: Path):
+        pytest.importorskip("slide2vec")
         from types import SimpleNamespace
 
         from hs2p import SlideSpec
@@ -918,7 +948,7 @@ class TestPipeline:
         slide_config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=tmp_path / "slide_run",
+            output_root=tmp_path / "slide_run",
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_slide),
             aggregator=None,
@@ -928,7 +958,7 @@ class TestPipeline:
         tile_config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=tmp_path / "tile_run",
+            output_root=tmp_path / "tile_run",
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_tile),
             aggregator=AggregatorConfig(name="mean_pool"),
@@ -993,7 +1023,8 @@ class TestPipeline:
             autospec=True,
             side_effect=_fake_populate_slide_cache,
         ) as populate_slide_cache:
-            Pipeline(slide_config).run()
+            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+                Pipeline(slide_config).run()
             assert populate_tile_cache.called
             assert populate_slide_cache.called
 
@@ -1011,17 +1042,61 @@ class TestPipeline:
             "_populate_tile_cache",
             side_effect=AssertionError("tile extraction should be reused"),
         ):
-            Pipeline(tile_config).run()
+            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+                Pipeline(tile_config).run()
 
     def test_dataset_and_splits_properties(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
-            output_dir=tmp_path / "output",
+            output_root=tmp_path / "output",
             task=TaskConfig(name="classification"),
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
 
         assert pipeline.dataset.num_classes == 2
         assert pipeline.splits.num_folds == 1
+
+    def test_pipeline_writes_experiment_metadata_and_indexes(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "output",
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=feature_dir).run()
+
+        experiment_dir = result.output_dir.parents[1]
+        experiment_yaml = experiment_dir / "experiment.yaml"
+        run_yaml = result.output_dir / "run.yaml"
+        latest = experiment_dir / "latest"
+        runs_index = Path(config.output_root) / "indexes" / "runs.csv"
+
+        assert experiment_yaml.exists()
+        assert run_yaml.exists()
+        assert latest.is_symlink()
+        assert latest.resolve() == result.output_dir.resolve()
+
+        with runs_index.open(newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+
+        assert rows == [
+            {
+                "run_id": FIXED_RUN_ID,
+                "experiment_id": rows[0]["experiment_id"],
+                "status": "completed",
+                "started_at": rows[0]["started_at"],
+                "finished_at": rows[0]["finished_at"],
+                "seed": "0",
+                "wandb_id": "",
+                "git_sha": rows[0]["git_sha"],
+                "run_dir": str(result.output_dir.resolve()),
+                "error": "",
+            }
+        ]

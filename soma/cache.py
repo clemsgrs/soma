@@ -13,15 +13,33 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import torch
-from slide2vec.artifacts import TileEmbeddingArtifact
+try:
+    from slide2vec.artifacts import TileEmbeddingArtifact
+except ModuleNotFoundError:
+    @dataclass(frozen=True)
+    class TileEmbeddingArtifact:
+        sample_id: str
+        path: Path
+        metadata_path: Path | None = None
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
-from soma.encoders.validation import resolve_encoder_precision
 
 CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
 SCHEMA_VERSION = "v1"
+
+
+def _resolve_encoder_precision(
+    encoder_config: EncoderConfig,
+    *,
+    encoder_name: str | None = None,
+) -> str:
+    try:
+        from soma.encoders.validation import resolve_encoder_precision
+    except ModuleNotFoundError:
+        return str(encoder_config.precision or "fp32")
+    return resolve_encoder_precision(encoder_config, encoder_name=encoder_name)
 
 
 @dataclass(frozen=True)
@@ -135,7 +153,7 @@ def execution_signature(
     output_variant: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "precision": resolve_encoder_precision(encoder_config, encoder_name=encoder_name),
+        "precision": _resolve_encoder_precision(encoder_config, encoder_name=encoder_name),
         "input_size": encoder_config.input_size,
         "spacing_um": encoder_config.spacing_um,
         "output_variant": output_variant if output_variant is not None else encoder_config.output_variant,

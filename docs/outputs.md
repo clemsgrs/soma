@@ -1,6 +1,9 @@
 # Outputs
 
-This project writes two different kinds of outputs.
+This project writes two different kinds of outputs:
+
+- reusable feature-cache artifacts
+- training run outputs
 
 ## Feature Extraction Outputs
 
@@ -27,18 +30,29 @@ output/
 
 ## Training Outputs
 
-`Pipeline.run()` writes experiment artifacts to `output_dir`.
+`Pipeline.run()` resolves a managed run directory from a user-provided `output_root`.
 
 ```text
-experiments/run1/
-├── config.yaml
-├── fold_0/
-│   ├── best_model.pt
-│   ├── metrics.json
-│   └── predictions.csv
-├── fold_1/
-│   └── ...
-└── summary.json
+<output_root>/
+├── experiments/
+│   └── <dataset>-<encoder>-<aggregator>-<task_type>_<short_hash>/
+│       ├── experiment.yaml
+│       ├── experiment.json
+│       ├── runs/
+│       │   └── <run_id>/
+│       │       ├── config.yaml
+│       │       ├── run.yaml
+│       │       ├── fold_0/
+│       │       │   ├── best_model.pt
+│       │       │   ├── metrics.json
+│       │       │   └── predictions.csv
+│       │       ├── fold_1/
+│       │       │   └── ...
+│       │       └── summary.json
+│       └── latest
+└── indexes/
+    ├── experiments.csv
+    └── runs.csv
 ```
 
 `predictions.csv` format depends on the task head:
@@ -47,6 +61,8 @@ experiments/run1/
 - **Regression**: columns `sample_id`, `true_label`, `predicted_value`
 
 `metrics.json` contains tune and test metrics for each fold. `summary.json` aggregates per-metric mean and std across folds.
+
+`run.yaml` records run provenance such as seed, timestamps, git metadata, and summary metrics. `indexes/runs.csv` and `indexes/experiments.csv` provide convenience views over the per-run and per-experiment metadata.
 
 ## FeatureStore Paths
 
