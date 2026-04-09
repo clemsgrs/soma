@@ -159,9 +159,11 @@ def _artifact(
 
 
 def test_build_execution_options_uses_cpu_budget_for_tiling_workers(monkeypatch, tmp_path: Path):
+    import slide2vec.api as slide2vec_api
     from soma import slide2vec_adapter as adapter
 
-    monkeypatch.setattr(adapter, "cpu_worker_limit", lambda: 24)
+    monkeypatch.setattr(slide2vec_api, "cpu_worker_limit", lambda: 24)
+    monkeypatch.setattr(slide2vec_api, "slurm_cpu_limit", lambda: 24)
 
     execution = adapter.build_execution_options(
         EncoderConfig(name=_TEST_TILE, num_workers=3),
