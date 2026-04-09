@@ -12,8 +12,10 @@ class SamplePrediction:
 
     sample_id: str
     true_label: int | float
-    predicted_label: int
-    probabilities: list[float]
+    predicted_label: int | None = None
+    probabilities: list[float] | None = None
+    predicted_value: float | None = None
+    raw_score: float | None = None
 
 
 @dataclass(frozen=True)

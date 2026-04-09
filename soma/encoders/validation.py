@@ -8,13 +8,42 @@ from dataclasses import replace
 from soma.config import EncoderConfig, PreprocessingConfig
 from slide2vec.encoders.registry import (
     encoder_registry,
-    require_encoder_metadata_field,
     resolve_encoder_output,
     resolve_encoder_level,
     resolve_preprocessing_requirements,
     resolve_tile_dependency_output,
 )
 from hs2p.preprocessing import TileGeometry
+
+
+def resolve_encoder_precision(
+    config: EncoderConfig,
+    *,
+    encoder_name: str | None = None,
+    model_metadata: dict[str, Any] | None = None,
+) -> str:
+    """Resolve the precision used at runtime.
+
+    Explicit user overrides win. Otherwise use the model recommendation when
+    available and fall back to fp32 when the registry does not provide one.
+    """
+    if config.precision is not None:
+        return str(config.precision)
+
+    metadata = model_metadata
+    effective_encoder_name = encoder_name or config.name
+    if metadata is None:
+        try:
+            metadata = encoder_registry.info(effective_encoder_name)
+        except Exception:
+            metadata = None
+
+    recommended_precision = None
+    if metadata is not None:
+        recommended_precision = metadata.get("precision")
+    if recommended_precision is not None:
+        return str(recommended_precision)
+    return "fp32"
 
 
 def resolve_preprocessing_config(
@@ -120,12 +149,11 @@ def validate_encoder_config(
                 f"Slide encoder dependency '{tile_encoder_name}' must resolve to a tile encoder"
             )
 
-    rec_precision = str(
-        require_encoder_metadata_field(config.name, model_metadata, "precision")
-    )
-    if config.precision != rec_precision:
+    rec_precision = model_metadata.get("precision")
+    resolved_precision = resolve_encoder_precision(config, model_metadata=model_metadata)
+    if config.precision is not None and rec_precision is not None and config.precision != rec_precision:
         warnings.append(
-            f"Precision mismatch: config uses '{config.precision}', "
+            f"Precision mismatch: config uses '{resolved_precision}', "
             f"model recommends '{rec_precision}'."
         )
 

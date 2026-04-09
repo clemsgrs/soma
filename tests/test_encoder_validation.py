@@ -20,10 +20,10 @@ def _metadata(
     tile_encoder: str | None = None,
     tile_encoder_output_variant: str | None = None,
     supported_spacing_um: float | list[float] = 0.5,
-    precision: str = "fp16",
+    precision: str | None = "fp16",
     source: str = "",
 ) -> dict:
-    return {
+    payload = {
         "output_variants": output_variants or {"default": {"encode_dim": 1536}},
         "default_output_variant": default_output_variant,
         "level": level,
@@ -31,9 +31,11 @@ def _metadata(
         "tile_encoder": tile_encoder,
         "tile_encoder_output_variant": tile_encoder_output_variant,
         "supported_spacing_um": supported_spacing_um,
-        "precision": precision,
         "source": source,
     }
+    if precision is not None:
+        payload["precision"] = precision
+    return payload
 
 
 def _tiling_result(
@@ -80,19 +82,19 @@ class TestValidateEncoderConfig:
                 },
             )
 
-    def test_missing_precision_metadata_errors(self):
-        with pytest.raises(ValueError, match="precision metadata"):
-            validate_encoder_config(
-                EncoderConfig(name="uni2", precision="fp16"),
-                {
-                    "output_variants": {"default": {"encode_dim": 1536}},
-                    "default_output_variant": "default",
-                    "level": "tile",
-                    "input_size": 224,
-                    "supported_spacing_um": 0.5,
-                    "source": "",
-                },
-            )
+    def test_unset_precision_uses_model_recommendation_without_warning(self):
+        warnings = validate_encoder_config(
+            EncoderConfig(name="uni2", precision=None),
+            _metadata(precision="fp16"),
+        )
+        assert not any("precision" in w.lower() for w in warnings)
+
+    def test_unset_precision_falls_back_to_fp32_when_metadata_has_no_recommendation(self):
+        warnings = validate_encoder_config(
+            EncoderConfig(name="uni2", precision=None),
+            _metadata(precision=None),
+        )
+        assert not any("precision" in w.lower() for w in warnings)
 
     def test_precision_mismatch(self):
         warnings = validate_encoder_config(

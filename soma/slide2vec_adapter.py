@@ -12,16 +12,19 @@ from slide2vec import (
     ExecutionOptions,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
-from slide2vec.utils.tiling_io import load_process_df, load_tiling_result_from_row
+from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
+from soma.encoders.validation import resolve_encoder_precision
 
 
 @dataclass(frozen=True)
 class LoadedTiling:
     slide: SlideSpec
     tiling_result: object
+    requested_backend: str | None = None
+    backend: str | None = None
 
 
 def to_slide_spec(record: SampleRecord) -> SlideSpec:
@@ -35,6 +38,17 @@ def to_slide_spec(record: SampleRecord) -> SlideSpec:
 
 def build_slide_specs(dataset: Dataset) -> list[SlideSpec]:
     return [to_slide_spec(record) for record in dataset.samples.values()]
+
+
+def tiling_num_tiles(tiling_result: object) -> int:
+    """Return the number of tiles recorded in a tiling result."""
+    num_tiles = getattr(tiling_result, "num_tiles", None)
+    if num_tiles is not None:
+        return int(num_tiles)
+    coordinates = getattr(tiling_result, "x", None)
+    if coordinates is not None:
+        return int(len(coordinates))
+    return 0
 
 
 def ensure_supported_mask_value(
@@ -53,15 +67,13 @@ def ensure_supported_mask_value(
 
 def build_preprocessing_config(
     preprocessing: PreprocessingConfig,
-    *,
-    backend: str,
 ) -> Slide2VecPreprocessingConfig:
     if preprocessing.target_tile_size_px is None:
         raise ValueError("target_tile_size_px must be resolved before extraction")
     if preprocessing.target_spacing_um is None:
         raise ValueError("target_spacing_um must be resolved before extraction")
     payload: dict[str, object] = {
-        "backend": backend,
+        "backend": preprocessing.backend,
         "target_spacing_um": float(preprocessing.target_spacing_um),
         "target_tile_size_px": int(preprocessing.target_tile_size_px),
         "tolerance": float(preprocessing.tolerance),
@@ -99,6 +111,7 @@ def build_preprocessing_config(
 def build_execution_options(
     encoder: EncoderConfig,
     *,
+    encoder_name: str | None = None,
     output_dir: Path,
     num_gpus: int | None,
     save_tile_embeddings: bool,
@@ -107,10 +120,9 @@ def build_execution_options(
         output_dir=output_dir,
         output_format="pt",
         batch_size=int(encoder.batch_size),
-        num_workers=int(encoder.num_workers),
-        num_preprocessing_workers=8,
+        num_workers=int(encoder.num_workers) if encoder.num_workers is not None else None,
         num_gpus=1 if num_gpus is None else int(num_gpus),
-        precision=encoder.precision,
+        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         save_tile_embeddings=save_tile_embeddings,
         save_latents=False,
     )
@@ -127,7 +139,7 @@ def load_tilings(
         raise ValueError(
             f"Tiling directory '{tiling_dir}' is missing process_list.csv"
         )
-    process_df = load_process_df(process_list_path)
+    process_df = load_tiling_process_df(process_list_path)
     rows_by_sample_id = {
         str(row["sample_id"]): row
         for row in process_df.to_dict("records")
@@ -142,14 +154,23 @@ def load_tilings(
                 f"Tiling failed for {record.sample_id}: {row.get('error', '')}"
             )
         tiling_result = load_tiling_result_from_row(row)
+        requested_backend = str(getattr(tiling_result, "requested_backend", "auto"))
+        actual_backend = str(getattr(tiling_result, "backend", requested_backend))
         validate_tiling_result_provenance(
             tiling_result,
             sample_id=record.sample_id,
             image_path=record.image_path,
-            tissue_mask_path=record.mask_path,
+            mask_path=record.mask_path,
             tissue_mask_tissue_value=(
                 int(tissue_mask_tissue_value) if record.mask_path is not None else None
             ),
         )
-        loaded.append(LoadedTiling(slide=to_slide_spec(record), tiling_result=tiling_result))
+        loaded.append(
+            LoadedTiling(
+                slide=to_slide_spec(record),
+                tiling_result=tiling_result,
+                requested_backend=requested_backend,
+                backend=actual_backend,
+            )
+        )
     return loaded

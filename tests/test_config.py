@@ -39,6 +39,8 @@ def test_pipeline_config_is_frozen():
 
 def test_preprocessing_config_defaults():
     cfg = PreprocessingConfig()
+    assert cfg.backend == "auto"
+    assert cfg.requested_backend == "auto"
     assert cfg.target_tile_size_px is None
     assert cfg.target_spacing_um is None
     assert cfg.target_region_size_px is None
@@ -74,18 +76,27 @@ def test_aggregator_config_defaults():
     assert cfg.params == {}
 
 
-def test_task_config_defaults():
-    cfg = TaskConfig()
-    assert cfg.name == "classification"
+def test_task_config_requires_name():
+    with pytest.raises(TypeError):
+        TaskConfig()  # name is required
+
+
+def test_task_config_params_default_empty():
+    cfg = TaskConfig(name="classification")
     assert cfg.params == {}
 
 
+def test_encoder_config_requires_name():
+    with pytest.raises(TypeError):
+        EncoderConfig()
+
+
 def test_encoder_config_defaults():
-    cfg = EncoderConfig()
+    cfg = EncoderConfig(name="uni2")
     assert cfg.name == "uni2"
-    assert cfg.precision == "fp16"
+    assert cfg.precision is None
     assert cfg.batch_size == 32
-    assert cfg.num_workers == 4
+    assert cfg.num_workers is None
     assert cfg.output_variant is None
     assert cfg.save_tile_features is False
 
@@ -98,6 +109,16 @@ def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.encoder.output_variant == "cls"
+
+
+def test_encoder_config_roundtrip_with_num_workers(tmp_path: Path):
+    cfg = _make_pipeline_config(encoder=EncoderConfig(name="h0-mini", num_workers=6))
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.encoder.num_workers == 6
 
 
 def test_cache_config_defaults():
@@ -124,7 +145,7 @@ def test_task_config_with_params():
 
 def test_save_and_load_config_roundtrip(tmp_path: Path):
     original = _make_pipeline_config(
-        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=7)
+        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=7, backend="openslide")
     )
     yaml_path = tmp_path / "config.yaml"
 
@@ -136,11 +157,13 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.dataset_csv == original.dataset_csv
     assert loaded.splits_csv == original.splits_csv
     assert loaded.output_dir == original.output_dir
+    assert loaded.preprocessing.backend == "openslide"
     assert loaded.preprocessing.tissue_mask_tissue_value == 7
     assert loaded.preprocessing.target_tile_size_px == original.preprocessing.target_tile_size_px
 
     assert loaded.cache.enabled == original.cache.enabled
     assert loaded.encoder.name == original.encoder.name
+    assert loaded.encoder.num_workers == original.encoder.num_workers
     assert loaded.aggregator.name == original.aggregator.name
     assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name
@@ -156,13 +179,13 @@ def test_load_config_with_target_fields(tmp_path: Path):
         "splits_csv": "splits.csv",
         "output_dir": "out",
         "preprocessing": {
+            "backend": "cucim",
             "target_tile_size_px": 256,
             "target_spacing_um": 0.5,
         },
         "cache": {},
-        "encoder": {},
         "aggregator": None,
-        "task": {},
+        "task": {"name": "classification"},
         "training": {},
         "tags": [],
     }
@@ -172,6 +195,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
 
     loaded = load_config(yaml_path)
 
+    assert loaded.preprocessing.backend == "cucim"
     assert loaded.preprocessing.target_tile_size_px == 256
     assert loaded.preprocessing.target_spacing_um == 0.5
 
@@ -215,6 +239,44 @@ def test_aggregator_none_yaml_output(tmp_path: Path):
 
     raw = yaml.safe_load(yaml_path.read_text())
     assert raw["aggregator"] is None
+
+
+def test_pipeline_config_requires_task():
+    with pytest.raises(TypeError, match="task"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_dir="out",
+        )
+
+
+def test_load_config_raises_without_task_name(tmp_path: Path):
+    raw = {
+        "dataset_csv": "dataset.csv",
+        "splits_csv": "splits.csv",
+        "output_dir": "out",
+        "task": {},
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+    with pytest.raises(ValueError, match="task"):
+        load_config(yaml_path)
+
+
+def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
+    raw = {
+        "dataset_csv": "dataset.csv",
+        "splits_csv": "splits.csv",
+        "output_dir": "out",
+        "encoder": {},
+        "task": {"name": "classification"},
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+    with pytest.raises(TypeError):
+        load_config(yaml_path)
 
 
 # --- Helpers ---

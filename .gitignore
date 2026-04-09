@@ -207,8 +207,9 @@ marimo/_lsp/
 __marimo__/
 
 # custom
-tasks/
 output/
 AGENTS.md
 CLAUDE.md
 .claude/
+data/
+shared/

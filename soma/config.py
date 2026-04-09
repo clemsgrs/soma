@@ -13,6 +13,7 @@ import yaml
 class PreprocessingConfig:
     """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
 
+    backend: str = "auto"
     target_tile_size_px: int | None = None
     target_spacing_um: float | None = None
     target_region_size_px: int | None = None
@@ -34,6 +35,11 @@ class PreprocessingConfig:
     hierarchical_patch_size_px: int | None = None
 
     @property
+    def requested_backend(self) -> str:
+        """Backend requested by config before runtime auto-resolution."""
+        return self.backend
+
+    @property
     def has_hierarchical_geometry(self) -> bool:
         return self.region_tile_multiple is not None or self.target_region_size_px is not None
 
@@ -42,11 +48,11 @@ class PreprocessingConfig:
 class EncoderConfig:
     """Configuration for foundation model encoding."""
 
-    name: str = "uni2"
-    precision: str = "fp16"
+    name: str
+    precision: str | None = None
     batch_size: int = 32
+    num_workers: int | None = None
     adaptive_batching: bool = False
-    num_workers: int = 4
     input_size: int | None = None
     spacing_um: float | None = None
     output_variant: str | None = None
@@ -75,7 +81,7 @@ class AggregatorConfig:
 class TaskConfig:
     """Configuration for the task head."""
 
-    name: str = "classification"
+    name: str
     params: dict[str, Any] = field(default_factory=dict)
 
 
@@ -102,11 +108,15 @@ class PipelineConfig:
     output_dir: str | Path
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
-    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    encoder: EncoderConfig | None = None
     aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
-    task: TaskConfig = field(default_factory=TaskConfig)
+    task: TaskConfig = field(default=None)  # type: ignore[assignment]
     training: TrainingConfig = field(default_factory=TrainingConfig)
     tags: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if self.task is None:
+            raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
 
 
 # --- YAML serialization ---
@@ -151,17 +161,27 @@ def load_config(path: Path | str) -> PipelineConfig:
     return _dict_to_config(data)
 
 
+def _load_task_config(data: dict[str, Any]) -> TaskConfig:
+    task_data = data.get("task")
+    if not task_data or "name" not in task_data:
+        raise ValueError(
+            "Config is missing required 'task.name' (e.g. task: {name: classification})"
+        )
+    return TaskConfig(**task_data)
+
+
 def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
+    encoder_data = data.get("encoder")
     return PipelineConfig(
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
         output_dir=data["output_dir"],
         preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
         cache=CacheConfig(**data.get("cache", {})),
-        encoder=EncoderConfig(**data.get("encoder", {})),
+        encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
-        task=TaskConfig(**data.get("task", {})),
+        task=_load_task_config(data),
         training=TrainingConfig(**data.get("training", {})),
         tags=data.get("tags", []),
     )

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import errno
 from pathlib import Path
-
+from types import SimpleNamespace
+from unittest.mock import patch
 import pandas as pd
 import pytest
 import torch
@@ -19,6 +21,7 @@ from soma.cache import (
     resolve_hierarchical_cache,
     resolve_slide_cache,
     resolve_tile_cache,
+    write_cache_payload,
 )
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -115,6 +118,49 @@ def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
         execution=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
     )
     assert key_a != key_b
+
+
+def test_tile_cache_key_changes_with_backend(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    key_a = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(backend="auto"),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    key_b = build_tile_cache_key(
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(backend="openslide"),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    assert key_a != key_b
+
+
+def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    provenance = {
+        "requested_backend": "auto",
+        "backend": "openslide",
+        "backend_by_sample_id": {
+            "s1": "openslide",
+            "s2": "openslide",
+        },
+    }
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(backend="auto"),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+        backend_provenance=provenance,
+    )
+
+    metadata = json.loads(resolution.metadata_path.read_text())
+    assert metadata["requested_backend"] == "auto"
+    assert metadata["backend"] == "openslide"
+    assert metadata["backend_by_sample_id"] == {"s1": "openslide", "s2": "openslide"}
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
@@ -263,6 +309,49 @@ def test_resolve_feature_payload_dir_prefers_hierarchical_embeddings(tmp_path: P
     hier_dir.mkdir(parents=True)
     tile_dir.mkdir(parents=True)
     assert resolve_feature_payload_dir(artifact_root) == hier_dir
+
+
+def test_write_cache_payload_reuses_pt_artifacts_without_reserializing(tmp_path: Path):
+    artifact_dir = tmp_path / "artifacts" / "tile_embeddings"
+    artifact_dir.mkdir(parents=True)
+    artifact_path = artifact_dir / "s1.pt"
+    torch.save(torch.ones(3, 7), artifact_path)
+    cache_dir = tmp_path / "cache" / "features"
+
+    artifact = SimpleNamespace(sample_id="s1", path=artifact_path)
+
+    with patch(
+        "soma.cache.torch.save",
+        side_effect=AssertionError("torch.save should not be used"),
+    ):
+        feature_dim = write_cache_payload([artifact], output_dir=cache_dir)
+
+    cached_path = cache_dir / "s1.pt"
+    assert feature_dim == 7
+    assert cached_path.is_file()
+    assert torch.load(cached_path, weights_only=True, map_location="cpu").shape == (3, 7)
+
+
+def test_write_cache_payload_falls_back_to_content_copy_across_devices(tmp_path: Path):
+    artifact_dir = tmp_path / "artifacts" / "tile_embeddings"
+    artifact_dir.mkdir(parents=True)
+    artifact_path = artifact_dir / "s1.pt"
+    torch.save(torch.ones(3, 7), artifact_path)
+    cache_dir = tmp_path / "cache" / "features"
+
+    artifact = SimpleNamespace(sample_id="s1", path=artifact_path)
+
+    with patch("soma.cache.os.link", side_effect=OSError(errno.EXDEV, "Invalid cross-device link")), patch(
+        "soma.cache.shutil.copyfile",
+        wraps=__import__("shutil").copyfile,
+    ) as copyfile:
+        feature_dim = write_cache_payload([artifact], output_dir=cache_dir)
+
+    cached_path = cache_dir / "s1.pt"
+    assert feature_dim == 7
+    assert copyfile.called
+    assert cached_path.is_file()
+    assert torch.load(cached_path, weights_only=True, map_location="cpu").shape == (3, 7)
 
 
 def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):

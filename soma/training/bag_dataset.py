@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from torch import Tensor
 from torch.utils.data import Dataset
 
@@ -18,7 +20,10 @@ class BagDataset(Dataset):
     Args:
         records: List of SampleRecords with sample_id and label.
         feature_store: FeatureStore for loading precomputed embeddings.
-        label_map: Mapping from raw labels to integer indices.
+        label_map: Mapping from raw labels to integer indices. Ignored when
+            label_fn is provided.
+        label_fn: Optional callable that maps a SampleRecord to its label
+            value (int or float). When provided, label_map is not used.
     """
 
     def __init__(
@@ -26,15 +31,17 @@ class BagDataset(Dataset):
         records: list[SampleRecord],
         feature_store: FeatureStore,
         label_map: dict[str | int, int],
+        label_fn: Callable[[SampleRecord], int | float] | None = None,
     ) -> None:
         self._records = records
         self._store = feature_store
         self._label_map = label_map
+        self._label_fn = label_fn or (lambda record: label_map[record.label])
 
     def __len__(self) -> int:
         return len(self._records)
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, int, str]:
+    def __getitem__(self, idx: int) -> tuple[Tensor, int | float, str]:
         record = self._records[idx]
         features = self._store.load(record.sample_id)
         if features.ndim != 2:
@@ -42,7 +49,7 @@ class BagDataset(Dataset):
                 f"BagDataset expects 2-D tile features, got rank {features.ndim} for "
                 f"sample_id={record.sample_id}"
             )
-        label = self._label_map[record.label]
+        label = self._label_fn(record)
         return features, label, record.sample_id
 
 
@@ -51,6 +58,14 @@ class HierarchicalBagDataset(Dataset):
 
     Each item returns (features, label, sample_id) where features
     is a tensor of shape (num_regions, num_tiles_per_region, D).
+
+    Args:
+        records: List of SampleRecords with sample_id and label.
+        feature_store: FeatureStore for loading precomputed embeddings.
+        label_map: Mapping from raw labels to integer indices. Ignored when
+            label_fn is provided.
+        label_fn: Optional callable that maps a SampleRecord to its label
+            value (int or float). When provided, label_map is not used.
     """
 
     def __init__(
@@ -58,15 +73,17 @@ class HierarchicalBagDataset(Dataset):
         records: list[SampleRecord],
         feature_store: FeatureStore,
         label_map: dict[str | int, int],
+        label_fn: Callable[[SampleRecord], int | float] | None = None,
     ) -> None:
         self._records = records
         self._store = feature_store
         self._label_map = label_map
+        self._label_fn = label_fn or (lambda record: label_map[record.label])
 
     def __len__(self) -> int:
         return len(self._records)
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, int, str]:
+    def __getitem__(self, idx: int) -> tuple[Tensor, int | float, str]:
         record = self._records[idx]
         features = self._store.load(record.sample_id)
         if features.ndim != 3:
@@ -74,5 +91,5 @@ class HierarchicalBagDataset(Dataset):
                 f"HierarchicalBagDataset expects 3-D hierarchical features, got rank "
                 f"{features.ndim} for sample_id={record.sample_id}"
             )
-        label = self._label_map[record.label]
+        label = self._label_fn(record)
         return features, label, record.sample_id

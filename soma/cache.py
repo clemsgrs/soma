@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import csv
+import contextlib
 import hashlib
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import torch
-from slide2vec.artifacts import TileEmbeddingArtifact, load_array
+from slide2vec.artifacts import TileEmbeddingArtifact
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
+from soma.encoders.validation import resolve_encoder_precision
 
 CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
@@ -78,6 +82,7 @@ def manifest_digest(manifest_rows: Iterable[dict[str, object]]) -> str:
 
 def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
     return {
+        "backend": config.backend,
         "target_tile_size_px": config.target_tile_size_px,
         "target_spacing_um": config.target_spacing_um,
         "target_region_size_px": config.target_region_size_px,
@@ -98,13 +103,39 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
     }
 
 
+def preprocessing_backend_provenance(
+    *,
+    requested_backend: str,
+    loaded_tilings: Sequence[object],
+) -> dict[str, Any]:
+    backend_by_sample_id: dict[str, str] = {}
+    for loaded in loaded_tilings:
+        slide = getattr(loaded, "slide", None)
+        sample_id = getattr(slide, "sample_id", getattr(loaded, "sample_id", None))
+        if sample_id is None:
+            continue
+        backend = getattr(loaded, "backend", None)
+        if backend is None:
+            backend = getattr(loaded, "requested_backend", requested_backend)
+        backend_by_sample_id[str(sample_id)] = str(backend)
+
+    unique_backends = sorted(set(backend_by_sample_id.values()))
+    actual_backend: str | None = unique_backends[0] if len(unique_backends) == 1 else None
+    return {
+        "requested_backend": str(requested_backend),
+        "backend": actual_backend,
+        "backend_by_sample_id": backend_by_sample_id,
+    }
+
+
 def execution_signature(
     encoder_config: EncoderConfig,
     *,
+    encoder_name: str | None = None,
     output_variant: str | None = None,
 ) -> dict[str, Any]:
     return {
-        "precision": encoder_config.precision,
+        "precision": resolve_encoder_precision(encoder_config, encoder_name=encoder_name),
         "input_size": encoder_config.input_size,
         "spacing_um": encoder_config.spacing_um,
         "output_variant": output_variant if output_variant is not None else encoder_config.output_variant,
@@ -125,7 +156,11 @@ def build_tile_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -144,7 +179,11 @@ def build_slide_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "slide_encoder_name": slide_encoder_name,
         "tile_cache_key": tile_cache_key,
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=slide_encoder_name,
+            output_variant=output_variant,
+        ),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -163,7 +202,11 @@ def build_hierarchical_cache_key(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -199,6 +242,19 @@ def _feature_dim_from_tensor(tensor: torch.Tensor) -> int:
     return int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
 
 
+def _materialize_pt_artifact(*, artifact_path: Path, output_path: Path) -> torch.Tensor:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        output_path.unlink()
+    try:
+        os.link(artifact_path, output_path)
+    except OSError:
+        shutil.copyfile(artifact_path, output_path)
+        with contextlib.suppress(OSError):
+            artifact_path.unlink()
+    return torch.load(output_path, weights_only=True, map_location="cpu")
+
+
 def write_cache_payload(
     artifacts: Sequence[object],
     *,
@@ -208,9 +264,14 @@ def write_cache_payload(
     output_dir.mkdir(parents=True, exist_ok=True)
     feature_dim: int | None = None
     for artifact in artifacts:
-        array = load_array(artifact.path)
-        tensor = array if torch.is_tensor(array) else torch.as_tensor(array)
-        torch.save(tensor, output_dir / f"{artifact.sample_id}.pt")
+        artifact_path = Path(artifact.path)
+        output_path = output_dir / f"{artifact.sample_id}.pt"
+        if artifact_path.suffix != ".pt" or not artifact_path.is_file():
+            raise ValueError(f"Expected a .pt artifact for cache materialization, got: {artifact_path}")
+        tensor = _materialize_pt_artifact(
+            artifact_path=artifact_path,
+            output_path=output_path,
+        )
         feature_dim = _feature_dim_from_tensor(tensor)
     return feature_dim
 
@@ -267,6 +328,7 @@ def _build_tile_cache_metadata(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_tile_cache_key(
         dataset=dataset,
@@ -275,7 +337,7 @@ def _build_tile_cache_metadata(
         execution=execution,
         output_variant=output_variant,
     )
-    return {
+    metadata = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "tile",
         "cache_key": key,
@@ -284,10 +346,17 @@ def _build_tile_cache_metadata(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
         "feature_rank": 2,
         "feature_dim": None,
     }
+    if backend_provenance is not None:
+        metadata.update(backend_provenance)
+    return metadata
 
 
 def _build_slide_cache_metadata(
@@ -298,6 +367,7 @@ def _build_slide_cache_metadata(
     tile_cache_key: str,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_slide_cache_key(
         dataset=dataset,
@@ -306,7 +376,7 @@ def _build_slide_cache_metadata(
         execution=execution,
         output_variant=output_variant,
     )
-    return {
+    metadata = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "slide",
         "cache_key": key,
@@ -316,10 +386,17 @@ def _build_slide_cache_metadata(
         "tile_cache_key": tile_cache_key,
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=slide_encoder_name,
+            output_variant=output_variant,
+        ),
         "feature_rank": 1,
         "feature_dim": None,
     }
+    if backend_provenance is not None:
+        metadata.update(backend_provenance)
+    return metadata
 
 
 def _build_hierarchical_cache_metadata(
@@ -329,6 +406,7 @@ def _build_hierarchical_cache_metadata(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_hierarchical_cache_key(
         dataset=dataset,
@@ -337,7 +415,7 @@ def _build_hierarchical_cache_metadata(
         execution=execution,
         output_variant=output_variant,
     )
-    return {
+    metadata = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "hierarchical",
         "cache_key": key,
@@ -346,10 +424,17 @@ def _build_hierarchical_cache_metadata(
         "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
-        "execution": execution_signature(execution, output_variant=output_variant),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
         "feature_rank": 3,
         "feature_dim": None,
     }
+    if backend_provenance is not None:
+        metadata.update(backend_provenance)
+    return metadata
 
 
 def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -455,6 +540,7 @@ def resolve_tile_cache(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
 ) -> CacheResolution:
     metadata = _build_tile_cache_metadata(
         dataset=dataset,
@@ -462,6 +548,7 @@ def resolve_tile_cache(
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
+        backend_provenance=backend_provenance,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -481,6 +568,7 @@ def resolve_slide_cache(
     tile_cache_key: str,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
 ) -> CacheResolution:
     metadata = _build_slide_cache_metadata(
         dataset=dataset,
@@ -489,6 +577,7 @@ def resolve_slide_cache(
         tile_cache_key=tile_cache_key,
         execution=execution,
         output_variant=output_variant,
+        backend_provenance=backend_provenance,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -507,6 +596,7 @@ def resolve_hierarchical_cache(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
 ) -> CacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         dataset=dataset,
@@ -514,6 +604,7 @@ def resolve_hierarchical_cache(
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
+        backend_provenance=backend_provenance,
     )
     return _resolve_cache(
         cache_root=cache_root,
