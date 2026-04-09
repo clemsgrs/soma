@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import contextlib
 import hashlib
 import json
 import os
@@ -248,7 +249,9 @@ def _materialize_pt_artifact(*, artifact_path: Path, output_path: Path) -> torch
     try:
         os.link(artifact_path, output_path)
     except OSError:
-        shutil.move(str(artifact_path), str(output_path))
+        shutil.copyfile(artifact_path, output_path)
+        with contextlib.suppress(OSError):
+            artifact_path.unlink()
     return torch.load(output_path, weights_only=True, map_location="cpu")
 
 

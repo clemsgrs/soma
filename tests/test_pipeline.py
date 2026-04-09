@@ -364,6 +364,29 @@ class TestTrainOneFold:
         assert result.test_report is not None
         assert "accuracy" in result.test_report.metrics
 
+    def test_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+
+        slide_dir = tmp_path / "slide_feats"
+        slide_dir.mkdir()
+        for i in range(NUM_SAMPLES):
+            torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
+        store = FeatureStore(slide_dir)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            output_dir=tmp_path / "fold_slide_omitted",
+        )
+
+        assert isinstance(result, FoldResult)
+        assert "accuracy" in result.test_report.metrics
+
     def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         dataset = Dataset(dataset_csv)
@@ -672,6 +695,30 @@ class TestPipeline:
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
         assert result.fold_results[0].test_report is not None
+        assert "accuracy" in result.fold_results[0].test_report.metrics
+
+    def test_run_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
+        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
+
+        slide_feature_dir = tmp_path / "slide_features"
+        slide_feature_dir.mkdir()
+        torch.manual_seed(7)
+        for i in range(NUM_SAMPLES):
+            torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
+
+        output_dir = tmp_path / "output_slide_omitted"
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_dir=output_dir,
+            aggregator=None,
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        result = Pipeline(config, feature_dir=slide_feature_dir).run()
+
+        assert isinstance(result, PipelineResult)
+        assert len(result.fold_results) == 1
         assert "accuracy" in result.fold_results[0].test_report.metrics
 
     def test_run_hierarchical_features_with_hipt(self, tmp_path: Path):

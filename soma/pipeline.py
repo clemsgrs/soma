@@ -99,11 +99,11 @@ def train_one_fold(
     feature_store: FeatureStore,
     dataset: Dataset,
     fold_split: FoldSplit,
-    aggregator: AggregatorConfig | None,
     task: TaskConfig,
     training: TrainingConfig,
     output_dir: str | Path,
     *,
+    aggregator: AggregatorConfig | None = None,
     fold: int = 0,
     preprocessing: PreprocessingConfig | None = None,
 ) -> FoldResult:
@@ -114,6 +114,7 @@ def train_one_fold(
         dataset: Dataset with sample records and label_map.
         fold_split: Train/tune/test sample IDs for this fold.
         aggregator: Aggregator configuration, or None for slide-level features.
+            Omit this argument for slide-level encoders.
         task: Task head configuration.
         training: Training loop configuration.
         output_dir: Directory for checkpoint, metrics, predictions.
@@ -326,10 +327,10 @@ def train(
     feature_store: FeatureStore,
     dataset: Dataset,
     splits: Splits,
-    aggregator: AggregatorConfig | None,
     task: TaskConfig,
     training: TrainingConfig,
     output_dir: str | Path,
+    aggregator: AggregatorConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
@@ -339,6 +340,7 @@ def train(
         dataset: Dataset with sample records and label_map.
         splits: Cross-validation splits (1 or more folds).
         aggregator: Aggregator configuration, or None for slide-level features.
+            Omit this argument for slide-level encoders.
         task: Task head configuration.
         training: Training loop configuration.
         output_dir: Root directory — each fold gets a fold_N/ subdirectory.

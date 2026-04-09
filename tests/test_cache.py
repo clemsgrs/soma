@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import errno
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -327,6 +328,28 @@ def test_write_cache_payload_reuses_pt_artifacts_without_reserializing(tmp_path:
 
     cached_path = cache_dir / "s1.pt"
     assert feature_dim == 7
+    assert cached_path.is_file()
+    assert torch.load(cached_path, weights_only=True, map_location="cpu").shape == (3, 7)
+
+
+def test_write_cache_payload_falls_back_to_content_copy_across_devices(tmp_path: Path):
+    artifact_dir = tmp_path / "artifacts" / "tile_embeddings"
+    artifact_dir.mkdir(parents=True)
+    artifact_path = artifact_dir / "s1.pt"
+    torch.save(torch.ones(3, 7), artifact_path)
+    cache_dir = tmp_path / "cache" / "features"
+
+    artifact = SimpleNamespace(sample_id="s1", path=artifact_path)
+
+    with patch("soma.cache.os.link", side_effect=OSError(errno.EXDEV, "Invalid cross-device link")), patch(
+        "soma.cache.shutil.copyfile",
+        wraps=__import__("shutil").copyfile,
+    ) as copyfile:
+        feature_dim = write_cache_payload([artifact], output_dir=cache_dir)
+
+    cached_path = cache_dir / "s1.pt"
+    assert feature_dim == 7
+    assert copyfile.called
     assert cached_path.is_file()
     assert torch.load(cached_path, weights_only=True, map_location="cpu").shape == (3, 7)
 
