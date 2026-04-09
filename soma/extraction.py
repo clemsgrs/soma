@@ -207,12 +207,92 @@ def _runtime_output_variant(*, level: str, resolved_output: dict[str, object]) -
     return str(resolved_output["output_variant"])
 
 
+def _feature_kind_from_rank(feature_rank: int) -> str:
+    if int(feature_rank) == 1:
+        return "slide"
+    if int(feature_rank) == 2:
+        return "tile"
+    if int(feature_rank) == 3:
+        return "hierarchical"
+    raise ValueError(f"Unsupported feature rank {feature_rank}")
+
+
 def _resolve_num_gpus(num_gpus: int | None) -> int:
     if num_gpus is not None:
         return int(num_gpus)
     if torch.cuda.is_available():
         return max(1, int(torch.cuda.device_count()))
     return 1
+
+
+_PENDING_FEATURE_PATH_SENTINEL = "__soma_pending_feature_path__"
+
+
+def _rewrite_process_list_rows(
+    process_list_path: Path,
+    *,
+    fieldnames: Sequence[str],
+    rows: Sequence[dict[str, str]],
+) -> None:
+    with process_list_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(fieldnames))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _normalize_process_list_for_embedding(process_list_path: Path) -> None:
+    if not process_list_path.is_file():
+        return
+    with process_list_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    if not fieldnames or not rows:
+        return
+
+    changed = False
+    for column in ("feature_status", "aggregation_status"):
+        if column not in fieldnames:
+            continue
+        if any((row.get(column) or "").strip() for row in rows):
+            continue
+        for row in rows:
+            row[column] = "tbp"
+        changed = True
+    if "feature_path" in fieldnames:
+        if not any((row.get("feature_path") or "").strip() for row in rows):
+            for row in rows:
+                row["feature_path"] = _PENDING_FEATURE_PATH_SENTINEL
+            changed = True
+
+    if changed:
+        _rewrite_process_list_rows(
+            process_list_path,
+            fieldnames=fieldnames,
+            rows=rows,
+        )
+
+
+def _restore_process_list_after_embedding(process_list_path: Path) -> None:
+    if not process_list_path.is_file():
+        return
+    with process_list_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = list(reader.fieldnames or [])
+        rows = list(reader)
+    if "feature_path" not in fieldnames or not rows:
+        return
+    changed = False
+    for row in rows:
+        if row.get("feature_path") == _PENDING_FEATURE_PATH_SENTINEL:
+            row["feature_path"] = ""
+            changed = True
+    if changed:
+        _rewrite_process_list_rows(
+            process_list_path,
+            fieldnames=fieldnames,
+            rows=rows,
+        )
 
 
 def _embed_tiles(
@@ -244,9 +324,11 @@ def _run_with_coordinates(
 ):
     staged_process_list = Path(execution.output_dir) / "process_list.csv"
     source_process_list = tiling_dir / "process_list.csv"
-    if source_process_list.is_file() and not staged_process_list.exists():
-        staged_process_list.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source_process_list, staged_process_list)
+    if source_process_list.is_file():
+        _normalize_process_list_for_embedding(source_process_list)
+        if not staged_process_list.exists():
+            staged_process_list.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_process_list, staged_process_list)
     try:
         return Pipeline(
             Model.from_preset(model_name, output_variant=output_variant),
@@ -258,6 +340,7 @@ def _run_with_coordinates(
         )
     finally:
         if source_process_list.is_file():
+            _restore_process_list_after_embedding(source_process_list)
             source_resolved = source_process_list.resolve()
             staged_resolved = staged_process_list.resolve()
             if source_resolved != staged_resolved:
@@ -428,7 +511,7 @@ class FeatureExtractor:
                         preprocessing=s2v_preprocessing,
                         resolved_preprocessing=resolved_preprocessing,
                         backend_provenance=backend_provenance,
-                        output_variant=runtime_output_variant,
+                        output_variant=output_variant,
                         num_gpus=effective_num_gpus,
                     )
                     elif level == "tile":
@@ -441,7 +524,7 @@ class FeatureExtractor:
                         preprocessing=s2v_preprocessing,
                         resolved_preprocessing=resolved_preprocessing,
                         backend_provenance=backend_provenance,
-                        output_variant=runtime_output_variant,
+                        output_variant=output_variant,
                         num_gpus=effective_num_gpus,
                     )
                     else:
@@ -456,7 +539,8 @@ class FeatureExtractor:
                             resolved_preprocessing=resolved_preprocessing,
                             resolved_output=resolved_output,
                             backend_provenance=backend_provenance,
-                            output_variant=runtime_output_variant,
+                            output_variant=output_variant,
+                            runtime_output_variant=runtime_output_variant,
                             num_gpus=effective_num_gpus,
                         )
 
@@ -464,6 +548,8 @@ class FeatureExtractor:
                     output_dir=output_dir,
                     store=store,
                     loaded_tilings=loaded_tilings,
+                    encoder_name=self._encoder.name,
+                    output_variant=output_variant,
                 )
                 store = FeatureStore(store.feature_dir)
 
@@ -484,11 +570,14 @@ class FeatureExtractor:
         output_dir: Path,
         store: FeatureStore,
         loaded_tilings: Sequence[LoadedTiling],
+        encoder_name: str,
+        output_variant: str,
     ) -> None:
         manifest_roots = {output_dir.resolve()}
         feature_root = store.feature_dir.resolve()
         if feature_root != output_dir.resolve():
             manifest_roots.add(feature_root.parent.resolve())
+        feature_kind = _feature_kind_from_rank(store.feature_rank)
 
         rows = []
         for loaded in loaded_tilings:
@@ -505,6 +594,9 @@ class FeatureExtractor:
                     "num_tiles": num_tiles,
                     "feature_rank": store.feature_rank,
                     "feature_dim": store.feature_dim,
+                    "encoder_name": encoder_name,
+                    "output_variant": output_variant,
+                    "feature_kind": feature_kind,
                 }
             )
 
@@ -520,6 +612,9 @@ class FeatureExtractor:
                         "num_tiles",
                         "feature_rank",
                         "feature_dim",
+                        "encoder_name",
+                        "output_variant",
+                        "feature_kind",
                     ],
                 )
                 writer.writeheader()
@@ -564,6 +659,7 @@ class FeatureExtractor:
         feature_rank = int(metadata["feature_rank"])
         feature_dim = metadata.get("feature_dim")
         output_variant = metadata.get("execution", {}).get("output_variant")
+        feature_kind = _feature_kind_from_rank(feature_rank)
         with process_list_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
                 handle,
@@ -577,6 +673,7 @@ class FeatureExtractor:
                     "cache_dir",
                     "encoder_name",
                     "output_variant",
+                    "feature_kind",
                     "feature_rank",
                     "feature_dim",
                 ],
@@ -594,6 +691,7 @@ class FeatureExtractor:
                         "cache_dir": str(cache_dir),
                         "encoder_name": metadata["encoder_name"],
                         "output_variant": output_variant,
+                        "feature_kind": feature_kind,
                         "feature_rank": feature_rank,
                         "feature_dim": feature_dim,
                     }
@@ -796,6 +894,7 @@ class FeatureExtractor:
         resolved_output: dict[str, object],
         backend_provenance: dict[str, object],
         output_variant: str,
+        runtime_output_variant: str | None,
         num_gpus: int | None,
     ) -> FeatureStore:
         tile_encoder_name = str(encoder_info["tile_encoder"])
@@ -835,7 +934,7 @@ class FeatureExtractor:
                 tiling_dir=tiling_dir,
                 preprocessing=preprocessing,
                 model_name=self._encoder.name,
-                output_variant=output_variant,
+                output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
             )
             return FeatureStore(slide_cache.cache_dir)
@@ -855,7 +954,7 @@ class FeatureExtractor:
             tile_cache=tile_cache,
             loaded_tilings=loaded_tilings,
             model_name=self._encoder.name,
-            output_variant=str(slide_cache.metadata["execution"]["output_variant"]),
+            output_variant=runtime_output_variant,
             num_gpus=num_gpus,
         )
         self._write_cached_process_list(output_dir, cache_resolution=slide_cache)
@@ -985,7 +1084,7 @@ class FeatureExtractor:
         tiling_dir: Path,
         preprocessing: Slide2VecPreprocessingConfig,
         model_name: str,
-        output_variant: str,
+        output_variant: str | None,
         num_gpus: int,
     ) -> None:
         tile_missing = set(tile_cache.missing_sample_ids())
@@ -1029,7 +1128,7 @@ class FeatureExtractor:
         tile_cache,
         loaded_tilings: Sequence[LoadedTiling],
         model_name: str,
-        output_variant: str,
+        output_variant: str | None,
         num_gpus: int | None,
     ) -> None:
         missing = set(slide_cache.missing_sample_ids())

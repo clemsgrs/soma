@@ -34,7 +34,7 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "slide2vec[fm]>=4.0.2",
+    "slide2vec[fm]>=4.0.3",
 ]
 
 [project.urls]

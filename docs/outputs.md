@@ -10,7 +10,9 @@ If caching is disabled, `extract()` writes embeddings directly into the requeste
 
 When caching is enabled, the requested run-local feature directory is left with a small `README.txt` marker so it is clear that the real payload lives in the shared cache.
 
-The run-local feature directory also gets a `process_list.csv` with one row per sample and a `feature_path` column that points at the resolved cached `.pt` file.
+The run-local feature directory also gets a `process_list.csv` with one row per sample.
+It records the resolved `feature_path` plus canonical feature provenance columns:
+`encoder_name`, `output_variant`, and `feature_kind`.
 
 For uncached multi-GPU extraction, `process_list.csv` is synchronized back from the tiling directory into the feature directory after embedding so the feature output tree remains self-contained.
 

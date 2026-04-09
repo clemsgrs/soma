@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 import pandas as pd
 import pytest
 import torch
@@ -18,6 +20,7 @@ from soma.cache import (
     resolve_hierarchical_cache,
     resolve_slide_cache,
     resolve_tile_cache,
+    write_cache_payload,
 )
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -305,6 +308,27 @@ def test_resolve_feature_payload_dir_prefers_hierarchical_embeddings(tmp_path: P
     hier_dir.mkdir(parents=True)
     tile_dir.mkdir(parents=True)
     assert resolve_feature_payload_dir(artifact_root) == hier_dir
+
+
+def test_write_cache_payload_reuses_pt_artifacts_without_reserializing(tmp_path: Path):
+    artifact_dir = tmp_path / "artifacts" / "tile_embeddings"
+    artifact_dir.mkdir(parents=True)
+    artifact_path = artifact_dir / "s1.pt"
+    torch.save(torch.ones(3, 7), artifact_path)
+    cache_dir = tmp_path / "cache" / "features"
+
+    artifact = SimpleNamespace(sample_id="s1", path=artifact_path)
+
+    with patch(
+        "soma.cache.torch.save",
+        side_effect=AssertionError("torch.save should not be used"),
+    ):
+        feature_dim = write_cache_payload([artifact], output_dir=cache_dir)
+
+    cached_path = cache_dir / "s1.pt"
+    assert feature_dim == 7
+    assert cached_path.is_file()
+    assert torch.load(cached_path, weights_only=True, map_location="cpu").shape == (3, 7)
 
 
 def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):

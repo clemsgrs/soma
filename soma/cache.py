@@ -5,12 +5,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import torch
-from slide2vec.artifacts import TileEmbeddingArtifact, load_array
+from slide2vec.artifacts import TileEmbeddingArtifact
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -239,6 +241,17 @@ def _feature_dim_from_tensor(tensor: torch.Tensor) -> int:
     return int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
 
 
+def _materialize_pt_artifact(*, artifact_path: Path, output_path: Path) -> torch.Tensor:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        output_path.unlink()
+    try:
+        os.link(artifact_path, output_path)
+    except OSError:
+        shutil.move(str(artifact_path), str(output_path))
+    return torch.load(output_path, weights_only=True, map_location="cpu")
+
+
 def write_cache_payload(
     artifacts: Sequence[object],
     *,
@@ -248,9 +261,14 @@ def write_cache_payload(
     output_dir.mkdir(parents=True, exist_ok=True)
     feature_dim: int | None = None
     for artifact in artifacts:
-        array = load_array(artifact.path)
-        tensor = array if torch.is_tensor(array) else torch.as_tensor(array)
-        torch.save(tensor, output_dir / f"{artifact.sample_id}.pt")
+        artifact_path = Path(artifact.path)
+        output_path = output_dir / f"{artifact.sample_id}.pt"
+        if artifact_path.suffix != ".pt" or not artifact_path.is_file():
+            raise ValueError(f"Expected a .pt artifact for cache materialization, got: {artifact_path}")
+        tensor = _materialize_pt_artifact(
+            artifact_path=artifact_path,
+            output_path=output_path,
+        )
         feature_dim = _feature_dim_from_tensor(tensor)
     return feature_dim
 
