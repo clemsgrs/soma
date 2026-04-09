@@ -5,11 +5,25 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from soma.cache import resolve_feature_payload_dir
 
-from slide2vec.artifacts import load_array
+try:
+    from slide2vec.artifacts import load_array
+except ModuleNotFoundError:
+    def load_array(path: Path | str):
+        path = Path(path)
+        if path.suffix == ".pt":
+            return torch.load(path, map_location="cpu", weights_only=True)
+        if path.suffix == ".npz":
+            data = np.load(path)
+            if "arr_0" in data:
+                return data["arr_0"]
+            first_key = next(iter(data.files))
+            return data[first_key]
+        raise ValueError(f"Unsupported feature artifact format: {path.suffix}")
 
 
 class FeatureStore:

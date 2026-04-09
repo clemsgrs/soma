@@ -31,7 +31,7 @@ def test_preprocessing_config_is_frozen():
 def test_pipeline_config_is_frozen():
     cfg = _make_pipeline_config()
     with pytest.raises(FrozenInstanceError):
-        cfg.output_dir = "other"
+        cfg.output_root = "other"
 
 
 # --- Default values ---
@@ -156,7 +156,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
 
     assert loaded.dataset_csv == original.dataset_csv
     assert loaded.splits_csv == original.splits_csv
-    assert loaded.output_dir == original.output_dir
+    assert loaded.output_root == original.output_root
     assert loaded.preprocessing.backend == "openslide"
     assert loaded.preprocessing.tissue_mask_tissue_value == 7
     assert loaded.preprocessing.target_tile_size_px == original.preprocessing.target_tile_size_px
@@ -177,7 +177,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
     raw = {
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
-        "output_dir": "out",
+        "output_root": "out",
         "preprocessing": {
             "backend": "cucim",
             "target_tile_size_px": 256,
@@ -246,7 +246,7 @@ def test_pipeline_config_requires_task():
         PipelineConfig(
             dataset_csv="data.csv",
             splits_csv="splits.csv",
-            output_dir="out",
+            output_root="out",
         )
 
 
@@ -254,7 +254,7 @@ def test_load_config_raises_without_task_name(tmp_path: Path):
     raw = {
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
-        "output_dir": "out",
+        "output_root": "out",
         "task": {},
     }
     yaml_path = tmp_path / "config.yaml"
@@ -268,7 +268,7 @@ def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
     raw = {
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
-        "output_dir": "out",
+        "output_root": "out",
         "encoder": {},
         "task": {"name": "classification"},
     }
@@ -286,7 +286,7 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
     defaults = dict(
         dataset_csv="data/dataset.csv",
         splits_csv="data/splits.csv",
-        output_dir="runs/exp1",
+        output_root="runs",
         cache=CacheConfig(),
         encoder=EncoderConfig(name="uni2"),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),

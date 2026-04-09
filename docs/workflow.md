@@ -52,7 +52,7 @@ from soma import (
 config = PipelineConfig(
     dataset_csv="dataset.csv",
     splits_csv="splits.csv",
-    output_dir="experiments/run1",
+    output_root="experiments",
     cache=CacheConfig(root_dir="shared/feature_cache"),
     encoder=EncoderConfig(name="uni2"),
     preprocessing=PreprocessingConfig(backend="openslide", target_tile_size_px=224, target_spacing_um=0.5),
@@ -87,4 +87,5 @@ For regression, use float values in the `label` column of `dataset.csv`. For cla
 
 - `preprocess()` writes tiling artifacts.
 - `extract()` writes embeddings and returns a `FeatureStore`.
-- `Pipeline.run()` writes training outputs under `output_dir` and uses the configured cache for reusable embeddings.
+- `Pipeline.run()` writes training outputs under a managed experiment/run directory inside `output_root`.
+- The shared `feature_cache/` remains separate from run-local training artifacts.

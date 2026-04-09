@@ -7,10 +7,10 @@
 If `CacheConfig.root_dir` is not set, the cache lives next to the run directory:
 
 ```text
-<parent of output_dir>/feature_cache/
+<output_root>/feature_cache/
 ```
 
-For example, if `output_dir` is `experiments/run1`, the default cache root is `experiments/feature_cache`.
+For example, if `output_root` is `experiments`, the default cache root is `experiments/feature_cache`.
 
 ## Explicit Shared Cache
 
