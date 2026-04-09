@@ -26,15 +26,22 @@ from soma.training.trainer import Trainer
 
 
 def _make_bag_batches(
-    n_samples: int = 4, bag_size: int = 10, feat_dim: int = 16, n_classes: int = 2
+    n_samples: int = 4,
+    bag_size: int = 10,
+    feat_dim: int = 16,
+    n_classes: int = 2,
+    label_dtype: torch.dtype = torch.long,
 ) -> list[BagBatch]:
     """Create deterministic BagBatch objects for testing."""
     torch.manual_seed(42)
     batches = []
-    for _ in range(n_samples):
+    for idx in range(n_samples):
         features = torch.randn(1, bag_size, feat_dim)
         mask = torch.ones(1, bag_size, dtype=torch.bool)
-        labels = torch.randint(0, n_classes, (1,))
+        if label_dtype == torch.float:
+            labels = torch.tensor([float(idx) * 0.5], dtype=torch.float)
+        else:
+            labels = torch.randint(0, n_classes, (1,), dtype=label_dtype)
         batches.append(BagBatch(features=features, mask=mask, labels=labels, sample_ids=("s",)))
     return batches
 
@@ -63,7 +70,7 @@ def _train_one_epoch(aggregator: Aggregator, feat_dim: int = 16) -> float:
         aggregator=aggregator,
         task_head=head,
     )
-    batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim)
+    batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim, label_dtype=head.label_dtype)
     loader = _FakeBagLoader(batches)
     config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
     output_dir = Path("/tmp/test_trainer_aux")
@@ -84,7 +91,12 @@ def _train_one_epoch_with_head(aggregator: Aggregator, head, feat_dim: int = 16,
     """Build a MILModel with the given aggregator/head and train one epoch."""
     torch.manual_seed(0)
     model = MILModel(aggregator=aggregator, task_head=head)
-    batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim, n_classes=n_classes)
+    batches = _make_bag_batches(
+        n_samples=4,
+        feat_dim=feat_dim,
+        n_classes=n_classes,
+        label_dtype=head.label_dtype,
+    )
     loader = _FakeBagLoader(batches)
     config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
     output_dir = Path("/tmp/test_trainer_aux")
