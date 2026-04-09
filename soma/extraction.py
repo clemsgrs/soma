@@ -40,7 +40,7 @@ from soma.cache import (
 )
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
-from soma.encoders.validation import resolve_preprocessing_config
+from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import (
     LoadedTiling,
@@ -195,7 +195,7 @@ def _validate_runtime(
         encoder_name,
         target_tile_size_px=int(first.requested_tile_size_px),
         target_spacing_um=float(first.requested_spacing_um),
-        precision=encoder.precision,
+        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         output_variant=output_variant,
         allow_non_recommended=False,
     )
@@ -614,6 +614,7 @@ class FeatureExtractor:
     ) -> None:
         execution = build_execution_options(
             self._encoder,
+            encoder_name=self._encoder.name,
             output_dir=output_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=(level == "tile" or self._encoder.save_tile_features or hierarchical),
@@ -677,6 +678,7 @@ class FeatureExtractor:
             with tempfile.TemporaryDirectory(prefix="soma-tiles-") as tmp_dir:
                 temp_execution = build_execution_options(
                     self._encoder,
+                    encoder_name=self._encoder.name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
                     save_tile_embeddings=True,
@@ -884,6 +886,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-tile-") as tmp_dir:
             execution = build_execution_options(
                 self._encoder,
+                encoder_name=encoder_name,
                 output_dir=Path(tmp_dir),
                 num_gpus=num_gpus,
                 save_tile_embeddings=True,
@@ -938,6 +941,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-hierarchical-") as tmp_dir:
             execution = build_execution_options(
                 self._encoder,
+                encoder_name=encoder_name,
                 output_dir=Path(tmp_dir),
                 num_gpus=num_gpus,
                 save_tile_embeddings=True,
@@ -997,6 +1001,7 @@ class FeatureExtractor:
                 preprocessing=preprocessing,
                 execution=build_execution_options(
                     self._encoder,
+                    encoder_name=model_name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
                     save_tile_embeddings=True,
@@ -1045,6 +1050,7 @@ class FeatureExtractor:
                 preprocessing=None,
                 execution=build_execution_options(
                     self._encoder,
+                    encoder_name=model_name,
                     output_dir=artifact_dir,
                     num_gpus=num_gpus,
                     save_tile_embeddings=False,

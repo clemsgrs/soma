@@ -48,11 +48,11 @@ class PreprocessingConfig:
 class EncoderConfig:
     """Configuration for foundation model encoding."""
 
-    name: str = "uni2"
-    precision: str = "fp16"
+    name: str
+    precision: str | None = None
     batch_size: int = 32
+    num_workers: int | None = None
     adaptive_batching: bool = False
-    num_workers: int = 4
     input_size: int | None = None
     spacing_um: float | None = None
     output_variant: str | None = None
@@ -108,7 +108,7 @@ class PipelineConfig:
     output_dir: str | Path
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
-    encoder: EncoderConfig = field(default_factory=EncoderConfig)
+    encoder: EncoderConfig | None = None
     aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -172,13 +172,14 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig:
 
 def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
+    encoder_data = data.get("encoder")
     return PipelineConfig(
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
         output_dir=data["output_dir"],
         preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
         cache=CacheConfig(**data.get("cache", {})),
-        encoder=EncoderConfig(**data.get("encoder", {})),
+        encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
         task=_load_task_config(data),
         training=TrainingConfig(**data.get("training", {})),

@@ -16,6 +16,7 @@ from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result
 
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
+from soma.encoders.validation import resolve_encoder_precision
 
 
 @dataclass(frozen=True)
@@ -110,6 +111,7 @@ def build_preprocessing_config(
 def build_execution_options(
     encoder: EncoderConfig,
     *,
+    encoder_name: str | None = None,
     output_dir: Path,
     num_gpus: int | None,
     save_tile_embeddings: bool,
@@ -118,9 +120,9 @@ def build_execution_options(
         output_dir=output_dir,
         output_format="pt",
         batch_size=int(encoder.batch_size),
-        num_workers=int(encoder.num_workers),
+        num_workers=int(encoder.num_workers) if encoder.num_workers is not None else None,
         num_gpus=1 if num_gpus is None else int(num_gpus),
-        precision=encoder.precision,
+        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         save_tile_embeddings=save_tile_embeddings,
         save_latents=False,
     )

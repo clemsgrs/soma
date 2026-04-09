@@ -166,14 +166,27 @@ def test_build_execution_options_uses_cpu_budget_for_tiling_workers(monkeypatch,
     monkeypatch.setattr(slide2vec_api, "slurm_cpu_limit", lambda: 24)
 
     execution = adapter.build_execution_options(
-        EncoderConfig(name=_TEST_TILE, num_workers=3),
+        EncoderConfig(name=_TEST_TILE),
         output_dir=tmp_path,
         num_gpus=None,
         save_tile_embeddings=False,
     )
 
-    assert execution.num_workers == 3
+    assert execution.num_workers is None
     assert execution.num_preprocessing_workers == 24
+
+
+def test_build_execution_options_forwards_explicit_num_workers(tmp_path: Path):
+    from soma import slide2vec_adapter as adapter
+
+    execution = adapter.build_execution_options(
+        EncoderConfig(name=_TEST_TILE, num_workers=6),
+        output_dir=tmp_path,
+        num_gpus=None,
+        save_tile_embeddings=False,
+    )
+
+    assert execution.num_workers == 6
 
 
 class _FakeInnerReporter:

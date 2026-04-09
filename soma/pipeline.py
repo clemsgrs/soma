@@ -473,6 +473,10 @@ class Pipeline:
         else:
             from soma.extraction import FeatureExtractor
 
+            if self._config.encoder is None:
+                raise ValueError(
+                    "PipelineConfig.encoder is required when feature_dir is not provided."
+                )
             preprocessing = self._resolve_preprocessing()
 
             cache_config = self._config.cache
