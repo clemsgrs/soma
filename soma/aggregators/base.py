@@ -72,3 +72,23 @@ class Aggregator(ABC, nn.Module):
             Scalar auxiliary loss, or None if no auxiliary loss.
         """
         return None
+
+    def combine_losses(
+        self,
+        task_loss: Tensor,
+        auxiliary: dict[str, Tensor] | None,
+        labels: Tensor,
+        mask: Tensor | None = None,
+    ) -> Tensor:
+        """Combine task loss with any aggregator-specific auxiliary loss.
+
+        Aggregators that use a custom weighting strategy can override this.
+        By default, this preserves soma's existing behavior of adding any
+        auxiliary loss to the task loss.
+        """
+        if auxiliary is None:
+            return task_loss
+        auxiliary_loss = self.compute_auxiliary_loss(auxiliary, labels, mask=mask)
+        if auxiliary_loss is None:
+            return task_loss
+        return task_loss + auxiliary_loss

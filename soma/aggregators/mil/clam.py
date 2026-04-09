@@ -1,86 +1,127 @@
-"""CLAM — Clustering-constrained Attention MIL (Lu et al., 2021).
+"""CLAM aggregators — reference-style CLAM-SB and CLAM-MB.
 
-Adapted from torchmil (Apache 2.0). Unlike torchmil's monolithic CLAM,
-this is a pure aggregator (no bag classifier, no loss). The classifier lives
-in TaskHead, making CLAM composable with any task.
-
-The aggregation is identical to ABMIL (gated attention pooling). The key
-difference is the instance-level clustering loss computed via
-`compute_instance_loss()`, which the trainer can call during training.
+These implementations follow the original CLAM repository more closely than
+the previous torchmil-inspired soma version while preserving soma's
+aggregator + task-head architecture.
 """
 
 from __future__ import annotations
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.aggregators.base import Aggregator, AggregatorOutput
-from soma.aggregators.mil.attention_pool import AttentionPool
 from soma.aggregators.mil.losses import SmoothTop1SVM
 from soma.aggregators.registry import aggregator_registry
 
 
-class CLAM(Aggregator):
-    """CLAM aggregator with instance-level clustering loss.
+class AttnNet(nn.Module):
+    """Attention network without gating."""
 
-    Uses gated attention pooling (same as ABMIL) for aggregation, plus
-    two instance classifiers for the CLAM clustering regularization.
+    def __init__(self, input_dim: int, attn_dim: int, dropout: float, n_classes: int) -> None:
+        super().__init__()
+        layers: list[nn.Module] = [nn.Linear(input_dim, attn_dim), nn.Tanh()]
+        if dropout > 0:
+            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Linear(attn_dim, n_classes))
+        self.module = nn.Sequential(*layers)
 
-    Args:
-        input_dim: Feature dimension of input tiles.
-        hidden_dim: Attention bottleneck dimension.
-        activation: Activation function ('tanh', 'relu', 'gelu').
-        gated: If True, use gated attention.
-        dropout: Dropout rate applied before attention.
-        k_sample: Number of top/bottom instances to sample for clustering loss.
-        inst_loss: Instance loss type ('smooth_top1_svm' or 'bce').
-    """
+    def forward(self, X: Tensor) -> tuple[Tensor, Tensor]:
+        return self.module(X), X
+
+
+class AttnNetGated(nn.Module):
+    """Attention network with gating."""
+
+    def __init__(self, input_dim: int, attn_dim: int, dropout: float, n_classes: int) -> None:
+        super().__init__()
+        a_layers: list[nn.Module] = [nn.Linear(input_dim, attn_dim), nn.Tanh()]
+        b_layers: list[nn.Module] = [nn.Linear(input_dim, attn_dim), nn.Sigmoid()]
+        if dropout > 0:
+            a_layers.append(nn.Dropout(dropout))
+            b_layers.append(nn.Dropout(dropout))
+        self.attention_a = nn.Sequential(*a_layers)
+        self.attention_b = nn.Sequential(*b_layers)
+        self.attention_c = nn.Linear(attn_dim, n_classes)
+
+    def forward(self, X: Tensor) -> tuple[Tensor, Tensor]:
+        A = self.attention_a(X).mul(self.attention_b(X))
+        return self.attention_c(A), X
+
+
+class _CLAMBase(Aggregator):
+    """Shared reference-style CLAM behavior."""
 
     def __init__(
         self,
         input_dim: int,
-        hidden_dim: int = 128,
-        activation: str = "tanh",
-        gated: bool = False,
-        dropout: float = 0.25,
-        k_sample: int = 10,
-        inst_loss: str = "smooth_top1_svm",
+        hidden_dim: int = 512,
+        attn_dim: int = 256,
+        gated: bool = True,
+        dropout: float = 0.0,
+        k_sample: int = 8,
+        n_classes: int = 2,
+        inst_loss: str = "ce",
+        use_negative_class_instance_loss: bool = False,
+        bag_weight: float = 0.7,
+        multi_branch: bool = False,
     ) -> None:
         super().__init__()
-        self._input_dim = input_dim
+        self._output_dim = hidden_dim
         self.k_sample = k_sample
+        self.n_classes = n_classes
+        self.use_negative_class_instance_loss = use_negative_class_instance_loss
+        self.bag_weight = bag_weight
+        self.multi_branch = multi_branch
 
-        self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
-        self.pool = AttentionPool(
-            input_dim=input_dim,
-            hidden_dim=hidden_dim,
-            activation=activation,
-            gated=gated,
+        fc: list[nn.Module] = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
+        if dropout > 0:
+            fc.append(nn.Dropout(dropout))
+        attn_cls = AttnNetGated if gated else AttnNet
+        fc.append(
+            attn_cls(
+                input_dim=hidden_dim,
+                attn_dim=attn_dim,
+                dropout=dropout,
+                n_classes=n_classes if multi_branch else 1,
+            )
         )
+        self.attention_net = nn.Sequential(*fc)
         self.inst_classifiers = nn.ModuleList(
-            [nn.Linear(input_dim, 2) for _ in range(2)]
+            [nn.Linear(hidden_dim, 2) for _ in range(n_classes)]
         )
 
-        if inst_loss == "smooth_top1_svm":
+        if inst_loss == "svm":
             self.inst_loss_fn = SmoothTop1SVM(n_classes=2)
-        elif inst_loss == "bce":
+        elif inst_loss == "ce":
             self.inst_loss_fn = nn.CrossEntropyLoss()
         else:
-            msg = f"inst_loss must be 'smooth_top1_svm' or 'bce', got '{inst_loss}'"
+            msg = f"inst_loss must be 'ce' or 'svm', got '{inst_loss}'"
             raise ValueError(msg)
 
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
-        X = self.dropout(X)
-        z, attn_logits = self.pool(X, mask=mask)
+        A, H = self.attention_net(X)
+        A = torch.transpose(A, 2, 1) if A.ndim == 3 else torch.transpose(A, 1, 0)
+        if X.ndim == 3:
+            # Batched path: (B, N, C_or_1) -> (B, C_or_1, N)
+            A_raw = A
+            if mask is not None:
+                A = A.masked_fill(~mask.unsqueeze(1), float("-inf"))
+            A = F.softmax(A, dim=-1)
+            M = torch.bmm(A, H)
+        else:
+            raise ValueError("CLAM aggregators expect batched input of shape (B, N, D)")
         return AggregatorOutput(
-            bag_representation=z,
-            tile_attention=attn_logits,
-            auxiliary={"embeddings": X, "attention": attn_logits},
+            bag_representation=self._bag_representation(M),
+            tile_attention=self._attention_output(A_raw),
+            auxiliary={"embeddings": H, "attention": A_raw},
         )
 
     @property
     def output_dim(self) -> int:
-        return self._input_dim
+        return self._output_dim
 
     def compute_auxiliary_loss(
         self,
@@ -88,10 +129,21 @@ class CLAM(Aggregator):
         labels: Tensor,
         mask: Tensor | None = None,
     ) -> Tensor:
-        """Instance clustering loss (CLAM auxiliary objective)."""
         return self.compute_instance_loss(
             auxiliary["attention"], auxiliary["embeddings"], labels, mask=mask
         )
+
+    def combine_losses(
+        self,
+        task_loss: Tensor,
+        auxiliary: dict[str, Tensor] | None,
+        labels: Tensor,
+        mask: Tensor | None = None,
+    ) -> Tensor:
+        if auxiliary is None or self.bag_weight >= 1.0:
+            return task_loss
+        inst_loss = self.compute_auxiliary_loss(auxiliary, labels, mask=mask)
+        return self.bag_weight * task_loss + (1.0 - self.bag_weight) * inst_loss
 
     def compute_instance_loss(
         self,
@@ -100,42 +152,26 @@ class CLAM(Aggregator):
         labels: Tensor,
         mask: Tensor | None = None,
     ) -> Tensor:
-        """Compute CLAM instance-level clustering loss.
-
-        Args:
-            attention: Attention logits, shape (B, N).
-            embeddings: Tile embeddings, shape (B, N, D).
-            labels: Bag labels, shape (B,).
-            mask: Boolean mask, shape (B, N). True = valid tile.
-
-        Returns:
-            Scalar instance loss.
-        """
-        total_loss = attention.new_zeros(())
+        total_loss = embeddings.new_zeros(())
         batch_size = attention.shape[0]
 
         for i in range(batch_size):
-            label = int(labels[i].item())
-            in_idx = label
-            out_idx = 1 - label
-
-            att_i = attention[i]  # (N,)
-            emb_i = embeddings[i]  # (N, D)
+            att_i = attention[i]
+            emb_i = embeddings[i]
             mask_i = mask[i] if mask is not None else None
-
-            bag_size = int(mask_i.sum().item()) if mask_i is not None else att_i.shape[0]
-            k = min(self.k_sample, bag_size)
-
-            # In-the-class: top-k (positive) + bottom-k (negative)
-            in_loss = self._inst_eval(
-                att_i, emb_i, self.inst_classifiers[in_idx], k, mask_i
-            )
-            # Out-of-the-class: top-k instances labeled as negative
-            out_loss = self._inst_eval_out(
-                att_i, emb_i, self.inst_classifiers[out_idx], k, mask_i
-            )
-            total_loss = total_loss + in_loss + out_loss
-
+            inst_labels = F.one_hot(labels[i], num_classes=self.n_classes).reshape(-1)
+            bag_loss = embeddings.new_zeros(())
+            for class_idx, classifier in enumerate(self.inst_classifiers):
+                if inst_labels[class_idx].item() == 1:
+                    inst_loss, _, _ = self._inst_eval(att_i, emb_i, classifier, class_idx, mask_i)
+                elif self.use_negative_class_instance_loss:
+                    inst_loss, _, _ = self._inst_eval_out(att_i, emb_i, classifier, class_idx, mask_i)
+                else:
+                    continue
+                bag_loss = bag_loss + inst_loss
+            if self.use_negative_class_instance_loss:
+                bag_loss = bag_loss / len(self.inst_classifiers)
+            total_loss = total_loss + bag_loss
         return total_loss / max(batch_size, 1)
 
     def _inst_eval(
@@ -143,45 +179,133 @@ class CLAM(Aggregator):
         att: Tensor,
         emb: Tensor,
         classifier: nn.Module,
-        k: int,
+        branch_idx: int,
         mask: Tensor | None,
-    ) -> Tensor:
-        """In-the-class instance loss: top-k positive + bottom-k negative."""
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        att_branch = self._attention_branch(att, branch_idx)
+        bag_size = int(mask.sum().item()) if mask is not None else att_branch.shape[-1]
+        k = min(self.k_sample, bag_size)
         if mask is not None:
-            att = att.masked_fill(~mask, float("-inf"))
-        top_p_ids = torch.topk(att, k)[1]
+            att_branch = att_branch.masked_fill(~mask, float("-inf"))
+        top_p_ids = torch.topk(att_branch, k)[1]
         top_p = emb[top_p_ids]
-
-        att_for_neg = att.clone()
+        att_for_neg = att_branch.clone()
         if mask is not None:
             att_for_neg = att_for_neg.masked_fill(~mask, float("inf"))
-        top_n_ids = torch.topk(-att_for_neg, k)[1]
+        top_n_ids = torch.topk(-att_for_neg, k, dim=0)[1]
         top_n = emb[top_n_ids]
-
-        p_targets = torch.ones(k, device=att.device, dtype=torch.long)
-        n_targets = torch.zeros(k, device=att.device, dtype=torch.long)
-
+        p_targets = torch.ones(k, device=emb.device, dtype=torch.long)
+        n_targets = torch.zeros(k, device=emb.device, dtype=torch.long)
         all_instances = torch.cat([top_p, top_n], dim=0)
         all_targets = torch.cat([p_targets, n_targets], dim=0)
         logits = classifier(all_instances)
-        return self.inst_loss_fn(logits.float(), all_targets)
+        return self.inst_loss_fn(logits.float(), all_targets), logits, all_targets
 
     def _inst_eval_out(
         self,
         att: Tensor,
         emb: Tensor,
         classifier: nn.Module,
-        k: int,
+        branch_idx: int,
         mask: Tensor | None,
-    ) -> Tensor:
-        """Out-of-the-class instance loss: top-k instances labeled negative."""
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        att_branch = self._attention_branch(att, branch_idx)
+        bag_size = int(mask.sum().item()) if mask is not None else att_branch.shape[-1]
+        k = min(self.k_sample, bag_size)
         if mask is not None:
-            att = att.masked_fill(~mask, float("-inf"))
-        top_p_ids = torch.topk(att, k)[1]
+            att_branch = att_branch.masked_fill(~mask, float("-inf"))
+        top_p_ids = torch.topk(att_branch, k)[1]
         top_p = emb[top_p_ids]
-        targets = torch.zeros(k, device=att.device, dtype=torch.long)
+        targets = torch.zeros(k, device=emb.device, dtype=torch.long)
         logits = classifier(top_p)
-        return self.inst_loss_fn(logits.float(), targets)
+        return self.inst_loss_fn(logits.float(), targets), logits, targets
+
+    def _attention_branch(self, attention: Tensor, branch_idx: int) -> Tensor:
+        raise NotImplementedError
+
+    def _bag_representation(self, M: Tensor) -> Tensor:
+        raise NotImplementedError
+
+    def _attention_output(self, A_raw: Tensor) -> Tensor:
+        return A_raw
 
 
-aggregator_registry.register("clam", CLAM)
+class CLAM_SB(_CLAMBase):
+    """Single-branch CLAM aggregator."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 512,
+        attn_dim: int = 256,
+        gated: bool = True,
+        dropout: float = 0.0,
+        k_sample: int = 8,
+        n_classes: int = 2,
+        inst_loss: str = "ce",
+        use_negative_class_instance_loss: bool = False,
+        bag_weight: float = 0.7,
+    ) -> None:
+        super().__init__(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            attn_dim=attn_dim,
+            gated=gated,
+            dropout=dropout,
+            k_sample=k_sample,
+            n_classes=n_classes,
+            inst_loss=inst_loss,
+            use_negative_class_instance_loss=use_negative_class_instance_loss,
+            bag_weight=bag_weight,
+            multi_branch=False,
+        )
+
+    def _attention_branch(self, attention: Tensor, branch_idx: int) -> Tensor:
+        return attention[0]
+
+    def _bag_representation(self, M: Tensor) -> Tensor:
+        return M[:, 0, :]
+
+    def _attention_output(self, A_raw: Tensor) -> Tensor:
+        return A_raw[:, 0, :]
+
+
+class CLAM_MB(_CLAMBase):
+    """Multi-branch CLAM aggregator."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 512,
+        attn_dim: int = 256,
+        gated: bool = True,
+        dropout: float = 0.0,
+        k_sample: int = 8,
+        n_classes: int = 2,
+        inst_loss: str = "ce",
+        use_negative_class_instance_loss: bool = False,
+        bag_weight: float = 0.7,
+    ) -> None:
+        super().__init__(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            attn_dim=attn_dim,
+            gated=gated,
+            dropout=dropout,
+            k_sample=k_sample,
+            n_classes=n_classes,
+            inst_loss=inst_loss,
+            use_negative_class_instance_loss=use_negative_class_instance_loss,
+            bag_weight=bag_weight,
+            multi_branch=True,
+        )
+
+    def _attention_branch(self, attention: Tensor, branch_idx: int) -> Tensor:
+        return attention[branch_idx]
+
+    def _bag_representation(self, M: Tensor) -> Tensor:
+        return M
+
+
+aggregator_registry.register("clam_sb", CLAM_SB)
+aggregator_registry.register("clam_mb", CLAM_MB)

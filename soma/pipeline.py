@@ -34,6 +34,7 @@ from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
+from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
@@ -285,7 +286,10 @@ def train_one_fold(
             raise ValueError(msg)
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
-        head = task_cls(input_dim=agg.output_dim, **task_params)
+        if aggregator.name == "clam_mb" and task.name == "classification":
+            head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
+        else:
+            head = task_cls(input_dim=agg.output_dim, **task_params)
         model = MILModel(aggregator=agg, task_head=head)
 
     # Train

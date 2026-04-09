@@ -82,10 +82,10 @@ clam_result = train(
     feature_store=store,
     dataset=dataset,
     splits=splits,
-    aggregator=AggregatorConfig(name="clam", params={"hidden_dim": 256}),
+    aggregator=AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128}),
     task=task,
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
-    output_dir="output/clam/uni2",
+    output_dir="output/clam_sb/uni2",
 )
 ```
 

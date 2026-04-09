@@ -22,7 +22,8 @@ Use the `aggregator.name` config key with the canonical lowercase names below.
 | `MeanPool` | `mean_pool` | Simple mean pooling baseline. |
 | `MaxPool` | `max_pool` | Simple max pooling baseline. |
 | `ABMIL` | `abmil` | Attention-based MIL with gated attention. |
-| `CLAM` | `clam` | Attention MIL with instance-level clustering loss. |
+| `CLAM_SB` | `clam_sb` | Reference-style single-branch CLAM with weighted instance clustering loss. |
+| `CLAM_MB` | `clam_mb` | Reference-style multi-branch CLAM for classification tasks. |
 | `DSMIL` | `dsmil` | Dual-stream MIL with critical-instance attention. |
 | `TransMIL` | `transmil` | Transformer-based MIL with Nyström attention. |
 | `DTFDMIL` | `dtfdmil` | Double-tier feature distillation MIL. |
@@ -50,6 +51,25 @@ task:
 ```
 
 User-provided `params` are merged on top of the auto-injected `num_classes`, so no extra config is required for standard use.
+
+### `branch_aware_classification`
+
+Classification head for branch-aware MIL representations shaped `(B, C, D)`.
+This is primarily intended for `clam_mb`, which emits one pooled representation
+per class branch.
+
+| Property | Value |
+|---|---|
+| Loss | Cross-entropy |
+| Label dtype | `torch.long` (integer class indices) |
+| Metrics | `accuracy`, `balanced_accuracy`, `f1_macro`, `auc` |
+| Auto-injected param | `num_classes` (from dataset) |
+
+Config:
+```yaml
+task:
+  name: branch_aware_classification
+```
 
 ### `ordinal_classification`
 

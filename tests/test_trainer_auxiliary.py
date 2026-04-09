@@ -13,11 +13,11 @@ from torch.utils.data import DataLoader, TensorDataset
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.mil.abmil import ABMIL
 from soma.aggregators.mil.dsmil import DSMIL
-from soma.aggregators.mil.clam import CLAM
+from soma.aggregators.mil.clam import CLAM_MB, CLAM_SB
 from soma.aggregators.mil.dtfdmil import DTFDMIL
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
-from soma.tasks.classification import ClassificationHead
+from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
 from soma.training.collate import BagBatch
 from soma.training.model import MILModel
 from soma.training.trainer import Trainer
@@ -53,9 +53,13 @@ class _FakeBagLoader:
 def _train_one_epoch(aggregator: Aggregator, feat_dim: int = 16) -> float:
     """Build a MILModel with the given aggregator and train one epoch. Returns loss."""
     torch.manual_seed(0)
+    if isinstance(aggregator, CLAM_MB):
+        head = BranchAwareClassificationHead(input_dim=aggregator.output_dim, num_classes=2)
+    else:
+        head = ClassificationHead(input_dim=aggregator.output_dim, num_classes=2)
     model = MILModel(
         aggregator=aggregator,
-        task_head=ClassificationHead(input_dim=aggregator.output_dim, num_classes=2),
+        task_head=head,
     )
     batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim)
     loader = _FakeBagLoader(batches)
@@ -91,7 +95,7 @@ class TestAuxiliaryLossWiring:
     def test_clam_aux_loss_is_nonzero(self):
         """CLAM produces auxiliary embeddings + attention — aux loss should contribute."""
         torch.manual_seed(0)
-        agg = CLAM(input_dim=16, hidden_dim=8, k_sample=3)
+        agg = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3)
         X = torch.randn(2, 10, 16)
         labels = torch.tensor([0, 1])
         out = agg(X)
@@ -134,7 +138,12 @@ class TestAuxiliaryLossWiring:
 
     def test_clam_trainer_epoch_runs(self):
         """Trainer epoch with CLAM completes without error (aux loss wired)."""
-        loss = _train_one_epoch(CLAM(input_dim=16, hidden_dim=8, k_sample=3))
+        loss = _train_one_epoch(CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3))
+        assert loss > 0
+
+    def test_clam_mb_trainer_epoch_runs(self):
+        """Trainer epoch with CLAM-MB completes without error."""
+        loss = _train_one_epoch(CLAM_MB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=3))
         assert loss > 0
 
     def test_dtfdmil_trainer_epoch_runs(self):
@@ -163,6 +172,18 @@ class TestAuxiliaryLossWiring:
         aux_loss = agg.compute_auxiliary_loss(out.auxiliary, labels, mask=mask)
 
         assert aux_loss is not None
-        total_loss = task_loss + aux_loss
-        # Total should differ from task-only (aux contributes something)
+        total_loss = agg.combine_losses(task_loss, out.auxiliary, labels, mask=mask)
         assert not torch.isclose(total_loss, task_loss)
+
+    def test_clam_uses_weighted_loss_mix(self):
+        torch.manual_seed(0)
+        agg = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, bag_weight=0.25)
+        X = torch.randn(2, 10, 16)
+        labels = torch.tensor([0, 1])
+        mask = torch.ones(2, 10, dtype=torch.bool)
+        out = agg(X, mask=mask)
+        task_loss = torch.tensor(4.0)
+        aux_loss = agg.compute_auxiliary_loss(out.auxiliary, labels, mask=mask)
+        total_loss = agg.combine_losses(task_loss, out.auxiliary, labels, mask=mask)
+        expected = 0.25 * task_loss + 0.75 * aux_loss
+        assert torch.isclose(total_loss, expected)

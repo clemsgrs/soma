@@ -7,7 +7,8 @@ import torch
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.pooling import MeanPool
 from soma.aggregators.mil.abmil import ABMIL
-from soma.tasks.classification import ClassificationHead
+from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.regression import RegressionHead
 from soma.training.model import MILModel, MILModelOutput
 
 
@@ -99,3 +100,41 @@ class TestMILModel:
         loss.backward()
         assert X.grad is not None
         assert X.grad.abs().sum() > 0
+
+    def test_branch_aware_classification_supported(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        model = MILModel(
+            aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
+            task_head=BranchAwareClassificationHead(input_dim=4, num_classes=3),
+        )
+        out = model(torch.randn(2, 5, 8))
+        assert out.logits.shape == (2, 3)
+
+    def test_plain_classification_rejected_for_branch_aware_input(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        model = MILModel(
+            aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
+            task_head=ClassificationHead(input_dim=4, num_classes=3),
+        )
+        try:
+            model(torch.randn(2, 5, 8))
+        except ValueError as exc:
+            assert "does not support branch-aware" in str(exc)
+        else:
+            raise AssertionError("Expected plain classification head to be rejected for CLAM_MB")
+
+    def test_branch_aware_representation_rejected_for_regression(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        model = MILModel(
+            aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
+            task_head=RegressionHead(input_dim=4),
+        )
+        try:
+            model(torch.randn(2, 5, 8))
+        except ValueError as exc:
+            assert "does not support branch-aware" in str(exc)
+        else:
+            raise AssertionError("Expected branch-aware CLAM_MB to be rejected for regression")
