@@ -29,6 +29,7 @@ store = extractor.extract(feature_dir="output/features", tiling_dir="output/tili
 ```
 
 `extractor.run(feature_dir="output/features")` is the convenience form for the same workflow.
+It writes tiling artifacts to the sibling `output/tiling/` directory rather than nesting them under `features/`.
 If you do not pass a backend argument to `preprocess()`, `extract()`, or `run()`,
 the value from `PreprocessingConfig.backend` is used.
 That field is the requested backend; the actual backend selected during tiling is

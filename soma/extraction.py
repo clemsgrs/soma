@@ -180,15 +180,15 @@ def _validate_runtime(
     encoder_name: str,
     output_variant: str | None,
     encoder: EncoderConfig,
+    preprocessing: PreprocessingConfig,
     tiling_results: Sequence[object],
 ) -> None:
     if not tiling_results:
         return
-    first = tiling_results[0]
     validate_slide2vec_encoder_config(
         encoder_name,
-        target_tile_size_px=int(first.requested_tile_size_px),
-        target_spacing_um=float(first.requested_spacing_um),
+        target_tile_size_px=int(preprocessing.target_tile_size_px),
+        target_spacing_um=float(preprocessing.target_spacing_um),
         precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         output_variant=output_variant,
         allow_non_recommended=False,
@@ -542,6 +542,7 @@ class FeatureExtractor:
             encoder_name=self._encoder.name,
             output_variant=runtime_output_variant,
             encoder=self._encoder,
+            preprocessing=resolved_preprocessing,
             tiling_results=prepared_tilings,
         )
 
@@ -1241,7 +1242,8 @@ class FeatureExtractor:
         num_gpus: int | None = None,
     ) -> FeatureStore:
         feature_dir = Path(feature_dir).resolve()
-        tiling_dir = feature_dir / "tiling"
+        # Keep the run-local tiling output alongside the feature directory.
+        tiling_dir = feature_dir.parent / "tiling"
         self.preprocess(tiling_dir=tiling_dir, skip_existing=skip_existing)
         return self.extract(
             feature_dir=feature_dir,

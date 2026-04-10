@@ -18,7 +18,7 @@ from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
 from slide2vec.encoders.registry import encoder_registry
-from soma.extraction import FeatureExtractor, _run_with_coordinates
+from soma.extraction import FeatureExtractor, _run_with_coordinates, _validate_runtime
 from soma.slide2vec_adapter import LoadedTiling
 from soma.slide2vec_adapter import load_tilings
 
@@ -190,6 +190,38 @@ def test_build_execution_options_forwards_explicit_num_workers(tmp_path: Path):
     assert execution.num_workers == 6
 
 
+def test_validate_runtime_uses_resolved_tile_size_for_hierarchical_runs():
+    captured: dict[str, object] = {}
+
+    def _fake_validate(encoder_name: str, **kwargs):
+        captured["encoder_name"] = encoder_name
+        captured.update(kwargs)
+
+    preprocessing = PreprocessingConfig(
+        target_tile_size_px=224,
+        target_spacing_um=0.5,
+        target_region_size_px=1792,
+        region_tile_multiple=8,
+    )
+    hierarchical_tiling = SimpleNamespace(
+        requested_tile_size_px=1792,
+        requested_spacing_um=0.5,
+    )
+
+    with patch("soma.extraction.validate_slide2vec_encoder_config", side_effect=_fake_validate):
+        _validate_runtime(
+            encoder_name=_TEST_TILE,
+            output_variant="default",
+            encoder=EncoderConfig(name=_TEST_TILE),
+            preprocessing=preprocessing,
+            tiling_results=[hierarchical_tiling],
+        )
+
+    assert captured["encoder_name"] == _TEST_TILE
+    assert captured["target_tile_size_px"] == 224
+    assert captured["target_spacing_um"] == 0.5
+
+
 class _FakeInnerReporter:
     def __init__(self) -> None:
         self.events = []
@@ -335,7 +367,12 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
     )
     loaded = [
         LoadedTiling(
-            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            slide=SlideSpec(
+                sample_id="s0",
+                image_path=Path("/tmp/s0.svs"),
+                mask_path=None,
+                spacing_at_level_0=None,
+            ),
             tiling_result=_tiling(),
         )
     ]
@@ -594,6 +631,44 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
 
     preprocess.assert_called_once()
     assert preprocess.call_args.kwargs["tiling_dir"] == tmp_path / "features" / "tiling"
+
+
+def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=False),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_embed_tiles(*, model_name, output_variant, slides, tiling_results, preprocessing, execution):
+        output_dir = Path(execution.output_dir) / "tile_embeddings"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for slide in slides:
+            _artifact(
+                sample_id=slide.sample_id,
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+
+    with patch.object(FeatureExtractor, "preprocess", autospec=True) as preprocess, patch(
+        "soma.extraction.load_tilings", return_value=loaded
+    ), patch("soma.extraction._validate_runtime"), patch(
+        "soma.extraction._embed_tiles",
+        side_effect=_fake_embed_tiles,
+    ):
+        extractor.run(feature_dir=tmp_path / "features")
+
+    preprocess.assert_called_once()
+    assert preprocess.call_args.kwargs["tiling_dir"] == tmp_path / "tiling"
 
 
 def test_extract_returns_manifest_aware_store(tmp_path: Path):
