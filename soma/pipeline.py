@@ -212,7 +212,7 @@ def train_one_fold(
     logger.info(summary)
 
     task_cls = task_registry.get(task.name)
-    task_params = {**task_cls.auto_params(dataset), **task.params}
+    task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": task.metrics}
 
     # Derive label encoding from the task head class
     label_dtype = task_cls.label_dtype
@@ -304,7 +304,12 @@ def train_one_fold(
             raise ValueError(msg)
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
-        if aggregator.name == "clam_mb" and task.name == "classification":
+        if aggregator.name == "clam_mb" and task.name == "binary_classification":
+            raise ValueError(
+                "clam_mb does not support binary_classification; "
+                "use multiclass_classification or a different aggregator."
+            )
+        elif aggregator.name == "clam_mb" and task.name == "multiclass_classification":
             head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
         else:
             head = task_cls(input_dim=agg.output_dim, **task_params)

@@ -174,7 +174,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, learning_rate=1e-3, patience=10, batch_size=2),
             fold_dir=tmp_path / "fold_0",
         )
@@ -214,7 +214,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=fold_dir,
         )
@@ -254,7 +254,7 @@ class TestTrainOneFold:
                 dataset=dataset,
                 fold_split=splits.folds[0],
                 aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="classification"),
+                task=TaskConfig(name="binary_classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
                 fold_dir=tmp_path / "fold_missing_feature",
             )
@@ -271,7 +271,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=fold_dir,
         )
@@ -290,7 +290,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=fold_dir,
         )
@@ -299,7 +299,7 @@ class TestTrainOneFold:
         assert metrics_path.exists()
         metrics = json.loads(metrics_path.read_text())
         assert "test" in metrics
-        assert "accuracy" in metrics["test"]
+        assert "auroc" in metrics["test"]
 
     def test_saves_predictions_csv(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -313,7 +313,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=fold_dir,
         )
@@ -340,7 +340,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=1, patience=10, batch_size=1),
             fold_dir=fold_dir,
             heatmaps=HeatmapConfig(enabled=True),
@@ -370,7 +370,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=1, patience=10, batch_size=1),
             fold_dir=fold_dir,
             heatmaps=HeatmapConfig(enabled=False),
@@ -390,7 +390,7 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),  # no num_classes specified
+            task=TaskConfig(name="binary_classification"),  # no num_classes specified
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=tmp_path / "fold_0",
         )
@@ -417,14 +417,14 @@ class TestTrainOneFold:
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=None,
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=tmp_path / "fold_slide",
         )
 
         assert isinstance(result, FoldResult)
         assert result.test_report is not None
-        assert "accuracy" in result.test_report.metrics
+        assert "auroc" in result.test_report.metrics
 
     def test_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -441,13 +441,13 @@ class TestTrainOneFold:
             feature_store=store,
             dataset=dataset,
             fold_split=splits.folds[0],
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=tmp_path / "fold_slide_omitted",
         )
 
         assert isinstance(result, FoldResult)
-        assert "accuracy" in result.test_report.metrics
+        assert "auroc" in result.test_report.metrics
 
     def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -465,7 +465,7 @@ class TestTrainOneFold:
                 dataset=dataset,
                 fold_split=splits.folds[0],
                 aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="classification"),
+                task=TaskConfig(name="binary_classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
                 fold_dir=tmp_path / "fold_slide",
             )
@@ -489,7 +489,7 @@ class TestTrainOneFold:
                     "dropout": 0.0,
                 },
             ),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=tmp_path / "fold_hier",
             preprocessing=PreprocessingConfig(
@@ -516,7 +516,7 @@ class TestTrainOneFold:
                 dataset=dataset,
                 fold_split=splits.folds[0],
                 aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="classification"),
+                task=TaskConfig(name="binary_classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
                 fold_dir=tmp_path / "fold_hier_error",
                 preprocessing=PreprocessingConfig(
@@ -545,7 +545,7 @@ class TestTrain:
             dataset=dataset,
             splits=splits,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             run_dir=tmp_path / "output",
         )
@@ -566,7 +566,7 @@ class TestTrain:
             dataset=dataset,
             splits=splits,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             run_dir=run_dir,
         )
@@ -574,8 +574,8 @@ class TestTrain:
         assert len(result.fold_results) == 2
         assert result.fold_results[0].fold == 0
         assert result.fold_results[1].fold == 1
-        assert "accuracy_mean" in result.summary
-        assert "accuracy_std" in result.summary
+        assert "auroc_mean" in result.summary
+        assert "auroc_std" in result.summary
 
     def test_saves_summary_json(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -589,13 +589,13 @@ class TestTrain:
             dataset=dataset,
             splits=splits,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             run_dir=run_dir,
         )
 
         summary = json.loads((run_dir / "summary.json").read_text())
-        assert "accuracy_mean" in summary
+        assert "auroc_mean" in summary
 
     def test_fold_subdirectories(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
@@ -609,7 +609,7 @@ class TestTrain:
             dataset=dataset,
             splits=splits,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             run_dir=run_dir,
         )
@@ -633,7 +633,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
@@ -667,7 +667,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -686,7 +686,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -703,7 +703,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -712,7 +712,7 @@ class TestPipeline:
         summary_path = _expected_run_dir(config) / "summary.json"
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
-        assert "accuracy_mean" in summary
+        assert "auroc_mean" in summary
 
     def test_run_multi_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
@@ -723,7 +723,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -734,8 +734,8 @@ class TestPipeline:
         assert (_expected_run_dir(config) / "fold_1" / "best_model.pt").exists()
 
         summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
-        assert "accuracy_mean" in summary
-        assert "accuracy_std" in summary
+        assert "auroc_mean" in summary
+        assert "auroc_std" in summary
 
     def test_run_slide_level_features(self, tmp_path: Path):
         """Pipeline with aggregator=None should work with slide-level (1-D) features."""
@@ -754,7 +754,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=None,
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -763,7 +763,7 @@ class TestPipeline:
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
         assert result.fold_results[0].test_report is not None
-        assert "accuracy" in result.fold_results[0].test_report.metrics
+        assert "auroc" in result.fold_results[0].test_report.metrics
 
     def test_run_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -780,7 +780,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             aggregator=None,
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -788,7 +788,7 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert "accuracy" in result.fold_results[0].test_report.metrics
+        assert "auroc" in result.fold_results[0].test_report.metrics
 
     def test_run_hierarchical_features_with_hipt(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
@@ -814,7 +814,7 @@ class TestPipeline:
                     "dropout": 0.0,
                 },
             ),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -823,7 +823,7 @@ class TestPipeline:
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
         assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
-        assert "accuracy" in result.fold_results[0].test_report.metrics
+        assert "auroc" in result.fold_results[0].test_report.metrics
 
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
         pytest.importorskip("soma.extraction")
@@ -843,7 +843,7 @@ class TestPipeline:
             output_root=output_root,
             encoder=EncoderConfig(name="prism"),
             aggregator=None,
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
@@ -866,7 +866,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "output_slide_error",
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with pytest.raises(ValueError, match="aggregator must be None"):
@@ -1005,7 +1005,7 @@ class TestPipeline:
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_slide),
             aggregator=None,
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         tile_config = PipelineConfig(
@@ -1015,7 +1015,7 @@ class TestPipeline:
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_tile),
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
@@ -1104,7 +1104,7 @@ class TestPipeline:
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
             output_root=tmp_path / "output",
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
 
@@ -1118,7 +1118,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "output",
             aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="classification"),
+            task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 

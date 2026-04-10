@@ -1,10 +1,18 @@
 """Evaluation module — metrics and reports."""
 
-from soma.evaluation.metrics import compute_classification_metrics
+from soma.evaluation.metrics import (
+    DEFAULT_METRICS,
+    VALID_METRICS,
+    compute_metrics,
+    resolve_metrics,
+)
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 
 __all__ = [
-    "compute_classification_metrics",
+    "DEFAULT_METRICS",
+    "VALID_METRICS",
+    "compute_metrics",
+    "resolve_metrics",
     "EvaluationReport",
     "SamplePrediction",
 ]

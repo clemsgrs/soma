@@ -245,7 +245,7 @@ result = train(
     dataset=dataset,
     splits=splits,
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-    task=TaskConfig(name="classification"),
+    task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
     output_dir="experiments/run1",
 )
@@ -256,7 +256,7 @@ fold_result = train_one_fold(
     dataset=dataset,
     fold_split=splits.folds[0],
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-    task=TaskConfig(name="classification"),
+    task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
     output_dir="experiments/run1/fold_0",
 )
@@ -448,8 +448,8 @@ MIL bag-level aggregation: tile features `(B, N, D)` → slide-level representat
 - **`AggregatorOutput`** — `bag_representation: (B, D_out)` or branch-aware `(B, C, D_out)` + optional `tile_attention` + optional `auxiliary: dict`
 - **`MeanPool`** / **`MaxPool`** — Simple pooling, no attention
 - **`ABMIL`** — Attention-Based MIL (Ilse et al., 2018), gated attention pooling
-- **`CLAM_SB`** — Reference-style single-branch CLAM (Lu et al., 2021), gated attention + weighted task-aware auxiliary loss; supports classification, ordinal classification, and single-target regression
-- **`CLAM_MB`** — Reference-style multi-branch CLAM with class-wise attention branches; classification-only in soma v1
+- **`CLAM_SB`** — Reference-style single-branch CLAM (Lu et al., 2021), gated attention + weighted task-aware auxiliary loss; supports binary/multiclass classification, ordinal classification, and single-target regression
+- **`CLAM_MB`** — Reference-style multi-branch CLAM with class-wise attention branches; multiclass classification only
 - **`DSMIL`** — Dual-Stream MIL (Li et al., 2021), critical-instance attention via query-key matching
 - **`TransMIL`** — Transformer-based MIL (Shao et al., 2021), Nyströmformer layers + PPEG positional encoding, `output_dim = att_dim`
 - **`DTFDMIL`** — Double-Tier Feature Distillation MIL (Zhang et al., 2022), pseudo-bag partitioning + Grad-CAM distillation
@@ -466,10 +466,10 @@ Canonical `aggregator.name` values:
 - `dtfdmil`
 - `hipt`
 
-Tile attention flows through `MILModel` for heatmap generation. Aggregators with auxiliary training losses (CLAM, DSMIL, DTFD-MIL) return extra tensors via `AggregatorOutput.auxiliary`. CLAM uses original-style `bag_weight * task_loss + (1 - bag_weight) * instance_loss`, while other aggregators keep the default `task_loss + aux_loss` combination. `clam_mb` emits branch-aware bag representations and is consumed by a dedicated branch-aware classification head rather than overloading the standard `ClassificationHead`.
+Tile attention flows through `MILModel` for heatmap generation. Aggregators with auxiliary training losses (CLAM, DSMIL, DTFD-MIL) return extra tensors via `AggregatorOutput.auxiliary`. CLAM uses original-style `bag_weight * task_loss + (1 - bag_weight) * instance_loss`, while other aggregators keep the default `task_loss + aux_loss` combination. `clam_mb` emits branch-aware bag representations and is consumed by `BranchAwareClassificationHead` (task name `branch_aware_classification`). When task name is `multiclass_classification`, the pipeline selects this head automatically.
 
-For `clam_sb`, the auxiliary loss now follows the paired task family:
-- `classification`: original CLAM instance clustering
+For `clam_sb`, the auxiliary loss follows the paired task family:
+- `binary_classification` / `multiclass_classification`: original CLAM instance clustering
 - `ordinal_classification`: top-k scalar instance regression toward the bag label plus low-attention regularization
 - `regression`: top-k scalar instance regression toward the bag target plus low-attention regularization
 
@@ -540,7 +540,9 @@ The wheel is explicitly limited to the `soma` package so the published distribut
 
 ## Evaluation Module
 
-- **`compute_classification_metrics(y_true, y_prob, y_pred)`** → `{accuracy, balanced_accuracy, auc, f1_macro}`
+- **`compute_metrics(task_family, metrics, y_true, y_pred, y_prob)`** → `dict[str, float]` — dispatcher for all task families
+- **`resolve_metrics(task_family, metrics)`** — returns effective metric list (defaults when empty, validates names)
+- **`VALID_METRICS`** / **`DEFAULT_METRICS`** — catalogues of valid and default metric names per task family
 - **`EvaluationReport`** — Split name, metrics dict, per-sample predictions
 - **`SamplePrediction`** — sample_id, true/predicted labels, probabilities
 

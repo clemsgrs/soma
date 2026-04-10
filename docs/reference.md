@@ -44,7 +44,8 @@ Use the `aggregator.name` config key with the canonical lowercase names below.
 
 | Task family | Auxiliary behavior |
 |---|---|
-| `classification` | Original CLAM-style instance clustering with per-class instance classifiers. |
+| `binary_classification` | Original CLAM-style instance clustering with per-class instance classifiers. |
+| `multiclass_classification` | Original CLAM-style instance clustering with per-class instance classifiers. |
 | `ordinal_classification` | Top-k scalar instance regression toward the bag label plus low-attention regularization. |
 | `regression` | Top-k scalar instance regression toward the bag target plus low-attention regularization. |
 
@@ -55,7 +56,7 @@ Key `clam_sb` parameters:
 - `topk_target_weight`: weight on the top-k target-matching term for ordinal/regression CLAM
 - `use_negative_class_instance_loss`: classification-only flag for training out-of-class negative instance branches
 
-`clam_mb` remains class-branch-specific and is therefore limited to categorical classification.
+`clam_mb` remains class-branch-specific and is therefore limited to `multiclass_classification` (and `branch_aware_classification`).
 | `DSMIL` | `dsmil` | ✓ | Dual-stream MIL with critical-instance attention. |
 | `TransMIL` | `transmil` | — | Transformer-based MIL with Nyström attention. |
 | `DTFDMIL` | `dtfdmil` | — | Double-tier feature distillation MIL. |
@@ -65,36 +66,66 @@ Key `clam_sb` parameters:
 
 Task heads map the aggregated slide representation to a prediction and define the training loss, label encoding, and evaluation metrics.
 
-### `classification`
+### Configuring metrics
 
-Linear head for binary or multi-class classification.
+Every task head accepts an optional `metrics` list in the config. An empty list (the default) uses the task’s built-in defaults. Specify metric names explicitly to override:
+
+```yaml
+task:
+  name: binary_classification
+  metrics: [auroc, sensitivity, specificity]
+```
+
+The set of valid metrics differs per task family — see each section below.
+
+### `binary_classification`
+
+Linear head for two-class classification (`num_classes` must equal 2).
 
 | Property | Value |
 |---|---|
 | Loss | Cross-entropy |
 | Label dtype | `torch.long` (integer class indices) |
-| Metrics | `accuracy`, `balanced_accuracy`, `f1_macro`, `auc` |
+| Default metrics | `auroc`, `balanced_accuracy`, `auprc`, `f1` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc`, `auprc`, `f1`, `sensitivity`, `specificity`, `mcc` |
 | Auto-injected param | `num_classes` (from dataset) |
 
 Config:
 ```yaml
 task:
-  name: classification
+  name: binary_classification
 ```
 
-User-provided `params` are merged on top of the auto-injected `num_classes`, so no extra config is required for standard use.
+### `multiclass_classification`
 
-### `branch_aware_classification`
-
-Classification head for branch-aware MIL representations shaped `(B, C, D)`.
-This is primarily intended for `clam_mb`, which emits one pooled representation
-per class branch.
+Linear head for classification with three or more classes.
 
 | Property | Value |
 |---|---|
 | Loss | Cross-entropy |
 | Label dtype | `torch.long` (integer class indices) |
-| Metrics | `accuracy`, `balanced_accuracy`, `f1_macro`, `auc` |
+| Default metrics | `auroc_macro`, `balanced_accuracy`, `f1_macro` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc` |
+| Auto-injected param | `num_classes` (from dataset) |
+
+Config:
+```yaml
+task:
+  name: multiclass_classification
+```
+
+### `branch_aware_classification`
+
+Classification head for branch-aware MIL representations shaped `(B, C, D)`.
+This is primarily intended for `clam_mb`, which emits one pooled representation
+per class branch. Accepts the same metrics as `multiclass_classification`.
+
+| Property | Value |
+|---|---|
+| Loss | Cross-entropy |
+| Label dtype | `torch.long` (integer class indices) |
+| Default metrics | `auroc_macro`, `balanced_accuracy`, `f1_macro` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc` |
 | Auto-injected param | `num_classes` (from dataset) |
 
 Config:
@@ -111,7 +142,8 @@ Linear head for ordered integer labels (e.g. grading scores 0–5). Uses MSE los
 |---|---|
 | Loss | MSE (targets cast to float) |
 | Label dtype | `torch.long` (integer class indices) |
-| Metrics | `qwk` (quadratic weighted kappa), `accuracy`, `balanced_accuracy` |
+| Default metrics | `qwk`, `balanced_accuracy` |
+| All valid metrics | `qwk`, `linear_wk`, `accuracy`, `balanced_accuracy`, `mae`, `spearman` |
 | Auto-injected param | `num_classes` (from dataset, used for clipping) |
 
 Config:
@@ -132,7 +164,8 @@ Linear head for single or multi-target regression.
 |---|---|
 | Loss | Mean squared error (MSE) |
 | Label dtype | `torch.float` (continuous values) |
-| Metrics | `mse`, `mae`, `r2` |
+| Default metrics | `mae`, `r2` |
+| All valid metrics | `mse`, `rmse`, `mae`, `r2`, `pearson`, `spearman` |
 | Auto-injected param | none |
 
 Config:

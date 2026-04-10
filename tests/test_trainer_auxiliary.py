@@ -17,7 +17,10 @@ from soma.aggregators.mil.clam import CLAM_MB, CLAM_SB
 from soma.aggregators.mil.dtfdmil import DTFDMIL
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
-from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.classification import (
+    BinaryClassificationHead,
+    BranchAwareClassificationHead,
+)
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import BagBatch
@@ -65,7 +68,7 @@ def _train_one_epoch(aggregator: Aggregator, feat_dim: int = 16) -> float:
     if isinstance(aggregator, CLAM_MB):
         head = BranchAwareClassificationHead(input_dim=aggregator.output_dim, num_classes=2)
     else:
-        head = ClassificationHead(input_dim=aggregator.output_dim, num_classes=2)
+        head = BinaryClassificationHead(input_dim=aggregator.output_dim, num_classes=2)
     model = MILModel(
         aggregator=aggregator,
         task_head=head,
@@ -232,7 +235,7 @@ class TestAuxiliaryLossWiring:
         """DSMIL total loss (task + aux) should differ from task-only loss."""
         torch.manual_seed(0)
         agg = DSMIL(input_dim=16, att_dim=8)
-        head = ClassificationHead(input_dim=16, num_classes=2)
+        head = BinaryClassificationHead(input_dim=16, num_classes=2)
         model = MILModel(aggregator=agg, task_head=head)
 
         X = torch.randn(2, 10, 16)

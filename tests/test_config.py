@@ -82,8 +82,18 @@ def test_task_config_requires_name():
 
 
 def test_task_config_params_default_empty():
-    cfg = TaskConfig(name="classification")
+    cfg = TaskConfig(name="binary_classification")
     assert cfg.params == {}
+
+
+def test_task_config_metrics_default_empty():
+    cfg = TaskConfig(name="binary_classification")
+    assert cfg.metrics == []
+
+
+def test_task_config_metrics_explicit():
+    cfg = TaskConfig(name="binary_classification", metrics=["auroc", "f1"])
+    assert cfg.metrics == ["auroc", "f1"]
 
 
 def test_encoder_config_requires_name():
@@ -136,7 +146,7 @@ def test_aggregator_config_with_params():
 
 
 def test_task_config_with_params():
-    cfg = TaskConfig(name="classification", params={"num_classes": 5})
+    cfg = TaskConfig(name="multiclass_classification", params={"num_classes": 5})
     assert cfg.params["num_classes"] == 5
 
 
@@ -168,6 +178,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name
     assert loaded.task.params == original.task.params
+    assert loaded.task.metrics == original.task.metrics
     assert loaded.training.epochs == original.training.epochs
     assert loaded.training.learning_rate == original.training.learning_rate
     assert loaded.tags == original.tags
@@ -185,7 +196,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
         },
         "cache": {},
         "aggregator": None,
-        "task": {"name": "classification"},
+        "task": {"name": "binary_classification"},
         "training": {},
         "tags": [],
     }
@@ -210,6 +221,24 @@ def test_save_config_produces_valid_yaml(tmp_path: Path):
     assert raw["cache"]["enabled"] is True
     assert raw["training"]["learning_rate"] == 2e-4
     assert raw["aggregator"]["params"]["hidden_dim"] == 128
+
+
+def test_task_metrics_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        task=TaskConfig(name="binary_classification", metrics=["auroc", "auprc"])
+    )
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.task.metrics == ["auroc", "auprc"]
+
+
+def test_task_metrics_empty_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(task=TaskConfig(name="binary_classification"))
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.task.metrics == []
 
 
 def test_load_config_with_tags(tmp_path: Path):
@@ -270,7 +299,7 @@ def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
         "splits_csv": "splits.csv",
         "output_root": "out",
         "encoder": {},
-        "task": {"name": "classification"},
+        "task": {"name": "binary_classification"},
     }
     yaml_path = tmp_path / "config.yaml"
     with yaml_path.open("w") as f:
@@ -290,7 +319,7 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
         cache=CacheConfig(),
         encoder=EncoderConfig(name="uni2"),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
-        task=TaskConfig(name="classification", params={"num_classes": 3}),
+        task=TaskConfig(name="multiclass_classification", params={"num_classes": 3}),
         training=TrainingConfig(epochs=100, learning_rate=2e-4),
         tags=["test"],
     )

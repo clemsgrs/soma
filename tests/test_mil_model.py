@@ -7,7 +7,11 @@ import torch
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.pooling import MeanPool
 from soma.aggregators.mil.abmil import ABMIL
-from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.classification import (
+    BinaryClassificationHead,
+    BranchAwareClassificationHead,
+    MulticlassClassificationHead,
+)
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.model import MILModel, MILModelOutput
@@ -18,7 +22,7 @@ class TestMILModel:
         torch.manual_seed(0)
         model = MILModel(
             aggregator=MeanPool(input_dim=16),
-            task_head=ClassificationHead(input_dim=16, num_classes=3),
+            task_head=MulticlassClassificationHead(input_dim=16, num_classes=3),
         )
         X = torch.randn(2, 10, 16)
         out = model(X)
@@ -30,7 +34,7 @@ class TestMILModel:
         torch.manual_seed(0)
         model = MILModel(
             aggregator=ABMIL(input_dim=8, hidden_dim=4),
-            task_head=ClassificationHead(input_dim=8, num_classes=2),
+            task_head=BinaryClassificationHead(input_dim=8, num_classes=2),
         )
         X = torch.randn(2, 5, 8)
         out = model(X)
@@ -41,7 +45,7 @@ class TestMILModel:
         """MeanPool has no attention — tile_attention should be None."""
         model = MILModel(
             aggregator=MeanPool(input_dim=8),
-            task_head=ClassificationHead(input_dim=8, num_classes=2),
+            task_head=BinaryClassificationHead(input_dim=8, num_classes=2),
         )
         X = torch.randn(1, 5, 8)
         out = model(X)
@@ -68,7 +72,7 @@ class TestMILModel:
 
         model = MILModel(
             aggregator=DummyAggregator(),
-            task_head=ClassificationHead(input_dim=8, num_classes=2),
+            task_head=BinaryClassificationHead(input_dim=8, num_classes=2),
         )
         X = torch.randn(2, 5, 8)
         out = model(X)
@@ -81,7 +85,7 @@ class TestMILModel:
         torch.manual_seed(0)
         model = MILModel(
             aggregator=ABMIL(input_dim=8, hidden_dim=4),
-            task_head=ClassificationHead(input_dim=8, num_classes=2),
+            task_head=BinaryClassificationHead(input_dim=8, num_classes=2),
         )
         X = torch.randn(1, 5, 8)
         out = model(X)
@@ -92,7 +96,7 @@ class TestMILModel:
         torch.manual_seed(0)
         model = MILModel(
             aggregator=ABMIL(input_dim=8, hidden_dim=4),
-            task_head=ClassificationHead(input_dim=8, num_classes=2),
+            task_head=BinaryClassificationHead(input_dim=8, num_classes=2),
         )
         X = torch.randn(2, 5, 8, requires_grad=True)
         out = model(X)
@@ -117,7 +121,7 @@ class TestMILModel:
 
         model = MILModel(
             aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
-            task_head=ClassificationHead(input_dim=4, num_classes=3),
+            task_head=MulticlassClassificationHead(input_dim=4, num_classes=3),
         )
         try:
             model(torch.randn(2, 5, 8))

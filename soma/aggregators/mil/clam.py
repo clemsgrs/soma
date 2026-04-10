@@ -58,7 +58,8 @@ class _CLAMBase(Aggregator):
     _REGRESSION_MODE = "regression"
     _VALID_INSTANCE_LOSS_MODES = {_CLASSIFICATION_MODE, _ORDINAL_MODE, _REGRESSION_MODE}
     _TASK_TO_MODE = {
-        "classification": _CLASSIFICATION_MODE,
+        "binary_classification": _CLASSIFICATION_MODE,
+        "multiclass_classification": _CLASSIFICATION_MODE,
         "ordinal_classification": _ORDINAL_MODE,
         "regression": _REGRESSION_MODE,
     }
@@ -146,7 +147,7 @@ class _CLAMBase(Aggregator):
         if task_num_classes is None:
             task_num_classes = getattr(getattr(task_head, "fc", None), "out_features", None)
         if self.multi_branch:
-            if task_family != "classification":
+            if task_family not in {"binary_classification", "multiclass_classification"}:
                 raise ValueError("clam_mb only supports classification tasks.")
             if task_num_classes is None:
                 raise ValueError("clam_mb requires a classification head with num_classes.")
@@ -161,8 +162,8 @@ class _CLAMBase(Aggregator):
 
         if task_family not in self._TASK_TO_MODE:
             raise ValueError(
-                "clam_sb only supports classification, ordinal_classification, "
-                f"and regression tasks, got '{task_family}'."
+                "clam_sb only supports binary_classification, multiclass_classification, "
+                f"ordinal_classification, and regression tasks, got '{task_family}'."
             )
 
         if task_family == "regression" and getattr(task_head, "num_targets", 1) != 1:

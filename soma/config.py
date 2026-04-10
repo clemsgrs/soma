@@ -83,6 +83,7 @@ class TaskConfig:
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+    metrics: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -176,7 +177,7 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig:
     task_data = data.get("task")
     if not task_data or "name" not in task_data:
         raise ValueError(
-            "Config is missing required 'task.name' (e.g. task: {name: classification})"
+            "Config is missing required 'task.name' (e.g. task: {name: binary_classification})"
         )
     return TaskConfig(**task_data)
 

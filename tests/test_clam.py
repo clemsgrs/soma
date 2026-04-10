@@ -7,7 +7,11 @@ import torch
 from soma.aggregators.base import AggregatorOutput
 from soma.aggregators.mil.losses import SmoothTop1SVM
 from soma.aggregators.registry import aggregator_registry
-from soma.tasks.classification import BranchAwareClassificationHead, ClassificationHead
+from soma.tasks.classification import (
+    BinaryClassificationHead,
+    BranchAwareClassificationHead,
+    MulticlassClassificationHead,
+)
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
 
@@ -74,14 +78,14 @@ class TestCLAMSB:
         from soma.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
-        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
+        model.configure_for_task(BinaryClassificationHead(input_dim=4, num_classes=2))
         assert model._resolved_instance_loss_mode == "classification"
 
     def test_configure_for_classification_syncs_num_classes(self):
         from soma.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
-        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=6))
+        model.configure_for_task(MulticlassClassificationHead(input_dim=4, num_classes=6))
         out = model(torch.randn(2, 10, 8))
         inst_loss = model.compute_instance_loss(
             out.auxiliary["attention"],
@@ -148,7 +152,7 @@ class TestCLAMSB:
         from soma.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=3)
-        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
+        model.configure_for_task(BinaryClassificationHead(input_dim=4, num_classes=2))
         out = model(torch.randn(2, 10, 8))
         labels = torch.tensor([0, 1])
         inst_loss = model.compute_instance_loss(
@@ -163,7 +167,7 @@ class TestCLAMSB:
         from soma.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=100)
-        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
+        model.configure_for_task(BinaryClassificationHead(input_dim=4, num_classes=2))
         X = torch.randn(1, 3, 8)
         mask = torch.tensor([[True, True, False]])
         out = model(X, mask=mask)

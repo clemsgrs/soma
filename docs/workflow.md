@@ -58,7 +58,7 @@ config = PipelineConfig(
     encoder=EncoderConfig(name="uni2"),
     preprocessing=PreprocessingConfig(backend="openslide", target_tile_size_px=224, target_spacing_um=0.5),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-    task=TaskConfig(name="classification"),
+    task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(epochs=50),
 )
 
@@ -69,20 +69,39 @@ If you already have a feature store on disk, you can bypass extraction and call 
 
 ## Task Configuration
 
-`task` is a required field in `PipelineConfig`. Set it to `classification` or `regression`:
+`task` is a required field in `PipelineConfig`. Pick the task type that matches your labels:
 
 ```python
-task=TaskConfig(name="classification")
-task=TaskConfig(name="regression")
+task=TaskConfig(name="binary_classification")       # two classes
+task=TaskConfig(name="multiclass_classification")   # three or more classes
+task=TaskConfig(name="ordinal_classification")      # ordered integer grades
+task=TaskConfig(name="regression")                  # continuous targets
 ```
 
 Or in YAML:
 ```yaml
 task:
-  name: classification   # or: regression
+  name: binary_classification
 ```
 
-For regression, use float values in the `label` column of `dataset.csv`. For classification, `num_classes` is auto-inferred from the dataset.
+`num_classes` is auto-inferred from the dataset for classification tasks; no extra config is required. For regression, labels in `dataset.csv` must be numeric floats.
+
+### Configuring metrics
+
+Each task type has a default metric set. Override it with the `metrics` field:
+
+```python
+task=TaskConfig(name="binary_classification", metrics=["auroc", "sensitivity", "specificity"])
+```
+
+Or in YAML:
+```yaml
+task:
+  name: binary_classification
+  metrics: [auroc, sensitivity, specificity]
+```
+
+See the [reference](reference.md) for the full list of valid metrics per task type.
 
 ## Attention Heatmaps
 
