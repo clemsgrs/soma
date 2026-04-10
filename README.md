@@ -45,6 +45,12 @@ print(splits.num_folds)
 
 `FeatureExtractor` handles preprocessing and embedding extraction, and the cache lets you reuse the same extracted features across multiple training runs instead of recomputing them every time. That is especially useful when you want to compare several MIL aggregators or heads against the same encoder output.
 
+When you run the full pipeline, the same cache system also handles tiling:
+
+- live tiling runs write a local `tiling/` directory first
+- a complete tiling-cache hit replaces that directory with a run-local stub
+- a complete feature-cache hit reuses the shared embeddings directly
+
 More details about the caching mechanism are in [docs/cache.md](docs/cache.md).
 
 ```python

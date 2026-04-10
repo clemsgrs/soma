@@ -504,7 +504,7 @@ class FeatureExtractor:
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
         if tiling_dir is None:
-            tiling_dir = feature_dir / ".tiling"
+            tiling_dir = feature_dir / "tiling"
             self.preprocess(tiling_dir=tiling_dir, skip_existing=True)
         tiling_dir = Path(tiling_dir).resolve()
 
@@ -1241,7 +1241,7 @@ class FeatureExtractor:
         num_gpus: int | None = None,
     ) -> FeatureStore:
         feature_dir = Path(feature_dir).resolve()
-        tiling_dir = feature_dir / ".tiling"
+        tiling_dir = feature_dir / "tiling"
         self.preprocess(tiling_dir=tiling_dir, skip_existing=skip_existing)
         return self.extract(
             feature_dir=feature_dir,

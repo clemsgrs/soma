@@ -558,6 +558,44 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
     assert store.load("s0").shape == (2, 8)
 
 
+def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=False),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_embed_tiles(*, model_name, output_variant, slides, tiling_results, preprocessing, execution):
+        output_dir = Path(execution.output_dir) / "tile_embeddings"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for slide in slides:
+            _artifact(
+                sample_id=slide.sample_id,
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+
+    with patch.object(FeatureExtractor, "preprocess", autospec=True) as preprocess, patch(
+        "soma.extraction.load_tilings", return_value=loaded
+    ), patch("soma.extraction._validate_runtime"), patch(
+        "soma.extraction._embed_tiles",
+        side_effect=_fake_embed_tiles,
+    ):
+        extractor.extract(feature_dir=tmp_path / "features")
+
+    preprocess.assert_called_once()
+    assert preprocess.call_args.kwargs["tiling_dir"] == tmp_path / "features" / "tiling"
+
+
 def test_extract_returns_manifest_aware_store(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(

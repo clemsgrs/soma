@@ -160,7 +160,7 @@ def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
 def test_resolve_tiling_cache_root_is_sibling_of_feature_cache(tmp_path: Path):
     root = resolve_tiling_cache_root(
         CacheConfig(root_dir=tmp_path / "shared" / "feature_cache"),
-        tiling_dir=tmp_path / "run" / ".tiling",
+        tiling_dir=tmp_path / "run" / "tiling",
     )
     assert root == tmp_path / "shared" / "tiling_cache"
 
@@ -177,7 +177,7 @@ def test_resolve_cache_root_uses_output_root_when_provided(tmp_path: Path):
 def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path):
     root = resolve_tiling_cache_root(
         CacheConfig(),
-        tiling_dir=tmp_path / "run" / ".tiling",
+        tiling_dir=tmp_path / "run" / "tiling",
         output_root=tmp_path / "outputs",
     )
     assert root == tmp_path / "outputs" / "tiling_cache"
@@ -261,12 +261,12 @@ def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
         (resolution.artifacts_dir / f"{sample_id}.npz").write_bytes(b"npz")
         (resolution.artifacts_dir / f"{sample_id}.meta.json").write_text("{}", encoding="utf-8")
 
-    write_tiling_cache_stub(tiling_dir=tmp_path / "run" / ".tiling", cache_resolution=resolution)
+    write_tiling_cache_stub(tiling_dir=tmp_path / "run" / "tiling", cache_resolution=resolution)
 
-    stub_process_list = pd.read_csv(tmp_path / "run" / ".tiling" / "process_list.csv").set_index("sample_id")
+    stub_process_list = pd.read_csv(tmp_path / "run" / "tiling" / "process_list.csv").set_index("sample_id")
     assert Path(stub_process_list.loc["s1", "coordinates_meta_path"]).is_absolute()
     assert Path(stub_process_list.loc["s1", "coordinates_meta_path"]).parent == resolution.artifacts_dir
-    assert (tmp_path / "run" / ".tiling" / "README.txt").is_file()
+    assert (tmp_path / "run" / "tiling" / "README.txt").is_file()
 
 
 def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
