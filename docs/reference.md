@@ -2,16 +2,41 @@
 
 ## Supported Encoders
 
-| Model | Dim | Spacing |
-|-------|-----|---------|
-| uni / uni2 | 1024 / 1536 | 0.5 µm/px |
-| virchow / virchow2 | 2560 | 0.5 µm/px |
-| conch / conchv15 | 512 / 768 | 0.5 µm/px |
-| gigapath | 1536 | 0.5 µm/px |
-| h-optimus-0 / h-optimus-1 / h0-mini | 1536 | 0.5 µm/px |
-| phikon / phikonv2 | 768 / 1024 | 0.5 µm/px |
-| hibou-b / hibou-l | 768 / 1024 | 0.5 µm/px |
-| midnight | 3072 | 0.25–2.0 µm/px |
+The canonical encoder presets are registered in code and summarized below. Use the tables as the source of truth for:
+
+- which encoder names ship with `soma`
+- whether a preset is a tile encoder or a slide encoder
+- the output dimension returned by each preset
+- which spacing values are accepted by validation
+- preset-specific behavior, including `output_variant` support
+
+### Tile-level encoders (15)
+
+| Preset | Model | Output dim | Supported spacing | Notes |
+| --- | --- | --- | --- | --- |
+| `uni` | [UNI](https://huggingface.co/MahmoodLab/UNI) | 1024 | `0.5` µm/px | |
+| `uni2` | [UNI2](https://huggingface.co/MahmoodLab/UNI2-h) | 1536 | `0.5` µm/px | |
+| `virchow` | [Virchow](https://huggingface.co/paige-ai/Virchow) | 1280 / 2560 | `0.5` µm/px | Supports `output_variant="cls"` or `"cls_patch_mean"` |
+| `virchow2` | [Virchow2](https://huggingface.co/paige-ai/Virchow2) | 1280 / 2560 | `0.5`, `1.0`, `2.0` µm/px | Supports `output_variant="cls"` or `"cls_patch_mean"` |
+| `conch` | [CONCH](https://huggingface.co/MahmoodLab/conch) | 512 | `0.5` µm/px | |
+| `conchv15` | [CONCHv1.5](https://huggingface.co/MahmoodLab/TITAN) | 768 | `0.5` µm/px | |
+| `gigapath` | [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) | 1536 | `0.5` µm/px | Alias: `prov-gigapath` |
+| `h-optimus-0` | [H-optimus-0](https://huggingface.co/bioptimus/H-optimus-0) | 1536 | `0.5` µm/px | |
+| `h-optimus-1` | [H-optimus-1](https://huggingface.co/bioptimus/H-optimus-1) | 1536 | `0.5` µm/px | |
+| `h0-mini` | [H0-mini](https://huggingface.co/bioptimus/H0-mini) | 768 / 1536 | `0.5` µm/px | Supports `output_variant="cls"` or `"cls_patch_mean"` |
+| `phikon` | [Phikon](https://huggingface.co/owkin/phikon) | 768 | `0.5` µm/px | |
+| `phikonv2` | [Phikon-v2](https://huggingface.co/owkin/phikon-v2) | 1024 | `0.5` µm/px | |
+| `hibou-b` | [Hibou-B](https://huggingface.co/histai/hibou-b) | 768 | `0.5` µm/px | |
+| `hibou-l` | [Hibou-L](https://huggingface.co/histai/hibou-L) | 1024 | `0.5` µm/px | |
+| `midnight` | [MidNight12k](https://huggingface.co/kaiko-ai/midnight) | 3072 | `0.25`, `0.5`, `1.0`, `2.0` µm/px | Alias: `kaiko-midnight` |
+
+### Slide-level encoders (3)
+
+| Preset | Model | Tile encoder | Output dim | Supported spacing | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `gigapath-slide` | [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) | `gigapath` | 768 | `0.5` µm/px | |
+| `prism` | [PRISM](https://huggingface.co/paige-ai/PRISM) | `virchow` (`cls_patch_mean`) | 1280 | `0.5` µm/px | |
+| `titan` | [TITAN](https://huggingface.co/MahmoodLab/TITAN) | `conchv15` | 768 | `0.5` µm/px | |
 
 ## Attention Heatmap Config
 
