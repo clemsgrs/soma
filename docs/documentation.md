@@ -4,8 +4,10 @@
 
 - The README now points to the repository's actual AGPL-3.0 license.
 - The README now highlights the layered API so users can extract features, train from a feature store, or run the full pipeline.
+- `debug-pipeline.py` now seeds a temp-local cuFile config before importing `slide2vec`/`hs2p`, so `cufile.log` no longer falls back into the repository cwd during debug runs.
 - The supported encoder reference in `docs/reference.md` now uses a registry-style table with tile and slide presets, output dimensions, spacing, and variant notes.
 - The cache docs now describe the full tiling-and-feature cache flow, including run-local stubs and shared cache directories.
+- Cache resolution now emits compact rich-friendly hit/miss messages for tiling and feature caches, e.g. `✓ tiling cache hit:` and `✗ tiling cache miss:` with the status word colored when the active reporter supports color.
 - Run-local extraction now keeps `tiling/` as a sibling of `features/` when using the `FeatureExtractor.run()` convenience path.
 - Evaluation metrics now import `sklearn.metrics` directly and no longer carry local fallback implementations for missing `sklearn` installs.
 - The output-layout module no longer carries an unused path-normalization helper.
@@ -318,6 +320,7 @@ Default behavior:
 - slide features are cached under `slide/<cache_key>/features/`
 - run-local extraction without cache writes canonical `slide2vec` artifact roots (`tile_embeddings/` and optionally `slide_embeddings/`)
 - cache-payload writes, reads, and tile-artifact reconstruction for cache reuse are handled by functions in `soma.cache`
+- cache resolution emits a single hit/miss line for tiling and feature caches through the active rich progress reporter, or stdout when no reporter is active
 - `FeatureStore` can read soma cache payload dirs or native `slide2vec` artifact roots, including `hierarchical_embeddings/`
 
 This enables reuse such as:

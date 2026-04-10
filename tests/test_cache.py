@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import errno
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,7 @@ import torch
 
 from soma.cache import (
     CACHE_METADATA_NAME,
+    CacheValidationResult,
     build_slide_cache_key,
     build_tiling_cache_key,
     build_hierarchical_cache_key,
@@ -44,6 +46,10 @@ def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -
         ]
     ).to_csv(csv_path, index=False)
     return Dataset(csv_path)
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def test_manifest_digest_stable_under_row_order(tmp_path: Path):
@@ -236,6 +242,51 @@ def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
     assert resolution.complete is False
 
 
+def test_resolve_tiling_cache_emits_miss_then_hit_logs(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "tiling_cache"
+    provenance = {
+        "requested_backend": "openslide",
+        "backend": "openslide",
+        "backend_by_sample_id": {
+            "s1": "openslide",
+            "s2": "openslide",
+        },
+    }
+
+    rich_reporter = SimpleNamespace(console=object(), progress=object())
+
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache.slide2vec_progress.emit_progress_log"
+    ) as emit_progress_log:
+        resolution = resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+            backend_provenance=provenance,
+        )
+
+    assert resolution.complete is False
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ tiling cache miss:")
+
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache._validate_tiling_cache_contents",
+        return_value=CacheValidationResult(complete=True),
+    ), patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        reused = resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+            backend_provenance=provenance,
+        )
+
+    assert reused.complete is True
+    assert reused.reused is True
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ tiling cache hit:")
+
+
 def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "tiling_cache"
@@ -322,6 +373,50 @@ def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
     assert metadata["requested_backend"] == "auto"
     assert metadata["backend"] == "openslide"
     assert metadata["backend_by_sample_id"] == {"s1": "openslide", "s2": "openslide"}
+
+
+def test_resolve_tile_cache_emits_miss_then_hit_logs(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+
+    rich_reporter = SimpleNamespace(console=object(), progress=object())
+
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache.slide2vec_progress.emit_progress_log"
+    ) as emit_progress_log:
+        resolution = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+
+    assert resolution.complete is False
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ tile cache miss:")
+
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata["feature_dim"] = 16
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    for sample_id in dataset.sample_ids:
+        torch.save(torch.randn(4, 16), resolution.features_dir / f"{sample_id}.pt")
+
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache.slide2vec_progress.emit_progress_log"
+    ) as emit_progress_log:
+        reused = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+
+    assert reused.complete is True
+    assert reused.reused is True
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ tile cache hit:")
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):

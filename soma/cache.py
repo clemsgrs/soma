@@ -17,6 +17,7 @@ import torch
 from hs2p.preprocessing import validate_tiling_result_provenance
 from hs2p.wsi.reader import resolve_backend
 from slide2vec.artifacts import TileEmbeddingArtifact
+import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
@@ -597,6 +598,12 @@ def resolve_tiling_cache(
             preprocessing=preprocessing,
             expected_backend_provenance=backend_provenance,
         )
+        _emit_cache_state_log(
+            kind="tiling",
+            cache_dir=cache_dir,
+            complete=validation.complete,
+            reason=validation.reason,
+        )
         return TilingCacheResolution(
             key=str(existing["cache_key"]),
             cache_dir=cache_dir,
@@ -611,6 +618,12 @@ def resolve_tiling_cache(
 
     _write_manifest(manifest_path, dataset_manifest_rows(dataset))
     _write_metadata(metadata_path, metadata)
+    _emit_cache_state_log(
+        kind="tiling",
+        cache_dir=cache_dir,
+        complete=False,
+        reason="initializing",
+    )
     return TilingCacheResolution(
         key=str(metadata["cache_key"]),
         cache_dir=cache_dir,
@@ -843,6 +856,32 @@ def _validate_feature_cache_contents(
     return CacheValidationResult(complete=True)
 
 
+def _emit_cache_state_log(
+    *,
+    kind: str,
+    cache_dir: Path,
+    complete: bool,
+    reason: str | None = None,
+) -> None:
+    cache_path = str(cache_dir.resolve())
+    reporter = slide2vec_progress.get_progress_reporter()
+    rich_viz = hasattr(reporter, "console") and hasattr(reporter, "progress")
+    label = f"{kind} cache"
+    if complete:
+        status = "hit"
+        if rich_viz:
+            status = "\x1b[1;32mhit\x1b[0m"
+        message = f"✓ {label} {status}: {cache_path}"
+    else:
+        status = "miss"
+        if rich_viz:
+            status = "\x1b[1;31mmiss\x1b[0m"
+        message = f"✗ {label} {status}: {cache_path}"
+        if reason is not None:
+            message = f"{message} ({reason})"
+    slide2vec_progress.emit_progress_log(message)
+
+
 def _resolve_cache(
     *,
     cache_root: Path,
@@ -863,6 +902,12 @@ def _resolve_cache(
         if _comparable_metadata(existing) != _comparable_metadata(metadata):
             raise ValueError(f"Cache metadata mismatch for {cache_dir}")
         validation = _validate_feature_cache_contents(features_dir=features_dir, metadata=existing)
+        _emit_cache_state_log(
+            kind=kind,
+            cache_dir=cache_dir,
+            complete=validation.complete,
+            reason=validation.reason,
+        )
         return FeatureCacheResolution(
             key=key,
             cache_dir=cache_dir,
@@ -877,6 +922,11 @@ def _resolve_cache(
 
     _write_manifest(manifest_path, manifest_rows)
     _write_metadata(metadata_path, metadata)
+    _emit_cache_state_log(
+        kind=kind,
+        cache_dir=cache_dir,
+        complete=False,
+    )
     return FeatureCacheResolution(
         key=key,
         cache_dir=cache_dir,

@@ -8,3 +8,4 @@
 - When a sibling dependency has clearly cut over and the project is aligned to that new boundary, do not add version-compatibility fallbacks unless explicitly requested.
 - In soma, treat `slide2vec` as a required dependency rather than adding local test-only import fallbacks; if it is unavailable in the current environment, report that and skip affected verification.
 - Distinguish the user-facing managed `output_root` from internal concrete destination directories like run, fold, feature, or tiling output paths. Replacing the former does not mean lower-level APIs should stop accepting resolved leaf directories.
+- For compact rich logs, keep the visible status phrase exact and color only the status word or symbol; assert against ANSI-stripped text in tests instead of raw escape sequences.
