@@ -13,17 +13,30 @@
 | hibou-b / hibou-l | 768 / 1024 | 0.5 µm/px |
 | midnight | 3072 | 0.25–2.0 µm/px |
 
+## Attention Heatmap Config
+
+`HeatmapConfig` controls whether and how attention heatmaps are generated after training. It is a field on `PipelineConfig`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `bool` | `false` | Generate heatmaps after training completes. |
+| `cmap` | `str` | `"coolwarm"` | Any matplotlib colormap name (e.g. `"viridis"`, `"hot"`, `"RdBu_r"`). |
+| `alpha` | `float` | `0.5` | Opacity of the attention overlay blended onto the WSI thumbnail (0 = invisible, 1 = opaque). |
+| `blur_sigma` | `float` | `0.0` | Gaussian blur standard deviation applied to the attention map before coloring. `0` disables blurring. |
+
+The WSI thumbnail is read at the pyramid level closest to `preprocessing.seg_downsample` (default 64×), which matches the level used for tissue mask and tiling preview images. Heatmaps are saved to `fold_N/attention/` (raw scores) and `fold_N/heatmaps/` (PNG overlays) inside the run directory.
+
 ## Aggregators
 
 Use the `aggregator.name` config key with the canonical lowercase names below.
 
-| Aggregator | Config name | Notes |
-|---|---|---|
-| `MeanPool` | `mean_pool` | Simple mean pooling baseline. |
-| `MaxPool` | `max_pool` | Simple max pooling baseline. |
-| `ABMIL` | `abmil` | Attention-based MIL with gated attention. |
-| `CLAM_SB` | `clam_sb` | Reference-style single-branch CLAM with task-aware auxiliary supervision for classification, ordinal classification, and single-target regression. |
-| `CLAM_MB` | `clam_mb` | Reference-style multi-branch CLAM for classification tasks only. |
+| Aggregator | Config name | Attention heatmaps | Notes |
+|---|---|---|---|
+| `MeanPool` | `mean_pool` | — | Simple mean pooling baseline. |
+| `MaxPool` | `max_pool` | — | Simple max pooling baseline. |
+| `ABMIL` | `abmil` | ✓ | Attention-based MIL with gated attention. |
+| `CLAM_SB` | `clam_sb` | ✓ | Reference-style single-branch CLAM with task-aware auxiliary supervision for classification, ordinal classification, and single-target regression. |
+| `CLAM_MB` | `clam_mb` | ✓ (one map per class) | Reference-style multi-branch CLAM for classification tasks only. |
 
 ### CLAM task support
 
@@ -43,10 +56,10 @@ Key `clam_sb` parameters:
 - `use_negative_class_instance_loss`: classification-only flag for training out-of-class negative instance branches
 
 `clam_mb` remains class-branch-specific and is therefore limited to categorical classification.
-| `DSMIL` | `dsmil` | Dual-stream MIL with critical-instance attention. |
-| `TransMIL` | `transmil` | Transformer-based MIL with Nyström attention. |
-| `DTFDMIL` | `dtfdmil` | Double-tier feature distillation MIL. |
-| `HIPT` | `hipt` | Hierarchical MIL over native hierarchical features. |
+| `DSMIL` | `dsmil` | ✓ | Dual-stream MIL with critical-instance attention. |
+| `TransMIL` | `transmil` | — | Transformer-based MIL with Nyström attention. |
+| `DTFDMIL` | `dtfdmil` | — | Double-tier feature distillation MIL. |
+| `HIPT` | `hipt` | — | Hierarchical MIL over native hierarchical features. |
 
 ## Task Heads
 

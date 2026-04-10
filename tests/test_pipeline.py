@@ -325,6 +325,59 @@ class TestTrainOneFold:
         assert "true_label" in preds_df.columns
         assert "predicted_label" in preds_df.columns
 
+    def test_saves_attention_npz_when_heatmaps_enabled(self, tmp_path: Path):
+        """With heatmaps.enabled, attention .npz files should be written during the test pass."""
+        from soma.config import HeatmapConfig
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        fold_dir = tmp_path / "fold_0"
+
+        train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(name="abmil"),
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=1, patience=10, batch_size=1),
+            fold_dir=fold_dir,
+            heatmaps=HeatmapConfig(enabled=True),
+        )
+
+        attention_dir = fold_dir / "attention"
+        assert attention_dir.is_dir(), "attention/ dir should be created"
+        npz_files = list(attention_dir.glob("*.npz"))
+        assert len(npz_files) > 0, "at least one attention .npz should be saved"
+        # Verify shape: (N,) for single-branch ABMIL
+        data = np.load(npz_files[0])
+        assert "attention" in data
+        assert data["attention"].ndim == 1
+
+    def test_no_attention_dir_when_heatmaps_disabled(self, tmp_path: Path):
+        """Without heatmaps enabled, no attention/ directory should be written."""
+        from soma.config import HeatmapConfig
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        fold_dir = tmp_path / "fold_0"
+
+        train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(name="abmil"),
+            task=TaskConfig(name="classification"),
+            training=TrainingConfig(epochs=1, patience=10, batch_size=1),
+            fold_dir=fold_dir,
+            heatmaps=HeatmapConfig(enabled=False),
+        )
+
+        assert not (fold_dir / "attention").exists()
+
     def test_num_classes_auto_inferred(self, tmp_path: Path):
         """num_classes should be auto-inferred from dataset labels."""
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)

@@ -100,6 +100,16 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class HeatmapConfig:
+    """Configuration for attention heatmap generation."""
+
+    enabled: bool = False
+    cmap: str = "coolwarm"
+    alpha: float = 0.5
+    blur_sigma: float = 0.0
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     """Complete specification for a pipeline run."""
 
@@ -112,6 +122,7 @@ class PipelineConfig:
     aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     tags: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -173,6 +184,7 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig:
 def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
     encoder_data = data.get("encoder")
+    heatmap_data = data.get("heatmaps")
     return PipelineConfig(
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
@@ -183,5 +195,6 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
         task=_load_task_config(data),
         training=TrainingConfig(**data.get("training", {})),
+        heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         tags=data.get("tags", []),
     )
