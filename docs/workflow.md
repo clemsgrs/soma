@@ -16,6 +16,7 @@ dataset = Dataset("dataset.csv")
 extractor = FeatureExtractor(
     dataset=dataset,
     encoder=EncoderConfig(name="uni2"),
+    output_root="output",
     preprocessing=PreprocessingConfig(
         backend="openslide",
         target_tile_size_px=224,
@@ -23,11 +24,11 @@ extractor = FeatureExtractor(
     ),
 )
 
-extractor.preprocess("output/tiling")
-store = extractor.extract("output/features", tiling_dir="output/tiling")
+extractor.preprocess(tiling_dir="output/tiling")
+store = extractor.extract(feature_dir="output/features", tiling_dir="output/tiling")
 ```
 
-`extractor.run("output/features")` is the convenience form for the same workflow.
+`extractor.run(feature_dir="output/features")` is the convenience form for the same workflow.
 If you do not pass a backend argument to `preprocess()`, `extract()`, or `run()`,
 the value from `PreprocessingConfig.backend` is used.
 That field is the requested backend; the actual backend selected during tiling is
@@ -87,5 +88,6 @@ For regression, use float values in the `label` column of `dataset.csv`. For cla
 
 - `preprocess()` writes tiling artifacts.
 - `extract()` writes embeddings and returns a `FeatureStore`.
+- Lower-level APIs use specific destination names like `tiling_dir`, `feature_dir`, `fold_dir`, and `run_dir` instead of a generic `output_dir`.
 - `Pipeline.run()` writes training outputs under a managed experiment/run directory inside `output_root`.
 - The shared `feature_cache/` remains separate from run-local training artifacts.

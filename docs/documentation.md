@@ -578,3 +578,34 @@ config = load_config("config.yaml")
 | `soma.tasks.*` | TaskHead ABC, ClassificationHead |
 | `soma.training.*` | MILModel, BagDataset, Trainer, collation, seeding |
 | `soma.evaluation.*` | Metrics, EvaluationReport, SamplePrediction |
+
+## Active Design Decisions
+
+### Tiling cache
+
+The tiling cache is intentionally narrow and separate from the existing feature
+cache.
+
+The shared tiling cache is the canonical storage location for cached tiling
+artifacts. Run-local tiling directories are lightweight stubs that contain a
+`README.txt` plus a `process_list.csv` pointing at the shared cache paths.
+
+Feature and tiling cache resolution now share the same basic structure: a
+small shared resolution base plus explicit validation results so completeness
+checks are organized consistently across both cache families.
+
+When `FeatureExtractor` is used directly, passing `output_root` aligns both
+`feature_cache/` and `tiling_cache/` under that root when `CacheConfig.root_dir`
+is not set.
+
+Lower-level extraction APIs now prefer concrete destination names like
+`feature_dir` and `tiling_dir`, while the pipeline keeps `output_root` as the
+user-facing managed root.
+
+Standalone training APIs follow the same pattern: `train_one_fold()` writes to
+`fold_dir`, `train()` writes to `run_dir`, and `PipelineResult.run_dir`
+exposes the resolved managed run path.
+
+For `backend="auto"`, cache reuse validates against the current runtime's
+actual resolved backend by probing `hs2p.wsi.resolve_backend(...)` per sample
+before accepting a cache hit.
