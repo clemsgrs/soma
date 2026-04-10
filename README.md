@@ -58,10 +58,11 @@ dataset = Dataset("dataset.csv")
 extractor = FeatureExtractor(
     dataset=dataset,
     encoder=EncoderConfig(name="uni2"),
+    output_root="output",
     cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
 )
 
-store = extractor.extract("output/features/uni2")
+store = extractor.extract(feature_dir="output/features/uni2")
 
 ## Build on top of these features
 
@@ -75,7 +76,7 @@ abmil_result = train(
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
     task=task,
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
-    output_dir="output/abmil/uni2",
+    run_dir="output/abmil/uni2",
 )
 
 clam_result = train(
@@ -85,7 +86,7 @@ clam_result = train(
     aggregator=AggregatorConfig(name="clam", params={"hidden_dim": 256}),
     task=task,
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
-    output_dir="output/clam/uni2",
+    run_dir="output/clam/uni2",
 )
 ```
 
@@ -120,7 +121,7 @@ The returned `PipelineResult` includes:
 
 - `fold_results`: one entry per fold, each with training, tune, and test reports
 - `summary`: aggregated metrics across folds
-- `output_dir`: the resolved run directory containing the saved artifacts
+- `run_dir`: the resolved run directory containing the saved artifacts
 
 More details about the generated artifacts are in [docs/outputs.md](docs/outputs.md).
 

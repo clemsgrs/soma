@@ -176,7 +176,7 @@ class TestTrainOneFold:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, learning_rate=1e-3, patience=10, batch_size=2),
-            output_dir=tmp_path / "fold_0",
+            fold_dir=tmp_path / "fold_0",
         )
 
         assert isinstance(result, FoldResult)
@@ -216,7 +216,7 @@ class TestTrainOneFold:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=fold_dir,
+            fold_dir=fold_dir,
         )
 
         assert isinstance(result, FoldResult)
@@ -256,7 +256,7 @@ class TestTrainOneFold:
                 aggregator=AggregatorConfig(name="mean_pool"),
                 task=TaskConfig(name="classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                output_dir=tmp_path / "fold_missing_feature",
+                fold_dir=tmp_path / "fold_missing_feature",
             )
 
     def test_saves_checkpoint(self, tmp_path: Path):
@@ -273,7 +273,7 @@ class TestTrainOneFold:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=fold_dir,
+            fold_dir=fold_dir,
         )
 
         assert (fold_dir / "best_model.pt").exists()
@@ -292,7 +292,7 @@ class TestTrainOneFold:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=fold_dir,
+            fold_dir=fold_dir,
         )
 
         metrics_path = fold_dir / "metrics.json"
@@ -315,7 +315,7 @@ class TestTrainOneFold:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=fold_dir,
+            fold_dir=fold_dir,
         )
 
         preds_path = fold_dir / "predictions.csv"
@@ -339,7 +339,7 @@ class TestTrainOneFold:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),  # no num_classes specified
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=tmp_path / "fold_0",
+            fold_dir=tmp_path / "fold_0",
         )
 
         # Should have 2-class probabilities (tumor/normal)
@@ -366,7 +366,7 @@ class TestTrainOneFold:
             aggregator=None,
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=tmp_path / "fold_slide",
+            fold_dir=tmp_path / "fold_slide",
         )
 
         assert isinstance(result, FoldResult)
@@ -390,7 +390,7 @@ class TestTrainOneFold:
             fold_split=splits.folds[0],
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=tmp_path / "fold_slide_omitted",
+            fold_dir=tmp_path / "fold_slide_omitted",
         )
 
         assert isinstance(result, FoldResult)
@@ -414,7 +414,7 @@ class TestTrainOneFold:
                 aggregator=AggregatorConfig(name="mean_pool"),
                 task=TaskConfig(name="classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                output_dir=tmp_path / "fold_slide",
+                fold_dir=tmp_path / "fold_slide",
             )
 
     def test_hierarchical_features_use_hipt(self, tmp_path: Path):
@@ -438,7 +438,7 @@ class TestTrainOneFold:
             ),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=tmp_path / "fold_hier",
+            fold_dir=tmp_path / "fold_hier",
             preprocessing=PreprocessingConfig(
                 target_tile_size_px=224,
                 target_spacing_um=0.5,
@@ -465,7 +465,7 @@ class TestTrainOneFold:
                 aggregator=AggregatorConfig(name="mean_pool"),
                 task=TaskConfig(name="classification"),
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                output_dir=tmp_path / "fold_hier_error",
+                fold_dir=tmp_path / "fold_hier_error",
                 preprocessing=PreprocessingConfig(
                     target_tile_size_px=224,
                     target_spacing_um=0.5,
@@ -494,7 +494,7 @@ class TestTrain:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=tmp_path / "output",
+            run_dir=tmp_path / "output",
         )
 
         assert isinstance(result, PipelineResult)
@@ -506,7 +506,7 @@ class TestTrain:
         dataset = Dataset(dataset_csv)
         splits = Splits(splits_csv, dataset)
         store = FeatureStore(feature_dir)
-        output_dir = tmp_path / "output"
+        run_dir = tmp_path / "output"
 
         result = train(
             feature_store=store,
@@ -515,7 +515,7 @@ class TestTrain:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=output_dir,
+            run_dir=run_dir,
         )
 
         assert len(result.fold_results) == 2
@@ -529,7 +529,7 @@ class TestTrain:
         dataset = Dataset(dataset_csv)
         splits = Splits(splits_csv, dataset)
         store = FeatureStore(feature_dir)
-        output_dir = tmp_path / "output"
+        run_dir = tmp_path / "output"
 
         train(
             feature_store=store,
@@ -538,10 +538,10 @@ class TestTrain:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=output_dir,
+            run_dir=run_dir,
         )
 
-        summary = json.loads((output_dir / "summary.json").read_text())
+        summary = json.loads((run_dir / "summary.json").read_text())
         assert "accuracy_mean" in summary
 
     def test_fold_subdirectories(self, tmp_path: Path):
@@ -549,7 +549,7 @@ class TestTrain:
         dataset = Dataset(dataset_csv)
         splits = Splits(splits_csv, dataset)
         store = FeatureStore(feature_dir)
-        output_dir = tmp_path / "output"
+        run_dir = tmp_path / "output"
 
         train(
             feature_store=store,
@@ -558,11 +558,11 @@ class TestTrain:
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            output_dir=output_dir,
+            run_dir=run_dir,
         )
 
-        assert (output_dir / "fold_0" / "best_model.pt").exists()
-        assert (output_dir / "fold_1" / "best_model.pt").exists()
+        assert (run_dir / "fold_0" / "best_model.pt").exists()
+        assert (run_dir / "fold_1" / "best_model.pt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +589,7 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert result.output_dir == _expected_run_dir(config)
+        assert result.run_dir == _expected_run_dir(config)
 
     def test_run_ignores_samples_without_features(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -777,8 +777,8 @@ class TestPipeline:
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output_prism"
 
-        def _fake_run(self, output_dir_arg, **kwargs):
-            out = Path(output_dir_arg)
+        def _fake_run(self, feature_dir, **kwargs):
+            out = Path(feature_dir)
             out.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(D), out / f"s{i}.pt")
@@ -966,10 +966,10 @@ class TestPipeline:
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
-        def _fake_preprocess(self_, output_dir, *, skip_existing=True, backend="auto"):
-            output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            (output_dir / "process_list.csv").write_text("sample_id,tiling_status\n", encoding="utf-8")
+        def _fake_preprocess(self_, tiling_dir, *, skip_existing=True, backend="auto"):
+            tiling_dir = Path(tiling_dir)
+            tiling_dir.mkdir(parents=True, exist_ok=True)
+            (tiling_dir / "process_list.csv").write_text("sample_id,tiling_status\n", encoding="utf-8")
 
         def _fake_populate_tile_cache(
             self_,
@@ -1072,16 +1072,16 @@ class TestPipeline:
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, feature_dir=feature_dir).run()
 
-        experiment_dir = result.output_dir.parents[1]
+        experiment_dir = result.run_dir.parents[1]
         experiment_yaml = experiment_dir / "experiment.yaml"
-        run_yaml = result.output_dir / "run.yaml"
+        run_yaml = result.run_dir / "run.yaml"
         latest = experiment_dir / "latest"
         runs_index = Path(config.output_root) / "indexes" / "runs.csv"
 
         assert experiment_yaml.exists()
         assert run_yaml.exists()
         assert latest.is_symlink()
-        assert latest.resolve() == result.output_dir.resolve()
+        assert latest.resolve() == result.run_dir.resolve()
 
         with runs_index.open(newline="", encoding="utf-8") as handle:
             rows = list(csv.DictReader(handle))
@@ -1096,7 +1096,7 @@ class TestPipeline:
                 "seed": "0",
                 "wandb_id": "",
                 "git_sha": rows[0]["git_sha"],
-                "run_dir": str(result.output_dir.resolve()),
+                "run_dir": str(result.run_dir.resolve()),
                 "error": "",
             }
         ]

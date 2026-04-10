@@ -120,7 +120,7 @@ class TestTrainer:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
         )
         result = trainer.fit()
@@ -148,7 +148,7 @@ class TestTrainer:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
             console=console,
         )
@@ -175,7 +175,7 @@ class TestTrainer:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
         )
         result = trainer.fit()
@@ -198,7 +198,7 @@ class TestTrainer:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
         )
         result = trainer.fit()
@@ -218,7 +218,7 @@ class TestTrainer:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
         )
         result = trainer.fit()
@@ -250,7 +250,7 @@ class TestTrainerWithSlideModel:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
         )
         result = trainer.fit()
@@ -285,7 +285,7 @@ class TestTrainerWithRegressionHead:
             train_loader=train_loader,
             tune_loader=tune_loader,
             config=config,
-            output_dir=tmp_path,
+            fold_dir=tmp_path,
             device=torch.device("cpu"),
         )
         result = trainer.fit()

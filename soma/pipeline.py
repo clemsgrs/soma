@@ -80,7 +80,7 @@ class PipelineResult:
 
     fold_results: list[FoldResult]
     summary: dict[str, float]
-    output_dir: Path
+    run_dir: Path
 
 
 def _format_fold_summary(
@@ -113,7 +113,7 @@ def train_one_fold(
     fold_split: FoldSplit,
     task: TaskConfig,
     training: TrainingConfig,
-    output_dir: str | Path,
+    fold_dir: str | Path,
     *,
     aggregator: AggregatorConfig | None = None,
     fold: int = 0,
@@ -129,14 +129,14 @@ def train_one_fold(
             Omit this argument for slide-level encoders.
         task: Task head configuration.
         training: Training loop configuration.
-        output_dir: Directory for checkpoint, metrics, predictions.
+        fold_dir: Directory for checkpoint, metrics, predictions.
         fold: Fold index (for FoldResult metadata).
 
     Returns:
         FoldResult with training result + tune/test evaluation reports.
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    fold_dir = Path(fold_dir)
+    fold_dir.mkdir(parents=True, exist_ok=True)
 
     seed_everything(training.seed)
 
@@ -307,7 +307,7 @@ def train_one_fold(
         train_loader=train_loader,
         tune_loader=tune_loader,
         config=training,
-        output_dir=output_dir,
+        fold_dir=fold_dir,
         device=device,
     )
     train_result = trainer.fit()
@@ -324,8 +324,8 @@ def train_one_fold(
     test_report = _evaluate(model, test_loader, "test", label_map, device)
 
     # Save metrics and predictions
-    _save_metrics(tune_report, test_report, output_dir / "metrics.json")
-    _save_predictions(test_report, output_dir / "predictions.csv")
+    _save_metrics(tune_report, test_report, fold_dir / "metrics.json")
+    _save_predictions(test_report, fold_dir / "predictions.csv")
 
     return FoldResult(
         fold=fold,
@@ -341,7 +341,7 @@ def train(
     splits: Splits,
     task: TaskConfig,
     training: TrainingConfig,
-    output_dir: str | Path,
+    run_dir: str | Path,
     aggregator: AggregatorConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
 ) -> PipelineResult:
@@ -355,13 +355,13 @@ def train(
             Omit this argument for slide-level encoders.
         task: Task head configuration.
         training: Training loop configuration.
-        output_dir: Root directory — each fold gets a fold_N/ subdirectory.
+        run_dir: Root directory — each fold gets a fold_N/ subdirectory.
 
     Returns:
         PipelineResult with per-fold results and aggregated summary.
     """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    run_dir = Path(run_dir)
+    run_dir.mkdir(parents=True, exist_ok=True)
 
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
@@ -372,19 +372,19 @@ def train(
             aggregator=aggregator,
             task=task,
             training=training,
-            output_dir=output_dir / f"fold_{fold_idx}",
+            fold_dir=run_dir / f"fold_{fold_idx}",
             fold=fold_idx,
             preprocessing=preprocessing,
         )
         fold_results.append(result)
 
     summary = _aggregate_fold_metrics(fold_results)
-    _save_summary(summary, output_dir / "summary.json")
+    _save_summary(summary, run_dir / "summary.json")
 
     return PipelineResult(
         fold_results=fold_results,
         summary=summary,
-        output_dir=output_dir,
+        run_dir=run_dir,
     )
 
 
@@ -501,7 +501,7 @@ class Pipeline:
                 aggregator=self._config.aggregator,
                 task=self._config.task,
                 training=self._config.training,
-                output_dir=layout.run_dir,
+                run_dir=layout.run_dir,
                 preprocessing=self._resolve_preprocessing(),
             )
         except Exception as exc:
@@ -565,7 +565,7 @@ class Pipeline:
                 preprocessing,
                 cache=cache_config,
             )
-            store = extractor.run(run_dir / "features")
+            store = extractor.run(feature_dir=run_dir / "features")
         return store
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
