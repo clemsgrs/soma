@@ -73,19 +73,9 @@ RUN python -m ensurepip --upgrade \
     && python -m pip install --upgrade pip setuptools wheel hatchling psutil \
     && rm -rf /root/.cache/pip
 
-COPY --chown=user:user soma /opt/app/soma
-COPY --chown=user:user pyproject.toml /opt/app/pyproject.toml
-COPY --chown=user:user README.md /opt/app/README.md
-COPY --chown=user:user LICENSE /opt/app/LICENSE
 RUN printf '%s\n' \
     'torch' \
-    > /opt/app/constraints-cu128.txt
-
-RUN python -m pip install \
-    --no-cache-dir \
-    --no-color \
-    --constraint /opt/app/constraints-cu128.txt \
-    "/opt/app[dev]"
+    > /tmp/constraints-cu128.txt
 
 
 USER user
