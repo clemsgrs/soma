@@ -31,6 +31,7 @@ class ClassificationHead(TaskHead):
     def __init__(self, input_dim: int, num_classes: int) -> None:
         super().__init__()
         self.fc = nn.Linear(input_dim, num_classes)
+        self.num_classes = num_classes
 
     @classmethod
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
