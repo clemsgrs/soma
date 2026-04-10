@@ -4,6 +4,7 @@
 
 - The README now points to the repository's actual AGPL-3.0 license.
 - The README now highlights the layered API so users can extract features, train from a feature store, or run the full pipeline.
+- The cache docs now describe the full tiling-and-feature cache flow, including run-local stubs and shared cache directories.
 - Evaluation metrics now import `sklearn.metrics` directly and no longer carry local fallback implementations for missing `sklearn` installs.
 - The output-layout module no longer carries an unused path-normalization helper.
 - Core modules now import `slide2vec`, `hs2p`, `yaml`, and `FeatureExtractor` directly at module scope instead of deferring those imports behind compatibility shims or function-local indirection.

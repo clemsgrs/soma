@@ -4,6 +4,21 @@
 
 Add a small shared tiling cache that reuses tiling artifacts across runs when the dataset and the fully resolved preprocessing geometry are identical.
 
+## Flow Summary
+
+```mermaid
+flowchart TD
+    A[FeatureExtractor.preprocess()] --> B{tiling cache hit?}
+    B -- yes --> C[write local tiling/ stub]
+    B -- no --> D[run live tiling]
+    D --> E[publish canonical tiling payload to shared tiling_cache/]
+    E --> C
+    C --> F[FeatureExtractor.extract()]
+    F --> G{feature cache hit?}
+    G -- yes --> H[reuse shared features]
+    G -- no --> I[compute embeddings and populate feature_cache/]
+```
+
 This cache is intentionally narrow:
 
 - It caches only tiling outputs.
@@ -19,6 +34,12 @@ Today, feature-cache hits still depend on a concrete tiling directory:
 - The shared cache stores only feature payloads, not tiling artifacts.
 
 That means repeated runs can reuse embeddings, but they still need tiling metadata and often still rerun tiling.
+
+The user-facing cache docs now show this as two separate layers:
+
+- run-local `tiling/` is the entrypoint for loading tilings
+- shared `tiling_cache/` and `feature_cache/` hold the canonical payloads
+- local run directories may become lightweight stubs when a shared hit is available
 
 With the tiling cache enabled, run-local `skip_existing=True` should no longer
 mean "a `process_list.csv` exists". It should mean the local tiling directory is
