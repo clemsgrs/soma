@@ -14,11 +14,9 @@ from getpass import getuser
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from soma.config import PipelineConfig
-
-
-def _normalize_path(value: str | Path) -> str:
-    return str(Path(value).resolve())
 
 
 def _sha256_file(path: str | Path) -> str:
@@ -271,8 +269,6 @@ def create_run_metadata(
 
 
 def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
-    import yaml
-
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
@@ -405,8 +401,6 @@ def has_successful_run(experiment_dir: Path) -> bool:
         if not run_yaml.exists():
             continue
         try:
-            import yaml
-
             payload = yaml.safe_load(run_yaml.read_text(encoding="utf-8")) or {}
         except Exception:
             continue

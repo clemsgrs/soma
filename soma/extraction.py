@@ -12,12 +12,14 @@ from pathlib import Path
 from typing import Sequence
 
 import torch
+import hs2p.progress as hs2p_progress
 from slide2vec import (
     ExecutionOptions,
     Model,
     Pipeline,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
+import slide2vec.progress as slide2vec_progress
 from slide2vec.encoders.registry import (
     encoder_registry,
     resolve_encoder_level,
@@ -128,11 +130,8 @@ class _TilingProgressBridgeReporter:
     def emit(self, event) -> None:
         if getattr(event, "kind", None) != "tiling.progress":
             return
-        from slide2vec.progress import ProgressEvent as Slide2VecProgressEvent
-        from slide2vec.progress import get_progress_reporter as get_slide2vec_progress_reporter
-
-        get_slide2vec_progress_reporter().emit(
-            Slide2VecProgressEvent(kind=event.kind, payload=dict(event.payload))
+        slide2vec_progress.get_progress_reporter().emit(
+            slide2vec_progress.ProgressEvent(kind=event.kind, payload=dict(event.payload))
         )
 
     def close(self) -> None:
@@ -140,9 +139,7 @@ class _TilingProgressBridgeReporter:
 
     def write_log(self, message: str, *, stream=None) -> None:
         target = stream or None
-        from slide2vec.progress import emit_progress_log
-
-        emit_progress_log(message, stream=target)
+        slide2vec_progress.emit_progress_log(message, stream=target)
 
 
 @contextlib.contextmanager
@@ -152,27 +149,20 @@ def _make_extraction_reporter_ctx(feature_dir: Path):
     reporter is already active, and installs a log-dedup filter on
     slide2vec's inference logger to suppress repeated warnings.
     """
-    from slide2vec.progress import (
-        NullProgressReporter,
-        activate_progress_reporter,
-        create_api_progress_reporter,
-        get_progress_reporter,
-    )
-
     dedup_filter = _DeduplicateLogFilter()
     inference_logger = logging.getLogger("slide2vec.inference")
     inference_logger.addFilter(dedup_filter)
     try:
         with _suppress_logger_noise_ctx("cucim"):
-            active = get_progress_reporter()
-            if not isinstance(active, NullProgressReporter):
+            active = slide2vec_progress.get_progress_reporter()
+            if not isinstance(active, slide2vec_progress.NullProgressReporter):
                 yield
                 return
-            inner = create_api_progress_reporter(output_dir=feature_dir)
-            if isinstance(inner, NullProgressReporter):
+            inner = slide2vec_progress.create_api_progress_reporter(output_dir=feature_dir)
+            if isinstance(inner, slide2vec_progress.NullProgressReporter):
                 yield
                 return
-            with activate_progress_reporter(_SomaExtractionReporter(inner)):
+            with slide2vec_progress.activate_progress_reporter(_SomaExtractionReporter(inner)):
                 yield
     finally:
         inference_logger.removeFilter(dedup_filter)
@@ -181,9 +171,7 @@ def _make_extraction_reporter_ctx(feature_dir: Path):
 @contextlib.contextmanager
 def _forward_tiling_progress_ctx():
     """Forward hs2p tiling progress into the active slide2vec reporter."""
-    from hs2p.progress import activate_progress_reporter
-
-    with activate_progress_reporter(_TilingProgressBridgeReporter()):
+    with hs2p_progress.activate_progress_reporter(_TilingProgressBridgeReporter()):
         yield
 
 
@@ -512,8 +500,6 @@ class FeatureExtractor:
         num_gpus: int | None = None,
     ) -> FeatureStore:
         """Extract features using slide2vec and adapt outputs for soma."""
-        from slide2vec.progress import emit_progress
-
         del skip_existing
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
@@ -565,7 +551,7 @@ class FeatureExtractor:
         with _suppress_logger_noise_ctx("cucim"):
             with _make_extraction_reporter_ctx(feature_dir):
                 if not should_delegate_embedding_progress:
-                    emit_progress("embedding.started", slide_count=n_slides)
+                    slide2vec_progress.emit_progress("embedding.started", slide_count=n_slides)
 
                 if not self._cache.enabled:
                     self._extract_uncached(
@@ -639,7 +625,7 @@ class FeatureExtractor:
                 store = FeatureStore(store.feature_dir)
 
                 if not should_delegate_embedding_progress:
-                    emit_progress(
+                    slide2vec_progress.emit_progress(
                         "embedding.finished",
                         slide_count=n_slides,
                         slides_completed=n_slides,

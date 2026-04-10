@@ -11,6 +11,7 @@ in TaskHead, making HIPT composable with any task.
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import torch
 from torch import Tensor, nn
@@ -356,9 +357,7 @@ class HIPT(Aggregator):
 
     def _load_pretrained_region(self, path: str) -> None:
         """Load pretrained weights for the region ViT."""
-        from pathlib import Path as _Path
-
-        if not _Path(path).is_file():
+        if not Path(path).is_file():
             msg = f"Pretrained weights not found: {path}"
             raise FileNotFoundError(msg)
 

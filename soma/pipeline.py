@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import json
+import csv
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from soma.config import (
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.report import EvaluationReport, SamplePrediction
+from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 from soma.output_layout import (
     count_run_directories,
@@ -549,8 +551,6 @@ class Pipeline:
         if self._feature_dir is not None:
             store = FeatureStore(self._feature_dir)
         else:
-            from soma.extraction import FeatureExtractor
-
             if self._config.encoder is None:
                 raise ValueError(
                     "PipelineConfig.encoder is required when feature_dir is not provided."
@@ -680,8 +680,6 @@ def _save_metrics(
 
 
 def _save_predictions(report: EvaluationReport, path: Path) -> None:
-    import csv
-
     with open(path, "w", newline="") as f:
         if not report.predictions:
             return
