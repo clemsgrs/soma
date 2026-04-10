@@ -70,7 +70,7 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*
 
 RUN python -m ensurepip --upgrade \
-    && python -m pip install --upgrade pip setuptools wheel hatchling psutil \
+    && python -m pip install --upgrade pip setuptools 'packaging>=24.2' wheel hatchling psutil \
     && rm -rf /root/.cache/pip
 
 RUN printf '%s\n' \
