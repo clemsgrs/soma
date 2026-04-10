@@ -47,7 +47,7 @@ def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
         cache=CacheConfig(),
         encoder=EncoderConfig(name="uni2"),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
-        task=TaskConfig(name="classification"),
+        task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
         tags=["baseline"],
     )
@@ -73,7 +73,7 @@ def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
     spec = build_experiment_spec(config)
 
     assert isinstance(spec, ExperimentSpec)
-    assert spec.slug.startswith("dataset-uni2-abmil-classification_")
+    assert spec.slug.startswith("dataset-uni2-abmil-binary-classification_")
     assert spec.experiment_dirname == spec.slug
     assert len(spec.short_hash) == 12
     assert spec.dataset_checksum
@@ -155,4 +155,4 @@ def test_experiment_spec_roundtrips_through_yaml(tmp_path: Path):
 
     assert loaded["experiment_id"] == spec.experiment_id
     assert loaded["slug"] == spec.slug
-    assert loaded["canonical_spec"]["task"]["name"] == "classification"
+    assert loaded["canonical_spec"]["task"]["name"] == "binary_classification"

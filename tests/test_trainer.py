@@ -14,7 +14,7 @@ from rich.panel import Panel
 
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
-from soma.tasks.classification import ClassificationHead
+from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
@@ -33,7 +33,7 @@ NUM_CLASSES = 2
 def _make_model() -> MILModel:
     return MILModel(
         aggregator=MeanPool(input_dim=D),
-        task_head=ClassificationHead(input_dim=D, num_classes=NUM_CLASSES),
+        task_head=BinaryClassificationHead(input_dim=D, num_classes=NUM_CLASSES),
     )
 
 
@@ -41,10 +41,10 @@ def _make_epoch_log(
     epoch: int,
     train_loss: float,
     tune_loss: float,
-    accuracy: float,
+    auroc: float,
     balanced_accuracy: float,
-    f1_macro: float,
-    auc: float,
+    f1: float,
+    auprc: float,
     lr: float,
 ):
     from soma.training.trainer import EpochLog
@@ -54,10 +54,10 @@ def _make_epoch_log(
         train_loss=train_loss,
         tune_loss=tune_loss,
         tune_metrics={
-            "accuracy": accuracy,
+            "auroc": auroc,
             "balanced_accuracy": balanced_accuracy,
-            "f1_macro": f1_macro,
-            "auc": auc,
+            "f1": f1,
+            "auprc": auprc,
         },
         lr=lr,
     )
@@ -129,7 +129,7 @@ class TestTrainer:
         assert len(result.history) == 3
         assert result.best_epoch >= 0
         assert result.best_tune_loss >= 0
-        assert set(result.best_tune_metrics) >= {"accuracy", "balanced_accuracy", "f1_macro", "auc"}
+        assert set(result.best_tune_metrics) >= {"auroc", "balanced_accuracy", "auprc", "f1"}
 
     def test_fit_renders_epoch_progress_with_rich_console(
         self, tmp_path: Path
@@ -158,7 +158,7 @@ class TestTrainer:
         assert "Training progress" in output
         assert "epoch" in output
         assert "train" in output and "tune" in output
-        assert "acc" in output and "bal" in output and "f1" in output and "auc" in output
+        assert "auroc" in output and "bal" in output and "f1" in output
         assert "new best checkpoint" in output or "training complete" in output
         assert result.history[-1].epoch == len(result.history) - 1
 
@@ -237,7 +237,7 @@ class TestTrainerWithSlideModel:
 
         seed_everything(42)
         D = 16
-        model = SlideModel(task_head=ClassificationHead(input_dim=D, num_classes=2))
+        model = SlideModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
 
         # Build slide-level batches: (D,) tensors
         slides = [(torch.randn(D), i % 2, f"s{i}") for i in range(8)]
@@ -293,7 +293,7 @@ class TestTrainerWithRegressionHead:
         assert isinstance(result, TrainResult)
         assert len(result.history) == 3
         assert result.checkpoint_path.exists()
-        for key in ["mse", "mae", "r2"]:
+        for key in ["mae", "r2"]:
             assert key in result.best_tune_metrics
 
 

@@ -389,7 +389,7 @@ def test_save_attention_skips_no_attention_aggregator(tmp_path):
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "out",
         aggregator=AggregatorConfig(name="meanpool"),
-        task=TaskConfig(name="classification", params={"num_classes": 2}),
+        task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
     )
     save_config(config, tmp_path / "config.yaml")
 
@@ -413,7 +413,7 @@ def test_save_attention_skips_slide_level_features(tmp_path):
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "out",
         aggregator=AggregatorConfig(name="abmil"),
-        task=TaskConfig(name="classification", params={"num_classes": 2}),
+        task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
     )
     save_config(config, tmp_path / "config.yaml")
 

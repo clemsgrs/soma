@@ -89,7 +89,7 @@ def save_attention(
 
     task_cfg = config.task
     task_cls = task_registry.get(task_cfg.name)
-    task_params = {**task_cls.auto_params(dataset), **task_cfg.params}
+    task_params = {**task_cls.auto_params(dataset), **task_cfg.params, "metrics": task_cfg.metrics}
     feature_dim = feature_store.feature_dim
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -106,7 +106,7 @@ def save_attention(
         # Reconstruct model
         aggregator_cls = aggregator_registry.get(agg_name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator_cfg.params)
-        if agg_name == "clam_mb" and task_cfg.name == "classification":
+        if agg_name == "clam_mb" and task_cfg.name == "multiclass_classification":
             head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
         else:
             head = task_cls(input_dim=agg.output_dim, **task_params)

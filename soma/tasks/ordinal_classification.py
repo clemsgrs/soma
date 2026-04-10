@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from soma.evaluation.metrics import compute_ordinal_metrics
+from soma.evaluation.metrics import compute_metrics, resolve_metrics
 from soma.tasks.base import TaskHead
 from soma.tasks.registry import task_registry
 
@@ -28,15 +28,23 @@ class OrdinalClassificationHead(TaskHead):
     Args:
         input_dim: Dimension of the input representation.
         num_classes: Number of ordinal classes (e.g. 6 for labels 0–5).
+        metrics: Metrics to compute. Empty list uses the default set for
+            ordinal_classification: qwk, balanced_accuracy.
     """
 
     label_dtype = torch.long
     task_family = "ordinal_classification"
 
-    def __init__(self, input_dim: int, num_classes: int) -> None:
+    def __init__(
+        self,
+        input_dim: int,
+        num_classes: int,
+        metrics: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self.fc = nn.Linear(input_dim, 1)
         self.num_classes = num_classes
+        self.metrics = resolve_metrics("ordinal_classification", metrics or [])
 
     @classmethod
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
@@ -58,7 +66,9 @@ class OrdinalClassificationHead(TaskHead):
     def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
         processed = self.postprocess(raw_output)
         y_true = targets.detach().cpu().numpy()
-        return compute_ordinal_metrics(y_true, processed["predicted_labels"])
+        return compute_metrics(
+            "ordinal_classification", self.metrics, y_true, processed["predicted_labels"]
+        )
 
 
 task_registry.register("ordinal_classification", OrdinalClassificationHead)
