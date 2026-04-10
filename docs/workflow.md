@@ -84,6 +84,48 @@ task:
 
 For regression, use float values in the `label` column of `dataset.csv`. For classification, `num_classes` is auto-inferred from the dataset.
 
+## Attention Heatmaps
+
+Set `heatmaps.enabled = true` in the pipeline config to automatically generate tile-level attention heatmaps after training. Heatmaps are produced for the test split of each fold and saved inside the run directory.
+
+```python
+from soma import Pipeline, PipelineConfig, HeatmapConfig
+
+config = PipelineConfig(
+    ...
+    heatmaps=HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5),
+)
+
+Pipeline(config).run()
+```
+
+Or in YAML:
+
+```yaml
+heatmaps:
+  enabled: true
+  cmap: coolwarm
+  alpha: 0.5
+  blur_sigma: 0.0
+```
+
+Generation is split into two phases. First, attention scores are extracted from `best_model.pt` and saved as `fold_N/attention/<sample_id>.npz`. Then heatmaps are rendered by overlaying attention-colored tiles on a WSI thumbnail at the `seg_downsample` pyramid level. Because the two steps are decoupled, you can re-render with different visual settings (colormap, alpha, blur) without re-running inference:
+
+```python
+from soma.heatmaps import render_heatmaps
+from soma.config import HeatmapConfig
+
+render_heatmaps(
+    run_dir="experiments/.../runs/<run_id>",
+    dataset=dataset,
+    feature_store=store,
+    heatmap_config=HeatmapConfig(cmap="viridis", alpha=0.4, blur_sigma=1.5),
+    seg_downsample=32,
+)
+```
+
+Supported aggregators: ABMIL, CLAM-SB, CLAM-MB, DSMIL. HIPT, TransMIL, MeanPool, and MaxPool are skipped automatically.
+
 ## Common Paths
 
 - `preprocess()` writes tiling artifacts.

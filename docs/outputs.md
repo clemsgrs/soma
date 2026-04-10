@@ -45,7 +45,13 @@ output/
 │       │       ├── fold_0/
 │       │       │   ├── best_model.pt
 │       │       │   ├── metrics.json
-│       │       │   └── predictions.csv
+│       │       │   ├── predictions.csv
+│       │       │   ├── attention/          # present when heatmaps.enabled = true
+│       │       │   │   ├── <sample_id>.npz
+│       │       │   │   └── ...
+│       │       │   └── heatmaps/           # present when heatmaps.enabled = true
+│       │       │       ├── <sample_id>.png
+│       │       │       └── ...
 │       │       ├── fold_1/
 │       │       │   └── ...
 │       │       └── summary.json
@@ -53,6 +59,41 @@ output/
 └── indexes/
     ├── experiments.csv
     └── runs.csv
+```
+
+## Attention Heatmaps
+
+When `heatmaps.enabled = true`, two additional subdirectories are written inside each fold directory.
+
+**`attention/`** — per-tile attention scores extracted from the best checkpoint, one `.npz` file per test sample. These are saved before rendering so heatmaps can be re-generated later with different visual settings (colormap, alpha, blur) without re-running inference:
+
+| Aggregator | Array shape |
+|---|---|
+| ABMIL, CLAM-SB, DSMIL | `(N,)` |
+| CLAM-MB | `(n_classes, N)` |
+
+**`heatmaps/`** — PNG images composited over a WSI thumbnail at the `seg_downsample` resolution (same pyramid level used for preprocessing previews):
+
+| Aggregator | Files |
+|---|---|
+| ABMIL, CLAM-SB, DSMIL | `<sample_id>.png` |
+| CLAM-MB | `<sample_id>_class_0.png`, `<sample_id>_class_1.png`, … |
+
+HIPT, TransMIL, MeanPool, and MaxPool produce no attention scores and are skipped silently.
+
+To re-render heatmaps from saved attention without re-running inference:
+
+```python
+from soma.heatmaps import render_heatmaps
+from soma.config import HeatmapConfig
+
+render_heatmaps(
+    run_dir="experiments/.../runs/<run_id>",
+    dataset=dataset,
+    feature_store=store,
+    heatmap_config=HeatmapConfig(cmap="viridis", alpha=0.4),
+    seg_downsample=32,
+)
 ```
 
 `predictions.csv` format depends on the task head:

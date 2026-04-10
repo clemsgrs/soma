@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader
 from soma.aggregators.registry import aggregator_registry
 from soma.config import (
     AggregatorConfig,
+    HeatmapConfig,
     PipelineConfig,
     PreprocessingConfig,
     TaskConfig,
@@ -121,6 +122,7 @@ def train_one_fold(
     aggregator: AggregatorConfig | None = None,
     fold: int = 0,
     preprocessing: PreprocessingConfig | None = None,
+    heatmaps: HeatmapConfig | None = None,
 ) -> FoldResult:
     """Train and evaluate a single fold.
 
@@ -134,6 +136,8 @@ def train_one_fold(
         training: Training loop configuration.
         fold_dir: Directory for checkpoint, metrics, predictions.
         fold: Fold index (for FoldResult metadata).
+        heatmaps: When provided and enabled, attention scores are saved during
+            the test evaluation pass (no separate inference pass needed).
 
     Returns:
         FoldResult with training result + tune/test evaluation reports.
@@ -326,8 +330,23 @@ def train_one_fold(
     model.to(device)
     model.eval()
 
+    save_attention = (
+        heatmaps is not None
+        and heatmaps.enabled
+        and aggregator is not None
+        and not feature_store.is_slide_level
+        and not feature_store.is_hierarchical
+    )
+    attention_dir = fold_dir / "attention" if save_attention else None
+    if attention_dir is not None:
+        attention_dir.mkdir(exist_ok=True)
+
     tune_report = _evaluate(model, tune_loader, "tune", label_map, device)
-    test_report = _evaluate(model, test_loader, "test", label_map, device)
+    test_report = _evaluate(
+        model, test_loader, "test", label_map, device,
+        attention_dir=attention_dir,
+        aggregator_name=aggregator.name if aggregator is not None else None,
+    )
 
     # Save metrics and predictions
     _save_metrics(tune_report, test_report, fold_dir / "metrics.json")
@@ -350,6 +369,7 @@ def train(
     run_dir: str | Path,
     aggregator: AggregatorConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
+    heatmaps: HeatmapConfig | None = None,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
 
@@ -362,6 +382,8 @@ def train(
         task: Task head configuration.
         training: Training loop configuration.
         run_dir: Root directory — each fold gets a fold_N/ subdirectory.
+        heatmaps: When provided and enabled, attention scores are captured
+            during the test evaluation pass and saved to fold_N/attention/.
 
     Returns:
         PipelineResult with per-fold results and aggregated summary.
@@ -381,6 +403,7 @@ def train(
             fold_dir=run_dir / f"fold_{fold_idx}",
             fold=fold_idx,
             preprocessing=preprocessing,
+            heatmaps=heatmaps,
         )
         fold_results.append(result)
 
@@ -509,7 +532,19 @@ class Pipeline:
                 training=self._config.training,
                 run_dir=layout.run_dir,
                 preprocessing=self._resolve_preprocessing(),
+                heatmaps=self._config.heatmaps,
             )
+
+            if self._config.heatmaps.enabled:
+                from soma.heatmaps import render_heatmaps
+                logger.info("Rendering attention heatmaps...")
+                render_heatmaps(
+                    run_dir=layout.run_dir,
+                    dataset=self._dataset,
+                    feature_store=store,
+                    heatmap_config=self._config.heatmaps,
+                    seg_downsample=self._config.preprocessing.seg_downsample,
+                )
         except Exception as exc:
             failed_metadata = run_metadata.with_updates(
                 status="failed",
@@ -592,8 +627,20 @@ def _evaluate(
     split_name: str,
     label_map: dict[str | int, int],
     device: torch.device,
+    *,
+    attention_dir: Path | None = None,
+    aggregator_name: str | None = None,
 ) -> EvaluationReport:
-    """Evaluate model on a split and build a report."""
+    """Evaluate model on a split and build a report.
+
+    Args:
+        attention_dir: When provided, per-tile attention scores are saved as
+            ``<sample_id>.npz`` files inside this directory during the forward
+            pass — no separate inference pass is needed for heatmap generation.
+        aggregator_name: Name of the aggregator (e.g. ``"abmil"``), used to
+            decide whether to apply softmax before saving attention scores.
+            Required when ``attention_dir`` is set.
+    """
     all_logits = []
     all_labels = []
     all_sample_ids: list[str] = []
@@ -607,6 +654,13 @@ def _evaluate(
         all_logits.append(out.logits.cpu())
         all_labels.append(batch.labels)
         all_sample_ids.extend(batch.sample_ids)
+
+        if attention_dir is not None and out.tile_attention is not None:
+            from soma.heatmaps import _normalize_attention
+            for i, sid in enumerate(batch.sample_ids):
+                attn_i = out.tile_attention[i : i + 1]
+                normalized = _normalize_attention(attn_i, aggregator_name or "")
+                np.savez_compressed(attention_dir / f"{sid}.npz", attention=normalized)
 
     logits = torch.cat(all_logits, dim=0)
     labels = torch.cat(all_labels, dim=0)
