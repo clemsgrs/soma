@@ -31,6 +31,7 @@ class OrdinalClassificationHead(TaskHead):
     """
 
     label_dtype = torch.long
+    task_family = "ordinal_classification"
 
     def __init__(self, input_dim: int, num_classes: int) -> None:
         super().__init__()

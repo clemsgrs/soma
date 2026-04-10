@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
 from torch import Tensor, nn
+
+if TYPE_CHECKING:
+    from soma.tasks.base import TaskHead
 
 
 @dataclass
@@ -70,5 +74,33 @@ class Aggregator(ABC, nn.Module):
 
         Returns:
             Scalar auxiliary loss, or None if no auxiliary loss.
+        """
+        return None
+
+    def combine_losses(
+        self,
+        task_loss: Tensor,
+        auxiliary: dict[str, Tensor] | None,
+        labels: Tensor,
+        mask: Tensor | None = None,
+    ) -> Tensor:
+        """Combine task loss with any aggregator-specific auxiliary loss.
+
+        Aggregators that use a custom weighting strategy can override this.
+        By default, this preserves soma's existing behavior of adding any
+        auxiliary loss to the task loss.
+        """
+        if auxiliary is None:
+            return task_loss
+        auxiliary_loss = self.compute_auxiliary_loss(auxiliary, labels, mask=mask)
+        if auxiliary_loss is None:
+            return task_loss
+        return task_loss + auxiliary_loss
+
+    def configure_for_task(self, task_head: "TaskHead") -> None:
+        """Configure aggregator behavior for a specific task head.
+
+        Aggregators can override this to validate compatibility or resolve
+        task-dependent behavior before training starts.
         """
         return None

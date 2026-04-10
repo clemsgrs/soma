@@ -26,6 +26,7 @@ class RegressionHead(TaskHead):
     """
 
     label_dtype = torch.float
+    task_family = "regression"
 
     def __init__(self, input_dim: int, num_targets: int = 1) -> None:
         super().__init__()

@@ -72,7 +72,9 @@ class TestTransMIL:
         model = TransMIL(input_dim=16, att_dim=16, n_heads=2, n_landmarks=4)
         X = torch.randn(1, 10, 16, requires_grad=True)
         out = model(X)
-        loss = out.bag_representation.sum()
+        # LayerNorm makes the plain sum degenerate; use a loss that still
+        # depends on the representation so we can verify gradients flow.
+        loss = out.bag_representation.pow(2).sum()
         loss.backward()
         assert X.grad is not None
         assert X.grad.abs().sum() > 0

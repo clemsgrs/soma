@@ -22,6 +22,8 @@ class TaskHead(ABC, nn.Module):
     """
 
     label_dtype: torch.dtype = torch.long
+    supports_branch_representation: bool = False
+    task_family: str = "generic"
 
     @abstractmethod
     def forward(self, X: Tensor) -> Tensor:
