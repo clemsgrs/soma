@@ -81,6 +81,11 @@ class _CLAMBase(Aggregator):
         multi_branch: bool = False,
     ) -> None:
         super().__init__()
+        self._input_dim = input_dim
+        self._hidden_dim = hidden_dim
+        self._attn_dim = attn_dim
+        self._gated = gated
+        self._dropout = dropout
         self._output_dim = hidden_dim
         self.k_sample = k_sample
         self.n_classes = n_classes
@@ -91,24 +96,6 @@ class _CLAMBase(Aggregator):
         self.low_attention_weight = low_attention_weight
         self.topk_target_weight = topk_target_weight
         self._resolved_instance_loss_mode: str | None = None
-
-        fc: list[nn.Module] = [nn.Linear(input_dim, hidden_dim), nn.ReLU()]
-        if dropout > 0:
-            fc.append(nn.Dropout(dropout))
-        attn_cls = AttnNetGated if gated else AttnNet
-        fc.append(
-            attn_cls(
-                input_dim=hidden_dim,
-                attn_dim=attn_dim,
-                dropout=dropout,
-                n_classes=n_classes if multi_branch else 1,
-            )
-        )
-        self.attention_net = nn.Sequential(*fc)
-        self.class_instance_classifiers = nn.ModuleList(
-            [nn.Linear(hidden_dim, 2) for _ in range(n_classes)]
-        )
-        self.instance_regressor = nn.Linear(hidden_dim, 1)
 
         if inst_loss == "svm":
             self.classification_instance_loss_fn = SmoothTop1SVM(n_classes=2)
@@ -125,15 +112,50 @@ class _CLAMBase(Aggregator):
             )
             raise ValueError(msg)
 
+        self.attention_net = self._build_attention_net(
+            n_classes=n_classes if multi_branch else 1,
+        )
+        self.class_instance_classifiers = self._build_class_instance_classifiers(n_classes)
+        self.instance_regressor = nn.Linear(hidden_dim, 1)
+
     @property
     def output_dim(self) -> int:
         return self._output_dim
 
+    def _build_attention_net(self, n_classes: int) -> nn.Sequential:
+        fc: list[nn.Module] = [nn.Linear(self._input_dim, self._hidden_dim), nn.ReLU()]
+        if self._dropout > 0:
+            fc.append(nn.Dropout(self._dropout))
+        attn_cls = AttnNetGated if self._gated else AttnNet
+        fc.append(
+            attn_cls(
+                input_dim=self._hidden_dim,
+                attn_dim=self._attn_dim,
+                dropout=self._dropout,
+                n_classes=n_classes,
+            )
+        )
+        return nn.Sequential(*fc)
+
+    def _build_class_instance_classifiers(self, n_classes: int) -> nn.ModuleList:
+        return nn.ModuleList([nn.Linear(self._hidden_dim, 2) for _ in range(n_classes)])
+
     def configure_for_task(self, task_head) -> None:
         task_family = getattr(task_head, "task_family", "generic")
+        task_num_classes = getattr(task_head, "num_classes", None)
+        if task_num_classes is None:
+            task_num_classes = getattr(getattr(task_head, "fc", None), "out_features", None)
         if self.multi_branch:
             if task_family != "classification":
                 raise ValueError("clam_mb only supports classification tasks.")
+            if task_num_classes is None:
+                raise ValueError("clam_mb requires a classification head with num_classes.")
+            if task_num_classes != self.n_classes:
+                self.n_classes = int(task_num_classes)
+                self.attention_net = self._build_attention_net(self.n_classes)
+                self.class_instance_classifiers = self._build_class_instance_classifiers(
+                    self.n_classes
+                )
             self._resolved_instance_loss_mode = self._CLASSIFICATION_MODE
             return
 
@@ -165,14 +187,23 @@ class _CLAMBase(Aggregator):
                 "use_negative_class_instance_loss is only supported for classification CLAM."
             )
 
+        if inferred_mode == self._CLASSIFICATION_MODE:
+            if task_num_classes is None:
+                raise ValueError("classification CLAM requires a classification head with num_classes.")
+            if task_num_classes != self.n_classes:
+                self.n_classes = int(task_num_classes)
+                self.class_instance_classifiers = self._build_class_instance_classifiers(
+                    self.n_classes
+                )
+
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
         if self._resolved_instance_loss_mode is None:
             mode = self._CLASSIFICATION_MODE if self.multi_branch else self.instance_loss_mode
             self._resolved_instance_loss_mode = mode or self._CLASSIFICATION_MODE
-
-        A, H = self.attention_net(X)
         if X.ndim != 3:
             raise ValueError("CLAM aggregators expect batched input of shape (B, N, D)")
+
+        A, H = self.attention_net(X)
         A = torch.transpose(A, 2, 1)
         A_raw = A
         if mask is not None:

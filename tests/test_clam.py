@@ -77,6 +77,21 @@ class TestCLAMSB:
         model.configure_for_task(ClassificationHead(input_dim=4, num_classes=2))
         assert model._resolved_instance_loss_mode == "classification"
 
+    def test_configure_for_classification_syncs_num_classes(self):
+        from soma.aggregators.mil.clam import CLAM_SB
+
+        model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
+        model.configure_for_task(ClassificationHead(input_dim=4, num_classes=6))
+        out = model(torch.randn(2, 10, 8))
+        inst_loss = model.compute_instance_loss(
+            out.auxiliary["attention"],
+            out.auxiliary["embeddings"],
+            torch.tensor([0, 5]),
+        )
+        assert model.n_classes == 6
+        assert len(model.class_instance_classifiers) == 6
+        assert inst_loss.dim() == 0
+
     def test_configure_for_ordinal(self):
         from soma.aggregators.mil.clam import CLAM_SB
 
@@ -246,6 +261,15 @@ class TestCLAMMB:
         )
         assert inst_loss.dim() == 0
         assert inst_loss.item() >= 0
+
+    def test_configure_for_classification_syncs_num_classes(self):
+        from soma.aggregators.mil.clam import CLAM_MB
+
+        model = CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3)
+        model.configure_for_task(BranchAwareClassificationHead(input_dim=4, num_classes=6))
+        out = model(torch.randn(2, 10, 8))
+        assert model.n_classes == 6
+        assert out.bag_representation.shape == (2, 6, 4)
 
     def test_out_of_class_branch_uses_negative_only_helper(self):
         from soma.aggregators.mil.clam import CLAM_MB
