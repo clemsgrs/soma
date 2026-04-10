@@ -99,14 +99,14 @@ def _train_one_epoch_with_head(aggregator: Aggregator, head, feat_dim: int = 16,
     )
     loader = _FakeBagLoader(batches)
     config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
-    output_dir = Path("/tmp/test_trainer_aux")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    fold_dir = Path("/tmp/test_trainer_aux")
+    fold_dir.mkdir(parents=True, exist_ok=True)
     trainer = Trainer(
         model=model,
         train_loader=loader,
         tune_loader=loader,
         config=config,
-        output_dir=output_dir,
+        fold_dir=fold_dir,
         device=torch.device("cpu"),
     )
     return trainer._train_epoch()
