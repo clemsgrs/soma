@@ -53,7 +53,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/opt/app" \
             soma-ci:${{ github.sha }} \
-            bash -lc "python -m pytest -q tests -k 'not prism_slide_feature_matches_slide2vec_gt'"
+            bash -lc "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt --no-build-isolation '/opt/app[dev]' pytest pytest-cov && python -m pytest -q tests -k 'not prism_slide_feature_matches_slide2vec_gt'"
 
       - name: Guard required secret
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -73,4 +73,4 @@ jobs:
             -e SOMA_RUN_PRISM_REGRESSION="$SOMA_RUN_PRISM_REGRESSION" \
             -v "$GITHUB_WORKSPACE:/opt/app" \
             soma-ci:${{ github.sha }} \
-            bash -lc "python -m pytest -q tests/test_regression_fixtures.py -k prism_slide_feature_matches_slide2vec_gt"
+            bash -lc "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt --no-build-isolation '/opt/app[dev]' pytest pytest-cov && python -m pytest -q tests/test_regression_fixtures.py -k prism_slide_feature_matches_slide2vec_gt"

@@ -44,8 +44,20 @@ def test_docker_workflow_pushes_version_and_latest_tags_on_published_release():
     assert "docker push $IMAGE_BASE:latest" in push_step["run"]
 
 
-def test_ci_dockerfile_keeps_build_isolation_enabled_for_project_install():
+def test_ci_dockerfile_stays_generic_and_defers_project_install_to_runtime():
     dockerfile = _load_text("Dockerfile.ci")
+    workflow = _load_workflow(".github/workflows/pr-test.yaml")
 
-    assert '"/opt/app[dev]"' in dockerfile
+    assert 'COPY --chown=user:user soma /opt/app/soma' not in dockerfile
+    assert '"/opt/app[dev]"' not in dockerfile
     assert "--no-build-isolation" not in dockerfile
+
+    test_step = next(
+        step for step in workflow["jobs"]["docker-test"]["steps"] if step.get("name") == "Run full test suite in container"
+    )
+    prism_step = next(
+        step for step in workflow["jobs"]["docker-test"]["steps"] if step.get("name") == "Run PRISM regression in container"
+    )
+
+    assert "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt --no-build-isolation '/opt/app[dev]' pytest pytest-cov" in test_step["run"]
+    assert "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt --no-build-isolation '/opt/app[dev]' pytest pytest-cov" in prism_step["run"]
