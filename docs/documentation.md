@@ -5,9 +5,11 @@
 - The README now points to the repository's actual AGPL-3.0 license.
 - The README now highlights the layered API so users can extract features, train from a feature store, or run the full pipeline.
 - The cache docs now describe the full tiling-and-feature cache flow, including run-local stubs and shared cache directories.
+- Run-local extraction now keeps `tiling/` as a sibling of `features/` when using the `FeatureExtractor.run()` convenience path.
 - Evaluation metrics now import `sklearn.metrics` directly and no longer carry local fallback implementations for missing `sklearn` installs.
 - The output-layout module no longer carries an unused path-normalization helper.
 - Core modules now import `slide2vec`, `hs2p`, `yaml`, and `FeatureExtractor` directly at module scope instead of deferring those imports behind compatibility shims or function-local indirection.
+- HIPT runtime validation in `soma` now checks the encoder against resolved preprocessing tile geometry (`target_tile_size_px`, `target_spacing_um`) instead of hierarchical tiling artifacts, which expose region-size geometry through `requested_tile_size_px`.
 
 ## Output Root Design
 
@@ -394,8 +396,7 @@ Hierarchical/HIPT-style extraction uses the same runtime boundary and can run on
 
 ### CI Coverage
 
-The pull-request workflow now runs entirely inside `docker-test`. It builds `Dockerfile.ci` once, runs the broad in-container test suite, and then reuses that same image for the gated PRISM regression step. The PRISM step still runs only for same-repo PRs or non-PR dispatches and still requires `HF_TOKEN`.
-`Dockerfile.ci` keeps pip build isolation enabled for the project install so dependency sdists can provision their own build backends during CI image creation.
+The pull-request workflow now builds a reusable `Dockerfile.ci` base image and installs the repository package inside the test container at runtime. This keeps source changes from invalidating the expensive image build layers while preserving the same in-container test flow. The PRISM step still runs only for same-repo PRs or non-PR dispatches and still requires `HF_TOKEN`.
 
 ### Release Publishing
 

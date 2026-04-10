@@ -28,6 +28,8 @@ output/
 └── feature_cache/          # shared cache when cache is enabled
 ```
 
+When you use the `FeatureExtractor.run(feature_dir="output/features")` convenience form, `tiling/` is created as a sibling of `features/`, not nested inside it.
+
 ## Training Outputs
 
 `Pipeline.run()` resolves a managed run directory from a user-provided `output_root`.
