@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, SubgroupConfig, TaskConfig, TrainingConfig
+from soma.evaluation.metrics import compare_run_metrics
 from soma.evaluation.metrics import (
     _extract_arrays,
     compute_subgroup_metrics,
@@ -57,7 +58,6 @@ def _make_run_dir(
     tmp_path: Path,
     *,
     subgroup_columns: list[str] | None = None,
-    statistical_testing: bool = False,
     subgroup_metrics_data: dict | None = None,
 ) -> Path:
     """Build a synthetic run directory for reporting tests."""
@@ -73,7 +73,6 @@ def _make_run_dir(
             "metrics": ["auroc"],
             "subgroups": {
                 "columns": subgroup_columns or [],
-                "statistical_testing": statistical_testing,
             },
         },
         "encoder": None,
@@ -282,6 +281,7 @@ def test_subgroup_column_validation_raises_for_missing_column(tmp_path: Path) ->
             fold_split=fold_split,
             task=TaskConfig(name="binary_classification"),
             eval=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
+
             training=TrainingConfig(seed=0, epochs=1),
             fold_dir=tmp_path / "fold_0",
         )
@@ -351,7 +351,10 @@ def test_subgroup_metrics_json_saved_and_loaded(tmp_path: Path) -> None:
                 "M": {"auroc": 0.82, "n": 8},
                 "F": {"auroc": 0.91, "n": 8},
             }
-        }
+        },
+        "stats": {
+            "sex": {"M": {"auroc": 0.12}, "F": {"auroc": 0.12}},
+        },
     }
     run_dir = _make_run_dir(
         tmp_path,
@@ -398,27 +401,74 @@ def test_report_no_subgroup_section_when_not_configured(tmp_path: Path) -> None:
     assert "Subgroup Analysis" not in html
 
 
-def test_stats_panel_shown_only_when_stats_present(tmp_path: Path) -> None:
-    """Statistical testing panel appears only when stats data is present in fold data."""
-    sg_data_with_stats = {
-        "metrics": {"sex": {"M": {"auroc": 0.82, "n": 8}, "F": {"auroc": 0.91, "n": 8}}},
-        "stats": {"sex": {"M": {"auroc": 0.12}, "F": {"auroc": 0.12}}},
-    }
-    run_dir = _make_run_dir(
-        tmp_path, subgroup_columns=["sex"], subgroup_metrics_data=sg_data_with_stats
-    )
+def test_subgroup_section_contains_css_highlight_classes(tmp_path: Path) -> None:
+    """When subgroup data is present, the HTML report uses subgroup highlight CSS classes."""
+    run_dir = _make_run_dir(tmp_path, subgroup_columns=["sex"])
     html = generate_report(run_dir).read_text()
-    assert "permutation test" in html.lower()
+    # CSS classes for highlighting must be defined in the report
+    assert "subgroup-sig" in html or "subgroup-flag" in html or "subgroup-sig-small" in html
 
 
-def test_stats_panel_absent_without_stats(tmp_path: Path) -> None:
-    """Statistical testing panel is absent when subgroup_metrics.json has no 'stats' key."""
-    sg_data_no_stats = {
-        "metrics": {"sex": {"M": {"auroc": 0.82, "n": 8}, "F": {"auroc": 0.91, "n": 8}}},
-    }
-    run_dir = _make_run_dir(
-        tmp_path, subgroup_columns=["sex"], subgroup_metrics_data=sg_data_no_stats
-    )
-    html = generate_report(run_dir).read_text()
-    # No stats → no permutation test panel
-    assert "permutation test" not in html.lower()
+# ---------------------------------------------------------------------------
+# compare_run_metrics
+# ---------------------------------------------------------------------------
+
+
+def test_compare_run_metrics_returns_p_values() -> None:
+    """compare_run_metrics returns a p-value per run; best run gets 1.0."""
+    # Run 0 consistently better than run 1
+    run0 = [0.9, 0.88, 0.91, 0.89]
+    run1 = [0.7, 0.72, 0.68, 0.71]
+    p_values = compare_run_metrics([run0, run1], n_permutations=500, seed=0)
+
+    assert len(p_values) == 2
+    assert p_values[0] == 1.0  # best run
+    assert p_values[1] is not None
+    assert 0.0 <= p_values[1] <= 1.0
+
+
+def test_compare_run_metrics_significant_difference() -> None:
+    """A clearly better run produces a low p-value for the other run.
+
+    With 8 folds the minimum sign-permutation p-value is 2/2^8 ≈ 0.008,
+    well below 0.05 for a clear separation.
+    """
+    run0 = [0.95, 0.94, 0.96, 0.95, 0.94, 0.96, 0.95, 0.93]
+    run1 = [0.60, 0.61, 0.59, 0.62, 0.60, 0.58, 0.61, 0.63]
+    p_values = compare_run_metrics([run0, run1], n_permutations=500, seed=42)
+
+    assert p_values[1] < 0.05
+
+
+def test_compare_run_metrics_no_difference() -> None:
+    """Runs with identical performance produce a high p-value."""
+    vals = [0.80, 0.81, 0.79, 0.80, 0.82]
+    p_values = compare_run_metrics([vals, vals[:]], n_permutations=200, seed=42)
+
+    # Both identical → p-value should be high (≥ 0.05)
+    assert p_values[1] is not None
+    assert p_values[1] >= 0.05
+
+
+def test_compare_run_metrics_single_fold_returns_none() -> None:
+    """Single-fold runs cannot be tested; all p-values are None."""
+    p_values = compare_run_metrics([[0.85], [0.80]])
+    assert all(p is None for p in p_values)
+
+
+def test_compare_run_metrics_mismatched_folds_returns_none() -> None:
+    """Runs with different fold counts cannot be compared."""
+    p_values = compare_run_metrics([[0.8, 0.82], [0.7, 0.72, 0.71]])
+    assert all(p is None for p in p_values)
+
+
+def test_compare_run_metrics_three_runs() -> None:
+    """With 3 runs, best gets p=1.0; other two get a p-value."""
+    run0 = [0.95, 0.94, 0.96]  # best
+    run1 = [0.70, 0.71, 0.69]
+    run2 = [0.80, 0.81, 0.79]
+    p_values = compare_run_metrics([run0, run1, run2], n_permutations=200, seed=0)
+
+    assert len(p_values) == 3
+    assert p_values[0] == 1.0
+    assert all(p is None or 0.0 <= p <= 1.0 for p in p_values)

@@ -92,7 +92,6 @@ def test_eval_config_defaults():
     cfg = EvalConfig()
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
-    assert cfg.subgroups.statistical_testing is False
 
 
 def test_eval_config_metrics_explicit():
@@ -103,13 +102,11 @@ def test_eval_config_metrics_explicit():
 def test_subgroup_config_defaults():
     cfg = SubgroupConfig()
     assert cfg.columns == []
-    assert cfg.statistical_testing is False
 
 
 def test_subgroup_config_explicit():
-    cfg = SubgroupConfig(columns=["sex", "grade"], statistical_testing=True)
+    cfg = SubgroupConfig(columns=["sex", "grade"])
     assert cfg.columns == ["sex", "grade"]
-    assert cfg.statistical_testing is True
 
 
 def test_encoder_config_requires_name():
@@ -259,14 +256,13 @@ def test_eval_subgroups_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
         eval=EvalConfig(
             metrics=["auroc_macro"],
-            subgroups=SubgroupConfig(columns=["sex", "grade"], statistical_testing=True),
+            subgroups=SubgroupConfig(columns=["sex", "grade"]),
         )
     )
     yaml_path = tmp_path / "config.yaml"
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
     assert loaded.eval.subgroups.columns == ["sex", "grade"]
-    assert loaded.eval.subgroups.statistical_testing is True
 
 
 def test_load_config_with_tags(tmp_path: Path):

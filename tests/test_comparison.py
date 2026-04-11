@@ -59,7 +59,7 @@ def _make_run_dir(
         "splits_csv": "/data/splits.csv",
         "output_root": "/output",
         "task": {"name": "binary_classification", "params": {}},
-        "eval": {"metrics": metrics, "subgroups": {"columns": [], "statistical_testing": False}},
+        "eval": {"metrics": metrics, "subgroups": {"columns": []}},
         "encoder": None,
         "aggregator": {"name": aggregator, "params": {}},
         "training": {

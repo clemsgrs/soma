@@ -383,10 +383,8 @@ def train_one_fold(
         task_family = task.name
         resolved_metrics = resolve_metrics(task_family, eval.metrics)
         sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
-        sg_out: dict = {"metrics": sg_metrics}
-        if eval.subgroups.statistical_testing:
-            sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
-            sg_out["stats"] = sg_stats
+        sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
+        sg_out: dict = {"metrics": sg_metrics, "stats": sg_stats}
         (fold_dir / "subgroup_metrics.json").write_text(json.dumps(sg_out, indent=2))
 
     return FoldResult(

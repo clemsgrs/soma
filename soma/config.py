@@ -92,7 +92,6 @@ class SubgroupConfig:
     """Configuration for subgroup analysis."""
 
     columns: list[str] = field(default_factory=list)
-    statistical_testing: bool = False
 
 
 @dataclass(frozen=True)
@@ -205,9 +204,10 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig:
 def _load_eval_config(data: dict[str, Any]) -> EvalConfig:
     eval_data = data.get("eval", {})
     subgroup_data = eval_data.get("subgroups", {})
+    columns = subgroup_data.get("columns", []) if subgroup_data else []
     return EvalConfig(
         metrics=eval_data.get("metrics", []),
-        subgroups=SubgroupConfig(**subgroup_data) if subgroup_data else SubgroupConfig(),
+        subgroups=SubgroupConfig(columns=columns),
     )
 
 

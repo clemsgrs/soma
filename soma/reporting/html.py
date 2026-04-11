@@ -26,7 +26,7 @@ from soma.reporting.charts import (
     subgroup_metric_chart,
     subgroup_stats_heatmap,
 )
-from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats
+from soma.evaluation.metrics import compare_run_metrics, compute_subgroup_metrics, compute_subgroup_stats
 from soma.reporting.data import ComparisonData, RunData
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
@@ -247,18 +247,10 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
     sg_metrics = compute_subgroup_metrics(
         run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
     )
-
-    # Check if any fold has statistical testing results
-    has_stats = any(
-        fd.subgroup_metrics is not None and "stats" in (fd.subgroup_metrics or {})
-        for fd in run_data.folds
+    # Always compute stats from the concatenated predictions (more robust than per-fold)
+    sg_stats = compute_subgroup_stats(
+        run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
     )
-    sg_stats: dict | None = None
-    if has_stats:
-        # Recompute stats from the concatenated predictions (more robust than per-fold)
-        sg_stats = compute_subgroup_stats(
-            run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
-        )
 
     html_parts: list[str] = []
 
@@ -266,8 +258,12 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
         col_data = sg_metrics.get(col, {})
         if not col_data:
             continue
+        col_stats = sg_stats.get(col, {})
 
         # Table: groups × metrics
+        # Cell highlight classes:
+        #   subgroup-sig  — p < 0.05 AND deviation ≥ 10% (significant and large)
+        #   subgroup-flag — deviation ≥ 10% but not statistically significant
         header_cells = "<th>Group</th><th>n</th>" + "".join(
             f"<th>{m}</th>" for m in run_data.metrics
         )
@@ -282,15 +278,33 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
                     cells += "<td>—</td>"
                     continue
                 deviation = abs(val - overall_val) / max(abs(overall_val), 1e-9) if overall_val is not None else 0
-                css = " class=\"subgroup-flag\"" if deviation >= 0.10 else ""
-                cells += f"<td{css}>{val:.3f}</td>"
+                p_val = col_stats.get(group_val, {}).get(metric)
+                significant = p_val is not None and p_val < 0.05
+                large = deviation >= 0.10
+                if significant and large:
+                    css = " class=\"subgroup-sig\""
+                    tip = f" title=\"p={p_val:.3f}, Δ={deviation:.0%}\""
+                elif large:
+                    css = " class=\"subgroup-flag\""
+                    tip = f" title=\"Δ={deviation:.0%} (n.s.)\""
+                elif significant:
+                    css = " class=\"subgroup-sig-small\""
+                    tip = f" title=\"p={p_val:.3f}\""
+                else:
+                    css, tip = "", ""
+                cells += f"<td{css}{tip}>{val:.3f}</td>"
             rows_html += f"<tr>{cells}</tr>"
 
         table_html = f"""
 <table class="metrics-table">
   <thead><tr>{header_cells}</tr></thead>
   <tbody>{rows_html}</tbody>
-</table>"""
+</table>
+<p class="subgroup-legend">
+  <span class="legend-sig">■</span> p&lt;0.05 &amp; Δ≥10% &nbsp;
+  <span class="legend-flag">■</span> Δ≥10% (not significant) &nbsp;
+  <span class="legend-sig-small">■</span> p&lt;0.05 (small Δ)
+</p>"""
 
         # Bar charts (one per metric)
         chart_divs = "".join(
@@ -304,25 +318,7 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
 {table_html}
 <div class="chart-grid">{chart_divs}</div>""")
 
-    # Statistical testing panel (collapsible)
-    stats_html = ""
-    if sg_stats:
-        heatmap_div = _chart_div(
-            subgroup_stats_heatmap(sg_stats, run_data.subgroup_columns, run_data.metrics),
-            width="full",
-        )
-        stats_html = f"""
-<details>
-  <summary>Statistical significance (permutation test)</summary>
-  <p style="margin:0.5em 0;font-size:0.9em;color:#555;">
-    Two-sided permutation test (1000 iterations, seed=42). Each group is compared against
-    the rest of the test set. p&nbsp;&lt;&nbsp;0.05 indicates a statistically significant
-    performance gap. Groups with n&nbsp;&lt;&nbsp;10 are excluded.
-  </p>
-  {heatmap_div}
-</details>"""
-
-    inner = "\n".join(html_parts) + stats_html
+    inner = "\n".join(html_parts)
     return f"""
 <div class="section">
   <h2>Subgroup Analysis</h2>
@@ -511,33 +507,69 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
 
     rows_html = ""
     for metric in cd.metric_names:
-        # Collect mean value per run for best-highlighting
+        # Collect mean value and per-fold values per run
         means: list[float | None] = []
+        fold_values: list[list[float]] = []
         for run in cd.runs:
             mean_key = f"{metric}_mean"
             val = run.summary.get(mean_key)
             if val is None:
-                # Fall back to first fold's test metric
                 val = run.folds[0].test_metrics.get(metric) if run.folds else None
             means.append(val)
+            fold_values.append([
+                fd.test_metrics[metric]
+                for fd in run.folds
+                if metric in fd.test_metrics
+            ])
 
         valid_means = [v for v in means if v is not None]
         best_val = max(valid_means) if valid_means else None
 
+        # Statistical comparison: permutation test on per-fold metric values
+        p_values = compare_run_metrics(fold_values)
+
         cells = ""
-        for val in means:
+        for i, val in enumerate(means):
             if val is None:
                 cells += "<td>—</td>"
                 continue
             std_key = f"{metric}_std"
-            run_idx = means.index(val)
-            std = cd.runs[run_idx].summary.get(std_key)
+            std = cd.runs[i].summary.get(std_key)
             is_best = best_val is not None and abs(val - best_val) < 1e-9
-            cell_class = " class='best-val'" if is_best else ""
+            p_val = p_values[i]
+            sig_worse = (
+                not is_best
+                and p_val is not None
+                and p_val < 0.05
+            )
+            if is_best:
+                cell_class = " class='best-val'"
+                tip = ""
+            elif sig_worse:
+                cell_class = " class='sig-worse'"
+                tip = f" title='significantly worse than best (p={p_val:.3f})'"
+            else:
+                cell_class = ""
+                tip = f" title='p={p_val:.3f}'" if p_val is not None else ""
             std_str = f" ± {std:.4f}" if std is not None else ""
-            cells += f"<td{cell_class}><strong>{val:.4f}</strong>{std_str}</td>"
+            cells += f"<td{cell_class}{tip}><strong>{val:.4f}</strong>{std_str}</td>"
 
         rows_html += f"<tr><td class='metric-name'>{metric}</td>{cells}</tr>"
+
+    # Note when statistical comparison was not possible
+    all_fold_counts = [len(run.folds) for run in cd.runs]
+    stats_note = ""
+    if any(n < 2 for n in all_fold_counts):
+        stats_note = """
+  <p class="muted" style="margin-top:8px;font-size:12px;">
+    Statistical comparison requires ≥ 2 folds per run — not available for single-fold runs.
+  </p>"""
+    else:
+        stats_note = """
+  <p class="muted" style="margin-top:8px;font-size:12px;">
+    <span style="background:#f8d7da;padding:2px 6px;border-radius:3px;">■</span>
+    significantly worse than best run (p&lt;0.05, paired permutation test)
+  </p>"""
 
     return f"""
 <div class="section">
@@ -546,6 +578,7 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
     <thead>{header_row}</thead>
     <tbody>{rows_html}</tbody>
   </table>
+  {stats_note}
 </div>"""
 
 
@@ -595,7 +628,14 @@ def _comparison_css() -> str:
   margin-right: 6px;
 }
 .best-val { background: #d4edda; }
+.sig-worse { background: #f8d7da; }
+.subgroup-sig { background: #f8d7da; font-weight: 600; }
 .subgroup-flag { background: #fff3cd; font-weight: 600; }
+.subgroup-sig-small { background: #e8d5f5; }
+.subgroup-legend { font-size: 12px; color: #6c757d; margin-top: 6px; }
+.legend-sig { color: #f8d7da; text-shadow: 0 0 1px #666; }
+.legend-flag { color: #fff3cd; text-shadow: 0 0 1px #666; }
+.legend-sig-small { color: #e8d5f5; text-shadow: 0 0 1px #666; }
 .shared-cfg { margin-top: 16px; }
 .shared-cfg summary {
   cursor: pointer; color: #6c757d; font-size: 13px;
@@ -667,6 +707,11 @@ body {
 .chart-full  { flex: 1 1 100%; min-width: 0; }
 .chart-half  { flex: 1 1 calc(50% - 8px); min-width: 320px; }
 code { font-family: monospace; font-size: 12px; }
+/* Subgroup analysis */
+.subgroup-sig { background: #f8d7da; font-weight: 600; }
+.subgroup-flag { background: #fff3cd; font-weight: 600; }
+.subgroup-sig-small { background: #e8d5f5; }
+.subgroup-legend { font-size: 12px; color: #6c757d; margin-top: 6px; }
 @media (max-width: 768px) {
   .section { margin: 12px; padding: 16px; }
   .chart-half { flex: 1 1 100%; }

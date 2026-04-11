@@ -73,7 +73,7 @@ def _make_run_dir(
         "splits_csv": "/data/splits.csv",
         "output_root": "/output",
         "task": {"name": task_name, "params": {}},
-        "eval": {"metrics": metrics or [], "subgroups": {"columns": [], "statistical_testing": False}},
+        "eval": {"metrics": metrics or [], "subgroups": {"columns": []}},
         "encoder": None,
         "aggregator": {"name": "abmil", "params": {}},
         "training": {

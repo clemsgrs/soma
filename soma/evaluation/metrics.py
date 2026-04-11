@@ -263,6 +263,64 @@ def compute_metrics(
     return {name: funs[name](y_true, y_pred, y_prob) for name in metrics}
 
 
+def compare_run_metrics(
+    runs_fold_metrics: list[list[float]],
+    *,
+    n_permutations: int = 1000,
+    seed: int = 42,
+) -> list[float | None]:
+    """Permutation test comparing each run against the best run per metric.
+
+    Uses paired permutation on per-fold metric values. Requires all runs to
+    have at least 2 folds with the same fold count; otherwise returns None
+    for every run.
+
+    Args:
+        runs_fold_metrics: List of per-run fold metric lists, shape
+            (n_runs, n_folds). Each inner list must have the same length.
+        n_permutations: Number of permutation iterations.
+        seed: Random seed for reproducibility.
+
+    Returns:
+        List of p-values, one per run. The best run gets p-value 1.0
+        (it is its own reference). Returns [None, ...] when statistical
+        comparison is not possible (single-fold or mismatched fold counts).
+    """
+    n_runs = len(runs_fold_metrics)
+    if n_runs < 2:
+        return [None] * n_runs
+
+    fold_counts = [len(m) for m in runs_fold_metrics]
+    n_folds = fold_counts[0]
+    if n_folds < 2 or any(c != n_folds for c in fold_counts):
+        return [None] * n_runs
+
+    rng = np.random.default_rng(seed)
+    means = [float(np.mean(m)) for m in runs_fold_metrics]
+    best_idx = int(np.argmax(means))
+    best_folds = np.array(runs_fold_metrics[best_idx], dtype=float)
+
+    p_values: list[float | None] = []
+    for i, fold_vals in enumerate(runs_fold_metrics):
+        if i == best_idx:
+            p_values.append(1.0)
+            continue
+        other_folds = np.array(fold_vals, dtype=float)
+        diffs = best_folds - other_folds
+        observed_delta = abs(float(np.mean(diffs)))
+
+        # Sign permutation test: for each fold independently, randomly flip
+        # which run is labeled "best" vs "other".
+        null_deltas = np.empty(n_permutations)
+        for k in range(n_permutations):
+            signs = rng.choice([-1.0, 1.0], size=n_folds)
+            null_deltas[k] = abs(float(np.mean(signs * diffs)))
+
+        p_values.append(float(np.mean(null_deltas >= observed_delta)))
+
+    return p_values
+
+
 def _extract_arrays(
     df: pd.DataFrame,
     task_family: str,
