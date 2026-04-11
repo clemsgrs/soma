@@ -21,7 +21,7 @@ from soma.evaluation.metrics import (
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
 from soma.reporting.data import FoldData, RunData, run_data_from_result
-from soma.reporting.html import _deduplicate_predictions
+from soma.reporting.html import _aggregate_fold_predictions
 from soma.reporting.html import render_report
 from soma.training.trainer import EpochLog, TrainResult
 
@@ -411,11 +411,11 @@ def test_subgroup_section_contains_css_highlight_classes(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# _deduplicate_predictions
+# _aggregate_fold_predictions
 # ---------------------------------------------------------------------------
 
 
-def test_deduplicate_predictions_no_duplicates_unchanged() -> None:
+def test_aggregate_fold_predictions_no_duplicates_unchanged() -> None:
     """DataFrame with unique sample_ids passes through unmodified."""
     df = pd.DataFrame({
         "sample_id": ["s0", "s1"],
@@ -424,12 +424,12 @@ def test_deduplicate_predictions_no_duplicates_unchanged() -> None:
         "prob_0": [0.8, 0.3],
         "prob_1": [0.2, 0.7],
     })
-    result = _deduplicate_predictions(df)
+    result = _aggregate_fold_predictions(df)
     assert len(result) == 2
     assert list(result["sample_id"]) == ["s0", "s1"]
 
 
-def test_deduplicate_predictions_averages_probs() -> None:
+def test_aggregate_fold_predictions_averages_probs() -> None:
     """Duplicate rows for the same sample have their probs averaged."""
     df = pd.DataFrame({
         "sample_id": ["s0", "s0"],
@@ -438,13 +438,13 @@ def test_deduplicate_predictions_averages_probs() -> None:
         "prob_0": [0.8, 0.6],
         "prob_1": [0.2, 0.4],
     })
-    result = _deduplicate_predictions(df)
+    result = _aggregate_fold_predictions(df)
     assert len(result) == 1
     assert result["prob_0"].iloc[0] == pytest.approx(0.7)
     assert result["prob_1"].iloc[0] == pytest.approx(0.3)
 
 
-def test_deduplicate_predictions_recomputes_predicted_label() -> None:
+def test_aggregate_fold_predictions_recomputes_predicted_label() -> None:
     """predicted_label is recomputed as argmax of averaged probs."""
     df = pd.DataFrame({
         "sample_id": ["s0", "s0"],
@@ -453,24 +453,24 @@ def test_deduplicate_predictions_recomputes_predicted_label() -> None:
         "prob_0": [0.6, 0.3],        # fold 0: class 0 wins; fold 1: class 1 wins
         "prob_1": [0.4, 0.7],
     })
-    result = _deduplicate_predictions(df)
+    result = _aggregate_fold_predictions(df)
     # mean prob_0=0.45, mean prob_1=0.55 → argmax = 1
     assert result["predicted_label"].iloc[0] == 1
 
 
-def test_deduplicate_predictions_regression() -> None:
+def test_aggregate_fold_predictions_regression() -> None:
     """Regression predictions (predicted_value) are averaged across folds."""
     df = pd.DataFrame({
         "sample_id": ["s0", "s0"],
         "true_label": [3.0, 3.0],
         "predicted_value": [2.8, 3.2],
     })
-    result = _deduplicate_predictions(df)
+    result = _aggregate_fold_predictions(df)
     assert len(result) == 1
     assert result["predicted_value"].iloc[0] == pytest.approx(3.0)
 
 
-def test_deduplicate_predictions_preserves_subgroup_columns() -> None:
+def test_aggregate_fold_predictions_preserves_subgroup_columns() -> None:
     """Metadata columns (subgroup) are kept from the first occurrence."""
     df = pd.DataFrame({
         "sample_id": ["s0", "s0"],
@@ -480,7 +480,7 @@ def test_deduplicate_predictions_preserves_subgroup_columns() -> None:
         "prob_1": [0.3, 0.3],
         "sex": ["M", "M"],
     })
-    result = _deduplicate_predictions(df)
+    result = _aggregate_fold_predictions(df)
     assert result["sex"].iloc[0] == "M"
 
 

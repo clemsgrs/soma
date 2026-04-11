@@ -224,7 +224,7 @@ def _section_prediction_analysis(run_data: RunData) -> str:
 </div>"""
 
 
-def _deduplicate_predictions(df: pd.DataFrame) -> pd.DataFrame:
+def _aggregate_fold_predictions(df: pd.DataFrame) -> pd.DataFrame:
     """Deduplicate predictions for samples that appear in multiple folds.
 
     In fixed-holdout setups the same test set is used for every fold, so
@@ -271,7 +271,7 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
 
     # Aggregate all fold predictions. Deduplicate in case of a shared test set
     # (fixed-holdout setup where the same samples appear in every fold).
-    all_preds = _deduplicate_predictions(pd.concat(
+    all_preds = _aggregate_fold_predictions(pd.concat(
         [fd.predictions for fd in run_data.folds if not fd.predictions.empty],
         ignore_index=True,
     ))
