@@ -716,6 +716,45 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
     assert recorded.loc["s1", "feature_kind"] == "tile"
 
 
+def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+    )
+    cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
+    features_dir = cache_dir / "features"
+    features_dir.mkdir(parents=True)
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    resolution = SimpleNamespace(
+        metadata={
+            "sample_ids": ["s0", "s1"],
+            "empty_sample_ids": ["s1"],
+            "feature_rank": 2,
+            "feature_dim": 8,
+            "encoder_name": _TEST_TILE,
+            "execution": {"output_variant": "default"},
+            "cache_key": "abc123",
+        },
+        cache_dir=cache_dir,
+        features_dir=features_dir,
+        cache_kind="tile",
+        empty_sample_ids={"s1"},
+    )
+    torch.save(torch.ones(2, 8), features_dir / "s0.pt")
+
+    extractor._write_cached_process_list(feature_dir, cache_resolution=resolution)
+
+    recorded = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
+    assert recorded.loc["s0", "feature_status"] == "success"
+    assert recorded.loc["s0", "feature_path"].endswith("s0.pt")
+    assert recorded.loc["s1", "feature_status"] == "empty"
+    assert pd.isna(recorded.loc["s1", "feature_path"])
+
+
 def test_extract_suppresses_cucim_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(

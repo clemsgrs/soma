@@ -825,6 +825,28 @@ class TestPipeline:
         assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
         assert "auroc" in result.fold_results[0].test_report.metrics
 
+    def test_resolve_preprocessing_populates_hipt_geometry(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "output_resolve",
+            encoder=EncoderConfig(name="uni2"),
+            preprocessing=PreprocessingConfig(target_spacing_um=0.5),
+            aggregator=AggregatorConfig(name="hipt", params={"tile_multiple": 6}),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        pipeline = Pipeline(config, feature_dir=feature_dir)
+
+        resolved = pipeline._resolve_preprocessing()
+
+        assert resolved.target_tile_size_px == 224
+        assert resolved.effective_tile_size_px == 224
+        assert resolved.region_tile_multiple == 6
+        assert resolved.target_region_size_px == 1344
+        assert resolved.effective_region_size_px == 1344
+
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
         pytest.importorskip("soma.extraction")
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
