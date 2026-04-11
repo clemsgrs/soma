@@ -298,15 +298,18 @@ results = pipeline.run()
 ### Output Directory Structure
 
 ```
-output_dir/
-    config.yaml              # full PipelineConfig snapshot
+run_dir/
+    config.yaml                  # full PipelineConfig snapshot
+    run.yaml                     # run metadata (status, timestamps, git SHA, seed)
+    summary.json                 # aggregated metrics (mean ± std across folds)
+    report.html                  # self-contained HTML experiment report
     fold_0/
-        best_model.pt        # checkpoint
-        metrics.json          # tune + test metrics
-        predictions.csv       # per-sample predictions
+        best_model.pt            # checkpoint
+        metrics.json             # tune + test metrics
+        predictions.csv          # per-sample predictions
+        training_history.json    # epoch-by-epoch loss, metrics, and LR
     fold_1/
         ...
-    summary.json              # aggregated metrics (mean ± std across folds)
 ```
 
 ### Shared Feature Cache
@@ -553,6 +556,65 @@ The wheel is explicitly limited to the `soma` package so the published distribut
 
 ---
 
+## Reporting Module
+
+`soma.reporting` generates self-contained HTML experiment reports from completed run directories.
+
+### Training history
+
+Each fold now persists epoch-by-epoch training data to `fold_N/training_history.json`:
+
+```json
+[
+  {"epoch": 0, "train_loss": 0.69, "tune_loss": 0.71, "tune_metrics": {"auroc": 0.55}, "lr": 1e-4},
+  ...
+]
+```
+
+This is written automatically by `train_one_fold()` alongside `metrics.json` and `predictions.csv`.
+
+### Report generation
+
+Reports are generated automatically at the end of every `Pipeline.run()` and saved to `run_dir/report.html`. They can also be generated on demand from any completed run directory:
+
+```python
+from soma.reporting import generate_report, generate_report_from_result
+
+# From a saved run directory
+path = generate_report("/path/to/run_dir")
+
+# From an in-memory PipelineResult
+path = generate_report_from_result(result, config)
+```
+
+### Report contents
+
+The HTML report is fully self-contained (Plotly JS embedded, no network access required) and includes:
+
+- **Run header** — run ID, status badge, seed, timestamps, git SHA
+- **Configuration** — encoder, aggregator, task, training hyperparameters
+- **Test results table** — per-fold metrics and mean ± std across folds
+- **Training curves** — train/tune loss, one tune metric curve per user-requested metric, learning rate schedule; all folds overlaid on the same chart
+- **Prediction analysis** — task-aware:
+  - *Binary classification*: ROC curve (per-fold + pooled), PR curve (per-fold + pooled), confusion matrix (aggregated), score distributions
+  - *Multiclass classification*: macro-averaged ROC curve, confusion matrix, score distributions
+  - *Ordinal classification*: confusion matrix, score distributions
+  - *Regression*: predicted vs. actual scatter, residuals plot
+
+### Public API
+
+| Symbol | Description |
+|---|---|
+| `generate_report(run_dir, *, output_path=None)` | Generate report from disk |
+| `generate_report_from_result(result, config, *, output_path=None)` | Generate report from in-memory result |
+| `load_run_data(run_dir)` | Load all run artifacts into a `RunData` object |
+| `run_data_from_result(result, config)` | Convert in-memory result to `RunData` |
+| `render_report(run_data)` | Render `RunData` to an HTML string |
+| `RunData` | Dataclass holding config, metadata, summary, and per-fold data |
+| `FoldData` | Dataclass holding one fold's history, metrics, and predictions |
+
+---
+
 ## Configuration
 
 All configs are frozen dataclasses with YAML serialization:
@@ -589,6 +651,7 @@ config = load_config("config.yaml")
 | `soma.tasks.*` | TaskHead ABC, ClassificationHead |
 | `soma.training.*` | MILModel, BagDataset, Trainer, collation, seeding |
 | `soma.evaluation.*` | Metrics, EvaluationReport, SamplePrediction |
+| `soma.reporting` | `generate_report`, `generate_report_from_result`, `RunData`, `FoldData` |
 
 ## Active Design Decisions
 

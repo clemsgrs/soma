@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import json
 import csv
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -58,6 +58,7 @@ from soma.training.seed import seed_everything
 from soma.training.slide_dataset import SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel
 from soma.training.trainer import Trainer, TrainResult
+from soma.reporting import generate_report_from_result
 
 
 logger = logging.getLogger(__name__)
@@ -353,9 +354,10 @@ def train_one_fold(
         aggregator_name=aggregator.name if aggregator is not None else None,
     )
 
-    # Save metrics and predictions
+    # Save metrics, predictions, and training history
     _save_metrics(tune_report, test_report, fold_dir / "metrics.json")
     _save_predictions(test_report, fold_dir / "predictions.csv")
+    _save_training_history(train_result.history, fold_dir / "training_history.json")
 
     return FoldResult(
         fold=fold,
@@ -550,6 +552,13 @@ class Pipeline:
                     heatmap_config=self._config.heatmaps,
                     seg_downsample=self._config.preprocessing.seg_downsample,
                 )
+
+            try:
+                report_path = generate_report_from_result(result, self._config)
+                logger.info("Report saved to %s", report_path)
+            except Exception:
+                logger.warning("Report generation failed", exc_info=True)
+
         except Exception as exc:
             failed_metadata = run_metadata.with_updates(
                 status="failed",
@@ -735,6 +744,11 @@ def _save_metrics(
         "tune": tune_report.metrics,
         "test": test_report.metrics,
     }
+    path.write_text(json.dumps(data, indent=2))
+
+
+def _save_training_history(history: list, path: Path) -> None:
+    data = [asdict(log) for log in history]
     path.write_text(json.dumps(data, indent=2))
 
 

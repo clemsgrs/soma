@@ -35,6 +35,7 @@ dependencies = [
     "safetensors",
     "transformers",
     "slide2vec[fm]>=4.1.0",
+    "plotly>=5.0",
 ]
 
 [project.urls]
