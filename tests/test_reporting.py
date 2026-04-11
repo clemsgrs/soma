@@ -32,6 +32,8 @@ def _make_training_history(n_epochs: int = 5) -> list[dict]:
             "tune_loss": 0.75 - i * 0.04,
             "tune_metrics": {"auroc": 0.5 + i * 0.05, "balanced_accuracy": 0.5 + i * 0.03},
             "lr": 1e-4,
+            "elapsed_seconds": 12.5 * (i + 1),
+            "avg_epoch_seconds": 12.5,
         }
         for i in range(n_epochs)
     ]
@@ -145,10 +147,22 @@ def test_save_training_history(tmp_path: Path) -> None:
     from soma.pipeline import _save_training_history
 
     history = [
-        EpochLog(epoch=0, train_loss=0.8, tune_loss=0.75,
-                 tune_metrics={"auroc": 0.55}, lr=1e-4),
-        EpochLog(epoch=1, train_loss=0.6, tune_loss=0.60,
-                 tune_metrics={"auroc": 0.70}, lr=9e-5),
+        EpochLog(
+            epoch=0,
+            train_loss=0.8,
+            tune_loss=0.75,
+            tune_metrics={"auroc": 0.55},
+            lr=1e-4,
+            elapsed_seconds=12.5,
+            avg_epoch_seconds=12.5,
+        ),
+        EpochLog(
+            epoch=1,
+            train_loss=0.6,
+            tune_loss=0.60,
+            tune_metrics={"auroc": 0.70},
+            lr=9e-5,
+        ),
     ]
     path = tmp_path / "training_history.json"
     _save_training_history(history, path)
@@ -161,6 +175,8 @@ def test_save_training_history(tmp_path: Path) -> None:
         "tune_loss": 0.75,
         "tune_metrics": {"auroc": 0.55},
         "lr": 1e-4,
+        "elapsed_seconds": 12.5,
+        "avg_epoch_seconds": 12.5,
     }
     assert data[1]["epoch"] == 1
     assert data[1]["tune_metrics"] == {"auroc": 0.70}
@@ -181,6 +197,8 @@ def test_load_run_data_binary(tmp_path: Path) -> None:
     assert run_data.folds[0].fold == 0
     assert len(run_data.folds[0].training_history) == 5
     assert run_data.folds[0].training_history[0]["epoch"] == 0
+    assert "elapsed_seconds" in run_data.folds[0].training_history[0]
+    assert "avg_epoch_seconds" in run_data.folds[0].training_history[0]
     assert "auroc" in run_data.folds[0].tune_metrics
     assert "prob_1" in run_data.folds[0].predictions.columns
 
@@ -227,8 +245,17 @@ def test_load_run_data_uses_user_metrics(tmp_path: Path) -> None:
 
 def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
     """Build a minimal mock PipelineResult and PipelineConfig."""
-    history = [EpochLog(epoch=0, train_loss=0.7, tune_loss=0.65,
-                        tune_metrics={"auroc": 0.6}, lr=1e-4)]
+    history = [
+        EpochLog(
+            epoch=0,
+            train_loss=0.7,
+            tune_loss=0.65,
+            tune_metrics={"auroc": 0.6},
+            lr=1e-4,
+            elapsed_seconds=12.5,
+            avg_epoch_seconds=12.5,
+        )
+    ]
     train_result = TrainResult(
         best_epoch=0,
         best_tune_loss=0.65,
@@ -290,6 +317,8 @@ def test_run_data_from_result(tmp_path: Path) -> None:
     fd = run_data.folds[0]
     assert len(fd.training_history) == 1
     assert fd.training_history[0]["epoch"] == 0
+    assert "elapsed_seconds" in fd.training_history[0]
+    assert "avg_epoch_seconds" in fd.training_history[0]
     assert fd.tune_metrics == {"auroc": 0.65}
     assert fd.test_metrics == {"auroc": 0.60}
     assert "prob_1" in fd.predictions.columns
@@ -322,6 +351,17 @@ def test_generate_report_contains_key_sections(tmp_path: Path) -> None:
     assert "Test Results" in html
     assert "Training Curves" in html
     assert "Prediction Analysis" in html
+
+
+def test_generate_report_includes_training_timing_summary(tmp_path: Path) -> None:
+    """The generated HTML surfaces the persisted training timing fields."""
+    run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
+    html = generate_report(run_dir).read_text()
+
+    assert "Training Timing" in html
+    assert "Elapsed" in html
+    assert "Average epoch" in html
+    assert "<th>ETA</th>" not in html
 
 
 def test_generate_report_regression(tmp_path: Path) -> None:

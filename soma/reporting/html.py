@@ -48,6 +48,7 @@ def render_report(run_data: RunData) -> str:
     sections.append(_section_header(run_data))
     sections.append(_section_config(run_data))
     sections.append(_section_results_summary(run_data))
+    sections.append(_section_training_timing(run_data))
     sections.append(_section_training_curves(run_data))
     sections.append(_section_prediction_analysis(run_data))
     sections.append(_section_subgroup_analysis(run_data))
@@ -153,6 +154,33 @@ def _section_results_summary(run_data: RunData) -> str:
   <table class="results-table">
     <thead>{header_row}</thead>
     <tbody>{rows_html}</tbody>
+  </table>
+</div>"""
+
+
+def _section_training_timing(run_data: RunData) -> str:
+    rows: list[str] = []
+    for fd in run_data.folds:
+        if not fd.training_history:
+            continue
+        final = fd.training_history[-1]
+        rows.append(
+            "<tr>"
+            f"<td>Fold {fd.fold}</td>"
+            f"<td>{_format_duration_cell(final.get('elapsed_seconds'))}</td>"
+            f"<td>{_format_duration_cell(final.get('avg_epoch_seconds'))}</td>"
+            "</tr>"
+        )
+
+    if not rows:
+        return ""
+
+    return f"""
+<div class="section">
+  <h2>Training Timing</h2>
+  <table class="results-table">
+    <thead><tr><th>Fold</th><th>Elapsed</th><th>Average epoch</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
   </table>
 </div>"""
 
@@ -349,6 +377,18 @@ def _chart_div(fig: go.Figure, *, width: str = "full") -> str:
 
 def _run_id(run_data: RunData) -> str:
     return run_data.run_metadata.get("run_id") or "—"
+
+
+def _format_duration_cell(value: object) -> str:
+    if value is None:
+        return "—"
+    try:
+        total_seconds = max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return "—"
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
 def _config_rows(cfg: dict) -> list[tuple[str, str]]:

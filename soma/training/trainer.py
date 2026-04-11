@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -28,6 +29,9 @@ class EpochLog:
     tune_loss: float
     tune_metrics: dict[str, float]
     lr: float
+    elapsed_seconds: float | None = None
+    avg_epoch_seconds: float | None = None
+    eta_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,7 @@ class Trainer:
         self._fold_dir = Path(fold_dir)
         self._device = device
         self._console = console
+        self._trainable_param_count = _count_trainable_parameters(self._model)
 
         self._optimizer = _build_optimizer(model, config)
         self._scheduler = _build_scheduler(self._optimizer, config)
@@ -93,6 +98,7 @@ class Trainer:
         best_epoch = 0
         best_tune_metrics: dict[str, float] = {}
         patience_counter = 0
+        started_at = time.perf_counter()
 
         console = self._console or Console()
         current_log: EpochLog | None = None
@@ -100,7 +106,11 @@ class Trainer:
         current_status = "waiting for epoch 1"
         current_batch_progress: str | None = None
 
+        current_avg_epoch_seconds: float | None = None
+        current_eta_seconds: float | None = None
+
         def render_panel() -> None:
+            elapsed_seconds = time.perf_counter() - started_at
             live.update(
                 _build_training_panel(
                     title="Training progress",
@@ -113,6 +123,10 @@ class Trainer:
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
                     status=current_status,
+                    trainable_param_count=self._trainable_param_count,
+                    elapsed_seconds=elapsed_seconds,
+                    avg_epoch_seconds=current_avg_epoch_seconds,
+                    eta_seconds=current_eta_seconds,
                     batch_progress=current_batch_progress,
                 ),
                 refresh=True,
@@ -130,6 +144,10 @@ class Trainer:
                 patience_counter=patience_counter,
                 patience_limit=self._config.patience,
                 status="waiting for epoch 1",
+                trainable_param_count=self._trainable_param_count,
+                elapsed_seconds=0.0,
+                avg_epoch_seconds=None,
+                eta_seconds=None,
                 batch_progress=None,
             ),
             console=console,
@@ -164,12 +182,23 @@ class Trainer:
                 if self._scheduler is not None:
                     self._scheduler.step()
 
+                elapsed_seconds = time.perf_counter() - started_at
+                completed_epochs = len(history) + 1
+                avg_epoch_seconds = elapsed_seconds / completed_epochs
+                remaining_epochs = max(self._config.epochs - completed_epochs, 0)
+                eta_seconds = avg_epoch_seconds * remaining_epochs
+                current_avg_epoch_seconds = avg_epoch_seconds
+                current_eta_seconds = eta_seconds
+
                 current_log = log = EpochLog(
                     epoch=epoch,
                     train_loss=train_loss,
                     tune_loss=tune_loss,
                     tune_metrics=tune_metrics,
                     lr=lr,
+                    elapsed_seconds=elapsed_seconds,
+                    avg_epoch_seconds=avg_epoch_seconds,
+                    eta_seconds=eta_seconds,
                 )
                 history.append(log)
 
@@ -196,6 +225,7 @@ class Trainer:
 
             current_subtitle = "complete"
             current_status = "training complete"
+            elapsed_seconds = time.perf_counter() - started_at
             live.update(
                 _build_training_panel(
                     title="Training progress",
@@ -208,6 +238,10 @@ class Trainer:
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
                     status=current_status,
+                    trainable_param_count=self._trainable_param_count,
+                    elapsed_seconds=elapsed_seconds,
+                    avg_epoch_seconds=current_avg_epoch_seconds,
+                    eta_seconds=current_eta_seconds,
                     batch_progress=current_batch_progress,
                 ),
                 refresh=True,
@@ -352,6 +386,19 @@ def _save_checkpoint(
     )
 
 
+def _epoch_log_to_dict(log: EpochLog) -> dict[str, object]:
+    data = {
+        "epoch": log.epoch,
+        "train_loss": log.train_loss,
+        "tune_loss": log.tune_loss,
+        "tune_metrics": log.tune_metrics,
+        "lr": log.lr,
+        "elapsed_seconds": log.elapsed_seconds,
+        "avg_epoch_seconds": log.avg_epoch_seconds,
+    }
+    return {key: value for key, value in data.items() if value is not None}
+
+
 def _build_training_panel(
     *,
     title: str,
@@ -364,6 +411,10 @@ def _build_training_panel(
     patience_counter: int,
     patience_limit: int,
     status: str,
+    trainable_param_count: int | None = None,
+    elapsed_seconds: float | None = None,
+    avg_epoch_seconds: float | None = None,
+    eta_seconds: float | None = None,
     batch_progress: str | None = None,
 ) -> Panel:
     table = Table.grid(padding=(0, 1))
@@ -383,6 +434,9 @@ def _build_training_panel(
         table.add_row("tune", Text("-", style="dim"))
         table.add_row("lr", Text("-", style="dim"))
 
+    if trainable_param_count is not None:
+        table.add_row("trainable params", Text(f"{trainable_param_count:,}", style="white"))
+
     if batch_progress is not None:
         table.add_row("batch", Text(batch_progress, style="white"))
 
@@ -397,6 +451,8 @@ def _build_training_panel(
         table.add_row("best metrics", Text(best_metrics_text, style="green"))
     table.add_row("patience", Text(f"{patience_counter}/{patience_limit}", style="white"))
     table.add_row("status", Text(status, style="bold yellow" if "best" not in status else "bold green"))
+    table.add_row("elapsed", Text(_format_elapsed_with_eta(elapsed_seconds, eta_seconds), style="white"))
+    table.add_row("epoch avg", Text(_format_optional_duration(avg_epoch_seconds), style="white"))
 
     return Panel.fit(
         table,
@@ -424,6 +480,27 @@ def _format_metrics(metrics: dict[str, float]) -> str:
 
 def _format_finite(value: float) -> str:
     return f"{value:.4f}" if np.isfinite(value) else "n/a"
+
+
+def _format_elapsed_seconds(elapsed_seconds: float) -> str:
+    total_seconds = max(0, int(elapsed_seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _format_optional_duration(value: float | None) -> str:
+    return _format_elapsed_seconds(value) if value is not None else "n/a"
+
+
+def _format_elapsed_with_eta(elapsed_seconds: float | None, eta_seconds: float | None) -> str:
+    elapsed_text = _format_optional_duration(elapsed_seconds)
+    eta_text = _format_optional_duration(eta_seconds)
+    return f"{elapsed_text} [ETA {eta_text}]"
+
+
+def _count_trainable_parameters(model: torch.nn.Module) -> int:
+    return sum(param.numel() for param in model.parameters() if param.requires_grad)
 
 
 def _format_batch_progress(current_batch: int, total_batches: int, *, phase: str) -> str:

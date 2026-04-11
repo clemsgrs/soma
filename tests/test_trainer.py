@@ -101,6 +101,10 @@ class TestTrainer:
             patience_counter=0,
             patience_limit=10,
             status="new best model saved at epoch 1",
+            trainable_param_count=34,
+            elapsed_seconds=65.4,
+            avg_epoch_seconds=12.3,
+            eta_seconds=490.2,
             batch_progress=_format_batch_progress(3, 10, phase="train"),
         )
 
@@ -109,12 +113,27 @@ class TestTrainer:
         console = Console(file=buffer, force_terminal=False, color_system=None, width=120, record=True)
         console.print(panel)
         rendered = console.export_text(clear=False)
+        lines = rendered.splitlines()
+        status_idx = next(i for i, line in enumerate(lines) if "status" in line)
+        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
+        avg_idx = next(i for i, line in enumerate(lines) if "epoch avg" in line)
+        elapsed_line = lines[elapsed_idx]
         assert "epoch" in rendered
         assert "train" in rendered
         assert "tune" in rendered
         assert "batch" in rendered
+        assert "trainable params" in rendered
+        assert "34" in rendered
+        assert "elapsed" in rendered
+        assert "epoch avg" in rendered
+        assert "[ETA" in elapsed_line
+        assert "00:01:05" in rendered
+        assert "00:00:12" in rendered
+        assert "00:08:10" in rendered
         assert "03/10" in rendered
         assert "best_model.pt" not in rendered
+        assert elapsed_idx > status_idx
+        assert avg_idx > elapsed_idx
 
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
@@ -163,14 +182,25 @@ class TestTrainer:
         result = trainer.fit()
 
         output = buffer.getvalue()
+        lines = output.splitlines()
+        status_idx = next(i for i, line in enumerate(lines) if "status" in line)
+        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
+        avg_idx = next(i for i, line in enumerate(lines) if "epoch avg" in line)
+        elapsed_line = lines[elapsed_idx]
         assert "Training progress" in output
         assert "epoch" in output
         assert "train" in output and "tune" in output
+        assert "trainable params" in output
+        assert "elapsed" in output
+        assert "epoch avg" in output
+        assert "[ETA" in elapsed_line
         assert "batch" in output
         assert "best_model.pt" not in output
         assert "auroc" in output and "bal" in output and "f1" in output
         assert "new best checkpoint" in output or "training complete" in output
         assert result.history[-1].epoch == len(result.history) - 1
+        assert elapsed_idx > status_idx
+        assert avg_idx > elapsed_idx
 
     def test_loss_decreases(self, tmp_path: Path):
         """Training loss should decrease over epochs on synthetic data."""
