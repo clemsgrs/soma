@@ -37,6 +37,12 @@
 - [x] Update `docs/documentation.md` with the parameter count note.
 - [x] Run focused trainer tests and confirm the panel renders correctly.
 
+# Parameter Label
+
+- [x] Rename the live parameter row to `# params`.
+- [x] Update tests and docs to match the shorter label.
+- [x] Run focused trainer tests and confirm the label change renders correctly.
+
 # Timing Layout
 
 - [x] Put ETA inline with elapsed time in the live training panel.

@@ -3,7 +3,7 @@
 ## Training UX
 
 - The training progress live panel now shows epoch, loss, learning rate, tune metrics, patience, and status without rendering the checkpoint file path.
-- The live panel also shows the number of trainable parameters for the model.
+- The live panel also shows the number of trainable parameters for the model as `# params`.
 - The live panel now also shows average epoch time below the status row, and total elapsed training time with ETA inline on the next row, so long runs have at-a-glance duration readouts.
 - Saved `fold_N/training_history.json` entries persist elapsed and average epoch time, and the HTML report shows those values in a dedicated training timing section. ETA remains live-only.
 - Checkpoint files are still written and returned via `TrainResult.checkpoint_path`; the UX change only removes the path from the live progress display.

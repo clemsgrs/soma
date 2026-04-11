@@ -435,7 +435,7 @@ def _build_training_panel(
         table.add_row("lr", Text("-", style="dim"))
 
     if trainable_param_count is not None:
-        table.add_row("trainable params", Text(f"{trainable_param_count:,}", style="white"))
+        table.add_row("# params", Text(f"{trainable_param_count:,}", style="white"))
 
     if batch_progress is not None:
         table.add_row("batch", Text(batch_progress, style="white"))

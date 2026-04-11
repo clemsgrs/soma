@@ -122,7 +122,7 @@ class TestTrainer:
         assert "train" in rendered
         assert "tune" in rendered
         assert "batch" in rendered
-        assert "trainable params" in rendered
+        assert "# params" in rendered
         assert "34" in rendered
         assert "elapsed" in rendered
         assert "epoch avg" in rendered
@@ -190,7 +190,7 @@ class TestTrainer:
         assert "Training progress" in output
         assert "epoch" in output
         assert "train" in output and "tune" in output
-        assert "trainable params" in output
+        assert "# params" in output
         assert "elapsed" in output
         assert "epoch avg" in output
         assert "[ETA" in elapsed_line
