@@ -224,16 +224,57 @@ def _section_prediction_analysis(run_data: RunData) -> str:
 </div>"""
 
 
+def _deduplicate_predictions(df: pd.DataFrame) -> pd.DataFrame:
+    """Deduplicate predictions for samples that appear in multiple folds.
+
+    In fixed-holdout setups the same test set is used for every fold, so
+    concatenating fold predictions produces duplicate rows. We resolve this by
+    averaging numeric prediction columns across folds and recomputing
+    predicted_label from the averaged values:
+    - prob_* columns (classification) → mean, then argmax for predicted_label
+    - raw_score (ordinal) → mean, predicted_label = round(mean raw_score)
+    - predicted_value (regression) → mean
+    Metadata columns (true_label, subgroup columns) are deterministic across
+    folds and are taken from the first occurrence.
+    """
+    if not df["sample_id"].duplicated().any():
+        return df
+
+    prob_cols = sorted(c for c in df.columns if c.startswith("prob_"))
+    fixed_cols = [
+        c for c in df.columns
+        if c not in {"sample_id", "predicted_label", "predicted_value", "raw_score"}
+        and not c.startswith("prob_")
+    ]
+    agg: dict = {c: "first" for c in fixed_cols}
+    for c in prob_cols:
+        agg[c] = "mean"
+    if "predicted_value" in df.columns:
+        agg["predicted_value"] = "mean"
+    if "raw_score" in df.columns:
+        agg["raw_score"] = "mean"
+
+    result = df.groupby("sample_id", sort=False).agg(agg).reset_index()
+
+    if prob_cols:
+        result["predicted_label"] = result[prob_cols].to_numpy().argmax(axis=1)
+    elif "raw_score" in result.columns:
+        result["predicted_label"] = result["raw_score"].round().astype(int)
+
+    return result
+
+
 def _section_subgroup_analysis(run_data: RunData) -> str:
     """Subgroup analysis section — only rendered when subgroup columns are configured."""
     if not run_data.subgroup_columns:
         return ""
 
-    # Aggregate all fold predictions into one DataFrame for robust estimates.
-    all_preds = pd.concat(
+    # Aggregate all fold predictions. Deduplicate in case of a shared test set
+    # (fixed-holdout setup where the same samples appear in every fold).
+    all_preds = _deduplicate_predictions(pd.concat(
         [fd.predictions for fd in run_data.folds if not fd.predictions.empty],
         ignore_index=True,
-    )
+    ))
     if all_preds.empty:
         return ""
 
