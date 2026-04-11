@@ -1055,6 +1055,86 @@ def resolve_hierarchical_cache(
     )
 
 
+def build_tile_dataset_cache_key(
+    *,
+    dataset: Dataset,
+    tile_encoder_name: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+) -> str:
+    """Build a cache key for tile-dataset features (no preprocessing, 1D output)."""
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "tile_dataset",
+        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
+        "tile_encoder_name": tile_encoder_name,
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
+def _build_tile_dataset_cache_metadata(
+    *,
+    dataset: Dataset,
+    tile_encoder_name: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+) -> dict[str, Any]:
+    key = build_tile_dataset_cache_key(
+        dataset=dataset,
+        tile_encoder_name=tile_encoder_name,
+        execution=execution,
+        output_variant=output_variant,
+    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "tile_dataset",
+        "cache_key": key,
+        "encoder_name": tile_encoder_name,
+        "encoder_level": "tile",
+        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
+        "sample_ids": sorted(dataset.sample_ids),
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            output_variant=output_variant,
+        ),
+        "feature_rank": 1,
+        "feature_dim": None,
+    }
+
+
+def resolve_tile_dataset_cache(
+    *,
+    cache_root: Path,
+    dataset: Dataset,
+    tile_encoder_name: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+    complete_state: str = "hit",
+) -> FeatureCacheResolution:
+    """Resolve the feature cache for a tile-image dataset (1D features, no WSI tiling)."""
+    metadata = _build_tile_dataset_cache_metadata(
+        dataset=dataset,
+        tile_encoder_name=tile_encoder_name,
+        execution=execution,
+        output_variant=output_variant,
+    )
+    return _resolve_cache(
+        cache_root=cache_root,
+        cache_kind="tile_dataset",
+        key=metadata["cache_key"],
+        metadata=metadata,
+        manifest_rows=dataset_manifest_rows(dataset),
+        initial_reason="initializing",
+        complete_state=complete_state,
+    )
+
+
 def record_feature_dim(resolution: FeatureCacheResolution, feature_dim: int) -> None:
     metadata = dict(resolution.metadata)
     metadata["feature_dim"] = int(feature_dim)

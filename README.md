@@ -116,6 +116,7 @@ config = PipelineConfig(
     dataset_csv="dataset.csv",
     splits_csv="splits.csv",
     output_root="output",
+    dataset_type="slide",
     encoder=EncoderConfig(name="uni2"),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
     task=TaskConfig(name="classification"),

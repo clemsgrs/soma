@@ -388,6 +388,7 @@ def test_save_attention_skips_no_attention_aggregator(tmp_path):
         dataset_csv=tmp_path / "dataset.csv",
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "out",
+        dataset_type="slide",
         aggregator=AggregatorConfig(name="meanpool"),
         task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
     )
@@ -412,6 +413,7 @@ def test_save_attention_skips_slide_level_features(tmp_path):
         dataset_csv=tmp_path / "dataset.csv",
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "out",
+        dataset_type="slide",
         aggregator=AggregatorConfig(name="abmil"),
         task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
     )

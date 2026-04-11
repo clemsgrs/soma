@@ -43,6 +43,7 @@ def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
         dataset_csv=dataset_csv,
         splits_csv=splits_csv,
         output_root=tmp_path / "outputs",
+        dataset_type="slide",
         preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(),
         encoder=EncoderConfig(name="uni2"),

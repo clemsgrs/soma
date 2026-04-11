@@ -296,6 +296,7 @@ def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
         dataset_csv="/data/dataset.csv",
         splits_csv="/data/splits.csv",
         output_root="/output",
+        dataset_type="slide",
         task=TaskConfig(name="binary_classification"),
         eval=EvalConfig(metrics=["auroc"]),
         training=TrainingConfig(seed=42),
