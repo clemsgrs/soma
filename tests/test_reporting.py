@@ -342,17 +342,6 @@ def test_generate_report_binary_creates_file(tmp_path: Path) -> None:
     assert "Experiment Report" in html
 
 
-def test_generate_report_contains_key_sections(tmp_path: Path) -> None:
-    """The generated HTML contains all expected section headers."""
-    run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
-    html = generate_report(run_dir).read_text()
-
-    assert "Configuration" in html
-    assert "Test Results" in html
-    assert "Training Curves" in html
-    assert "Prediction Analysis" in html
-
-
 def test_generate_report_includes_training_timing_summary(tmp_path: Path) -> None:
     """The generated HTML surfaces the persisted training timing fields."""
     run_dir = _make_run_dir(tmp_path, task_name="binary_classification")

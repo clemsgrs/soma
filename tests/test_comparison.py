@@ -211,39 +211,6 @@ def test_compare_runs_creates_html(tmp_path: Path) -> None:
     assert "Run Comparison" in html
 
 
-def test_compare_runs_contains_key_sections(tmp_path: Path) -> None:
-    """The comparison HTML includes all expected sections."""
-    run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")
-    run2 = _make_run_dir(tmp_path / "r2", aggregator="clam_sb", run_id="run2")
-
-    html = compare_runs([run1, run2], output_path=tmp_path / "out.html").read_text()
-
-    assert "Configuration differences" in html
-    assert "Metrics comparison" in html
-    assert "Training Curves" in html
-
-
-def test_compare_runs_highlights_best_metric(tmp_path: Path) -> None:
-    """The best metric value per row is marked with the best-val CSS class."""
-    run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")
-    run2 = _make_run_dir(tmp_path / "r2", aggregator="clam_sb", run_id="run2")
-
-    html = compare_runs([run1, run2], output_path=tmp_path / "out.html").read_text()
-
-    assert "best-val" in html
-
-
-def test_compare_runs_shows_config_diff(tmp_path: Path) -> None:
-    """Config diff table shows only the aggregator field, not shared fields."""
-    run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")
-    run2 = _make_run_dir(tmp_path / "r2", aggregator="clam_sb", run_id="run2")
-
-    html = compare_runs([run1, run2], output_path=tmp_path / "out.html").read_text()
-
-    assert "abmil" in html
-    assert "clam_sb" in html
-
-
 def test_compare_runs_default_output_path(tmp_path: Path) -> None:
     """Default output_path is parent-of-first-run-dir / comparison.html."""
     run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")

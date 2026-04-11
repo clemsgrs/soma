@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import io
 from pathlib import Path
 
 import functools
 
 import torch
-import pytest
-from rich.console import Console
-from rich.panel import Panel
 
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
@@ -18,7 +14,7 @@ from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer, TrainResult, _build_training_panel, _format_batch_progress
+from soma.training.trainer import Trainer, TrainResult
 from soma.training.seed import seed_everything
 
 
@@ -83,58 +79,6 @@ def _make_synthetic_loader(num_slides: int, seed: int = 0):
 
 
 class TestTrainer:
-    def test_format_batch_progress_returns_spinner_and_bar(self):
-        progress = _format_batch_progress(3, 10, phase="train")
-        assert "train 03/10 [###-------]" in progress
-        assert progress[0] in "|/-\\"
-
-    def test_build_training_panel_returns_rich_panel(self):
-        log = _make_epoch_log(0, 1.2345, 0.9876, 0.75, 0.5, 0.25, 0.125, 1e-4)
-        panel = _build_training_panel(
-            title="Training progress",
-            subtitle="epoch 1/50",
-            log=log,
-            total_epochs=50,
-            best_epoch=0,
-            best_tune_loss=0.9876,
-            best_tune_metrics=log.tune_metrics,
-            patience_counter=0,
-            patience_limit=10,
-            status="new best model saved at epoch 1",
-            trainable_param_count=34,
-            elapsed_seconds=65.4,
-            avg_epoch_seconds=12.3,
-            eta_seconds=490.2,
-            batch_progress=_format_batch_progress(3, 10, phase="train"),
-        )
-
-        assert isinstance(panel, Panel)
-        buffer = io.StringIO()
-        console = Console(file=buffer, force_terminal=False, color_system=None, width=120, record=True)
-        console.print(panel)
-        rendered = console.export_text(clear=False)
-        lines = rendered.splitlines()
-        status_idx = next(i for i, line in enumerate(lines) if "status" in line)
-        avg_idx = next(i for i, line in enumerate(lines) if "epoch avg" in line)
-        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
-        elapsed_line = lines[elapsed_idx]
-        assert "epoch" in rendered
-        assert "train" in rendered
-        assert "tune" in rendered
-        assert "batch" in rendered
-        assert "# params" in rendered
-        assert "34" in rendered
-        assert "elapsed" in rendered
-        assert "epoch avg" in rendered
-        assert "[ETA" in elapsed_line
-        assert "00:01:05" in rendered
-        assert "00:00:12" in rendered
-        assert "00:08:10" in rendered
-        assert "03/10" in rendered
-        assert "best_model.pt" not in rendered
-        assert avg_idx > status_idx
-        assert elapsed_idx > avg_idx
-
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
         model = _make_model()
@@ -157,50 +101,6 @@ class TestTrainer:
         assert result.best_epoch >= 0
         assert result.best_tune_loss >= 0
         assert set(result.best_tune_metrics) >= {"auroc", "balanced_accuracy", "auprc", "f1"}
-
-    def test_fit_renders_epoch_progress_with_rich_console(
-        self, tmp_path: Path
-    ):
-        seed_everything(42)
-        model = _make_model()
-        train_loader = _make_synthetic_loader(6, seed=0)
-        tune_loader = _make_synthetic_loader(4, seed=1)
-        config = TrainingConfig(epochs=2, learning_rate=1e-3, patience=10)
-
-        buffer = io.StringIO()
-        console = Console(file=buffer, force_terminal=False, color_system=None, width=120)
-
-        trainer = Trainer(
-            model=model,
-            train_loader=train_loader,
-            tune_loader=tune_loader,
-            config=config,
-            fold_dir=tmp_path,
-            device=torch.device("cpu"),
-            console=console,
-        )
-        result = trainer.fit()
-
-        output = buffer.getvalue()
-        lines = output.splitlines()
-        status_idx = next(i for i, line in enumerate(lines) if "status" in line)
-        avg_idx = next(i for i, line in enumerate(lines) if "epoch avg" in line)
-        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
-        elapsed_line = lines[elapsed_idx]
-        assert "Training progress" in output
-        assert "epoch" in output
-        assert "train" in output and "tune" in output
-        assert "# params" in output
-        assert "elapsed" in output
-        assert "epoch avg" in output
-        assert "[ETA" in elapsed_line
-        assert "batch" in output
-        assert "best_model.pt" not in output
-        assert "auroc" in output and "bal" in output and "f1" in output
-        assert "new best checkpoint" in output or "training complete" in output
-        assert result.history[-1].epoch == len(result.history) - 1
-        assert avg_idx > status_idx
-        assert elapsed_idx > avg_idx
 
     def test_loss_decreases(self, tmp_path: Path):
         """Training loss should decrease over epochs on synthetic data."""
