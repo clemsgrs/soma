@@ -1,5 +1,24 @@
 # Reference
 
+## `dataset_type`
+
+`dataset_type` is a **required** field on `PipelineConfig`. It selects the pipeline mode:
+
+| Value | Description |
+|---|---|
+| `"slide"` | Whole-slide image pipeline: tiling → tile encoding → MIL aggregation → training. |
+| `"tile"` | Tile-image pipeline: each sample is a single patch image. Tile encoding → tile classifier training. No aggregation. |
+
+```yaml
+dataset_type: slide  # or "tile"
+```
+
+When `dataset_type="tile"`:
+- `aggregator` must be omitted (or `None`).
+- `preprocessing` is ignored.
+- Only **tile-level encoders** are valid. Slide-level encoders (`prism`, `titan`, `gigapath-slide`, `moozy-slide`) cannot be used.
+- `training.batch_size` should be set higher than the MIL default of `1` (e.g. `32` or `64`).
+
 ## Supported Encoders
 
 The canonical encoder presets are registered in code and summarized below. Use the tables as the source of truth for:
@@ -10,7 +29,9 @@ The canonical encoder presets are registered in code and summarized below. Use t
 - which spacing values are accepted by validation
 - preset-specific behavior, including `output_variant` support
 
-### Tile-level encoders (15)
+Tile-level encoders are compatible with both `dataset_type="slide"` (as the tiling backbone) and `dataset_type="tile"` (direct patch encoding). Slide-level encoders are only compatible with `dataset_type="slide"`.
+
+### Tile-level encoders (16)
 
 | Preset | Model | Output dim | Supported spacing | Notes |
 | --- | --- | --- | --- | --- |
@@ -29,14 +50,16 @@ The canonical encoder presets are registered in code and summarized below. Use t
 | `hibou-b` | [Hibou-B](https://huggingface.co/histai/hibou-b) | 768 | `0.5` µm/px | |
 | `hibou-l` | [Hibou-L](https://huggingface.co/histai/hibou-L) | 1024 | `0.5` µm/px | |
 | `midnight` | [MidNight12k](https://huggingface.co/kaiko-ai/midnight) | 3072 | `0.25`, `0.5`, `1.0`, `2.0` µm/px | Alias: `kaiko-midnight` |
+| `lunit` | [Lunit DINO ViT-S/8](https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino) | 384 | `0.5` µm/px | Tile backbone for MOOZY |
 
-### Slide-level encoders (3)
+### Slide-level encoders (4)
 
 | Preset | Model | Tile encoder | Output dim | Supported spacing | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `gigapath-slide` | [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) | `gigapath` | 768 | `0.5` µm/px | |
 | `prism` | [PRISM](https://huggingface.co/paige-ai/PRISM) | `virchow` (`cls_patch_mean`) | 1280 | `0.5` µm/px | |
 | `titan` | [TITAN](https://huggingface.co/MahmoodLab/TITAN) | `conchv15` | 768 | `0.5` µm/px | |
+| `moozy-slide` | [MOOZY](https://huggingface.co/AtlasAnalyticsLab/MOOZY) | `lunit` | 768 | `0.5` µm/px | Slide-level only; patient-level not yet supported |
 
 ## Attention Heatmap Config
 
@@ -64,7 +87,7 @@ The WSI thumbnail is read at the pyramid level closest to `preprocessing.seg_dow
 | `optimizer` | `str` | `"adam"` | Optimizer. One of `"adam"`, `"adamw"`, `"sgd"`. |
 | `scheduler` | `str` | `"cosine"` | LR scheduler. One of `"cosine"`, `"none"`. |
 | `patience` | `int` | `10` | Early-stopping patience in epochs (on tune loss). |
-| `batch_size` | `int` | `1` | Number of slides per batch. |
+| `batch_size` | `int` | `1` | Number of samples per batch. The default of `1` is appropriate for MIL (slide pipeline). For tile datasets (`dataset_type="tile"`), use a larger value (e.g. `32` or `64`). |
 | `gradient_accumulation` | `int` | `1` | Number of batches to accumulate gradients over before an optimizer step. `1` disables accumulation. Effective batch size = `batch_size × gradient_accumulation`. Loss is averaged (not summed) across accumulation steps, so loss curves remain comparable across experiments with different settings. |
 
 ```yaml

@@ -98,6 +98,7 @@ def run_pipeline(
         dataset_csv=dataset_csv,
         splits_csv=splits_csv,
         output_dir=output_dir,
+        dataset_type="slide",
         cache=cache,
         encoder=encoder,
         preprocessing=PreprocessingConfig(backend=backend),

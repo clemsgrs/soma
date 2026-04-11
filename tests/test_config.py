@@ -104,6 +104,7 @@ def test_pipeline_config_defaults_to_no_aggregator():
         dataset_csv="data.csv",
         splits_csv="splits.csv",
         output_root="out",
+        dataset_type="slide",
         task=TaskConfig(name="binary_classification"),
     )
     assert cfg.aggregator is None
@@ -217,6 +218,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
         "output_root": "out",
+        "dataset_type": "slide",
         "preprocessing": {
             "backend": "cucim",
             "requested_tile_size_px": 256,
@@ -315,6 +317,7 @@ def test_pipeline_config_requires_task():
             dataset_csv="data.csv",
             splits_csv="splits.csv",
             output_root="out",
+            dataset_type="slide",
         )
 
 
@@ -323,6 +326,7 @@ def test_load_config_raises_without_task_name(tmp_path: Path):
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
         "output_root": "out",
+        "dataset_type": "slide",
         "task": {},
     }
     yaml_path = tmp_path / "config.yaml"
@@ -337,6 +341,7 @@ def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
         "output_root": "out",
+        "dataset_type": "slide",
         "encoder": {},
         "task": {"name": "binary_classification"},
     }
@@ -355,6 +360,7 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
         dataset_csv="data/dataset.csv",
         splits_csv="data/splits.csv",
         output_root="runs",
+        dataset_type="slide",
         cache=CacheConfig(),
         encoder=EncoderConfig(name="uni2"),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),

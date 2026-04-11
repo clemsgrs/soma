@@ -1,11 +1,20 @@
 # Workflow
 
+`soma` supports two dataset modes, selected via `dataset_type` in `PipelineConfig`:
+
+- **`"slide"`** — whole-slide image pipeline: tiling → encoding → MIL aggregation → training.
+- **`"tile"`** — tile-image pipeline: each sample is a single patch image; encoding → tile classifier training (no tiling, no aggregation).
+
+`dataset_type` is a required field in every `PipelineConfig`.
+
+## Slide Pipeline
+
 `soma` is organized around two stages:
 
 1. Feature extraction from whole-slide images.
 2. Training and evaluation from precomputed features.
 
-## Extraction
+### Extraction
 
 Use `FeatureExtractor` when you want to preprocess slides and write embeddings to disk.
 
@@ -35,7 +44,7 @@ the value from `PreprocessingConfig.backend` is used.
 That field is the requested backend; the actual backend selected during tiling is
 recorded on the loaded tiling result.
 
-## Training
+### Training
 
 Use `Pipeline` when you want extraction and training coordinated from a single config.
 
@@ -55,6 +64,7 @@ config = PipelineConfig(
     dataset_csv="dataset.csv",
     splits_csv="splits.csv",
     output_root="experiments",
+    dataset_type="slide",
     cache=CacheConfig(root_dir="shared/feature_cache"),
     encoder=EncoderConfig(name="uni2"),
     preprocessing=PreprocessingConfig(backend="openslide", requested_tile_size_px=224, requested_spacing_um=0.5),
@@ -67,6 +77,80 @@ result = Pipeline(config).run()
 ```
 
 If you already have a feature store on disk, you can bypass extraction and call `train()` directly.
+
+## Tile Pipeline
+
+Use `dataset_type="tile"` when each sample in your dataset is an individual patch image (PNG, JPEG, etc.) with an associated label. There is no tiling or MIL aggregation step — a tile encoder embeds each image into a 1D feature vector, and a task head classifies or regresses it directly.
+
+### Dataset format
+
+The CSV format is identical to the slide pipeline. `image_path` should point to the tile image file instead of a WSI:
+
+```
+sample_id,image_path,label
+patch_001,/data/patches/patch_001.png,tumor
+patch_002,/data/patches/patch_002.png,normal
+...
+```
+
+### Full pipeline
+
+```python
+from soma import (
+    CacheConfig,
+    EncoderConfig,
+    Pipeline,
+    PipelineConfig,
+    TaskConfig,
+    TrainingConfig,
+)
+
+config = PipelineConfig(
+    dataset_csv="tiles.csv",
+    splits_csv="splits.csv",
+    output_root="experiments",
+    dataset_type="tile",
+    cache=CacheConfig(root_dir="shared/feature_cache"),
+    encoder=EncoderConfig(name="uni2", batch_size=64),
+    task=TaskConfig(name="binary_classification"),
+    training=TrainingConfig(epochs=50, batch_size=32),
+)
+
+result = Pipeline(config).run()
+```
+
+Key differences from the slide pipeline:
+- `aggregator` must be omitted (or `None`) — tile datasets do not use MIL.
+- `preprocessing` is ignored — images are already individual tiles.
+- `training.batch_size` should be set higher (e.g. `32`) than the MIL default of `1`.
+- `encoder.batch_size` controls how many tile images are encoded per forward pass during feature extraction.
+- Only **tile-level encoders** are supported (e.g. `uni2`, `virchow2`, `h-optimus-0`). Slide-level encoders (`prism`, `titan`, etc.) cannot be used with `dataset_type="tile"`.
+
+### Step-by-step API
+
+```python
+from soma import Dataset, Splits, TileFeatureExtractor, EncoderConfig, CacheConfig, train
+
+dataset = Dataset("tiles.csv")
+splits = Splits("splits.csv", dataset)
+
+extractor = TileFeatureExtractor(
+    dataset=dataset,
+    encoder=EncoderConfig(name="uni2", batch_size=64),
+    cache=CacheConfig(root_dir="shared/feature_cache"),
+)
+store = extractor.run(feature_dir="output/features")
+
+result = train(
+    feature_store=store,
+    dataset=dataset,
+    splits=splits,
+    dataset_type="tile",
+    task=TaskConfig(name="binary_classification"),
+    training=TrainingConfig(epochs=50, batch_size=32),
+    run_dir="output/run",
+)
+```
 
 ## Task Configuration
 

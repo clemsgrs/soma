@@ -129,11 +129,20 @@ class HeatmapConfig:
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    """Complete specification for a pipeline run."""
+    """Complete specification for a pipeline run.
+
+    Args:
+        dataset_type: Type of input data. ``"slide"`` for whole-slide image
+            pipelines (tiling → encoding → aggregation → training).
+            ``"tile"`` for tile-image pipelines where each sample is a single
+            patch with a label (encoding → tile classifier training, no
+            aggregation). Must be specified explicitly.
+    """
 
     dataset_csv: str | Path
     splits_csv: str | Path
     output_root: str | Path
+    dataset_type: str
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
@@ -147,6 +156,17 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.task is None:
             raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
+        _valid_dataset_types = {"slide", "tile"}
+        if self.dataset_type not in _valid_dataset_types:
+            raise ValueError(
+                f"Invalid dataset_type {self.dataset_type!r}. "
+                f"Must be one of: {sorted(_valid_dataset_types)}"
+            )
+        if self.dataset_type == "tile" and self.aggregator is not None:
+            raise ValueError(
+                "aggregator must be None for dataset_type='tile' — "
+                "tile classifiers do not use MIL aggregation."
+            )
         # Validate that requested metrics are valid for the task family.
         resolve_metrics(self.task.name, self.eval.metrics)
 
@@ -220,6 +240,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
         output_root=data["output_root"],
+        dataset_type=data["dataset_type"],
         preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,

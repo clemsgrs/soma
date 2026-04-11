@@ -67,6 +67,8 @@ from soma.training.model import MILModel
 from soma.training.seed import seed_everything
 from soma.training.slide_dataset import SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel
+from soma.training.tile_dataset import TileDataset, tile_collate_fn
+from soma.training.tile_model import TileClassifier
 from soma.training.trainer import Trainer, TrainResult, _epoch_log_to_dict
 from soma.reporting import generate_report_from_result
 
@@ -130,6 +132,7 @@ def train_one_fold(
     training: TrainingConfig,
     fold_dir: str | Path,
     *,
+    dataset_type: str = "slide",
     eval: EvalConfig | None = None,
     aggregator: AggregatorConfig | None = None,
     fold: int = 0,
@@ -139,11 +142,13 @@ def train_one_fold(
     """Train and evaluate a single fold.
 
     Args:
-        feature_store: Precomputed embeddings (tile-level or slide-level).
+        feature_store: Precomputed embeddings.
         dataset: Dataset with sample records and label_map.
         fold_split: Train/tune/test sample IDs for this fold.
-        aggregator: Aggregator configuration, or None for slide-level features.
-            Omit this argument for slide-level encoders.
+        dataset_type: ``"slide"`` for WSI pipelines; ``"tile"`` for tile-image
+            pipelines where each sample is a single encoded patch.
+        aggregator: Aggregator configuration, or None for slide-level or
+            tile-dataset features.
         task: Task head configuration.
         eval: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
         training: Training loop configuration.
@@ -245,7 +250,30 @@ def train_one_fold(
     else:
         label_fn = lambda record: label_map[record.label]  # noqa: E731
 
-    if feature_store.is_slide_level:
+    if dataset_type == "tile":
+        # Tile-dataset path: each sample is a single encoded tile → task head directly
+        _tile_collate = functools.partial(tile_collate_fn, label_dtype=label_dtype)
+        train_loader = DataLoader(
+            TileDataset(train_records, feature_store, label_map, label_fn=label_fn),
+            batch_size=training.batch_size,
+            shuffle=True,
+            collate_fn=_tile_collate,
+        )
+        tune_loader = DataLoader(
+            TileDataset(tune_records, feature_store, label_map, label_fn=label_fn),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=_tile_collate,
+        )
+        test_loader = DataLoader(
+            TileDataset(test_records, feature_store, label_map, label_fn=label_fn),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=_tile_collate,
+        )
+        head = task_cls(input_dim=feature_dim, **task_params)
+        model: torch.nn.Module = TileClassifier(task_head=head)
+    elif feature_store.is_slide_level:
         # Slide-level path: skip aggregator, pass (B, D) directly to task head
         if aggregator is not None:
             msg = "aggregator must be None for slide-level features"
@@ -412,15 +440,18 @@ def train(
     eval: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
+    dataset_type: str = "slide",
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
 
     Args:
-        feature_store: Precomputed embeddings (tile-level or slide-level).
+        feature_store: Precomputed embeddings.
         dataset: Dataset with sample records and label_map.
         splits: Cross-validation splits (1 or more folds).
-        aggregator: Aggregator configuration, or None for slide-level features.
-            Omit this argument for slide-level encoders.
+        dataset_type: ``"slide"`` for WSI pipelines; ``"tile"`` for tile-image
+            pipelines.
+        aggregator: Aggregator configuration, or None for slide-level or
+            tile-dataset features.
         task: Task head configuration.
         eval: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
         training: Training loop configuration.
@@ -440,6 +471,7 @@ def train(
             feature_store=feature_store,
             dataset=dataset,
             fold_split=fold_split,
+            dataset_type=dataset_type,
             aggregator=aggregator,
             task=task,
             eval=eval,
@@ -473,6 +505,7 @@ def _build_run_summary_panel(
     aggregator: AggregatorConfig | None,
     task: TaskConfig,
     feature_store: FeatureStore,
+    dataset_type: str = "slide",
 ) -> Panel:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold", justify="right", no_wrap=True)
@@ -484,11 +517,12 @@ def _build_run_summary_panel(
     else:
         grid.add_row("encoder", "[dim]pre-extracted[/dim]")
 
-    # Spacing — prefer encoder-level override, fall back to preprocessing
-    spacing: float | None = encoder.spacing_um if encoder is not None else None
-    if spacing is None:
-        spacing = preprocessing.requested_spacing_um
-    grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
+    # Spacing — only meaningful for slide/WSI pipelines
+    if dataset_type != "tile":
+        spacing: float | None = encoder.spacing_um if encoder is not None else None
+        if spacing is None:
+            spacing = preprocessing.requested_spacing_um
+        grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
 
     # Aggregator
     if aggregator is not None:
@@ -500,7 +534,9 @@ def _build_run_summary_panel(
     grid.add_row("task", task.name.replace("_", " "))
 
     # Feature level + dim
-    if feature_store.is_slide_level:
+    if dataset_type == "tile":
+        level = "tile (encoded)"
+    elif feature_store.is_slide_level:
         level = "slide"
     elif feature_store.is_hierarchical:
         level = "hierarchical"
@@ -627,6 +663,7 @@ class Pipeline:
                     aggregator=self._config.aggregator,
                     task=self._config.task,
                     feature_store=store,
+                    dataset_type=self._config.dataset_type,
                 )
             )
 
@@ -634,6 +671,7 @@ class Pipeline:
                 feature_store=store,
                 dataset=self._dataset,
                 splits=self._splits,
+                dataset_type=self._config.dataset_type,
                 aggregator=self._config.aggregator,
                 task=self._config.task,
                 eval=self._config.eval,
@@ -699,13 +737,15 @@ class Pipeline:
 
     def _get_feature_store(self, *, run_dir: Path) -> FeatureStore:
         if self._feature_dir is not None:
-            store = FeatureStore(self._feature_dir)
-        else:
+            return FeatureStore(self._feature_dir)
+
+        if self._config.dataset_type == "tile":
             if self._config.encoder is None:
                 raise ValueError(
-                    "PipelineConfig.encoder is required when feature_dir is not provided."
+                    "PipelineConfig.encoder is required for dataset_type='tile' "
+                    "when feature_dir is not provided."
                 )
-            preprocessing = self._resolve_preprocessing()
+            from soma.tile_extraction import TileFeatureExtractor
 
             cache_config = self._config.cache
             if cache_config.root_dir is None:
@@ -713,17 +753,39 @@ class Pipeline:
                     cache_config,
                     root_dir=Path(self._config.output_root) / "feature_cache",
                 )
-            extractor = FeatureExtractor(
+            extractor = TileFeatureExtractor(
                 self._dataset,
                 self._config.encoder,
-                preprocessing,
                 cache=cache_config,
             )
-            store = extractor.run(feature_dir=run_dir / "features")
-        return store
+            return extractor.run(feature_dir=run_dir / "features")
+
+        # Slide pipeline path
+        if self._config.encoder is None:
+            raise ValueError(
+                "PipelineConfig.encoder is required when feature_dir is not provided."
+            )
+        preprocessing = self._resolve_preprocessing()
+
+        cache_config = self._config.cache
+        if cache_config.root_dir is None:
+            cache_config = replace(
+                cache_config,
+                root_dir=Path(self._config.output_root) / "feature_cache",
+            )
+        extractor = FeatureExtractor(
+            self._dataset,
+            self._config.encoder,
+            preprocessing,
+            cache=cache_config,
+        )
+        return extractor.run(feature_dir=run_dir / "features")
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
+        if self._config.dataset_type == "tile":
+            # Tile-dataset pipelines have no WSI tiling step; preprocessing is irrelevant.
+            return PreprocessingConfig()
         preprocessing = derive_preprocessing_for_aggregator(
             self._config.preprocessing,
             self._config.aggregator,
