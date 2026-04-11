@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, SubgroupConfig, TaskConfig, TrainingConfig
-from soma.evaluation.metrics import compare_run_metrics
+from soma.evaluation.metrics import bh_correct, compare_run_metrics
 from soma.evaluation.metrics import (
     _extract_arrays,
     compute_subgroup_metrics,
@@ -407,6 +407,54 @@ def test_subgroup_section_contains_css_highlight_classes(tmp_path: Path) -> None
     html = generate_report(run_dir).read_text()
     # CSS classes for highlighting must be defined in the report
     assert "subgroup-sig" in html or "subgroup-flag" in html or "subgroup-sig-small" in html
+
+
+# ---------------------------------------------------------------------------
+# bh_correct
+# ---------------------------------------------------------------------------
+
+
+def test_bh_correct_empty() -> None:
+    assert bh_correct([]) == []
+
+
+def test_bh_correct_single() -> None:
+    assert bh_correct([0.03]) == [0.03]
+
+
+def test_bh_correct_all_significant() -> None:
+    """Clearly small p-values remain below 0.05 after correction."""
+    adjusted = bh_correct([0.001, 0.002, 0.003])
+    assert all(p < 0.05 for p in adjusted)
+
+
+def test_bh_correct_none_significant() -> None:
+    """Large p-values remain above 0.05 after correction."""
+    adjusted = bh_correct([0.4, 0.5, 0.6])
+    assert all(p > 0.05 for p in adjusted)
+
+
+def test_bh_correct_preserves_order_relationship() -> None:
+    """Adjusted p-values maintain the same rank order as raw p-values."""
+    raw = [0.01, 0.04, 0.20, 0.50]
+    adjusted = bh_correct(raw)
+    assert adjusted[0] <= adjusted[1] <= adjusted[2] <= adjusted[3]
+
+
+def test_bh_correct_known_values() -> None:
+    """BH step-up on a known example matches hand-computed output.
+
+    Input: [0.01, 0.04, 0.10, 0.20], n=4
+    Ranks (ascending): p_(1)=0.01, p_(2)=0.04, p_(3)=0.10, p_(4)=0.20
+    Adjusted (step-up from largest):
+      rank 4: 0.20 * 4/4 = 0.20
+      rank 3: min(0.20, 0.10 * 4/3) = min(0.20, 0.133) = 0.133
+      rank 2: min(0.133, 0.04 * 4/2) = min(0.133, 0.08) = 0.08
+      rank 1: min(0.08, 0.01 * 4/1) = min(0.08, 0.04) = 0.04
+    """
+    raw = [0.01, 0.04, 0.10, 0.20]
+    adjusted = bh_correct(raw)
+    assert adjusted == pytest.approx([0.04, 0.08, 0.1333, 0.20], abs=1e-3)
 
 
 # ---------------------------------------------------------------------------

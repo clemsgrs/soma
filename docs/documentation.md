@@ -13,6 +13,11 @@
 - The output-layout module no longer carries an unused path-normalization helper.
 - Core modules now import `slide2vec`, `hs2p`, `yaml`, and `FeatureExtractor` directly at module scope instead of deferring those imports behind compatibility shims or function-local indirection.
 - HIPT runtime validation in `soma` now checks the encoder against resolved preprocessing tile geometry before extraction.
+- Evaluation config (`EvalConfig`) is now separate from `TaskConfig`; `EvalConfig` holds `metrics` and `subgroups` (a `SubgroupConfig` with `columns: list[str]`).
+- Reports include a **Subgroup Analysis** section when `eval.subgroups.columns` is configured. Per-subgroup metrics are computed on all-fold concatenated predictions; cells are highlighted by significance tier (see below).
+- Statistical testing uses permutation tests (group-vs-rest for subgroups; paired sign-permutation on per-fold values for cross-run). All p-values are corrected for multiple comparisons using **Benjamini-Hochberg FDR** correction: within each (column, metric) family for subgroups, and globally across all (metric, run) comparisons for cross-run reports.
+- Highlight tiers in subgroup tables (p-values are BH-adjusted): `subgroup-sig` — p_adj < 0.05 and Δ ≥ 10%; `subgroup-flag` — Δ ≥ 10% but not significant; `subgroup-sig-small` — p_adj < 0.05 but small effect.
+- Cross-run comparison tables mark significantly worse runs (`sig-worse`, red) when p_adj < 0.05; the best run is marked `best-val` (green). Stats are omitted when any run has fewer than 2 folds or fold counts differ across runs.
 
 ## Output Root Design
 

@@ -26,7 +26,7 @@ from soma.reporting.charts import (
     subgroup_metric_chart,
     subgroup_stats_heatmap,
 )
-from soma.evaluation.metrics import compare_run_metrics, compute_subgroup_metrics, compute_subgroup_stats
+from soma.evaluation.metrics import bh_correct, compare_run_metrics, compute_subgroup_metrics, compute_subgroup_stats
 from soma.reporting.data import ComparisonData, RunData
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
@@ -252,18 +252,33 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
         run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
     )
 
+    # Apply BH FDR correction per (column, metric): groups are the family.
+    sg_stats_adj: dict[str, dict[str, dict[str, float]]] = {}
+    for col, col_stats in sg_stats.items():
+        sg_stats_adj[col] = {}
+        groups = sorted(col_stats.keys())
+        for metric in run_data.metrics:
+            raw = [col_stats[g].get(metric) for g in groups]
+            valid_idx = [i for i, p in enumerate(raw) if p is not None]
+            valid_p = [raw[i] for i in valid_idx]  # type: ignore[misc]
+            corrected = bh_correct(valid_p)
+            for list_pos, orig_idx in enumerate(valid_idx):
+                g = groups[orig_idx]
+                sg_stats_adj[col].setdefault(g, {})[metric] = corrected[list_pos]
+
     html_parts: list[str] = []
 
     for col in run_data.subgroup_columns:
         col_data = sg_metrics.get(col, {})
         if not col_data:
             continue
-        col_stats = sg_stats.get(col, {})
+        col_stats_adj = sg_stats_adj.get(col, {})
 
         # Table: groups × metrics
-        # Cell highlight classes:
-        #   subgroup-sig  — p < 0.05 AND deviation ≥ 10% (significant and large)
+        # Cell highlight classes (p-values are BH-adjusted):
+        #   subgroup-sig  — p_adj < 0.05 AND deviation ≥ 10% (significant and large)
         #   subgroup-flag — deviation ≥ 10% but not statistically significant
+        #   subgroup-sig-small — p_adj < 0.05 but small deviation
         header_cells = "<th>Group</th><th>n</th>" + "".join(
             f"<th>{m}</th>" for m in run_data.metrics
         )
@@ -278,18 +293,18 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
                     cells += "<td>—</td>"
                     continue
                 deviation = abs(val - overall_val) / max(abs(overall_val), 1e-9) if overall_val is not None else 0
-                p_val = col_stats.get(group_val, {}).get(metric)
-                significant = p_val is not None and p_val < 0.05
+                p_adj = col_stats_adj.get(group_val, {}).get(metric)
+                significant = p_adj is not None and p_adj < 0.05
                 large = deviation >= 0.10
                 if significant and large:
                     css = " class=\"subgroup-sig\""
-                    tip = f" title=\"p={p_val:.3f}, Δ={deviation:.0%}\""
+                    tip = f" title=\"p_adj={p_adj:.3f}, Δ={deviation:.0%}\""
                 elif large:
                     css = " class=\"subgroup-flag\""
                     tip = f" title=\"Δ={deviation:.0%} (n.s.)\""
                 elif significant:
                     css = " class=\"subgroup-sig-small\""
-                    tip = f" title=\"p={p_val:.3f}\""
+                    tip = f" title=\"p_adj={p_adj:.3f}\""
                 else:
                     css, tip = "", ""
                 cells += f"<td{css}{tip}>{val:.3f}</td>"
@@ -301,9 +316,9 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
   <tbody>{rows_html}</tbody>
 </table>
 <p class="subgroup-legend">
-  <span class="legend-sig">■</span> p&lt;0.05 &amp; Δ≥10% &nbsp;
+  <span class="legend-sig">■</span> p_adj&lt;0.05 &amp; Δ≥10% &nbsp;
   <span class="legend-flag">■</span> Δ≥10% (not significant) &nbsp;
-  <span class="legend-sig-small">■</span> p&lt;0.05 (small Δ)
+  <span class="legend-sig-small">■</span> p_adj&lt;0.05 (small Δ)
 </p>"""
 
         # Bar charts (one per metric)
@@ -505,9 +520,10 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
     )
     header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
 
-    rows_html = ""
+    # First pass: collect raw p-values for all (metric, run) pairs so we can
+    # apply BH FDR correction globally across all comparisons.
+    per_metric_data: list[tuple[list[float | None], list[float | None], list[list[float]]]] = []
     for metric in cd.metric_names:
-        # Collect mean value and per-fold values per run
         means: list[float | None] = []
         fold_values: list[list[float]] = []
         for run in cd.runs:
@@ -521,12 +537,25 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
                 for fd in run.folds
                 if metric in fd.test_metrics
             ])
+        raw_p = compare_run_metrics(fold_values)
+        per_metric_data.append((means, raw_p, fold_values))
 
+    # Collect all non-None raw p-values, correct, then redistribute.
+    all_keys: list[tuple[int, int]] = []  # (metric_idx, run_idx)
+    all_raw_p: list[float] = []
+    for m_idx, (_, raw_p, _) in enumerate(per_metric_data):
+        for r_idx, p in enumerate(raw_p):
+            if p is not None:
+                all_keys.append((m_idx, r_idx))
+                all_raw_p.append(p)
+    corrected = bh_correct(all_raw_p)
+    adj_p: dict[tuple[int, int], float] = dict(zip(all_keys, corrected))
+
+    rows_html = ""
+    for m_idx, metric in enumerate(cd.metric_names):
+        means, _, _ = per_metric_data[m_idx]
         valid_means = [v for v in means if v is not None]
         best_val = max(valid_means) if valid_means else None
-
-        # Statistical comparison: permutation test on per-fold metric values
-        p_values = compare_run_metrics(fold_values)
 
         cells = ""
         for i, val in enumerate(means):
@@ -536,21 +565,17 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
             std_key = f"{metric}_std"
             std = cd.runs[i].summary.get(std_key)
             is_best = best_val is not None and abs(val - best_val) < 1e-9
-            p_val = p_values[i]
-            sig_worse = (
-                not is_best
-                and p_val is not None
-                and p_val < 0.05
-            )
+            p_adj = adj_p.get((m_idx, i))
+            sig_worse = not is_best and p_adj is not None and p_adj < 0.05
             if is_best:
                 cell_class = " class='best-val'"
                 tip = ""
             elif sig_worse:
                 cell_class = " class='sig-worse'"
-                tip = f" title='significantly worse than best (p={p_val:.3f})'"
+                tip = f" title='significantly worse than best (p_adj={p_adj:.3f})'"
             else:
                 cell_class = ""
-                tip = f" title='p={p_val:.3f}'" if p_val is not None else ""
+                tip = f" title='p_adj={p_adj:.3f}'" if p_adj is not None else ""
             std_str = f" ± {std:.4f}" if std is not None else ""
             cells += f"<td{cell_class}{tip}><strong>{val:.4f}</strong>{std_str}</td>"
 

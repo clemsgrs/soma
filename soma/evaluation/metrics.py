@@ -263,6 +263,26 @@ def compute_metrics(
     return {name: funs[name](y_true, y_pred, y_prob) for name in metrics}
 
 
+def bh_correct(p_values: list[float]) -> list[float]:
+    """Benjamini-Hochberg FDR correction (step-up procedure).
+
+    Returns adjusted p-values in the same order as the input, capped at 1.0.
+    A single p-value is returned unchanged. An empty list returns an empty list.
+    """
+    n = len(p_values)
+    if n <= 1:
+        return list(p_values)
+    order = sorted(range(n), key=lambda i: p_values[i])
+    adjusted = [0.0] * n
+    running_min = 1.0
+    for step, orig_idx in enumerate(reversed(order)):
+        rank = n - step  # 1-indexed rank in ascending order
+        adj = min(p_values[orig_idx] * n / rank, 1.0)
+        running_min = min(running_min, adj)
+        adjusted[orig_idx] = running_min
+    return adjusted
+
+
 def compare_run_metrics(
     runs_fold_metrics: list[list[float]],
     *,
