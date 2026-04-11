@@ -6,7 +6,7 @@ from typing import Callable
 
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import false_discovery_control, pearsonr, spearmanr
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -264,23 +264,14 @@ def compute_metrics(
 
 
 def bh_correct(p_values: list[float]) -> list[float]:
-    """Benjamini-Hochberg FDR correction (step-up procedure).
+    """Benjamini-Hochberg FDR correction via scipy.stats.false_discovery_control.
 
-    Returns adjusted p-values in the same order as the input, capped at 1.0.
-    A single p-value is returned unchanged. An empty list returns an empty list.
+    Returns adjusted p-values in the same order as the input.
+    An empty list returns an empty list; a single p-value is returned unchanged.
     """
-    n = len(p_values)
-    if n <= 1:
-        return list(p_values)
-    order = sorted(range(n), key=lambda i: p_values[i])
-    adjusted = [0.0] * n
-    running_min = 1.0
-    for step, orig_idx in enumerate(reversed(order)):
-        rank = n - step  # 1-indexed rank in ascending order
-        adj = min(p_values[orig_idx] * n / rank, 1.0)
-        running_min = min(running_min, adj)
-        adjusted[orig_idx] = running_min
-    return adjusted
+    if len(p_values) == 0:
+        return []
+    return list(false_discovery_control(p_values, method="bh"))
 
 
 def compare_run_metrics(
