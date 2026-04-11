@@ -115,8 +115,8 @@ class TestTrainer:
         rendered = console.export_text(clear=False)
         lines = rendered.splitlines()
         status_idx = next(i for i, line in enumerate(lines) if "status" in line)
-        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
         avg_idx = next(i for i, line in enumerate(lines) if "epoch avg" in line)
+        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
         elapsed_line = lines[elapsed_idx]
         assert "epoch" in rendered
         assert "train" in rendered
@@ -132,8 +132,8 @@ class TestTrainer:
         assert "00:08:10" in rendered
         assert "03/10" in rendered
         assert "best_model.pt" not in rendered
-        assert elapsed_idx > status_idx
-        assert avg_idx > elapsed_idx
+        assert avg_idx > status_idx
+        assert elapsed_idx > avg_idx
 
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
@@ -184,8 +184,8 @@ class TestTrainer:
         output = buffer.getvalue()
         lines = output.splitlines()
         status_idx = next(i for i, line in enumerate(lines) if "status" in line)
-        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
         avg_idx = next(i for i, line in enumerate(lines) if "epoch avg" in line)
+        elapsed_idx = next(i for i, line in enumerate(lines) if "elapsed" in line)
         elapsed_line = lines[elapsed_idx]
         assert "Training progress" in output
         assert "epoch" in output
@@ -199,8 +199,8 @@ class TestTrainer:
         assert "auroc" in output and "bal" in output and "f1" in output
         assert "new best checkpoint" in output or "training complete" in output
         assert result.history[-1].epoch == len(result.history) - 1
-        assert elapsed_idx > status_idx
-        assert avg_idx > elapsed_idx
+        assert avg_idx > status_idx
+        assert elapsed_idx > avg_idx
 
     def test_loss_decreases(self, tmp_path: Path):
         """Training loss should decrease over epochs on synthetic data."""

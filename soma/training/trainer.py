@@ -451,8 +451,8 @@ def _build_training_panel(
         table.add_row("best metrics", Text(best_metrics_text, style="green"))
     table.add_row("patience", Text(f"{patience_counter}/{patience_limit}", style="white"))
     table.add_row("status", Text(status, style="bold yellow" if "best" not in status else "bold green"))
-    table.add_row("elapsed", Text(_format_elapsed_with_eta(elapsed_seconds, eta_seconds), style="white"))
     table.add_row("epoch avg", Text(_format_optional_duration(avg_epoch_seconds), style="white"))
+    table.add_row("elapsed", Text(_format_elapsed_with_eta(elapsed_seconds, eta_seconds), style="white"))
 
     return Panel.fit(
         table,

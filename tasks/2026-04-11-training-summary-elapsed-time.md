@@ -40,7 +40,7 @@
 # Timing Layout
 
 - [x] Put ETA inline with elapsed time in the live training panel.
-- [x] Move elapsed and average epoch time below status in the live training panel.
+- [x] Move average epoch time above elapsed in the live training panel.
 - [x] Add regression coverage for the new timing row order.
 - [x] Update `docs/documentation.md` with the timing layout note.
 - [x] Run focused trainer tests and confirm the panel renders correctly.
