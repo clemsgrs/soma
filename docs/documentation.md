@@ -13,6 +13,11 @@
 - The output-layout module no longer carries an unused path-normalization helper.
 - Core modules now import `slide2vec`, `hs2p`, `yaml`, and `FeatureExtractor` directly at module scope instead of deferring those imports behind compatibility shims or function-local indirection.
 - HIPT runtime validation in `soma` now checks the encoder against resolved preprocessing tile geometry before extraction.
+- Evaluation config (`EvalConfig`) is now separate from `TaskConfig`; `EvalConfig` holds `metrics` and `subgroups` (a `SubgroupConfig` with `columns: list[str]`).
+- Reports include a **Subgroup Analysis** section when `eval.subgroups.columns` is configured. Per-subgroup metrics are computed on all-fold concatenated predictions; cells are highlighted by significance tier (see below).
+- Statistical testing uses permutation tests (group-vs-rest for subgroups; paired sign-permutation on per-fold values for cross-run). All p-values are corrected for multiple comparisons using **Benjamini-Hochberg FDR** correction: within each (column, metric) family for subgroups, and globally across all (metric, run) comparisons for cross-run reports.
+- Highlight tiers in subgroup tables (p-values are BH-adjusted): `subgroup-sig` — p_adj < 0.05 and Δ ≥ 10%; `subgroup-flag` — Δ ≥ 10% but not significant; `subgroup-sig-small` — p_adj < 0.05 but small effect.
+- Cross-run comparison tables mark significantly worse runs (`sig-worse`, red) when p_adj < 0.05; the best run is marked `best-val` (green). Stats are omitted when any run has fewer than 2 folds or fold counts differ across runs.
 
 ## Output Root Design
 
@@ -298,15 +303,18 @@ results = pipeline.run()
 ### Output Directory Structure
 
 ```
-output_dir/
-    config.yaml              # full PipelineConfig snapshot
+run_dir/
+    config.yaml                  # full PipelineConfig snapshot
+    run.yaml                     # run metadata (status, timestamps, git SHA, seed)
+    summary.json                 # aggregated metrics (mean ± std across folds)
+    report.html                  # self-contained HTML experiment report
     fold_0/
-        best_model.pt        # checkpoint
-        metrics.json          # tune + test metrics
-        predictions.csv       # per-sample predictions
+        best_model.pt            # checkpoint
+        metrics.json             # tune + test metrics
+        predictions.csv          # per-sample predictions
+        training_history.json    # epoch-by-epoch loss, metrics, and LR
     fold_1/
         ...
-    summary.json              # aggregated metrics (mean ± std across folds)
 ```
 
 ### Shared Feature Cache
@@ -553,6 +561,91 @@ The wheel is explicitly limited to the `soma` package so the published distribut
 
 ---
 
+## Reporting Module
+
+`soma.reporting` generates self-contained HTML experiment reports from completed run directories.
+
+### Training history
+
+Each fold now persists epoch-by-epoch training data to `fold_N/training_history.json`:
+
+```json
+[
+  {"epoch": 0, "train_loss": 0.69, "tune_loss": 0.71, "tune_metrics": {"auroc": 0.55}, "lr": 1e-4},
+  ...
+]
+```
+
+This is written automatically by `train_one_fold()` alongside `metrics.json` and `predictions.csv`.
+
+### Report generation
+
+Reports are generated automatically at the end of every `Pipeline.run()` and saved to `run_dir/report.html`. They can also be generated on demand from any completed run directory:
+
+```python
+from soma.reporting import generate_report, generate_report_from_result
+
+# From a saved run directory
+path = generate_report("/path/to/run_dir")
+
+# From an in-memory PipelineResult
+path = generate_report_from_result(result, config)
+```
+
+### Report contents
+
+The HTML report is fully self-contained (Plotly JS embedded, no network access required) and includes:
+
+- **Run header** — run ID, status badge, seed, timestamps, git SHA
+- **Configuration** — encoder, aggregator, task, training hyperparameters
+- **Test results table** — per-fold metrics and mean ± std across folds
+- **Training curves** — train/tune loss, one tune metric curve per user-requested metric, learning rate schedule; all folds overlaid on the same chart
+- **Prediction analysis** — task-aware:
+  - *Binary classification*: ROC curve (per-fold + pooled), PR curve (per-fold + pooled), confusion matrix (aggregated), score distributions
+  - *Multiclass classification*: macro-averaged ROC curve, confusion matrix, score distributions
+  - *Ordinal classification*: confusion matrix, score distributions
+  - *Regression*: predicted vs. actual scatter, residuals plot
+- **Subgroup analysis** — when `eval.subgroups.columns` is configured, shows per-group metric tables and bar charts with deviation highlighting. An optional statistical testing panel (permutation test) can be enabled with `eval.subgroups.statistical_testing = True`.
+
+### Cross-run comparison
+
+`compare_runs` generates a side-by-side comparison report for any list of completed run directories. It automatically detects which config fields differ across runs and highlights only those, collapsing the shared configuration.
+
+```python
+from soma.reporting import compare_runs
+
+path = compare_runs([
+    "output/experiments/exp_abc/runs/run1",
+    "output/experiments/exp_def/runs/run2",
+])
+```
+
+Labels are auto-derived from the config diff: if runs differ in exactly one field (e.g., `aggregator.name`), that field's value is used as the label. Otherwise the run ID is used. Custom labels can be passed via the `labels` argument.
+
+The comparison report includes:
+
+- **Configuration differences** — only the fields that vary across runs, as a column-per-run table; shared configuration shown in a collapsible block
+- **Metrics comparison** — one row per metric, one column per run (mean ± std), best value per metric highlighted
+- **Training curves** — loss and per-metric curves overlaid across runs; multi-fold runs show a ±1 std shaded band around the mean
+
+### Public API
+
+| Symbol | Description |
+|---|---|
+| `generate_report(run_dir, *, output_path=None)` | Generate single-run report from disk |
+| `generate_report_from_result(result, config, *, output_path=None)` | Generate single-run report from in-memory result |
+| `compare_runs(run_dirs, *, output_path=None, labels=None)` | Generate cross-run comparison report |
+| `load_run_data(run_dir)` | Load all run artifacts into a `RunData` object |
+| `load_comparison_data(run_dirs, *, labels=None)` | Load multiple runs into a `ComparisonData` object |
+| `run_data_from_result(result, config)` | Convert in-memory result to `RunData` |
+| `render_report(run_data)` | Render `RunData` to an HTML string |
+| `render_comparison_report(comparison_data)` | Render `ComparisonData` to an HTML string |
+| `RunData` | Dataclass holding config, metadata, summary, and per-fold data |
+| `FoldData` | Dataclass holding one fold's history, metrics, and predictions |
+| `ComparisonData` | Dataclass holding multiple runs with config diffs and labels |
+
+---
+
 ## Configuration
 
 All configs are frozen dataclasses with YAML serialization:
@@ -563,9 +656,24 @@ All configs are frozen dataclasses with YAML serialization:
 | `CacheConfig` | Shared feature-cache policy and root |
 | `EncoderConfig` | Required foundation model name, optional precision override, batch_size, optional `num_workers` override |
 | `AggregatorConfig` | Aggregator name + params dict |
-| `TaskConfig` | Task head name + params dict |
+| `TaskConfig` | Task head name + params dict (model architecture only) |
+| `EvalConfig` | Evaluation metrics + subgroup analysis settings |
+| `SubgroupConfig` | Categorical columns for subgroup analysis, optional statistical testing flag |
 | `TrainingConfig` | Epochs, LR, optimizer, scheduler, patience |
 | `PipelineConfig` | Bundles all above + dataset/splits/output paths |
+
+`TaskConfig` and `EvalConfig` are separate: `task` defines what is predicted (model head architecture), `eval` defines how it is measured (metrics, subgroup breakdowns). Metric validation (`resolve_metrics`) runs in `PipelineConfig.__post_init__` where both are in scope.
+
+Example:
+```python
+from soma.config import TaskConfig, EvalConfig, SubgroupConfig
+
+task = TaskConfig(name="binary_classification")
+eval = EvalConfig(
+    metrics=["auroc", "f1"],
+    subgroups=SubgroupConfig(columns=["sex", "grade"], statistical_testing=False),
+)
+```
 
 ```python
 from soma.config import save_config, load_config
@@ -589,6 +697,7 @@ config = load_config("config.yaml")
 | `soma.tasks.*` | TaskHead ABC, ClassificationHead |
 | `soma.training.*` | MILModel, BagDataset, Trainer, collation, seeding |
 | `soma.evaluation.*` | Metrics, EvaluationReport, SamplePrediction |
+| `soma.reporting` | `generate_report`, `generate_report_from_result`, `compare_runs`, `RunData`, `FoldData`, `ComparisonData` |
 
 ## Active Design Decisions
 

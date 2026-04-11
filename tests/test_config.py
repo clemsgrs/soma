@@ -10,8 +10,10 @@ from soma.config import (
     AggregatorConfig,
     CacheConfig,
     EncoderConfig,
+    EvalConfig,
     PipelineConfig,
     PreprocessingConfig,
+    SubgroupConfig,
     TaskConfig,
     TrainingConfig,
     load_config,
@@ -86,14 +88,25 @@ def test_task_config_params_default_empty():
     assert cfg.params == {}
 
 
-def test_task_config_metrics_default_empty():
-    cfg = TaskConfig(name="binary_classification")
+def test_eval_config_defaults():
+    cfg = EvalConfig()
     assert cfg.metrics == []
+    assert cfg.subgroups.columns == []
 
 
-def test_task_config_metrics_explicit():
-    cfg = TaskConfig(name="binary_classification", metrics=["auroc", "f1"])
+def test_eval_config_metrics_explicit():
+    cfg = EvalConfig(metrics=["auroc", "f1"])
     assert cfg.metrics == ["auroc", "f1"]
+
+
+def test_subgroup_config_defaults():
+    cfg = SubgroupConfig()
+    assert cfg.columns == []
+
+
+def test_subgroup_config_explicit():
+    cfg = SubgroupConfig(columns=["sex", "grade"])
+    assert cfg.columns == ["sex", "grade"]
 
 
 def test_encoder_config_requires_name():
@@ -178,7 +191,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name
     assert loaded.task.params == original.task.params
-    assert loaded.task.metrics == original.task.metrics
+    assert loaded.eval.metrics == original.eval.metrics
     assert loaded.training.epochs == original.training.epochs
     assert loaded.training.learning_rate == original.training.learning_rate
     assert loaded.tags == original.tags
@@ -223,22 +236,33 @@ def test_save_config_produces_valid_yaml(tmp_path: Path):
     assert raw["aggregator"]["params"]["hidden_dim"] == 128
 
 
-def test_task_metrics_roundtrip(tmp_path: Path):
+def test_eval_metrics_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(eval=EvalConfig(metrics=["auroc_macro", "f1_macro"]))
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.eval.metrics == ["auroc_macro", "f1_macro"]
+
+
+def test_eval_metrics_empty_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config()
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.eval.metrics == []
+
+
+def test_eval_subgroups_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
-        task=TaskConfig(name="binary_classification", metrics=["auroc", "auprc"])
+        eval=EvalConfig(
+            metrics=["auroc_macro"],
+            subgroups=SubgroupConfig(columns=["sex", "grade"]),
+        )
     )
     yaml_path = tmp_path / "config.yaml"
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
-    assert loaded.task.metrics == ["auroc", "auprc"]
-
-
-def test_task_metrics_empty_roundtrip(tmp_path: Path):
-    cfg = _make_pipeline_config(task=TaskConfig(name="binary_classification"))
-    yaml_path = tmp_path / "config.yaml"
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-    assert loaded.task.metrics == []
+    assert loaded.eval.subgroups.columns == ["sex", "grade"]
 
 
 def test_load_config_with_tags(tmp_path: Path):
