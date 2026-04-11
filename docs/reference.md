@@ -130,7 +130,7 @@ Linear head for classification with three or more classes.
 | Loss | Cross-entropy |
 | Label dtype | `torch.long` (integer class indices) |
 | Default metrics | `auroc_macro`, `balanced_accuracy`, `f1_macro` |
-| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc`, `qwk` |
 | Auto-injected param | `num_classes` (from dataset) |
 
 Config:
@@ -150,7 +150,7 @@ per class branch. Accepts the same metrics as `multiclass_classification`.
 | Loss | Cross-entropy |
 | Label dtype | `torch.long` (integer class indices) |
 | Default metrics | `auroc_macro`, `balanced_accuracy`, `f1_macro` |
-| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc`, `qwk` |
 | Auto-injected param | `num_classes` (from dataset) |
 
 Config:

@@ -69,12 +69,19 @@ tiling cache entry, `preprocess()` skips live tiling and writes a local stub:
 - `process_list.csv` points to the canonical shared tiling artifacts
 - `README.txt` explains that the local directory is a placeholder
 
+On a fresh run, the first cache resolution logs `✗ tiling cache miss: ... (initializing)`,
+and after the payload is published it logs `✓ tiling cache populated: ...`.
+
 ### 3. Feature cache hit
 
 If the feature cache entry is complete, `extract()` skips embedding
 computation and returns a `FeatureStore` that reads from the shared cache.
 The requested feature directory still gets a small manifest/README so the run
 remains navigable.
+
+On a fresh run, the first cache resolution logs `✗ feature cache miss: ... (initializing)`,
+and after the payload is written back into the shared cache it logs
+`✓ feature cache populated: ...`.
 
 ## Cache Layout
 

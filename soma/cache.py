@@ -908,6 +908,8 @@ def _resolve_cache(
     key: str,
     metadata: dict[str, Any],
     manifest_rows: list[dict[str, object]],
+    initial_reason: str | None = None,
+    complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
     features_dir = cache_dir / "features"
@@ -925,6 +927,7 @@ def _resolve_cache(
             cache_label="feature",
             cache_dir=cache_dir,
             complete=validation.complete,
+            complete_state=complete_state,
             reason=validation.reason,
         )
         return FeatureCacheResolution(
@@ -945,6 +948,7 @@ def _resolve_cache(
         cache_label="feature",
         cache_dir=cache_dir,
         complete=False,
+        reason=initial_reason,
     )
     return FeatureCacheResolution(
         key=key,
@@ -968,6 +972,7 @@ def resolve_tile_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
+    complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
         dataset=dataset,
@@ -983,6 +988,8 @@ def resolve_tile_cache(
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
+        initial_reason="initializing",
+        complete_state=complete_state,
     )
 
 
@@ -996,6 +1003,7 @@ def resolve_slide_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
+    complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     metadata = _build_slide_cache_metadata(
         dataset=dataset,
@@ -1012,6 +1020,8 @@ def resolve_slide_cache(
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
+        initial_reason="initializing",
+        complete_state=complete_state,
     )
 
 
@@ -1024,6 +1034,7 @@ def resolve_hierarchical_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
+    complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         dataset=dataset,
@@ -1039,6 +1050,8 @@ def resolve_hierarchical_cache(
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
+        initial_reason="initializing",
+        complete_state=complete_state,
     )
 
 

@@ -434,7 +434,7 @@ def test_resolve_feature_cache_emits_miss_then_hit_logs(tmp_path: Path):
 
     assert resolution.complete is False
     emit_progress_log.assert_called_once()
-    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ feature cache miss:")
+    assert _strip_ansi(emit_progress_log.call_args.args[0]) == f"✗ feature cache miss: {cache_root / 'tile' / 'abc123'} (initializing)"
 
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -518,7 +518,7 @@ def test_resolve_hierarchical_cache_emits_feature_cache_logs(tmp_path: Path):
 
     assert resolution.complete is False
     emit_progress_log.assert_called_once()
-    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ feature cache miss:")
+    assert _strip_ansi(emit_progress_log.call_args.args[0]) == f"✗ feature cache miss: {cache_root / 'hierarchical' / resolution.key} (initializing)"
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):

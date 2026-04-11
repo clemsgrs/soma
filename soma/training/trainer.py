@@ -112,7 +112,6 @@ class Trainer:
                     best_tune_metrics=best_tune_metrics,
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
-                    checkpoint_path=checkpoint_path,
                     status=current_status,
                     batch_progress=current_batch_progress,
                 ),
@@ -130,7 +129,6 @@ class Trainer:
                 best_tune_metrics=best_tune_metrics,
                 patience_counter=patience_counter,
                 patience_limit=self._config.patience,
-                checkpoint_path=checkpoint_path,
                 status="waiting for epoch 1",
                 batch_progress=None,
             ),
@@ -209,7 +207,6 @@ class Trainer:
                     best_tune_metrics=best_tune_metrics,
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
-                    checkpoint_path=checkpoint_path,
                     status=current_status,
                     batch_progress=current_batch_progress,
                 ),
@@ -364,7 +361,6 @@ def _build_training_panel(
     best_tune_metrics: dict[str, float],
     patience_counter: int,
     patience_limit: int,
-    checkpoint_path: Path,
     status: str,
     batch_progress: str | None = None,
 ) -> Panel:
@@ -399,7 +395,6 @@ def _build_training_panel(
         table.add_row("best metrics", Text(best_metrics_text, style="green"))
     table.add_row("patience", Text(f"{patience_counter}/{patience_limit}", style="white"))
     table.add_row("status", Text(status, style="bold yellow" if "best" not in status else "bold green"))
-    table.add_row("checkpoint", Text(str(checkpoint_path), style="cyan"))
 
     return Panel.fit(
         table,

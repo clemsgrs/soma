@@ -100,8 +100,7 @@ class TestTrainer:
             best_tune_metrics=log.tune_metrics,
             patience_counter=0,
             patience_limit=10,
-            checkpoint_path=Path("/tmp/best_model.pt"),
-            status="new best checkpoint saved at epoch 1",
+            status="new best model saved at epoch 1",
             batch_progress=_format_batch_progress(3, 10, phase="train"),
         )
 
@@ -115,6 +114,7 @@ class TestTrainer:
         assert "tune" in rendered
         assert "batch" in rendered
         assert "03/10" in rendered
+        assert "best_model.pt" not in rendered
 
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
@@ -167,6 +167,7 @@ class TestTrainer:
         assert "epoch" in output
         assert "train" in output and "tune" in output
         assert "batch" in output
+        assert "best_model.pt" not in output
         assert "auroc" in output and "bal" in output and "f1" in output
         assert "new best checkpoint" in output or "training complete" in output
         assert result.history[-1].epoch == len(result.history) - 1

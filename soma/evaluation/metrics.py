@@ -43,6 +43,7 @@ VALID_METRICS: dict[str, set[str]] = {
         "f1_macro",
         "f1_weighted",
         "mcc",
+        "qwk",
     },
     "ordinal_classification": {
         "qwk",
@@ -192,6 +193,7 @@ _METRIC_FUNS: dict[str, dict[str, _Fn]] = {
         "f1_macro": _f1_macro,
         "f1_weighted": _f1_weighted,
         "mcc": _mcc,
+        "qwk": _qwk,
     },
     "ordinal_classification": {
         "qwk": _qwk,
