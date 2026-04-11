@@ -114,6 +114,7 @@ class TrainingConfig:
     scheduler: str = "cosine"
     patience: int = 10
     batch_size: int = 1
+    gradient_accumulation: int = 1
 
 
 @dataclass(frozen=True)

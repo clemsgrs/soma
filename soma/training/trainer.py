@@ -228,17 +228,18 @@ class Trainer:
         """Run one training epoch. Returns average loss."""
         self._model.train()
         total_loss = 0.0
-        num_batches = 0
         total_batches = len(self._train_loader)
+        accum_steps = self._config.gradient_accumulation
 
-        for batch in self._train_loader:
-            batch_index = num_batches + 1
+        self._optimizer.zero_grad()
+        step = 0
+
+        for step, batch in enumerate(self._train_loader, 1):
             if on_batch_progress is not None:
-                on_batch_progress("train", batch_index, total_batches)
+                on_batch_progress("train", step, total_batches)
             features = batch.features.to(self._device)
             labels = batch.labels.to(self._device)
 
-            self._optimizer.zero_grad()
             if hasattr(batch, "mask"):
                 out = self._model(features, mask=batch.mask.to(self._device))
             else:
@@ -254,13 +255,14 @@ class Trainer:
                     mask=mask_tensor,
                 )
 
-            loss.backward()
-            self._optimizer.step()
-
+            (loss / accum_steps).backward()
             total_loss += loss.item()
-            num_batches += 1
 
-        return total_loss / max(num_batches, 1)
+            if step % accum_steps == 0 or step == total_batches:
+                self._optimizer.step()
+                self._optimizer.zero_grad()
+
+        return total_loss / max(step, 1)
 
     @torch.inference_mode()
     def _tune(
