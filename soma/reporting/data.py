@@ -20,6 +20,7 @@ import pandas as pd
 import yaml
 
 from soma.evaluation.metrics import compute_subgroup_metrics, resolve_metrics
+from soma.training.trainer import _epoch_log_to_dict
 
 if TYPE_CHECKING:
     from soma.config import PipelineConfig
@@ -194,7 +195,7 @@ def run_data_from_result(
 
     folds = []
     for fold_result in result.fold_results:
-        training_history = [asdict(log) for log in fold_result.train_result.history]
+        training_history = [_epoch_log_to_dict(log) for log in fold_result.train_result.history]
         predictions = _predictions_to_dataframe(fold_result.test_report.predictions)
 
         # Compute subgroup metrics for the in-memory path by joining predictions

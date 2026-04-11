@@ -49,7 +49,9 @@ When you run the full pipeline, the same cache system also handles tiling:
 
 - live tiling runs write a local `tiling/` directory first
 - a complete tiling-cache hit replaces that directory with a run-local stub
+- a fresh tiling-cache population logs an `initializing` miss first, then a `populated` completion after the shared payload is written
 - a complete feature-cache hit reuses the shared embeddings directly
+- a fresh feature-cache population logs an `initializing` miss first, then a `populated` completion after the shared payload is written
 
 More details about the caching mechanism are in [docs/cache.md](docs/cache.md).
 

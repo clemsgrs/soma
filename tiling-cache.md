@@ -108,13 +108,13 @@ This keeps tiling reuse strict with respect to input slide and mask files.
 The key must use resolved preprocessing values, not raw user config. In particular:
 
 - `backend` as requested
-- `target_tile_size_px`
-- `target_spacing_um`
+- `requested_tile_size_px`
+- `requested_spacing_um`
 - `ref_tile_size_px`
-- `target_region_size_px`
+- `requested_region_size_px`
 - `region_tile_multiple`
-- `effective_tile_size_px`
-- `effective_region_size_px`
+- `read_tile_size_px`
+- `read_region_size_px`
 - `tissue_method`
 - `tissue_threshold`
 - `overlap`
@@ -128,8 +128,8 @@ The key must use resolved preprocessing values, not raw user config. In particul
 
 This matters because some fields are encoder-derived after resolution, for example:
 
-- `target_tile_size_px`
-- `target_spacing_um`
+- `requested_tile_size_px`
+- `requested_spacing_um`
 - `ref_tile_size_px`
 - hierarchical region geometry
 

@@ -51,6 +51,32 @@ The canonical encoder presets are registered in code and summarized below. Use t
 
 The WSI thumbnail is read at the pyramid level closest to `preprocessing.seg_downsample` (default 64×), which matches the level used for tissue mask and tiling preview images. Heatmaps are saved to `fold_N/attention/` (raw scores) and `fold_N/heatmaps/` (PNG overlays) inside the run directory.
 
+## Training Config
+
+`TrainingConfig` controls the training loop. It is a field on `PipelineConfig`.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `seed` | `int` | `0` | Random seed for reproducibility. |
+| `epochs` | `int` | `50` | Maximum number of training epochs. |
+| `learning_rate` | `float` | `1e-4` | Optimizer learning rate. |
+| `weight_decay` | `float` | `1e-5` | L2 regularization strength. |
+| `optimizer` | `str` | `"adam"` | Optimizer. One of `"adam"`, `"adamw"`, `"sgd"`. |
+| `scheduler` | `str` | `"cosine"` | LR scheduler. One of `"cosine"`, `"none"`. |
+| `patience` | `int` | `10` | Early-stopping patience in epochs (on tune loss). |
+| `batch_size` | `int` | `1` | Number of slides per batch. |
+| `gradient_accumulation` | `int` | `1` | Number of batches to accumulate gradients over before an optimizer step. `1` disables accumulation. Effective batch size = `batch_size × gradient_accumulation`. Loss is averaged (not summed) across accumulation steps, so loss curves remain comparable across experiments with different settings. |
+
+```yaml
+training:
+  epochs: 100
+  learning_rate: 3e-4
+  optimizer: adamw
+  scheduler: cosine
+  patience: 20
+  gradient_accumulation: 16   # effective batch size = 16 × batch_size
+```
+
 ## Aggregators
 
 Use the `aggregator.name` config key with the canonical lowercase names below.
@@ -130,7 +156,7 @@ Linear head for classification with three or more classes.
 | Loss | Cross-entropy |
 | Label dtype | `torch.long` (integer class indices) |
 | Default metrics | `auroc_macro`, `balanced_accuracy`, `f1_macro` |
-| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc`, `qwk` |
 | Auto-injected param | `num_classes` (from dataset) |
 
 Config:
@@ -150,7 +176,7 @@ per class branch. Accepts the same metrics as `multiclass_classification`.
 | Loss | Cross-entropy |
 | Label dtype | `torch.long` (integer class indices) |
 | Default metrics | `auroc_macro`, `balanced_accuracy`, `f1_macro` |
-| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc` |
+| All valid metrics | `accuracy`, `balanced_accuracy`, `auroc_macro`, `f1_macro`, `f1_weighted`, `mcc`, `qwk` |
 | Auto-injected param | `num_classes` (from dataset) |
 
 Config:

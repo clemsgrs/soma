@@ -23,11 +23,16 @@ import pandas as pd
 
 import numpy as np
 import torch
+from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
 from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
 from soma.config import (
     AggregatorConfig,
+    EncoderConfig,
     EvalConfig,
     HeatmapConfig,
     PipelineConfig,
@@ -62,7 +67,7 @@ from soma.training.model import MILModel
 from soma.training.seed import seed_everything
 from soma.training.slide_dataset import SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel
-from soma.training.trainer import Trainer, TrainResult
+from soma.training.trainer import Trainer, TrainResult, _epoch_log_to_dict
 from soma.reporting import generate_report_from_result
 
 
@@ -461,9 +466,60 @@ def train(
 # ---------------------------------------------------------------------------
 
 
+def _build_run_summary_panel(
+    *,
+    encoder: EncoderConfig | None,
+    preprocessing: PreprocessingConfig,
+    aggregator: AggregatorConfig | None,
+    task: TaskConfig,
+    feature_store: FeatureStore,
+) -> Panel:
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold", justify="right", no_wrap=True)
+    grid.add_column()
+
+    # Encoder
+    if encoder is not None:
+        grid.add_row("encoder", encoder.name)
+    else:
+        grid.add_row("encoder", "[dim]pre-extracted[/dim]")
+
+    # Spacing — prefer encoder-level override, fall back to preprocessing
+    spacing: float | None = encoder.spacing_um if encoder is not None else None
+    if spacing is None:
+        spacing = preprocessing.requested_spacing_um
+    grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
+
+    # Aggregator
+    if aggregator is not None:
+        grid.add_row("aggregator", aggregator.name)
+    else:
+        grid.add_row("aggregator", "[dim]—[/dim]")
+
+    # Task
+    grid.add_row("task", task.name.replace("_", " "))
+
+    # Feature level + dim
+    if feature_store.is_slide_level:
+        level = "slide"
+    elif feature_store.is_hierarchical:
+        level = "hierarchical"
+    else:
+        level = "tile"
+    grid.add_row("features", f"{level}  ·  dim={feature_store.feature_dim}")
+
+    return Panel.fit(
+        grid,
+        title="[bold]run summary[/bold]",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+
+
 def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: AggregatorConfig) -> dict[str, object]:
-    patch_size = preprocessing.target_tile_size_px or preprocessing.effective_tile_size_px
-    region_size = preprocessing.target_region_size_px or preprocessing.effective_region_size_px
+    patch_size = preprocessing.requested_tile_size_px or preprocessing.read_tile_size_px
+    region_size = preprocessing.requested_region_size_px or preprocessing.read_region_size_px
     tile_multiple = preprocessing.region_tile_multiple
     if patch_size is None or region_size is None:
         raise ValueError("hierarchical preprocessing must resolve patch and region sizes")
@@ -472,14 +528,14 @@ def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Aggrega
     if tile_multiple is None:
         if region_size % patch_size != 0:
             raise ValueError(
-                "hierarchical preprocessing requires target_region_size_px to be divisible by target_tile_size_px"
+                "hierarchical preprocessing requires requested_region_size_px to be divisible by requested_tile_size_px"
             )
         tile_multiple = region_size // patch_size
     tile_multiple = int(tile_multiple)
     if region_size != patch_size * tile_multiple:
         raise ValueError(
-            "hierarchical preprocessing requires target_region_size_px to equal "
-            "target_tile_size_px × region_tile_multiple"
+            "hierarchical preprocessing requires requested_region_size_px to equal "
+            "requested_tile_size_px × region_tile_multiple"
         )
 
     params = {
@@ -562,6 +618,18 @@ class Pipeline:
             # Load feature store
             store = self._get_feature_store(run_dir=layout.run_dir)
 
+            # Print a compact summary of the run configuration before training
+            preprocessing = self._resolve_preprocessing()
+            Console().print(
+                _build_run_summary_panel(
+                    encoder=self._config.encoder,
+                    preprocessing=preprocessing,
+                    aggregator=self._config.aggregator,
+                    task=self._config.task,
+                    feature_store=store,
+                )
+            )
+
             result = train(
                 feature_store=store,
                 dataset=self._dataset,
@@ -571,7 +639,7 @@ class Pipeline:
                 eval=self._config.eval,
                 training=self._config.training,
                 run_dir=layout.run_dir,
-                preprocessing=self._resolve_preprocessing(),
+                preprocessing=preprocessing,
                 heatmaps=self._config.heatmaps,
             )
 
@@ -787,7 +855,7 @@ def _save_metrics(
 
 
 def _save_training_history(history: list, path: Path) -> None:
-    data = [asdict(log) for log in history]
+    data = [_epoch_log_to_dict(log) for log in history]
     path.write_text(json.dumps(data, indent=2))
 
 

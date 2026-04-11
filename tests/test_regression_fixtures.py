@@ -50,8 +50,8 @@ def _build_dataset(tmp_path: Path) -> Dataset:
 def _regression_preprocessing() -> PreprocessingConfig:
     return PreprocessingConfig(
         backend="openslide",
-        target_tile_size_px=224,
-        target_spacing_um=0.5,
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
         tolerance=0.07,
         tissue_threshold=0.1,
         overlap=0.0,
@@ -103,10 +103,10 @@ def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
     gt_meta, gt_tile_index, gt_coordinates, gt_tissue_fractions = _load_legacy_coordinate_gt()
 
     assert soma_meta["sample_id"] == gt_meta["sample_id"]
-    assert soma_meta["requested_spacing_um"] == pytest.approx(gt_meta["target_spacing_um"])
-    assert soma_meta["requested_tile_size_px"] == gt_meta["target_tile_size_px"]
+    assert soma_meta["requested_spacing_um"] == pytest.approx(gt_meta["requested_spacing_um"])
+    assert soma_meta["requested_tile_size_px"] == gt_meta["requested_tile_size_px"]
     assert soma_meta["read_level"] == gt_meta["read_level"]
-    assert soma_meta["effective_tile_size_px"] == gt_meta["read_tile_size_px"]
+    assert soma_meta["read_tile_size_px"] == gt_meta["read_tile_size_px"]
     assert soma_meta["tile_size_lv0"] == gt_meta["tile_size_lv0"]
     assert soma_meta["step_px_lv0"] == gt_meta["step_px_lv0"]
     assert soma_meta["overlap"] == gt_meta["overlap"]

@@ -188,8 +188,8 @@ def _validate_runtime(
         return
     validate_slide2vec_encoder_config(
         encoder_name,
-        target_tile_size_px=int(preprocessing.target_tile_size_px),
-        target_spacing_um=float(preprocessing.target_spacing_um),
+        requested_tile_size_px=int(preprocessing.requested_tile_size_px),
+        requested_spacing_um=float(preprocessing.requested_spacing_um),
         precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         output_variant=output_variant,
         allow_non_recommended=False,
@@ -496,6 +496,7 @@ class FeatureExtractor:
                 backend_provenance=backend_provenance,
                 encoder_name=self._encoder.name,
                 raw_preprocessing=asdict(self._preprocessing),
+                complete_state="populated",
             )
             if refreshed.complete:
                 write_tiling_cache_stub(tiling_dir, cache_resolution=refreshed)
@@ -922,8 +923,18 @@ class FeatureExtractor:
             output_variant=output_variant,
             num_gpus=num_gpus,
         )
+        refreshed = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            tile_encoder_name=self._encoder.name,
+            preprocessing=resolved_preprocessing,
+            execution=self._encoder,
+            output_variant=output_variant,
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
         self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
-        return FeatureStore(cache_resolution.cache_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_hierarchical_cached(
         self,
@@ -963,8 +974,18 @@ class FeatureExtractor:
             output_variant=output_variant,
             num_gpus=num_gpus,
         )
+        refreshed = resolve_hierarchical_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            tile_encoder_name=self._encoder.name,
+            preprocessing=resolved_preprocessing,
+            execution=self._encoder,
+            output_variant=output_variant,
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
         self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
-        return FeatureStore(cache_resolution.cache_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_slide_cached(
         self,
@@ -1019,7 +1040,10 @@ class FeatureExtractor:
                 loaded_tilings=loaded_tilings,
                 tiling_dir=tiling_dir,
                 preprocessing=preprocessing,
+                resolved_preprocessing=resolved_preprocessing,
+                backend_provenance=backend_provenance,
                 model_name=self._encoder.name,
+                tile_encoder_name=tile_encoder_name,
                 output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
             )
@@ -1035,6 +1059,16 @@ class FeatureExtractor:
             output_variant=str(tile_dependency_output["output_variant"]),
             num_gpus=num_gpus,
         )
+        tile_cache = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            tile_encoder_name=tile_encoder_name,
+            preprocessing=resolved_preprocessing,
+            execution=self._encoder,
+            output_variant=str(tile_dependency_output["output_variant"]),
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
         self._populate_slide_cache(
             slide_cache=slide_cache,
             tile_cache=tile_cache,
@@ -1043,8 +1077,19 @@ class FeatureExtractor:
             output_variant=runtime_output_variant,
             num_gpus=num_gpus,
         )
+        refreshed = resolve_slide_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            slide_encoder_name=self._encoder.name,
+            tile_encoder_name=tile_encoder_name,
+            tile_cache_key=tile_cache.key,
+            execution=self._encoder,
+            output_variant=output_variant,
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
         self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
-        return FeatureStore(slide_cache.cache_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _populate_tile_cache(
         self,
@@ -1175,7 +1220,10 @@ class FeatureExtractor:
         loaded_tilings: Sequence[LoadedTiling],
         tiling_dir: Path,
         preprocessing: Slide2VecPreprocessingConfig,
+        resolved_preprocessing: PreprocessingConfig,
+        backend_provenance: dict[str, object],
         model_name: str,
+        tile_encoder_name: str,
         output_variant: str | None,
         num_gpus: int,
     ) -> None:
@@ -1216,6 +1264,27 @@ class FeatureExtractor:
         if empty_sample_ids:
             record_empty_sample_ids(tile_cache, empty_sample_ids)
             record_empty_sample_ids(slide_cache, empty_sample_ids)
+        resolve_tile_cache(
+            cache_root=tile_cache.cache_dir.parent.parent,
+            dataset=self._dataset,
+            tile_encoder_name=tile_cache.metadata["encoder_name"],
+            preprocessing=resolved_preprocessing,
+            execution=self._encoder,
+            output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
+        resolve_slide_cache(
+            cache_root=slide_cache.cache_dir.parent.parent,
+            dataset=self._dataset,
+            slide_encoder_name=self._encoder.name,
+            tile_encoder_name=tile_encoder_name,
+            tile_cache_key=tile_cache.key,
+            execution=self._encoder,
+            output_variant=output_variant,
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
 
     def _populate_slide_cache(
         self,

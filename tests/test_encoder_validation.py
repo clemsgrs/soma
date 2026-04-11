@@ -39,7 +39,7 @@ def _metadata(
 
 
 def _tiling_result(
-    effective_spacing_um: float = 0.5,
+    read_spacing_um: float = 0.5,
     requested_tile_size_px: int = 256,
     requested_spacing_um: float = 0.5,
 ) -> TileGeometry:
@@ -50,8 +50,8 @@ def _tiling_result(
         requested_tile_size_px=requested_tile_size_px,
         requested_spacing_um=requested_spacing_um,
         read_level=0,
-        effective_tile_size_px=requested_tile_size_px,
-        effective_spacing_um=effective_spacing_um,
+        read_tile_size_px=requested_tile_size_px,
+        read_spacing_um=read_spacing_um,
         tile_size_lv0=requested_tile_size_px,
         is_within_tolerance=True,
         base_spacing_um=0.25,
@@ -131,11 +131,11 @@ class TestValidateEncoderConfig:
         )
         assert any("input_size" in w.lower() for w in warnings)
 
-    def test_requested_spacing_match_does_not_warn_when_effective_spacing_differs(self):
+    def test_requested_spacing_match_does_not_warn_when_read_spacing_differs(self):
         warnings = validate_encoder_config(
             EncoderConfig(name="uni2", spacing_um=0.5),
             _metadata(supported_spacing_um=0.5),
-            tiling_result=_tiling_result(effective_spacing_um=0.75),
+            tiling_result=_tiling_result(read_spacing_um=0.75),
         )
         assert not any("spacing" in w.lower() for w in warnings)
 
@@ -145,7 +145,7 @@ class TestValidateEncoderConfig:
             _metadata(supported_spacing_um=0.5),
             tiling_result=_tiling_result(
                 requested_spacing_um=0.75,
-                effective_spacing_um=0.5,
+                read_spacing_um=0.5,
             ),
         )
         assert any("requested tiling spacing" in w.lower() for w in warnings)
@@ -171,7 +171,7 @@ class TestValidateEncoderConfig:
                 tile_encoder_output_variant="default",
                 input_size=None,
             ),
-            preprocessing_config=PreprocessingConfig(target_tile_size_px=256),
+            preprocessing_config=PreprocessingConfig(requested_tile_size_px=256),
         )
         assert any("tile size" in w.lower() for w in warnings)
 

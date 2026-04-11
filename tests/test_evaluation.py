@@ -160,6 +160,12 @@ class TestMulticlassClassificationMetrics:
         assert isinstance(m["f1_macro"], float)
         assert isinstance(m["f1_weighted"], float)
 
+    def test_qwk_is_supported_for_multiclass(self):
+        y_true = np.array([0, 1, 2, 3])
+        y_pred = np.array([0, 1, 2, 3])
+        m = compute_metrics("multiclass_classification", ["qwk"], y_true, y_pred, y_prob=None)
+        assert m["qwk"] == pytest.approx(1.0, abs=1e-6)
+
 
 # ---------------------------------------------------------------------------
 # Ordinal classification metrics

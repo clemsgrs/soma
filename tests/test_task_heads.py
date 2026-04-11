@@ -140,12 +140,18 @@ class TestMulticlassClassificationHead:
         assert set(head.metrics) == set(DEFAULT_METRICS["multiclass_classification"])
 
     def test_custom_metrics(self):
-        head = MulticlassClassificationHead(input_dim=8, num_classes=3, metrics=["accuracy", "f1_macro"])
-        assert set(head.metrics) == {"accuracy", "f1_macro"}
+        head = MulticlassClassificationHead(
+            input_dim=8, num_classes=3, metrics=["accuracy", "f1_macro", "qwk"]
+        )
+        assert set(head.metrics) == {"accuracy", "f1_macro", "qwk"}
 
     def test_invalid_metric_raises(self):
         with pytest.raises(ValueError, match="Invalid metrics"):
             MulticlassClassificationHead(input_dim=8, num_classes=3, metrics=["auroc"])
+
+    def test_qwk_metric_is_accepted(self):
+        head = MulticlassClassificationHead(input_dim=8, num_classes=3, metrics=["qwk"])
+        assert head.metrics == ["qwk"]
 
     def test_compute_metrics_returns_requested_keys(self):
         head = MulticlassClassificationHead(input_dim=8, num_classes=3, metrics=["accuracy", "f1_macro"])

@@ -16,12 +16,12 @@ class PreprocessingConfig:
     """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
 
     backend: str = "auto"
-    target_tile_size_px: int | None = None
-    target_spacing_um: float | None = None
-    target_region_size_px: int | None = None
+    requested_tile_size_px: int | None = None
+    requested_spacing_um: float | None = None
+    requested_region_size_px: int | None = None
     region_tile_multiple: int | None = None
-    effective_tile_size_px: int | None = None
-    effective_region_size_px: int | None = None
+    read_tile_size_px: int | None = None
+    read_region_size_px: int | None = None
     tissue_method: str = "hsv"
     tissue_threshold: float = 0.1
     overlap: float = 0.0
@@ -43,7 +43,7 @@ class PreprocessingConfig:
 
     @property
     def has_hierarchical_geometry(self) -> bool:
-        return self.region_tile_multiple is not None or self.target_region_size_px is not None
+        return self.region_tile_multiple is not None or self.requested_region_size_px is not None
 
 
 @dataclass(frozen=True)
@@ -75,7 +75,7 @@ class CacheConfig:
 class AggregatorConfig:
     """Configuration for the MIL aggregator."""
 
-    name: str = "abmil"
+    name: str
     params: dict[str, Any] = field(default_factory=dict)
 
 
@@ -114,6 +114,7 @@ class TrainingConfig:
     scheduler: str = "cosine"
     patience: int = 10
     batch_size: int = 1
+    gradient_accumulation: int = 1
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ class PipelineConfig:
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
-    aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
+    aggregator: AggregatorConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     eval: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
