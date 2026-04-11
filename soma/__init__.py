@@ -4,8 +4,10 @@ from soma.config import (
     AggregatorConfig,
     CacheConfig,
     EncoderConfig,
+    EvalConfig,
     PipelineConfig,
     PreprocessingConfig,
+    SubgroupConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -21,8 +23,10 @@ __all__ = [
     "AggregatorConfig",
     "CacheConfig",
     "EncoderConfig",
+    "EvalConfig",
     "PipelineConfig",
     "PreprocessingConfig",
+    "SubgroupConfig",
     "TaskConfig",
     "TrainingConfig",
     # Data

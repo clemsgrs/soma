@@ -6,6 +6,8 @@ Plotly JS is embedded inline so the report opens without network access.
 
 from __future__ import annotations
 
+import numpy as np
+import pandas as pd
 import plotly
 import plotly.graph_objects as go
 
@@ -21,7 +23,10 @@ from soma.reporting.charts import (
     roc_curve_chart,
     scatter_predicted_vs_actual,
     score_distribution_chart,
+    subgroup_metric_chart,
+    subgroup_stats_heatmap,
 )
+from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats
 from soma.reporting.data import ComparisonData, RunData
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
@@ -45,6 +50,7 @@ def render_report(run_data: RunData) -> str:
     sections.append(_section_results_summary(run_data))
     sections.append(_section_training_curves(run_data))
     sections.append(_section_prediction_analysis(run_data))
+    sections.append(_section_subgroup_analysis(run_data))
 
     body = "\n".join(sections)
     plotly_js = plotly.offline.get_plotlyjs()
@@ -218,6 +224,112 @@ def _section_prediction_analysis(run_data: RunData) -> str:
 </div>"""
 
 
+def _section_subgroup_analysis(run_data: RunData) -> str:
+    """Subgroup analysis section — only rendered when subgroup columns are configured."""
+    if not run_data.subgroup_columns:
+        return ""
+
+    # Aggregate all fold predictions into one DataFrame for robust estimates.
+    all_preds = pd.concat(
+        [fd.predictions for fd in run_data.folds if not fd.predictions.empty],
+        ignore_index=True,
+    )
+    if all_preds.empty:
+        return ""
+
+    # Overall (non-subgroup) test metrics: average across folds
+    overall: dict[str, float] = {}
+    for metric in run_data.metrics:
+        vals = [fd.test_metrics.get(metric) for fd in run_data.folds if metric in fd.test_metrics]
+        if vals:
+            overall[metric] = float(np.mean(vals))
+
+    sg_metrics = compute_subgroup_metrics(
+        run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
+    )
+
+    # Check if any fold has statistical testing results
+    has_stats = any(
+        fd.subgroup_metrics is not None and "stats" in (fd.subgroup_metrics or {})
+        for fd in run_data.folds
+    )
+    sg_stats: dict | None = None
+    if has_stats:
+        # Recompute stats from the concatenated predictions (more robust than per-fold)
+        sg_stats = compute_subgroup_stats(
+            run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
+        )
+
+    html_parts: list[str] = []
+
+    for col in run_data.subgroup_columns:
+        col_data = sg_metrics.get(col, {})
+        if not col_data:
+            continue
+
+        # Table: groups × metrics
+        header_cells = "<th>Group</th><th>n</th>" + "".join(
+            f"<th>{m}</th>" for m in run_data.metrics
+        )
+        rows_html = ""
+        for group_val, group_metrics in sorted(col_data.items()):
+            n = group_metrics.get("n", "—")
+            cells = f"<td><strong>{group_val}</strong></td><td>{n}</td>"
+            for metric in run_data.metrics:
+                val = group_metrics.get(metric)
+                overall_val = overall.get(metric)
+                if val is None:
+                    cells += "<td>—</td>"
+                    continue
+                deviation = abs(val - overall_val) / max(abs(overall_val), 1e-9) if overall_val is not None else 0
+                css = " class=\"subgroup-flag\"" if deviation >= 0.10 else ""
+                cells += f"<td{css}>{val:.3f}</td>"
+            rows_html += f"<tr>{cells}</tr>"
+
+        table_html = f"""
+<table class="metrics-table">
+  <thead><tr>{header_cells}</tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>"""
+
+        # Bar charts (one per metric)
+        chart_divs = "".join(
+            _chart_div(subgroup_metric_chart(col_data, m, overall.get(m, 0), col), width="half")
+            for m in run_data.metrics
+            if any(m in col_data[g] for g in col_data)
+        )
+
+        html_parts.append(f"""
+<h3>{col}</h3>
+{table_html}
+<div class="chart-grid">{chart_divs}</div>""")
+
+    # Statistical testing panel (collapsible)
+    stats_html = ""
+    if sg_stats:
+        heatmap_div = _chart_div(
+            subgroup_stats_heatmap(sg_stats, run_data.subgroup_columns, run_data.metrics),
+            width="full",
+        )
+        stats_html = f"""
+<details>
+  <summary>Statistical significance (permutation test)</summary>
+  <p style="margin:0.5em 0;font-size:0.9em;color:#555;">
+    Two-sided permutation test (1000 iterations, seed=42). Each group is compared against
+    the rest of the test set. p&nbsp;&lt;&nbsp;0.05 indicates a statistically significant
+    performance gap. Groups with n&nbsp;&lt;&nbsp;10 are excluded.
+  </p>
+  {heatmap_div}
+</details>"""
+
+    inner = "\n".join(html_parts) + stats_html
+    return f"""
+<div class="section">
+  <h2>Subgroup Analysis</h2>
+  {inner}
+</div>"""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -247,7 +359,7 @@ def _config_rows(cfg: dict) -> list[tuple[str, str]]:
         return str(obj) if obj is not None else default
 
     rows.append(("Task", _get(cfg, "task", "name")))
-    rows.append(("Metrics", ", ".join(cfg.get("task", {}).get("metrics") or ["(defaults)"])))
+    rows.append(("Metrics", ", ".join(cfg.get("eval", {}).get("metrics") or ["(defaults)"])))
 
     encoder = cfg.get("encoder")
     if encoder:
@@ -483,6 +595,7 @@ def _comparison_css() -> str:
   margin-right: 6px;
 }
 .best-val { background: #d4edda; }
+.subgroup-flag { background: #fff3cd; font-weight: 600; }
 .shared-cfg { margin-top: 16px; }
 .shared-cfg summary {
   cursor: pointer; color: #6c757d; font-size: 13px;

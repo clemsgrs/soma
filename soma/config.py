@@ -8,6 +8,8 @@ from typing import Any
 
 import yaml
 
+from soma.evaluation.metrics import resolve_metrics
+
 
 @dataclass(frozen=True)
 class PreprocessingConfig:
@@ -83,7 +85,22 @@ class TaskConfig:
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SubgroupConfig:
+    """Configuration for subgroup analysis."""
+
+    columns: list[str] = field(default_factory=list)
+    statistical_testing: bool = False
+
+
+@dataclass(frozen=True)
+class EvalConfig:
+    """Configuration for evaluation: metrics and subgroup analysis."""
+
     metrics: list[str] = field(default_factory=list)
+    subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
 
 
 @dataclass(frozen=True)
@@ -122,6 +139,7 @@ class PipelineConfig:
     encoder: EncoderConfig | None = None
     aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
+    eval: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     tags: list[str] = field(default_factory=list)
@@ -129,6 +147,8 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.task is None:
             raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
+        # Validate that requested metrics are valid for the task family.
+        resolve_metrics(self.task.name, self.eval.metrics)
 
 
 # --- YAML serialization ---
@@ -179,7 +199,16 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig:
         raise ValueError(
             "Config is missing required 'task.name' (e.g. task: {name: binary_classification})"
         )
-    return TaskConfig(**task_data)
+    return TaskConfig(name=task_data["name"], params=task_data.get("params", {}))
+
+
+def _load_eval_config(data: dict[str, Any]) -> EvalConfig:
+    eval_data = data.get("eval", {})
+    subgroup_data = eval_data.get("subgroups", {})
+    return EvalConfig(
+        metrics=eval_data.get("metrics", []),
+        subgroups=SubgroupConfig(**subgroup_data) if subgroup_data else SubgroupConfig(),
+    )
 
 
 def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
@@ -195,6 +224,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
         task=_load_task_config(data),
+        eval=_load_eval_config(data),
         training=TrainingConfig(**data.get("training", {})),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         tags=data.get("tags", []),

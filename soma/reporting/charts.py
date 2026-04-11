@@ -587,6 +587,116 @@ def _hex_to_rgba(hex_color: str, alpha: float = 0.2) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
+def subgroup_metric_chart(
+    subgroup_data: dict[str, dict[str, float | int]],
+    metric_name: str,
+    overall_value: float,
+    column_name: str = "",
+) -> go.Figure:
+    """Bar chart comparing metric values across subgroups.
+
+    Args:
+        subgroup_data: {group_value → {metric: value, "n": count}}
+        metric_name: Which metric to plot.
+        overall_value: Overall (non-subgroup) metric value — shown as a reference line.
+        column_name: Column name for the chart title.
+
+    Returns:
+        Plotly Figure with one bar per group.
+    """
+    groups = [g for g, d in subgroup_data.items() if metric_name in d]
+    values = [subgroup_data[g][metric_name] for g in groups]
+    ns = [subgroup_data[g].get("n", "") for g in groups]
+
+    colors = [
+        "#2A9D8F" if v >= overall_value else "#E63946"
+        for v in values
+    ]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        x=groups,
+        y=values,
+        marker_color=colors,
+        text=[f"n={n}" for n in ns],
+        textposition="outside",
+        name=metric_name,
+    ))
+    fig.add_hline(
+        y=overall_value,
+        line_dash="dash",
+        line_color="gray",
+        annotation_text=f"overall={overall_value:.3f}",
+        annotation_position="top right",
+    )
+    title = f"{metric_name} by {column_name}" if column_name else metric_name
+    fig.update_layout(
+        **_chart_layout(),
+        title=title,
+        xaxis_title=column_name or "Group",
+        yaxis_title=metric_name,
+        showlegend=False,
+    )
+    return fig
+
+
+def subgroup_stats_heatmap(
+    stats: dict[str, dict[str, dict[str, float]]],
+    columns: list[str],
+    metrics: list[str],
+) -> go.Figure:
+    """Heatmap of permutation-test p-values for subgroup analysis.
+
+    Rows = column×group combinations, columns = metrics.
+    Color scale: green (low p-value / significant) to white (high p-value).
+
+    Args:
+        stats: {column → {group → {metric: p_value}}}
+        columns: Column names (controls row ordering).
+        metrics: Metric names (controls column ordering).
+
+    Returns:
+        Plotly Figure heatmap.
+    """
+    row_labels: list[str] = []
+    z: list[list[float]] = []
+
+    for col in columns:
+        if col not in stats:
+            continue
+        for group, metric_pvals in sorted(stats[col].items()):
+            row_labels.append(f"{col}={group}")
+            z.append([metric_pvals.get(m, float("nan")) for m in metrics])
+
+    if not row_labels:
+        fig = go.Figure()
+        fig.update_layout(**_chart_layout(), title="No statistical test results")
+        return fig
+
+    fig = go.Figure(go.Heatmap(
+        z=z,
+        x=metrics,
+        y=row_labels,
+        colorscale=[[0, "#2A9D8F"], [0.05, "#E9C46A"], [1, "#f5f5f5"]],
+        zmin=0,
+        zmax=1,
+        colorbar=dict(title="p-value"),
+        text=[[f"{v:.3f}" if not np.isnan(v) else "—" for v in row] for row in z],
+        texttemplate="%{text}",
+    ))
+    fig.add_shape(
+        type="line", x0=-0.5, x1=len(metrics) - 0.5,
+        y0=-0.5, y1=len(row_labels) - 0.5,
+        line=dict(color="rgba(0,0,0,0)"),
+    )
+    fig.update_layout(
+        **_chart_layout(),
+        title="Permutation test p-values (p < 0.05 = significant)",
+        height=max(400, 40 * len(row_labels)),
+    )
+    return fig
+
+
 def _chart_layout() -> dict:
     return dict(
         template="plotly_white",

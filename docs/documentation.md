@@ -600,6 +600,7 @@ The HTML report is fully self-contained (Plotly JS embedded, no network access r
   - *Multiclass classification*: macro-averaged ROC curve, confusion matrix, score distributions
   - *Ordinal classification*: confusion matrix, score distributions
   - *Regression*: predicted vs. actual scatter, residuals plot
+- **Subgroup analysis** — when `eval.subgroups.columns` is configured, shows per-group metric tables and bar charts with deviation highlighting. An optional statistical testing panel (permutation test) can be enabled with `eval.subgroups.statistical_testing = True`.
 
 ### Cross-run comparison
 
@@ -650,9 +651,24 @@ All configs are frozen dataclasses with YAML serialization:
 | `CacheConfig` | Shared feature-cache policy and root |
 | `EncoderConfig` | Required foundation model name, optional precision override, batch_size, optional `num_workers` override |
 | `AggregatorConfig` | Aggregator name + params dict |
-| `TaskConfig` | Task head name + params dict |
+| `TaskConfig` | Task head name + params dict (model architecture only) |
+| `EvalConfig` | Evaluation metrics + subgroup analysis settings |
+| `SubgroupConfig` | Categorical columns for subgroup analysis, optional statistical testing flag |
 | `TrainingConfig` | Epochs, LR, optimizer, scheduler, patience |
 | `PipelineConfig` | Bundles all above + dataset/splits/output paths |
+
+`TaskConfig` and `EvalConfig` are separate: `task` defines what is predicted (model head architecture), `eval` defines how it is measured (metrics, subgroup breakdowns). Metric validation (`resolve_metrics`) runs in `PipelineConfig.__post_init__` where both are in scope.
+
+Example:
+```python
+from soma.config import TaskConfig, EvalConfig, SubgroupConfig
+
+task = TaskConfig(name="binary_classification")
+eval = EvalConfig(
+    metrics=["auroc", "f1"],
+    subgroups=SubgroupConfig(columns=["sex", "grade"], statistical_testing=False),
+)
+```
 
 ```python
 from soma.config import save_config, load_config

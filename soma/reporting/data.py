@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import yaml
 
-from soma.evaluation.metrics import resolve_metrics
+from soma.evaluation.metrics import compute_subgroup_metrics, resolve_metrics
 
 if TYPE_CHECKING:
     from soma.config import PipelineConfig
@@ -35,6 +35,7 @@ class FoldData:
     tune_metrics: dict[str, float]
     test_metrics: dict[str, float]
     predictions: pd.DataFrame     # columns depend on task family
+    subgroup_metrics: dict | None = None  # {column → {group → {metric: value, n: int}}}
 
 
 @dataclass
@@ -47,6 +48,11 @@ class RunData:
     folds: list[FoldData]
     task_family: str
     metrics: list[str]            # resolved user-requested metrics
+    subgroup_columns: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.subgroup_columns is None:
+            self.subgroup_columns = []
 
 
 def load_run_data(run_dir: str | Path) -> RunData:
@@ -71,7 +77,8 @@ def load_run_data(run_dir: str | Path) -> RunData:
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
 
     task_family = config["task"]["name"]
-    metrics = resolve_metrics(task_family, config["task"].get("metrics") or [])
+    metrics = resolve_metrics(task_family, config.get("eval", {}).get("metrics") or [])
+    subgroup_columns = list(config.get("eval", {}).get("subgroups", {}).get("columns") or [])
 
     folds = []
     fold_dirs = sorted(
@@ -89,12 +96,16 @@ def load_run_data(run_dir: str | Path) -> RunData:
         predictions_path = fold_dir / "predictions.csv"
         predictions = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame()
 
+        sg_path = fold_dir / "subgroup_metrics.json"
+        subgroup_metrics = json.loads(sg_path.read_text()) if sg_path.exists() else None
+
         folds.append(FoldData(
             fold=fold_idx,
             training_history=training_history,
             tune_metrics=metrics_data.get("tune", {}),
             test_metrics=metrics_data.get("test", {}),
             predictions=predictions,
+            subgroup_metrics=subgroup_metrics,
         ))
 
     return RunData(
@@ -104,21 +115,30 @@ def load_run_data(run_dir: str | Path) -> RunData:
         folds=folds,
         task_family=task_family,
         metrics=metrics,
+        subgroup_columns=subgroup_columns,
     )
 
 
-def run_data_from_result(result: PipelineResult, config: PipelineConfig) -> RunData:
+def run_data_from_result(
+    result: PipelineResult,
+    config: PipelineConfig,
+    *,
+    dataset: object = None,
+) -> RunData:
     """Build RunData from an in-memory PipelineResult (no heavy disk reads).
 
     Args:
         result: PipelineResult returned by Pipeline.run() or train().
         config: The PipelineConfig used for the run.
+        dataset: Optional Dataset object. Required to compute subgroup metrics
+            for the in-memory path when subgroup columns are configured.
 
     Returns:
         RunData ready for report rendering.
     """
     task_family = config.task.name
-    metrics = resolve_metrics(task_family, config.task.metrics)
+    metrics = resolve_metrics(task_family, config.eval.metrics)
+    subgroup_columns = list(config.eval.subgroups.columns)
 
     config_dict = _config_to_dict(config)
 
@@ -130,12 +150,22 @@ def run_data_from_result(result: PipelineResult, config: PipelineConfig) -> RunD
         training_history = [asdict(log) for log in fold_result.train_result.history]
         predictions = _predictions_to_dataframe(fold_result.test_report.predictions)
 
+        # Compute subgroup metrics for the in-memory path by joining predictions
+        # with dataset metadata on sample_id.
+        fold_subgroup_metrics = None
+        if subgroup_columns and dataset is not None:
+            enriched = _enrich_predictions_df(predictions, dataset, subgroup_columns)
+            fold_subgroup_metrics = {"metrics": compute_subgroup_metrics(
+                task_family, metrics, enriched, subgroup_columns
+            )}
+
         folds.append(FoldData(
             fold=fold_result.fold,
             training_history=training_history,
             tune_metrics=fold_result.tune_report.metrics,
             test_metrics=fold_result.test_report.metrics,
             predictions=predictions,
+            subgroup_metrics=fold_subgroup_metrics,
         ))
 
     return RunData(
@@ -145,6 +175,7 @@ def run_data_from_result(result: PipelineResult, config: PipelineConfig) -> RunD
         folds=folds,
         task_family=task_family,
         metrics=metrics,
+        subgroup_columns=subgroup_columns,
     )
 
 
@@ -169,6 +200,21 @@ def _stringify_paths(obj: object) -> None:
                 obj[i] = str(value)
             else:
                 _stringify_paths(value)
+
+
+def _enrich_predictions_df(
+    predictions_df: pd.DataFrame,
+    dataset: object,
+    subgroup_columns: list[str],
+) -> pd.DataFrame:
+    """Add subgroup columns to predictions DataFrame by joining on sample_id."""
+    df = predictions_df.copy()
+    samples = dataset.samples  # type: ignore[attr-defined]
+    for col in subgroup_columns:
+        df[col] = df["sample_id"].map(
+            lambda sid, c=col: samples[sid].metadata.get(c) if sid in samples else None
+        )
+    return df
 
 
 def _predictions_to_dataframe(predictions: list) -> pd.DataFrame:

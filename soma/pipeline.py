@@ -19,6 +19,8 @@ from pathlib import Path
 
 import functools
 
+import pandas as pd
+
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
@@ -26,6 +28,7 @@ from torch.utils.data import DataLoader
 from soma.aggregators.registry import aggregator_registry
 from soma.config import (
     AggregatorConfig,
+    EvalConfig,
     HeatmapConfig,
     PipelineConfig,
     PreprocessingConfig,
@@ -34,6 +37,7 @@ from soma.config import (
     save_config,
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
+from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats, resolve_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
@@ -120,6 +124,7 @@ def train_one_fold(
     training: TrainingConfig,
     fold_dir: str | Path,
     *,
+    eval: EvalConfig | None = None,
     aggregator: AggregatorConfig | None = None,
     fold: int = 0,
     preprocessing: PreprocessingConfig | None = None,
@@ -134,6 +139,7 @@ def train_one_fold(
         aggregator: Aggregator configuration, or None for slide-level features.
             Omit this argument for slide-level encoders.
         task: Task head configuration.
+        eval: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
         training: Training loop configuration.
         fold_dir: Directory for checkpoint, metrics, predictions.
         fold: Fold index (for FoldResult metadata).
@@ -143,6 +149,7 @@ def train_one_fold(
     Returns:
         FoldResult with training result + tune/test evaluation reports.
     """
+    eval = eval or EvalConfig()
     fold_dir = Path(fold_dir)
     fold_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,8 +219,18 @@ def train_one_fold(
     )
     logger.info(summary)
 
+    # Validate subgroup columns exist in dataset metadata
+    if eval.subgroups.columns:
+        sample = next(iter(dataset.samples.values()))
+        missing = [c for c in eval.subgroups.columns if c not in sample.metadata]
+        if missing:
+            raise ValueError(
+                f"Subgroup column(s) not found in dataset metadata: {missing}. "
+                f"Available: {sorted(sample.metadata)}"
+            )
+
     task_cls = task_registry.get(task.name)
-    task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": task.metrics}
+    task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": eval.metrics}
 
     # Derive label encoding from the task head class
     label_dtype = task_cls.label_dtype
@@ -356,8 +373,21 @@ def train_one_fold(
 
     # Save metrics, predictions, and training history
     _save_metrics(tune_report, test_report, fold_dir / "metrics.json")
-    _save_predictions(test_report, fold_dir / "predictions.csv")
+    subgroup_data = _build_subgroup_data(dataset, test_report, eval.subgroups.columns)
+    _save_predictions(test_report, fold_dir / "predictions.csv", subgroup_data=subgroup_data)
     _save_training_history(train_result.history, fold_dir / "training_history.json")
+
+    # Save subgroup metrics when subgroup columns are configured
+    if eval.subgroups.columns:
+        predictions_df = pd.read_csv(fold_dir / "predictions.csv")
+        task_family = task.name
+        resolved_metrics = resolve_metrics(task_family, eval.metrics)
+        sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
+        sg_out: dict = {"metrics": sg_metrics}
+        if eval.subgroups.statistical_testing:
+            sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
+            sg_out["stats"] = sg_stats
+        (fold_dir / "subgroup_metrics.json").write_text(json.dumps(sg_out, indent=2))
 
     return FoldResult(
         fold=fold,
@@ -375,6 +405,7 @@ def train(
     training: TrainingConfig,
     run_dir: str | Path,
     aggregator: AggregatorConfig | None = None,
+    eval: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
 ) -> PipelineResult:
@@ -387,6 +418,7 @@ def train(
         aggregator: Aggregator configuration, or None for slide-level features.
             Omit this argument for slide-level encoders.
         task: Task head configuration.
+        eval: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
         training: Training loop configuration.
         run_dir: Root directory — each fold gets a fold_N/ subdirectory.
         heatmaps: When provided and enabled, attention scores are captured
@@ -406,6 +438,7 @@ def train(
             fold_split=fold_split,
             aggregator=aggregator,
             task=task,
+            eval=eval,
             training=training,
             fold_dir=run_dir / f"fold_{fold_idx}",
             fold=fold_idx,
@@ -536,6 +569,7 @@ class Pipeline:
                 splits=self._splits,
                 aggregator=self._config.aggregator,
                 task=self._config.task,
+                eval=self._config.eval,
                 training=self._config.training,
                 run_dir=layout.run_dir,
                 preprocessing=self._resolve_preprocessing(),
@@ -752,18 +786,43 @@ def _save_training_history(history: list, path: Path) -> None:
     path.write_text(json.dumps(data, indent=2))
 
 
-def _save_predictions(report: EvaluationReport, path: Path) -> None:
+def _build_subgroup_data(
+    dataset: Dataset,
+    report: EvaluationReport,
+    subgroup_columns: list[str],
+) -> dict[str, dict[str, object]]:
+    """Build a mapping of sample_id → subgroup column values for enriching predictions."""
+    if not subgroup_columns:
+        return {}
+    return {
+        pred.sample_id: {
+            col: dataset.samples[pred.sample_id].metadata.get(col)
+            for col in subgroup_columns
+            if pred.sample_id in dataset.samples
+        }
+        for pred in report.predictions
+    }
+
+
+def _save_predictions(
+    report: EvaluationReport,
+    path: Path,
+    *,
+    subgroup_data: dict[str, dict[str, object]] | None = None,
+) -> None:
     with open(path, "w", newline="") as f:
         if not report.predictions:
             return
 
         first = report.predictions[0]
+        extra_cols = sorted(next(iter(subgroup_data.values()))) if subgroup_data else []
+
         if first.probabilities is not None:
             # Classification: include class probabilities
             num_classes = len(first.probabilities)
             fieldnames = ["sample_id", "true_label", "predicted_label"] + [
                 f"prob_{i}" for i in range(num_classes)
-            ]
+            ] + extra_cols
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for pred in report.predictions:
@@ -774,30 +833,38 @@ def _save_predictions(report: EvaluationReport, path: Path) -> None:
                 }
                 for i, p in enumerate(pred.probabilities):  # type: ignore[arg-type]
                     row[f"prob_{i}"] = f"{p:.6f}"
+                if subgroup_data and pred.sample_id in subgroup_data:
+                    row.update(subgroup_data[pred.sample_id])
                 writer.writerow(row)
         elif first.raw_score is not None:
             # Ordinal classification: integer prediction + raw continuous score
-            fieldnames = ["sample_id", "true_label", "predicted_label", "raw_score"]
+            fieldnames = ["sample_id", "true_label", "predicted_label", "raw_score"] + extra_cols
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for pred in report.predictions:
-                writer.writerow({
+                row = {
                     "sample_id": pred.sample_id,
                     "true_label": pred.true_label,
                     "predicted_label": pred.predicted_label,
                     "raw_score": f"{pred.raw_score:.6f}",
-                })
+                }
+                if subgroup_data and pred.sample_id in subgroup_data:
+                    row.update(subgroup_data[pred.sample_id])
+                writer.writerow(row)
         else:
             # Regression: predicted continuous value
-            fieldnames = ["sample_id", "true_label", "predicted_value"]
+            fieldnames = ["sample_id", "true_label", "predicted_value"] + extra_cols
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for pred in report.predictions:
-                writer.writerow({
+                row = {
                     "sample_id": pred.sample_id,
                     "true_label": pred.true_label,
                     "predicted_value": f"{pred.predicted_value:.6f}",
-                })
+                }
+                if subgroup_data and pred.sample_id in subgroup_data:
+                    row.update(subgroup_data[pred.sample_id])
+                writer.writerow(row)
 
 
 def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
