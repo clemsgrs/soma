@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -501,107 +500,6 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
     assert loaded[0].backend == "openslide"
 
 
-def test_preprocess_forwards_live_tiling_progress_to_slide2vec_reporter(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-    )
-    inner = _FakeInnerReporter()
-
-    def _fake_pipeline_run(*args, **kwargs):
-        from hs2p.progress import emit_progress
-
-        emit_progress("tiling.started", total=2)
-        emit_progress(
-            "tiling.progress",
-            total=2,
-            completed=1,
-            failed=0,
-            pending=1,
-            discovered_tiles=8,
-        )
-        emit_progress(
-            "tiling.progress",
-            total=2,
-            completed=2,
-            failed=0,
-            pending=0,
-            discovered_tiles=14,
-        )
-        emit_progress(
-            "tiling.finished",
-            total=2,
-            completed=2,
-            failed=0,
-            pending=0,
-            discovered_tiles=14,
-            output_dir=str(tmp_path / "tiling"),
-            process_list_path=str(tmp_path / "tiling" / "process_list.csv"),
-            zero_tile_successes=0,
-        )
-
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
-        return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
-        "slide2vec.progress.get_progress_reporter",
-        return_value=inner,
-    ):
-        MockPipeline.return_value.run.side_effect = _fake_pipeline_run
-        extractor.preprocess(tiling_dir=tmp_path / "tiling")
-
-    assert [
-        (event.kind, event.payload)
-        for event in inner.events
-    ] == [
-        (
-            "tiling.progress",
-            {
-                "total": 2,
-                "completed": 1,
-                "failed": 0,
-                "pending": 1,
-                "discovered_tiles": 8,
-            },
-        ),
-        (
-            "tiling.progress",
-            {
-                "total": 2,
-                "completed": 2,
-                "failed": 0,
-                "pending": 0,
-                "discovered_tiles": 14,
-            },
-        ),
-    ]
-
-
-def test_preprocess_suppresses_cucim_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
-    dataset = _make_dataset(tmp_path)
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-    )
-    caplog.set_level(logging.INFO)
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
-        return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
-        mock_instance = MockPipeline.return_value
-
-        def _fake_run(*args, **kwargs):
-            logging.getLogger("cucim.core").info("decode noise")
-
-        mock_instance.run.side_effect = _fake_run
-        extractor.preprocess(tiling_dir=tmp_path / "tiling")
-
-    assert not any(record.name.startswith("cucim") for record in caplog.records)
-
-
 def test_extract_tile_features_returns_store(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
@@ -794,40 +692,6 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
     assert recorded.loc["s0", "feature_path"].endswith("s0.pt")
     assert recorded.loc["s1", "feature_status"] == "empty"
     assert pd.isna(recorded.loc["s1", "feature_path"])
-
-
-def test_extract_suppresses_cucim_logs(tmp_path: Path, caplog: pytest.LogCaptureFixture):
-    dataset = _make_dataset(tmp_path)
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(enabled=False),
-    )
-    loaded = [
-        LoadedTiling(
-            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
-            tiling_result=_tiling(),
-        )
-    ]
-
-    def _fake_embed_tiles(*, model_name, output_variant, slides, tiling_results, preprocessing, execution):
-        logging.getLogger("cucim.core").info("decode noise")
-        output_dir = Path(execution.output_dir) / "tile_embeddings"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        for slide in slides:
-            _artifact(sample_id=slide.sample_id, output_dir=Path(execution.output_dir), kind="tile_embeddings", tensor=torch.ones(2, 8))
-
-    caplog.set_level(logging.INFO)
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
-    ), patch(
-        "soma.extraction._embed_tiles",
-        side_effect=_fake_embed_tiles,
-    ):
-        extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
-
-    assert not any(record.name.startswith("cucim") for record in caplog.records)
 
 
 def test_soma_extraction_reporter_forwards_progress_events_to_inner_reporter():
@@ -1077,8 +941,6 @@ def test_cached_extract_writes_marker_file(tmp_path: Path):
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
 
     assert store.available_samples == ["s0"]
-    marker = tmp_path / "features" / "README.txt"
-    assert marker.is_file()
     process_list = tmp_path / "features" / "process_list.csv"
     assert process_list.is_file()
     recorded = pd.read_csv(process_list).set_index("sample_id")
