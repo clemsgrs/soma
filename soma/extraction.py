@@ -1040,7 +1040,10 @@ class FeatureExtractor:
                 loaded_tilings=loaded_tilings,
                 tiling_dir=tiling_dir,
                 preprocessing=preprocessing,
+                resolved_preprocessing=resolved_preprocessing,
+                backend_provenance=backend_provenance,
                 model_name=self._encoder.name,
+                tile_encoder_name=tile_encoder_name,
                 output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
             )
@@ -1217,7 +1220,10 @@ class FeatureExtractor:
         loaded_tilings: Sequence[LoadedTiling],
         tiling_dir: Path,
         preprocessing: Slide2VecPreprocessingConfig,
+        resolved_preprocessing: PreprocessingConfig,
+        backend_provenance: dict[str, object],
         model_name: str,
+        tile_encoder_name: str,
         output_variant: str | None,
         num_gpus: int,
     ) -> None:

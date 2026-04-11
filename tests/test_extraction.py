@@ -1662,6 +1662,121 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
     assert store.load("s0").shape == (1, 4, 8)
 
 
+def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=448,
+            region_tile_multiple=2,
+        ),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+    resolved_preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        requested_region_size_px=448,
+        region_tile_multiple=2,
+    )
+    backend_provenance = {
+        "requested_backend": "openslide",
+        "backend": "openslide",
+        "backend_by_sample_id": {"s0": "openslide"},
+    }
+    run_dir = tmp_path / "distributed-run"
+    run_result = SimpleNamespace(
+        tile_artifacts=[
+            _artifact(
+                sample_id="s0",
+                output_dir=run_dir,
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ],
+        slide_artifacts=[
+            _artifact(
+                sample_id="s0",
+                output_dir=run_dir,
+                kind="slide_embeddings",
+                tensor=torch.ones(8),
+            )
+        ],
+    )
+    tile_cache = SimpleNamespace(
+        cache_dir=cache_root / "tile" / "cache",
+        features_dir=cache_root / "tile" / "cache" / "features",
+        metadata={"encoder_name": _TEST_TILE, "execution": {"output_variant": "default"}},
+        key="tile-cache-key",
+        missing_sample_ids=lambda: ["s0"],
+    )
+    slide_cache = SimpleNamespace(
+        cache_dir=cache_root / "slide" / "cache",
+        features_dir=cache_root / "slide" / "cache" / "features",
+        metadata={"encoder_name": _TEST_SLIDE, "execution": {"output_variant": "default"}},
+        key="slide-cache-key",
+        missing_sample_ids=lambda: ["s0"],
+    )
+    tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
+    slide_cache.features_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("soma.extraction._run_with_coordinates", return_value=run_result) as run_with_coordinates, patch(
+        "soma.extraction.build_execution_options",
+        return_value=SimpleNamespace(output_dir=run_dir),
+    ), patch("soma.extraction.record_feature_dim"), patch("soma.extraction.record_empty_sample_ids"), patch(
+        "soma.extraction.resolve_tile_cache",
+        return_value=tile_cache,
+    ) as resolve_tile_cache, patch(
+        "soma.extraction.resolve_slide_cache",
+        return_value=slide_cache,
+    ) as resolve_slide_cache:
+        extractor._populate_slide_and_tile_caches_distributed(
+            tile_cache=tile_cache,
+            slide_cache=slide_cache,
+            loaded_tilings=loaded,
+            tiling_dir=tmp_path / "tiling",
+            preprocessing=SimpleNamespace(),
+            resolved_preprocessing=resolved_preprocessing,
+            backend_provenance=backend_provenance,
+            model_name=_TEST_SLIDE,
+            tile_encoder_name=_TEST_TILE,
+            output_variant="default",
+            num_gpus=2,
+        )
+
+    assert run_with_coordinates.called
+    assert resolve_tile_cache.call_args.kwargs == {
+        "cache_root": cache_root,
+        "dataset": dataset,
+        "tile_encoder_name": _TEST_TILE,
+        "preprocessing": resolved_preprocessing,
+        "execution": extractor._encoder,
+        "output_variant": "default",
+        "backend_provenance": backend_provenance,
+        "complete_state": "populated",
+    }
+    assert resolve_slide_cache.call_args.kwargs == {
+        "cache_root": cache_root,
+        "dataset": dataset,
+        "slide_encoder_name": _TEST_SLIDE,
+        "tile_encoder_name": _TEST_TILE,
+        "tile_cache_key": "tile-cache-key",
+        "execution": extractor._encoder,
+        "output_variant": "default",
+        "backend_provenance": backend_provenance,
+        "complete_state": "populated",
+    }
+
+
 def test_slide_cache_population_delegates_to_cache_methods(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
