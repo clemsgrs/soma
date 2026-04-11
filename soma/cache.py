@@ -248,6 +248,29 @@ def build_slide_cache_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
+def build_patient_cache_key(
+    *,
+    dataset: Dataset,
+    patient_encoder_name: str,
+    slide_cache_key: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+) -> str:
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "patient",
+        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
+        "patient_encoder_name": patient_encoder_name,
+        "slide_cache_key": slide_cache_key,
+        "execution": execution_signature(
+            execution,
+            encoder_name=patient_encoder_name,
+            output_variant=output_variant,
+        ),
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
 def build_hierarchical_cache_key(
     *,
     dataset: Dataset,
@@ -322,7 +345,7 @@ def resolve_feature_payload_dir(path: Path | str) -> Path:
     root = Path(path)
     if (root / "cache_metadata.json").is_file() and (root / "features").is_dir():
         return root / "features"
-    for subdir in ("slide_embeddings", "hierarchical_embeddings", "tile_embeddings"):
+    for subdir in ("patient_embeddings", "slide_embeddings", "hierarchical_embeddings", "tile_embeddings"):
         candidate = root / subdir
         if candidate.is_dir():
             return candidate
@@ -350,13 +373,20 @@ def write_cache_payload(
     artifacts: Sequence[object],
     *,
     feature_dir: Path,
+    id_attr: str = "sample_id",
 ) -> int | None:
-    """Write slide2vec artifacts to a soma cache directory as .pt files."""
+    """Write slide2vec artifacts to a soma cache directory as .pt files.
+
+    Args:
+        id_attr: Attribute on each artifact used as the filename stem. Defaults to
+            ``"sample_id"``; pass ``"patient_id"`` for PatientEmbeddingArtifact.
+    """
     feature_dir.mkdir(parents=True, exist_ok=True)
     feature_dim: int | None = None
     for artifact in artifacts:
         artifact_path = Path(artifact.path)
-        output_path = feature_dir / f"{artifact.sample_id}.pt"
+        artifact_id = getattr(artifact, id_attr)
+        output_path = feature_dir / f"{artifact_id}.pt"
         if artifact_path.suffix != ".pt" or not artifact_path.is_file():
             raise ValueError(f"Expected a .pt artifact for cache materialization, got: {artifact_path}")
         tensor = _materialize_pt_artifact(
@@ -776,6 +806,46 @@ def _build_slide_cache_metadata(
     return metadata
 
 
+def _build_patient_cache_metadata(
+    *,
+    dataset: Dataset,
+    patient_encoder_name: str,
+    tile_encoder_name: str,
+    slide_cache_key: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    key = build_patient_cache_key(
+        dataset=dataset,
+        patient_encoder_name=patient_encoder_name,
+        slide_cache_key=slide_cache_key,
+        execution=execution,
+        output_variant=output_variant,
+    )
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "patient",
+        "cache_key": key,
+        "encoder_name": patient_encoder_name,
+        "encoder_level": "patient",
+        "tile_encoder": tile_encoder_name,
+        "slide_cache_key": slide_cache_key,
+        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
+        "sample_ids": sorted(dataset.sample_ids),
+        "execution": execution_signature(
+            execution,
+            encoder_name=patient_encoder_name,
+            output_variant=output_variant,
+        ),
+        "feature_rank": 1,
+        "feature_dim": None,
+    }
+    if backend_provenance is not None:
+        metadata.update(backend_provenance)
+    return metadata
+
+
 def _build_hierarchical_cache_metadata(
     *,
     dataset: Dataset,
@@ -1017,6 +1087,38 @@ def resolve_slide_cache(
     return _resolve_cache(
         cache_root=cache_root,
         cache_kind="slide",
+        key=metadata["cache_key"],
+        metadata=metadata,
+        manifest_rows=dataset_manifest_rows(dataset),
+        initial_reason="initializing",
+        complete_state=complete_state,
+    )
+
+
+def resolve_patient_cache(
+    *,
+    cache_root: Path,
+    dataset: Dataset,
+    patient_encoder_name: str,
+    tile_encoder_name: str,
+    slide_cache_key: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+    backend_provenance: dict[str, Any] | None = None,
+    complete_state: str = "hit",
+) -> FeatureCacheResolution:
+    metadata = _build_patient_cache_metadata(
+        dataset=dataset,
+        patient_encoder_name=patient_encoder_name,
+        tile_encoder_name=tile_encoder_name,
+        slide_cache_key=slide_cache_key,
+        execution=execution,
+        output_variant=output_variant,
+        backend_provenance=backend_provenance,
+    )
+    return _resolve_cache(
+        cache_root=cache_root,
+        cache_kind="patient",
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
