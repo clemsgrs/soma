@@ -352,6 +352,44 @@ def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
         load_config(yaml_path)
 
 
+# --- dataset_type validation ---
+
+
+def test_patient_dataset_type_is_valid():
+    cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="patient",
+        task=TaskConfig(name="binary_classification"),
+    )
+    assert cfg.dataset_type == "patient"
+    assert cfg.aggregator is None
+
+
+def test_patient_dataset_type_with_aggregator_raises():
+    with pytest.raises(ValueError, match="aggregator"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="patient",
+            aggregator=AggregatorConfig(name="abmil"),
+            task=TaskConfig(name="binary_classification"),
+        )
+
+
+def test_invalid_dataset_type_raises():
+    with pytest.raises(ValueError, match="dataset_type"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="case",
+            task=TaskConfig(name="binary_classification"),
+        )
+
+
 # --- Helpers ---
 
 
