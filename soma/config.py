@@ -75,7 +75,7 @@ class CacheConfig:
 class AggregatorConfig:
     """Configuration for the MIL aggregator."""
 
-    name: str = "abmil"
+    name: str
     params: dict[str, Any] = field(default_factory=dict)
 
 
@@ -137,7 +137,7 @@ class PipelineConfig:
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
-    aggregator: AggregatorConfig | None = field(default_factory=AggregatorConfig)
+    aggregator: AggregatorConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     eval: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)

@@ -72,10 +72,15 @@ def test_training_config_defaults():
     assert cfg.batch_size == 1
 
 
-def test_aggregator_config_defaults():
-    cfg = AggregatorConfig()
+def test_aggregator_config_explicit_name():
+    cfg = AggregatorConfig(name="abmil")
     assert cfg.name == "abmil"
     assert cfg.params == {}
+
+
+def test_aggregator_config_requires_name():
+    with pytest.raises(TypeError):
+        AggregatorConfig()
 
 
 def test_task_config_requires_name():
@@ -92,6 +97,16 @@ def test_eval_config_defaults():
     cfg = EvalConfig()
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
+
+
+def test_pipeline_config_defaults_to_no_aggregator():
+    cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        task=TaskConfig(name="binary_classification"),
+    )
+    assert cfg.aggregator is None
 
 
 def test_eval_config_metrics_explicit():

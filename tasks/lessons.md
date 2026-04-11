@@ -16,3 +16,4 @@
 - When a tolerance gate says the resolved spacing is acceptable, treat the actual read geometry as the source of truth for downstream level-0 footprint fields; update both the producer and the consumer together when that contract changes.
 - When validating a cross-repo schema rename, put all affected checkouts on `PYTHONPATH` before running tests so you do not accidentally exercise an older installed copy of a sibling package.
 - When a cache-population helper has a distributed refresh step, pass the resolved preprocessing and backend provenance explicitly instead of closing over values from a different branch.
+- When removing the implicit MIL default, make `PipelineConfig.aggregator` default to `None` for slide-level runs; do not hide the change behind a default `AggregatorConfig.name` value.
