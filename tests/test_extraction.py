@@ -1255,7 +1255,7 @@ def test_tile_cache_population_logs_populated_after_write(tmp_path: Path):
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
         torch.save(torch.ones(2, 8), cache_resolution.features_dir / "s0.pt")
 
-    rich_reporter = SimpleNamespace(console=object(), progress=object())
+    rich_reporter = SimpleNamespace(console=object(), progress=object(), emit=lambda *args, **kwargs: None)
 
     with patch("soma.extraction.load_tilings", return_value=loaded), patch(
         "soma.extraction._validate_runtime"
@@ -1330,7 +1330,7 @@ def test_hierarchical_cache_population_logs_populated_after_write(tmp_path: Path
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
         torch.save(torch.ones(1, 4, 8), cache_resolution.features_dir / "s0.pt")
 
-    rich_reporter = SimpleNamespace(console=object(), progress=object())
+    rich_reporter = SimpleNamespace(console=object(), progress=object(), emit=lambda *args, **kwargs: None)
 
     with patch("soma.extraction.load_tilings", return_value=loaded), patch(
         "soma.extraction._validate_runtime"
