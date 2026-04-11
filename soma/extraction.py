@@ -34,6 +34,7 @@ from soma.cache import (
     FeatureCacheResolution,
     build_tile_artifacts_from_cache_payload,
     probe_resolved_backends,
+    record_empty_sample_ids,
     record_feature_dim,
     preprocessing_backend_provenance,
     resolve_cache_root,
@@ -230,6 +231,14 @@ def _resolve_num_gpus(num_gpus: int | None) -> int:
     if torch.cuda.is_available():
         return max(1, int(torch.cuda.device_count()))
     return 1
+
+
+def _empty_sample_ids_from_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[str]:
+    return [
+        str(loaded.slide.sample_id)
+        for loaded in loaded_tilings
+        if tiling_num_tiles(loaded.tiling_result) == 0
+    ]
 
 
 _PENDING_FEATURE_PATH_SENTINEL = "__soma_pending_feature_path__"
@@ -722,11 +731,12 @@ class FeatureExtractor:
         process_list_path = feature_dir / "process_list.csv"
         metadata = cache_resolution.metadata
         sample_ids = [str(sample_id) for sample_id in metadata["sample_ids"]]
+        empty_sample_ids = cache_resolution.empty_sample_ids
         artifact_kind = {
             "tile": "tile_embeddings",
             "slide": "slide_embeddings",
             "hierarchical": "hierarchical_embeddings",
-        }[cache_resolution.kind]
+        }[cache_resolution.cache_kind]
         cache_dir = cache_resolution.cache_dir.resolve()
         feature_rank = int(metadata["feature_rank"])
         feature_dim = metadata.get("feature_dim")
@@ -752,13 +762,17 @@ class FeatureExtractor:
             )
             writer.writeheader()
             for sample_id in sample_ids:
+                feature_status = "empty" if sample_id in empty_sample_ids else "success"
+                feature_path = ""
+                if feature_status == "success":
+                    feature_path = str((cache_resolution.features_dir / f"{sample_id}.pt").resolve())
                 writer.writerow(
                     {
                         "sample_id": sample_id,
-                        "feature_status": "success",
-                        "feature_path": str((cache_resolution.features_dir / f"{sample_id}.pt").resolve()),
+                        "feature_status": feature_status,
+                        "feature_path": feature_path,
                         "artifact_kind": artifact_kind,
-                        "cache_kind": cache_resolution.kind,
+                        "cache_kind": cache_resolution.cache_kind,
                         "cache_key": metadata["cache_key"],
                         "cache_dir": str(cache_dir),
                         "encoder_name": metadata["encoder_name"],
@@ -1047,6 +1061,7 @@ class FeatureExtractor:
         missing = cache_resolution.missing_sample_ids()
         if not missing:
             return
+        empty_sample_ids = _empty_sample_ids_from_loaded_tilings(loaded_tilings)
         wanted = set(missing)
         selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in wanted]
         selected_tilings = [
@@ -1086,6 +1101,8 @@ class FeatureExtractor:
             )
         if feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
+        if empty_sample_ids:
+            record_empty_sample_ids(cache_resolution, empty_sample_ids)
 
     def _populate_hierarchical_cache(
         self,
@@ -1102,6 +1119,7 @@ class FeatureExtractor:
         missing = cache_resolution.missing_sample_ids()
         if not missing:
             return
+        empty_sample_ids = _empty_sample_ids_from_loaded_tilings(loaded_tilings)
         wanted = set(missing)
         selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in wanted]
         selected_tilings = [
@@ -1146,6 +1164,8 @@ class FeatureExtractor:
             )
         if feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
+        if empty_sample_ids:
+            record_empty_sample_ids(cache_resolution, empty_sample_ids)
 
     def _populate_slide_and_tile_caches_distributed(
         self,
@@ -1164,6 +1184,7 @@ class FeatureExtractor:
         run_ids = tile_missing | slide_missing
         if not run_ids:
             return
+        empty_sample_ids = _empty_sample_ids_from_loaded_tilings(loaded_tilings)
         selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in run_ids]
         with tempfile.TemporaryDirectory(prefix="soma-cache-slide-dist-") as tmp_dir:
             run_result = _run_with_coordinates(
@@ -1192,6 +1213,9 @@ class FeatureExtractor:
             record_feature_dim(tile_cache, tile_feature_dim)
         if slide_feature_dim is not None:
             record_feature_dim(slide_cache, slide_feature_dim)
+        if empty_sample_ids:
+            record_empty_sample_ids(tile_cache, empty_sample_ids)
+            record_empty_sample_ids(slide_cache, empty_sample_ids)
 
     def _populate_slide_cache(
         self,

@@ -104,6 +104,8 @@ preview artifacts under a shared `tiling_cache/<hash>/` directory.
 - `cache_metadata.json` records the configuration used to build the cache.
 - `cache_metadata.json` also records the requested preprocessing backend plus
   the actual backend used per sample.
+- `cache_metadata.json` also records `empty_sample_ids` so zero-tile samples do
+  not get mistaken for missing features on cache reuse.
 - `manifest.csv` snapshots the dataset rows used for the cache key.
 - `features/` contains the serialized embeddings for each sample.
 - tiling cache entries store `process_list.csv` plus referenced tiling

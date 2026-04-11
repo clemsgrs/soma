@@ -375,7 +375,7 @@ def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
     assert metadata["backend_by_sample_id"] == {"s1": "openslide", "s2": "openslide"}
 
 
-def test_resolve_tile_cache_emits_miss_then_hit_logs(tmp_path: Path):
+def test_resolve_feature_cache_emits_miss_then_hit_logs(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"
 
@@ -394,7 +394,7 @@ def test_resolve_tile_cache_emits_miss_then_hit_logs(tmp_path: Path):
 
     assert resolution.complete is False
     emit_progress_log.assert_called_once()
-    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ tile cache miss:")
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ feature cache miss:")
 
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -416,7 +416,69 @@ def test_resolve_tile_cache_emits_miss_then_hit_logs(tmp_path: Path):
     assert reused.complete is True
     assert reused.reused is True
     emit_progress_log.assert_called_once()
-    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ tile cache hit:")
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ feature cache hit:")
+
+
+def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata["feature_dim"] = 16
+    metadata["empty_sample_ids"] = ["s2"]
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 16), resolution.features_dir / "s1.pt")
+
+    rich_reporter = SimpleNamespace(console=object(), progress=object())
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache.slide2vec_progress.emit_progress_log"
+    ) as emit_progress_log:
+        reused = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+
+    assert reused.complete is True
+    assert reused.reused is True
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ feature cache hit:")
+
+
+def test_resolve_hierarchical_cache_emits_feature_cache_logs(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+
+    rich_reporter = SimpleNamespace(console=object(), progress=object())
+
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache.slide2vec_progress.emit_progress_log"
+    ) as emit_progress_log:
+        resolution = resolve_hierarchical_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(
+                target_tile_size_px=224,
+                target_spacing_um=0.5,
+                target_region_size_px=1344,
+                region_tile_multiple=6,
+            ),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+
+    assert resolution.complete is False
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✗ feature cache miss:")
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):

@@ -41,6 +41,7 @@ from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_s
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
+from soma.encoders.validation import resolve_preprocessing_config
 from soma.output_layout import (
     count_run_directories,
     create_run_metadata,
@@ -655,10 +656,16 @@ class Pipeline:
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
-        return derive_preprocessing_for_aggregator(
+        preprocessing = derive_preprocessing_for_aggregator(
             self._config.preprocessing,
             self._config.aggregator,
         )
+        if self._config.encoder is not None:
+            preprocessing = resolve_preprocessing_config(
+                self._config.encoder,
+                preprocessing,
+            )
+        return preprocessing
 
 
 # ---------------------------------------------------------------------------

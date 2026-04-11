@@ -57,13 +57,20 @@ class CacheValidationResult:
 
 @dataclass(frozen=True)
 class FeatureCacheResolution(BaseCacheResolution):
-    kind: str
+    cache_kind: str
     features_dir: Path
+
+    @property
+    def empty_sample_ids(self) -> set[str]:
+        return {str(s) for s in self.metadata.get("empty_sample_ids", [])}
 
     def missing_sample_ids(self) -> list[str]:
         expected = self.metadata["sample_ids"]
+        empty = self.empty_sample_ids
         missing: list[str] = []
         for sample_id in expected:
+            if str(sample_id) in empty:
+                continue
             if not (self.features_dir / f"{sample_id}.pt").is_file():
                 missing.append(str(sample_id))
         return missing
@@ -599,7 +606,7 @@ def resolve_tiling_cache(
             expected_backend_provenance=backend_provenance,
         )
         _emit_cache_state_log(
-            kind="tiling",
+            cache_label="tiling",
             cache_dir=cache_dir,
             complete=validation.complete,
             reason=validation.reason,
@@ -619,7 +626,7 @@ def resolve_tiling_cache(
     _write_manifest(manifest_path, dataset_manifest_rows(dataset))
     _write_metadata(metadata_path, metadata)
     _emit_cache_state_log(
-        kind="tiling",
+        cache_label="tiling",
         cache_dir=cache_dir,
         complete=False,
         reason="initializing",
@@ -684,8 +691,8 @@ def write_tiling_cache_stub(
     _write_tiling_stub_marker(tiling_dir=tiling_dir, cache_dir=cache_resolution.cache_dir)
 
 
-def _cache_dir(cache_root: Path, kind: str, key: str) -> Path:
-    return cache_root / kind / key
+def _cache_dir(cache_root: Path, cache_kind: str, key: str) -> Path:
+    return cache_root / cache_kind / key
 
 
 def _build_tile_cache_metadata(
@@ -807,6 +814,7 @@ def _build_hierarchical_cache_metadata(
 def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     comparable = dict(metadata)
     comparable.pop("feature_dim", None)
+    comparable.pop("empty_sample_ids", None)
     return comparable
 
 
@@ -837,9 +845,17 @@ def _validate_feature_cache_contents(
     metadata: dict[str, Any],
 ) -> CacheValidationResult:
     expected_rank = int(metadata["feature_rank"])
-    sample_ids = metadata["sample_ids"]
+    sample_ids = [str(s) for s in metadata["sample_ids"]]
+    sample_ids_set = set(sample_ids)
     feature_dim = metadata.get("feature_dim")
+    empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
+    if not empty_sample_ids.issubset(sample_ids_set):
+        return CacheValidationResult(complete=False, reason="empty sample metadata mismatch")
     for sample_id in sample_ids:
+        if sample_id in empty_sample_ids:
+            if (features_dir / f"{sample_id}.pt").is_file():
+                return CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {sample_id}")
+            continue
         path = features_dir / f"{sample_id}.pt"
         if not path.is_file():
             return CacheValidationResult(complete=False, reason=f"missing feature for {sample_id}")
@@ -858,7 +874,7 @@ def _validate_feature_cache_contents(
 
 def _emit_cache_state_log(
     *,
-    kind: str,
+    cache_label: str,
     cache_dir: Path,
     complete: bool,
     reason: str | None = None,
@@ -866,17 +882,16 @@ def _emit_cache_state_log(
     cache_path = str(cache_dir.resolve())
     reporter = slide2vec_progress.get_progress_reporter()
     rich_viz = hasattr(reporter, "console") and hasattr(reporter, "progress")
-    label = f"{kind} cache"
     if complete:
         status = "hit"
         if rich_viz:
             status = "\x1b[1;32mhit\x1b[0m"
-        message = f"✓ {label} {status}: {cache_path}"
+        message = f"✓ {cache_label} cache {status}: {cache_path}"
     else:
         status = "miss"
         if rich_viz:
             status = "\x1b[1;31mmiss\x1b[0m"
-        message = f"✗ {label} {status}: {cache_path}"
+        message = f"✗ {cache_label} cache {status}: {cache_path}"
         if reason is not None:
             message = f"{message} ({reason})"
     slide2vec_progress.emit_progress_log(message)
@@ -885,12 +900,12 @@ def _emit_cache_state_log(
 def _resolve_cache(
     *,
     cache_root: Path,
-    kind: str,
+    cache_kind: str,
     key: str,
     metadata: dict[str, Any],
     manifest_rows: list[dict[str, object]],
 ) -> FeatureCacheResolution:
-    cache_dir = _cache_dir(cache_root, kind, key)
+    cache_dir = _cache_dir(cache_root, cache_kind, key)
     features_dir = cache_dir / "features"
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
@@ -903,7 +918,7 @@ def _resolve_cache(
             raise ValueError(f"Cache metadata mismatch for {cache_dir}")
         validation = _validate_feature_cache_contents(features_dir=features_dir, metadata=existing)
         _emit_cache_state_log(
-            kind=kind,
+            cache_label="feature",
             cache_dir=cache_dir,
             complete=validation.complete,
             reason=validation.reason,
@@ -916,14 +931,14 @@ def _resolve_cache(
             reused=validation.complete,
             complete=validation.complete,
             metadata=existing,
-            kind=kind,
+            cache_kind=cache_kind,
             features_dir=features_dir,
         )
 
     _write_manifest(manifest_path, manifest_rows)
     _write_metadata(metadata_path, metadata)
     _emit_cache_state_log(
-        kind=kind,
+        cache_label="feature",
         cache_dir=cache_dir,
         complete=False,
     )
@@ -935,7 +950,7 @@ def _resolve_cache(
         reused=False,
         complete=False,
         metadata=metadata,
-        kind=kind,
+        cache_kind=cache_kind,
         features_dir=features_dir,
     )
 
@@ -960,7 +975,7 @@ def resolve_tile_cache(
     )
     return _resolve_cache(
         cache_root=cache_root,
-        kind="tile",
+        cache_kind="tile",
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
@@ -989,7 +1004,7 @@ def resolve_slide_cache(
     )
     return _resolve_cache(
         cache_root=cache_root,
-        kind="slide",
+        cache_kind="slide",
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
@@ -1016,7 +1031,7 @@ def resolve_hierarchical_cache(
     )
     return _resolve_cache(
         cache_root=cache_root,
-        kind="hierarchical",
+        cache_kind="hierarchical",
         key=metadata["cache_key"],
         metadata=metadata,
         manifest_rows=dataset_manifest_rows(dataset),
@@ -1026,4 +1041,10 @@ def resolve_hierarchical_cache(
 def record_feature_dim(resolution: FeatureCacheResolution, feature_dim: int) -> None:
     metadata = dict(resolution.metadata)
     metadata["feature_dim"] = int(feature_dim)
+    _write_metadata(resolution.metadata_path, metadata)
+
+
+def record_empty_sample_ids(resolution: FeatureCacheResolution, empty_sample_ids: Sequence[str]) -> None:
+    metadata = dict(resolution.metadata)
+    metadata["empty_sample_ids"] = sorted({str(sample_id) for sample_id in empty_sample_ids})
     _write_metadata(resolution.metadata_path, metadata)

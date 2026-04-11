@@ -7,7 +7,7 @@
 - `debug-pipeline.py` now seeds a temp-local cuFile config before importing `slide2vec`/`hs2p`, so `cufile.log` no longer falls back into the repository cwd during debug runs.
 - The supported encoder reference in `docs/reference.md` now uses a registry-style table with tile and slide presets, output dimensions, spacing, and variant notes.
 - The cache docs now describe the full tiling-and-feature cache flow, including run-local stubs and shared cache directories.
-- Cache resolution now emits compact rich-friendly hit/miss messages for tiling and feature caches, e.g. `✓ tiling cache hit:` and `✗ tiling cache miss:` with the status word colored when the active reporter supports color.
+- Cache resolution now emits compact rich-friendly hit/miss messages for tiling and feature caches, e.g. `✓ tiling cache hit:` and `✓ feature cache hit:` / `✗ feature cache miss:` with the status word colored when the active reporter supports color.
 - Run-local extraction now keeps `tiling/` as a sibling of `features/` when using the `FeatureExtractor.run()` convenience path.
 - Evaluation metrics now import `sklearn.metrics` directly and no longer carry local fallback implementations for missing `sklearn` installs.
 - The output-layout module no longer carries an unused path-normalization helper.
