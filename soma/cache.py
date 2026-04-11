@@ -120,12 +120,12 @@ def manifest_digest(manifest_rows: Iterable[dict[str, object]]) -> str:
 def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
     return {
         "backend": config.backend,
-        "target_tile_size_px": config.target_tile_size_px,
-        "target_spacing_um": config.target_spacing_um,
-        "target_region_size_px": config.target_region_size_px,
+        "requested_tile_size_px": config.requested_tile_size_px,
+        "requested_spacing_um": config.requested_spacing_um,
+        "requested_region_size_px": config.requested_region_size_px,
         "region_tile_multiple": config.region_tile_multiple,
-        "effective_tile_size_px": config.effective_tile_size_px,
-        "effective_region_size_px": config.effective_region_size_px,
+        "read_tile_size_px": config.read_tile_size_px,
+        "read_region_size_px": config.read_region_size_px,
         "tissue_method": config.tissue_method,
         "tissue_mask_tissue_value": config.tissue_mask_tissue_value,
         "tissue_threshold": config.tissue_threshold,
@@ -555,9 +555,9 @@ def _validate_tiling_cache_contents(
             )
         except Exception:
             return CacheValidationResult(complete=False, reason=f"invalid tiling provenance for {sample_id}")
-        if int(getattr(tiling_result, "requested_tile_size_px", -1)) != int(preprocessing.target_tile_size_px):
+        if int(getattr(tiling_result, "requested_tile_size_px", -1)) != int(preprocessing.requested_tile_size_px):
             return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
-        if float(getattr(tiling_result, "requested_spacing_um", -1.0)) != float(preprocessing.target_spacing_um):
+        if float(getattr(tiling_result, "requested_spacing_um", -1.0)) != float(preprocessing.requested_spacing_um):
             return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
         expected_backend = metadata.get("backend_by_sample_id", {}).get(str(sample_id))
         actual_backend = str(getattr(tiling_result, "backend", row.get("backend")))
@@ -578,6 +578,7 @@ def resolve_tiling_cache(
     backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
     raw_preprocessing: dict[str, Any] | None = None,
+    complete_state: str = "hit",
 ) -> TilingCacheResolution:
     metadata = _build_tiling_cache_metadata(
         dataset=dataset,
@@ -609,6 +610,7 @@ def resolve_tiling_cache(
             cache_label="tiling",
             cache_dir=cache_dir,
             complete=validation.complete,
+            complete_state=complete_state,
             reason=validation.reason,
         )
         return TilingCacheResolution(
@@ -629,6 +631,7 @@ def resolve_tiling_cache(
         cache_label="tiling",
         cache_dir=cache_dir,
         complete=False,
+        complete_state=complete_state,
         reason="initializing",
     )
     return TilingCacheResolution(
@@ -877,15 +880,16 @@ def _emit_cache_state_log(
     cache_label: str,
     cache_dir: Path,
     complete: bool,
+    complete_state: str = "hit",
     reason: str | None = None,
 ) -> None:
     cache_path = str(cache_dir.resolve())
     reporter = slide2vec_progress.get_progress_reporter()
     rich_viz = hasattr(reporter, "console") and hasattr(reporter, "progress")
     if complete:
-        status = "hit"
+        status = complete_state
         if rich_viz:
-            status = "\x1b[1;32mhit\x1b[0m"
+            status = f"\x1b[1;32m{complete_state}\x1b[0m"
         message = f"✓ {cache_label} cache {status}: {cache_path}"
     else:
         status = "miss"

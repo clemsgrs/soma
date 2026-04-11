@@ -9,6 +9,9 @@
 - In soma, treat `slide2vec` as a required dependency rather than adding local test-only import fallbacks; if it is unavailable in the current environment, report that and skip affected verification.
 - Distinguish the user-facing managed `output_root` from internal concrete destination directories like run, fold, feature, or tiling output paths. Replacing the former does not mean lower-level APIs should stop accepting resolved leaf directories.
 - For compact rich logs, keep the visible status phrase exact and color only the status word or symbol; assert against ANSI-stripped text in tests instead of raw escape sequences.
+- When debugging a verified runtime bug, do not keep speculative import-structure refactors that are not required by the final repro/fix path; revert or clearly separate them from the minimal validated fix.
 - For cache logging, key the user-facing label off the cache type that callers understand (`tiling cache` vs `feature cache`), not the internal directory segment used to store entries.
 - When a field is only used as an internal cache selector, name it after that selector (`cache_kind`) instead of overloading a generic public name like `kind`.
 - If a sample legitimately produces zero tiles, persist that fact in cache metadata and skip it during cache validation instead of treating the missing `.pt` as a cache miss.
+- When a tolerance gate says the resolved spacing is acceptable, treat the actual read geometry as the source of truth for downstream level-0 footprint fields; update both the producer and the consumer together when that contract changes.
+- When validating a cross-repo schema rename, put all affected checkouts on `PYTHONPATH` before running tests so you do not accidentally exercise an older installed copy of a sibling package.

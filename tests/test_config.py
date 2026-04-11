@@ -27,7 +27,7 @@ from soma.config import (
 def test_preprocessing_config_is_frozen():
     cfg = PreprocessingConfig()
     with pytest.raises(FrozenInstanceError):
-        cfg.target_tile_size_px = 512
+        cfg.requested_tile_size_px = 512
 
 
 def test_pipeline_config_is_frozen():
@@ -43,12 +43,12 @@ def test_preprocessing_config_defaults():
     cfg = PreprocessingConfig()
     assert cfg.backend == "auto"
     assert cfg.requested_backend == "auto"
-    assert cfg.target_tile_size_px is None
-    assert cfg.target_spacing_um is None
-    assert cfg.target_region_size_px is None
+    assert cfg.requested_tile_size_px is None
+    assert cfg.requested_spacing_um is None
+    assert cfg.requested_region_size_px is None
     assert cfg.region_tile_multiple is None
-    assert cfg.effective_tile_size_px is None
-    assert cfg.effective_region_size_px is None
+    assert cfg.read_tile_size_px is None
+    assert cfg.read_region_size_px is None
     assert cfg.has_hierarchical_geometry is False
     assert cfg.tissue_method == "hsv"
     assert cfg.tissue_threshold == 0.1
@@ -182,7 +182,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.output_root == original.output_root
     assert loaded.preprocessing.backend == "openslide"
     assert loaded.preprocessing.tissue_mask_tissue_value == 7
-    assert loaded.preprocessing.target_tile_size_px == original.preprocessing.target_tile_size_px
+    assert loaded.preprocessing.requested_tile_size_px == original.preprocessing.requested_tile_size_px
 
     assert loaded.cache.enabled == original.cache.enabled
     assert loaded.encoder.name == original.encoder.name
@@ -204,8 +204,8 @@ def test_load_config_with_target_fields(tmp_path: Path):
         "output_root": "out",
         "preprocessing": {
             "backend": "cucim",
-            "target_tile_size_px": 256,
-            "target_spacing_um": 0.5,
+            "requested_tile_size_px": 256,
+            "requested_spacing_um": 0.5,
         },
         "cache": {},
         "aggregator": None,
@@ -220,8 +220,8 @@ def test_load_config_with_target_fields(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.preprocessing.backend == "cucim"
-    assert loaded.preprocessing.target_tile_size_px == 256
-    assert loaded.preprocessing.target_spacing_um == 0.5
+    assert loaded.preprocessing.requested_tile_size_px == 256
+    assert loaded.preprocessing.requested_spacing_um == 0.5
 
 
 def test_save_config_produces_valid_yaml(tmp_path: Path):

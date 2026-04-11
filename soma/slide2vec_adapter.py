@@ -68,14 +68,14 @@ def ensure_supported_mask_value(
 def build_preprocessing_config(
     preprocessing: PreprocessingConfig,
 ) -> Slide2VecPreprocessingConfig:
-    if preprocessing.target_tile_size_px is None:
-        raise ValueError("target_tile_size_px must be resolved before extraction")
-    if preprocessing.target_spacing_um is None:
-        raise ValueError("target_spacing_um must be resolved before extraction")
+    if preprocessing.requested_tile_size_px is None:
+        raise ValueError("requested_tile_size_px must be resolved before extraction")
+    if preprocessing.requested_spacing_um is None:
+        raise ValueError("requested_spacing_um must be resolved before extraction")
     payload: dict[str, object] = {
         "backend": preprocessing.backend,
-        "target_spacing_um": float(preprocessing.target_spacing_um),
-        "target_tile_size_px": int(preprocessing.target_tile_size_px),
+        "requested_spacing_um": float(preprocessing.requested_spacing_um),
+        "requested_tile_size_px": int(preprocessing.requested_tile_size_px),
         "tolerance": float(preprocessing.tolerance),
         "overlap": float(preprocessing.overlap),
         "tissue_threshold": float(preprocessing.tissue_threshold),
@@ -90,19 +90,19 @@ def build_preprocessing_config(
             "ref_tile_size": int(
                 preprocessing.ref_tile_size_px
                 if preprocessing.ref_tile_size_px is not None
-                else preprocessing.target_tile_size_px
+                else preprocessing.requested_tile_size_px
             ),
             "a_t": int(preprocessing.a_t),
         },
     }
-    if preprocessing.target_region_size_px is not None:
-        payload["target_region_size_px"] = int(preprocessing.target_region_size_px)
+    if preprocessing.requested_region_size_px is not None:
+        payload["requested_region_size_px"] = int(preprocessing.requested_region_size_px)
     if preprocessing.region_tile_multiple is not None:
         payload["region_tile_multiple"] = int(preprocessing.region_tile_multiple)
-    if preprocessing.effective_tile_size_px is not None:
-        payload["effective_tile_size_px"] = int(preprocessing.effective_tile_size_px)
-    if preprocessing.effective_region_size_px is not None:
-        payload["effective_region_size_px"] = int(preprocessing.effective_region_size_px)
+    if preprocessing.read_tile_size_px is not None:
+        payload["read_tile_size_px"] = int(preprocessing.read_tile_size_px)
+    if preprocessing.read_region_size_px is not None:
+        payload["read_region_size_px"] = int(preprocessing.read_region_size_px)
     allowed_fields = set(getattr(Slide2VecPreprocessingConfig, "__dataclass_fields__", {}))
     filtered = {key: value for key, value in payload.items() if key in allowed_fields}
     return Slide2VecPreprocessingConfig(**filtered)

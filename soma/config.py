@@ -16,12 +16,12 @@ class PreprocessingConfig:
     """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
 
     backend: str = "auto"
-    target_tile_size_px: int | None = None
-    target_spacing_um: float | None = None
-    target_region_size_px: int | None = None
+    requested_tile_size_px: int | None = None
+    requested_spacing_um: float | None = None
+    requested_region_size_px: int | None = None
     region_tile_multiple: int | None = None
-    effective_tile_size_px: int | None = None
-    effective_region_size_px: int | None = None
+    read_tile_size_px: int | None = None
+    read_region_size_px: int | None = None
     tissue_method: str = "hsv"
     tissue_threshold: float = 0.1
     overlap: float = 0.0
@@ -43,7 +43,7 @@ class PreprocessingConfig:
 
     @property
     def has_hierarchical_geometry(self) -> bool:
-        return self.region_tile_multiple is not None or self.target_region_size_px is not None
+        return self.region_tile_multiple is not None or self.requested_region_size_px is not None
 
 
 @dataclass(frozen=True)

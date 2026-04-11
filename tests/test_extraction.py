@@ -106,8 +106,8 @@ def _tiling(sample_id: str = "s0") -> object:
         tissue_fractions=torch.tensor([1.0, 1.0], dtype=torch.float32).numpy(),
         requested_tile_size_px=224,
         requested_spacing_um=0.5,
-        effective_tile_size_px=224,
-        effective_spacing_um=0.5,
+        read_tile_size_px=224,
+        read_spacing_um=0.5,
         tile_size_lv0=224,
         read_level=0,
         use_padding=True,
@@ -198,9 +198,9 @@ def test_validate_runtime_uses_resolved_tile_size_for_hierarchical_runs():
         captured.update(kwargs)
 
     preprocessing = PreprocessingConfig(
-        target_tile_size_px=224,
-        target_spacing_um=0.5,
-        target_region_size_px=1792,
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        requested_region_size_px=1792,
         region_tile_multiple=8,
     )
     hierarchical_tiling = SimpleNamespace(
@@ -218,8 +218,8 @@ def test_validate_runtime_uses_resolved_tile_size_for_hierarchical_runs():
         )
 
     assert captured["encoder_name"] == _TEST_TILE
-    assert captured["target_tile_size_px"] == 224
-    assert captured["target_spacing_um"] == 0.5
+    assert captured["requested_tile_size_px"] == 224
+    assert captured["requested_spacing_um"] == 0.5
 
 
 class _FakeInnerReporter:
@@ -242,7 +242,7 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
     )
     with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
         "soma.extraction.resolve_tiling_cache",
@@ -259,7 +259,7 @@ def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Pat
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
     )
     cache_dir = tmp_path / "tiling_cache" / "abc123"
@@ -299,7 +299,7 @@ def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: P
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
     )
     tiling_dir = tmp_path / "tiling"
@@ -342,7 +342,7 @@ def test_preprocess_uses_output_root_for_tiling_cache_when_cache_root_omitted(tm
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -356,12 +356,53 @@ def test_preprocess_uses_output_root_for_tiling_cache_when_cache_root_omitted(tm
     assert resolve_tiling_cache.call_args.kwargs["cache_root"] == tmp_path / "outputs" / "tiling_cache"
 
 
+def test_preprocess_marks_refresh_as_populated(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+    )
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir(parents=True, exist_ok=True)
+
+    initial_resolution = SimpleNamespace(
+        complete=False,
+        metadata={"backend_by_sample_id": {"s0": "openslide"}},
+    )
+    refreshed_resolution = SimpleNamespace(
+        complete=True,
+        metadata={"backend_by_sample_id": {"s0": "openslide"}},
+        process_list_path=tiling_dir / "process_list.csv",
+        cache_dir=tmp_path / "tiling_cache" / "cache",
+    )
+
+    def _fake_pipeline_run(*args, **kwargs):
+        del args, kwargs
+        (tiling_dir / "process_list.csv").write_text("sample_id,tiling_status\ns0,success\n", encoding="utf-8")
+
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        side_effect=[initial_resolution, refreshed_resolution],
+    ) as resolve_tiling_cache, patch("soma.extraction.write_tiling_cache_payload") as write_tiling_cache_payload, patch(
+        "soma.extraction.write_tiling_cache_stub"
+    ) as write_tiling_cache_stub, patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+        MockPipeline.return_value.run.side_effect = _fake_pipeline_run
+        extractor.preprocess(tiling_dir=tiling_dir)
+
+    assert resolve_tiling_cache.call_args_list[1].kwargs["complete_state"] == "populated"
+    write_tiling_cache_payload.assert_called_once()
+    write_tiling_cache_stub.assert_called_once()
+
+
 def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -403,7 +444,7 @@ def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5, backend="openslide"),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5, backend="openslide"),
     )
 
     captured = {}
@@ -465,7 +506,7 @@ def test_preprocess_forwards_live_tiling_progress_to_slide2vec_reporter(tmp_path
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
     )
     inner = _FakeInnerReporter()
 
@@ -543,7 +584,7 @@ def test_preprocess_suppresses_cucim_logs(tmp_path: Path, caplog: pytest.LogCapt
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
     )
     caplog.set_level(logging.INFO)
     with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
@@ -566,7 +607,7 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -600,7 +641,7 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -638,7 +679,7 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -676,7 +717,7 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -721,7 +762,7 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
     )
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
@@ -760,7 +801,7 @@ def test_extract_suppresses_cucim_logs(tmp_path: Path, caplog: pytest.LogCapture
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -828,7 +869,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -959,7 +1000,7 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -1002,7 +1043,7 @@ def test_cached_extract_writes_marker_file(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
     )
     loaded = [
@@ -1060,7 +1101,7 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_SLIDE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -1113,7 +1154,7 @@ def test_slide_cache_population_does_not_forward_output_variant_override(tmp_pat
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
     )
     loaded = [
@@ -1174,7 +1215,7 @@ def test_multi_gpu_uncached_extraction_uses_slide2vec_pipeline(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
     )
     loaded = [
@@ -1215,7 +1256,7 @@ def test_multi_gpu_slide_cache_population_uses_slide2vec_pipeline(tmp_path: Path
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
     )
     loaded = [
@@ -1255,7 +1296,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
     )
     loaded = [
@@ -1294,9 +1335,9 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
         dataset,
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(
-            target_tile_size_px=224,
-            target_spacing_um=0.5,
-            target_region_size_px=448,
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=448,
             region_tile_multiple=2,
         ),
         cache=CacheConfig(enabled=False),
@@ -1307,8 +1348,8 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
             tiling_result=SimpleNamespace(
                 requested_tile_size_px=224,
                 requested_spacing_um=0.5,
-                effective_tile_size_px=224,
-                effective_spacing_um=0.5,
+                read_tile_size_px=224,
+                read_spacing_um=0.5,
                 tile_size_lv0=224,
                 read_level=0,
                 use_padding=True,
@@ -1357,9 +1398,9 @@ def test_hierarchical_multi_gpu_uses_slide2vec_pipeline(tmp_path: Path):
         dataset,
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(
-            target_tile_size_px=224,
-            target_spacing_um=0.5,
-            target_region_size_px=448,
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=448,
             region_tile_multiple=2,
         ),
         cache=CacheConfig(enabled=False),
@@ -1370,8 +1411,8 @@ def test_hierarchical_multi_gpu_uses_slide2vec_pipeline(tmp_path: Path):
             tiling_result=SimpleNamespace(
                 requested_tile_size_px=224,
                 requested_spacing_um=0.5,
-                effective_tile_size_px=224,
-                effective_spacing_um=0.5,
+                read_tile_size_px=224,
+                read_spacing_um=0.5,
                 tile_size_lv0=224,
                 read_level=0,
                 use_padding=True,
@@ -1418,9 +1459,9 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
         dataset,
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(
-            target_tile_size_px=224,
-            target_spacing_um=0.5,
-            target_region_size_px=448,
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=448,
             region_tile_multiple=2,
         ),
         cache=CacheConfig(root_dir=cache_root),
@@ -1431,8 +1472,8 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
             tiling_result=SimpleNamespace(
                 requested_tile_size_px=224,
                 requested_spacing_um=0.5,
-                effective_tile_size_px=224,
-                effective_spacing_um=0.5,
+                read_tile_size_px=224,
+                read_spacing_um=0.5,
                 tile_size_lv0=224,
                 read_level=0,
                 use_padding=True,
@@ -1483,7 +1524,7 @@ def test_slide_cache_population_delegates_to_cache_methods(tmp_path: Path):
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
     )
     loaded = [

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import torch
@@ -94,6 +95,29 @@ class Trainer:
         patience_counter = 0
 
         console = self._console or Console()
+        current_log: EpochLog | None = None
+        current_subtitle = "starting"
+        current_status = "waiting for epoch 1"
+        current_batch_progress: str | None = None
+
+        def render_panel() -> None:
+            live.update(
+                _build_training_panel(
+                    title="Training progress",
+                    subtitle=current_subtitle,
+                    log=current_log,
+                    total_epochs=self._config.epochs,
+                    best_epoch=best_epoch,
+                    best_tune_loss=best_tune_loss,
+                    best_tune_metrics=best_tune_metrics,
+                    patience_counter=patience_counter,
+                    patience_limit=self._config.patience,
+                    checkpoint_path=checkpoint_path,
+                    status=current_status,
+                    batch_progress=current_batch_progress,
+                ),
+                refresh=True,
+            )
 
         with Live(
             _build_training_panel(
@@ -108,20 +132,41 @@ class Trainer:
                 patience_limit=self._config.patience,
                 checkpoint_path=checkpoint_path,
                 status="waiting for epoch 1",
+                batch_progress=None,
             ),
             console=console,
             refresh_per_second=8,
             transient=False,
         ) as live:
+            render_panel()
+
+            def on_batch_progress(phase: str, batch_index: int, total_batches: int) -> None:
+                nonlocal current_batch_progress, current_status
+                current_batch_progress = _format_batch_progress(
+                    batch_index,
+                    total_batches,
+                    phase=phase,
+                )
+                current_status = f"{phase} batch {batch_index}/{total_batches}"
+                render_panel()
+
             for epoch in range(self._config.epochs):
-                train_loss = self._train_epoch()
-                tune_loss, tune_metrics = self._tune()
+                current_subtitle = f"epoch {epoch + 1}/{self._config.epochs} | train"
+                current_status = "training epoch in progress"
+                current_batch_progress = None
+                render_panel()
+                train_loss = self._train_epoch(on_batch_progress=on_batch_progress)
+
+                current_subtitle = f"epoch {epoch + 1}/{self._config.epochs} | tune"
+                current_status = "evaluating tune split"
+                render_panel()
+                tune_loss, tune_metrics = self._tune(on_batch_progress=on_batch_progress)
 
                 lr = self._optimizer.param_groups[0]["lr"]
                 if self._scheduler is not None:
                     self._scheduler.step()
 
-                log = EpochLog(
+                current_log = log = EpochLog(
                     epoch=epoch,
                     train_loss=train_loss,
                     tune_loss=tune_loss,
@@ -143,46 +188,20 @@ class Trainer:
                     patience_counter += 1
                     status = f"no improvement ({patience_counter}/{self._config.patience})"
 
-                live.update(
-                    _build_training_panel(
-                        title="Training progress",
-                        subtitle=f"epoch {epoch + 1}/{self._config.epochs}",
-                        log=log,
-                        total_epochs=self._config.epochs,
-                        best_epoch=best_epoch,
-                        best_tune_loss=best_tune_loss,
-                        best_tune_metrics=best_tune_metrics,
-                        patience_counter=patience_counter,
-                        patience_limit=self._config.patience,
-                        checkpoint_path=checkpoint_path,
-                        status=status,
-                    ),
-                    refresh=True,
-                )
+                current_status = status
+                render_panel()
 
                 if not improved and patience_counter >= self._config.patience:
-                    live.update(
-                        _build_training_panel(
-                            title="Training progress",
-                            subtitle=f"epoch {epoch + 1}/{self._config.epochs}",
-                            log=log,
-                            total_epochs=self._config.epochs,
-                            best_epoch=best_epoch,
-                            best_tune_loss=best_tune_loss,
-                            best_tune_metrics=best_tune_metrics,
-                            patience_counter=patience_counter,
-                            patience_limit=self._config.patience,
-                            checkpoint_path=checkpoint_path,
-                            status="early stopping triggered",
-                        ),
-                        refresh=True,
-                    )
+                    current_status = "early stopping triggered"
+                    render_panel()
                     break
 
+            current_subtitle = "complete"
+            current_status = "training complete"
             live.update(
                 _build_training_panel(
                     title="Training progress",
-                    subtitle="complete",
+                    subtitle=current_subtitle,
                     log=history[-1] if history else None,
                     total_epochs=self._config.epochs,
                     best_epoch=best_epoch,
@@ -191,7 +210,8 @@ class Trainer:
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
                     checkpoint_path=checkpoint_path,
-                    status="training complete",
+                    status=current_status,
+                    batch_progress=current_batch_progress,
                 ),
                 refresh=True,
             )
@@ -204,13 +224,20 @@ class Trainer:
             checkpoint_path=checkpoint_path,
         )
 
-    def _train_epoch(self) -> float:
+    def _train_epoch(
+        self,
+        on_batch_progress: Callable[[str, int, int], None] | None = None,
+    ) -> float:
         """Run one training epoch. Returns average loss."""
         self._model.train()
         total_loss = 0.0
         num_batches = 0
+        total_batches = len(self._train_loader)
 
         for batch in self._train_loader:
+            batch_index = num_batches + 1
+            if on_batch_progress is not None:
+                on_batch_progress("train", batch_index, total_batches)
             features = batch.features.to(self._device)
             labels = batch.labels.to(self._device)
 
@@ -239,15 +266,22 @@ class Trainer:
         return total_loss / max(num_batches, 1)
 
     @torch.inference_mode()
-    def _tune(self) -> tuple[float, dict[str, float]]:
+    def _tune(
+        self,
+        on_batch_progress: Callable[[str, int, int], None] | None = None,
+    ) -> tuple[float, dict[str, float]]:
         """Run evaluation on tune set. Returns (average loss, metrics dict)."""
         self._model.eval()
         total_loss = 0.0
         num_batches = 0
         all_logits: list[torch.Tensor] = []
         all_labels: list[torch.Tensor] = []
+        total_batches = len(self._tune_loader)
 
         for batch in self._tune_loader:
+            batch_index = num_batches + 1
+            if on_batch_progress is not None:
+                on_batch_progress("tune", batch_index, total_batches)
             features = batch.features.to(self._device)
             labels = batch.labels.to(self._device)
 
@@ -332,6 +366,7 @@ def _build_training_panel(
     patience_limit: int,
     checkpoint_path: Path,
     status: str,
+    batch_progress: str | None = None,
 ) -> Panel:
     table = Table.grid(padding=(0, 1))
     table.add_column(style="dim", no_wrap=True)
@@ -349,6 +384,9 @@ def _build_training_panel(
         table.add_row("train", Text("-", style="dim"))
         table.add_row("tune", Text("-", style="dim"))
         table.add_row("lr", Text("-", style="dim"))
+
+    if batch_progress is not None:
+        table.add_row("batch", Text(batch_progress, style="white"))
 
     best_metrics_text = _format_metrics(best_tune_metrics)
     best_loss_text = _format_finite(best_tune_loss)
@@ -389,3 +427,16 @@ def _format_metrics(metrics: dict[str, float]) -> str:
 
 def _format_finite(value: float) -> str:
     return f"{value:.4f}" if np.isfinite(value) else "n/a"
+
+
+def _format_batch_progress(current_batch: int, total_batches: int, *, phase: str) -> str:
+    frames = "|/-\\"
+    spinner = frames[current_batch % len(frames)]
+    width = 10
+    if total_batches > 0:
+        filled = min(width, int(round(width * current_batch / total_batches)))
+    else:
+        filled = 0
+    bar = "#" * filled + "-" * (width - filled)
+    total_display = f"{total_batches:02d}" if total_batches > 0 else "--"
+    return f"{spinner} {phase} {current_batch:02d}/{total_display} [{bar}]"

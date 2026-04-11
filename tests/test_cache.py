@@ -70,13 +70,13 @@ def test_tile_cache_key_changes_with_preprocessing(tmp_path: Path):
     key_a = build_tile_cache_key(
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(target_tile_size_px=224),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     key_b = build_tile_cache_key(
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(target_tile_size_px=256),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=256),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     assert key_a != key_b
@@ -154,11 +154,11 @@ def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     key_a = build_tiling_cache_key(
         dataset=dataset,
-        preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
     )
     key_b = build_tiling_cache_key(
         dataset=dataset,
-        preprocessing=PreprocessingConfig(target_tile_size_px=256, target_spacing_um=0.5),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=256, requested_spacing_um=0.5),
     )
     assert key_a != key_b
 
@@ -231,7 +231,7 @@ def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         dataset=dataset,
-        preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         backend_provenance=provenance,
     )
 
@@ -262,7 +262,7 @@ def test_resolve_tiling_cache_emits_miss_then_hit_logs(tmp_path: Path):
         resolution = resolve_tiling_cache(
             cache_root=cache_root,
             dataset=dataset,
-            preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
             backend_provenance=provenance,
         )
 
@@ -277,7 +277,7 @@ def test_resolve_tiling_cache_emits_miss_then_hit_logs(tmp_path: Path):
         reused = resolve_tiling_cache(
             cache_root=cache_root,
             dataset=dataset,
-            preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
             backend_provenance=provenance,
         )
 
@@ -287,13 +287,53 @@ def test_resolve_tiling_cache_emits_miss_then_hit_logs(tmp_path: Path):
     assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ tiling cache hit:")
 
 
+def test_resolve_tiling_cache_can_log_populated_for_refresh(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "tiling_cache"
+    provenance = {
+        "requested_backend": "openslide",
+        "backend": "openslide",
+        "backend_by_sample_id": {
+            "s1": "openslide",
+            "s2": "openslide",
+        },
+    }
+    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+
+    rich_reporter = SimpleNamespace(console=object(), progress=object())
+
+    resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        preprocessing=preprocessing,
+        backend_provenance=provenance,
+    )
+
+    with patch("soma.cache.slide2vec_progress.get_progress_reporter", return_value=rich_reporter), patch(
+        "soma.cache._validate_tiling_cache_contents",
+        return_value=CacheValidationResult(complete=True),
+    ), patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        reused = resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=preprocessing,
+            backend_provenance=provenance,
+            complete_state="populated",
+        )
+
+    assert reused.complete is True
+    assert reused.reused is True
+    emit_progress_log.assert_called_once()
+    assert _strip_ansi(emit_progress_log.call_args.args[0]).startswith("✓ tiling cache populated:")
+
+
 def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "tiling_cache"
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         dataset=dataset,
-        preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         backend_provenance={
             "requested_backend": "openslide",
             "backend": "openslide",
@@ -334,7 +374,7 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     resolution = resolve_tiling_cache(
         cache_root=tmp_path / "tiling_cache",
         dataset=dataset,
-        preprocessing=PreprocessingConfig(target_tile_size_px=224, target_spacing_um=0.5),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         backend_provenance={
             "requested_backend": "openslide",
             "backend": "openslide",
@@ -468,9 +508,9 @@ def test_resolve_hierarchical_cache_emits_feature_cache_logs(tmp_path: Path):
             dataset=dataset,
             tile_encoder_name="virchow",
             preprocessing=PreprocessingConfig(
-                target_tile_size_px=224,
-                target_spacing_um=0.5,
-                target_region_size_px=1344,
+                requested_tile_size_px=224,
+                requested_spacing_um=0.5,
+                requested_region_size_px=1344,
                 region_tile_multiple=6,
             ),
             execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -487,8 +527,8 @@ def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
         dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(
-            target_tile_size_px=224,
-            target_region_size_px=1344,
+            requested_tile_size_px=224,
+            requested_region_size_px=1344,
             region_tile_multiple=6,
         ),
         execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -497,8 +537,8 @@ def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
         dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(
-            target_tile_size_px=224,
-            target_region_size_px=896,
+            requested_tile_size_px=224,
+            requested_region_size_px=896,
             region_tile_multiple=4,
         ),
         execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -680,9 +720,9 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
         dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(
-            target_tile_size_px=224,
-            target_spacing_um=0.5,
-            target_region_size_px=1344,
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=1344,
             region_tile_multiple=6,
         ),
         execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -698,9 +738,9 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
         dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(
-            target_tile_size_px=224,
-            target_spacing_um=0.5,
-            target_region_size_px=1344,
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=1344,
             region_tile_multiple=6,
         ),
         execution=EncoderConfig(name="virchow", precision="fp16"),

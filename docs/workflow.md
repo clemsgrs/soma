@@ -19,8 +19,8 @@ extractor = FeatureExtractor(
     output_root="output",
     preprocessing=PreprocessingConfig(
         backend="openslide",
-        target_tile_size_px=224,
-        target_spacing_um=0.5,
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
     ),
 )
 
@@ -57,7 +57,7 @@ config = PipelineConfig(
     output_root="experiments",
     cache=CacheConfig(root_dir="shared/feature_cache"),
     encoder=EncoderConfig(name="uni2"),
-    preprocessing=PreprocessingConfig(backend="openslide", target_tile_size_px=224, target_spacing_um=0.5),
+    preprocessing=PreprocessingConfig(backend="openslide", requested_tile_size_px=224, requested_spacing_um=0.5),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
     task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(epochs=50),

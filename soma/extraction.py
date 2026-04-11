@@ -188,8 +188,8 @@ def _validate_runtime(
         return
     validate_slide2vec_encoder_config(
         encoder_name,
-        target_tile_size_px=int(preprocessing.target_tile_size_px),
-        target_spacing_um=float(preprocessing.target_spacing_um),
+        requested_tile_size_px=int(preprocessing.requested_tile_size_px),
+        requested_spacing_um=float(preprocessing.requested_spacing_um),
         precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         output_variant=output_variant,
         allow_non_recommended=False,
@@ -496,6 +496,7 @@ class FeatureExtractor:
                 backend_provenance=backend_provenance,
                 encoder_name=self._encoder.name,
                 raw_preprocessing=asdict(self._preprocessing),
+                complete_state="populated",
             )
             if refreshed.complete:
                 write_tiling_cache_stub(tiling_dir, cache_resolution=refreshed)

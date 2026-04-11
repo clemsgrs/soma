@@ -57,15 +57,15 @@ def resolve_preprocessing_config(
         encoder_config.name,
         metadata=model_metadata,
     )
-    target_tile_size_px = preprocessing_config.target_tile_size_px
-    if target_tile_size_px is None:
-        target_tile_size_px = int(requirements["tile_size_px"])
+    requested_tile_size_px = preprocessing_config.requested_tile_size_px
+    if requested_tile_size_px is None:
+        requested_tile_size_px = int(requirements["tile_size_px"])
 
-    target_spacing_um = preprocessing_config.target_spacing_um
-    if target_spacing_um is None:
+    requested_spacing_um = preprocessing_config.requested_spacing_um
+    if requested_spacing_um is None:
         spacing_override = encoder_config.spacing_um
         if spacing_override is not None:
-            target_spacing_um = float(spacing_override)
+            requested_spacing_um = float(spacing_override)
         else:
             rec_spacing = requirements["spacing_um"]
             if isinstance(rec_spacing, list):
@@ -73,52 +73,52 @@ def resolve_preprocessing_config(
                     raise ValueError(
                         f"Encoder '{encoder_config.name}' supports multiple spacings "
                         f"{rec_spacing}; please specify EncoderConfig.spacing_um or "
-                        "PreprocessingConfig.target_spacing_um."
+                        "PreprocessingConfig.requested_spacing_um."
                     )
-                target_spacing_um = float(rec_spacing[0])
+                requested_spacing_um = float(rec_spacing[0])
             else:
-                target_spacing_um = float(rec_spacing)
+                requested_spacing_um = float(rec_spacing)
 
     ref_tile_size_px = preprocessing_config.ref_tile_size_px
     if ref_tile_size_px is None:
-        ref_tile_size_px = int(target_tile_size_px)
+        ref_tile_size_px = int(requested_tile_size_px)
 
-    target_region_size_px = preprocessing_config.target_region_size_px
+    requested_region_size_px = preprocessing_config.requested_region_size_px
     region_tile_multiple = preprocessing_config.region_tile_multiple
-    effective_region_size_px = preprocessing_config.effective_region_size_px
+    read_region_size_px = preprocessing_config.read_region_size_px
     if region_tile_multiple is not None:
         region_tile_multiple = int(region_tile_multiple)
         if region_tile_multiple < 2:
             raise ValueError("region_tile_multiple must be >= 2")
-        derived_region_size_px = int(target_tile_size_px) * region_tile_multiple
-        if target_region_size_px is not None and int(target_region_size_px) != derived_region_size_px:
+        derived_region_size_px = int(requested_tile_size_px) * region_tile_multiple
+        if requested_region_size_px is not None and int(requested_region_size_px) != derived_region_size_px:
             raise ValueError(
-                "Hierarchical preprocessing requires target_region_size_px to match "
-                f"target_tile_size_px × region_tile_multiple ({derived_region_size_px})."
+                "Hierarchical preprocessing requires requested_region_size_px to match "
+                f"requested_tile_size_px × region_tile_multiple ({derived_region_size_px})."
             )
-        target_region_size_px = derived_region_size_px
-    elif target_region_size_px is not None:
-        target_region_size_px = int(target_region_size_px)
-        if target_region_size_px % int(target_tile_size_px) != 0:
+        requested_region_size_px = derived_region_size_px
+    elif requested_region_size_px is not None:
+        requested_region_size_px = int(requested_region_size_px)
+        if requested_region_size_px % int(requested_tile_size_px) != 0:
             raise ValueError(
-                "target_region_size_px must be divisible by target_tile_size_px"
+                "requested_region_size_px must be divisible by requested_tile_size_px"
             )
-        region_tile_multiple = target_region_size_px // int(target_tile_size_px)
+        region_tile_multiple = requested_region_size_px // int(requested_tile_size_px)
         if region_tile_multiple < 2:
             raise ValueError("Hierarchical preprocessing requires region_tile_multiple >= 2")
 
-    if effective_region_size_px is None and target_region_size_px is not None:
-        effective_region_size_px = target_region_size_px
+    if read_region_size_px is None and requested_region_size_px is not None:
+        read_region_size_px = requested_region_size_px
 
     return replace(
         preprocessing_config,
-        target_tile_size_px=target_tile_size_px,
-        target_spacing_um=target_spacing_um,
+        requested_tile_size_px=requested_tile_size_px,
+        requested_spacing_um=requested_spacing_um,
         ref_tile_size_px=ref_tile_size_px,
-        target_region_size_px=target_region_size_px,
+        requested_region_size_px=requested_region_size_px,
         region_tile_multiple=region_tile_multiple,
-        effective_tile_size_px=int(target_tile_size_px),
-        effective_region_size_px=effective_region_size_px,
+        read_tile_size_px=int(requested_tile_size_px),
+        read_region_size_px=read_region_size_px,
     )
 
 
@@ -193,14 +193,14 @@ def validate_encoder_config(
     rec_tile_size = rec_requirements["tile_size_px"]
     rec_spacing = rec_requirements["spacing_um"]
     if preprocessing_config is not None and rec_tile_size is not None:
-        preprocessing_tile_size = preprocessing_config.target_tile_size_px
+        preprocessing_tile_size = preprocessing_config.requested_tile_size_px
         if preprocessing_tile_size != rec_tile_size:
             warnings.append(
                 f"Tile size mismatch: preprocessing uses "
                 f"{preprocessing_tile_size}px, model recommends "
                 f"{rec_tile_size}px."
             )
-        requested_spacing = config.spacing_um or preprocessing_config.target_spacing_um
+        requested_spacing = config.spacing_um or preprocessing_config.requested_spacing_um
 
         valid_spacings = rec_spacing if isinstance(rec_spacing, list) else [rec_spacing]
         if requested_spacing not in valid_spacings:
@@ -210,15 +210,15 @@ def validate_encoder_config(
             )
 
     if tiling_result is not None:
-        target_spacing = config.spacing_um or (
+        recommended_spacing_um = config.spacing_um or (
             rec_spacing if isinstance(rec_spacing, (int, float)) else None
         )
-        if target_spacing is not None:
+        if recommended_spacing_um is not None:
             requested_spacing = tiling_result.requested_spacing_um
-            if abs(requested_spacing - target_spacing) / target_spacing > 0.05:
+            if abs(requested_spacing - recommended_spacing_um) / recommended_spacing_um > 0.05:
                 warnings.append(
                     f"Requested tiling spacing ({requested_spacing:.4f} µm/px) differs from "
-                    f"target ({target_spacing} µm/px) by more than 5%."
+                    f"recommended ({recommended_spacing_um} µm/px) by more than 5%."
                 )
 
         if rec_tile_size is not None and tiling_result.requested_tile_size_px != rec_tile_size:

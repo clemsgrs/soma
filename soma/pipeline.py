@@ -462,8 +462,8 @@ def train(
 
 
 def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: AggregatorConfig) -> dict[str, object]:
-    patch_size = preprocessing.target_tile_size_px or preprocessing.effective_tile_size_px
-    region_size = preprocessing.target_region_size_px or preprocessing.effective_region_size_px
+    patch_size = preprocessing.requested_tile_size_px or preprocessing.read_tile_size_px
+    region_size = preprocessing.requested_region_size_px or preprocessing.read_region_size_px
     tile_multiple = preprocessing.region_tile_multiple
     if patch_size is None or region_size is None:
         raise ValueError("hierarchical preprocessing must resolve patch and region sizes")
@@ -472,14 +472,14 @@ def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Aggrega
     if tile_multiple is None:
         if region_size % patch_size != 0:
             raise ValueError(
-                "hierarchical preprocessing requires target_region_size_px to be divisible by target_tile_size_px"
+                "hierarchical preprocessing requires requested_region_size_px to be divisible by requested_tile_size_px"
             )
         tile_multiple = region_size // patch_size
     tile_multiple = int(tile_multiple)
     if region_size != patch_size * tile_multiple:
         raise ValueError(
-            "hierarchical preprocessing requires target_region_size_px to equal "
-            "target_tile_size_px × region_tile_multiple"
+            "hierarchical preprocessing requires requested_region_size_px to equal "
+            "requested_tile_size_px × region_tile_multiple"
         )
 
     params = {

@@ -18,7 +18,7 @@ from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer, TrainResult, _build_training_panel
+from soma.training.trainer import Trainer, TrainResult, _build_training_panel, _format_batch_progress
 from soma.training.seed import seed_everything
 
 
@@ -83,6 +83,11 @@ def _make_synthetic_loader(num_slides: int, seed: int = 0):
 
 
 class TestTrainer:
+    def test_format_batch_progress_returns_spinner_and_bar(self):
+        progress = _format_batch_progress(3, 10, phase="train")
+        assert "train 03/10 [###-------]" in progress
+        assert progress[0] in "|/-\\"
+
     def test_build_training_panel_returns_rich_panel(self):
         log = _make_epoch_log(0, 1.2345, 0.9876, 0.75, 0.5, 0.25, 0.125, 1e-4)
         panel = _build_training_panel(
@@ -97,6 +102,7 @@ class TestTrainer:
             patience_limit=10,
             checkpoint_path=Path("/tmp/best_model.pt"),
             status="new best checkpoint saved at epoch 1",
+            batch_progress=_format_batch_progress(3, 10, phase="train"),
         )
 
         assert isinstance(panel, Panel)
@@ -107,6 +113,8 @@ class TestTrainer:
         assert "epoch" in rendered
         assert "train" in rendered
         assert "tune" in rendered
+        assert "batch" in rendered
+        assert "03/10" in rendered
 
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
@@ -158,6 +166,7 @@ class TestTrainer:
         assert "Training progress" in output
         assert "epoch" in output
         assert "train" in output and "tune" in output
+        assert "batch" in output
         assert "auroc" in output and "bal" in output and "f1" in output
         assert "new best checkpoint" in output or "training complete" in output
         assert result.history[-1].epoch == len(result.history) - 1

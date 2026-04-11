@@ -493,9 +493,9 @@ class TestTrainOneFold:
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
             fold_dir=tmp_path / "fold_hier",
             preprocessing=PreprocessingConfig(
-                target_tile_size_px=224,
-                target_spacing_um=0.5,
-                target_region_size_px=448,
+                requested_tile_size_px=224,
+                requested_spacing_um=0.5,
+                requested_region_size_px=448,
                 region_tile_multiple=2,
             ),
         )
@@ -520,9 +520,9 @@ class TestTrainOneFold:
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
                 fold_dir=tmp_path / "fold_hier_error",
                 preprocessing=PreprocessingConfig(
-                    target_tile_size_px=224,
-                    target_spacing_um=0.5,
-                    target_region_size_px=448,
+                    requested_tile_size_px=224,
+                    requested_spacing_um=0.5,
+                    requested_region_size_px=448,
                     region_tile_multiple=2,
                 ),
             )
@@ -800,9 +800,9 @@ class TestPipeline:
             output_root=output_root,
             encoder=EncoderConfig(name="uni2"),
             preprocessing=PreprocessingConfig(
-                target_tile_size_px=224,
-                target_spacing_um=0.5,
-                target_region_size_px=448,
+                requested_tile_size_px=224,
+                requested_spacing_um=0.5,
+                requested_region_size_px=448,
                 region_tile_multiple=2,
             ),
             aggregator=AggregatorConfig(
@@ -832,7 +832,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "output_resolve",
             encoder=EncoderConfig(name="uni2"),
-            preprocessing=PreprocessingConfig(target_spacing_um=0.5),
+            preprocessing=PreprocessingConfig(requested_spacing_um=0.5),
             aggregator=AggregatorConfig(name="hipt", params={"tile_multiple": 6}),
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
@@ -841,11 +841,11 @@ class TestPipeline:
 
         resolved = pipeline._resolve_preprocessing()
 
-        assert resolved.target_tile_size_px == 224
-        assert resolved.effective_tile_size_px == 224
+        assert resolved.requested_tile_size_px == 224
+        assert resolved.read_tile_size_px == 224
         assert resolved.region_tile_multiple == 6
-        assert resolved.target_region_size_px == 1344
-        assert resolved.effective_region_size_px == 1344
+        assert resolved.requested_region_size_px == 1344
+        assert resolved.read_region_size_px == 1344
 
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
         pytest.importorskip("soma.extraction")
@@ -1006,8 +1006,8 @@ class TestPipeline:
                     tissue_fractions=np.array([1.0, 1.0], dtype=np.float32),
                     requested_tile_size_px=256,
                     requested_spacing_um=0.5,
-                    effective_tile_size_px=256,
-                    effective_spacing_um=0.5,
+                    read_tile_size_px=256,
+                    read_spacing_um=0.5,
                     tile_size_lv0=256,
                     read_level=0,
                     use_padding=True,
