@@ -64,6 +64,8 @@ from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
 from soma.training.model import MILModel
+from soma.training.patient_dataset import PatientDataset, patient_collate_fn
+from soma.training.patient_model import PatientModel
 from soma.training.seed import seed_everything
 from soma.training.slide_dataset import SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel
@@ -168,7 +170,14 @@ def train_one_fold(
 
     label_map = dataset.label_map
     feature_dim = feature_store.feature_dim
-    if feature_store.has_feature_manifest:
+    if dataset_type == "patient":
+        # Patient-level: features are indexed by patient_id; splits are slide-based.
+        # Skip the sample-level manifest check and build records directly from splits.
+        train_records = [dataset.samples[sid] for sid in fold_split.train]
+        tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+        test_records = [dataset.samples[sid] for sid in fold_split.test]
+        dropped_by_split = None
+    elif feature_store.has_feature_manifest:
         manifest_statuses = feature_store.feature_statuses
         manifest_sample_ids = set(manifest_statuses)
         split_sample_ids = set(fold_split.train) | set(fold_split.tune) | set(fold_split.test)
@@ -250,7 +259,55 @@ def train_one_fold(
     else:
         label_fn = lambda record: label_map[record.label]  # noqa: E731
 
-    if dataset_type == "tile":
+    if dataset_type == "patient":
+        # Patient-level path: pretrained patient encoder produced (D,) per patient
+        if aggregator is not None:
+            raise ValueError("aggregator must be None for dataset_type='patient'")
+        patient_label_map = dataset.patient_label_map
+        if label_dtype == torch.float:
+            patient_label_fn = lambda pid, raw: float(raw)  # noqa: E731
+        else:
+            patient_label_fn = lambda pid, raw: label_map[raw]  # noqa: E731
+        _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
+
+        def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
+            seen: set[str] = set()
+            ids: list[str] = []
+            for r in records:
+                if r.patient_id is None:
+                    raise ValueError(
+                        f"Sample '{r.sample_id}' has no patient_id. "
+                        "All samples must have a patient_id for dataset_type='patient'."
+                    )
+                if r.patient_id not in seen:
+                    seen.add(r.patient_id)
+                    ids.append(r.patient_id)
+            return ids
+
+        train_patient_ids = _patient_ids_for_records(train_records)
+        tune_patient_ids = _patient_ids_for_records(tune_records)
+        test_patient_ids = _patient_ids_for_records(test_records)
+        train_loader = DataLoader(
+            PatientDataset(train_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
+            batch_size=training.batch_size,
+            shuffle=True,
+            collate_fn=_patient_collate,
+        )
+        tune_loader = DataLoader(
+            PatientDataset(tune_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=_patient_collate,
+        )
+        test_loader = DataLoader(
+            PatientDataset(test_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
+            batch_size=training.batch_size,
+            shuffle=False,
+            collate_fn=_patient_collate,
+        )
+        head = task_cls(input_dim=feature_dim, **task_params)
+        model: torch.nn.Module = PatientModel(task_head=head)
+    elif dataset_type == "tile":
         # Tile-dataset path: each sample is a single encoded tile → task head directly
         _tile_collate = functools.partial(tile_collate_fn, label_dtype=label_dtype)
         train_loader = DataLoader(
@@ -272,7 +329,7 @@ def train_one_fold(
             collate_fn=_tile_collate,
         )
         head = task_cls(input_dim=feature_dim, **task_params)
-        model: torch.nn.Module = TileClassifier(task_head=head)
+        model = TileClassifier(task_head=head)
     elif feature_store.is_slide_level:
         # Slide-level path: skip aggregator, pass (B, D) directly to task head
         if aggregator is not None:
@@ -465,6 +522,9 @@ def train(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    if dataset_type == "patient":
+        splits.validate_no_patient_leakage(dataset)
+
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
         result = train_one_fold(
@@ -534,7 +594,9 @@ def _build_run_summary_panel(
     grid.add_row("task", task.name.replace("_", " "))
 
     # Feature level + dim
-    if dataset_type == "tile":
+    if dataset_type == "patient":
+        level = "patient"
+    elif dataset_type == "tile":
         level = "tile (encoded)"
     elif feature_store.is_slide_level:
         level = "slide"

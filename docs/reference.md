@@ -8,9 +8,10 @@
 |---|---|
 | `"slide"` | Whole-slide image pipeline: tiling → tile encoding → MIL aggregation → training. |
 | `"tile"` | Tile-image pipeline: each sample is a single patch image. Tile encoding → tile classifier training. No aggregation. |
+| `"patient"` | Patient-level pipeline: tiling → tile encoding → slide encoding → patient encoding → training. One prediction per patient. |
 
 ```yaml
-dataset_type: slide  # or "tile"
+dataset_type: slide  # or "tile" or "patient"
 ```
 
 When `dataset_type="tile"`:
@@ -18,6 +19,14 @@ When `dataset_type="tile"`:
 - `preprocessing` is ignored.
 - Only **tile-level encoders** are valid. Slide-level encoders (`prism`, `titan`, `gigapath-slide`, `moozy-slide`) cannot be used.
 - `training.batch_size` should be set higher than the MIL default of `1` (e.g. `32` or `64`).
+
+When `dataset_type="patient"`:
+- `aggregator` must be omitted (or `None`).
+- Only **patient-level encoders** are valid (e.g. `moozy`).
+- The dataset CSV **must** include a `patient_id` column grouping slides by patient.
+- All slides for a patient must share the same label.
+- The splits CSV must not split a patient's slides across train/tune/test within any fold (no patient leakage).
+- Predictions are one per patient (keyed by `patient_id`).
 
 ## Supported Encoders
 
@@ -29,7 +38,7 @@ The canonical encoder presets are registered in code and summarized below. Use t
 - which spacing values are accepted by validation
 - preset-specific behavior, including `output_variant` support
 
-Tile-level encoders are compatible with both `dataset_type="slide"` (as the tiling backbone) and `dataset_type="tile"` (direct patch encoding). Slide-level encoders are only compatible with `dataset_type="slide"`.
+Tile-level encoders are compatible with both `dataset_type="slide"` (as the tiling backbone) and `dataset_type="tile"` (direct patch encoding). Slide-level encoders are only compatible with `dataset_type="slide"`. Patient-level encoders require `dataset_type="patient"` and a `patient_id` column in the dataset CSV.
 
 ### Tile-level encoders (16)
 
@@ -59,7 +68,15 @@ Tile-level encoders are compatible with both `dataset_type="slide"` (as the tili
 | `gigapath-slide` | [Prov-GigaPath](https://huggingface.co/prov-gigapath/prov-gigapath) | `gigapath` | 768 | `0.5` µm/px | |
 | `prism` | [PRISM](https://huggingface.co/paige-ai/PRISM) | `virchow` (`cls_patch_mean`) | 1280 | `0.5` µm/px | |
 | `titan` | [TITAN](https://huggingface.co/MahmoodLab/TITAN) | `conchv15` | 768 | `0.5` µm/px | |
-| `moozy-slide` | [MOOZY](https://huggingface.co/AtlasAnalyticsLab/MOOZY) | `lunit` | 768 | `0.5` µm/px | Slide-level only; patient-level not yet supported |
+| `moozy-slide` | [MOOZY](https://huggingface.co/AtlasAnalyticsLab/MOOZY) | `lunit` | 768 | `0.5` µm/px | |
+
+### Patient-level encoders (1)
+
+Requires `dataset_type="patient"` and a `patient_id` column in the dataset CSV.
+
+| Preset | Model | Tile encoder | Output dim | Supported spacing | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `moozy` | [MOOZY](https://huggingface.co/AtlasAnalyticsLab/MOOZY) | `lunit` | 768 | `0.5` µm/px | Pipeline: lunit tiles → MOOZY slide encoder → MOOZY case transformer |
 
 ## Attention Heatmap Config
 

@@ -1190,3 +1190,133 @@ class TestPipeline:
                 "error": "",
             }
         ]
+
+
+# ---------------------------------------------------------------------------
+# Patient pipeline
+# ---------------------------------------------------------------------------
+
+D_PATIENT = 768
+NUM_PATIENTS = 4  # 2 slides each → 8 slides total
+
+
+def _setup_patient_data(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create dataset.csv (with patient_id), splits.csv, and patient feature .pt files.
+
+    4 patients × 2 slides each = 8 slides.
+    Splits are patient-clean: all slides for a patient go to the same split.
+    """
+    sample_ids = [f"s{i}" for i in range(8)]
+    patient_ids = [f"p{i // 2}" for i in range(8)]  # p0 p0 p1 p1 p2 p2 p3 p3
+    labels = ["tumor" if (i // 2) % 2 == 0 else "normal" for i in range(8)]
+
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": sample_ids,
+            "image_path": [f"/slides/{s}.svs" for s in sample_ids],
+            "label": labels,
+            "patient_id": patient_ids,
+        }
+    ).to_csv(dataset_csv, index=False)
+
+    # Splits: p0+p1 in train, p2 in tune, p3 in test
+    splits_rows = []
+    for sid, pid in zip(sample_ids, patient_ids):
+        if pid in ("p0", "p1"):
+            split = "train"
+        elif pid == "p2":
+            split = "tune"
+        else:
+            split = "test"
+        splits_rows.append({"fold": 0, "sample_id": sid, "split": split})
+    splits_csv = tmp_path / "splits.csv"
+    pd.DataFrame(splits_rows).to_csv(splits_csv, index=False)
+
+    # One patient feature per patient_id (1-D tensors)
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.manual_seed(0)
+    for pid in [f"p{i}" for i in range(NUM_PATIENTS)]:
+        torch.save(torch.randn(D_PATIENT), feature_dir / f"{pid}.pt")
+
+    return dataset_csv, splits_csv, feature_dir
+
+
+class TestPatientPipeline:
+    def test_train_one_fold_returns_fold_result_and_saves_checkpoint(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        fold_dir = tmp_path / "fold_0"
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=fold_dir,
+        )
+
+        assert isinstance(result, FoldResult)
+        assert result.fold == 0
+        assert result.tune_report.split == "tune"
+        assert result.test_report.split == "test"
+        assert (fold_dir / "best_model.pt").exists()
+
+    def test_train_one_fold_predictions_keyed_by_patient_id(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=tmp_path / "fold_0",
+        )
+
+        test_ids = {pred.sample_id for pred in result.test_report.predictions}
+        assert test_ids == {"p3"}
+
+    def test_train_detects_patient_leakage(self, tmp_path: Path):
+        dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+
+        # s0 belongs to p0 but is put in test; the other p0 slide (s1) stays in train
+        bad_splits = []
+        for sid in dataset.sample_ids:
+            pid = dataset.samples[sid].patient_id
+            if sid == "s0":
+                split = "test"
+            elif pid in ("p0", "p1"):
+                split = "train"
+            elif pid == "p2":
+                split = "tune"
+            else:
+                split = "test"
+            bad_splits.append({"fold": 0, "sample_id": sid, "split": split})
+
+        splits_csv = tmp_path / "bad_splits.csv"
+        pd.DataFrame(bad_splits).to_csv(splits_csv, index=False)
+
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="p0"):
+            train(
+                feature_store=store,
+                dataset=dataset,
+                splits=splits,
+                dataset_type="patient",
+                task=TaskConfig(name="binary_classification"),
+                training=TrainingConfig(epochs=1, patience=5),
+                run_dir=tmp_path / "run",
+            )

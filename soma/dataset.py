@@ -10,7 +10,7 @@ import pandas as pd
 
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
-KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"mask_path"}
+KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"mask_path", "patient_id"}
 REQUIRED_SPLITS_COLUMNS = {"fold", "sample_id", "split"}
 VALID_SPLIT_NAMES = {"train", "tune", "test"}
 
@@ -23,6 +23,7 @@ class SampleRecord:
     image_path: Path
     label: str | int
     mask_path: Path | None = None
+    patient_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -61,12 +62,18 @@ class Dataset:
                 if "mask_path" in row.index and pd.notna(row.get("mask_path"))
                 else None
             )
+            patient_id = (
+                str(row["patient_id"])
+                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
+                else None
+            )
             metadata = {c: row[c] for c in meta_columns}
             samples[sid] = SampleRecord(
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
                 label=row["label"],
                 mask_path=mask_path,
+                patient_id=patient_id,
                 metadata=metadata,
             )
         return samples
@@ -91,6 +98,44 @@ class Dataset:
     @property
     def num_classes(self) -> int:
         return len(self._label_map)
+
+    @property
+    def has_patient_ids(self) -> bool:
+        """True if any sample record has a patient_id."""
+        return any(r.patient_id is not None for r in self._samples.values())
+
+    @property
+    def patient_groups(self) -> dict[str, list["SampleRecord"]]:
+        """Group sample records by patient_id.
+
+        Raises ValueError if any sample record is missing a patient_id.
+        """
+        groups: dict[str, list[SampleRecord]] = {}
+        for record in self._samples.values():
+            if record.patient_id is None:
+                raise ValueError(
+                    f"Sample '{record.sample_id}' is missing a patient_id. "
+                    "All rows must have a patient_id for patient-level pipelines."
+                )
+            groups.setdefault(record.patient_id, []).append(record)
+        return groups
+
+    @property
+    def patient_label_map(self) -> dict[str, str | int]:
+        """Map patient_id to label. Validates all slides per patient share the same label.
+
+        Raises ValueError if patient_ids are missing or labels are inconsistent.
+        """
+        patient_label: dict[str, str | int] = {}
+        for patient_id, records in self.patient_groups.items():
+            labels = {r.label for r in records}
+            if len(labels) > 1:
+                raise ValueError(
+                    f"Patient '{patient_id}' has inconsistent labels across slides: {sorted(str(l) for l in labels)}. "
+                    "All slides for a patient must share the same label."
+                )
+            patient_label[patient_id] = records[0].label
+        return patient_label
 
 
 @dataclass(frozen=True)
@@ -165,3 +210,47 @@ class Splits:
     @property
     def num_folds(self) -> int:
         return len(self._folds)
+
+    def validate_no_patient_leakage(self, dataset: "Dataset") -> None:
+        """Validate that no patient appears in more than one split within any fold.
+
+        Raises ValueError if a patient's slides are assigned to different splits
+        in the same fold (e.g., some in train, some in test). This is required
+        for patient-level pipelines to prevent data leakage.
+        """
+        sample_to_patient = {
+            sid: record.patient_id
+            for sid, record in dataset.samples.items()
+            if record.patient_id is not None
+        }
+        if not sample_to_patient:
+            raise ValueError(
+                "Dataset has no patient_id column. "
+                "Patient-level pipelines require a patient_id column in the dataset CSV."
+            )
+        for fold_idx, fold_split in enumerate(self._folds):
+            patient_splits: dict[str, set[str]] = {}
+            for split_name, sample_ids in (
+                ("train", fold_split.train),
+                ("tune", fold_split.tune),
+                ("test", fold_split.test),
+            ):
+                for sid in sample_ids:
+                    pid = sample_to_patient.get(sid)
+                    if pid is None:
+                        continue
+                    patient_splits.setdefault(pid, set()).add(split_name)
+            leaked = {
+                pid: splits
+                for pid, splits in patient_splits.items()
+                if len(splits) > 1
+            }
+            if leaked:
+                details = "; ".join(
+                    f"patient '{pid}' in {sorted(splits)}"
+                    for pid, splits in sorted(leaked.items())
+                )
+                raise ValueError(
+                    f"Patient leakage detected in fold {fold_idx}: {details}. "
+                    "All slides for a patient must be assigned to the same split."
+                )

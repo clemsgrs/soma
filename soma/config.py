@@ -156,7 +156,7 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.task is None:
             raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
-        _valid_dataset_types = {"slide", "tile"}
+        _valid_dataset_types = {"slide", "tile", "patient"}
         if self.dataset_type not in _valid_dataset_types:
             raise ValueError(
                 f"Invalid dataset_type {self.dataset_type!r}. "
@@ -166,6 +166,11 @@ class PipelineConfig:
             raise ValueError(
                 "aggregator must be None for dataset_type='tile' — "
                 "tile classifiers do not use MIL aggregation."
+            )
+        if self.dataset_type == "patient" and self.aggregator is not None:
+            raise ValueError(
+                "aggregator must be None for dataset_type='patient' — "
+                "patient-level pipelines use a pretrained patient encoder, not a trainable aggregator."
             )
         # Validate that requested metrics are valid for the task family.
         resolve_metrics(self.task.name, self.eval.metrics)

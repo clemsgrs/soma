@@ -39,6 +39,7 @@ from soma.cache import (
     preprocessing_backend_provenance,
     resolve_cache_root,
     resolve_hierarchical_cache,
+    resolve_patient_cache,
     resolve_slide_cache,
     resolve_tiling_cache,
     resolve_tiling_cache_root,
@@ -379,6 +380,76 @@ def _aggregate_tiles(
     )
 
 
+def _aggregate_patients(
+    *,
+    model_name: str,
+    output_variant: str,
+    tile_artifacts,
+    patient_id_map: dict[str, str],
+    preprocessing: Slide2VecPreprocessingConfig | None,
+    slide_execution: ExecutionOptions,
+    patient_execution: ExecutionOptions,
+):
+    """Aggregate per-slide tile artifacts into patient-level embeddings.
+
+    Two-phase process:
+    1. Run the model's slide encoder on each set of tile artifacts
+       (using aggregate_tiles, which calls encode_slide).
+    2. Group slide embeddings by patient_id and call encode_patient
+       for each patient.
+
+    Args:
+        tile_artifacts: List of TileEmbeddingArtifact objects per slide.
+        patient_id_map: Mapping from sample_id to patient_id.
+        slide_execution: ExecutionOptions with a temporary output_dir for
+            intermediate slide embeddings.
+        patient_execution: ExecutionOptions with output_dir for patient
+            embedding artifacts.
+
+    Returns:
+        List of PatientEmbeddingArtifact objects, one per unique patient.
+    """
+    from slide2vec.artifacts import write_patient_embeddings
+    from slide2vec.utils.io import load_array
+
+    model = Model.from_preset(model_name, output_variant=output_variant)
+
+    # Step 1: Compute per-slide embeddings from tile artifacts.
+    slide_artifacts = model.aggregate_tiles(
+        tile_artifacts,
+        preprocessing=preprocessing,
+        execution=slide_execution,
+    )
+
+    # Step 2: Group slide embeddings by patient_id.
+    patient_slide_embs: dict[str, list[torch.Tensor]] = {}
+    for art in slide_artifacts:
+        pid = patient_id_map.get(art.sample_id, art.sample_id)
+        emb = load_array(art.path)
+        if not torch.is_tensor(emb):
+            emb = torch.as_tensor(emb)
+        patient_slide_embs.setdefault(pid, []).append(emb)
+
+    # Step 3: Patient encoding.
+    loaded = model._load_backend()
+    patient_artifacts = []
+    for pid, slide_embs_list in patient_slide_embs.items():
+        stacked = torch.stack(slide_embs_list, dim=0).to(loaded.device)
+        with torch.inference_mode():
+            patient_emb = loaded.model.encode_patient(stacked).detach().cpu()
+        artifact = write_patient_embeddings(
+            pid,
+            patient_emb,
+            output_dir=patient_execution.output_dir,
+            output_format=patient_execution.output_format,
+            metadata={"encoder_name": model_name, "encoder_level": "patient"},
+            num_slides=len(slide_embs_list),
+        )
+        patient_artifacts.append(artifact)
+
+    return patient_artifacts
+
+
 class FeatureExtractor:
     """Preprocesses slides and extracts features for all samples in a dataset."""
 
@@ -609,6 +680,22 @@ class FeatureExtractor:
                             output_variant=output_variant,
                             num_gpus=effective_num_gpus,
                         )
+                    elif level == "patient":
+                        store = self._extract_patient_cached(
+                            feature_dir=feature_dir,
+                            cache_root=cache_root,
+                            encoder_info=encoder_info,
+                            loaded_tilings=loaded_tilings,
+                            prepared_tilings=prepared_tilings,
+                            tiling_dir=tiling_dir,
+                            preprocessing=s2v_preprocessing,
+                            resolved_preprocessing=resolved_preprocessing,
+                            resolved_output=resolved_output,
+                            backend_provenance=backend_provenance,
+                            output_variant=output_variant,
+                            runtime_output_variant=runtime_output_variant,
+                            num_gpus=effective_num_gpus,
+                        )
                     else:
                         store = self._extract_slide_cached(
                             feature_dir=feature_dir,
@@ -626,13 +713,14 @@ class FeatureExtractor:
                             num_gpus=effective_num_gpus,
                         )
 
-                self._write_feature_manifest(
-                    feature_dir=feature_dir,
-                    store=store,
-                    loaded_tilings=loaded_tilings,
-                    encoder_name=self._encoder.name,
-                    output_variant=output_variant,
-                )
+                if level != "patient":
+                    self._write_feature_manifest(
+                        feature_dir=feature_dir,
+                        store=store,
+                        loaded_tilings=loaded_tilings,
+                        encoder_name=self._encoder.name,
+                        output_variant=output_variant,
+                    )
                 store = FeatureStore(store.feature_dir)
 
                 if not should_delegate_embedding_progress:
@@ -737,6 +825,7 @@ class FeatureExtractor:
             "tile": "tile_embeddings",
             "slide": "slide_embeddings",
             "hierarchical": "hierarchical_embeddings",
+            "patient": "patient_embeddings",
         }[cache_resolution.cache_kind]
         cache_dir = cache_resolution.cache_dir.resolve()
         feature_rank = int(metadata["feature_rank"])
@@ -1090,6 +1179,167 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
         return FeatureStore(refreshed.cache_dir)
+
+    def _extract_patient_cached(
+        self,
+        *,
+        feature_dir: Path,
+        cache_root: Path,
+        encoder_info: dict,
+        loaded_tilings: list[LoadedTiling],
+        prepared_tilings: list[object],
+        tiling_dir: Path,
+        preprocessing: Slide2VecPreprocessingConfig,
+        resolved_preprocessing: PreprocessingConfig,
+        resolved_output: dict[str, object],
+        backend_provenance: dict[str, object],
+        output_variant: str,
+        runtime_output_variant: str | None,
+        num_gpus: int | None,
+    ) -> FeatureStore:
+        tile_encoder_name = str(encoder_info["tile_encoder"])
+        tile_dependency_output = resolve_tile_dependency_output(
+            self._encoder.name,
+            metadata=encoder_info,
+        )
+        tile_cache = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            tile_encoder_name=tile_encoder_name,
+            preprocessing=resolved_preprocessing,
+            execution=self._encoder,
+            output_variant=str(tile_dependency_output["output_variant"]),
+            backend_provenance=backend_provenance,
+        )
+        patient_cache = resolve_patient_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            patient_encoder_name=self._encoder.name,
+            tile_encoder_name=tile_encoder_name,
+            slide_cache_key=tile_cache.key,
+            execution=self._encoder,
+            output_variant=output_variant,
+            backend_provenance=backend_provenance,
+        )
+        self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
+        if tile_cache.complete and patient_cache.complete:
+            self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
+            return FeatureStore(patient_cache.cache_dir)
+
+        # Build patient_id_map from dataset.
+        patient_id_map = {
+            sample_id: record.patient_id
+            for sample_id, record in self._dataset.samples.items()
+            if record.patient_id is not None
+        }
+        if not patient_id_map:
+            raise ValueError(
+                f"Encoder '{self._encoder.name}' is a patient-level encoder but the dataset "
+                "has no patient_id column. Add a patient_id column to the dataset CSV."
+            )
+
+        self._populate_tile_cache(
+            cache_resolution=tile_cache,
+            loaded_tilings=loaded_tilings,
+            prepared_tilings=prepared_tilings,
+            tiling_dir=tiling_dir,
+            preprocessing=preprocessing,
+            encoder_name=tile_encoder_name,
+            output_variant=str(tile_dependency_output["output_variant"]),
+            num_gpus=num_gpus,
+        )
+        tile_cache = resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            tile_encoder_name=tile_encoder_name,
+            preprocessing=resolved_preprocessing,
+            execution=self._encoder,
+            output_variant=str(tile_dependency_output["output_variant"]),
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
+        self._populate_patient_cache(
+            patient_cache=patient_cache,
+            tile_cache=tile_cache,
+            loaded_tilings=loaded_tilings,
+            patient_id_map=patient_id_map,
+            model_name=self._encoder.name,
+            output_variant=runtime_output_variant,
+            num_gpus=num_gpus,
+        )
+        refreshed = resolve_patient_cache(
+            cache_root=cache_root,
+            dataset=self._dataset,
+            patient_encoder_name=self._encoder.name,
+            tile_encoder_name=tile_encoder_name,
+            slide_cache_key=tile_cache.key,
+            execution=self._encoder,
+            output_variant=output_variant,
+            backend_provenance=backend_provenance,
+            complete_state="populated",
+        )
+        self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
+        return FeatureStore(refreshed.cache_dir)
+
+    def _populate_patient_cache(
+        self,
+        *,
+        patient_cache: FeatureCacheResolution,
+        tile_cache: FeatureCacheResolution,
+        loaded_tilings: Sequence[LoadedTiling],
+        patient_id_map: dict[str, str],
+        model_name: str,
+        output_variant: str | None,
+        num_gpus: int | None,
+    ) -> None:
+        """Compute patient embeddings from cached tile features and write them to the patient cache.
+
+        Two-phase: tile features → slide embeddings (via encode_slide) → patient embeddings
+        (via encode_patient, grouped by patient_id).
+        """
+        missing_sample_ids = set(tile_cache.missing_sample_ids())
+        # Patient cache is per-patient; all slides with tiles are needed.
+        selected_loaded = [
+            loaded for loaded in loaded_tilings
+            if loaded.slide.sample_id not in missing_sample_ids
+        ]
+        with tempfile.TemporaryDirectory(prefix="soma-cache-patient-") as tmp_dir:
+            artifact_dir = Path(tmp_dir)
+            tile_artifacts = build_tile_artifacts_from_cache_payload(
+                features_dir=tile_cache.features_dir,
+                loaded_tilings=selected_loaded,
+                work_dir=artifact_dir / "tile_metadata",
+            )
+            slide_exec = build_execution_options(
+                self._encoder,
+                encoder_name=model_name,
+                output_dir=artifact_dir / "slide_embeddings",
+                num_gpus=num_gpus,
+                save_tile_embeddings=False,
+            )
+            patient_exec = build_execution_options(
+                self._encoder,
+                encoder_name=model_name,
+                output_dir=artifact_dir / "patient_embeddings",
+                num_gpus=num_gpus,
+                save_tile_embeddings=False,
+            )
+            patient_artifacts = _aggregate_patients(
+                model_name=model_name,
+                output_variant=output_variant,
+                tile_artifacts=tile_artifacts,
+                patient_id_map=patient_id_map,
+                preprocessing=None,
+                slide_execution=slide_exec,
+                patient_execution=patient_exec,
+            )
+            feature_dim = write_cache_payload(
+                patient_artifacts,
+                feature_dir=patient_cache.features_dir,
+                id_attr="patient_id",
+            )
+        if feature_dim is not None:
+            record_feature_dim(patient_cache, feature_dim)
 
     def _populate_tile_cache(
         self,
