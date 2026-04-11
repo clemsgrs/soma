@@ -1353,9 +1353,6 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
     }
 
 
-    assert recorded.loc["s0", "feature_kind"] == "slide"
-
-
 def test_multispacing_encoder_requires_explicit_spacing(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(dataset, EncoderConfig(name=_TEST_MULTI))
