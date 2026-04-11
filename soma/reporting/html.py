@@ -10,6 +10,8 @@ import plotly
 import plotly.graph_objects as go
 
 from soma.reporting.charts import (
+    comparison_loss_curves,
+    comparison_metric_curves,
     confusion_matrix_chart,
     loss_curves,
     lr_curve,
@@ -20,7 +22,7 @@ from soma.reporting.charts import (
     scatter_predicted_vs_actual,
     score_distribution_chart,
 )
-from soma.reporting.data import RunData
+from soma.reporting.data import ComparisonData, RunData
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
 _ORDINAL_FAMILIES = {"ordinal_classification"}
@@ -281,6 +283,213 @@ def _config_rows(cfg: dict) -> list[tuple[str, str]]:
         rows.append(("Tags", ", ".join(tags)))
 
     return [(k, v) for k, v in rows if v and v != "—"]
+
+
+def render_comparison_report(comparison_data: ComparisonData) -> str:
+    """Generate a self-contained HTML comparison report string.
+
+    Args:
+        comparison_data: Populated ComparisonData from load_comparison_data().
+
+    Returns:
+        Full HTML string with embedded Plotly JS and all comparison sections.
+    """
+    sections: list[str] = []
+    sections.append(_comparison_section_header(comparison_data))
+    sections.append(_comparison_section_config_diff(comparison_data))
+    sections.append(_comparison_section_metrics(comparison_data))
+    sections.append(_comparison_section_curves(comparison_data))
+
+    body = "\n".join(s for s in sections if s)
+    plotly_js = plotly.offline.get_plotlyjs()
+    n = len(comparison_data.runs)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Run Comparison ({n} runs)</title>
+  <script>{plotly_js}</script>
+  <style>{_css()}{_comparison_css()}</style>
+</head>
+<body>
+{body}
+</body>
+</html>"""
+
+
+def _comparison_section_header(cd: ComparisonData) -> str:
+    n = len(cd.runs)
+    label_badges = "".join(
+        f'<span class="run-badge" style="background:{_badge_color(i)}">{label}</span>'
+        for i, label in enumerate(cd.labels)
+    )
+    return f"""
+<div class="page-header">
+  <h1>Run Comparison</h1>
+  <div class="header-meta">
+    <span>{n} runs</span>
+    {label_badges}
+  </div>
+</div>"""
+
+
+def _comparison_section_config_diff(cd: ComparisonData) -> str:
+    if not any(cd.config_diffs):
+        # All configs identical
+        return """
+<div class="section">
+  <h2>Configuration</h2>
+  <p class="muted">All runs share identical configurations.</p>
+</div>"""
+
+    # Collect all varying keys
+    varying_keys: list[str] = []
+    for diff in cd.config_diffs:
+        for k in diff:
+            if k not in varying_keys:
+                varying_keys.append(k)
+
+    col_headers = "".join(
+        f'<th><span class="run-badge" style="background:{_badge_color(i)}">{label}</span></th>'
+        for i, label in enumerate(cd.labels)
+    )
+    header_row = f"<tr><th>Config field</th>{col_headers}</tr>"
+
+    rows_html = ""
+    for key in varying_keys:
+        cells = "".join(
+            f"<td><code>{diff.get(key, '—')}</code></td>"
+            for diff in cd.config_diffs
+        )
+        rows_html += f"<tr><td class='cfg-key'>{key}</td>{cells}</tr>"
+
+    # Shared config in a collapsible block
+    shared_rows = "".join(
+        f"<tr><td class='cfg-key'>{k}</td><td class='cfg-val'><code>{v}</code></td></tr>"
+        for k, v in sorted(cd.shared_config.items())
+    )
+    shared_html = f"""
+<details class="shared-cfg">
+  <summary>Shared configuration ({len(cd.shared_config)} fields)</summary>
+  <table class="cfg-table" style="margin-top:10px"><tbody>{shared_rows}</tbody></table>
+</details>""" if cd.shared_config else ""
+
+    return f"""
+<div class="section">
+  <h2>Configuration differences</h2>
+  <table class="results-table">
+    <thead>{header_row}</thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+  {shared_html}
+</div>"""
+
+
+def _comparison_section_metrics(cd: ComparisonData) -> str:
+    if not cd.metric_names:
+        return ""
+
+    col_headers = "".join(
+        f'<th><span class="run-badge" style="background:{_badge_color(i)}">{label}</span></th>'
+        for i, label in enumerate(cd.labels)
+    )
+    header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
+
+    rows_html = ""
+    for metric in cd.metric_names:
+        # Collect mean value per run for best-highlighting
+        means: list[float | None] = []
+        for run in cd.runs:
+            mean_key = f"{metric}_mean"
+            val = run.summary.get(mean_key)
+            if val is None:
+                # Fall back to first fold's test metric
+                val = run.folds[0].test_metrics.get(metric) if run.folds else None
+            means.append(val)
+
+        valid_means = [v for v in means if v is not None]
+        best_val = max(valid_means) if valid_means else None
+
+        cells = ""
+        for val in means:
+            if val is None:
+                cells += "<td>—</td>"
+                continue
+            std_key = f"{metric}_std"
+            run_idx = means.index(val)
+            std = cd.runs[run_idx].summary.get(std_key)
+            is_best = best_val is not None and abs(val - best_val) < 1e-9
+            cell_class = " class='best-val'" if is_best else ""
+            std_str = f" ± {std:.4f}" if std is not None else ""
+            cells += f"<td{cell_class}><strong>{val:.4f}</strong>{std_str}</td>"
+
+        rows_html += f"<tr><td class='metric-name'>{metric}</td>{cells}</tr>"
+
+    return f"""
+<div class="section">
+  <h2>Metrics comparison</h2>
+  <table class="results-table">
+    <thead>{header_row}</thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>"""
+
+
+def _comparison_section_curves(cd: ComparisonData) -> str:
+    has_history = any(
+        any(fd.training_history for fd in run.folds)
+        for run in cd.runs
+    )
+    if not has_history:
+        return """
+<div class="section">
+  <h2>Training Curves</h2>
+  <p class="muted">No training history available.</p>
+</div>"""
+
+    chart_divs: list[str] = []
+    chart_divs.append(_chart_div(
+        comparison_loss_curves(cd.runs, cd.labels), width="full"
+    ))
+    for metric_name in cd.metric_names:
+        chart_divs.append(_chart_div(
+            comparison_metric_curves(cd.runs, cd.labels, metric_name), width="half"
+        ))
+
+    inner = "\n".join(chart_divs)
+    return f"""
+<div class="section">
+  <h2>Training Curves</h2>
+  <div class="chart-grid">{inner}</div>
+</div>"""
+
+
+def _badge_color(idx: int) -> str:
+    palette = [
+        "#E63946", "#2A9D8F", "#E9C46A", "#264653",
+        "#F4A261", "#A8DADC", "#457B9D", "#1D3557",
+    ]
+    return palette[idx % len(palette)]
+
+
+def _comparison_css() -> str:
+    return """
+.run-badge {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 12px;
+  font-size: 12px; font-weight: 600; color: #fff;
+  margin-right: 6px;
+}
+.best-val { background: #d4edda; }
+.shared-cfg { margin-top: 16px; }
+.shared-cfg summary {
+  cursor: pointer; color: #6c757d; font-size: 13px;
+  padding: 6px 0;
+}
+details[open] summary { margin-bottom: 4px; }
+"""
 
 
 def _css() -> str:

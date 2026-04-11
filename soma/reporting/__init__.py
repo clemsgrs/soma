@@ -14,19 +14,30 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from soma.reporting.data import RunData, FoldData, load_run_data, run_data_from_result
-from soma.reporting.html import render_report
+from soma.reporting.data import (
+    ComparisonData,
+    FoldData,
+    RunData,
+    load_comparison_data,
+    load_run_data,
+    run_data_from_result,
+)
+from soma.reporting.html import render_comparison_report, render_report
 
 if TYPE_CHECKING:
     from soma.config import PipelineConfig
     from soma.pipeline import PipelineResult
 
 __all__ = [
+    "compare_runs",
     "generate_report",
     "generate_report_from_result",
+    "load_comparison_data",
     "load_run_data",
     "run_data_from_result",
+    "render_comparison_report",
     "render_report",
+    "ComparisonData",
     "RunData",
     "FoldData",
 ]
@@ -55,6 +66,36 @@ def generate_report(
 
     run_data = load_run_data(run_dir)
     html = render_report(run_data)
+    output_path.write_text(html, encoding="utf-8")
+    return output_path
+
+
+def compare_runs(
+    run_dirs: list[str | Path],
+    *,
+    output_path: str | Path | None = None,
+    labels: list[str] | None = None,
+) -> Path:
+    """Generate an HTML comparison report for multiple runs.
+
+    Args:
+        run_dirs: Paths to completed run directories.
+        output_path: Destination for the HTML file. Defaults to the parent of
+            the first run_dir / "comparison.html".
+        labels: Short labels for each run. When None, labels are auto-derived
+            from the config diff (e.g., aggregator name when that's the only
+            difference), falling back to run_id.
+
+    Returns:
+        Path to the generated comparison report.
+    """
+    run_dirs = [Path(d) for d in run_dirs]
+    if output_path is None:
+        output_path = run_dirs[0].parent / "comparison.html"
+    output_path = Path(output_path)
+
+    comparison_data = load_comparison_data(run_dirs, labels=labels)
+    html = render_comparison_report(comparison_data)
     output_path.write_text(html, encoding="utf-8")
     return output_path
 

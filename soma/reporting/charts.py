@@ -23,7 +23,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-from soma.reporting.data import FoldData
+from soma.reporting.data import FoldData, RunData
 
 # Consistent color palette for folds
 _FOLD_COLORS = [
@@ -449,6 +449,142 @@ def _empty_figure(title: str) -> go.Figure:
         **_chart_layout(),
     )
     return fig
+
+
+# ---------------------------------------------------------------------------
+# Cross-run comparison charts
+# ---------------------------------------------------------------------------
+
+
+def comparison_loss_curves(runs: list[RunData], labels: list[str]) -> go.Figure:
+    """Train/tune loss curves overlaid across runs.
+
+    Each run contributes one mean line (averaged across folds). When a run
+    has multiple folds a ±1 std shaded band is drawn around the mean.
+    """
+    fig = go.Figure()
+    for run, label, color in zip(runs, labels, _run_colors(len(runs))):
+        _add_comparison_curve(fig, run, label, color, key="train_loss", dash="solid")
+        _add_comparison_curve(fig, run, label, color, key="tune_loss", dash="dot", show_label=False)
+    fig.update_layout(
+        title="Loss curves (cross-run)",
+        xaxis_title="Epoch",
+        yaxis_title="Loss",
+        **_chart_layout(),
+    )
+    return fig
+
+
+def comparison_metric_curves(
+    runs: list[RunData],
+    labels: list[str],
+    metric_name: str,
+) -> go.Figure:
+    """Tune metric curves overlaid across runs.
+
+    Each run contributes one mean line (averaged across folds). When a run
+    has multiple folds a ±1 std shaded band is drawn around the mean.
+    """
+    fig = go.Figure()
+    for run, label, color in zip(runs, labels, _run_colors(len(runs))):
+        _add_comparison_curve(fig, run, label, color, metric_name=metric_name)
+    fig.update_layout(
+        title=f"Tune {metric_name} per epoch (cross-run)",
+        xaxis_title="Epoch",
+        yaxis_title=metric_name,
+        **_chart_layout(),
+    )
+    return fig
+
+
+def _add_comparison_curve(
+    fig: go.Figure,
+    run: RunData,
+    label: str,
+    color: str,
+    *,
+    key: str | None = None,
+    metric_name: str | None = None,
+    dash: str = "solid",
+    show_label: bool = True,
+) -> None:
+    """Add one mean curve (+ optional ±1std band) for a single run."""
+    folds_with_history = [fd for fd in run.folds if fd.training_history]
+    if not folds_with_history:
+        return
+
+    n_epochs = max(len(fd.training_history) for fd in folds_with_history)
+    epochs = list(range(n_epochs))
+
+    per_fold_values = []
+    for fd in folds_with_history:
+        if key is not None:
+            vals = [e[key] for e in fd.training_history]
+        else:
+            vals = [e["tune_metrics"].get(metric_name) for e in fd.training_history]
+            if all(v is None for v in vals):
+                continue
+            vals = [v if v is not None else float("nan") for v in vals]
+        # Pad to n_epochs if this fold stopped early
+        if len(vals) < n_epochs:
+            vals = vals + [float("nan")] * (n_epochs - len(vals))
+        per_fold_values.append(vals)
+
+    if not per_fold_values:
+        return
+
+    arr = np.array(per_fold_values, dtype=float)
+    mean = np.nanmean(arr, axis=0)
+    std = np.nanstd(arr, axis=0) if arr.shape[0] > 1 else None
+
+    trace_label = f"{label} {key or metric_name}" if not show_label else label
+    legend_label = f"{label} (train)" if key == "train_loss" else (
+        f"{label} (tune)" if key == "tune_loss" else label
+    )
+
+    if std is not None:
+        upper = mean + std
+        lower = mean - std
+        # Upper bound (invisible line, fills down to lower)
+        fig.add_trace(go.Scatter(
+            x=epochs, y=upper.tolist(),
+            mode="lines", line=dict(width=0),
+            showlegend=False, hoverinfo="skip",
+            legendgroup=label,
+        ))
+        # Lower bound with fill
+        fig.add_trace(go.Scatter(
+            x=epochs, y=lower.tolist(),
+            mode="lines", line=dict(width=0),
+            fill="tonexty",
+            fillcolor=_hex_to_rgba(color, alpha=0.15),
+            showlegend=False, hoverinfo="skip",
+            legendgroup=label,
+        ))
+
+    fig.add_trace(go.Scatter(
+        x=epochs, y=mean.tolist(),
+        mode="lines",
+        name=legend_label,
+        line=dict(color=color, width=2, dash=dash),
+        legendgroup=label,
+    ))
+
+
+def _run_colors(n: int) -> list[str]:
+    """Return n distinct colors for runs (different palette from fold colors)."""
+    palette = [
+        "#E63946", "#2A9D8F", "#E9C46A", "#264653",
+        "#F4A261", "#A8DADC", "#457B9D", "#1D3557",
+    ]
+    return [palette[i % len(palette)] for i in range(n)]
+
+
+def _hex_to_rgba(hex_color: str, alpha: float = 0.2) -> str:
+    """Convert a hex color string to an rgba() CSS string."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 
 def _chart_layout() -> dict:
