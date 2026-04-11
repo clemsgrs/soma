@@ -20,8 +20,7 @@ from soma.evaluation.metrics import (
 )
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
-from soma.reporting.data import FoldData, RunData, run_data_from_result
-from soma.reporting.html import _aggregate_fold_predictions
+from soma.reporting.data import FoldData, RunData, aggregate_fold_predictions, run_data_from_result
 from soma.reporting.html import render_report
 from soma.training.trainer import EpochLog, TrainResult
 
@@ -411,34 +410,41 @@ def test_subgroup_section_contains_css_highlight_classes(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# _aggregate_fold_predictions
+# aggregate_fold_predictions
 # ---------------------------------------------------------------------------
 
 
+def _fold(df: pd.DataFrame) -> FoldData:
+    """Wrap a DataFrame as a minimal FoldData for testing."""
+    return FoldData(fold=0, training_history=[], tune_metrics={}, test_metrics={}, predictions=df)
+
+
 def test_aggregate_fold_predictions_no_duplicates_unchanged() -> None:
-    """DataFrame with unique sample_ids passes through unmodified."""
-    df = pd.DataFrame({
-        "sample_id": ["s0", "s1"],
-        "true_label": [0, 1],
-        "predicted_label": [0, 1],
-        "prob_0": [0.8, 0.3],
-        "prob_1": [0.2, 0.7],
-    })
-    result = _aggregate_fold_predictions(df)
+    """Two folds with disjoint sample_ids are simply concatenated."""
+    fold0 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+        "prob_0": [0.8], "prob_1": [0.2],
+    }))
+    fold1 = _fold(pd.DataFrame({
+        "sample_id": ["s1"], "true_label": [1], "predicted_label": [1],
+        "prob_0": [0.3], "prob_1": [0.7],
+    }))
+    result = aggregate_fold_predictions([fold0, fold1])
     assert len(result) == 2
-    assert list(result["sample_id"]) == ["s0", "s1"]
+    assert set(result["sample_id"]) == {"s0", "s1"}
 
 
 def test_aggregate_fold_predictions_averages_probs() -> None:
-    """Duplicate rows for the same sample have their probs averaged."""
-    df = pd.DataFrame({
-        "sample_id": ["s0", "s0"],
-        "true_label": [0, 0],
-        "predicted_label": [0, 1],   # will be recomputed
-        "prob_0": [0.8, 0.6],
-        "prob_1": [0.2, 0.4],
-    })
-    result = _aggregate_fold_predictions(df)
+    """Same sample in two folds has its probs averaged."""
+    fold0 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+        "prob_0": [0.8], "prob_1": [0.2],
+    }))
+    fold1 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [1],
+        "prob_0": [0.6], "prob_1": [0.4],
+    }))
+    result = aggregate_fold_predictions([fold0, fold1])
     assert len(result) == 1
     assert result["prob_0"].iloc[0] == pytest.approx(0.7)
     assert result["prob_1"].iloc[0] == pytest.approx(0.3)
@@ -446,41 +452,39 @@ def test_aggregate_fold_predictions_averages_probs() -> None:
 
 def test_aggregate_fold_predictions_recomputes_predicted_label() -> None:
     """predicted_label is recomputed as argmax of averaged probs."""
-    df = pd.DataFrame({
-        "sample_id": ["s0", "s0"],
-        "true_label": [1, 1],
-        "predicted_label": [0, 0],   # both folds predicted 0
-        "prob_0": [0.6, 0.3],        # fold 0: class 0 wins; fold 1: class 1 wins
-        "prob_1": [0.4, 0.7],
-    })
-    result = _aggregate_fold_predictions(df)
+    fold0 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [1], "predicted_label": [0],
+        "prob_0": [0.6], "prob_1": [0.4],   # fold 0: class 0 wins
+    }))
+    fold1 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [1], "predicted_label": [1],
+        "prob_0": [0.3], "prob_1": [0.7],   # fold 1: class 1 wins
+    }))
+    result = aggregate_fold_predictions([fold0, fold1])
     # mean prob_0=0.45, mean prob_1=0.55 → argmax = 1
     assert result["predicted_label"].iloc[0] == 1
 
 
 def test_aggregate_fold_predictions_regression() -> None:
     """Regression predictions (predicted_value) are averaged across folds."""
-    df = pd.DataFrame({
-        "sample_id": ["s0", "s0"],
-        "true_label": [3.0, 3.0],
-        "predicted_value": [2.8, 3.2],
-    })
-    result = _aggregate_fold_predictions(df)
+    fold0 = _fold(pd.DataFrame({"sample_id": ["s0"], "true_label": [3.0], "predicted_value": [2.8]}))
+    fold1 = _fold(pd.DataFrame({"sample_id": ["s0"], "true_label": [3.0], "predicted_value": [3.2]}))
+    result = aggregate_fold_predictions([fold0, fold1])
     assert len(result) == 1
     assert result["predicted_value"].iloc[0] == pytest.approx(3.0)
 
 
 def test_aggregate_fold_predictions_preserves_subgroup_columns() -> None:
-    """Metadata columns (subgroup) are kept from the first occurrence."""
-    df = pd.DataFrame({
-        "sample_id": ["s0", "s0"],
-        "true_label": [0, 0],
-        "predicted_label": [0, 0],
-        "prob_0": [0.7, 0.7],
-        "prob_1": [0.3, 0.3],
-        "sex": ["M", "M"],
-    })
-    result = _aggregate_fold_predictions(df)
+    """Metadata columns (subgroup) are kept from the first fold."""
+    fold0 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+        "prob_0": [0.7], "prob_1": [0.3], "sex": ["M"],
+    }))
+    fold1 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+        "prob_0": [0.7], "prob_1": [0.3], "sex": ["M"],
+    }))
+    result = aggregate_fold_predictions([fold0, fold1])
     assert result["sex"].iloc[0] == "M"
 
 

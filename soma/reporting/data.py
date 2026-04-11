@@ -55,6 +55,53 @@ class RunData:
             self.subgroup_columns = []
 
 
+def aggregate_fold_predictions(folds: list[FoldData]) -> pd.DataFrame:
+    """Concatenate test predictions across all folds, averaging per sample when needed.
+
+    In fixed-holdout setups the same test set appears in every fold, producing
+    duplicate sample_ids after concatenation. When duplicates are detected,
+    numeric prediction columns are averaged per sample and predicted_label is
+    recomputed from the averaged values:
+    - prob_* (classification) → mean, predicted_label = argmax
+    - raw_score (ordinal) → mean, predicted_label = round(mean)
+    - predicted_value (regression) → mean
+    Metadata columns (true_label, subgroup columns) are taken from the first fold.
+    """
+    dfs = [fd.predictions for fd in folds if not fd.predictions.empty]
+    if not dfs:
+        return pd.DataFrame()
+    df = pd.concat(dfs, ignore_index=True)
+    if not df["sample_id"].duplicated().any():
+        return df
+
+    # Classify columns in one pass
+    prob_cols: list[str] = []
+    mean_cols: list[str] = []
+    fixed_cols: list[str] = []
+    for c in df.columns:
+        if c in {"sample_id", "predicted_label"}:
+            continue
+        elif c.startswith("prob_"):
+            prob_cols.append(c)
+            mean_cols.append(c)
+        elif c in {"predicted_value", "raw_score"}:
+            mean_cols.append(c)
+        else:
+            fixed_cols.append(c)
+
+    agg = {c: "first" for c in fixed_cols}
+    agg.update({c: "mean" for c in mean_cols})
+    result = df.groupby("sample_id", sort=False).agg(agg).reset_index()
+
+    prob_cols_sorted = sorted(prob_cols)
+    if prob_cols_sorted:
+        result["predicted_label"] = result[prob_cols_sorted].to_numpy().argmax(axis=1)
+    elif "raw_score" in result.columns:
+        result["predicted_label"] = result["raw_score"].round().astype(int)
+
+    return result
+
+
 def load_run_data(run_dir: str | Path) -> RunData:
     """Load all report data from a saved run directory on disk.
 

@@ -322,11 +322,8 @@ def compare_run_metrics(
 
         # Sign permutation test: for each fold independently, randomly flip
         # which run is labeled "best" vs "other".
-        null_deltas = np.empty(n_permutations)
-        for k in range(n_permutations):
-            signs = rng.choice([-1.0, 1.0], size=n_folds)
-            null_deltas[k] = abs(float(np.mean(signs * diffs)))
-
+        all_signs = rng.choice([-1.0, 1.0], size=(n_permutations, n_folds))
+        null_deltas = np.abs(all_signs @ diffs) / n_folds
         p_values.append(float(np.mean(null_deltas >= observed_delta)))
 
     return p_values
@@ -455,15 +452,15 @@ def compute_subgroup_stats(
                 except Exception:
                     continue
 
-                # Permutation test: shuffle the group label, recompute delta
-                combined = predictions_df.copy()
+                # Permutation test: shuffle group membership, recompute delta
                 n_group = int(group_mask.sum())
+                n_total = len(predictions_df)
                 null_deltas = []
                 for _ in range(n_permutations):
-                    perm_mask = np.zeros(len(combined), dtype=bool)
-                    perm_mask[rng.choice(len(combined), size=n_group, replace=False)] = True
-                    perm_group = combined[perm_mask]
-                    perm_rest = combined[~perm_mask]
+                    perm_mask = np.zeros(n_total, dtype=bool)
+                    perm_mask[rng.choice(n_total, size=n_group, replace=False)] = True
+                    perm_group = predictions_df[perm_mask]
+                    perm_rest = predictions_df[~perm_mask]
                     try:
                         yg_t, yg_p, yg_pr = _extract_arrays(perm_group, task_family)
                         yr_t, yr_p, yr_pr = _extract_arrays(perm_rest, task_family)
@@ -474,8 +471,7 @@ def compute_subgroup_stats(
                         continue
 
                 if null_deltas:
-                    p_value = float(np.mean(np.array(null_deltas) >= observed_delta))
-                    metric_pvals[metric] = p_value
+                    metric_pvals[metric] = float(np.mean(np.array(null_deltas) >= observed_delta))
 
             if metric_pvals:
                 col_stats[str(group_val)] = metric_pvals

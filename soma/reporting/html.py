@@ -27,7 +27,7 @@ from soma.reporting.charts import (
     subgroup_stats_heatmap,
 )
 from soma.evaluation.metrics import bh_correct, compare_run_metrics, compute_subgroup_metrics, compute_subgroup_stats
-from soma.reporting.data import ComparisonData, RunData
+from soma.reporting.data import ComparisonData, RunData, aggregate_fold_predictions
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
 _ORDINAL_FAMILIES = {"ordinal_classification"}
@@ -224,57 +224,12 @@ def _section_prediction_analysis(run_data: RunData) -> str:
 </div>"""
 
 
-def _aggregate_fold_predictions(df: pd.DataFrame) -> pd.DataFrame:
-    """Deduplicate predictions for samples that appear in multiple folds.
-
-    In fixed-holdout setups the same test set is used for every fold, so
-    concatenating fold predictions produces duplicate rows. We resolve this by
-    averaging numeric prediction columns across folds and recomputing
-    predicted_label from the averaged values:
-    - prob_* columns (classification) → mean, then argmax for predicted_label
-    - raw_score (ordinal) → mean, predicted_label = round(mean raw_score)
-    - predicted_value (regression) → mean
-    Metadata columns (true_label, subgroup columns) are deterministic across
-    folds and are taken from the first occurrence.
-    """
-    if not df["sample_id"].duplicated().any():
-        return df
-
-    prob_cols = sorted(c for c in df.columns if c.startswith("prob_"))
-    fixed_cols = [
-        c for c in df.columns
-        if c not in {"sample_id", "predicted_label", "predicted_value", "raw_score"}
-        and not c.startswith("prob_")
-    ]
-    agg: dict = {c: "first" for c in fixed_cols}
-    for c in prob_cols:
-        agg[c] = "mean"
-    if "predicted_value" in df.columns:
-        agg["predicted_value"] = "mean"
-    if "raw_score" in df.columns:
-        agg["raw_score"] = "mean"
-
-    result = df.groupby("sample_id", sort=False).agg(agg).reset_index()
-
-    if prob_cols:
-        result["predicted_label"] = result[prob_cols].to_numpy().argmax(axis=1)
-    elif "raw_score" in result.columns:
-        result["predicted_label"] = result["raw_score"].round().astype(int)
-
-    return result
-
-
 def _section_subgroup_analysis(run_data: RunData) -> str:
     """Subgroup analysis section — only rendered when subgroup columns are configured."""
     if not run_data.subgroup_columns:
         return ""
 
-    # Aggregate all fold predictions. Deduplicate in case of a shared test set
-    # (fixed-holdout setup where the same samples appear in every fold).
-    all_preds = _aggregate_fold_predictions(pd.concat(
-        [fd.predictions for fd in run_data.folds if not fd.predictions.empty],
-        ignore_index=True,
-    ))
+    all_preds = aggregate_fold_predictions(run_data.folds)
     if all_preds.empty:
         return ""
 
@@ -297,15 +252,13 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
     sg_stats_adj: dict[str, dict[str, dict[str, float]]] = {}
     for col, col_stats in sg_stats.items():
         sg_stats_adj[col] = {}
-        groups = sorted(col_stats.keys())
         for metric in run_data.metrics:
-            raw = [col_stats[g].get(metric) for g in groups]
-            valid_idx = [i for i, p in enumerate(raw) if p is not None]
-            valid_p = [raw[i] for i in valid_idx]  # type: ignore[misc]
-            corrected = bh_correct(valid_p)
-            for list_pos, orig_idx in enumerate(valid_idx):
-                g = groups[orig_idx]
-                sg_stats_adj[col].setdefault(g, {})[metric] = corrected[list_pos]
+            tested = [(g, p) for g in sorted(col_stats) if (p := col_stats[g].get(metric)) is not None]
+            if not tested:
+                continue
+            groups_tested, raw_p = zip(*tested)
+            for g, p_adj in zip(groups_tested, bh_correct(list(raw_p))):
+                sg_stats_adj[col].setdefault(g, {})[metric] = p_adj
 
     html_parts: list[str] = []
 
