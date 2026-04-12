@@ -14,9 +14,9 @@ splits_csv: data/splits.csv
 output_root: runs/my_experiment
 
 # Input data type.
-# Options: slide | tile | patient
-#   slide:   whole-slide images — tiling → encoding → aggregation → training
+# Options: tile | slide | patient
 #   tile:    pre-tiled patch images — encoding → tile classifier (no aggregator)
+#   slide:   whole-slide images — tiling → encoding → aggregation → training
 #   patient: patient-level embeddings — encoding → patient classifier (no aggregator)
 dataset_type: slide
 
@@ -61,14 +61,17 @@ preprocessing:
   tissue_mask_tissue_value: 1
 
 # ---------------------------------------------------------------------------
-# Feature cache — reuse extracted features across experiments
+# Cache — reuse tiling and feature extraction results across experiments
+# Covers both tiling artifacts (<root>/tiling_cache) and features (<root>/feature_cache).
 # ---------------------------------------------------------------------------
 cache:
-  # Whether to use a shared feature cache.
+  # Whether caching is enabled.
   enabled: true
 
-  # Shared cache root. Set to null to disable caching.
-  root_dir: shared/feature_cache
+  # Shared cache root directory.
+  # Defaults to <output_root>/feature_cache when null (pipeline.py).
+  # Set explicitly to share a cache across multiple runs with different output_root values.
+  root_dir: null
 
   # How strictly to validate cache hits.
   # Options: strict (encoder + preprocessing must match) | relaxed (encoder only)
