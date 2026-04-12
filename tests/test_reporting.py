@@ -101,12 +101,12 @@ def _make_run_dir(
     }
     (run_dir / "run.yaml").write_text(_to_yaml(run_metadata))
 
-    # summary with mean/std for each metric
+    # summary with mean/std for each metric (always prefixed by split name)
     resolved = resolve_metrics(task_name, metrics or [])
     summary = {}
     for m in resolved:
-        summary[f"{m}_mean"] = 0.75
-        summary[f"{m}_std"] = 0.02
+        summary[f"test/{m}_mean"] = 0.75
+        summary[f"test/{m}_std"] = 0.02
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     preds_fn = predictions_fn or (
@@ -127,7 +127,7 @@ def _make_run_dir(
             "test": {m: 0.75 for m in resolved},
         }
         (fold_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
-        preds_fn().to_csv(fold_dir / "predictions.csv", index=False)
+        preds_fn().to_csv(fold_dir / "predictions_test.csv", index=False)
 
     return run_dir
 
@@ -200,7 +200,7 @@ def test_load_run_data_binary(tmp_path: Path) -> None:
     assert "elapsed_seconds" in run_data.folds[0].training_history[0]
     assert "avg_epoch_seconds" in run_data.folds[0].training_history[0]
     assert "auroc" in run_data.folds[0].tune_metrics
-    assert "prob_1" in run_data.folds[0].predictions.columns
+    assert "prob_1" in run_data.folds[0].predictions["test"].columns
 
 
 def test_load_run_data_multi_fold(tmp_path: Path) -> None:
@@ -279,7 +279,7 @@ def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
     fold_result.fold = 0
     fold_result.train_result = train_result
     fold_result.tune_report = tune_report
-    fold_result.test_report = test_report
+    fold_result.test_reports = {"test": test_report}
 
     run_dir = tmp_path / "run_dir"
     run_dir.mkdir()
@@ -289,7 +289,7 @@ def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
 
     result = MagicMock()
     result.fold_results = [fold_result]
-    result.summary = {"auroc_mean": 0.60, "auroc_std": 0.0}
+    result.summary = {"test/auroc_mean": 0.60, "test/auroc_std": 0.0}
     result.run_dir = run_dir
 
     config = PipelineConfig(
@@ -321,9 +321,9 @@ def test_run_data_from_result(tmp_path: Path) -> None:
     assert "elapsed_seconds" in fd.training_history[0]
     assert "avg_epoch_seconds" in fd.training_history[0]
     assert fd.tune_metrics == {"auroc": 0.65}
-    assert fd.test_metrics == {"auroc": 0.60}
-    assert "prob_1" in fd.predictions.columns
-    assert len(fd.predictions) == 2
+    assert fd.test_metrics == {"test": {"auroc": 0.60}}
+    assert "prob_1" in fd.predictions["test"].columns
+    assert len(fd.predictions["test"]) == 2
 
 
 # ---------------------------------------------------------------------------

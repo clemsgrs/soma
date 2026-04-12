@@ -23,6 +23,16 @@
 
 - `AggregatorConfig.name` is now required, and `PipelineConfig.aggregator` defaults to `None`. Slide-level feature runs must keep the aggregator explicit as `None`, while MIL runs must pass a named aggregator config.
 
+## Splits and Evaluation
+
+- `FoldSplit.tests` is now a dict mapping split names to sample ID tuples. Any split name that starts with `"test"` is valid (e.g., `"test"`, `"test_external"`, `"test_prospective"`).
+- `FoldResult.test_reports` is now a dict `{split_name: EvaluationReport}` — one report per test split.
+- `summary.json` keys are always prefixed by split name: `"test/auroc_mean"`, `"test_external/auroc_mean"`.
+- Per-fold predictions are saved as `predictions_{split_name}.csv` (e.g., `predictions_test.csv`, `predictions_test_external.csv`).
+- Subgroup metrics are saved as `subgroup_metrics_{split_name}.json`.
+- Attention maps (when enabled) go to `attention/{split_name}/` per split.
+- The HTML report renders a separate results table, prediction analysis section, and subgroup analysis section for each test split.
+
 ## CLI
 
 - `soma run config.yaml` launches a full pipeline run from a YAML config file (registered via `[project.scripts]` in `pyproject.toml`).

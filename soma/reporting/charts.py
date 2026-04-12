@@ -23,7 +23,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-from soma.reporting.data import FoldData, RunData, aggregate_fold_predictions
+from soma.reporting.data import FoldData, FoldSlice, RunData, aggregate_slice_predictions
 
 # Consistent color palette for folds
 _FOLD_COLORS = [
@@ -433,7 +433,7 @@ def residual_plot(folds: list[FoldData]) -> go.Figure:
 # ---------------------------------------------------------------------------
 
 
-_aggregate_predictions = aggregate_fold_predictions
+_aggregate_predictions = aggregate_slice_predictions
 
 
 def _empty_figure(title: str) -> go.Figure:

@@ -34,9 +34,42 @@ class FoldData:
     fold: int
     training_history: list[dict]  # [{epoch, train_loss, tune_loss, tune_metrics, lr}, ...]
     tune_metrics: dict[str, float]
-    test_metrics: dict[str, float]
-    predictions: pd.DataFrame     # columns depend on task family
-    subgroup_metrics: dict | None = None  # {column → {group → {metric: value, n: int}}}
+    test_metrics: dict[str, dict[str, float]]   # split_name → {metric: value}
+    predictions: dict[str, pd.DataFrame]         # split_name → predictions df
+    subgroup_metrics: dict[str, dict] | None = None  # split_name → subgroup data
+
+
+@dataclass
+class FoldSlice:
+    """Single-split view of FoldData — used by chart rendering functions.
+
+    Exposes ``predictions`` as a plain DataFrame (for a specific test split)
+    so that existing chart helpers can operate on one split at a time without
+    knowing about the multi-split structure.
+    """
+
+    fold: int
+    training_history: list[dict]
+    tune_metrics: dict[str, float]
+    test_metrics: dict[str, float]   # flat metrics dict for one split
+    predictions: pd.DataFrame
+    subgroup_metrics: dict | None = None
+
+
+def fold_slices_for_split(folds: list[FoldData], split_name: str) -> list[FoldSlice]:
+    """Project a list of FoldData to single-split FoldSlice objects for chart rendering."""
+    slices = []
+    for fd in folds:
+        sg = fd.subgroup_metrics.get(split_name) if fd.subgroup_metrics else None
+        slices.append(FoldSlice(
+            fold=fd.fold,
+            training_history=fd.training_history,
+            tune_metrics=fd.tune_metrics,
+            test_metrics=fd.test_metrics.get(split_name, {}),
+            predictions=fd.predictions.get(split_name, pd.DataFrame()),
+            subgroup_metrics=sg,
+        ))
+    return slices
 
 
 @dataclass
@@ -56,19 +89,16 @@ class RunData:
             self.subgroup_columns = []
 
 
-def aggregate_fold_predictions(folds: list[FoldData]) -> pd.DataFrame:
-    """Concatenate test predictions across all folds, averaging per sample when needed.
+def _aggregate_dataframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
+    """Concatenate prediction DataFrames, averaging per sample when duplicates exist.
 
-    In fixed-holdout setups the same test set appears in every fold, producing
-    duplicate sample_ids after concatenation. When duplicates are detected,
-    numeric prediction columns are averaged per sample and predicted_label is
-    recomputed from the averaged values:
+    When the same sample_id appears in multiple DataFrames (fixed-holdout setup),
+    numeric prediction columns are averaged and predicted_label is recomputed:
     - prob_* (classification) → mean, predicted_label = argmax
     - raw_score (ordinal) → mean, predicted_label = round(mean)
     - predicted_value (regression) → mean
     Metadata columns (true_label, subgroup columns) are taken from the first fold.
     """
-    dfs = [fd.predictions for fd in folds if not fd.predictions.empty]
     if not dfs:
         return pd.DataFrame()
     df = pd.concat(dfs, ignore_index=True)
@@ -101,6 +131,22 @@ def aggregate_fold_predictions(folds: list[FoldData]) -> pd.DataFrame:
         result["predicted_label"] = result["raw_score"].round().astype(int)
 
     return result
+
+
+def aggregate_fold_predictions(folds: list[FoldData], split_name: str) -> pd.DataFrame:
+    """Concatenate test predictions for a given split across all folds."""
+    dfs = [
+        fd.predictions[split_name]
+        for fd in folds
+        if split_name in fd.predictions and not fd.predictions[split_name].empty
+    ]
+    return _aggregate_dataframes(dfs)
+
+
+def aggregate_slice_predictions(slices: list[FoldSlice]) -> pd.DataFrame:
+    """Concatenate predictions from FoldSlice objects (used by chart rendering)."""
+    dfs = [s.predictions for s in slices if not s.predictions.empty]
+    return _aggregate_dataframes(dfs)
 
 
 def load_run_data(run_dir: str | Path) -> RunData:
@@ -140,18 +186,27 @@ def load_run_data(run_dir: str | Path) -> RunData:
         training_history = json.loads(history_path.read_text()) if history_path.exists() else []
 
         metrics_data = json.loads((fold_dir / "metrics.json").read_text())
+        test_split_names = [k for k in metrics_data if k != "tune"]
 
-        predictions_path = fold_dir / "predictions.csv"
-        predictions = pd.read_csv(predictions_path) if predictions_path.exists() else pd.DataFrame()
+        predictions: dict[str, pd.DataFrame] = {}
+        for split_name in test_split_names:
+            p = fold_dir / f"predictions_{split_name}.csv"
+            predictions[split_name] = pd.read_csv(p) if p.exists() else pd.DataFrame()
 
-        sg_path = fold_dir / "subgroup_metrics.json"
-        subgroup_metrics = json.loads(sg_path.read_text()) if sg_path.exists() else None
+        subgroup_metrics: dict[str, dict] | None = None
+        sg_data = {}
+        for split_name in test_split_names:
+            sg_path = fold_dir / f"subgroup_metrics_{split_name}.json"
+            if sg_path.exists():
+                sg_data[split_name] = json.loads(sg_path.read_text())
+        if sg_data:
+            subgroup_metrics = sg_data
 
         folds.append(FoldData(
             fold=fold_idx,
             training_history=training_history,
             tune_metrics=metrics_data.get("tune", {}),
-            test_metrics=metrics_data.get("test", {}),
+            test_metrics={k: v for k, v in metrics_data.items() if k != "tune"},
             predictions=predictions,
             subgroup_metrics=subgroup_metrics,
         ))
@@ -196,22 +251,31 @@ def run_data_from_result(
     folds = []
     for fold_result in result.fold_results:
         training_history = [_epoch_log_to_dict(log) for log in fold_result.train_result.history]
-        predictions = _predictions_to_dataframe(fold_result.test_report.predictions)
+
+        predictions: dict[str, pd.DataFrame] = {
+            split_name: _predictions_to_dataframe(report.predictions)
+            for split_name, report in fold_result.test_reports.items()
+        }
 
         # Compute subgroup metrics for the in-memory path by joining predictions
         # with dataset metadata on sample_id.
-        fold_subgroup_metrics = None
+        fold_subgroup_metrics: dict[str, dict] | None = None
         if subgroup_columns and dataset is not None:
-            enriched = _enrich_predictions_df(predictions, dataset, subgroup_columns)
-            fold_subgroup_metrics = {"metrics": compute_subgroup_metrics(
-                task_family, metrics, enriched, subgroup_columns
-            )}
+            sg_data = {}
+            for split_name, preds_df in predictions.items():
+                if not preds_df.empty:
+                    enriched = _enrich_predictions_df(preds_df, dataset, subgroup_columns)
+                    sg_data[split_name] = {"metrics": compute_subgroup_metrics(
+                        task_family, metrics, enriched, subgroup_columns
+                    )}
+            if sg_data:
+                fold_subgroup_metrics = sg_data
 
         folds.append(FoldData(
             fold=fold_result.fold,
             training_history=training_history,
             tune_metrics=fold_result.tune_report.metrics,
-            test_metrics=fold_result.test_report.metrics,
+            test_metrics={k: v.metrics for k, v in fold_result.test_reports.items()},
             predictions=predictions,
             subgroup_metrics=fold_subgroup_metrics,
         ))

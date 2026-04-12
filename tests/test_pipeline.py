@@ -183,7 +183,7 @@ class TestTrainOneFold:
         assert result.fold == 0
         assert result.train_result is not None
         assert result.tune_report.split == "tune"
-        assert result.test_report.split == "test"
+        assert result.test_reports["test"].split == "test"
 
     def test_ignores_samples_without_features(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -318,7 +318,7 @@ class TestTrainOneFold:
             fold_dir=fold_dir,
         )
 
-        preds_path = fold_dir / "predictions.csv"
+        preds_path = fold_dir / "predictions_test.csv"
         assert preds_path.exists()
         preds_df = pd.read_csv(preds_path)
         assert "sample_id" in preds_df.columns
@@ -346,8 +346,8 @@ class TestTrainOneFold:
             heatmaps=HeatmapConfig(enabled=True),
         )
 
-        attention_dir = fold_dir / "attention"
-        assert attention_dir.is_dir(), "attention/ dir should be created"
+        attention_dir = fold_dir / "attention" / "test"
+        assert attention_dir.is_dir(), "attention/test/ dir should be created"
         npz_files = list(attention_dir.glob("*.npz"))
         assert len(npz_files) > 0, "at least one attention .npz should be saved"
         # Verify shape: (N,) for single-branch ABMIL
@@ -396,7 +396,7 @@ class TestTrainOneFold:
         )
 
         # Should have 2-class probabilities (tumor/normal)
-        assert len(result.test_report.predictions[0].probabilities) == 2
+        assert len(result.test_reports["test"].predictions[0].probabilities) == 2
 
 
     def test_slide_level_features_no_aggregator(self, tmp_path: Path):
@@ -423,8 +423,8 @@ class TestTrainOneFold:
         )
 
         assert isinstance(result, FoldResult)
-        assert result.test_report is not None
-        assert "auroc" in result.test_report.metrics
+        assert result.test_reports["test"] is not None
+        assert "auroc" in result.test_reports["test"].metrics
 
     def test_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -447,7 +447,7 @@ class TestTrainOneFold:
         )
 
         assert isinstance(result, FoldResult)
-        assert "auroc" in result.test_report.metrics
+        assert "auroc" in result.test_reports["test"].metrics
 
     def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -574,8 +574,8 @@ class TestTrain:
         assert len(result.fold_results) == 2
         assert result.fold_results[0].fold == 0
         assert result.fold_results[1].fold == 1
-        assert "auroc_mean" in result.summary
-        assert "auroc_std" in result.summary
+        assert "test/auroc_mean" in result.summary
+        assert "test/auroc_std" in result.summary
 
     def test_saves_summary_json(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -595,7 +595,7 @@ class TestTrain:
         )
 
         summary = json.loads((run_dir / "summary.json").read_text())
-        assert "auroc_mean" in summary
+        assert "test/auroc_mean" in summary
 
     def test_fold_subdirectories(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
@@ -716,7 +716,7 @@ class TestPipeline:
         summary_path = _expected_run_dir(config) / "summary.json"
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
-        assert "auroc_mean" in summary
+        assert "test/auroc_mean" in summary
 
     def test_run_multi_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
@@ -739,8 +739,8 @@ class TestPipeline:
         assert (_expected_run_dir(config) / "fold_1" / "best_model.pt").exists()
 
         summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
-        assert "auroc_mean" in summary
-        assert "auroc_std" in summary
+        assert "test/auroc_mean" in summary
+        assert "test/auroc_std" in summary
 
     def test_run_slide_level_features(self, tmp_path: Path):
         """Pipeline with aggregator=None should work with slide-level (1-D) features."""
@@ -768,8 +768,8 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert result.fold_results[0].test_report is not None
-        assert "auroc" in result.fold_results[0].test_report.metrics
+        assert result.fold_results[0].test_reports["test"] is not None
+        assert "auroc" in result.fold_results[0].test_reports["test"].metrics
 
     def test_run_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -795,7 +795,7 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert "auroc" in result.fold_results[0].test_report.metrics
+        assert "auroc" in result.fold_results[0].test_reports["test"].metrics
 
     def test_run_hierarchical_features_with_hipt(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
@@ -831,7 +831,7 @@ class TestPipeline:
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
         assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
-        assert "auroc" in result.fold_results[0].test_report.metrics
+        assert "auroc" in result.fold_results[0].test_reports["test"].metrics
 
     def test_resolve_preprocessing_populates_hipt_geometry(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1264,7 +1264,7 @@ class TestPatientPipeline:
         assert isinstance(result, FoldResult)
         assert result.fold == 0
         assert result.tune_report.split == "tune"
-        assert result.test_report.split == "test"
+        assert result.test_reports["test"].split == "test"
         assert (fold_dir / "best_model.pt").exists()
 
     def test_train_one_fold_predictions_keyed_by_patient_id(self, tmp_path: Path):
@@ -1283,7 +1283,7 @@ class TestPatientPipeline:
             fold_dir=tmp_path / "fold_0",
         )
 
-        test_ids = {pred.sample_id for pred in result.test_report.predictions}
+        test_ids = {pred.sample_id for pred in result.test_reports["test"].predictions}
         assert test_ids == {"p3"}
 
     def test_train_detects_patient_leakage(self, tmp_path: Path):

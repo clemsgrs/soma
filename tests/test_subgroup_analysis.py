@@ -83,7 +83,7 @@ def _make_run_dir(
     }
     (run_dir / "config.yaml").write_text(yaml.dump(config))
     (run_dir / "run.yaml").write_text(yaml.dump({"run_id": "test-run", "status": "completed"}))
-    (run_dir / "summary.json").write_text(json.dumps({"auroc_mean": 0.85, "auroc_std": 0.02}))
+    (run_dir / "summary.json").write_text(json.dumps({"test/auroc_mean": 0.85, "test/auroc_std": 0.02}))
 
     fold_dir = run_dir / "fold_0"
     fold_dir.mkdir()
@@ -97,14 +97,14 @@ def _make_run_dir(
     if subgroup_columns:
         # Keep subgroup columns in the predictions CSV (as enriched by pipeline)
         df[subgroup_columns].to_csv.__doc__  # access check
-        df.to_csv(fold_dir / "predictions.csv", index=False)
+        df.to_csv(fold_dir / "predictions_test.csv", index=False)
     else:
         df[["sample_id", "true_label", "predicted_label", "prob_0", "prob_1"]].to_csv(
-            fold_dir / "predictions.csv", index=False
+            fold_dir / "predictions_test.csv", index=False
         )
 
     if subgroup_metrics_data is not None:
-        (fold_dir / "subgroup_metrics.json").write_text(json.dumps(subgroup_metrics_data))
+        (fold_dir / "subgroup_metrics_test.json").write_text(json.dumps(subgroup_metrics_data))
 
     return run_dir
 
@@ -266,7 +266,7 @@ def test_subgroup_column_validation_raises_for_missing_column(tmp_path: Path) ->
     dataset_csv.write_text("sample_id,image_path,label\ns0,/img/s0.tif,0\ns1,/img/s1.tif,1\n")
     dataset = Dataset(dataset_csv)
 
-    fold_split = FoldSplit(train=["s0"], tune=["s1"], test=["s0"])
+    fold_split = FoldSplit(train=("s0",), tune=("s1",), tests={"test": ("s0",)})
     feature_store = MagicMock()
     feature_store.has_feature_manifest = False
     feature_store.is_slide_level = True
@@ -367,8 +367,9 @@ def test_subgroup_metrics_json_saved_and_loaded(tmp_path: Path) -> None:
     assert run_data.subgroup_columns == ["sex"]
     fd = run_data.folds[0]
     assert fd.subgroup_metrics is not None
-    assert "metrics" in fd.subgroup_metrics
-    assert fd.subgroup_metrics["metrics"]["sex"]["M"]["auroc"] == 0.82
+    assert "test" in fd.subgroup_metrics
+    assert "metrics" in fd.subgroup_metrics["test"]
+    assert fd.subgroup_metrics["test"]["metrics"]["sex"]["M"]["auroc"] == 0.82
 
 
 def test_subgroup_metrics_json_absent_gives_none(tmp_path: Path) -> None:
@@ -414,9 +415,15 @@ def test_subgroup_section_contains_css_highlight_classes(tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 
 
-def _fold(df: pd.DataFrame) -> FoldData:
+def _fold(df: pd.DataFrame, split_name: str = "test") -> FoldData:
     """Wrap a DataFrame as a minimal FoldData for testing."""
-    return FoldData(fold=0, training_history=[], tune_metrics={}, test_metrics={}, predictions=df)
+    return FoldData(
+        fold=0,
+        training_history=[],
+        tune_metrics={},
+        test_metrics={split_name: {}},
+        predictions={split_name: df},
+    )
 
 
 def test_aggregate_fold_predictions_no_duplicates_unchanged() -> None:
@@ -429,7 +436,7 @@ def test_aggregate_fold_predictions_no_duplicates_unchanged() -> None:
         "sample_id": ["s1"], "true_label": [1], "predicted_label": [1],
         "prob_0": [0.3], "prob_1": [0.7],
     }))
-    result = aggregate_fold_predictions([fold0, fold1])
+    result = aggregate_fold_predictions([fold0, fold1], "test")
     assert len(result) == 2
     assert set(result["sample_id"]) == {"s0", "s1"}
 
@@ -444,7 +451,7 @@ def test_aggregate_fold_predictions_averages_probs() -> None:
         "sample_id": ["s0"], "true_label": [0], "predicted_label": [1],
         "prob_0": [0.6], "prob_1": [0.4],
     }))
-    result = aggregate_fold_predictions([fold0, fold1])
+    result = aggregate_fold_predictions([fold0, fold1], "test")
     assert len(result) == 1
     assert result["prob_0"].iloc[0] == pytest.approx(0.7)
     assert result["prob_1"].iloc[0] == pytest.approx(0.3)
@@ -460,7 +467,7 @@ def test_aggregate_fold_predictions_recomputes_predicted_label() -> None:
         "sample_id": ["s0"], "true_label": [1], "predicted_label": [1],
         "prob_0": [0.3], "prob_1": [0.7],   # fold 1: class 1 wins
     }))
-    result = aggregate_fold_predictions([fold0, fold1])
+    result = aggregate_fold_predictions([fold0, fold1], "test")
     # mean prob_0=0.45, mean prob_1=0.55 → argmax = 1
     assert result["predicted_label"].iloc[0] == 1
 
@@ -469,7 +476,7 @@ def test_aggregate_fold_predictions_regression() -> None:
     """Regression predictions (predicted_value) are averaged across folds."""
     fold0 = _fold(pd.DataFrame({"sample_id": ["s0"], "true_label": [3.0], "predicted_value": [2.8]}))
     fold1 = _fold(pd.DataFrame({"sample_id": ["s0"], "true_label": [3.0], "predicted_value": [3.2]}))
-    result = aggregate_fold_predictions([fold0, fold1])
+    result = aggregate_fold_predictions([fold0, fold1], "test")
     assert len(result) == 1
     assert result["predicted_value"].iloc[0] == pytest.approx(3.0)
 
@@ -484,7 +491,7 @@ def test_aggregate_fold_predictions_preserves_subgroup_columns() -> None:
         "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
         "prob_0": [0.7], "prob_1": [0.3], "sex": ["M"],
     }))
-    result = aggregate_fold_predictions([fold0, fold1])
+    result = aggregate_fold_predictions([fold0, fold1], "test")
     assert result["sex"].iloc[0] == "M"
 
 

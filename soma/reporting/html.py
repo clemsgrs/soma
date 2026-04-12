@@ -27,7 +27,7 @@ from soma.reporting.charts import (
     subgroup_stats_heatmap,
 )
 from soma.evaluation.metrics import bh_correct, compare_run_metrics, compute_subgroup_metrics, compute_subgroup_stats
-from soma.reporting.data import ComparisonData, RunData, aggregate_fold_predictions
+from soma.reporting.data import ComparisonData, FoldSlice, RunData, aggregate_fold_predictions, fold_slices_for_split
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
 _ORDINAL_FAMILIES = {"ordinal_classification"}
@@ -121,41 +121,48 @@ def _section_results_summary(run_data: RunData) -> str:
     if not run_data.folds:
         return ""
 
-    # Collect all test metric names
-    all_metric_names: list[str] = []
-    for fd in run_data.folds:
-        for name in fd.test_metrics:
-            if name not in all_metric_names:
-                all_metric_names.append(name)
+    all_split_names = _test_split_names(run_data.folds)
 
     fold_headers = "".join(f"<th>Fold {fd.fold}</th>" for fd in run_data.folds)
     header_row = f"<tr><th>Metric</th>{fold_headers}<th>Mean ± Std</th></tr>"
 
-    rows_html = ""
-    for metric in all_metric_names:
-        fold_vals = [fd.test_metrics.get(metric) for fd in run_data.folds]
-        fold_cells = "".join(
-            f'<td>{v:.4f}</td>' if v is not None else "<td>—</td>"
-            for v in fold_vals
-        )
-        mean_std = run_data.summary.get(f"{metric}_mean")
-        std = run_data.summary.get(f"{metric}_std")
-        if mean_std is not None and std is not None:
-            summary_cell = f"<td><strong>{mean_std:.4f}</strong> ± {std:.4f}</td>"
-        elif mean_std is not None:
-            summary_cell = f"<td><strong>{mean_std:.4f}</strong></td>"
-        else:
-            summary_cell = "<td>—</td>"
-        rows_html += f"<tr><td class='metric-name'>{metric}</td>{fold_cells}{summary_cell}</tr>"
+    sections = ""
+    for split_name in all_split_names:
+        # Collect metric names for this split
+        all_metric_names: list[str] = []
+        for fd in run_data.folds:
+            for name in fd.test_metrics.get(split_name, {}):
+                if name not in all_metric_names:
+                    all_metric_names.append(name)
 
-    return f"""
+        rows_html = ""
+        for metric in all_metric_names:
+            fold_vals = [fd.test_metrics.get(split_name, {}).get(metric) for fd in run_data.folds]
+            fold_cells = "".join(
+                f'<td>{v:.4f}</td>' if v is not None else "<td>—</td>"
+                for v in fold_vals
+            )
+            mean_std = run_data.summary.get(f"{split_name}/{metric}_mean")
+            std = run_data.summary.get(f"{split_name}/{metric}_std")
+            if mean_std is not None and std is not None:
+                summary_cell = f"<td><strong>{mean_std:.4f}</strong> ± {std:.4f}</td>"
+            elif mean_std is not None:
+                summary_cell = f"<td><strong>{mean_std:.4f}</strong></td>"
+            else:
+                summary_cell = "<td>—</td>"
+            rows_html += f"<tr><td class='metric-name'>{metric}</td>{fold_cells}{summary_cell}</tr>"
+
+        heading = "Test Results" if len(all_split_names) == 1 else f"Test Results — {split_name}"
+        sections += f"""
 <div class="section">
-  <h2>Test Results</h2>
+  <h2>{heading}</h2>
   <table class="results-table">
     <thead>{header_row}</thead>
     <tbody>{rows_html}</tbody>
   </table>
 </div>"""
+
+    return sections
 
 
 def _section_training_timing(run_data: RunData) -> str:
@@ -216,40 +223,45 @@ def _section_training_curves(run_data: RunData) -> str:
 
 
 def _section_prediction_analysis(run_data: RunData) -> str:
-    has_preds = any(not fd.predictions.empty for fd in run_data.folds)
-    if not has_preds:
+    all_split_names = _test_split_names(run_data.folds)
+    if not all_split_names:
         return ""
 
     family = run_data.task_family
-    chart_divs: list[str] = []
+    sections = ""
 
-    if family in _CLASSIFICATION_FAMILIES:
-        # ROC + PR (binary only)
-        chart_divs.append(_chart_div(roc_curve_chart(run_data.folds), width="half"))
-        if family == "binary_classification":
-            chart_divs.append(_chart_div(pr_curve_chart(run_data.folds), width="half"))
+    for split_name in all_split_names:
+        slices: list[FoldSlice] = fold_slices_for_split(run_data.folds, split_name)
+        has_preds = any(not s.predictions.empty for s in slices)
+        if not has_preds:
+            continue
 
-        # Confusion matrix + score distribution
-        chart_divs.append(_chart_div(confusion_matrix_chart(run_data.folds), width="half"))
-        chart_divs.append(_chart_div(score_distribution_chart(run_data.folds), width="half"))
+        chart_divs: list[str] = []
+        if family in _CLASSIFICATION_FAMILIES:
+            chart_divs.append(_chart_div(roc_curve_chart(slices), width="half"))
+            if family == "binary_classification":
+                chart_divs.append(_chart_div(pr_curve_chart(slices), width="half"))
+            chart_divs.append(_chart_div(confusion_matrix_chart(slices), width="half"))
+            chart_divs.append(_chart_div(score_distribution_chart(slices), width="half"))
+        elif family in _ORDINAL_FAMILIES:
+            chart_divs.append(_chart_div(confusion_matrix_chart(slices), width="half"))
+            chart_divs.append(_chart_div(score_distribution_chart(slices), width="half"))
+        elif family in _REGRESSION_FAMILIES:
+            chart_divs.append(_chart_div(scatter_predicted_vs_actual(slices), width="half"))
+            chart_divs.append(_chart_div(residual_plot(slices), width="half"))
 
-    elif family in _ORDINAL_FAMILIES:
-        chart_divs.append(_chart_div(confusion_matrix_chart(run_data.folds), width="half"))
-        chart_divs.append(_chart_div(score_distribution_chart(run_data.folds), width="half"))
+        if not chart_divs:
+            continue
 
-    elif family in _REGRESSION_FAMILIES:
-        chart_divs.append(_chart_div(scatter_predicted_vs_actual(run_data.folds), width="half"))
-        chart_divs.append(_chart_div(residual_plot(run_data.folds), width="half"))
-
-    if not chart_divs:
-        return ""
-
-    inner = "\n".join(chart_divs)
-    return f"""
+        heading = "Prediction Analysis" if len(all_split_names) == 1 else f"Prediction Analysis — {split_name}"
+        inner = "\n".join(chart_divs)
+        sections += f"""
 <div class="section">
-  <h2>Prediction Analysis</h2>
+  <h2>{heading}</h2>
   <div class="chart-grid">{inner}</div>
 </div>"""
+
+    return sections
 
 
 def _section_subgroup_analysis(run_data: RunData) -> str:
@@ -257,82 +269,90 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
     if not run_data.subgroup_columns:
         return ""
 
-    all_preds = aggregate_fold_predictions(run_data.folds)
-    if all_preds.empty:
-        return ""
+    all_split_names = _test_split_names(run_data.folds)
 
-    # Overall (non-subgroup) test metrics: average across folds
-    overall: dict[str, float] = {}
-    for metric in run_data.metrics:
-        vals = [fd.test_metrics.get(metric) for fd in run_data.folds if metric in fd.test_metrics]
-        if vals:
-            overall[metric] = float(np.mean(vals))
-
-    sg_metrics = compute_subgroup_metrics(
-        run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
-    )
-    # Always compute stats from the concatenated predictions (more robust than per-fold)
-    sg_stats = compute_subgroup_stats(
-        run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
-    )
-
-    # Apply BH FDR correction per (column, metric): groups are the family.
-    sg_stats_adj: dict[str, dict[str, dict[str, float]]] = {}
-    for col, col_stats in sg_stats.items():
-        sg_stats_adj[col] = {}
-        for metric in run_data.metrics:
-            tested = [(g, p) for g in sorted(col_stats) if (p := col_stats[g].get(metric)) is not None]
-            if not tested:
-                continue
-            groups_tested, raw_p = zip(*tested)
-            for g, p_adj in zip(groups_tested, bh_correct(list(raw_p))):
-                sg_stats_adj[col].setdefault(g, {})[metric] = p_adj
-
-    html_parts: list[str] = []
-
-    for col in run_data.subgroup_columns:
-        col_data = sg_metrics.get(col, {})
-        if not col_data:
+    sections = ""
+    for split_name in all_split_names:
+        all_preds = aggregate_fold_predictions(run_data.folds, split_name)
+        if all_preds.empty:
             continue
-        col_stats_adj = sg_stats_adj.get(col, {})
 
-        # Table: groups × metrics
-        # Cell highlight classes (p-values are BH-adjusted):
-        #   subgroup-sig  — p_adj < 0.05 AND deviation ≥ 10% (significant and large)
-        #   subgroup-flag — deviation ≥ 10% but not statistically significant
-        #   subgroup-sig-small — p_adj < 0.05 but small deviation
-        header_cells = "<th>Group</th><th>n</th>" + "".join(
-            f"<th>{m}</th>" for m in run_data.metrics
+        # Overall (non-subgroup) test metrics: average across folds for this split
+        overall: dict[str, float] = {}
+        for metric in run_data.metrics:
+            vals = [
+                fd.test_metrics.get(split_name, {}).get(metric)
+                for fd in run_data.folds
+                if metric in fd.test_metrics.get(split_name, {})
+            ]
+            if vals:
+                overall[metric] = float(np.mean(vals))
+
+        sg_metrics = compute_subgroup_metrics(
+            run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
         )
-        rows_html = ""
-        for group_val, group_metrics in sorted(col_data.items()):
-            n = group_metrics.get("n", "—")
-            cells = f"<td><strong>{group_val}</strong></td><td>{n}</td>"
-            for metric in run_data.metrics:
-                val = group_metrics.get(metric)
-                overall_val = overall.get(metric)
-                if val is None:
-                    cells += "<td>—</td>"
-                    continue
-                deviation = abs(val - overall_val) / max(abs(overall_val), 1e-9) if overall_val is not None else 0
-                p_adj = col_stats_adj.get(group_val, {}).get(metric)
-                significant = p_adj is not None and p_adj < 0.05
-                large = deviation >= 0.10
-                if significant and large:
-                    css = " class=\"subgroup-sig\""
-                    tip = f" title=\"p_adj={p_adj:.3f}, Δ={deviation:.0%}\""
-                elif large:
-                    css = " class=\"subgroup-flag\""
-                    tip = f" title=\"Δ={deviation:.0%} (n.s.)\""
-                elif significant:
-                    css = " class=\"subgroup-sig-small\""
-                    tip = f" title=\"p_adj={p_adj:.3f}\""
-                else:
-                    css, tip = "", ""
-                cells += f"<td{css}{tip}>{val:.3f}</td>"
-            rows_html += f"<tr>{cells}</tr>"
+        # Always compute stats from the concatenated predictions (more robust than per-fold)
+        sg_stats = compute_subgroup_stats(
+            run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
+        )
 
-        table_html = f"""
+        # Apply BH FDR correction per (column, metric): groups are the family.
+        sg_stats_adj: dict[str, dict[str, dict[str, float]]] = {}
+        for col, col_stats in sg_stats.items():
+            sg_stats_adj[col] = {}
+            for metric in run_data.metrics:
+                tested = [(g, p) for g in sorted(col_stats) if (p := col_stats[g].get(metric)) is not None]
+                if not tested:
+                    continue
+                groups_tested, raw_p = zip(*tested)
+                for g, p_adj in zip(groups_tested, bh_correct(list(raw_p))):
+                    sg_stats_adj[col].setdefault(g, {})[metric] = p_adj
+
+        html_parts: list[str] = []
+
+        for col in run_data.subgroup_columns:
+            col_data = sg_metrics.get(col, {})
+            if not col_data:
+                continue
+            col_stats_adj = sg_stats_adj.get(col, {})
+
+            # Table: groups × metrics
+            # Cell highlight classes (p-values are BH-adjusted):
+            #   subgroup-sig  — p_adj < 0.05 AND deviation ≥ 10% (significant and large)
+            #   subgroup-flag — deviation ≥ 10% but not statistically significant
+            #   subgroup-sig-small — p_adj < 0.05 but small deviation
+            header_cells = "<th>Group</th><th>n</th>" + "".join(
+                f"<th>{m}</th>" for m in run_data.metrics
+            )
+            rows_html = ""
+            for group_val, group_metrics in sorted(col_data.items()):
+                n = group_metrics.get("n", "—")
+                cells = f"<td><strong>{group_val}</strong></td><td>{n}</td>"
+                for metric in run_data.metrics:
+                    val = group_metrics.get(metric)
+                    overall_val = overall.get(metric)
+                    if val is None:
+                        cells += "<td>—</td>"
+                        continue
+                    deviation = abs(val - overall_val) / max(abs(overall_val), 1e-9) if overall_val is not None else 0
+                    p_adj = col_stats_adj.get(group_val, {}).get(metric)
+                    significant = p_adj is not None and p_adj < 0.05
+                    large = deviation >= 0.10
+                    if significant and large:
+                        css = " class=\"subgroup-sig\""
+                        tip = f" title=\"p_adj={p_adj:.3f}, Δ={deviation:.0%}\""
+                    elif large:
+                        css = " class=\"subgroup-flag\""
+                        tip = f" title=\"Δ={deviation:.0%} (n.s.)\""
+                    elif significant:
+                        css = " class=\"subgroup-sig-small\""
+                        tip = f" title=\"p_adj={p_adj:.3f}\""
+                    else:
+                        css, tip = "", ""
+                    cells += f"<td{css}{tip}>{val:.3f}</td>"
+                rows_html += f"<tr>{cells}</tr>"
+
+            table_html = f"""
 <table class="metrics-table">
   <thead><tr>{header_cells}</tr></thead>
   <tbody>{rows_html}</tbody>
@@ -343,29 +363,38 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
   <span class="legend-sig-small">■</span> p_adj&lt;0.05 (small Δ)
 </p>"""
 
-        # Bar charts (one per metric)
-        chart_divs = "".join(
-            _chart_div(subgroup_metric_chart(col_data, m, overall.get(m, 0), col), width="half")
-            for m in run_data.metrics
-            if any(m in col_data[g] for g in col_data)
-        )
+            # Bar charts (one per metric)
+            chart_divs = "".join(
+                _chart_div(subgroup_metric_chart(col_data, m, overall.get(m, 0), col), width="half")
+                for m in run_data.metrics
+                if any(m in col_data[g] for g in col_data)
+            )
 
-        html_parts.append(f"""
+            html_parts.append(f"""
 <h3>{col}</h3>
 {table_html}
 <div class="chart-grid">{chart_divs}</div>""")
 
-    inner = "\n".join(html_parts)
-    return f"""
+        if html_parts:
+            inner = "\n".join(html_parts)
+            heading = "Subgroup Analysis" if len(all_split_names) == 1 else f"Subgroup Analysis — {split_name}"
+            sections += f"""
 <div class="section">
-  <h2>Subgroup Analysis</h2>
+  <h2>{heading}</h2>
   {inner}
 </div>"""
+
+    return sections
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _test_split_names(folds: list) -> list[str]:
+    """Return sorted list of test split names present across all folds."""
+    return sorted({split_name for fd in folds for split_name in fd.predictions})
 
 
 def _chart_div(fig: go.Figure, *, width: str = "full") -> str:
@@ -554,6 +583,11 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
     )
     header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
 
+    # Determine the primary test split name for each run (first sorted).
+    def _primary_split(run: RunData) -> str:
+        splits = sorted({s for fd in run.folds for s in fd.test_metrics})
+        return splits[0] if splits else "test"
+
     # First pass: collect raw p-values for all (metric, run) pairs so we can
     # apply BH FDR correction globally across all comparisons.
     per_metric_data: list[tuple[list[float | None], list[float | None], list[list[float]]]] = []
@@ -561,15 +595,16 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
         means: list[float | None] = []
         fold_values: list[list[float]] = []
         for run in cd.runs:
-            mean_key = f"{metric}_mean"
+            split_name = _primary_split(run)
+            mean_key = f"{split_name}/{metric}_mean"
             val = run.summary.get(mean_key)
             if val is None:
-                val = run.folds[0].test_metrics.get(metric) if run.folds else None
+                val = run.folds[0].test_metrics.get(split_name, {}).get(metric) if run.folds else None
             means.append(val)
             fold_values.append([
-                fd.test_metrics[metric]
+                fd.test_metrics.get(split_name, {}).get(metric)
                 for fd in run.folds
-                if metric in fd.test_metrics
+                if metric in fd.test_metrics.get(split_name, {})
             ])
         raw_p = compare_run_metrics(fold_values)
         per_metric_data.append((means, raw_p, fold_values))

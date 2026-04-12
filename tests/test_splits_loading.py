@@ -45,7 +45,7 @@ def test_load_single_fold(splits_csv: Path, dataset: Dataset):
     assert isinstance(fold, FoldSplit)
     assert set(fold.train) == {"s1", "s2", "s3", "s4"}
     assert fold.tune == ("s5",)
-    assert fold.test == ("s6",)
+    assert fold.tests == {"test": ("s6",)}
 
 
 def test_multi_fold(tmp_path: Path, dataset: Dataset):
@@ -66,8 +66,8 @@ def test_multi_fold(tmp_path: Path, dataset: Dataset):
     assert splits.num_folds == 2
     assert set(splits.folds[0].train) == {"s1", "s2", "s3"}
     assert set(splits.folds[0].tune) == {"s4", "s5"}
-    assert splits.folds[0].test == ("s6",)
-    assert set(splits.folds[1].test) == {"s5", "s6"}
+    assert splits.folds[0].tests == {"test": ("s6",)}
+    assert set(splits.folds[1].tests["test"]) == {"s5", "s6"}
 
 
 def test_folds_sorted_by_index(tmp_path: Path, dataset: Dataset):
@@ -234,3 +234,78 @@ def test_validate_no_patient_leakage_no_patient_id_raises(tmp_path: Path, datase
     splits = Splits(path, dataset)
     with pytest.raises(ValueError, match="patient_id"):
         splits.validate_no_patient_leakage(dataset)
+
+
+# ---------------------------------------------------------------------------
+# Multiple named test sets
+# ---------------------------------------------------------------------------
+
+
+def test_multiple_test_splits_accepted(tmp_path: Path, dataset: Dataset):
+    """Split names starting with 'test' are all accepted."""
+    df = pd.DataFrame(
+        {
+            "fold": [0] * 6,
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "train", "train", "tune", "test", "test_external"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    splits = Splits(path, dataset)
+    fold = splits.folds[0]
+    assert fold.tests == {"test": ("s5",), "test_external": ("s6",)}
+    assert fold.test_split_names == ["test", "test_external"]
+
+
+def test_multiple_test_splits_all_in_tests_dict(tmp_path: Path, dataset: Dataset):
+    """Three test splits are all captured in the tests dict."""
+    df = pd.DataFrame(
+        {
+            "fold": [0] * 6,
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "train", "tune", "test", "test_ext", "test_prosp"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    splits = Splits(path, dataset)
+    fold = splits.folds[0]
+    assert set(fold.tests.keys()) == {"test", "test_ext", "test_prosp"}
+    assert fold.tests["test"] == ("s4",)
+    assert fold.tests["test_ext"] == ("s5",)
+    assert fold.tests["test_prosp"] == ("s6",)
+
+
+def test_invalid_non_test_name_still_rejected(tmp_path: Path, dataset: Dataset):
+    """Names like 'validation' that don't start with 'test' are still invalid."""
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0],
+            "sample_id": ["s1", "s2"],
+            "split": ["train", "validation"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="validation"):
+        Splits(path, dataset)
+
+
+def test_patient_leakage_detected_across_named_test_splits(
+    tmp_path: Path, patient_dataset: Dataset
+):
+    """Patient leakage is detected even when splits have custom names."""
+    # p1 has s1 in train and s2 in test_external → leakage
+    df = pd.DataFrame(
+        {
+            "fold": [0] * 6,
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "test_external", "tune", "tune", "test", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    splits = Splits(path, patient_dataset)
+    with pytest.raises(ValueError, match="p1"):
+        splits.validate_no_patient_leakage(patient_dataset)
