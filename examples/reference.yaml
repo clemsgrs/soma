@@ -1,0 +1,201 @@
+# soma reference configuration — all fields and options documented
+# Run with: soma run examples/reference.yaml
+#
+# This file shows every available field with its default value and valid options.
+# For task-specific minimal examples see the other files in this directory.
+
+# Path to dataset CSV. Required columns: slide_id, plus at least one label column.
+dataset_csv: data/dataset.csv
+
+# Path to splits CSV. Required columns: slide_id, fold.
+splits_csv: data/splits.csv
+
+# Root directory where run outputs are written (checkpoints, predictions, reports).
+output_root: runs/my_experiment
+
+# Input data type.
+# Options: tile | slide | patient
+#   tile:    pre-tiled patch images — encoding → tile classifier (no aggregator)
+#   slide:   whole-slide images — tiling → encoding → aggregation → training
+#   patient: patient-level embeddings — encoding → patient classifier (no aggregator)
+dataset_type: slide
+
+# ---------------------------------------------------------------------------
+# Preprocessing — tissue detection and tiling of whole-slide images
+# (only used for dataset_type: slide)
+# ---------------------------------------------------------------------------
+preprocessing:
+  # WSI backend. Resolved via hs2p.wsi.reader.resolve_backend().
+  # Options: auto | openslide | cucim | asap | vips
+  backend: auto
+
+  # Target pixel spacing in microns per pixel (determines effective magnification).
+  # Most encoders have a preset spacing — leave null to auto-resolve from the encoder.
+  # Must be set explicitly only when the encoder supports multiple spacings.
+  requested_spacing_um: null
+
+  # Tile size in pixels at the target spacing.
+  # Most encoders have a preset tile size — leave null to auto-resolve from the encoder.
+  requested_tile_size_px: null
+
+  # Tissue detection method. "hsv" uses HSV colour space; anything else
+  # falls back to Otsu thresholding (slide2vec_adapter.py).
+  tissue_method: hsv
+
+  # Minimum tissue fraction for a tile to be kept (0.0–1.0).
+  tissue_threshold: 0.1
+
+  # Tile overlap fraction (0.0 = no overlap, 0.5 = 50% overlap).
+  overlap: 0.0
+
+  # Downsampling factor used for tissue mask generation (higher = faster, less precise).
+  seg_downsample: 64
+
+  # Tolerance for spacing mismatch between requested and available levels.
+  tolerance: 0.05
+
+  # Minimum tissue pixel area (in tiles) for a region to be considered valid.
+  a_t: 4
+
+  # Pixel value used to mark tissue in the binary mask.
+  tissue_mask_tissue_value: 1
+
+# ---------------------------------------------------------------------------
+# Cache — reuse tiling and feature extraction results across experiments
+# Covers both tiling artifacts (<root>/tiling_cache) and features (<root>/feature_cache).
+# ---------------------------------------------------------------------------
+cache:
+  # Whether caching is enabled.
+  enabled: true
+
+  # Root directory for the shared cache.
+  # When null, defaults to <output_root>/ and cache artifacts are written to
+  # <output_root>/feature_cache/ and <output_root>/tiling_cache/ (pipeline.py, cache.py).
+  # Set explicitly to share a cache across runs with different output_root values.
+  root_dir: null
+
+  # How strictly to validate cache hits.
+  # Options: strict (encoder + preprocessing must match) | relaxed (encoder only)
+  reuse_policy: strict
+
+  # Whether to save per-tile features alongside slide-level features.
+  save_tile_features_for_slide: true
+
+# ---------------------------------------------------------------------------
+# Encoder — foundation model for tile embedding extraction
+# ---------------------------------------------------------------------------
+encoder:
+  # Model name as registered in slide2vec.
+  # Examples: uni2, virchow2, h0-mini, conch, phikon, resnet50
+  name: uni2
+
+  # Override the pixel spacing passed to the encoder.
+  # Only needed when preprocessing.requested_spacing_um is null and the encoder
+  # supports multiple spacings. Otherwise inferred from preprocessing automatically.
+  spacing_um: null
+
+  # Inference batch size (lower if running out of GPU memory).
+  batch_size: 32
+
+  # Number of DataLoader workers. null = auto.
+  num_workers: null
+
+  # Use adaptive batching to maximise GPU utilisation.
+  adaptive_batching: false
+
+  # Force a specific input resolution for the encoder (null = use model default).
+  input_size: null
+
+  # Which output head to use for models with multiple output variants.
+  # Examples: cls | mean | null (model default)
+  output_variant: null
+
+  # Numerical precision for inference.
+  # Options: null (model default) | fp32 | fp16 | bf16
+  precision: null
+
+  # Save per-tile feature tensors alongside slide features.
+  save_tile_features: false
+
+# ---------------------------------------------------------------------------
+# Aggregator — (trainable) stack that pools tile embeddings into a slide representation
+# (set to null for dataset_type: tile or patient)
+# Options: abmil | dsmil | clam_sb | clam_mb | transmil | dtfdmil | hipt
+#          mean_pool | max_pool
+# ---------------------------------------------------------------------------
+aggregator:
+  name: abmil
+  params:
+    hidden_dim: 256
+    dropout: 0.25
+
+# ---------------------------------------------------------------------------
+# Task — prediction head
+# Options: binary_classification | multiclass_classification |
+#          ordinal_classification | regression
+# ---------------------------------------------------------------------------
+task:
+  name: binary_classification
+  params: {}  # task-specific params (e.g. num_classes for multiclass)
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+eval:
+  # Metrics computed at the end of each fold.
+  # Valid values per task:
+  #   binary_classification:     accuracy, balanced_accuracy, auroc, auprc,
+  #                              f1, sensitivity, specificity, mcc
+  #   multiclass_classification: accuracy, balanced_accuracy, auroc_macro,
+  #                              f1_macro, f1_weighted, mcc, qwk
+  #   ordinal_classification:    qwk, linear_wk, accuracy, balanced_accuracy,
+  #                              mae, spearman
+  #   regression:                mse, rmse, mae, r2, pearson, spearman
+  # Leave empty to use the default metrics for the chosen task.
+  metrics:
+    - auroc
+    - balanced_accuracy
+
+  # Compute metrics stratified by categorical columns in the dataset CSV.
+  subgroups:
+    columns: []  # e.g. [sex, grade, center]
+
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
+training:
+  seed: 0
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+
+  # Options: adam | adamw | sgd
+  optimizer: adam
+
+  # Options: cosine | none  (trainer.py _build_scheduler)
+  scheduler: cosine
+
+  # Early stopping patience in epochs (stop if val metric does not improve).
+  patience: 10
+
+  batch_size: 1
+  gradient_accumulation: 1
+
+# ---------------------------------------------------------------------------
+# Heatmaps — attention heatmaps overlaid on slide thumbnails (optional)
+# (requires dataset_type: slide and an attention-based aggregator)
+# ---------------------------------------------------------------------------
+heatmaps:
+  enabled: false
+  # Matplotlib colormap name.
+  cmap: coolwarm
+  # Opacity of the attention overlay (0.0–1.0).
+  alpha: 0.5
+  # Gaussian blur sigma applied to the attention map (0.0 = no blur).
+  blur_sigma: 0.0
+
+# ---------------------------------------------------------------------------
+# Tags — free-form strings stored in the run metadata and shown in the HTML report
+# ---------------------------------------------------------------------------
+tags:
+  - baseline

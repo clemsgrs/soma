@@ -134,6 +134,16 @@ The returned `PipelineResult` includes:
 
 More details about the generated artifacts are in [docs/outputs.md](docs/outputs.md).
 
+## CLI
+
+For non-programmatic use, `soma` ships a command-line interface that runs a full pipeline from a YAML config file:
+
+```bash
+soma run config.yaml
+```
+
+`examples/` contains a `reference.yaml` documenting every available field, and focused per-task starting points (`slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, `tile_classification.yaml`).
+
 ## Docs
 
 - [Documentation](docs/documentation.md)

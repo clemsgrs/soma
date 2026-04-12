@@ -34,9 +34,12 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "slide2vec[fm]>=4.1.1",
+    "slide2vec[fm]>=4.1.2",
     "plotly>=5.0",
 ]
+
+[project.scripts]
+soma = "soma.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/clemsgrs/soma"
