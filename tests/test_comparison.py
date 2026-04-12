@@ -79,8 +79,8 @@ def _make_run_dir(
     (run_dir / "run.yaml").write_text(yaml.dump(run_metadata))
 
     resolved = resolve_metrics("binary_classification", metrics)
-    summary = {f"{m}_mean": 0.75 + 0.05 * (aggregator == "clam_sb") for m in resolved}
-    summary.update({f"{m}_std": 0.02 for m in resolved})
+    summary = {f"test/{m}_mean": 0.75 + 0.05 * (aggregator == "clam_sb") for m in resolved}
+    summary.update({f"test/{m}_std": 0.02 for m in resolved})
     (run_dir / "summary.json").write_text(json.dumps(summary))
 
     for fold_idx in range(n_folds):
@@ -89,7 +89,7 @@ def _make_run_dir(
         (fold_dir / "training_history.json").write_text(json.dumps(_make_training_history()))
         metrics_data = {"tune": {m: 0.78 for m in resolved}, "test": {m: 0.75 for m in resolved}}
         (fold_dir / "metrics.json").write_text(json.dumps(metrics_data))
-        _make_binary_predictions().to_csv(fold_dir / "predictions.csv", index=False)
+        _make_binary_predictions().to_csv(fold_dir / "predictions_test.csv", index=False)
 
     return run_dir
 

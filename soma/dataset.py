@@ -12,7 +12,11 @@ import pandas as pd
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"mask_path", "patient_id"}
 REQUIRED_SPLITS_COLUMNS = {"fold", "sample_id", "split"}
-VALID_SPLIT_NAMES = {"train", "tune", "test"}
+
+
+def _is_valid_split_name(name: str) -> bool:
+    """A split name is valid if it is 'train', 'tune', or starts with 'test'."""
+    return name in ("train", "tune") or name.startswith("test")
 
 
 @dataclass(frozen=True)
@@ -140,18 +144,30 @@ class Dataset:
 
 @dataclass(frozen=True)
 class FoldSplit:
-    """Sample IDs for each split within one fold."""
+    """Sample IDs for each split within one fold.
+
+    ``tests`` maps each test split name (e.g. ``"test"``, ``"test_external"``)
+    to the corresponding tuple of sample IDs.  Every fold must contain at
+    least one test split (any name that starts with ``"test"``).
+    """
 
     train: tuple[str, ...]
     tune: tuple[str, ...]
-    test: tuple[str, ...]
+    tests: dict[str, tuple[str, ...]]
+
+    @property
+    def test_split_names(self) -> list[str]:
+        """Sorted list of test split names for this fold."""
+        return sorted(self.tests.keys())
 
 
 class Splits:
     """Loads user-provided splits from a CSV with columns: fold, sample_id, split.
 
-    Validates that all sample_ids exist in the dataset, split names are valid
-    (train/tune/test), and no sample appears twice within the same fold.
+    Valid split names are ``"train"``, ``"tune"``, or any name starting with
+    ``"test"`` (e.g. ``"test"``, ``"test_external"``, ``"test_prospective"``).
+    Validates that all sample_ids exist in the dataset, split names are valid,
+    and no sample appears twice within the same fold.
     """
 
     def __init__(self, splits_csv: str | Path, dataset: Dataset) -> None:
@@ -176,9 +192,12 @@ class Splits:
             raise ValueError(msg)
 
         # Check split names
-        invalid = set(df["split"]) - VALID_SPLIT_NAMES
+        invalid = {name for name in df["split"] if not _is_valid_split_name(name)}
         if invalid:
-            msg = f"Invalid split name(s): {sorted(invalid)}. Must be one of {sorted(VALID_SPLIT_NAMES)}"
+            msg = (
+                f"Invalid split name(s): {sorted(invalid)}. "
+                "Must be 'train', 'tune', or start with 'test'."
+            )
             raise ValueError(msg)
 
         # Check no duplicate sample within a fold
@@ -197,10 +216,14 @@ class Splits:
             tune_ids = tuple(
                 str(s) for s in group.loc[group["split"] == "tune", "sample_id"]
             )
-            test_ids = tuple(
-                str(s) for s in group.loc[group["split"] == "test", "sample_id"]
-            )
-            folds.append(FoldSplit(train=train_ids, tune=tune_ids, test=test_ids))
+            tests: dict[str, tuple[str, ...]] = {
+                split_name: tuple(
+                    str(s) for s in group.loc[group["split"] == split_name, "sample_id"]
+                )
+                for split_name in sorted(group["split"].unique())
+                if split_name.startswith("test")
+            }
+            folds.append(FoldSplit(train=train_ids, tune=tune_ids, tests=tests))
         return folds
 
     @property
@@ -230,11 +253,12 @@ class Splits:
             )
         for fold_idx, fold_split in enumerate(self._folds):
             patient_splits: dict[str, set[str]] = {}
-            for split_name, sample_ids in (
+            all_splits = [
                 ("train", fold_split.train),
                 ("tune", fold_split.tune),
-                ("test", fold_split.test),
-            ):
+                *fold_split.tests.items(),
+            ]
+            for split_name, sample_ids in all_splits:
                 for sid in sample_ids:
                     pid = sample_to_patient.get(sid)
                     if pid is None:

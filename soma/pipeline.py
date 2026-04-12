@@ -90,7 +90,7 @@ class FoldResult:
     fold: int
     train_result: TrainResult
     tune_report: EvaluationReport
-    test_report: EvaluationReport
+    test_reports: dict[str, EvaluationReport]  # split_name → report
 
 
 @dataclass(frozen=True)
@@ -106,10 +106,11 @@ def _format_fold_summary(
     fold: int,
     train_count: int,
     tune_count: int,
-    test_count: int,
+    tests_counts: dict[str, int],
     dropped_by_split: dict[str, list[str]] | None = None,
 ) -> str:
-    base = f"Fold {fold}: train={train_count} tune={tune_count} test={test_count}"
+    tests_str = " ".join(f"{name}={count}" for name, count in sorted(tests_counts.items()))
+    base = f"Fold {fold}: train={train_count} tune={tune_count} {tests_str}"
     if not dropped_by_split:
         return base
 
@@ -170,17 +171,21 @@ def train_one_fold(
 
     label_map = dataset.label_map
     feature_dim = feature_store.feature_dim
+    all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
     if dataset_type == "patient":
         # Patient-level: features are indexed by patient_id; splits are slide-based.
         # Skip the sample-level manifest check and build records directly from splits.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
         tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-        test_records = [dataset.samples[sid] for sid in fold_split.test]
+        test_records_by_split: dict[str, list[SampleRecord]] = {
+            split_name: [dataset.samples[sid] for sid in ids]
+            for split_name, ids in fold_split.tests.items()
+        }
         dropped_by_split = None
     elif feature_store.has_feature_manifest:
         manifest_statuses = feature_store.feature_statuses
         manifest_sample_ids = set(manifest_statuses)
-        split_sample_ids = set(fold_split.train) | set(fold_split.tune) | set(fold_split.test)
+        split_sample_ids = set(fold_split.train) | set(fold_split.tune) | all_test_ids
         missing_manifest_ids = sorted(split_sample_ids - manifest_sample_ids)
         if missing_manifest_ids:
             msg = (
@@ -206,18 +211,27 @@ def train_one_fold(
         dropped_by_split = {
             "train": [sid for sid in fold_split.train if sid in empty_sample_ids],
             "tune": [sid for sid in fold_split.tune if sid in empty_sample_ids],
-            "test": [sid for sid in fold_split.test if sid in empty_sample_ids],
+            **{
+                split_name: [sid for sid in ids if sid in empty_sample_ids]
+                for split_name, ids in fold_split.tests.items()
+            },
         }
 
         # Build datasets from samples that are expected to have features.
         train_records = _records_for_sample_ids(dataset, fold_split.train, expected_feature_ids)
         tune_records = _records_for_sample_ids(dataset, fold_split.tune, expected_feature_ids)
-        test_records = _records_for_sample_ids(dataset, fold_split.test, expected_feature_ids)
+        test_records_by_split = {
+            split_name: _records_for_sample_ids(dataset, ids, expected_feature_ids)
+            for split_name, ids in fold_split.tests.items()
+        }
     else:
         # Legacy path: no manifest, so every listed sample must have a feature file.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
         tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-        test_records = [dataset.samples[sid] for sid in fold_split.test]
+        test_records_by_split = {
+            split_name: [dataset.samples[sid] for sid in ids]
+            for split_name, ids in fold_split.tests.items()
+        }
         dropped_by_split = None
 
     if not train_records:
@@ -226,15 +240,16 @@ def train_one_fold(
     if not tune_records:
         msg = f"Fold {fold} has no tuning samples with available features"
         raise ValueError(msg)
-    if not test_records:
-        msg = f"Fold {fold} has no test samples with available features"
-        raise ValueError(msg)
+    for split_name, records in test_records_by_split.items():
+        if not records:
+            msg = f"Fold {fold} has no samples with available features in split '{split_name}'"
+            raise ValueError(msg)
 
     summary = _format_fold_summary(
         fold=fold,
         train_count=len(train_records),
         tune_count=len(tune_records),
-        test_count=len(test_records),
+        tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
         dropped_by_split=dropped_by_split,
     )
     logger.info(summary)
@@ -286,7 +301,6 @@ def train_one_fold(
 
         train_patient_ids = _patient_ids_for_records(train_records)
         tune_patient_ids = _patient_ids_for_records(tune_records)
-        test_patient_ids = _patient_ids_for_records(test_records)
         train_loader = DataLoader(
             PatientDataset(train_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
             batch_size=training.batch_size,
@@ -299,12 +313,18 @@ def train_one_fold(
             shuffle=False,
             collate_fn=_patient_collate,
         )
-        test_loader = DataLoader(
-            PatientDataset(test_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_patient_collate,
-        )
+        test_loaders: dict[str, DataLoader] = {
+            split_name: DataLoader(
+                PatientDataset(
+                    _patient_ids_for_records(records),
+                    patient_label_map, feature_store, label_map, label_fn=patient_label_fn,
+                ),
+                batch_size=training.batch_size,
+                shuffle=False,
+                collate_fn=_patient_collate,
+            )
+            for split_name, records in test_records_by_split.items()
+        }
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = PatientModel(task_head=head)
     elif dataset_type == "tile":
@@ -322,12 +342,15 @@ def train_one_fold(
             shuffle=False,
             collate_fn=_tile_collate,
         )
-        test_loader = DataLoader(
-            TileDataset(test_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_tile_collate,
-        )
+        test_loaders = {
+            split_name: DataLoader(
+                TileDataset(records, feature_store, label_map, label_fn=label_fn),
+                batch_size=training.batch_size,
+                shuffle=False,
+                collate_fn=_tile_collate,
+            )
+            for split_name, records in test_records_by_split.items()
+        }
         head = task_cls(input_dim=feature_dim, **task_params)
         model = TileClassifier(task_head=head)
     elif feature_store.is_slide_level:
@@ -348,12 +371,15 @@ def train_one_fold(
             shuffle=False,
             collate_fn=_slide_collate,
         )
-        test_loader = DataLoader(
-            SlideDataset(test_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_slide_collate,
-        )
+        test_loaders = {
+            split_name: DataLoader(
+                SlideDataset(records, feature_store, label_map, label_fn=label_fn),
+                batch_size=training.batch_size,
+                shuffle=False,
+                collate_fn=_slide_collate,
+            )
+            for split_name, records in test_records_by_split.items()
+        }
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = SlideModel(task_head=head)
     elif feature_store.is_hierarchical:
@@ -377,12 +403,15 @@ def train_one_fold(
             shuffle=False,
             collate_fn=_hier_collate,
         )
-        test_loader = DataLoader(
-            HierarchicalBagDataset(test_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_hier_collate,
-        )
+        test_loaders = {
+            split_name: DataLoader(
+                HierarchicalBagDataset(records, feature_store, label_map, label_fn=label_fn),
+                batch_size=training.batch_size,
+                shuffle=False,
+                collate_fn=_hier_collate,
+            )
+            for split_name, records in test_records_by_split.items()
+        }
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
         head = task_cls(input_dim=agg.output_dim, **task_params)
@@ -402,12 +431,15 @@ def train_one_fold(
             shuffle=False,
             collate_fn=_bag_collate,
         )
-        test_loader = DataLoader(
-            BagDataset(test_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_bag_collate,
-        )
+        test_loaders = {
+            split_name: DataLoader(
+                BagDataset(records, feature_store, label_map, label_fn=label_fn),
+                batch_size=training.batch_size,
+                shuffle=False,
+                collate_fn=_bag_collate,
+            )
+            for split_name, records in test_records_by_split.items()
+        }
         if aggregator is None:
             msg = "aggregator must be provided for tile-level features"
             raise ValueError(msg)
@@ -451,38 +483,45 @@ def train_one_fold(
         and not feature_store.is_slide_level
         and not feature_store.is_hierarchical
     )
-    attention_dir = fold_dir / "attention" if save_attention else None
-    if attention_dir is not None:
-        attention_dir.mkdir(exist_ok=True)
 
     tune_report = _evaluate(model, tune_loader, "tune", label_map, device)
-    test_report = _evaluate(
-        model, test_loader, "test", label_map, device,
-        attention_dir=attention_dir,
-        aggregator_name=aggregator.name if aggregator is not None else None,
-    )
+
+    test_reports: dict[str, EvaluationReport] = {}
+    for split_name, test_loader in test_loaders.items():
+        attention_dir: Path | None = None
+        if save_attention:
+            attention_dir = fold_dir / "attention" / split_name
+            attention_dir.mkdir(parents=True, exist_ok=True)
+        test_reports[split_name] = _evaluate(
+            model, test_loader, split_name, label_map, device,
+            attention_dir=attention_dir,
+            aggregator_name=aggregator.name if aggregator is not None else None,
+        )
 
     # Save metrics, predictions, and training history
-    _save_metrics(tune_report, test_report, fold_dir / "metrics.json")
-    subgroup_data = _build_subgroup_data(dataset, test_report, eval.subgroups.columns)
-    _save_predictions(test_report, fold_dir / "predictions.csv", subgroup_data=subgroup_data)
+    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
     _save_training_history(train_result.history, fold_dir / "training_history.json")
 
-    # Save subgroup metrics when subgroup columns are configured
-    if eval.subgroups.columns:
-        predictions_df = pd.read_csv(fold_dir / "predictions.csv")
-        task_family = task.name
-        resolved_metrics = resolve_metrics(task_family, eval.metrics)
-        sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
-        sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
-        sg_out: dict = {"metrics": sg_metrics, "stats": sg_stats}
-        (fold_dir / "subgroup_metrics.json").write_text(json.dumps(sg_out, indent=2))
+    task_family = task.name
+    resolved_metrics = resolve_metrics(task_family, eval.metrics)
+    for split_name, test_report in test_reports.items():
+        predictions_path = fold_dir / f"predictions_{split_name}.csv"
+        subgroup_data = _build_subgroup_data(dataset, test_report, eval.subgroups.columns)
+        _save_predictions(test_report, predictions_path, subgroup_data=subgroup_data)
+
+        # Save subgroup metrics when subgroup columns are configured
+        if eval.subgroups.columns:
+            predictions_df = _build_predictions_df(test_report, subgroup_data)
+            sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
+            sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
+            sg_out: dict = {"metrics": sg_metrics, "stats": sg_stats}
+            (fold_dir / f"subgroup_metrics_{split_name}.json").write_text(json.dumps(sg_out, indent=2))
 
     return FoldResult(
         fold=fold,
         train_result=train_result,
         tune_report=tune_report,
-        test_report=test_report,
+        test_reports=test_reports,
     )
 
 
@@ -968,13 +1007,12 @@ def _records_for_sample_ids(
 
 def _save_metrics(
     tune_report: EvaluationReport,
-    test_report: EvaluationReport,
+    test_reports: dict[str, EvaluationReport],
     path: Path,
 ) -> None:
-    data = {
-        "tune": tune_report.metrics,
-        "test": test_report.metrics,
-    }
+    data: dict[str, dict[str, float]] = {"tune": tune_report.metrics}
+    for split_name, report in test_reports.items():
+        data[split_name] = report.metrics
     path.write_text(json.dumps(data, indent=2))
 
 
@@ -999,6 +1037,29 @@ def _build_subgroup_data(
         }
         for pred in report.predictions
     }
+
+
+def _build_predictions_df(
+    report: EvaluationReport,
+    subgroup_data: dict[str, dict[str, object]] | None = None,
+) -> pd.DataFrame:
+    """Build an enriched predictions DataFrame in memory (no disk I/O)."""
+    rows = []
+    for pred in report.predictions:
+        row: dict = {"sample_id": pred.sample_id, "true_label": pred.true_label}
+        if pred.predicted_label is not None:
+            row["predicted_label"] = pred.predicted_label
+        if pred.probabilities is not None:
+            for i, p in enumerate(pred.probabilities):
+                row[f"prob_{i}"] = p
+        if pred.raw_score is not None:
+            row["raw_score"] = pred.raw_score
+        if pred.predicted_value is not None:
+            row["predicted_value"] = pred.predicted_value
+        if subgroup_data and pred.sample_id in subgroup_data:
+            row.update(subgroup_data[pred.sample_id])
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
 def _save_predictions(
@@ -1065,18 +1126,19 @@ def _save_predictions(
 
 
 def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
-    """Compute mean and std of each metric across folds."""
+    """Compute mean and std of each metric across folds, namespaced by test split."""
     if not fold_results:
         return {}
 
-    # Collect all metric keys from test reports
-    metric_keys = list(fold_results[0].test_report.metrics.keys())
     summary: dict[str, float] = {}
+    test_split_names = sorted({s for fr in fold_results for s in fr.test_reports})
 
-    for key in metric_keys:
-        values = [fr.test_report.metrics[key] for fr in fold_results]
-        summary[f"{key}_mean"] = float(np.mean(values))
-        summary[f"{key}_std"] = float(np.std(values))
+    for split_name in test_split_names:
+        metric_keys = list(fold_results[0].test_reports[split_name].metrics.keys())
+        for key in metric_keys:
+            values = [fr.test_reports[split_name].metrics[key] for fr in fold_results]
+            summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
+            summary[f"{split_name}/{key}_std"] = float(np.std(values))
 
     return summary
 
