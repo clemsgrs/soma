@@ -1,0 +1,36 @@
+# Tile-level classification
+# Each sample is a single patch with a label — no aggregation step.
+# Typical use case: patch-level tissue type classification
+# Run with: soma run examples/tile_classification.yaml
+
+dataset_csv: data/dataset.csv
+splits_csv: data/splits.csv
+output_root: runs/tile_classifier
+
+dataset_type: tile
+
+# No preprocessing section needed — assumes tiles are already extracted.
+
+cache:
+  enabled: true
+  # root_dir defaults to <output_root>/ (feature_cache/ and tiling_cache/ alongside) — set explicitly to share across runs
+
+encoder:
+  name: uni2
+
+# aggregator must be omitted (or null) for tile datasets
+aggregator: null
+
+task:
+  name: binary_classification
+
+eval:
+  metrics:
+    - auroc
+    - balanced_accuracy
+    - f1
+
+training:
+  epochs: 30
+  learning_rate: 1.0e-4
+  patience: 5
