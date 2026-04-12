@@ -228,12 +228,15 @@ def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
         dataset=dataset,
         preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         backend_provenance=provenance,
+        requested_preprocessing={"backend": "auto", "requested_tile_size_px": None},
     )
 
     metadata = json.loads(resolution.metadata_path.read_text())
     assert metadata["requested_backend"] == "auto"
     assert metadata["backend"] == "openslide"
     assert metadata["backend_by_sample_id"] == {"s1": "openslide", "s2": "openslide"}
+    assert metadata["requested_preprocessing"] == {"backend": "auto", "requested_tile_size_px": None}
+    assert "raw_preprocessing" not in metadata
     assert resolution.complete is False
 
 
@@ -297,6 +300,74 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     recorded = pd.read_csv(resolution.process_list_path)
     assert Path(recorded.loc[0, "coordinates_npz_path"]).parent == resolution.artifacts_dir
     assert len(list(resolution.artifacts_dir.glob("*.npz"))) == 1
+
+
+def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
+    dataset = _make_dataset(
+        tmp_path,
+        rows=[{"sample_id": "s1", "image_path": "/slides/s1.svs", "label": "tumor"}],
+    )
+    cache_root = tmp_path / "tiling_cache"
+    preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        requested_region_size_px=1792,
+        region_tile_multiple=8,
+        hierarchical=True,
+        read_tile_size_px=224,
+        read_region_size_px=1792,
+    )
+    provenance = {
+        "requested_backend": "openslide",
+        "backend": "openslide",
+        "backend_by_sample_id": {"s1": "openslide"},
+    }
+
+    resolution = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        preprocessing=preprocessing,
+        backend_provenance=provenance,
+    )
+    (resolution.cache_dir / "process_list.csv").write_text(
+        "sample_id,tiling_status,backend,requested_backend\n"
+        "s1,success,openslide,openslide\n",
+        encoding="utf-8",
+    )
+
+    with (
+        patch(
+            "soma.cache.load_tiling_process_df",
+            return_value=pd.DataFrame(
+                [
+                    {
+                        "sample_id": "s1",
+                        "tiling_status": "success",
+                        "backend": "openslide",
+                        "requested_backend": "openslide",
+                    }
+                ]
+            ),
+        ),
+        patch(
+            "soma.cache.load_tiling_result_from_row",
+            return_value=SimpleNamespace(
+                requested_tile_size_px=1792,
+                requested_spacing_um=0.5,
+                backend="openslide",
+            ),
+        ),
+        patch("soma.cache.validate_tiling_result_provenance", return_value=None),
+    ):
+        refreshed = resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=preprocessing,
+            backend_provenance=provenance,
+        )
+
+    assert refreshed.complete is True
+    assert refreshed.reused is True
 
 
 def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
@@ -460,10 +531,13 @@ def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
+    metadata.pop("artifact_kind")
     metadata["encoder_name"] = "other-encoder"
+    metadata["unexpected_field"] = "boom"
+    metadata["schema_version"] = "v2"
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
-    with pytest.raises(ValueError, match="metadata mismatch"):
+    with pytest.raises(ValueError) as excinfo:
         resolve_tile_cache(
             cache_root=cache_root,
             dataset=dataset,
@@ -471,6 +545,57 @@ def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
             preprocessing=PreprocessingConfig(),
             execution=EncoderConfig(name="virchow", precision="fp16"),
         )
+
+    message = str(excinfo.value)
+    assert f"Feature cache metadata mismatch for {resolution.cache_dir}" in message
+    assert "missing=[" in message
+    assert "artifact_kind=" in message
+    assert "extra=[" in message
+    assert "unexpected_field=" in message
+    assert "changed=[" in message
+    assert "encoder_name:" in message
+    assert "schema_version:" in message
+
+
+def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "tiling_cache"
+    resolution = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
+        },
+    )
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata.pop("manifest_digest")
+    metadata["schema_version"] = "v2"
+    metadata["unexpected_field"] = "boom"
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+
+    with pytest.raises(ValueError) as excinfo:
+        resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            backend_provenance={
+                "requested_backend": "openslide",
+                "backend": "openslide",
+                "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
+            },
+        )
+
+    message = str(excinfo.value)
+    assert f"Tiling cache metadata mismatch for {resolution.cache_dir}" in message
+    assert "missing=[" in message
+    assert "manifest_digest=" in message
+    assert "extra=[" in message
+    assert "unexpected_field=" in message
+    assert "changed=[" in message
+    assert "schema_version:" in message
 
 
 def test_resolve_feature_payload_dir_understands_cache_dir(tmp_path: Path):

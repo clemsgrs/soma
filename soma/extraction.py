@@ -532,7 +532,7 @@ class FeatureExtractor:
             preprocessing=cfg,
             backend_provenance=backend_provenance,
             encoder_name=self._encoder.name,
-            raw_preprocessing=asdict(self._preprocessing),
+            requested_preprocessing=asdict(self._preprocessing),
         )
         if cache_resolution.complete:
             write_tiling_cache_stub(tiling_dir, cache_resolution=cache_resolution)
@@ -566,7 +566,7 @@ class FeatureExtractor:
                 preprocessing=cfg,
                 backend_provenance=backend_provenance,
                 encoder_name=self._encoder.name,
-                raw_preprocessing=asdict(self._preprocessing),
+                requested_preprocessing=asdict(self._preprocessing),
                 complete_state="populated",
             )
             if refreshed.complete:

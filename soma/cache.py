@@ -453,7 +453,7 @@ def _build_tiling_cache_metadata(
     preprocessing: PreprocessingConfig,
     backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
-    raw_preprocessing: dict[str, Any] | None = None,
+    requested_preprocessing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     metadata: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -471,17 +471,58 @@ def _build_tiling_cache_metadata(
     }
     if encoder_name is not None:
         metadata["resolved_by_encoder_name"] = str(encoder_name)
-    if raw_preprocessing is not None:
-        metadata["raw_preprocessing"] = raw_preprocessing
+    if requested_preprocessing is not None:
+        metadata["requested_preprocessing"] = requested_preprocessing
     return metadata
 
 
-def _compare_tiling_metadata(existing: dict[str, Any], expected: dict[str, Any]) -> None:
-    ignore_keys = {"backend", "backend_by_sample_id", "resolved_by_encoder_name", "raw_preprocessing"}
-    comparable_existing = {key: value for key, value in existing.items() if key not in ignore_keys}
-    comparable_expected = {key: value for key, value in expected.items() if key not in ignore_keys}
-    if comparable_existing != comparable_expected:
-        raise ValueError("Tiling cache metadata mismatch")
+def _format_cache_metadata_mismatch(
+    *,
+    cache_label: str,
+    cache_dir: Path,
+    existing: dict[str, Any],
+    expected: dict[str, Any],
+    ignore_keys: set[str] | frozenset[str] = frozenset(),
+) -> str:
+    base_ignore_keys = {
+        "backend",
+        "backend_by_sample_id",
+        "resolved_by_encoder_name",
+        "requested_preprocessing",
+    }
+    effective_ignore_keys = base_ignore_keys | set(ignore_keys)
+    comparable_existing = {
+        key: value for key, value in existing.items() if key not in effective_ignore_keys
+    }
+    comparable_expected = {
+        key: value for key, value in expected.items() if key not in effective_ignore_keys
+    }
+    if comparable_existing == comparable_expected:
+        return ""
+
+    all_keys = sorted(set(comparable_existing) | set(comparable_expected))
+    missing_keys: list[str] = []
+    extra_keys: list[str] = []
+    changed_keys: list[str] = []
+    for key in all_keys:
+        if key not in comparable_existing:
+            missing_keys.append(f"{key}={comparable_expected[key]!r}")
+        elif key not in comparable_expected:
+            extra_keys.append(f"{key}={comparable_existing[key]!r}")
+        elif comparable_existing[key] != comparable_expected[key]:
+            changed_keys.append(
+                f"{key}: existing={comparable_existing[key]!r}, expected={comparable_expected[key]!r}"
+            )
+
+    sections: list[str] = []
+    if missing_keys:
+        sections.append(f"missing=[{', '.join(missing_keys)}]")
+    if extra_keys:
+        sections.append(f"extra=[{', '.join(extra_keys)}]")
+    if changed_keys:
+        sections.append(f"changed=[{'; '.join(changed_keys)}]")
+    details = "; ".join(sections)
+    return f"{cache_label} metadata mismatch for {cache_dir}: {details}"
 
 
 def _tiling_cache_dir(cache_root: Path, key: str) -> Path:
@@ -585,7 +626,12 @@ def _validate_tiling_cache_contents(
             )
         except Exception:
             return CacheValidationResult(complete=False, reason=f"invalid tiling provenance for {sample_id}")
-        if int(getattr(tiling_result, "requested_tile_size_px", -1)) != int(preprocessing.requested_tile_size_px):
+        expected_requested_tile_size_px = (
+            preprocessing.requested_region_size_px
+            if preprocessing.requested_region_size_px is not None
+            else preprocessing.requested_tile_size_px
+        )
+        if int(getattr(tiling_result, "requested_tile_size_px", -1)) != int(expected_requested_tile_size_px):
             return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
         if float(getattr(tiling_result, "requested_spacing_um", -1.0)) != float(preprocessing.requested_spacing_um):
             return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
@@ -607,7 +653,7 @@ def resolve_tiling_cache(
     preprocessing: PreprocessingConfig,
     backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
-    raw_preprocessing: dict[str, Any] | None = None,
+    requested_preprocessing: dict[str, Any] | None = None,
     complete_state: str = "hit",
 ) -> TilingCacheResolution:
     metadata = _build_tiling_cache_metadata(
@@ -615,7 +661,7 @@ def resolve_tiling_cache(
         preprocessing=preprocessing,
         backend_provenance=backend_provenance,
         encoder_name=encoder_name,
-        raw_preprocessing=raw_preprocessing,
+        requested_preprocessing=requested_preprocessing,
     )
     cache_dir = _tiling_cache_dir(cache_root, str(metadata["cache_key"]))
     metadata_path = cache_dir / CACHE_METADATA_NAME
@@ -627,7 +673,14 @@ def resolve_tiling_cache(
 
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)
-        _compare_tiling_metadata(existing, metadata)
+        mismatch_message = _format_cache_metadata_mismatch(
+            cache_label="Tiling cache",
+            cache_dir=cache_dir,
+            existing=existing,
+            expected=metadata,
+        )
+        if mismatch_message:
+            raise ValueError(mismatch_message)
         validation = _validate_tiling_cache_contents(
             dataset=dataset,
             process_list_path=process_list_path,
@@ -990,8 +1043,14 @@ def _resolve_cache(
 
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)
-        if _comparable_metadata(existing) != _comparable_metadata(metadata):
-            raise ValueError(f"Cache metadata mismatch for {cache_dir}")
+        mismatch_message = _format_cache_metadata_mismatch(
+            cache_label="Feature cache",
+            cache_dir=cache_dir,
+            existing=_comparable_metadata(existing),
+            expected=_comparable_metadata(metadata),
+        )
+        if mismatch_message:
+            raise ValueError(mismatch_message)
         validation = _validate_feature_cache_contents(features_dir=features_dir, metadata=existing)
         _emit_cache_state_log(
             cache_label="feature",
