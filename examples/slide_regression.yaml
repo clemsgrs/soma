@@ -19,7 +19,6 @@ cache:
 
 encoder:
   name: uni2
-  spacing_um: 0.5
 
 aggregator:
   name: abmil

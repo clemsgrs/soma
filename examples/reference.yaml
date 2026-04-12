@@ -83,8 +83,10 @@ encoder:
   # Examples: uni2, virchow2, h0-mini, conch, phikon, resnet50
   name: uni2
 
-  # Pixel spacing the encoder expects (must match preprocessing.requested_spacing_um).
-  spacing_um: 0.5
+  # Override the pixel spacing passed to the encoder.
+  # Only needed when preprocessing.requested_spacing_um is null and the encoder
+  # supports multiple spacings. Otherwise inferred from preprocessing automatically.
+  spacing_um: null
 
   # Inference batch size (lower if running out of GPU memory).
   batch_size: 32
