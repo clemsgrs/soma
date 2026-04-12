@@ -13,7 +13,7 @@ dataset_type: tile
 
 cache:
   enabled: true
-  # root_dir defaults to <output_root>/feature_cache — set explicitly to share across runs
+  # root_dir defaults to <output_root>/ (feature_cache/ and tiling_cache/ alongside) — set explicitly to share across runs
 
 encoder:
   name: uni2

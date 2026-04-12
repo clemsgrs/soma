@@ -68,9 +68,10 @@ cache:
   # Whether caching is enabled.
   enabled: true
 
-  # Shared cache root directory.
-  # Defaults to <output_root>/feature_cache when null (pipeline.py).
-  # Set explicitly to share a cache across multiple runs with different output_root values.
+  # Root directory for the shared cache.
+  # When null, defaults to <output_root>/ and cache artifacts are written to
+  # <output_root>/feature_cache/ and <output_root>/tiling_cache/ (pipeline.py, cache.py).
+  # Set explicitly to share a cache across runs with different output_root values.
   root_dir: null
 
   # How strictly to validate cache hits.
