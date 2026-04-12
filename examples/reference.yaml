@@ -194,7 +194,7 @@ heatmaps:
   blur_sigma: 0.0
 
 # ---------------------------------------------------------------------------
-# Tags — free-form labels for organising and filtering runs
+# Tags — free-form strings stored in the run metadata and shown in the HTML report
 # ---------------------------------------------------------------------------
 tags:
   - baseline
