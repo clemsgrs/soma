@@ -9,8 +9,7 @@ output_root: runs/ordinal
 dataset_type: slide
 
 preprocessing:
-  requested_spacing_um: 0.5
-  requested_tile_size_px: 256
+  # spacing and tile size are auto-resolved from the encoder's preset values
   tissue_threshold: 0.1
 
 cache:

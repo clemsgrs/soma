@@ -30,11 +30,13 @@ preprocessing:
   backend: auto
 
   # Target pixel spacing in microns per pixel (determines effective magnification).
-  # Leave null to use requested_tile_size_px at native resolution.
-  requested_spacing_um: 0.5
+  # Most encoders have a preset spacing — leave null to auto-resolve from the encoder.
+  # Must be set explicitly only when the encoder supports multiple spacings.
+  requested_spacing_um: null
 
   # Tile size in pixels at the target spacing.
-  requested_tile_size_px: 256
+  # Most encoders have a preset tile size — leave null to auto-resolve from the encoder.
+  requested_tile_size_px: null
 
   # Tissue detection method.
   # Options: hsv | otsu
