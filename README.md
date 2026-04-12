@@ -29,7 +29,7 @@ The package root exports the main entry points:
 
 `splits.csv` should assign each `sample_id` to `train`, `tune`, or `test` for every fold. This is what keeps evaluation reproducible and prevents leakage.
 
-More details on the dataset and split contract are in [docs/reference.md](docs/reference.md).
+More details on the dataset and split contract are in [docs/getting-started.rst](docs/getting-started.rst) and [docs/pipeline.rst](docs/pipeline.rst).
 
 ```python
 from soma import Dataset, Splits
@@ -53,7 +53,7 @@ When you run the full pipeline, the same cache system also handles tiling:
 - a complete feature-cache hit reuses the shared embeddings directly
 - a fresh feature-cache population logs an `initializing` miss first, then a `populated` completion after the shared payload is written
 
-More details about the caching mechanism are in [docs/cache.md](docs/cache.md).
+More details about the caching mechanism are in [docs/caching.rst](docs/caching.rst).
 
 ```python
 from soma import Dataset, Splits
@@ -75,7 +75,7 @@ store = extractor.extract(feature_dir="output/features/uni2")
 ## Build on top of these features
 
 splits = Splits("splits.csv", dataset)
-task = TaskConfig(name="classification")
+task = TaskConfig(name="binary_classification")
 
 abmil_result = train(
     feature_store=store,
@@ -99,8 +99,8 @@ clam_result = train(
 ```
 
 This is the sweet spot for sweep-style workflows: one feature set, many model
-variants.  
-More details on the training and pipeline APIs are in [docs/reference.md](docs/reference.md).
+variants.
+More details on the training and pipeline APIs are in [docs/training.rst](docs/training.rst) and [docs/pipeline.rst](docs/pipeline.rst).
 
 ### 3. Run a full pipeline in one call
 
@@ -119,7 +119,7 @@ config = PipelineConfig(
     dataset_type="slide",
     encoder=EncoderConfig(name="uni2"),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-    task=TaskConfig(name="classification"),
+    task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
 )
 
@@ -132,7 +132,7 @@ The returned `PipelineResult` includes:
 - `summary`: aggregated metrics across folds
 - `run_dir`: the resolved run directory containing the saved artifacts
 
-More details about the generated artifacts are in [docs/outputs.md](docs/outputs.md).
+More details about the generated artifacts are in [docs/outputs.rst](docs/outputs.rst).
 
 ## CLI
 
@@ -146,11 +146,22 @@ soma run config.yaml
 
 ## Docs
 
-- [Documentation](docs/documentation.md)
-- [Workflow](docs/workflow.md)
-- [Cache](docs/cache.md)
-- [Outputs](docs/outputs.md)
-- [Reference](docs/reference.md)
+The canonical docs are now the curated Sphinx pages in `docs/`:
+
+- [Home](docs/index.rst)
+- [Getting Started](docs/getting-started.rst)
+- [Pipeline](docs/pipeline.rst)
+- [Preprocessing](docs/preprocessing.rst)
+- [Encoders](docs/encoders.rst)
+- [Aggregators](docs/aggregators.rst)
+- [Tasks](docs/tasks.rst)
+- [Training and Evaluation](docs/training.rst)
+- [Caching and Output Layout](docs/caching.rst)
+- [Run Outputs](docs/outputs.rst)
+- [Compact Parameter Reference](docs/reference.rst)
+
+The Sphinx pages above are the preferred reference. The legacy Markdown
+notes have been retired so the docs tree has a single canonical path.
 
 ## License
 

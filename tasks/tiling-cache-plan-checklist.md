@@ -5,4 +5,4 @@
 - [x] Decide whether run-local tiling reuse should materialize files or use a cache-backed stub.
 - [x] Confirm how `backend="auto"` should be validated against the current runtime.
 - [x] Update `tiling-cache.md` so the plan is implementation-ready.
-- [x] Record the agreed design briefly in `docs/documentation.md`.
+- [x] Record the agreed design briefly in `docs/caching.rst` and the relevant config docstrings.
