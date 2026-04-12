@@ -126,14 +126,6 @@ config = PipelineConfig(
 result = Pipeline(config).run()
 ```
 
-Or use the CLI to run a pipeline directly from a YAML config file:
-
-```bash
-soma run config.yaml
-```
-
-See `examples/` for a reference config with all available fields and focused per-task examples.
-
 The returned `PipelineResult` includes:
 
 - `fold_results`: one entry per fold, each with training, tune, and test reports
@@ -141,6 +133,16 @@ The returned `PipelineResult` includes:
 - `run_dir`: the resolved run directory containing the saved artifacts
 
 More details about the generated artifacts are in [docs/outputs.md](docs/outputs.md).
+
+## CLI
+
+For non-programmatic use, `soma` ships a command-line interface that runs a full pipeline from a YAML config file:
+
+```bash
+soma run config.yaml
+```
+
+`examples/` contains a `reference.yaml` documenting every available field, and focused per-task starting points (`slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, `tile_classification.yaml`).
 
 ## Docs
 
