@@ -126,6 +126,14 @@ config = PipelineConfig(
 result = Pipeline(config).run()
 ```
 
+Or use the CLI to run a pipeline directly from a YAML config file:
+
+```bash
+soma run config.yaml
+```
+
+See `examples/` for a reference config with all available fields and focused per-task examples.
+
 The returned `PipelineResult` includes:
 
 - `fold_results`: one entry per fold, each with training, tune, and test reports
