@@ -29,8 +29,6 @@ The package root exports the main entry points:
 
 `splits.csv` should assign each `sample_id` to `train`, `tune`, or `test` for every fold. This is what keeps evaluation reproducible and prevents leakage.
 
-More details on the dataset and split contract are in [docs/reference.md](docs/reference.md).
-
 ```python
 from soma import Dataset, Splits
 
@@ -43,24 +41,13 @@ print(splits.num_folds)
 
 ### 2. Extract once, cache, and reuse features across experiments
 
-`FeatureExtractor` handles preprocessing and embedding extraction, and the cache lets you reuse the same extracted features across multiple training runs instead of recomputing them every time. That is especially useful when you want to compare several MIL aggregators or heads against the same encoder output.
-
-When you run the full pipeline, the same cache system also handles tiling:
-
-- live tiling runs write a local `tiling/` directory first
-- a complete tiling-cache hit replaces that directory with a run-local stub
-- a fresh tiling-cache population logs an `initializing` miss first, then a `populated` completion after the shared payload is written
-- a complete feature-cache hit reuses the shared embeddings directly
-- a fresh feature-cache population logs an `initializing` miss first, then a `populated` completion after the shared payload is written
-
-More details about the caching mechanism are in [docs/cache.md](docs/cache.md).
+`FeatureExtractor` handles preprocessing and embedding extraction. The cache lets you reuse the same extracted features across multiple training runs, which is especially useful when comparing several MIL aggregators or heads against the same encoder output.
 
 ```python
-from soma import Dataset, Splits
-from soma import FeatureExtractor, train
+from soma import Dataset, Splits, FeatureExtractor, train
 from soma import CacheConfig, EncoderConfig, AggregatorConfig, TaskConfig, TrainingConfig
 
-## Extract features once
+# Extract features once
 
 dataset = Dataset("dataset.csv")
 extractor = FeatureExtractor(
@@ -72,10 +59,10 @@ extractor = FeatureExtractor(
 
 store = extractor.extract(feature_dir="output/features/uni2")
 
-## Build on top of these features
+# Train multiple model variants on the same features
 
 splits = Splits("splits.csv", dataset)
-task = TaskConfig(name="classification")
+task = TaskConfig(name="binary_classification")
 
 abmil_result = train(
     feature_store=store,
@@ -98,15 +85,9 @@ clam_result = train(
 )
 ```
 
-This is the sweet spot for sweep-style workflows: one feature set, many model
-variants.  
-More details on the training and pipeline APIs are in [docs/reference.md](docs/reference.md).
-
 ### 3. Run a full pipeline in one call
 
-`Pipeline(config).run()` is the single-call path from `(dataset, split)` to a
-reproducible result bundle. It handles preprocessing, feature extraction,
-training across folds, and metric aggregation for you.
+`Pipeline(config).run()` handles preprocessing, feature extraction, training across folds, and metric aggregation in a single call.
 
 ```python
 from soma import Pipeline, PipelineConfig
@@ -119,7 +100,7 @@ config = PipelineConfig(
     dataset_type="slide",
     encoder=EncoderConfig(name="uni2"),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-    task=TaskConfig(name="classification"),
+    task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
 )
 
@@ -132,11 +113,9 @@ The returned `PipelineResult` includes:
 - `summary`: aggregated metrics across folds
 - `run_dir`: the resolved run directory containing the saved artifacts
 
-More details about the generated artifacts are in [docs/outputs.md](docs/outputs.md).
-
 ## CLI
 
-For non-programmatic use, `soma` ships a command-line interface that runs a full pipeline from a YAML config file:
+`soma` ships a command-line interface that runs a full pipeline from a YAML config file:
 
 ```bash
 soma run config.yaml
@@ -146,11 +125,16 @@ soma run config.yaml
 
 ## Docs
 
-- [Documentation](docs/documentation.md)
-- [Workflow](docs/workflow.md)
-- [Cache](docs/cache.md)
-- [Outputs](docs/outputs.md)
-- [Reference](docs/reference.md)
+- [Getting Started](docs/getting-started.rst)
+- [Pipeline](docs/pipeline.rst)
+- [Preprocessing](docs/preprocessing.rst)
+- [Encoders](docs/encoders.rst)
+- [Aggregators](docs/aggregators.rst)
+- [Tasks](docs/tasks.rst)
+- [Training and Evaluation](docs/training.rst)
+- [Caching](docs/caching.rst)
+- [Run Outputs](docs/outputs.rst)
+- [Compact Parameter Reference](docs/reference.rst)
 
 ## License
 

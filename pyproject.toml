@@ -29,6 +29,7 @@ dependencies = [
     "pandas",
     "torch",
     "scikit-learn",
+    "scipy>=1.11",
     "pyyaml",
     "timm",
     "huggingface-hub",
@@ -50,6 +51,9 @@ Issues = "https://github.com/clemsgrs/soma/issues"
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+]
+docs = [
+    "sphinx>=8.1",
 ]
 
 [tool.hatch.build.targets.wheel]

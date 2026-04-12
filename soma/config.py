@@ -1,4 +1,9 @@
-"""Frozen dataclass configurations for soma experiments."""
+"""Frozen configuration dataclasses for soma experiments.
+
+These dataclasses form the public configuration surface used by the pipeline,
+the CLI, and the docs. Keep the field names stable and document any new field
+here so the Sphinx reference stays accurate.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +18,13 @@ from soma.evaluation.metrics import resolve_metrics
 
 @dataclass(frozen=True)
 class PreprocessingConfig:
-    """Configuration for WSI preprocessing (tissue segmentation + tiling)."""
+    """Whole-slide preprocessing, tiling, and geometry settings.
+
+    The preprocessing backend controls tissue segmentation and tile
+    extraction. ``requested_spacing_um`` and ``requested_tile_size_px`` are
+    the primary scale-selection knobs. The hierarchical fields are used only
+    when the aggregator requests HIPT-style region geometry.
+    """
 
     backend: str = "auto"
     requested_tile_size_px: int | None = None
@@ -48,7 +59,14 @@ class PreprocessingConfig:
 
 @dataclass(frozen=True)
 class EncoderConfig:
-    """Configuration for foundation model encoding."""
+    """Foundation-model encoder selection and runtime settings.
+
+    ``name`` selects the encoder preset. ``spacing_um`` and ``input_size``
+    describe the preset's native geometry and compatibility envelope. Other
+    values may be accepted by a preset, but they should be treated as
+    compatibility choices and may be suboptimal. ``output_variant`` exposes
+    preset-specific feature variants when the encoder supports them.
+    """
 
     name: str
     precision: str | None = None
@@ -63,7 +81,11 @@ class EncoderConfig:
 
 @dataclass(frozen=True)
 class CacheConfig:
-    """Configuration for the shared feature cache."""
+    """Shared cache policy for tiling and extracted features.
+
+    Reusing the cache keeps repeated experiments from recomputing expensive
+    tiling or embedding steps when the upstream configuration has not changed.
+    """
 
     enabled: bool = True
     root_dir: str | Path | None = None
@@ -73,7 +95,12 @@ class CacheConfig:
 
 @dataclass(frozen=True)
 class AggregatorConfig:
-    """Configuration for the MIL aggregator."""
+    """MIL aggregator selection and constructor parameters.
+
+    ``name`` selects the registered aggregator class. ``params`` are passed
+    through to the aggregator constructor after the pipeline injects the
+    feature dimension.
+    """
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
@@ -81,7 +108,11 @@ class AggregatorConfig:
 
 @dataclass(frozen=True)
 class TaskConfig:
-    """Configuration for the task head."""
+    """Task-head selection and constructor parameters.
+
+    ``name`` selects the registered task head. ``params`` are merged with any
+    dataset-derived auto parameters before instantiation.
+    """
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
@@ -89,14 +120,18 @@ class TaskConfig:
 
 @dataclass(frozen=True)
 class SubgroupConfig:
-    """Configuration for subgroup analysis."""
+    """Columns used for subgroup metric breakdowns."""
 
     columns: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
 class EvalConfig:
-    """Configuration for evaluation: metrics and subgroup analysis."""
+    """Evaluation metrics and subgroup analysis configuration.
+
+    Metrics are validated against the selected task family, and subgroup
+    columns are used to break down the reported metrics in the run outputs.
+    """
 
     metrics: list[str] = field(default_factory=list)
     subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
@@ -104,7 +139,12 @@ class EvalConfig:
 
 @dataclass(frozen=True)
 class TrainingConfig:
-    """Configuration for the training loop."""
+    """Training-loop hyperparameters and optimizer settings.
+
+    ``batch_size`` and ``gradient_accumulation`` control the effective batch
+    size, while ``epochs``, ``learning_rate``, ``optimizer``, ``scheduler``,
+    and ``patience`` define the optimization schedule.
+    """
 
     seed: int = 0
     epochs: int = 50
@@ -119,7 +159,7 @@ class TrainingConfig:
 
 @dataclass(frozen=True)
 class HeatmapConfig:
-    """Configuration for attention heatmap generation."""
+    """Attention heatmap generation and rendering settings."""
 
     enabled: bool = False
     cmap: str = "coolwarm"
@@ -132,11 +172,25 @@ class PipelineConfig:
     """Complete specification for a pipeline run.
 
     Args:
-        dataset_type: Type of input data. ``"slide"`` for whole-slide image
-            pipelines (tiling → encoding → aggregation → training).
-            ``"tile"`` for tile-image pipelines where each sample is a single
-            patch with a label (encoding → tile classifier training, no
-            aggregation). Must be specified explicitly.
+        dataset_csv: Path to the dataset manifest.
+        splits_csv: Path to the split manifest.
+        output_root: Directory for the run outputs.
+        dataset_type: Input mode for the pipeline. ``"slide"`` means whole
+            slide bags with optional MIL aggregation, ``"tile"`` means
+            patch-level classification, and ``"patient"`` means
+            patient-level aggregation. ``aggregator`` must be ``None`` unless
+            ``dataset_type`` is ``"slide"``.
+        preprocessing: Whole-slide preprocessing and tiling settings.
+        cache: Shared cache policy.
+        encoder: Foundation-model encoder configuration, or ``None`` for
+            workflows that do not need one.
+        aggregator: MIL aggregator configuration for slide-level bag
+            learning, or ``None`` for tile/patient pipelines.
+        task: Task-head configuration. Required.
+        eval: Metric and subgroup evaluation configuration.
+        training: Training hyperparameters.
+        heatmaps: Attention heatmap rendering settings.
+        tags: Free-form labels attached to the experiment metadata.
     """
 
     dataset_csv: str | Path

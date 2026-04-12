@@ -17,3 +17,4 @@
 - When validating a cross-repo schema rename, put all affected checkouts on `PYTHONPATH` before running tests so you do not accidentally exercise an older installed copy of a sibling package.
 - When a cache-population helper has a distributed refresh step, pass the resolved preprocessing and backend provenance explicitly instead of closing over values from a different branch.
 - When removing the implicit MIL default, make `PipelineConfig.aggregator` default to `None` for slide-level runs; do not hide the change behind a default `AggregatorConfig.name` value.
+- When GitHub Actions reports that it cannot resolve a major version for an action, verify the actual released tags on the upstream repository instead of assuming a floating `vX` tag exists; pin the exact published tag if that is the only available ref.
