@@ -152,7 +152,7 @@ Two runs should share a tiling cache only if these resolved values are identical
 Also record debugging provenance that is not part of the key:
 
 - the encoder name used when preprocessing was resolved
-- raw preprocessing config before resolution
+- requested preprocessing config before resolution
 
 Those fields help explain why two configs did or did not collide without making the cache less reusable.
 

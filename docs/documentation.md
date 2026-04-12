@@ -15,6 +15,9 @@
 ## Extraction
 
 - Distributed slide-level cache refresh now receives the resolved preprocessing and backend provenance explicitly, which keeps the post-embedding refresh path from depending on branch-local variables.
+- Tiling cache metadata now labels the original user-supplied preprocessing snapshot as `requested_preprocessing`, which reads more clearly than the previous internal name.
+- Hierarchical tiling cache validation treats the resolved region size as the effective requested tile size when the tiling artifact records region geometry in `requested_tile_size_px`.
+- Feature-cache and tiling-cache metadata mismatches now include the cache directory and group differences into `missing`, `extra`, and `changed` sections to make stale or incompatible cache entries easier to diagnose.
 
 ## Configuration
 
