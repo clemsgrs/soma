@@ -38,6 +38,9 @@ dependencies = [
     "plotly>=5.0",
 ]
 
+[project.scripts]
+soma = "soma.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/clemsgrs/soma"
 Source = "https://github.com/clemsgrs/soma"

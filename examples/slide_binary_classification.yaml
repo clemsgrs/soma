@@ -1,0 +1,40 @@
+# Slide-level binary classification with ABMIL
+# Typical use case: tumour vs. normal, responder vs. non-responder
+# Run with: soma run examples/slide_binary_classification.yaml
+
+dataset_csv: data/dataset.csv
+splits_csv: data/splits.csv
+output_root: runs/binary
+
+dataset_type: slide
+
+preprocessing:
+  requested_spacing_um: 0.5
+  requested_tile_size_px: 256
+  tissue_threshold: 0.1
+
+cache:
+  enabled: true
+  root_dir: shared/feature_cache
+
+encoder:
+  name: uni2
+  spacing_um: 0.5
+
+aggregator:
+  name: abmil
+
+task:
+  name: binary_classification
+
+eval:
+  metrics:
+    - auroc
+    - balanced_accuracy
+    - auprc
+    - f1
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  patience: 10

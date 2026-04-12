@@ -1,0 +1,39 @@
+# Slide-level ordinal classification with ABMIL
+# Typical use case: Gleason grading, tumour staging (ordered discrete grades)
+# Run with: soma run examples/slide_ordinal_classification.yaml
+
+dataset_csv: data/dataset.csv
+splits_csv: data/splits.csv
+output_root: runs/ordinal
+
+dataset_type: slide
+
+preprocessing:
+  requested_spacing_um: 0.5
+  requested_tile_size_px: 256
+  tissue_threshold: 0.1
+
+cache:
+  enabled: true
+  root_dir: shared/feature_cache
+
+encoder:
+  name: uni2
+  spacing_um: 0.5
+
+aggregator:
+  name: abmil
+
+task:
+  name: ordinal_classification
+
+eval:
+  metrics:
+    - qwk
+    - balanced_accuracy
+    - mae
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  patience: 10

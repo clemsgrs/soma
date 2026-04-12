@@ -19,3 +19,8 @@
 ## Configuration
 
 - `AggregatorConfig.name` is now required, and `PipelineConfig.aggregator` defaults to `None`. Slide-level feature runs must keep the aggregator explicit as `None`, while MIL runs must pass a named aggregator config.
+
+## CLI
+
+- `soma run config.yaml` launches a full pipeline run from a YAML config file (registered via `[project.scripts]` in `pyproject.toml`).
+- Example configs live in `examples/`: `reference.yaml` documents every field and valid option; `slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, and `tile_classification.yaml` are minimal task-specific starting points.
