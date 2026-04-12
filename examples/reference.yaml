@@ -25,8 +25,8 @@ dataset_type: slide
 # (only used for dataset_type: slide)
 # ---------------------------------------------------------------------------
 preprocessing:
-  # WSI backend.
-  # Options: auto | openslide | cucim | tiffslide
+  # WSI backend. Resolved via hs2p.wsi.reader.resolve_backend().
+  # Options: auto | openslide | cucim | asap | vips
   backend: auto
 
   # Target pixel spacing in microns per pixel (determines effective magnification).
@@ -38,8 +38,8 @@ preprocessing:
   # Most encoders have a preset tile size — leave null to auto-resolve from the encoder.
   requested_tile_size_px: null
 
-  # Tissue detection method.
-  # Options: hsv | otsu
+  # Tissue detection method. "hsv" uses HSV colour space; anything else
+  # falls back to Otsu thresholding (slide2vec_adapter.py).
   tissue_method: hsv
 
   # Minimum tissue fraction for a tile to be kept (0.0–1.0).
@@ -168,7 +168,7 @@ training:
   # Options: adam | adamw | sgd
   optimizer: adam
 
-  # Options: cosine | step | none
+  # Options: cosine | none  (trainer.py _build_scheduler)
   scheduler: cosine
 
   # Early stopping patience in epochs (stop if val metric does not improve).
