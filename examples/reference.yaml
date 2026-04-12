@@ -117,7 +117,7 @@ encoder:
   save_tile_features: false
 
 # ---------------------------------------------------------------------------
-# Aggregator — MIL model that pools tile embeddings into a slide representation
+# Aggregator — (trainable) stack that pools tile embeddings into a slide representation
 # (set to null for dataset_type: tile or patient)
 # Options: abmil | dsmil | clam_sb | clam_mb | transmil | dtfdmil | hipt
 #          mean_pool | max_pool
@@ -131,7 +131,7 @@ aggregator:
 # ---------------------------------------------------------------------------
 # Task — prediction head
 # Options: binary_classification | multiclass_classification |
-#          ordinal_classification | regression | branch_aware_classification
+#          ordinal_classification | regression
 # ---------------------------------------------------------------------------
 task:
   name: binary_classification
