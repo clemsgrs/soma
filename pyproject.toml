@@ -34,7 +34,7 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "slide2vec[fm]>=4.1.1",
+    "slide2vec[fm]>=4.2.0",
     "plotly>=5.0",
 ]
 
