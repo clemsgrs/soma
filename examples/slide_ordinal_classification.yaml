@@ -25,7 +25,7 @@ aggregator:
 task:
   name: ordinal_classification
 
-eval:
+evaluation:
   metrics:
     - qwk
     - balanced_accuracy

@@ -44,7 +44,6 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
-    "sphinx.ext.viewcode",
     "sphinx.ext.intersphinx",
     "sphinx_copybutton",
     "sphinx_autodoc_typehints",
@@ -74,6 +73,7 @@ html_theme = "furo"
 html_static_path = ["_static"]
 html_css_files = ["sidebar.css"]
 html_title = "soma"
+html_show_sourcelink = False
 _sidebar = [
     "sidebar/brand.html",
     "sidebar/search.html",

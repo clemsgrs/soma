@@ -139,3 +139,17 @@ class TestHIPT:
 
         with pytest.raises(ValueError, match="divisible"):
             HIPT(input_dim=16, region_size=7, patch_size=4, embed_dim_region=12, embed_dim_slide=12)
+
+    def test_pretrained_region_weights_is_not_supported(self):
+        """HIPT no longer accepts pretrained_region_weights."""
+        from soma.aggregators.mil.hipt import HIPT
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            HIPT(
+                input_dim=16,
+                region_size=8,
+                patch_size=4,
+                embed_dim_region=12,
+                embed_dim_slide=12,
+                pretrained_region_weights="weights.pt",
+            )

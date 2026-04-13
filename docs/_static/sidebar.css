@@ -89,3 +89,60 @@
     margin-top: 0.75rem;
   }
 }
+
+/* ─── API class / function blocks ──────────────────── */
+
+/*
+ * Furo sets text-indent: -35px on dt.sig, so the "class" / "def" keyword
+ * hangs left relative to the content box by (padding-left - 35px).
+ * We set padding-left: 2.5rem (40px) → keyword lands 5 px inside dt, 8 px
+ * inside the card border-box, so overflow:hidden no longer clips it and we
+ * get properly clipped rounded corners on the header strip for free.
+ */
+dl.py.class,
+dl.py.function {
+  border: 1px solid var(--color-background-border);
+  border-left: 3px solid var(--color-brand-primary);
+  border-radius: 0.5rem;
+  background: var(--color-background-secondary);
+  margin: 1.75rem 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Signature header: tinted strip clipped by card's overflow:hidden */
+dl.py.class > dt.sig,
+dl.py.function > dt.sig {
+  background: var(--color-background-hover);
+  border-bottom: 1px solid var(--color-background-border);
+  padding: 0.6rem 1rem 0.6rem 2.5rem;
+  margin: 0;
+}
+
+/* Docstring body */
+dl.py.class > dd,
+dl.py.function > dd {
+  padding: 0.75rem 1.25rem;
+  margin: 0;
+}
+
+/* Nested methods / attributes: left-rule, no card */
+dl.py.class > dd > dl.py {
+  border: none;
+  border-left: 2px solid var(--color-background-border);
+  background: transparent;
+  margin: 0.75rem 0;
+  padding: 0 0 0 0.875rem;
+}
+
+dl.py.class > dd > dl.py > dt.sig {
+  background: transparent;
+  border-bottom: none;
+  padding: 0.2rem 0;
+  margin: 0;
+}
+
+dl.py.class > dd > dl.py > dd {
+  padding: 0.25rem 0;
+  margin: 0;
+}

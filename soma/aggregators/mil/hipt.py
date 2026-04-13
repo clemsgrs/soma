@@ -11,7 +11,6 @@ in TaskHead, making HIPT composable with any task.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import torch
 from torch import Tensor, nn
@@ -283,7 +282,6 @@ class HIPT(Aggregator):
         embed_dim_slide: Global transformer / output dimension.
         num_heads: Attention heads in region ViT.
         dropout: Dropout rate.
-        pretrained_region_weights: Path to pretrained region ViT weights (optional).
     """
 
     def __init__(
@@ -295,7 +293,6 @@ class HIPT(Aggregator):
         embed_dim_slide: int = 192,
         num_heads: int = 6,
         dropout: float = 0.25,
-        pretrained_region_weights: str | None = None,
     ) -> None:
         super().__init__()
 
@@ -320,9 +317,6 @@ class HIPT(Aggregator):
             num_heads=num_heads,
             drop_rate=dropout,
         )
-
-        if pretrained_region_weights is not None:
-            self._load_pretrained_region(pretrained_region_weights)
 
         # Global aggregation
         self.global_phi = nn.Sequential(
@@ -354,26 +348,6 @@ class HIPT(Aggregator):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
-
-    def _load_pretrained_region(self, path: str) -> None:
-        """Load pretrained weights for the region ViT."""
-        if not Path(path).is_file():
-            msg = f"Pretrained weights not found: {path}"
-            raise FileNotFoundError(msg)
-
-        state_dict = torch.load(path, weights_only=True, map_location="cpu")
-        # Handle DINO-style checkpoints
-        if "teacher" in state_dict:
-            state_dict = state_dict["teacher"]
-        state_dict = {
-            k.replace("module.", "").replace("backbone.", ""): v
-            for k, v in state_dict.items()
-        }
-        # Only load matching keys
-        model_dict = self.vit_region.state_dict()
-        filtered = {k: v for k, v in state_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
-        model_dict.update(filtered)
-        self.vit_region.load_state_dict(model_dict)
 
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
         """Forward pass.

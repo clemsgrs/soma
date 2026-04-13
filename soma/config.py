@@ -187,7 +187,7 @@ class PipelineConfig:
         aggregator: MIL aggregator configuration for slide-level bag
             learning, or ``None`` for tile/patient pipelines.
         task: Task-head configuration. Required.
-        eval: Metric and subgroup evaluation configuration.
+        evaluation: Metric and subgroup evaluation configuration.
         training: Training hyperparameters.
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
@@ -202,7 +202,7 @@ class PipelineConfig:
     encoder: EncoderConfig | None = None
     aggregator: AggregatorConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
-    eval: EvalConfig = field(default_factory=EvalConfig)
+    evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     tags: list[str] = field(default_factory=list)
@@ -227,7 +227,7 @@ class PipelineConfig:
                 "patient-level pipelines use a pretrained patient encoder, not a trainable aggregator."
             )
         # Validate that requested metrics are valid for the task family.
-        resolve_metrics(self.task.name, self.eval.metrics)
+        resolve_metrics(self.task.name, self.evaluation.metrics)
 
 
 # --- YAML serialization ---
@@ -281,12 +281,12 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig:
     return TaskConfig(name=task_data["name"], params=task_data.get("params", {}))
 
 
-def _load_eval_config(data: dict[str, Any]) -> EvalConfig:
-    eval_data = data.get("eval", {})
-    subgroup_data = eval_data.get("subgroups", {})
+def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
+    evaluation_data = data.get("evaluation", {})
+    subgroup_data = evaluation_data.get("subgroups", {})
     columns = subgroup_data.get("columns", []) if subgroup_data else []
     return EvalConfig(
-        metrics=eval_data.get("metrics", []),
+        metrics=evaluation_data.get("metrics", []),
         subgroups=SubgroupConfig(columns=columns),
     )
 
@@ -305,7 +305,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
         task=_load_task_config(data),
-        eval=_load_eval_config(data),
+        evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**data.get("training", {})),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         tags=data.get("tags", []),

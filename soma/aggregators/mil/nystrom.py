@@ -1,7 +1,6 @@
 """Nystrom attention and transformer layer.
 
-Adapted from torchmil (Apache 2.0), which is based on the Nystromformer
-paper (Xiong et al., 2021) and lucidrains/nystrom-attention.
+Adapted from lucidrains/nystrom-attention.
 
 All einops operations replaced with standard PyTorch ops.
 """

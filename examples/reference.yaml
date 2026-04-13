@@ -141,7 +141,7 @@ task:
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
-eval:
+evaluation:
   # Metrics computed at the end of each fold.
   # Valid values per task:
   #   binary_classification:     accuracy, balanced_accuracy, auroc, auprc,

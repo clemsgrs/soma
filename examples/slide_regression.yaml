@@ -25,7 +25,7 @@ aggregator:
 task:
   name: regression
 
-eval:
+evaluation:
   metrics:
     - mae
     - r2

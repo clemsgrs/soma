@@ -433,7 +433,7 @@ def _config_rows(cfg: dict) -> list[tuple[str, str]]:
         return str(obj) if obj is not None else default
 
     rows.append(("Task", _get(cfg, "task", "name")))
-    rows.append(("Metrics", ", ".join(cfg.get("eval", {}).get("metrics") or ["(defaults)"])))
+    rows.append(("Metrics", ", ".join(cfg.get("evaluation", {}).get("metrics") or ["(defaults)"])))
 
     encoder = cfg.get("encoder")
     if encoder:

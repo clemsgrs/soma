@@ -75,7 +75,7 @@ def _make_run_dir(
         "splits_csv": "/data/splits.csv",
         "output_root": "/output",
         "task": {"name": task_name, "params": {}},
-        "eval": {"metrics": metrics or [], "subgroups": {"columns": []}},
+        "evaluation": {"metrics": metrics or [], "subgroups": {"columns": []}},
         "encoder": None,
         "aggregator": {"name": "abmil", "params": {}},
         "training": {
@@ -221,7 +221,7 @@ def test_load_run_data_missing_history(tmp_path: Path) -> None:
 
 
 def test_load_run_data_resolves_default_metrics(tmp_path: Path) -> None:
-    """When eval.metrics is empty, load_run_data uses default metrics for the family."""
+    """When evaluation.metrics is empty, load_run_data uses default metrics for the family."""
     run_dir = _make_run_dir(tmp_path, task_name="binary_classification", metrics=[])
     run_data = load_run_data(run_dir)
 
@@ -230,7 +230,7 @@ def test_load_run_data_resolves_default_metrics(tmp_path: Path) -> None:
 
 
 def test_load_run_data_uses_user_metrics(tmp_path: Path) -> None:
-    """When eval.metrics is set, only those metrics are in run_data.metrics."""
+    """When evaluation.metrics is set, only those metrics are in run_data.metrics."""
     run_dir = _make_run_dir(
         tmp_path, task_name="binary_classification", metrics=["auroc", "f1"]
     )
@@ -298,7 +298,7 @@ def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
         output_root="/output",
         dataset_type="slide",
         task=TaskConfig(name="binary_classification"),
-        eval=EvalConfig(metrics=["auroc"]),
+        evaluation=EvalConfig(metrics=["auroc"]),
         training=TrainingConfig(seed=42),
         aggregator=AggregatorConfig(name="abmil"),
     )

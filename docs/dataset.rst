@@ -1,0 +1,36 @@
+Dataset and splits
+==================
+
+The first thing ``soma`` needs is a pair of CSV manifests:
+
+- ``dataset.csv`` describes the samples, labels, and optional metadata.
+- ``splits.csv`` assigns each sample to a fold and split.
+
+These files are the contract between your data and the pipeline. They are
+validated when the dataset and splits are loaded, and they define which samples
+are used for training, tuning, and testing.
+
+Dataset format
+--------------
+
+``dataset.csv``
+  | Required columns: ``sample_id``, ``image_path``, ``label``.
+  | Optional columns: ``mask_path`` (pre-computed tissue mask), ``patient_id`` (required for ``dataset_type="patient"``).
+  | Any additional columns are carried along as per-sample metadata.
+
+Splits format
+-------------
+
+``splits.csv``
+  | Required columns: ``fold``, ``sample_id``, ``split``.
+  | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
+
+Practical notes
+---------------
+
+- Keep ``sample_id`` stable across both files.
+- Use ``patient_id`` when you want patient-level evaluation or aggregation.
+- Prefer explicit test split names when you have more than one held-out cohort.
+
+For a quick example of how these manifests fit into a full run, see
+:doc:`getting-started`.

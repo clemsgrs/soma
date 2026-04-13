@@ -13,7 +13,7 @@ def test_pyproject_has_publish_ready_metadata():
     assert project["version"] == "0.1.0"
     assert project["license"] == {"file": "LICENSE"}
     assert project["authors"] == [
-        {"name": "Clement Grisi", "email": "clement.grisi@radboudumc.nl"}
+        {"name": "Clément Grisi", "email": "clement.grisi@radboudumc.nl"}
     ]
     assert "classifiers" in project
     assert any("slide2vec" in dep for dep in project["dependencies"])

@@ -1,4 +1,4 @@
-"""Gated attention pooling — adapted from torchmil (Apache 2.0).
+"""Gated attention pooling
 
 Core building block for ABMIL and CLAM. Not an Aggregator itself — used
 internally by MIL aggregator modules.
@@ -30,8 +30,6 @@ class AttentionPool(nn.Module):
 
     Computes z = X^T @ softmax(MLP(X)), where MLP is a two-layer network
     with optional gating.
-
-    Adapted from torchmil (Apache 2.0).
 
     Args:
         input_dim: Feature dimension of input tiles.

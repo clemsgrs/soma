@@ -1,9 +1,5 @@
 """DTFD-MIL — Double-Tier Feature Distillation MIL (Zhang et al., 2022).
 
-Adapted from torchmil (Apache 2.0). Unlike torchmil's monolithic DTFDMIL,
-this is a pure aggregator (no bag classifier, no loss). The classifier lives
-in TaskHead, making DTFD-MIL composable with any task.
-
 The two-tier mechanism:
 1. Randomly partition bag into pseudo-bags.
 2. Tier 1: AttentionPool each pseudo-bag, compute Grad-CAM importance.

@@ -61,7 +61,7 @@ Configuration dataclasses
      - ``enabled``, ``cmap``, ``alpha``, ``blur_sigma``
      - Attention heatmap rendering
    * - ``PipelineConfig``
-     - ``dataset_csv``, ``splits_csv``, ``output_root``, ``dataset_type``, ``preprocessing``, ``cache``, ``encoder``, ``aggregator``, ``task``, ``eval``, ``training``, ``heatmaps``, ``tags``
+     - ``dataset_csv``, ``splits_csv``, ``output_root``, ``dataset_type``, ``preprocessing``, ``cache``, ``encoder``, ``aggregator``, ``task``, ``evaluation``, ``training``, ``heatmaps``, ``tags``
      - Complete experiment specification
 
 Aggregator registry
@@ -77,39 +77,39 @@ Aggregator registry
    * - ``mean_pool``
      - ``MeanPool``
      - ``input_dim``
-     - Baseline pooling
+     - Baseline pooling; ``input_dim`` is injected from the feature store
    * - ``max_pool``
      - ``MaxPool``
      - ``input_dim``
-     - Baseline pooling
+     - Baseline pooling; ``input_dim`` is injected from the feature store
    * - ``abmil``
      - ``ABMIL``
      - ``input_dim``, ``hidden_dim``, ``activation``, ``gated``, ``dropout``
-     - Attention MIL
+     - Attention MIL; ``input_dim`` is injected from the feature store
    * - ``clam_sb``
      - ``CLAM_SB``
      - ``input_dim``, ``hidden_dim``, ``attn_dim``, ``gated``, ``dropout``, ``k_sample``, ``n_classes``, ``inst_loss``, ``use_negative_class_instance_loss``, ``bag_weight``, ``instance_loss_mode``, ``low_attention_weight``, ``topk_target_weight``
-     - General-purpose CLAM
+     - General-purpose CLAM; ``input_dim`` is injected from the feature store
    * - ``clam_mb``
      - ``CLAM_MB``
      - ``input_dim``, ``hidden_dim``, ``attn_dim``, ``gated``, ``dropout``, ``k_sample``, ``n_classes``, ``inst_loss``, ``use_negative_class_instance_loss``, ``bag_weight``
-     - Multi-branch classification only
+     - Multi-branch classification only; ``input_dim`` is injected from the feature store
    * - ``dsmil``
      - ``DSMIL``
      - ``input_dim``, ``att_dim``, ``nonlinear_q``, ``nonlinear_v``, ``dropout``
-     - Dual-stream MIL
+     - Dual-stream MIL; ``input_dim`` is injected from the feature store
    * - ``dtfdmil``
      - ``DTFDMIL``
      - ``input_dim``, ``hidden_dim``, ``n_groups``, ``distill_mode``, ``dropout``
-     - Two-stage distillation MIL
+     - Two-stage distillation MIL; ``input_dim`` is injected from the feature store
    * - ``hipt``
      - ``HIPT``
-     - ``input_dim``, ``region_size``, ``patch_size``, ``embed_dim_region``, ``embed_dim_slide``, ``num_heads``, ``dropout``, ``pretrained_region_weights``
-     - Hierarchical aggregation
+     - ``input_dim``, ``region_size``, ``patch_size``, ``embed_dim_region``, ``embed_dim_slide``, ``num_heads``, ``dropout``
+     - Hierarchical aggregation; ``input_dim`` is injected from the feature store
    * - ``transmil``
      - ``TransMIL``
      - ``input_dim``, ``att_dim``, ``n_layers``, ``n_heads``, ``n_landmarks``, ``pinv_iterations``, ``dropout``, ``use_mlp``
-     - Transformer MIL
+     - Transformer MIL; ``input_dim`` is injected from the feature store
 
 Task registry
 -------------

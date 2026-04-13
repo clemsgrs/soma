@@ -10,9 +10,8 @@ from soma.aggregators.registry import aggregator_registry
 
 
 class MeanPool(Aggregator):
-    """Masked mean pooling over tile features.
-
-    Adapted from torchmil (Apache 2.0). No attention — returns tile_attention=None.
+    """
+    Masked mean pooling over tile features.
     """
 
     def __init__(self, input_dim: int) -> None:
@@ -34,9 +33,8 @@ class MeanPool(Aggregator):
 
 
 class MaxPool(Aggregator):
-    """Masked max pooling over tile features.
-
-    Adapted from torchmil (Apache 2.0). No attention — returns tile_attention=None.
+    """
+    Masked max pooling over tile features.
     """
 
     def __init__(self, input_dim: int) -> None:

@@ -136,7 +136,7 @@ def train_one_fold(
     fold_dir: str | Path,
     *,
     dataset_type: str = "slide",
-    eval: EvalConfig | None = None,
+    evaluation: EvalConfig | None = None,
     aggregator: AggregatorConfig | None = None,
     fold: int = 0,
     preprocessing: PreprocessingConfig | None = None,
@@ -153,7 +153,7 @@ def train_one_fold(
         aggregator: Aggregator configuration, or None for slide-level or
             tile-dataset features.
         task: Task head configuration.
-        eval: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
+        evaluation: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
         training: Training loop configuration.
         fold_dir: Directory for checkpoint, metrics, predictions.
         fold: Fold index (for FoldResult metadata).
@@ -163,7 +163,7 @@ def train_one_fold(
     Returns:
         FoldResult with training result + tune/test evaluation reports.
     """
-    eval = eval or EvalConfig()
+    evaluation = evaluation or EvalConfig()
     fold_dir = Path(fold_dir)
     fold_dir.mkdir(parents=True, exist_ok=True)
 
@@ -255,9 +255,9 @@ def train_one_fold(
     logger.info(summary)
 
     # Validate subgroup columns exist in dataset metadata
-    if eval.subgroups.columns:
+    if evaluation.subgroups.columns:
         sample = next(iter(dataset.samples.values()))
-        missing = [c for c in eval.subgroups.columns if c not in sample.metadata]
+        missing = [c for c in evaluation.subgroups.columns if c not in sample.metadata]
         if missing:
             raise ValueError(
                 f"Subgroup column(s) not found in dataset metadata: {missing}. "
@@ -265,7 +265,7 @@ def train_one_fold(
             )
 
     task_cls = task_registry.get(task.name)
-    task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": eval.metrics}
+    task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
 
     # Derive label encoding from the task head class
     label_dtype = task_cls.label_dtype
@@ -503,17 +503,17 @@ def train_one_fold(
     _save_training_history(train_result.history, fold_dir / "training_history.json")
 
     task_family = task.name
-    resolved_metrics = resolve_metrics(task_family, eval.metrics)
+    resolved_metrics = resolve_metrics(task_family, evaluation.metrics)
     for split_name, test_report in test_reports.items():
         predictions_path = fold_dir / f"predictions_{split_name}.csv"
-        subgroup_data = _build_subgroup_data(dataset, test_report, eval.subgroups.columns)
+        subgroup_data = _build_subgroup_data(dataset, test_report, evaluation.subgroups.columns)
         _save_predictions(test_report, predictions_path, subgroup_data=subgroup_data)
 
         # Save subgroup metrics when subgroup columns are configured
-        if eval.subgroups.columns:
+        if evaluation.subgroups.columns:
             predictions_df = _build_predictions_df(test_report, subgroup_data)
-            sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
-            sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, eval.subgroups.columns)
+            sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, evaluation.subgroups.columns)
+            sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, evaluation.subgroups.columns)
             sg_out: dict = {"metrics": sg_metrics, "stats": sg_stats}
             (fold_dir / f"subgroup_metrics_{split_name}.json").write_text(json.dumps(sg_out, indent=2))
 
@@ -533,7 +533,7 @@ def train(
     training: TrainingConfig,
     run_dir: str | Path,
     aggregator: AggregatorConfig | None = None,
-    eval: EvalConfig | None = None,
+    evaluation: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
     dataset_type: str = "slide",
@@ -549,7 +549,7 @@ def train(
         aggregator: Aggregator configuration, or None for slide-level or
             tile-dataset features.
         task: Task head configuration.
-        eval: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
+        evaluation: Evaluation configuration (metrics, subgroups). Defaults to EvalConfig().
         training: Training loop configuration.
         run_dir: Root directory — each fold gets a fold_N/ subdirectory.
         heatmaps: When provided and enabled, attention scores are captured
@@ -573,7 +573,7 @@ def train(
             dataset_type=dataset_type,
             aggregator=aggregator,
             task=task,
-            eval=eval,
+            evaluation=evaluation,
             training=training,
             fold_dir=run_dir / f"fold_{fold_idx}",
             fold=fold_idx,
@@ -775,7 +775,7 @@ class Pipeline:
                 dataset_type=self._config.dataset_type,
                 aggregator=self._config.aggregator,
                 task=self._config.task,
-                eval=self._config.eval,
+                evaluation=self._config.evaluation,
                 training=self._config.training,
                 run_dir=layout.run_dir,
                 preprocessing=preprocessing,

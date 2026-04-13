@@ -69,7 +69,7 @@ def _make_run_dir(
         "splits_csv": "/data/splits.csv",
         "output_root": "/output",
         "task": {"name": "binary_classification", "params": {}},
-        "eval": {
+        "evaluation": {
             "metrics": ["auroc"],
             "subgroups": {
                 "columns": subgroup_columns or [],
@@ -280,7 +280,7 @@ def test_subgroup_column_validation_raises_for_missing_column(tmp_path: Path) ->
             dataset=dataset,
             fold_split=fold_split,
             task=TaskConfig(name="binary_classification"),
-            eval=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
+            evaluation=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
 
             training=TrainingConfig(seed=0, epochs=1),
             fold_dir=tmp_path / "fold_0",

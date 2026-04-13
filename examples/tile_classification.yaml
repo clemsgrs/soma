@@ -24,7 +24,7 @@ aggregator: null
 task:
   name: binary_classification
 
-eval:
+evaluation:
   metrics:
     - auroc
     - balanced_accuracy

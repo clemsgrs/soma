@@ -88,9 +88,9 @@ def save_attention(
         return
 
     task_cfg = config.task
-    eval_cfg = config.eval
+    evaluation_cfg = config.evaluation
     task_cls = task_registry.get(task_cfg.name)
-    task_params = {**task_cls.auto_params(dataset), **task_cfg.params, "metrics": eval_cfg.metrics}
+    task_params = {**task_cls.auto_params(dataset), **task_cfg.params, "metrics": evaluation_cfg.metrics}
     feature_dim = feature_store.feature_dim
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

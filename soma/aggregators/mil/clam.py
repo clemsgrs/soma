@@ -1,8 +1,7 @@
 """CLAM aggregators — reference-style CLAM-SB and CLAM-MB.
 
-These implementations follow the original CLAM repository more closely than
-the previous torchmil-inspired soma version while preserving soma's
-aggregator + task-head architecture.
+These implementations follow the original CLAM repository closely
+while preserving soma's aggregator + task-head architecture.
 """
 
 from __future__ import annotations

@@ -1,8 +1,5 @@
-"""ABMIL — Attention-Based Multiple Instance Learning (Ilse et al., 2018).
-
-Adapted from torchmil (Apache 2.0). Unlike torchmil's monolithic ABMIL,
-this is a pure aggregator (no classifier, no loss). The classifier lives
-in TaskHead, making ABMIL composable with any task.
+"""
+ABMIL — Attention-Based Multiple Instance Learning (Ilse et al., 2018).
 """
 
 from __future__ import annotations
