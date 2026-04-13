@@ -125,15 +125,15 @@ def build_reference_rst() -> str:
     ]
 
     aggregator_notes = {
-        "mean_pool": "Baseline pooling; input_dim is injected from the feature store",
-        "max_pool": "Baseline pooling; input_dim is injected from the feature store",
-        "abmil": "Attention MIL; input_dim is injected from the feature store",
-        "clam_sb": "General-purpose CLAM; input_dim is injected from the feature store",
-        "clam_mb": "Multi-branch classification only; input_dim is injected from the feature store",
-        "dsmil": "Dual-stream MIL; input_dim is injected from the feature store",
-        "dtfdmil": "Two-stage distillation MIL; input_dim is injected from the feature store",
-        "hipt": "Hierarchical aggregation; input_dim is injected from the feature store",
-        "transmil": "Transformer MIL; input_dim is injected from the feature store",
+        "mean_pool": "Baseline pooling; ``input_dim`` is injected from the feature store",
+        "max_pool": "Baseline pooling; ``input_dim`` is injected from the feature store",
+        "abmil": "Attention MIL; ``input_dim`` is injected from the feature store",
+        "clam_sb": "General-purpose CLAM; ``input_dim`` is injected from the feature store",
+        "clam_mb": "Multi-branch classification only; ``input_dim`` is injected from the feature store",
+        "dsmil": "Dual-stream MIL; ``input_dim`` is injected from the feature store",
+        "dtfdmil": "Two-stage distillation MIL; ``input_dim`` is injected from the feature store",
+        "hipt": "Hierarchical aggregation; ``input_dim`` is injected from the feature store",
+        "transmil": "Transformer MIL; ``input_dim`` is injected from the feature store",
     }
 
     task_notes = {
