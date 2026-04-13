@@ -61,7 +61,7 @@ Configuration dataclasses
      - ``enabled``, ``cmap``, ``alpha``, ``blur_sigma``
      - Attention heatmap rendering
    * - ``PipelineConfig``
-     - ``dataset_csv``, ``splits_csv``, ``output_root``, ``dataset_type``, ``preprocessing``, ``cache``, ``encoder``, ``aggregator``, ``task``, ``eval``, ``training``, ``heatmaps``, ``tags``
+     - ``dataset_csv``, ``splits_csv``, ``output_root``, ``dataset_type``, ``preprocessing``, ``cache``, ``encoder``, ``aggregator``, ``task``, ``evaluation``, ``training``, ``heatmaps``, ``tags``
      - Complete experiment specification
 
 Aggregator registry

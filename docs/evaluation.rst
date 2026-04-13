@@ -47,7 +47,7 @@ for each distinct value in the selected columns.
 
 .. code-block:: yaml
 
-   eval:
+   evaluation:
      metrics: [auroc, balanced_accuracy]
      subgroups:
        columns: [center, grade]

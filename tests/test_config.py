@@ -93,7 +93,7 @@ def test_task_config_params_default_empty():
     assert cfg.params == {}
 
 
-def test_eval_config_defaults():
+def test_evaluation_config_defaults():
     cfg = EvalConfig()
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
@@ -110,7 +110,7 @@ def test_pipeline_config_defaults_to_no_aggregator():
     assert cfg.aggregator is None
 
 
-def test_eval_config_metrics_explicit():
+def test_evaluation_config_metrics_explicit():
     cfg = EvalConfig(metrics=["auroc", "f1"])
     assert cfg.metrics == ["auroc", "f1"]
 
@@ -207,7 +207,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name
     assert loaded.task.params == original.task.params
-    assert loaded.eval.metrics == original.eval.metrics
+    assert loaded.evaluation.metrics == original.evaluation.metrics
     assert loaded.training.epochs == original.training.epochs
     assert loaded.training.learning_rate == original.training.learning_rate
     assert loaded.tags == original.tags
@@ -253,25 +253,25 @@ def test_save_config_produces_valid_yaml(tmp_path: Path):
     assert raw["aggregator"]["params"]["hidden_dim"] == 128
 
 
-def test_eval_metrics_roundtrip(tmp_path: Path):
-    cfg = _make_pipeline_config(eval=EvalConfig(metrics=["auroc_macro", "f1_macro"]))
+def test_evaluation_metrics_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(evaluation=EvalConfig(metrics=["auroc_macro", "f1_macro"]))
     yaml_path = tmp_path / "config.yaml"
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
-    assert loaded.eval.metrics == ["auroc_macro", "f1_macro"]
+    assert loaded.evaluation.metrics == ["auroc_macro", "f1_macro"]
 
 
-def test_eval_metrics_empty_roundtrip(tmp_path: Path):
+def test_evaluation_metrics_empty_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config()
     yaml_path = tmp_path / "config.yaml"
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
-    assert loaded.eval.metrics == []
+    assert loaded.evaluation.metrics == []
 
 
-def test_eval_subgroups_roundtrip(tmp_path: Path):
+def test_evaluation_subgroups_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
-        eval=EvalConfig(
+        evaluation=EvalConfig(
             metrics=["auroc_macro"],
             subgroups=SubgroupConfig(columns=["sex", "grade"]),
         )
@@ -279,7 +279,7 @@ def test_eval_subgroups_roundtrip(tmp_path: Path):
     yaml_path = tmp_path / "config.yaml"
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
-    assert loaded.eval.subgroups.columns == ["sex", "grade"]
+    assert loaded.evaluation.subgroups.columns == ["sex", "grade"]
 
 
 def test_load_config_with_tags(tmp_path: Path):
@@ -403,6 +403,7 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
         encoder=EncoderConfig(name="uni2"),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
         task=TaskConfig(name="multiclass_classification", params={"num_classes": 3}),
+        evaluation=EvalConfig(),
         training=TrainingConfig(epochs=100, learning_rate=2e-4),
         tags=["test"],
     )

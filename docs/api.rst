@@ -12,10 +12,12 @@ Main building blocks
 
    * - Page
      - Focus
+   * - :doc:`Dataset and splits <dataset>`
+     - CSV manifest schema and fold assignment rules
    * - :doc:`Pipeline <pipeline>`
      - End-to-end orchestration from manifests to reports
    * - :doc:`Preprocessing <preprocessing>`
-     - Tiling, spacing, and geometry
+     - Tissue segmentation and slide tiling at a given spacing
    * - :doc:`Encoders <encoders>`
      - Feature extraction backends
    * - :doc:`Aggregators <aggregators>`
@@ -42,28 +44,42 @@ heads or aggregators against the same encoder output:
 
 .. code-block:: python
 
-   from soma import Dataset, Splits
-   from soma import FeatureExtractor, train
-   from soma import CacheConfig, EncoderConfig, AggregatorConfig, EvalConfig, TaskConfig, TrainingConfig
+   from soma import (
+       AggregatorConfig,
+       CacheConfig,
+       EncoderConfig,
+       FeatureExtractor,
+       TaskConfig,
+       TrainingConfig,
+       Dataset,
+       Splits,
+       train,
+   )
 
    dataset = Dataset("dataset.csv")
    splits = Splits("splits.csv", dataset)
+   encoder = EncoderConfig(name="uni2")
+   cache = CacheConfig(enabled=True, root_dir="shared/feature_cache")
 
    extractor = FeatureExtractor(
        dataset=dataset,
-       encoder=EncoderConfig(name="uni2"),
-       cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
+       encoder=encoder,
+       cache=cache,
        output_root="output",
    )
    store = extractor.extract(feature_dir="output/features/uni2")
+   task = TaskConfig(name="binary_classification")
+   training = TrainingConfig(epochs=50, learning_rate=1e-4)
+   abmil_aggregator = AggregatorConfig(name="abmil", params={"hidden_dim": 256})
+   clam_aggregator = AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128})
 
    abmil_result = train(
        feature_store=store,
        dataset=dataset,
        splits=splits,
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
+       task=task,
+       training=training,
+       aggregator=abmil_aggregator,
        run_dir="output/abmil/uni2",
    )
 
@@ -71,9 +87,9 @@ heads or aggregators against the same encoder output:
        feature_store=store,
        dataset=dataset,
        splits=splits,
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-       aggregator=AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128}),
+       task=task,
+       training=training,
+       aggregator=clam_aggregator,
        run_dir="output/clam_sb/uni2",
    )
 
@@ -83,15 +99,15 @@ upstream preprocessing and encoder settings do not change.
 Train with explicit evaluation settings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you want a more explicit evaluation contract, define the evaluation config
-up front and pass it through the pipeline or the lower-level training API.
+If you want a more explicit :doc:`evaluation contract <evaluation>`, define the evaluation
+config up front and pass it through the pipeline or the lower-level training API.
 Subgroup columns are included in the run outputs and summarized in the report:
 
 .. code-block:: python
 
    from soma import EvalConfig, SubgroupConfig
 
-   eval_config = EvalConfig(
+   evaluation = EvalConfig(
        metrics=["auroc", "balanced_accuracy", "f1"],
        subgroups=SubgroupConfig(columns=["center", "grade"]),
    )
@@ -100,26 +116,25 @@ Subgroup columns are included in the run outputs and summarized in the report:
        feature_store=store,
        dataset=dataset,
        splits=splits,
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-       eval=eval_config,
+       task=task,
+       training=training,
+       aggregator=aggregator,
+       evaluation=evaluation,
        run_dir="output/abmil/uni2",
    )
 
 Generate a report for one run
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use ``generate_report`` when you have a saved run directory on disk, or
-``generate_report_from_result`` when you still have the in-memory result and
-config object:
+Use ``generate_report`` to generate a :doc:`report <reporting>` from saved artifacts,
+rendering key results (e.g., loss curves and evaluation metrics) in an HTML view:
 
 .. code-block:: python
 
    from soma.reporting import generate_report, generate_report_from_result
 
-   report_path = generate_report("output/abmil/uni2")
-   report_path = generate_report_from_result(result, config)
+   report_dir = "output/abmil/uni2"
+   report_path = generate_report(report_dir)
 
 Compare multiple runs
 ~~~~~~~~~~~~~~~~~~~~~
@@ -130,9 +145,12 @@ Use ``compare_runs`` to generate a cross-run comparison report:
 
    from soma.reporting import compare_runs
 
+   abmil_run_dir = "output/abmil/uni2"
+   transmil_run_dir = "output/transmil/uni2"
+
    comparison_path = compare_runs(
-       ["output/abmil/uni2", "output/clam_sb/uni2"],
-       labels=["ABMIL", "CLAM-SB"],
+       [abmil_run_dir, transmil_run_dir],
+       labels=["ABMIL", "TransMIL"],
    )
 
 For more detail on what the generated HTML report contains, how subgroup
@@ -142,24 +160,28 @@ analysis is summarized, and how comparison statistics are computed, see the
 Enable heatmaps when you want attention overlays
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Attention heatmaps are controlled through ``PipelineConfig.heatmaps``. This is
-most useful for attention-based aggregators that expose per-tile scores:
+Attention heatmaps are controlled through ``HeatmapConfig`` and passed through
+``train(...)``. This is most useful for attention-based aggregators that
+expose per-tile scores. The saved overlays and raw attention scores are
+documented in :doc:`outputs`:
 
 .. code-block:: python
 
-   from soma import AggregatorConfig, EvalConfig, HeatmapConfig, Pipeline, PipelineConfig, TaskConfig, TrainingConfig, EncoderConfig
+   from soma import HeatmapConfig
 
-   config = PipelineConfig(
-       dataset_csv="dataset.csv",
-       splits_csv="splits.csv",
-       output_root="output",
-       dataset_type="slide",
-       encoder=EncoderConfig(name="uni2"),
-       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-       eval=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
-       heatmaps=HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5),
+   heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
+
+   result = train(
+       feature_store=store,
+       dataset=dataset,
+       splits=splits,
+       task=task,
+       training=training,
+       aggregator=aggregator,
+       evaluation=evaluation,
+       heatmaps=heatmaps,
+       run_dir="output/abmil/uni2",
    )
 
-   result = Pipeline(config).run()
+   # attention scores land in fold_N/attention/
+   # rendered attention overlays in fold_N/heatmaps/

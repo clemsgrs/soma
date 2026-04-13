@@ -66,7 +66,7 @@ Set :attr:`soma.config.SubgroupConfig.columns` to a list of column names in
 
 .. code-block:: yaml
 
-   eval:
+   evaluation:
      subgroups:
        columns: [center, grade]
 

@@ -171,8 +171,8 @@ def load_run_data(run_dir: str | Path) -> RunData:
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
 
     task_family = config["task"]["name"]
-    metrics = resolve_metrics(task_family, config.get("eval", {}).get("metrics") or [])
-    subgroup_columns = list(config.get("eval", {}).get("subgroups", {}).get("columns") or [])
+    metrics = resolve_metrics(task_family, config.get("evaluation", {}).get("metrics") or [])
+    subgroup_columns = list(config.get("evaluation", {}).get("subgroups", {}).get("columns") or [])
 
     folds = []
     fold_dirs = sorted(
@@ -240,8 +240,8 @@ def run_data_from_result(
         RunData ready for report rendering.
     """
     task_family = config.task.name
-    metrics = resolve_metrics(task_family, config.eval.metrics)
-    subgroup_columns = list(config.eval.subgroups.columns)
+    metrics = resolve_metrics(task_family, config.evaluation.metrics)
+    subgroup_columns = list(config.evaluation.subgroups.columns)
 
     config_dict = _config_to_dict(config)
 
