@@ -1,4 +1,4 @@
-Pipeline Overview
+Pipeline
 =================
 
 The pipeline is the orchestration layer for an experiment:
@@ -28,7 +28,8 @@ Dataset types
      - Aggregator
    * - ``slide``
      - Whole-slide pipeline with optional MIL aggregation
-     - Required for MIL, ``None`` for direct slide heads
+     - | Required for MIL
+       | ``None`` for direct slide heads
    * - ``tile``
      - Patch-level classification/regression
      - Must be ``None``

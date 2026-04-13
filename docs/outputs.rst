@@ -5,6 +5,9 @@ Each pipeline run writes a self-contained bundle beneath ``output_root``.
 The bundle captures the resolved configuration, fold-level artifacts, and the
 metrics needed to compare experiments reproducibly.
 
+The shared cache, which stores reusable upstream artifacts such as tiling and
+feature extraction, is documented separately in :doc:`caching`.
+
 Run directory contents
 ----------------------
 
@@ -63,9 +66,8 @@ summary tables, ROC/PR curves, confusion matrices (classification), scatter and
 residual plots (regression), loss curves, and training timing. The report is
 written to the run directory as ``report.html``.
 
-Cache versus run outputs
-------------------------
+Run directory vs cache
+----------------------
 
-The shared cache stores reusable upstream artifacts such as tiling and feature
-extraction. The run directory stores the outcome of one specific experiment and
-should be treated as immutable once the run completes.
+The run directory stores the outcome of one specific experiment and should be
+treated as immutable once the run completes.

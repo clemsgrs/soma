@@ -3,6 +3,8 @@ Reporting
 
 Every completed run automatically produces an HTML report. The reporting
 module also supports multi-run comparison and per-subgroup statistical analysis.
+This is the detailed guide for report contents, subgroup breakdowns, and
+comparison statistics.
 
 HTML reports
 ------------

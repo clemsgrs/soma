@@ -29,31 +29,42 @@ Available presets
      - Description
      - Main knobs
    * - ``mean_pool``
-     - Unweighted mean of all tile features; baseline with no learnable parameters beyond the task head
+     - | Unweighted mean of all tile features
+       | Baseline with no learnable parameters beyond the task head
      - none beyond ``input_dim``
    * - ``max_pool``
-     - Element-wise max over tile features; baseline with no learnable parameters beyond the task head
+     - | Element-wise max over tile features
+       | Baseline with no learnable parameters beyond the task head
      - none beyond ``input_dim``
    * - ``abmil``
-     - Gated attention pooling (Ilse et al., 2018); standard first choice for slide-level classification and regression
+     - | Gated attention pooling (Ilse et al., 2018)
+       | Standard first choice for slide-level classification and regression
      - ``hidden_dim``, ``activation``, ``gated``, ``dropout``
    * - ``clam_sb``
-     - Single-branch CLAM (Lu et al., 2021); adds instance-level supervision with a small tile classifier trained jointly with the bag classifier
+     - | Single-branch CLAM (Lu et al., 2021)
+       | Adds instance-level supervision with a small tile classifier trained jointly with the bag classifier
      - ``hidden_dim``, ``attn_dim``, ``gated``, ``dropout``, ``k_sample``, ``n_classes``, ``inst_loss``, ``use_negative_class_instance_loss``, ``bag_weight``, ``instance_loss_mode``, ``low_attention_weight``, ``topk_target_weight``
    * - ``clam_mb``
-     - Multi-branch CLAM (Lu et al., 2021); one attention branch per class; classification only
+     - | Multi-branch CLAM (Lu et al., 2021)
+       | One attention branch per class; classification only
      - ``hidden_dim``, ``attn_dim``, ``gated``, ``dropout``, ``k_sample``, ``n_classes``, ``inst_loss``, ``use_negative_class_instance_loss``, ``bag_weight``
    * - ``dsmil``
-     - Dual-stream MIL (Li et al., 2021); critical-instance query-key attention between a bag-level stream and a max-pooling stream
+     - | Dual-stream MIL (Li et al., 2021)
+       | Critical-instance query-key attention between a bag-level stream and a max-pooling stream
      - ``att_dim``, ``nonlinear_q``, ``nonlinear_v``, ``dropout``
    * - ``dtfdmil``
-     - Double-tier feature distillation MIL (Zhang et al., 2022); groups tiles into pseudo-bags and uses Grad-CAM distillation between tiers
+     - | Double-tier feature distillation MIL (Zhang et al., 2022)
+       | Groups tiles into pseudo-bags and uses Grad-CAM distillation between tiers
      - ``hidden_dim``, ``n_groups``, ``distill_mode``, ``dropout``
    * - ``transmil``
-     - Transformer MIL (Shao et al., 2021); uses Nystromformer self-attention with PPEG positional encoding; effective on large bags
+     - | Transformer MIL (Shao et al., 2021)
+       | Uses Nystromformer self-attention with PPEG positional encoding
+       | Effective on large bags
      - ``att_dim``, ``n_layers``, ``n_heads``, ``n_landmarks``, ``pinv_iterations``, ``dropout``, ``use_mlp``
    * - ``hipt``
-     - Hierarchical image pyramid transformer (Chen et al., 2022); processes tiles within regions, then regions within slides; requires hierarchical tiling
+     - | Hierarchical image pyramid transformer (Chen et al., 2022)
+       | Processes tiles within regions, then regions within slides
+       | Requires hierarchical tiling
      - ``region_size``, ``patch_size``, ``embed_dim_region``, ``embed_dim_slide``, ``num_heads``, ``dropout``, ``pretrained_region_weights``
 
 CLAM notes

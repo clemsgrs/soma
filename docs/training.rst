@@ -1,9 +1,9 @@
-Training and Evaluation
-=======================
+Training
+========
 
 Training takes the selected feature representation and fits the task head.
-The main knobs are learning rate, epochs, patience, optimizer, and batch
-behavior.
+The main knobs are learning rate, epochs, patience, optimizer, scheduler, and
+batch behavior.
 
 The main configuration object is :class:`soma.config.TrainingConfig`.
 
@@ -47,8 +47,8 @@ Practical defaults
      - ``1``
      - Effective batch size multiplier
 
-When tuning, keep the task metric contract stable before sweeping optimizer
-details.
+When tuning, keep the task and evaluation contract stable before sweeping
+optimizer details.
 
 Live training summary
 ---------------------

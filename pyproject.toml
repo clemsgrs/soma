@@ -9,7 +9,7 @@ description = "Modular experimentation framework for computational pathology"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Clement Grisi", email = "clement.grisi@radboudumc.nl" },
+    { name = "Clément Grisi", email = "clement.grisi@radboudumc.nl" },
 ]
 keywords = ["computational-pathology", "whole-slide-images", "mil", "pytorch", "research"]
 classifiers = [
