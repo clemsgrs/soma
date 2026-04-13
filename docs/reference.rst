@@ -4,6 +4,29 @@ Compact Parameter Reference
 This page is generated from the public config dataclasses and component
 registries. It provides a compact index of the main public surfaces.
 
+Public API
+----------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Symbol
+     - Description
+   * - ``Pipeline``
+     - Orchestrates the full pipeline: extract → train all folds → summarize
+   * - ``train``
+     - Train and evaluate all folds, then summarize
+   * - ``Dataset``
+     - Load and validate dataset.csv
+   * - ``Splits``
+     - Load and validate splits.csv
+   * - ``FeatureExtractor``
+     - Delegates tile/slide feature extraction to slide2vec
+   * - ``FeatureStore``
+     - Index and load precomputed tile embeddings from disk
+   * - ``TileFeatureExtractor``
+     - Encode individual tile images into 1D feature vectors
+
 Configuration dataclasses
 -------------------------
 

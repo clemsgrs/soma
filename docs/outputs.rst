@@ -5,6 +5,9 @@ Each pipeline run writes a self-contained bundle beneath ``output_root``.
 The bundle captures the resolved configuration, fold-level artifacts, and the
 metrics needed to compare experiments reproducibly.
 
+The shared cache, which stores reusable upstream artifacts such as tiling and
+feature extraction, is documented separately in :doc:`caching`.
+
 Run directory contents
 ----------------------
 
@@ -47,9 +50,24 @@ scores under ``fold_N/attention/<sample_id>.npz`` and rendered overlays under
 ``fold_N/heatmaps/``. The rendered overlays can be regenerated with different
 visual settings without rerunning inference.
 
-Cache versus run outputs
-------------------------
+Aggregators that support attention extraction: ``abmil``, ``clam_sb``,
+``clam_mb``, ``dsmil``. Heatmaps are skipped for ``mean_pool``, ``max_pool``,
+``transmil``, ``dtfdmil``, and ``hipt``.
 
-The shared cache stores reusable upstream artifacts such as tiling and feature
-extraction. The run directory stores the outcome of one specific experiment and
-should be treated as immutable once the run completes.
+Heatmap appearance is controlled by :class:`soma.config.HeatmapConfig`:
+``cmap`` (colormap name, default ``jet``), ``alpha`` (overlay opacity),
+``blur_sigma`` (Gaussian blur radius in pixels).
+
+HTML report
+-----------
+
+Each run automatically generates an interactive HTML report containing metrics
+summary tables, ROC/PR curves, confusion matrices (classification), scatter and
+residual plots (regression), loss curves, and training timing. The report is
+written to the run directory as ``report.html``.
+
+Run directory vs cache
+----------------------
+
+The run directory stores the outcome of one specific experiment and should be
+treated as immutable once the run completes.

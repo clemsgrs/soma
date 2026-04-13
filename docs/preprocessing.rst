@@ -45,3 +45,15 @@ Guidance
 - Use larger spacing when the label depends on broader structure.
 - Prefer a small set of meaningful spacing values instead of arbitrary
   near-duplicates.
+
+Tissue mask preview
+-------------------
+
+:func:`soma.preprocessing.preview.render_preview` produces a combined
+visualization of the tissue mask and tiling grid given a
+:class:`hs2p.wsi.reader.SlideReader`, a binary tissue mask array, and a
+:class:`hs2p.preprocessing.TilingResult`. It returns a NumPy image array that
+can be saved with :func:`soma.preprocessing.preview.save_preview`.
+
+Use this during data exploration to verify that the segmentation threshold and
+tile size produce sensible results before committing to a full extraction run.

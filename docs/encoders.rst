@@ -11,27 +11,8 @@ The main configuration object is :class:`soma.config.EncoderConfig`.
 .. autoclass:: soma.config.EncoderConfig
    :members:
 
-Primary encoder fields
-----------------------
-
-.. list-table::
-   :header-rows: 1
-
-   * - Knob
-     - Why it matters
-   * - ``name``
-     - Changes the representation family entirely
-   * - ``spacing_um``
-     - Indicates the preset's native spacing
-   * - ``output_variant``
-     - Chooses among supported feature variants for some presets
-   * - ``batch_size``
-     - Trades speed for memory
-   * - ``input_size``
-     - Indicates the preset's native input geometry when applicable
-
-Supported presets
------------------
+Model Zoo
+---------
 
 Tile-level encoders
 ~~~~~~~~~~~~~~~~~~~
@@ -43,70 +24,78 @@ Tile-level encoders
      - Output dim
      - Spacing
      - Notes
-   * - ``uni``
-     - 1024
-     - ``0.5``
-     - UNI
-   * - ``uni2``
-     - 1536
-     - ``0.5``
-     - UNI2
-   * - ``virchow``
-     - 1280 / 2560
-     - ``0.5``
-     - Supports ``output_variant="cls"`` or ``"cls_patch_mean"``
-   * - ``virchow2``
-     - 1280 / 2560
-     - ``0.5``, ``1.0``, ``2.0``
-     - Supports ``output_variant="cls"`` or ``"cls_patch_mean"``
-   * - ``conch``
-     - 512
-     - ``0.5``
-     - CONCH
-   * - ``conchv15``
-     - 768
-     - ``0.5``
-     - CONCHv1.5
-   * - ``gigapath``
-     - 1536
-     - ``0.5``
-     - Alias: ``prov-gigapath``
-   * - ``h-optimus-0``
-     - 1536
-     - ``0.5``
-     - H-optimus-0
-   * - ``h-optimus-1``
-     - 1536
-     - ``0.5``
-     - H-optimus-1
-   * - ``h0-mini``
-     - 768 / 1536
-     - ``0.5``
-     - Supports ``output_variant="cls"`` or ``"cls_patch_mean"``
-   * - ``phikon``
-     - 768
-     - ``0.5``
-     - Phikon
-   * - ``phikonv2``
-     - 1024
-     - ``0.5``
-     - Phikon-v2
-   * - ``hibou-b``
-     - 768
-     - ``0.5``
-     - Hibou-B
-   * - ``hibou-l``
-     - 1024
-     - ``0.5``
-     - Hibou-L
-   * - ``midnight``
-     - 3072
-     - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Alias: ``kaiko-midnight``
    * - ``lunit``
      - 384
      - ``0.5``
-     - Tile backbone for MOOZY
+     - Kang et al. (2023)
+   * - ``phikon``
+     - 768
+     - ``0.5``
+     - Filiot et al. (2023)
+   * - ``conch``
+     - 512
+     - ``0.5``
+     - Lu et al. (2024)
+   * - ``conchv15``
+     - 768
+     - ``0.5``
+     - Lu et al. (2024)
+   * - ``hibou-b``
+     - 768
+     - ``0.5``
+     - Nechaev et al. (2024)
+   * - ``h0-mini``
+     - 768 / 1536
+     - ``0.5``
+     - Filiot et al. (2024)
+   * - ``uni``
+     - 1024
+     - ``0.5``
+     - Chen et al. (2024)
+   * - ``phikonv2``
+     - 1024
+     - ``0.5``
+     - Filiot et al. (2024)
+   * - ``hibou-l``
+     - 1024
+     - ``0.5``
+     - Nechaev et al. (2024)
+   * - ``musk``
+     - 1024 / 2048
+     - ``0.25``, ``0.5``, ``1.0``
+     - Xiang et al. (2024)
+   * - ``virchow``
+     - 1280 / 2560
+     - ``0.5``
+     - Vorontsov et al. (2024)
+   * - ``virchow2``
+     - 1280 / 2560
+     - ``0.5``, ``1.0``, ``2.0``
+     - Zimmermann et al. (2024)
+   * - ``uni2``
+     - 1536
+     - ``0.5``
+     - Chen et al. (2024)
+   * - ``gigapath``
+     - 1536
+     - ``0.5``
+     - Xu et al. (2024)
+   * - ``h-optimus-0``
+     - 1536
+     - ``0.5``
+     - Saillard et al. (2024)
+   * - ``h-optimus-1``
+     - 1536
+     - ``0.5``
+     - Saillard et al. (2024)
+   * - ``midnight``
+     - 3072
+     - ``0.25``, ``0.5``, ``1.0``, ``2.0``
+     - Karasikov et al. (2025)
+   * - ``prost40m``
+     - 384
+     - ``0.5``
+     - Grisi et al. (2026)
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~
@@ -121,19 +110,19 @@ Slide-level encoders
    * - ``gigapath-slide``
      - ``gigapath``
      - 768
-     - Uses slide-level token aggregation
-   * - ``prism``
-     - ``virchow`` (``cls_patch_mean``)
-     - 1280
-     - PRISM slide encoder
+     - Xu et al. (2024)
    * - ``titan``
      - ``conchv15``
      - 768
-     - TITAN slide encoder
+     - Ding et al. (2024)
+   * - ``prism``
+     - ``virchow`` (``cls_patch_mean``)
+     - 1280
+     - Shaikovski et al. (2024)
    * - ``moozy-slide``
      - ``lunit``
      - 768
-     - MOOZY slide encoder
+     - Kotp et al. (2026)
 
 Patient-level encoders
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -148,7 +137,7 @@ Patient-level encoders
    * - ``moozy``
      - ``lunit``
      - 768
-     - Patient-level transformer over slide features
+     - Kotp et al. (2026)
 
 Compatibility is enforced by the code and by ``PipelineConfig`` validation.
 Use this page to choose a valid starting point, then let the runtime validate

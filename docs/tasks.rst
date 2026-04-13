@@ -26,7 +26,8 @@ Task families
    * - ``multiclass_classification``
      - Cross-entropy
      - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
-     - Two or more classes; use ``binary_classification`` when the problem is strictly binary
+     - | Two or more classes
+       | Use ``binary_classification`` when the problem is strictly binary
    * - ``branch_aware_classification``
      - Cross-entropy
      - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``

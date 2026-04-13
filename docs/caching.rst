@@ -1,5 +1,5 @@
-Caching and Output Layout
-=========================
+Caching
+=======
 
 The cache keeps repeated experiments inexpensive. Treat it as shared
 infrastructure across sweeps, not as part of any single run.
@@ -24,20 +24,20 @@ What the cache stores
    * - Features
      - Yes, when encoder and geometry match
      - Avoids re-embedding the same data
-   * - Run outputs
-     - No
-     - Each experiment should still get a fresh result bundle
 
-Output layout
--------------
+Cache reuse rules
+-----------------
 
-The run directory contains the artifacts for a single experiment:
+The shared cache stores reusable upstream artifacts such as tiling and feature
+extraction.
 
-- saved config
-- fold checkpoints
-- predictions
-- metrics
-- summaries and HTML report
+- Tiling is reused when preprocessing matches.
+- Features are reused when the encoder and geometry match.
+- Cache hits do not replace the run directory, which still records one
+  immutable experiment result.
 
-Treat the cache as reusable infrastructure and the run directory as the
-immutable record of a specific experiment.
+See also
+--------
+
+Run-directory layout and experiment artifacts are documented in
+:doc:`outputs`.

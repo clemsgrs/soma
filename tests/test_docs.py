@@ -37,5 +37,8 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
     status = build_main(["-W", "-b", "html", str(docs_dir), str(out_dir)])
 
     assert status == 0
+    index_html = (out_dir / "index.html").read_text(encoding="utf-8")
+    assert "Made with" not in index_html
+    assert "@pradyunsg" not in index_html
     assert (out_dir / "index.html").exists()
     assert (out_dir / "reference.html").exists()
