@@ -22,4 +22,5 @@ This is the canonical documentation home for the project.
    training
    caching
    outputs
+   reporting
    reference

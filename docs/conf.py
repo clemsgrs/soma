@@ -22,6 +22,9 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",
+    "sphinx.ext.intersphinx",
+    "sphinx_copybutton",
+    "sphinx_autodoc_typehints",
 ]
 
 templates_path = ["_templates"]
@@ -35,6 +38,20 @@ autodoc_default_options = {
 }
 napoleon_google_docstring = True
 napoleon_numpy_docstring = False
-html_theme = "alabaster"
+always_use_bars_union = True
+
+intersphinx_mapping = {
+    "python": ("https://docs.python.org/3", None),
+    "torch": ("https://pytorch.org/docs/stable", None),
+    "numpy": ("https://numpy.org/doc/stable", None),
+    "pandas": ("https://pandas.pydata.org/docs", None),
+}
+
+html_theme = "furo"
 html_static_path = ["_static"]
 html_title = "soma documentation"
+html_theme_options = {
+    "source_repository": "https://github.com/clemsgrs/soma",
+    "source_branch": "main",
+    "source_directory": "docs/",
+}

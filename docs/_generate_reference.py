@@ -26,7 +26,12 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
+from soma.dataset import Dataset, Splits
+from soma.extraction import FeatureExtractor
+from soma.features import FeatureStore
+from soma.pipeline import Pipeline, train
 from soma.tasks import task_registry
+from soma.tile_extraction import TileFeatureExtractor
 
 
 def _field_names(cls: type) -> str:
@@ -61,6 +66,24 @@ def _list_table(rows: list[tuple[str, str, str, str]]) -> str:
                 f"     - ``{cls_name}``",
                 f"     - {knobs}",
                 f"     - {notes}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _api_table(rows: list[tuple[str, str]]) -> str:
+    lines = [".. list-table::", "   :header-rows: 1", ""]
+    lines.extend(
+        [
+            "   * - Symbol",
+            "     - Description",
+        ]
+    )
+    for symbol, desc in rows:
+        lines.extend(
+            [
+                f"   * - ``{symbol}``",
+                f"     - {desc}",
             ]
         )
     return "\n".join(lines)
@@ -145,6 +168,16 @@ def build_reference_rst() -> str:
             )
         )
 
+    api_rows = [
+        ("Pipeline", "Orchestrates the full pipeline: extract → train all folds → summarize"),
+        ("train", "Train and evaluate all folds, then summarize"),
+        ("Dataset", "Load and validate dataset.csv"),
+        ("Splits", "Load and validate splits.csv"),
+        ("FeatureExtractor", "Delegates tile/slide feature extraction to slide2vec"),
+        ("FeatureStore", "Index and load precomputed tile embeddings from disk"),
+        ("TileFeatureExtractor", "Encode individual tile images into 1D feature vectors"),
+    ]
+
     body = dedent(
         """\
         Compact Parameter Reference
@@ -153,11 +186,13 @@ def build_reference_rst() -> str:
         This page is generated from the public config dataclasses and component
         registries. It provides a compact index of the main public surfaces.
 
-        Configuration dataclasses
-        -------------------------
+        Public API
+        ----------
 
         """
     )
+    body += _api_table(api_rows)
+    body += "\n\nConfiguration dataclasses\n-------------------------\n\n"
     body += _config_table(config_rows)
     body += "\n\nAggregator registry\n-------------------\n\n"
     body += _list_table(aggregator_rows)

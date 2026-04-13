@@ -7,6 +7,8 @@ training run with a single configuration object.
 Install
 -------
 
+Requires Python 3.11 or later.
+
 .. code-block:: bash
 
    pip install soma
@@ -38,6 +40,22 @@ Use the CLI when you want a YAML entrypoint:
 .. code-block:: bash
 
    soma run examples/reference.yaml
+
+Dataset format
+--------------
+
+Two CSV files describe the data:
+
+``dataset.csv``
+  Required columns: ``sample_id``, ``image_path``, ``label``.
+  Optional columns: ``mask_path`` (pre-computed tissue mask), ``patient_id``
+  (required for ``dataset_type="patient"``).
+  Any additional columns are carried along as per-sample metadata.
+
+``splits.csv``
+  Required columns: ``fold``, ``sample_id``, ``split``.
+  Valid split names: ``train``, ``tune``, or any name starting with ``test``
+  (e.g. ``test``, ``test_external``).
 
 Practical workflow
 ------------------

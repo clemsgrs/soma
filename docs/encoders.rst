@@ -42,71 +42,98 @@ Tile-level encoders
    * - Preset
      - Output dim
      - Spacing
+     - HF model
      - Notes
    * - ``uni``
      - 1024
      - ``0.5``
-     - UNI
+     - ``MahmoodLab/UNI``
+     - Chen et al. (2024)
    * - ``uni2``
      - 1536
      - ``0.5``
-     - UNI2
+     - ``MahmoodLab/UNI2-h``
+     - Chen et al. (2024)
    * - ``virchow``
      - 1280 / 2560
      - ``0.5``
-     - Supports ``output_variant="cls"`` or ``"cls_patch_mean"``
+     - ``paige-ai/Virchow``
+     - Vorontsov et al. (2024); ``output_variant="cls"`` or ``"cls_patch_mean"``
    * - ``virchow2``
      - 1280 / 2560
      - ``0.5``, ``1.0``, ``2.0``
-     - Supports ``output_variant="cls"`` or ``"cls_patch_mean"``
+     - ``paige-ai/Virchow2``
+     - Zimmermann et al. (2024); ``output_variant="cls"`` or ``"cls_patch_mean"``
    * - ``conch``
      - 512
      - ``0.5``
-     - CONCH
+     - ``MahmoodLab/conch``
+     - Lu et al. (2024)
    * - ``conchv15``
      - 768
      - ``0.5``
-     - CONCHv1.5
+     - ``MahmoodLab/TITAN``
+     - Lu et al. (2024); CONCHv1.5 tile backbone
    * - ``gigapath``
      - 1536
      - ``0.5``
-     - Alias: ``prov-gigapath``
+     - ``prov-gigapath/prov-gigapath``
+     - Xu et al. (2024); alias: ``prov-gigapath``
    * - ``h-optimus-0``
      - 1536
      - ``0.5``
-     - H-optimus-0
+     - ``bioptimus/H-optimus-0``
+     - Saillard et al. (2024)
    * - ``h-optimus-1``
      - 1536
      - ``0.5``
-     - H-optimus-1
+     - ``bioptimus/H-optimus-1``
+     - Saillard et al. (2024)
    * - ``h0-mini``
      - 768 / 1536
      - ``0.5``
-     - Supports ``output_variant="cls"`` or ``"cls_patch_mean"``
+     - ``bioptimus/H0-mini``
+     - Saillard et al. (2024); ``output_variant="cls"`` or ``"cls_patch_mean"``
    * - ``phikon``
      - 768
      - ``0.5``
-     - Phikon
+     - ``owkin/phikon``
+     - Filiot et al. (2023)
    * - ``phikonv2``
      - 1024
      - ``0.5``
-     - Phikon-v2
+     - ``owkin/phikon-v2``
+     - Filiot et al. (2024)
    * - ``hibou-b``
      - 768
      - ``0.5``
-     - Hibou-B
+     - ``histai/hibou-b``
+     - Nechaev et al. (2024)
    * - ``hibou-l``
      - 1024
      - ``0.5``
-     - Hibou-L
+     - ``histai/hibou-L``
+     - Nechaev et al. (2024)
    * - ``midnight``
      - 3072
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Alias: ``kaiko-midnight``
+     - ``kaiko-ai/midnight``
+     - Campanella et al. (2025); alias: ``kaiko-midnight``
    * - ``lunit``
      - 384
      - ``0.5``
-     - Tile backbone for MOOZY
+     - ``1aurent/vit_small_patch8_224.lunit_dino``
+     - Kang et al. (2023); tile backbone for MOOZY
+   * - ``prost40m``
+     - 384
+     - ``0.5``
+     - ``waticlems/Prost40M``
+     - fp32; prostate pathology specialist
+   * - ``musk``
+     - 1024 / 2048
+     - ``0.25``, ``0.5``, ``1.0``
+     - ``xiangjx/musk``
+     - Xiang et al. (2024); requires ``pip install git+https://github.com/lilab-stanford/MUSK.git``; ``output_variant="cls"`` or ``"ms_aug"`` (default)
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~
@@ -117,23 +144,28 @@ Slide-level encoders
    * - Preset
      - Tile encoder
      - Output dim
+     - HF model
      - Notes
    * - ``gigapath-slide``
      - ``gigapath``
      - 768
-     - Uses slide-level token aggregation
+     - ``prov-gigapath/prov-gigapath``
+     - Xu et al. (2024); slide-level token aggregation
    * - ``prism``
      - ``virchow`` (``cls_patch_mean``)
      - 1280
-     - PRISM slide encoder
+     - ``paige-ai/Prism``
+     - Shaikovski et al. (2024)
    * - ``titan``
      - ``conchv15``
      - 768
-     - TITAN slide encoder
+     - ``MahmoodLab/TITAN``
+     - Ding et al. (2024)
    * - ``moozy-slide``
      - ``lunit``
      - 768
-     - MOOZY slide encoder
+     - ``AtlasAnalyticsLab/MOOZY``
+     - Slide-level variant; use when slides are the unit of analysis
 
 Patient-level encoders
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -144,10 +176,12 @@ Patient-level encoders
    * - Preset
      - Tile encoder
      - Output dim
+     - HF model
      - Notes
    * - ``moozy``
      - ``lunit``
      - 768
+     - ``AtlasAnalyticsLab/MOOZY``
      - Patient-level transformer over slide features
 
 Compatibility is enforced by the code and by ``PipelineConfig`` validation.

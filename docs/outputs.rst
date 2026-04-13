@@ -47,6 +47,22 @@ scores under ``fold_N/attention/<sample_id>.npz`` and rendered overlays under
 ``fold_N/heatmaps/``. The rendered overlays can be regenerated with different
 visual settings without rerunning inference.
 
+Aggregators that support attention extraction: ``abmil``, ``clam_sb``,
+``clam_mb``, ``dsmil``. Heatmaps are skipped for ``mean_pool``, ``max_pool``,
+``transmil``, ``dtfdmil``, and ``hipt``.
+
+Heatmap appearance is controlled by :class:`soma.config.HeatmapConfig`:
+``cmap`` (colormap name, default ``jet``), ``alpha`` (overlay opacity),
+``blur_sigma`` (Gaussian blur radius in pixels).
+
+HTML report
+-----------
+
+Each run automatically generates an interactive HTML report containing metrics
+summary tables, ROC/PR curves, confusion matrices (classification), scatter and
+residual plots (regression), loss curves, and training timing. The report is
+written to the run directory as ``report.html``.
+
 Cache versus run outputs
 ------------------------
 
