@@ -14,6 +14,9 @@ The main configuration object is :class:`soma.config.EncoderConfig`.
 Model Zoo
 ---------
 
+The tile encoder zoo below is grouped by output dimension for easier scanning,
+with entries inside each bucket still following the existing date ordering.
+
 Tile-level encoders
 ~~~~~~~~~~~~~~~~~~~
 
@@ -28,14 +31,18 @@ Tile-level encoders
      - 384
      - ``0.5``
      - Kang et al. (2023)
-   * - ``phikon``
-     - 768
+   * - ``prost40m``
+     - 384
      - ``0.5``
-     - Filiot et al. (2023)
+     - Grisi et al. (2026)
    * - ``conch``
      - 512
      - ``0.5``
      - Lu et al. (2024)
+   * - ``phikon``
+     - 768
+     - ``0.5``
+     - Filiot et al. (2023)
    * - ``conchv15``
      - 768
      - ``0.5``
@@ -48,10 +55,6 @@ Tile-level encoders
      - 768 / 1536
      - ``0.5``
      - Filiot et al. (2024)
-   * - ``uni``
-     - 1024
-     - ``0.5``
-     - Chen et al. (2024)
    * - ``phikonv2``
      - 1024
      - ``0.5``
@@ -60,6 +63,10 @@ Tile-level encoders
      - 1024
      - ``0.5``
      - Nechaev et al. (2024)
+   * - ``uni``
+     - 1024
+     - ``0.5``
+     - Chen et al. (2024)
    * - ``musk``
      - 1024 / 2048
      - ``0.25``, ``0.5``, ``1.0``
@@ -92,10 +99,6 @@ Tile-level encoders
      - 3072
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
      - Karasikov et al. (2025)
-   * - ``prost40m``
-     - 384
-     - ``0.5``
-     - Grisi et al. (2026)
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~

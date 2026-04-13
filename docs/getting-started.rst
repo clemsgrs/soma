@@ -88,7 +88,7 @@ Each fold entry is a :class:`soma.pipeline.FoldResult` with:
 - ``train_result``: best epoch, tune loss, training history, and the saved
   checkpoint path.
 - ``tune_report``: evaluation metrics and per-sample predictions for the tune
-  split. The same report structure is used for the test splits.
+  split.
 - ``test_reports``: a split-name keyed mapping of evaluation reports for every
   test split.
 

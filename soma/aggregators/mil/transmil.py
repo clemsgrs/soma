@@ -1,11 +1,8 @@
 """TransMIL — Transformer-based Correlated MIL (Shao et al., 2021).
 
-Adapted from torchmil (Apache 2.0). Unlike torchmil's monolithic TransMIL,
+Adapted from torchmil. Unlike torchmil's monolithic TransMIL,
 this is a pure aggregator (no classifier, no loss). The classifier lives
 in TaskHead, making TransMIL composable with any task.
-
-Improvement over torchmil: supports optional boolean mask for
-variable-length bags.
 """
 
 from __future__ import annotations

@@ -19,3 +19,6 @@
 - When removing the implicit MIL default, make `PipelineConfig.aggregator` default to `None` for slide-level runs; do not hide the change behind a default `AggregatorConfig.name` value.
 - When GitHub Actions reports that it cannot resolve a major version for an action, verify the actual released tags on the upstream repository instead of assuming a floating `vX` tag exists; pin the exact published tag if that is the only available ref.
 - When the home page needs project metadata, prefer a small dedicated sidebar widget over adding more copy to the landing-page body; keep the main intro text uncluttered.
+- When a documentation table needs grouping, prefer section headings or separate subsections that match the primary sort key over adding a visible grouping column unless that column is part of the user-facing contract.
+- When a pipeline page describes supported levels, state the shared run loop first and then spell out the per-level stages so you do not imply that every path tiles slides or aggregates features.
+- On the landing page, keep workflow overviews brief and link to the dedicated page for execution details instead of repeating the full pipeline contract.

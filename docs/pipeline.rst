@@ -1,48 +1,56 @@
 Pipeline
 =================
 
-The pipeline is the orchestration layer for an experiment:
+A pipeline run starts by reading the dataset and split manifests, then follows
+the stages implied by ``dataset_type``:
 
-- read the dataset and split manifests
-- preprocess and tile slides
-- extract features with the selected encoder
-- aggregate features when MIL is used
-- train the task head
-- evaluate and write a run bundle
+- ``tile``: Read tile images and labels, extract tile features, train a
+  lightweight task head, and evaluate on the test split.
+- ``slide``: Read whole-slide images and labels, tile each slide, extract
+  features with a tile-level or slide-level encoder, and train the
+  appropriate downstream model. Tile-level encoders require an aggregator
+  plus prediction head. Slide-level encoders only require a prediction head.
+- ``patient``: Aggregate slide-level outputs across multiple slides per
+  patient (experimental).
 
-The main configuration object is :class:`soma.config.PipelineConfig`.
+Patient-level runs require a ``patient_id`` column in the dataset manifest and
+produce one prediction per patient.
+
+The main configuration object is :class:`soma.config.PipelineConfig`:
 
 .. autoclass:: soma.config.PipelineConfig
    :members:
 
-Dataset types
--------------
+Example
+-------
 
-``dataset_type`` determines which stages are active:
+This is the smallest typical slide-level pipeline configuration:
 
-.. list-table::
-   :header-rows: 1
+.. code-block:: python
 
-   * - Value
-     - Meaning
-     - Aggregator
-   * - ``slide``
-     - Whole-slide pipeline with optional MIL aggregation
-     - | Required for MIL
-       | ``None`` for direct slide heads
-   * - ``tile``
-     - Patch-level classification/regression
-     - Must be ``None``
-   * - ``patient``
-     - Patient-level aggregation over slide features
-     - Must be ``None``
+   from soma import (
+       AggregatorConfig,
+       EncoderConfig,
+       EvalConfig,
+       Pipeline,
+       PipelineConfig,
+       TaskConfig,
+       TrainingConfig,
+   )
 
-Use the smallest change that answers the current question. In practice, that
-usually means varying one stage at a time and keeping the rest of the pipeline
-fixed.
+   config = PipelineConfig(
+       dataset_csv="dataset.csv",
+       splits_csv="splits.csv",
+       output_root="output",
+       dataset_type="slide",
+       encoder=EncoderConfig(name="uni2"),
+       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
+       task=TaskConfig(name="binary_classification"),
+       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
+       training=TrainingConfig(epochs=50, learning_rate=1e-4),
+   )
 
-Patient-level runs require a ``patient_id`` column in the dataset manifest and
-produce one prediction per patient.
+   result = Pipeline(config).run()
 
 Run outputs
 -----------

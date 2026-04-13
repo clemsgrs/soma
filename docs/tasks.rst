@@ -9,8 +9,8 @@ The base abstraction is :class:`soma.tasks.base.TaskHead`.
 .. autoclass:: soma.tasks.base.TaskHead
    :members:
 
-Task families
--------------
+Task Zoo
+--------
 
 .. list-table::
    :header-rows: 1
@@ -28,10 +28,6 @@ Task families
      - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
      - | Two or more classes
        | Use ``binary_classification`` when the problem is strictly binary
-   * - ``branch_aware_classification``
-     - Cross-entropy
-     - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
-     - Branch-wise CLAM-MB output
    * - ``ordinal_classification``
      - MSE
      - ``qwk``, ``balanced_accuracy``
@@ -41,16 +37,13 @@ Task families
      - ``mae``, ``r2``
      - Continuous targets
 
-Public heads
+Task details
 ------------
 
 .. autoclass:: soma.tasks.classification.BinaryClassificationHead
    :members:
 
 .. autoclass:: soma.tasks.classification.MulticlassClassificationHead
-   :members:
-
-.. autoclass:: soma.tasks.classification.BranchAwareClassificationHead
    :members:
 
 .. autoclass:: soma.tasks.ordinal_classification.OrdinalClassificationHead

@@ -11,6 +11,15 @@
   projects that power preprocessing and encoding.
 - The docs use line-block formatting in schema-heavy tables and definition
   lists where explicit line breaks improve readability.
+- The landing page now briefly names the tile, slide, and patient workflows
+  and points readers to the pipeline page for the concrete execution paths.
+- The pipeline page now describes the shared run loop first and then explains
+  the tile, slide, and patient paths in a way that matches what each level
+  actually executes.
+- The pipeline page now includes a minimal slide-level `PipelineConfig`
+  example so readers can see the expected Python setup directly on the page.
+- The pipeline page now uses a simple bullet list for the `dataset_type`
+  overview instead of a two-column table.
 - The getting-started guide now uses one unified pipeline intro that combines
   the practical workflow, the under-the-hood execution steps, and the
   returned `PipelineResult`, while keeping the CLI out of the initial
@@ -56,3 +65,13 @@
 - The Sphinx API docs no longer show per-object source links, so the code
   reference pages stay focused on the public API instead of exposing source
   buttons under every documented symbol.
+- The encoder zoo now groups tile encoders by output-dimension buckets so
+  related variants stay easy to scan without adding a visible family column.
+- The aggregators page now uses a short overview table plus one section per
+  preset so readers can scan the zoo and then see the class docstrings for
+  each MIL aggregator.
+- The aggregators page now pairs short prose with `autoclass` blocks so the
+  constructor signatures stay in sync with the code.
+- The tasks page now hides the internal branch-aware classification head from
+  the public task table and API reference so the docs stay focused on
+  user-facing heads.

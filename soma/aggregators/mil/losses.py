@@ -1,6 +1,5 @@
-"""Loss utilities for MIL aggregators.
-
-Adapted from torchmil (Apache 2.0).
+"""
+Loss utilities for MIL aggregators.
 """
 
 from __future__ import annotations
@@ -38,7 +37,7 @@ class SmoothTop1SVM(nn.Module):
     """Smooth Top-1 SVM loss.
 
     From "Smooth Loss Functions for Deep Top-k Classification"
-    (Berrada et al., 2018). Adapted from torchmil (Apache 2.0).
+    (Berrada et al., 2018).
 
     Args:
         n_classes: Number of classes.

@@ -1,9 +1,5 @@
 """DSMIL — Dual-Stream Multiple Instance Learning (Li et al., 2021).
 
-Adapted from torchmil (Apache 2.0). Unlike torchmil's monolithic DSMIL,
-this is a pure aggregator (no classifier, no loss). The classifier lives
-in TaskHead, making DSMIL composable with any task.
-
 The dual-stream mechanism:
 1. An instance classifier finds the critical instance (highest scoring).
 2. Query-key attention is computed relative to the critical instance.
