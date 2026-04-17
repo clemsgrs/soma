@@ -146,6 +146,22 @@ def test_run_and_experiment_indexes_upsert_rows(tmp_path: Path):
     assert run_rows[0]["status"] == "completed"
 
 
+def test_read_csv_rows_handles_large_fields(tmp_path: Path):
+    from soma.output_layout import _read_csv_rows
+
+    path = tmp_path / "rows.csv"
+    path.write_text("name,notes\nrow1,\"" + ("x" * 200_000) + "\"\n", encoding="utf-8")
+
+    old_limit = csv.field_size_limit()
+    try:
+        csv.field_size_limit(1024)
+        rows = _read_csv_rows(path)
+    finally:
+        csv.field_size_limit(old_limit)
+
+    assert rows == [{"name": "row1", "notes": "x" * 200_000}]
+
+
 def test_experiment_spec_roundtrips_through_yaml(tmp_path: Path):
     config = _make_pipeline_config(tmp_path)
     spec = build_experiment_spec(config)

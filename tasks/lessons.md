@@ -17,8 +17,25 @@
 - When validating a cross-repo schema rename, put all affected checkouts on `PYTHONPATH` before running tests so you do not accidentally exercise an older installed copy of a sibling package.
 - When a cache-population helper has a distributed refresh step, pass the resolved preprocessing and backend provenance explicitly instead of closing over values from a different branch.
 - When removing the implicit MIL default, make `PipelineConfig.aggregator` default to `None` for slide-level runs; do not hide the change behind a default `AggregatorConfig.name` value.
+- When adding an opt-in runtime flag that changes model validation, thread it through every model-loading helper, not just `Model.from_preset(...)`; direct helpers like `load_model(...)` can otherwise keep dropping the flag.
+- When a preflight validator mirrors a runtime constructor option, keep the validator and the constructor wired to the same flag; otherwise the stricter preflight path will still fail even after the model object is created correctly.
 - When GitHub Actions reports that it cannot resolve a major version for an action, verify the actual released tags on the upstream repository instead of assuming a floating `vX` tag exists; pin the exact published tag if that is the only available ref.
 - When the home page needs project metadata, prefer a small dedicated sidebar widget over adding more copy to the landing-page body; keep the main intro text uncluttered.
 - When a documentation table needs grouping, prefer section headings or separate subsections that match the primary sort key over adding a visible grouping column unless that column is part of the user-facing contract.
 - When a pipeline page describes supported levels, state the shared run loop first and then spell out the per-level stages so you do not imply that every path tiles slides or aggregates features.
 - On the landing page, keep workflow overviews brief and link to the dedicated page for execution details instead of repeating the full pipeline contract.
+- When adding a cached extractor branch, keep the call-site arguments aligned with the helper signature; do not thread `model_kwargs` through helpers that already resolve model call flags internally.
+- If a forwarding helper only carries one boolean, pass the boolean directly instead of introducing a single-key dict wrapper.
+- When removing a forwarding wrapper, sweep every downstream call site in the same edit; stale keyword arguments can survive in sibling branches and only fail at runtime.
+- When training writes split-specific artifacts under `fold_*/attention/<split>/`, mirror that relative path under `fold_*/heatmaps/<split>/` instead of flattening rendered outputs.
+- When coordinates metadata nests geometry under `meta["tiling"]`, resolve `tile_size_lv0` from that nested block directly instead of keeping legacy fallbacks alive.
+- When reading managed CSV indexes, raise the Python `csv` field-size limit before instantiating `DictReader`; large metadata fields should not rely on the default 128 KiB parser cap.
+- For frozen inference encoders, keep `eval()` ownership in the encoder constructor or loader; call sites should rely on `torch.inference_mode()` and avoid assuming the returned wrapper exposes `nn.Module` methods.
+- In tile feature extraction, do not cast the loaded batch tensor to the encoder's recommended precision before calling `encode_tiles()`. Keep the input float32 and let the encoder wrapper manage mixed precision internally.
+- When a new path should match slide2vec's extraction UX, reuse the shared `slide2vec.progress` reporter and emit the upstream event stream instead of drawing a separate Rich `Live` panel.
+- When tile extraction needs progress, prefer one shared `Embedding tiles` task updated per batch instead of creating nested progress tasks for each batch.
+- When the tile extractor bar is meant to reflect work done, drive it from cumulative tile count rather than batch count so the completion fraction stays meaningful across batch sizes.
+- When `EncoderConfig.num_workers` is unset, tile extraction should use the shared SLURM-aware CPU worker cap from `slide2vec` instead of defaulting to zero workers.
+- When defaulting tile DataLoader workers, log the resolved count through the shared progress reporter so HPC users can confirm the effective budget from runtime output.
+- When the tile loader has worker processes, set `persistent_workers=True` and use non-blocking H2D copies so the input pipeline can overlap CPU and GPU work.
+- When soma exposes slide2vec execution knobs on `EncoderConfig`, thread them through the shared `build_execution_options(...)` helper instead of reimplementing loader defaults in each extraction path.

@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from getpass import getuser
@@ -289,9 +290,22 @@ def write_run_metadata(path: Path, metadata: RunMetadata) -> None:
     _write_yaml(path / "run.yaml", payload)
 
 
+def _ensure_csv_field_size_limit() -> None:
+    limit = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(limit)
+            return
+        except OverflowError:
+            limit //= 10
+            if limit <= 0:
+                return
+
+
 def _read_csv_rows(path: Path) -> list[dict[str, str]]:
     if not path.exists():
         return []
+    _ensure_csv_field_size_limit()
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
 

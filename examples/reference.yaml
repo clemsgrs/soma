@@ -110,6 +110,10 @@ encoder:
   # Examples: cls | mean | null (model default)
   output_variant: null
 
+  # Allow intentionally non-recommended geometry/variant combinations.
+  # This is useful for sweeps over spacing, tile size, or output variants.
+  allow_non_recommended_settings: false
+
   # Numerical precision for inference.
   # Options: null (model default) | fp32 | fp16 | bf16
   precision: null

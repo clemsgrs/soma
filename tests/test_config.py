@@ -136,7 +136,10 @@ def test_encoder_config_defaults():
     assert cfg.precision is None
     assert cfg.batch_size == 32
     assert cfg.num_workers is None
+    assert cfg.prefetch_factor == 4
+    assert cfg.persistent_workers is True
     assert cfg.output_variant is None
+    assert cfg.allow_non_recommended_settings is False
     assert cfg.save_tile_features is False
 
 
@@ -158,6 +161,35 @@ def test_encoder_config_roundtrip_with_num_workers(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.encoder.num_workers == 6
+
+
+def test_encoder_config_roundtrip_with_prefetch_and_persistent_workers(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        encoder=EncoderConfig(
+            name="h0-mini",
+            prefetch_factor=8,
+            persistent_workers=False,
+        )
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.encoder.prefetch_factor == 8
+    assert loaded.encoder.persistent_workers is False
+
+
+def test_encoder_config_roundtrip_with_allow_non_recommended_settings(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        encoder=EncoderConfig(name="h0-mini", allow_non_recommended_settings=True)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.encoder.allow_non_recommended_settings is True
 
 
 def test_cache_config_defaults():

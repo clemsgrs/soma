@@ -788,7 +788,7 @@ class Pipeline:
                 render_heatmaps(
                     run_dir=layout.run_dir,
                     dataset=self._dataset,
-                    feature_store=store,
+                    tiling_dir=layout.run_dir / "tiling",
                     heatmap_config=self._config.heatmaps,
                     seg_downsample=self._config.preprocessing.seg_downsample,
                 )

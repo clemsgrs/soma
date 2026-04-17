@@ -155,7 +155,7 @@ def save_attention(
 def render_heatmaps(
     run_dir: Path | str,
     dataset: Dataset,
-    feature_store: FeatureStore,
+    tiling_dir: Path | str,
     heatmap_config: HeatmapConfig,
     seg_downsample: int,
 ) -> None:
@@ -170,14 +170,14 @@ def render_heatmaps(
     Args:
         run_dir: Root run directory containing fold sub-directories.
         dataset: Dataset for resolving WSI paths per sample.
-        feature_store: Feature store for resolving tile coordinate paths.
+        tiling_dir: Run-local tiling directory containing process_list.csv.
         heatmap_config: Rendering parameters (colormap, alpha, blur).
         seg_downsample: Downsample factor for the WSI thumbnail — matches
             the preprocessing preview downsample so all visual outputs are
             consistent.
     """
     run_dir = Path(run_dir)
-    coord_map = _build_coordinate_map(feature_store)
+    coord_map = _build_coordinate_map(Path(tiling_dir))
 
     for fold_dir in sorted(run_dir.glob("fold_*")):
         attention_dir = fold_dir / "attention"
@@ -188,7 +188,7 @@ def render_heatmaps(
         heatmap_dir = fold_dir / "heatmaps"
         heatmap_dir.mkdir(exist_ok=True)
 
-        for npz_path in sorted(attention_dir.glob("*.npz")):
+        for npz_path in sorted(attention_dir.rglob("*.npz")):
             sample_id = npz_path.stem
             if sample_id not in dataset.samples:
                 logger.warning("render_heatmaps: sample_id %s not in dataset, skipping", sample_id)
@@ -206,9 +206,11 @@ def render_heatmaps(
 
             with open(coords_meta_path) as f:
                 meta = json.load(f)
-            tile_size_lv0 = int(meta["tile_size_lv0"])
+            tile_size_lv0 = _resolve_tile_size_lv0(meta, coords_meta_path)
 
             attention = np.load(npz_path)["attention"]  # (N,) or (n_classes, N)
+            heatmap_path = heatmap_dir / npz_path.relative_to(attention_dir).with_suffix(".png")
+            heatmap_path.parent.mkdir(parents=True, exist_ok=True)
 
             if attention.ndim == 1:
                 # Single-branch
@@ -218,18 +220,21 @@ def render_heatmaps(
                     alpha=heatmap_config.alpha,
                     blur_sigma=heatmap_config.blur_sigma,
                 )
-                _save_heatmap(img, heatmap_dir / f"{sample_id}.png")
+                _save_heatmap(img, heatmap_path)
             else:
                 # Multi-branch (CLAM-MB): one heatmap per class
                 n_classes = attention.shape[0]
                 for k in range(n_classes):
+                    branch_heatmap_path = heatmap_path.with_name(
+                        f"{heatmap_path.stem}_class_{k}{heatmap_path.suffix}"
+                    )
                     img = render_attention_heatmap(
                         slide_path, x_lv0, y_lv0, attention[k], tile_size_lv0, seg_downsample,
                         cmap=heatmap_config.cmap,
                         alpha=heatmap_config.alpha,
                         blur_sigma=heatmap_config.blur_sigma,
                     )
-                    _save_heatmap(img, heatmap_dir / f"{sample_id}_class_{k}.png")
+                    _save_heatmap(img, branch_heatmap_path)
 
         logger.info("Rendered heatmaps for fold %s to %s", fold_dir.name, heatmap_dir)
 
@@ -243,6 +248,7 @@ def generate_heatmaps(
     run_dir: Path | str,
     dataset: Dataset,
     feature_store: FeatureStore,
+    tiling_dir: Path | str,
     heatmap_config: HeatmapConfig,
     seg_downsample: int,
 ) -> None:
@@ -256,11 +262,12 @@ def generate_heatmaps(
         run_dir: Root run directory containing fold sub-directories.
         dataset: Dataset for resolving WSI paths and label map.
         feature_store: Feature store for loading features and coordinates.
+        tiling_dir: Run-local tiling directory containing process_list.csv.
         heatmap_config: Rendering parameters.
         seg_downsample: Downsample factor for the WSI thumbnail.
     """
     save_attention(run_dir, dataset, feature_store)
-    render_heatmaps(run_dir, dataset, feature_store, heatmap_config, seg_downsample)
+    render_heatmaps(run_dir, dataset, tiling_dir, heatmap_config, seg_downsample)
 
 
 # ---------------------------------------------------------------------------
@@ -399,28 +406,28 @@ def _read_sample_ids_from_predictions(predictions_path: Path) -> list[str]:
 
 
 def _build_coordinate_map(
-    feature_store: FeatureStore,
+    tiling_dir: Path,
 ) -> dict[str, tuple[Path, Path]]:
     """Build a mapping from sample_id to (coordinates_npz_path, coordinates_meta_path).
 
-    Reads from the ``process_list.csv`` tracked by the feature store.
+    Reads from the run-local tiling ``process_list.csv``.
 
     Returns an empty dict (with a warning) if the manifest is not available
     or lacks coordinate columns.
     """
-    manifest_path = feature_store.feature_manifest_path
-    if manifest_path is None:
+    coord_map: dict[str, tuple[Path, Path]] = {}
+    manifest_path = Path(tiling_dir) / "process_list.csv"
+    if not manifest_path.is_file():
         logger.warning(
-            "render_heatmaps: feature store has no process_list.csv — cannot resolve tile coordinates"
+            "render_heatmaps: tiling directory has no process_list.csv — cannot resolve tile coordinates"
         )
         return {}
 
-    coord_map: dict[str, tuple[Path, Path]] = {}
     with open(manifest_path, newline="") as f:
         reader = csv.DictReader(f)
         if "coordinates_npz_path" not in (reader.fieldnames or []):
             logger.warning(
-                "render_heatmaps: process_list.csv has no 'coordinates_npz_path' column — "
+                "render_heatmaps: tiling process_list.csv has no 'coordinates_npz_path' column — "
                 "cannot resolve tile coordinates"
             )
             return {}
@@ -442,6 +449,21 @@ def _build_coordinate_map(
                 )
 
     return coord_map
+
+
+def _resolve_tile_size_lv0(meta: dict[str, object], coords_meta_path: Path) -> int:
+    """Resolve the level-0 tile size from coordinates metadata.
+
+    Current hs2p artifacts store tile geometry under ``meta["tiling"]``.
+    """
+    tiling_meta = meta.get("tiling")
+    if isinstance(tiling_meta, dict):
+        tile_size = tiling_meta.get("tile_size_lv0")
+        if tile_size is not None:
+            return int(tile_size)
+
+    msg = f"{coords_meta_path} is missing tile_size_lv0 in coordinates metadata"
+    raise KeyError(msg)
 
 
 def _save_heatmap(img: np.ndarray, path: Path) -> None:
