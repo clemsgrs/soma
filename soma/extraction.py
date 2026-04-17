@@ -63,6 +63,19 @@ from soma.slide2vec_adapter import (
 )
 
 
+def _load_model(
+    model_name: str,
+    *,
+    output_variant: str | None,
+    allow_non_recommended_settings: bool,
+) -> Model:
+    return Model.from_preset(
+        model_name,
+        output_variant=output_variant,
+        allow_non_recommended_settings=allow_non_recommended_settings,
+    )
+
+
 class _DeduplicateLogFilter(logging.Filter):
     """Suppress repeated log messages from the same logger."""
 
@@ -193,7 +206,7 @@ def _validate_runtime(
         requested_spacing_um=float(preprocessing.requested_spacing_um),
         precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
         output_variant=output_variant,
-        allow_non_recommended=False,
+        allow_non_recommended=bool(encoder.allow_non_recommended_settings),
     )
 
 
@@ -316,12 +329,17 @@ def _embed_tiles(
     *,
     model_name: str,
     output_variant: str,
+    allow_non_recommended_settings: bool = False,
     slides: Sequence[object],
     tiling_results: Sequence[object],
     preprocessing: Slide2VecPreprocessingConfig,
     execution: ExecutionOptions,
 ) -> list:
-    model = Model.from_preset(model_name, output_variant=output_variant)
+    model = _load_model(
+        model_name,
+        output_variant=output_variant,
+        allow_non_recommended_settings=allow_non_recommended_settings,
+    )
     return model.embed_tiles(
         list(slides),
         list(tiling_results),
@@ -334,6 +352,7 @@ def _run_with_coordinates(
     *,
     model_name: str,
     output_variant: str,
+    allow_non_recommended_settings: bool = False,
     preprocessing: Slide2VecPreprocessingConfig,
     execution: ExecutionOptions,
     tiling_dir: Path,
@@ -348,7 +367,11 @@ def _run_with_coordinates(
             shutil.copyfile(source_process_list, staged_process_list)
     try:
         return Pipeline(
-            Model.from_preset(model_name, output_variant=output_variant),
+            _load_model(
+                model_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
+            ),
             preprocessing,
             execution=execution,
         ).run_with_coordinates(
@@ -368,11 +391,16 @@ def _aggregate_tiles(
     *,
     model_name: str,
     output_variant: str,
+    allow_non_recommended_settings: bool = False,
     tile_artifacts,
     preprocessing: Slide2VecPreprocessingConfig | None,
     execution: ExecutionOptions,
 ):
-    model = Model.from_preset(model_name, output_variant=output_variant)
+    model = _load_model(
+        model_name,
+        output_variant=output_variant,
+        allow_non_recommended_settings=allow_non_recommended_settings,
+    )
     return model.aggregate_tiles(
         tile_artifacts,
         preprocessing=preprocessing,
@@ -384,6 +412,7 @@ def _aggregate_patients(
     *,
     model_name: str,
     output_variant: str,
+    allow_non_recommended_settings: bool = False,
     tile_artifacts,
     patient_id_map: dict[str, str],
     preprocessing: Slide2VecPreprocessingConfig | None,
@@ -412,7 +441,11 @@ def _aggregate_patients(
     from slide2vec.artifacts import write_patient_embeddings
     from slide2vec.utils.io import load_array
 
-    model = Model.from_preset(model_name, output_variant=output_variant)
+    model = _load_model(
+        model_name,
+        output_variant=output_variant,
+        allow_non_recommended_settings=allow_non_recommended_settings,
+    )
 
     # Step 1: Compute per-slide embeddings from tile artifacts.
     slide_artifacts = model.aggregate_tiles(
@@ -500,7 +533,11 @@ class FeatureExtractor:
                 return
             preprocessing = build_preprocessing_config(cfg)
             pipeline = Pipeline(
-                Model.from_preset(self._encoder.name),
+                _load_model(
+                    self._encoder.name,
+                    output_variant=None,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                ),
                 preprocessing,
                 execution=ExecutionOptions(
                     output_dir=tiling_dir,
@@ -540,7 +577,11 @@ class FeatureExtractor:
 
         preprocessing = build_preprocessing_config(cfg)
         pipeline = Pipeline(
-            Model.from_preset(self._encoder.name),
+            _load_model(
+                self._encoder.name,
+                output_variant=None,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            ),
             preprocessing,
             execution=ExecutionOptions(
                 output_dir=tiling_dir,
@@ -618,6 +659,7 @@ class FeatureExtractor:
             resolved_output=resolved_output,
         )
         s2v_preprocessing = build_preprocessing_config(resolved_preprocessing)
+        allow_non_recommended_settings = bool(self._encoder.allow_non_recommended_settings)
 
         _validate_runtime(
             encoder_name=self._encoder.name,
@@ -644,6 +686,7 @@ class FeatureExtractor:
                         preprocessing=s2v_preprocessing,
                         level=level,
                         output_variant=runtime_output_variant,
+                        allow_non_recommended_settings=allow_non_recommended_settings,
                         num_gpus=effective_num_gpus,
                         hierarchical=is_hierarchical,
                     )
@@ -883,6 +926,7 @@ class FeatureExtractor:
         preprocessing: Slide2VecPreprocessingConfig,
         level: str,
         output_variant: str,
+        allow_non_recommended_settings: bool,
         num_gpus: int | None,
         hierarchical: bool = False,
     ) -> None:
@@ -901,6 +945,7 @@ class FeatureExtractor:
                 _run_with_coordinates(
                     model_name=model_name,
                     output_variant=output_variant,
+                    allow_non_recommended_settings=allow_non_recommended_settings,
                     preprocessing=preprocessing,
                     execution=execution,
                     tiling_dir=tiling_dir,
@@ -910,6 +955,7 @@ class FeatureExtractor:
             _embed_tiles(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
                 slides=slides,
                 tiling_results=prepared_tilings,
                 preprocessing=preprocessing,
@@ -921,6 +967,7 @@ class FeatureExtractor:
             _run_with_coordinates(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
                 preprocessing=preprocessing,
                 execution=execution,
                 tiling_dir=tiling_dir,
@@ -932,6 +979,7 @@ class FeatureExtractor:
             _embed_tiles(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
                 slides=slides,
                 tiling_results=prepared_tilings,
                 preprocessing=preprocessing,
@@ -943,6 +991,7 @@ class FeatureExtractor:
             tile_artifacts = _embed_tiles(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
                 slides=slides,
                 tiling_results=prepared_tilings,
                 preprocessing=preprocessing,
@@ -960,6 +1009,7 @@ class FeatureExtractor:
                 tile_artifacts = _embed_tiles(
                     model_name=model_name,
                     output_variant=output_variant,
+                    allow_non_recommended_settings=allow_non_recommended_settings,
                     slides=slides,
                     tiling_results=prepared_tilings,
                     preprocessing=preprocessing,
@@ -969,6 +1019,7 @@ class FeatureExtractor:
         _aggregate_tiles(
             model_name=model_name,
             output_variant=output_variant,
+            allow_non_recommended_settings=allow_non_recommended_settings,
             tile_artifacts=tile_artifacts,
             preprocessing=preprocessing,
             execution=execution,
@@ -1327,6 +1378,7 @@ class FeatureExtractor:
             patient_artifacts = _aggregate_patients(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                 tile_artifacts=tile_artifacts,
                 patient_id_map=patient_id_map,
                 preprocessing=None,
@@ -1376,6 +1428,7 @@ class FeatureExtractor:
                 artifacts = _run_with_coordinates(
                     model_name=encoder_name,
                     output_variant=output_variant,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                     preprocessing=preprocessing,
                     execution=execution,
                     tiling_dir=tiling_dir,
@@ -1385,6 +1438,7 @@ class FeatureExtractor:
                 artifacts = _embed_tiles(
                     model_name=encoder_name,
                     output_variant=output_variant,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                     slides=[loaded.slide for loaded in selected_loaded],
                     tiling_results=selected_tilings,
                     preprocessing=preprocessing,
@@ -1434,6 +1488,7 @@ class FeatureExtractor:
                 result = _run_with_coordinates(
                     model_name=encoder_name,
                     output_variant=output_variant,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                     preprocessing=preprocessing,
                     execution=execution,
                     tiling_dir=tiling_dir,
@@ -1443,6 +1498,7 @@ class FeatureExtractor:
                 result = _embed_tiles(
                     model_name=encoder_name,
                     output_variant=output_variant,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                     slides=[loaded.slide for loaded in selected_loaded],
                     tiling_results=selected_tilings,
                     preprocessing=preprocessing,
@@ -1488,6 +1544,7 @@ class FeatureExtractor:
             run_result = _run_with_coordinates(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                 preprocessing=preprocessing,
                 execution=build_execution_options(
                     self._encoder,
@@ -1560,6 +1617,7 @@ class FeatureExtractor:
             slide_artifacts = _aggregate_tiles(
                 model_name=model_name,
                 output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                 tile_artifacts=tile_artifacts,
                 preprocessing=None,
                 execution=build_execution_options(

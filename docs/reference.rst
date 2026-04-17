@@ -40,7 +40,7 @@ Configuration dataclasses
      - ``backend``, ``requested_tile_size_px``, ``requested_spacing_um``, ``requested_region_size_px``, ``region_tile_multiple``, ``read_tile_size_px``, ``read_region_size_px``, ``tissue_method``, ``tissue_threshold``, ``overlap``, ``seg_downsample``, ``tolerance``, ``ref_tile_size_px``, ``a_t``, ``tissue_mask_tissue_value``, ``hierarchical``, ``npatch``, ``hierarchical_patch_size_px``
      - Whole-slide segmentation and tiling geometry
    * - ``EncoderConfig``
-     - ``name``, ``precision``, ``batch_size``, ``num_workers``, ``adaptive_batching``, ``input_size``, ``spacing_um``, ``output_variant``, ``save_tile_features``
+     - ``name``, ``precision``, ``batch_size``, ``num_workers``, ``adaptive_batching``, ``input_size``, ``spacing_um``, ``output_variant``, ``allow_non_recommended_settings``, ``save_tile_features``
      - Foundation-model encoder selection and runtime behavior
    * - ``CacheConfig``
      - ``enabled``, ``root_dir``, ``reuse_policy``, ``save_tile_features_for_slide``

@@ -66,16 +66,24 @@ class EncoderConfig:
     values may be accepted by a preset, but they should be treated as
     compatibility choices and may be suboptimal. ``output_variant`` exposes
     preset-specific feature variants when the encoder supports them.
+    ``allow_non_recommended_settings`` opts into slide2vec's warning-only mode
+    when intentionally sweeping non-default geometry or variant settings.
+    ``num_workers``, ``prefetch_factor``, and ``persistent_workers`` tune the
+    tile input pipeline when slide2vec-backed extraction resolves its DataLoader
+    settings.
     """
 
     name: str
     precision: str | None = None
     batch_size: int = 32
     num_workers: int | None = None
+    prefetch_factor: int = 4
+    persistent_workers: bool = True
     adaptive_batching: bool = False
     input_size: int | None = None
     spacing_um: float | None = None
     output_variant: str | None = None
+    allow_non_recommended_settings: bool = False
     save_tile_features: bool = False
 
 

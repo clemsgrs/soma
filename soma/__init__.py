@@ -10,6 +10,7 @@ from soma.config import (
     SubgroupConfig,
     TaskConfig,
     TrainingConfig,
+    HeatmapConfig,
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.extraction import FeatureExtractor
@@ -32,6 +33,7 @@ __all__ = [
     "SubgroupConfig",
     "TaskConfig",
     "TrainingConfig",
+    "HeatmapConfig",
     # Data
     "Dataset",
     "FoldSplit",

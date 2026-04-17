@@ -123,6 +123,8 @@ def build_execution_options(
         num_workers=int(encoder.num_workers) if encoder.num_workers is not None else None,
         num_gpus=1 if num_gpus is None else int(num_gpus),
         precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
+        prefetch_factor=int(encoder.prefetch_factor),
+        persistent_workers=bool(encoder.persistent_workers),
         save_tile_embeddings=save_tile_embeddings,
         save_latents=False,
     )

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from dataclasses import replace
 from pathlib import Path
 
+import slide2vec.progress as slide2vec_progress
 import torch
 from PIL import Image
 from torch.utils.data import DataLoader
@@ -21,8 +22,8 @@ from soma.cache import (
 )
 from soma.config import CacheConfig, EncoderConfig
 from soma.dataset import Dataset, SampleRecord
-from soma.encoders.validation import resolve_encoder_precision
 from soma.features import FeatureStore
+from soma.slide2vec_adapter import build_execution_options
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,22 @@ class _TileImageDataset(TorchDataset):
         record = self._records[idx]
         image = Image.open(record.image_path).convert("RGB")
         return self._transform(image), record.sample_id
+
+
+@contextlib.contextmanager
+def _make_tile_extraction_reporter_ctx(feature_dir: Path):
+    active = slide2vec_progress.get_progress_reporter()
+    if not isinstance(active, slide2vec_progress.NullProgressReporter):
+        yield
+        return
+
+    reporter = slide2vec_progress.create_api_progress_reporter(output_dir=feature_dir)
+    if isinstance(reporter, slide2vec_progress.NullProgressReporter):
+        yield
+        return
+
+    with slide2vec_progress.activate_progress_reporter(reporter):
+        yield
 
 
 class TileFeatureExtractor:
@@ -104,49 +121,107 @@ class TileFeatureExtractor:
         out_dir = cache_resolution.features_dir if cache_resolution is not None else feature_dir
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        precision = resolve_encoder_precision(self._encoder)
-        dtype = _precision_to_dtype(precision)
-
-        logger.info("Loading tile encoder '%s'...", self._encoder.name)
-        loaded = load_model(
-            name=self._encoder.name,
-            output_variant=self._encoder.output_variant,
-        )
-        encoder = loaded.model
-        transform = loaded.transforms
-        encoder.eval()
-
         records = list(self._dataset.samples.values())
-        image_dataset = _TileImageDataset(records, transform)
-        loader = DataLoader(
-            image_dataset,
-            batch_size=self._encoder.batch_size,
-            shuffle=False,
-            num_workers=self._encoder.num_workers or 0,
-            pin_memory=torch.cuda.is_available(),
-        )
+        total_samples = len(records)
 
-        device = loaded.device
         feature_dim: int | None = None
 
-        logger.info(
-            "Encoding %d tile images with '%s' (precision=%s, batch_size=%d)...",
-            len(records),
-            self._encoder.name,
-            precision,
-            self._encoder.batch_size,
-        )
-        with torch.inference_mode():
-            for batch_images, batch_ids in loader:
-                batch_images = batch_images.to(device)
-                if dtype != torch.float32:
-                    batch_images = batch_images.to(dtype)
-                features = encoder.encode_tiles(batch_images)  # (B, D)
-                features = features.float().cpu()
-                if feature_dim is None:
-                    feature_dim = features.shape[1]
-                for feat, sample_id in zip(features, batch_ids):
-                    torch.save(feat, out_dir / f"{sample_id}.pt")
+        with _make_tile_extraction_reporter_ctx(feature_dir):
+            logger.info("Loading tile encoder '%s'...", self._encoder.name)
+            slide2vec_progress.emit_progress("model.loading", model_name=self._encoder.name)
+            loaded = load_model(
+                name=self._encoder.name,
+                output_variant=self._encoder.output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            )
+            encoder = loaded.model
+            transform = loaded.transforms
+            device = loaded.device
+            slide2vec_progress.emit_progress(
+                "model.ready",
+                model_name=self._encoder.name,
+                device=str(device),
+            )
+
+            image_dataset = _TileImageDataset(records, transform)
+            execution = build_execution_options(
+                self._encoder,
+                encoder_name=self._encoder.name,
+                output_dir=out_dir,
+                num_gpus=1,
+                save_tile_embeddings=True,
+            )
+            resolved_num_workers = execution.resolved_num_workers()
+            worker_source = (
+                "explicit EncoderConfig.num_workers"
+                if self._encoder.num_workers is not None
+                else "slide2vec cpu_worker_limit()"
+            )
+            slide2vec_progress.emit_progress_log(
+                f"Tile DataLoader workers: {resolved_num_workers} ({worker_source})"
+            )
+            loader = DataLoader(
+                image_dataset,
+                batch_size=self._encoder.batch_size,
+                shuffle=False,
+                num_workers=resolved_num_workers,
+                pin_memory=torch.cuda.is_available(),
+                **(
+                    {
+                        "persistent_workers": execution.persistent_workers,
+                        "prefetch_factor": execution.prefetch_factor,
+                    }
+                    if resolved_num_workers > 0
+                    else {}
+                ),
+            )
+
+            logger.info(
+                "Encoding %d tile images with '%s' (precision=%s, batch_size=%d)...",
+                len(records),
+                self._encoder.name,
+                self._encoder.precision,
+                self._encoder.batch_size,
+            )
+            embedding_label = "Embedding tiles"
+            slide2vec_progress.emit_progress(
+                "embedding.slide.started",
+                sample_id=embedding_label,
+                total_tiles=total_samples,
+            )
+
+            processed_samples = 0
+            with torch.inference_mode():
+                for batch_images, batch_ids in loader:
+                    batch_images = batch_images.to(device, non_blocking=True)
+                    features = encoder.encode_tiles(batch_images)  # (B, D)
+                    features = features.float().cpu()
+                    if feature_dim is None:
+                        feature_dim = features.shape[1]
+                    for feat, sample_id in zip(features, batch_ids):
+                        torch.save(feat, out_dir / f"{sample_id}.pt")
+                    processed_samples += len(batch_ids)
+
+                    slide2vec_progress.emit_progress(
+                        "embedding.tile.progress",
+                        sample_id=embedding_label,
+                        processed=processed_samples,
+                        total=total_samples,
+                        unit="tile",
+                    )
+
+            slide2vec_progress.emit_progress(
+                "embedding.slide.finished",
+                sample_id=embedding_label,
+                num_tiles=total_samples,
+            )
+            slide2vec_progress.emit_progress(
+                "embedding.finished",
+                slide_count=1,
+                slides_completed=1,
+                tile_artifacts=processed_samples,
+                slide_artifacts=0,
+            )
 
         logger.info("Saved tile features to %s (dim=%s)", out_dir, feature_dim)
 
@@ -154,11 +229,3 @@ class TileFeatureExtractor:
             record_feature_dim(cache_resolution, feature_dim)
 
         return FeatureStore(out_dir)
-
-
-def _precision_to_dtype(precision: str) -> torch.dtype:
-    if precision == "fp16":
-        return torch.float16
-    if precision in ("bf16", "bfloat16"):
-        return torch.bfloat16
-    return torch.float32

@@ -38,6 +38,11 @@
   the compact generated reference and the main guide pages.
 - The public pipeline config now uses `evaluation` instead of `eval`, and the
   docs/examples/reporting helpers were updated to match the new field name.
+- The encoder config now exposes `allow_non_recommended_settings` so soma can
+  sweep non-default spacing and input-size combinations without falling back
+  to direct `slide2vec` calls.
+- The extractor now threads `allow_non_recommended_settings` as an explicit
+  boolean instead of wrapping it in a one-field `model_kwargs` dict.
 - The API page now links to the dedicated dataset and split manifest reference
   page from its overview table.
 - The heatmap example on the API page now uses the lower-level `train(...)`
@@ -75,3 +80,35 @@
 - The tasks page now hides the internal branch-aware classification head from
   the public task table and API reference so the docs stay focused on
   user-facing heads.
+- Heatmap rendering now mirrors the nested split directory structure from
+  `fold_*/attention/` into `fold_*/heatmaps/`, so rendered PNGs preserve the
+  same split provenance as the saved attention files.
+- Heatmap rendering now reads tile geometry from the nested coordinates
+  metadata structure used by current `hs2p` artifacts.
+- Heatmap rendering now takes an explicit run-local `tiling_dir` so the
+  coordinate source is part of the API instead of being inferred from the
+  feature store.
+- Managed CSV index reads now raise the Python parser field-size limit before
+  loading existing rows, so very large metadata fields no longer crash run
+  index updates.
+- Tile feature extraction now trusts `slide2vec` encoders to be frozen by
+  construction and no longer calls `eval()` on the loaded wrapper at runtime.
+- Tile feature extraction now keeps encoder inputs in float32 instead of
+  pre-casting tile batches to the registry's recommended precision, so the
+  encoder wrapper remains responsible for any mixed-precision behavior.
+- Tile-only feature extraction now reuses the shared `slide2vec` Rich progress
+  reporter so encoder loading and batch-level feature extraction follow the
+  same spinner/bar UX as slide pipelines, with a single `Embedding tiles`
+  bar updated on the cumulative tile count rather than batch count.
+- Tile-only feature extraction now uses the shared SLURM-aware CPU worker
+  limit when `EncoderConfig.num_workers` is unset, instead of defaulting tile
+  loading to the main process.
+- Tile-only feature extraction now logs the resolved DataLoader worker count
+  at runtime so HPC runs can confirm the effective worker budget in the Rich
+  progress output.
+- Tile-only feature extraction now uses non-blocking device transfers and
+  persistent DataLoader workers whenever worker processes are enabled.
+- `EncoderConfig` now exposes `prefetch_factor` and `persistent_workers`, and
+  both slide-level and tile-level extraction thread them through the shared
+  `build_execution_options(...)` helper so the tile input pipeline matches the
+  upstream `slide2vec` execution contract.
