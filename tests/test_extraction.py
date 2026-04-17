@@ -1060,7 +1060,16 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
         )
     ]
 
-    def _fake_run_with_coordinates(*, model_name, output_variant, preprocessing, execution, tiling_dir, slides):
+    def _fake_run_with_coordinates(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        preprocessing,
+        execution,
+        tiling_dir,
+        slides,
+    ):
         tile_artifact = _artifact(
             sample_id="s0",
             output_dir=Path(execution.output_dir),
@@ -1208,7 +1217,15 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
             )
         return artifacts
 
-    def _fake_aggregate_tiles(*, model_name, output_variant, tile_artifacts, preprocessing, execution):
+    def _fake_aggregate_tiles(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        tile_artifacts,
+        preprocessing,
+        execution,
+    ):
         for artifact in tile_artifacts:
             _artifact(sample_id=artifact.sample_id, output_dir=Path(execution.output_dir), kind="slide_embeddings", tensor=torch.ones(8))
 
@@ -1260,7 +1277,15 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
             )
         return artifacts
 
-    def _fake_aggregate_tiles(*, model_name, output_variant, tile_artifacts, preprocessing, execution):
+    def _fake_aggregate_tiles(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        tile_artifacts,
+        preprocessing,
+        execution,
+    ):
         assert output_variant is None
         slide_artifacts = []
         for artifact in tile_artifacts:
@@ -1319,7 +1344,15 @@ def test_slide_cache_population_does_not_forward_output_variant_override(tmp_pat
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
         torch.save(torch.ones(2, 8), cache_resolution.features_dir / "s0.pt")
 
-    def _fake_aggregate_tiles(*, model_name, output_variant, tile_artifacts, preprocessing, execution):
+    def _fake_aggregate_tiles(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        tile_artifacts,
+        preprocessing,
+        execution,
+    ):
         assert output_variant is None
         slide_artifacts = []
         for artifact in tile_artifacts:
@@ -1370,7 +1403,16 @@ def test_multi_gpu_uncached_extraction_uses_slide2vec_pipeline(tmp_path: Path):
         )
     ]
 
-    def _fake_run_with_coordinates(*, model_name, output_variant, preprocessing, execution, tiling_dir, slides):
+    def _fake_run_with_coordinates(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        preprocessing,
+        execution,
+        tiling_dir,
+        slides,
+    ):
         tile_artifact = _artifact(
             sample_id="s0",
             output_dir=Path(execution.output_dir),
@@ -1411,7 +1453,16 @@ def test_multi_gpu_slide_cache_population_uses_slide2vec_pipeline(tmp_path: Path
         )
     ]
 
-    def _fake_run_with_coordinates(*, model_name, output_variant, preprocessing, execution, tiling_dir, slides):
+    def _fake_run_with_coordinates(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        preprocessing,
+        execution,
+        tiling_dir,
+        slides,
+    ):
         output_dir = Path(execution.output_dir)
         tile_artifact = _artifact(sample_id="s0", output_dir=output_dir, kind="tile_embeddings", tensor=torch.ones(2, 8))
         slide_artifact = _artifact(sample_id="s0", output_dir=output_dir, kind="slide_embeddings", tensor=torch.ones(8))
@@ -1451,7 +1502,16 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         )
     ]
 
-    def _fake_run_with_coordinates(*, model_name, output_variant, preprocessing, execution, tiling_dir, slides):
+    def _fake_run_with_coordinates(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        preprocessing,
+        execution,
+        tiling_dir,
+        slides,
+    ):
         assert output_variant is None
         output_dir = Path(execution.output_dir)
         tile_artifact = _artifact(sample_id="s0", output_dir=output_dir, kind="tile_embeddings", tensor=torch.ones(2, 8))

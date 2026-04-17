@@ -112,3 +112,6 @@
   both slide-level and tile-level extraction thread them through the shared
   `build_execution_options(...)` helper so the tile input pipeline matches the
   upstream `slide2vec` execution contract.
+- The compact generated API reference now includes `prefetch_factor` and
+  `persistent_workers` in the `EncoderConfig` field list, keeping the checked-
+  in snapshot aligned with the dataclass definition.
