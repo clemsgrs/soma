@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from slide2vec import (
 )
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
-from soma.config import EncoderConfig, PreprocessingConfig
+from soma.config import EncoderConfig, PreprocessingConfig, PreviewConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.encoders.validation import resolve_encoder_precision
 
@@ -83,8 +84,8 @@ def build_preprocessing_config(
         "adaptive_batching": False,
         "use_supertiles": True,
         "segmentation": {
+            "method": preprocessing.tissue_method,
             "downsample": int(preprocessing.seg_downsample),
-            "use_hsv": preprocessing.tissue_method == "hsv",
         },
         "filtering": {
             "ref_tile_size": int(
@@ -94,6 +95,7 @@ def build_preprocessing_config(
             ),
             "a_t": int(preprocessing.a_t),
         },
+        "preview": asdict(preprocessing.preview),
     }
     if preprocessing.requested_region_size_px is not None:
         payload["requested_region_size_px"] = int(preprocessing.requested_region_size_px)
@@ -106,6 +108,10 @@ def build_preprocessing_config(
     allowed_fields = set(getattr(Slide2VecPreprocessingConfig, "__dataclass_fields__", {}))
     filtered = {key: value for key, value in payload.items() if key in allowed_fields}
     return Slide2VecPreprocessingConfig(**filtered)
+
+
+def build_preview_config(preview: dict[str, object] | None = None) -> PreviewConfig:
+    return PreviewConfig(**({} if preview is None else dict(preview)))
 
 
 def build_execution_options(

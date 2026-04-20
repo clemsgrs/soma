@@ -42,8 +42,8 @@ class _TileImageDataset(TorchDataset):
 
     def __getitem__(self, idx: int) -> tuple[object, str]:
         record = self._records[idx]
-        image = Image.open(record.image_path).convert("RGB")
-        return self._transform(image), record.sample_id
+        with Image.open(record.image_path) as image:
+            return self._transform(image.convert("RGB")), record.sample_id
 
 
 @contextlib.contextmanager
@@ -163,21 +163,16 @@ class TileFeatureExtractor:
             slide2vec_progress.emit_progress_log(
                 f"Tile DataLoader workers: {resolved_num_workers} ({worker_source})"
             )
-            loader = DataLoader(
-                image_dataset,
-                batch_size=self._encoder.batch_size,
-                shuffle=False,
-                num_workers=resolved_num_workers,
-                pin_memory=torch.cuda.is_available(),
-                **(
-                    {
-                        "persistent_workers": execution.persistent_workers,
-                        "prefetch_factor": execution.prefetch_factor,
-                    }
-                    if resolved_num_workers > 0
-                    else {}
-                ),
-            )
+            loader_kwargs = {
+                "batch_size": self._encoder.batch_size,
+                "shuffle": False,
+                "num_workers": resolved_num_workers,
+                "pin_memory": torch.cuda.is_available(),
+            }
+            if resolved_num_workers > 0:
+                loader_kwargs["persistent_workers"] = execution.persistent_workers
+                loader_kwargs["prefetch_factor"] = execution.prefetch_factor
+            loader = DataLoader(image_dataset, **loader_kwargs)
 
             logger.info(
                 "Encoding %d tile images with '%s' (precision=%s, batch_size=%d)...",

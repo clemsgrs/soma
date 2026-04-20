@@ -811,9 +811,11 @@ class FeatureExtractor:
             feature_path = ""
             if feature_status == "success":
                 feature_path = str((feature_root / f"{loaded.slide.sample_id}.pt").resolve())
+            annotation = str(getattr(loaded.tiling_result, "annotation", "tissue") or "tissue")
             rows.append(
                 {
                     "sample_id": loaded.slide.sample_id,
+                    "annotation": annotation,
                     "feature_status": feature_status,
                     "feature_path": feature_path,
                     "num_tiles": num_tiles,
@@ -832,6 +834,7 @@ class FeatureExtractor:
                     handle,
                     fieldnames=[
                         "sample_id",
+                        "annotation",
                         "feature_status",
                         "feature_path",
                         "num_tiles",
@@ -893,6 +896,7 @@ class FeatureExtractor:
                 handle,
                 fieldnames=[
                     "sample_id",
+                    "annotation",
                     "feature_status",
                     "feature_path",
                     "artifact_kind",
@@ -915,6 +919,7 @@ class FeatureExtractor:
                 writer.writerow(
                     {
                         "sample_id": sample_id,
+                        "annotation": "tissue",
                         "feature_status": feature_status,
                         "feature_path": feature_path,
                         "artifact_kind": artifact_kind,

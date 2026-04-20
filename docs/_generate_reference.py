@@ -23,6 +23,7 @@ from soma.config import (
     HeatmapConfig,
     PipelineConfig,
     PreprocessingConfig,
+    PreviewConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -114,6 +115,7 @@ def build_reference_rst() -> str:
 
     config_rows = [
         ("PreprocessingConfig", _field_names(PreprocessingConfig), "Whole-slide segmentation and tiling geometry"),
+        ("PreviewConfig", _field_names(PreviewConfig), "Preview rendering settings"),
         ("EncoderConfig", _field_names(EncoderConfig), "Foundation-model encoder selection and runtime behavior"),
         ("CacheConfig", _field_names(CacheConfig), "Shared cache policy"),
         ("AggregatorConfig", _field_names(AggregatorConfig), "MIL bag aggregation"),
