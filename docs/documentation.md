@@ -36,6 +36,8 @@
   page, and the getting-started guide only links to it.
 - The docs now include a dedicated API reference landing page that points to
   the compact generated reference and the main guide pages.
+- Preview generation now delegates to hs2p's separate overlay and coordinate
+  preview entrypoints instead of keeping a custom combined renderer in soma.
 - The public pipeline config now uses `evaluation` instead of `eval`, and the
   docs/examples/reporting helpers were updated to match the new field name.
 - The encoder config now exposes `allow_non_recommended_settings` so soma can

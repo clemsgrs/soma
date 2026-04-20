@@ -49,11 +49,12 @@ Guidance
 Tissue mask preview
 -------------------
 
-:func:`soma.preprocessing.preview.render_preview` produces a combined
-visualization of the tissue mask and tiling grid given a
-:class:`hs2p.wsi.reader.SlideReader`, a binary tissue mask array, and a
-:class:`hs2p.preprocessing.TilingResult`. It returns a NumPy image array that
-can be saved with :func:`soma.preprocessing.preview.save_preview`.
+Preview rendering is delegated to :mod:`hs2p` so soma does not keep a separate
+renderer in sync. Use the hs2p entrypoints directly, or import them from the
+soma package root:
 
-Use this during data exploration to verify that the segmentation threshold and
-tile size produce sensible results before committing to a full extraction run.
+- :func:`hs2p.wsi.overlay_mask_on_slide` for tissue-mask overlays
+- :func:`hs2p.wsi.save_overlay_preview` for writing mask preview images
+- :func:`hs2p.wsi.write_coordinate_preview` for tile-grid previews
+
+The rendering behavior itself lives upstream.

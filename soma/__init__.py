@@ -16,6 +16,11 @@ from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
+from hs2p.wsi import (
+    overlay_mask_on_slide,
+    save_overlay_preview,
+    write_coordinate_preview,
+)
 from soma.tile_extraction import TileFeatureExtractor
 from soma.training.slide_dataset import SlideBatch, SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel, SlideModelOutput
@@ -47,6 +52,9 @@ __all__ = [
     "PipelineResult",
     "train",
     "train_one_fold",
+    "overlay_mask_on_slide",
+    "save_overlay_preview",
+    "write_coordinate_preview",
     "SlideBatch",
     "SlideDataset",
     "SlideModel",

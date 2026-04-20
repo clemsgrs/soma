@@ -1,8 +1,13 @@
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
-from soma.preprocessing.preview import render_preview, save_preview
+from hs2p.wsi import (
+    overlay_mask_on_slide,
+    save_overlay_preview,
+    write_coordinate_preview,
+)
 
 __all__ = [
     "derive_preprocessing_for_aggregator",
-    "render_preview",
-    "save_preview",
+    "overlay_mask_on_slide",
+    "save_overlay_preview",
+    "write_coordinate_preview",
 ]
