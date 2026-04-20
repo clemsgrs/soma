@@ -290,6 +290,16 @@ def test_save_config_produces_valid_yaml(tmp_path: Path):
     assert raw["aggregator"]["params"]["hidden_dim"] == 128
 
 
+def test_preview_color_roundtrip_preserves_tuple(tmp_path: Path):
+    cfg = _make_pipeline_config()
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.preprocessing.preview.tissue_contour_color == (37, 94, 59)
+
+
 def test_evaluation_metrics_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(evaluation=EvalConfig(metrics=["auroc_macro", "f1_macro"]))
     yaml_path = tmp_path / "config.yaml"

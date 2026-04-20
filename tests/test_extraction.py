@@ -597,7 +597,7 @@ def test_tile_feature_extractor_does_not_require_eval_method(tmp_path: Path):
     with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE),
+            EncoderConfig(name=_TEST_TILE, num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -635,7 +635,7 @@ def test_tile_feature_extractor_keeps_encoder_inputs_in_float32(tmp_path: Path):
     with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE),
+            EncoderConfig(name=_TEST_TILE, num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -836,7 +836,7 @@ def test_tile_feature_extractor_renders_rich_progress_for_model_loading_and_batc
     ):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE, batch_size=2),
+            EncoderConfig(name=_TEST_TILE, batch_size=2, num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 

@@ -118,6 +118,11 @@
   progress output.
 - Tile-only feature extraction now uses non-blocking device transfers and
   persistent DataLoader workers whenever worker processes are enabled.
+- Config serialization now emits plain YAML-safe primitives and restores the
+  preview contour color tuple on load, so config round-trips no longer depend
+  on PyYAML's Python-specific tuple tags.
+- The Sphinx docs build now tolerates lean offline environments by treating
+  optional extensions and the Furo theme as optional rather than required.
 - `EncoderConfig` now exposes `prefetch_factor` and `persistent_workers`, and
   both slide-level and tile-level extraction thread them through the shared
   `build_execution_options(...)` helper so the tile input pipeline matches the
