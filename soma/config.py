@@ -13,13 +13,18 @@ from typing import Any
 
 import yaml
 from hs2p import PreviewConfig
-from hs2p.configs.loader import default_config as hs2p_default_config
 
 from soma.evaluation.metrics import resolve_metrics
 
 
 def _default_preview_config() -> PreviewConfig:
-    return PreviewConfig(**dict(hs2p_default_config.tiling.preview))
+    return PreviewConfig(
+        save_mask_preview=True,
+        save_tiling_preview=True,
+        downsample=32,
+        tissue_contour_color=(37, 94, 59),
+        mask_overlay_alpha=0.5,
+    )
 
 
 @dataclass(frozen=True)
