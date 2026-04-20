@@ -256,9 +256,9 @@ def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
     canonical_process_list = resolution.cache_dir / "process_list.csv"
     canonical_process_list.write_text(
         "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,"
-        "coordinates_npz_path,coordinates_meta_path,error,traceback\n"
-        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's1.npz'},{resolution.artifacts_dir / 's1.meta.json'},,\n"
-        f"s2,/slides/s2.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's2.npz'},{resolution.artifacts_dir / 's2.meta.json'},,\n",
+        "coordinates_npz_path,coordinates_meta_path,annotation,error,traceback\n"
+        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's1.npz'},{resolution.artifacts_dir / 's1.meta.json'},,,\n"
+        f"s2,/slides/s2.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's2.npz'},{resolution.artifacts_dir / 's2.meta.json'},,,\n",
         encoding="utf-8",
     )
     for sample_id in dataset.sample_ids:
@@ -280,8 +280,8 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     (live_dir / "s1.npz").write_bytes(b"npz")
     (live_dir / "s1.meta.json").write_text("{}", encoding="utf-8")
     (live_dir / "process_list.csv").write_text(
-        "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,error,traceback\n"
-        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{live_dir / 's1.npz'},{live_dir / 's1.meta.json'},,\n",
+        "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,annotation,error,traceback\n"
+        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{live_dir / 's1.npz'},{live_dir / 's1.meta.json'},,,\n",
         encoding="utf-8",
     )
     resolution = resolve_tiling_cache(

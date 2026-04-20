@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import urllib.request
 from pathlib import Path
 import sys
+
+
+def _optional_extension(module_name: str) -> list[str]:
+    try:
+        __import__(module_name)
+    except ImportError:
+        return []
+    return [module_name]
 
 
 def _fetch_latest_release(repo: str) -> tuple[str, str]:
@@ -45,9 +54,7 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
-    "sphinx_copybutton",
-    "sphinx_autodoc_typehints",
-]
+] + _optional_extension("sphinx_copybutton") + _optional_extension("sphinx_autodoc_typehints")
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
@@ -62,31 +69,31 @@ napoleon_google_docstring = True
 napoleon_numpy_docstring = False
 always_use_bars_union = True
 
-intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "torch": ("https://pytorch.org/docs/stable", None),
-    "numpy": ("https://numpy.org/doc/stable", None),
-    "pandas": ("https://pandas.pydata.org/docs", None),
-}
+# Keep the docs build self-contained in offline environments.
+intersphinx_mapping = {}
 
 html_theme = "furo"
 html_static_path = ["_static"]
 html_css_files = ["sidebar.css"]
 html_title = "soma"
 html_show_sourcelink = False
-_sidebar = [
-    "sidebar/brand.html",
-    "sidebar/search.html",
-    "sidebar/scroll-start.html",
-    "sidebar/github.html",
-    "sidebar/navigation.html",
-    "sidebar/ethical-ads.html",
-    "sidebar/scroll-end.html",
-    "sidebar/variant-selector.html",
-]
-html_sidebars = {"**": _sidebar}
-html_theme_options = {
-    "source_repository": "https://github.com/clemsgrs/soma",
-    "source_branch": "main",
-    "source_directory": "docs/",
-}
+if importlib.util.find_spec("furo") is not None:
+    html_theme = "furo"
+    _sidebar = [
+        "sidebar/brand.html",
+        "sidebar/search.html",
+        "sidebar/scroll-start.html",
+        "sidebar/github.html",
+        "sidebar/navigation.html",
+        "sidebar/ethical-ads.html",
+        "sidebar/scroll-end.html",
+        "sidebar/variant-selector.html",
+    ]
+    html_sidebars = {"**": _sidebar}
+    html_theme_options = {
+        "source_repository": "https://github.com/clemsgrs/soma",
+        "source_branch": "main",
+        "source_directory": "docs/",
+    }
+else:
+    html_theme = "alabaster"

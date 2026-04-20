@@ -36,6 +36,16 @@
   page, and the getting-started guide only links to it.
 - The docs now include a dedicated API reference landing page that points to
   the compact generated reference and the main guide pages.
+- Preview generation now delegates to hs2p's separate overlay and coordinate
+  preview entrypoints instead of keeping a custom combined renderer in soma.
+- Preview rendering defaults now live in `soma.config.PreviewConfig`, and the
+  slide2vec adapter forwards that config directly instead of borrowing defaults
+  from another package.
+- The cache regression fixtures now include slide2vec 4.3's required
+  `annotation` column on `process_list.csv` rows so the schema matches the
+  current tiling loader contract.
+- Feature-cache process lists now also write the `annotation` column so the
+  manifests stay compatible with the same slide2vec loader contract.
 - The public pipeline config now uses `evaluation` instead of `eval`, and the
   docs/examples/reporting helpers were updated to match the new field name.
 - The encoder config now exposes `allow_non_recommended_settings` so soma can
@@ -108,6 +118,11 @@
   progress output.
 - Tile-only feature extraction now uses non-blocking device transfers and
   persistent DataLoader workers whenever worker processes are enabled.
+- Config serialization now emits plain YAML-safe primitives and restores the
+  preview contour color tuple on load, so config round-trips no longer depend
+  on PyYAML's Python-specific tuple tags.
+- The Sphinx docs build now tolerates lean offline environments by treating
+  optional extensions and the Furo theme as optional rather than required.
 - `EncoderConfig` now exposes `prefetch_factor` and `persistent_workers`, and
   both slide-level and tile-level extraction thread them through the shared
   `build_execution_options(...)` helper so the tile input pipeline matches the

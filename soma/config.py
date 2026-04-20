@@ -12,8 +12,19 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from hs2p import PreviewConfig
 
 from soma.evaluation.metrics import resolve_metrics
+
+
+def _default_preview_config() -> PreviewConfig:
+    return PreviewConfig(
+        save_mask_preview=True,
+        save_tiling_preview=True,
+        downsample=32,
+        tissue_contour_color=(37, 94, 59),
+        mask_overlay_alpha=0.5,
+    )
 
 
 @dataclass(frozen=True)
@@ -41,6 +52,7 @@ class PreprocessingConfig:
     ref_tile_size_px: int | None = None
     a_t: int = 4
     tissue_mask_tissue_value: int = 1
+    preview: PreviewConfig = field(default_factory=_default_preview_config)
 
     # Hierarchical (HIPT-style) fields — auto-derived from aggregator config
     hierarchical: bool = False
@@ -243,25 +255,20 @@ class PipelineConfig:
 
 def _config_to_dict(config: PipelineConfig) -> dict[str, Any]:
     """Convert a PipelineConfig to a plain dict suitable for YAML."""
-    data = asdict(config)
-    _convert_paths(data)
-    return data
+    return _normalize_yaml_value(asdict(config))
 
 
-def _convert_paths(obj: Any) -> None:
-    """Recursively convert Path objects to strings in a dict."""
+def _normalize_yaml_value(obj: Any) -> Any:
+    """Recursively normalize dataclass output into YAML-safe primitives."""
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, tuple):
+        return [_normalize_yaml_value(value) for value in obj]
+    if isinstance(obj, list):
+        return [_normalize_yaml_value(value) for value in obj]
     if isinstance(obj, dict):
-        for key, value in obj.items():
-            if isinstance(value, Path):
-                obj[key] = str(value)
-            elif isinstance(value, (dict, list)):
-                _convert_paths(value)
-    elif isinstance(obj, list):
-        for i, value in enumerate(obj):
-            if isinstance(value, Path):
-                obj[i] = str(value)
-            elif isinstance(value, (dict, list)):
-                _convert_paths(value)
+        return {key: _normalize_yaml_value(value) for key, value in obj.items()}
+    return obj
 
 
 def save_config(config: PipelineConfig, path: Path | str) -> None:
@@ -270,7 +277,7 @@ def save_config(config: PipelineConfig, path: Path | str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
-        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 def load_config(path: Path | str) -> PipelineConfig:
@@ -303,12 +310,20 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
     encoder_data = data.get("encoder")
     heatmap_data = data.get("heatmaps")
+    preprocessing_data = dict(data.get("preprocessing", {}))
+    preview_data = dict(preprocessing_data.pop("preview", {}))
+    tissue_contour_color = preview_data.get("tissue_contour_color")
+    if isinstance(tissue_contour_color, list):
+        preview_data["tissue_contour_color"] = tuple(tissue_contour_color)
     return PipelineConfig(
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
         output_root=data["output_root"],
         dataset_type=data["dataset_type"],
-        preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
+        preprocessing=PreprocessingConfig(
+            **preprocessing_data,
+            preview=PreviewConfig(**preview_data),
+        ),
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,

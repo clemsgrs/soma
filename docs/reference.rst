@@ -37,8 +37,11 @@ Configuration dataclasses
      - Main fields
      - Purpose
    * - ``PreprocessingConfig``
-     - ``backend``, ``requested_tile_size_px``, ``requested_spacing_um``, ``requested_region_size_px``, ``region_tile_multiple``, ``read_tile_size_px``, ``read_region_size_px``, ``tissue_method``, ``tissue_threshold``, ``overlap``, ``seg_downsample``, ``tolerance``, ``ref_tile_size_px``, ``a_t``, ``tissue_mask_tissue_value``, ``hierarchical``, ``npatch``, ``hierarchical_patch_size_px``
+     - ``backend``, ``requested_tile_size_px``, ``requested_spacing_um``, ``requested_region_size_px``, ``region_tile_multiple``, ``read_tile_size_px``, ``read_region_size_px``, ``tissue_method``, ``tissue_threshold``, ``overlap``, ``seg_downsample``, ``tolerance``, ``ref_tile_size_px``, ``a_t``, ``tissue_mask_tissue_value``, ``preview``, ``hierarchical``, ``npatch``, ``hierarchical_patch_size_px``
      - Whole-slide segmentation and tiling geometry
+   * - ``PreviewConfig``
+     - ``save_mask_preview``, ``save_tiling_preview``, ``downsample``, ``tissue_contour_color``, ``mask_overlay_alpha``
+     - Preview rendering settings
    * - ``EncoderConfig``
      - ``name``, ``precision``, ``batch_size``, ``num_workers``, ``prefetch_factor``, ``persistent_workers``, ``adaptive_batching``, ``input_size``, ``spacing_um``, ``output_variant``, ``allow_non_recommended_settings``, ``save_tile_features``
      - Foundation-model encoder selection and runtime behavior

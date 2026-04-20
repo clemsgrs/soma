@@ -453,6 +453,7 @@ def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
 
     def _fake_build_preprocessing_config(preprocessing):
         captured["backend"] = preprocessing.backend
+        captured["tissue_method"] = preprocessing.tissue_method
         return SimpleNamespace()
 
     with patch("soma.extraction.build_preprocessing_config", side_effect=_fake_build_preprocessing_config), patch(
@@ -462,7 +463,28 @@ def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
     assert captured["backend"] == "openslide"
+    assert captured["tissue_method"] == "hsv"
     mock_instance.run.assert_called_once()
+
+
+def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
+    from soma.slide2vec_adapter import build_preprocessing_config
+
+    preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        tissue_method="otsu",
+    )
+
+    config = build_preprocessing_config(preprocessing)
+
+    assert config.segmentation["method"] == "otsu"
+    assert "use_hsv" not in config.segmentation
+    assert config.preview["save_mask_preview"] is True
+    assert config.preview["save_tiling_preview"] is True
+    assert config.preview["downsample"] == 32
+    assert config.preview["tissue_contour_color"] == (37, 94, 59)
+    assert config.preview["mask_overlay_alpha"] == pytest.approx(0.5)
 
 
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -575,7 +597,7 @@ def test_tile_feature_extractor_does_not_require_eval_method(tmp_path: Path):
     with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE),
+            EncoderConfig(name=_TEST_TILE, num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -613,7 +635,7 @@ def test_tile_feature_extractor_keeps_encoder_inputs_in_float32(tmp_path: Path):
     with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE),
+            EncoderConfig(name=_TEST_TILE, num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -814,7 +836,7 @@ def test_tile_feature_extractor_renders_rich_progress_for_model_loading_and_batc
     ):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE, batch_size=2),
+            EncoderConfig(name=_TEST_TILE, batch_size=2, num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -1039,8 +1061,10 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
     extractor._write_cached_process_list(feature_dir, cache_resolution=resolution)
 
     recorded = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
+    assert recorded.loc["s0", "annotation"] == "tissue"
     assert recorded.loc["s0", "feature_status"] == "success"
     assert recorded.loc["s0", "feature_path"].endswith("s0.pt")
+    assert recorded.loc["s1", "annotation"] == "tissue"
     assert recorded.loc["s1", "feature_status"] == "empty"
     assert pd.isna(recorded.loc["s1", "feature_path"])
 
@@ -1101,7 +1125,10 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
     source_process_list = tiling_dir / "process_list.csv"
-    source_process_list.write_text("sample_id,tiling_status\ns0,success\n", encoding="utf-8")
+    source_process_list.write_text(
+        "sample_id,annotation,tiling_status\ns0,tissue,success\n",
+        encoding="utf-8",
+    )
 
     execution = ExecutionOptions(
         output_dir=tmp_path / "features",
@@ -1109,7 +1136,10 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
         output_format="pt",
     )
 
-    updated_process_list = "sample_id,tiling_status,feature_status,feature_path\ns0,success,success,/tmp/features/s0.pt\n"
+    updated_process_list = (
+        "sample_id,annotation,tiling_status,feature_status,feature_path\n"
+        "s0,tissue,success,success,/tmp/features/s0.pt\n"
+    )
 
     with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
         "soma.extraction.Model.from_preset",
@@ -1142,8 +1172,8 @@ def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec
     tiling_dir.mkdir()
     source_process_list = tiling_dir / "process_list.csv"
     source_process_list.write_text(
-        "sample_id,tiling_status,feature_status,feature_path\n"
-        "s0,success,tbp,\n",
+        "sample_id,annotation,tiling_status,feature_status,feature_path\n"
+        "s0,tissue,success,tbp,\n",
         encoding="utf-8",
     )
 
