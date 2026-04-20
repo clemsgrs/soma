@@ -39,3 +39,4 @@
 - When defaulting tile DataLoader workers, log the resolved count through the shared progress reporter so HPC users can confirm the effective budget from runtime output.
 - When the tile loader has worker processes, set `persistent_workers=True` and use non-blocking H2D copies so the input pipeline can overlap CPU and GPU work.
 - When soma exposes slide2vec execution knobs on `EncoderConfig`, thread them through the shared `build_execution_options(...)` helper instead of reimplementing loader defaults in each extraction path.
+- Keep preview defaults in soma's own config surface when soma owns the preprocessing contract; do not reach across to another package just to fill in omitted preview fields.

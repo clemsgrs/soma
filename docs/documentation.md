@@ -38,6 +38,9 @@
   the compact generated reference and the main guide pages.
 - Preview generation now delegates to hs2p's separate overlay and coordinate
   preview entrypoints instead of keeping a custom combined renderer in soma.
+- Preview rendering defaults now live in `soma.config.PreviewConfig`, and the
+  slide2vec adapter forwards that config directly instead of borrowing defaults
+  from another package.
 - The cache regression fixtures now include slide2vec 4.3's required
   `annotation` column on `process_list.csv` rows so the schema matches the
   current tiling loader contract.

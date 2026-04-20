@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 
-from hs2p import PreviewConfig, SlideSpec
-from hs2p.configs.loader import default_config as hs2p_default_config
+from hs2p import SlideSpec
 from hs2p.preprocessing import validate_tiling_result_provenance
 
 from slide2vec import (
@@ -15,7 +15,7 @@ from slide2vec import (
 )
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
-from soma.config import EncoderConfig, PreprocessingConfig
+from soma.config import EncoderConfig, PreprocessingConfig, PreviewConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.encoders.validation import resolve_encoder_precision
 
@@ -95,6 +95,7 @@ def build_preprocessing_config(
             ),
             "a_t": int(preprocessing.a_t),
         },
+        "preview": asdict(preprocessing.preview),
     }
     if preprocessing.requested_region_size_px is not None:
         payload["requested_region_size_px"] = int(preprocessing.requested_region_size_px)
@@ -109,24 +110,8 @@ def build_preprocessing_config(
     return Slide2VecPreprocessingConfig(**filtered)
 
 
-def build_preview_config(preview: dict[str, object]) -> PreviewConfig:
-    default_preview = hs2p_default_config.tiling.preview
-    return PreviewConfig(
-        save_mask_preview=bool(preview.get("save_mask_preview", default_preview.save_mask_preview)),
-        save_tiling_preview=bool(
-            preview.get("save_tiling_preview", default_preview.save_tiling_preview)
-        ),
-        downsample=int(preview.get("downsample", default_preview.downsample)),
-        tissue_contour_color=tuple(
-            int(channel)
-            for channel in preview.get(
-                "tissue_contour_color", default_preview.tissue_contour_color
-            )
-        ),
-        mask_overlay_alpha=float(
-            preview.get("mask_overlay_alpha", default_preview.mask_overlay_alpha)
-        ),
-    )
+def build_preview_config(preview: dict[str, object] | None = None) -> PreviewConfig:
+    return PreviewConfig(**({} if preview is None else dict(preview)))
 
 
 def build_execution_options(

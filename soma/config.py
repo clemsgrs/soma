@@ -12,8 +12,14 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from hs2p import PreviewConfig
+from hs2p.configs.loader import default_config as hs2p_default_config
 
 from soma.evaluation.metrics import resolve_metrics
+
+
+def _default_preview_config() -> PreviewConfig:
+    return PreviewConfig(**dict(hs2p_default_config.tiling.preview))
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,7 @@ class PreprocessingConfig:
     ref_tile_size_px: int | None = None
     a_t: int = 4
     tissue_mask_tissue_value: int = 1
+    preview: PreviewConfig = field(default_factory=_default_preview_config)
 
     # Hierarchical (HIPT-style) fields — auto-derived from aggregator config
     hierarchical: bool = False
@@ -303,12 +310,17 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
     encoder_data = data.get("encoder")
     heatmap_data = data.get("heatmaps")
+    preprocessing_data = dict(data.get("preprocessing", {}))
+    preview_data = dict(preprocessing_data.pop("preview", {}))
     return PipelineConfig(
         dataset_csv=data["dataset_csv"],
         splits_csv=data["splits_csv"],
         output_root=data["output_root"],
         dataset_type=data["dataset_type"],
-        preprocessing=PreprocessingConfig(**data.get("preprocessing", {})),
+        preprocessing=PreprocessingConfig(
+            **preprocessing_data,
+            preview=PreviewConfig(**preview_data),
+        ),
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
