@@ -923,7 +923,7 @@ class TestPipeline:
         from slide2vec.encoders.base import SlideEncoder, TileEncoder
         from slide2vec.encoders.registry import encoder_registry
         from soma.slide2vec_adapter import LoadedTiling
-        from soma.cache import record_feature_dim, record_sample_cache_stems
+        from soma.cache import record_feature_dim, record_sample_identity_signatures
         from soma.extraction import FeatureExtractor
 
         test_tile = "_test_pipeline_cache_tile"
@@ -1075,7 +1075,7 @@ class TestPipeline:
             for i in range(NUM_SAMPLES):
                 torch.save(torch.ones(2, D), cache_resolution.feature_path_for_id(f"s{i}"))
             record_feature_dim(cache_resolution, D)
-            record_sample_cache_stems(cache_resolution, [f"s{i}" for i in range(NUM_SAMPLES)])
+            record_sample_identity_signatures(cache_resolution, [f"s{i}" for i in range(NUM_SAMPLES)])
 
         def _fake_populate_slide_cache(
             self_,
@@ -1091,7 +1091,7 @@ class TestPipeline:
             for i in range(NUM_SAMPLES):
                 torch.save(torch.ones(D), slide_cache.feature_path_for_id(f"s{i}"))
             record_feature_dim(slide_cache, D)
-            record_sample_cache_stems(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
+            record_sample_identity_signatures(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
 
         with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
             "soma.extraction.torch.cuda.device_count", return_value=1

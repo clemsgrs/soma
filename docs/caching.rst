@@ -35,10 +35,18 @@ extraction.
 - Tiling reuse keys include sample identity
   ``(sample_id, image_path, mask_path)`` plus resolved preprocessing settings.
 - Feature payloads are reused per sample (or per patient for patient-level
-  embeddings), not per dataset.
+  embeddings) when the encoder and preprocessing match.
 - Feature reuse keys include sample identity
   ``(sample_id, image_path, mask_path)`` plus encoder/preprocessing/execution
   settings.
+- Cache metadata stores a normalized ``feature_type``:
+
+  - ``tile``: 1-D embeddings for ``dataset_type="tile"``
+  - ``bag``: 2-D WSI tile-bag embeddings
+  - ``slide``: 1-D slide-level embeddings
+  - ``patient``: 1-D patient-level embeddings
+  - ``hierarchical``: 3-D hierarchical embeddings
+
 - Two datasets can therefore reuse the same cached feature payload for shared
   samples while still recomputing non-overlapping samples.
 - Cache hits do not replace the run directory, which still records one

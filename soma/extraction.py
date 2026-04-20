@@ -37,7 +37,7 @@ from soma.cache import (
     probe_resolved_backends,
     record_empty_sample_ids,
     record_feature_dim,
-    record_sample_cache_stems,
+    record_sample_identity_signatures,
     preprocessing_backend_provenance,
     resolve_cache_root,
     resolve_hierarchical_cache,
@@ -221,10 +221,22 @@ def _feature_kind_from_rank(feature_rank: int) -> str:
     if int(feature_rank) == 1:
         return "slide"
     if int(feature_rank) == 2:
-        return "tile"
+        return "bag"
     if int(feature_rank) == 3:
         return "hierarchical"
     raise ValueError(f"Unsupported feature rank {feature_rank}")
+
+
+def _feature_rank_from_type(feature_type: str) -> int:
+    if feature_type == "tile":
+        return 1
+    if feature_type == "bag":
+        return 2
+    if feature_type in {"slide", "patient"}:
+        return 1
+    if feature_type == "hierarchical":
+        return 3
+    raise ValueError(f"Unsupported feature type {feature_type}")
 
 
 def _backend_provenance_from_mapping(
@@ -871,10 +883,11 @@ class FeatureExtractor:
             "patient": "patient_embeddings",
         }[cache_resolution.cache_kind]
         cache_dir = cache_resolution.cache_dir.resolve()
-        feature_rank = int(metadata["feature_rank"])
+        feature_type = str(metadata["feature_type"])
+        feature_rank = _feature_rank_from_type(feature_type)
         feature_dim = metadata.get("feature_dim")
         output_variant = metadata.get("execution", {}).get("output_variant")
-        feature_kind = _feature_kind_from_rank(feature_rank)
+        feature_kind = feature_type
         with process_list_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
                 handle,
@@ -1502,7 +1515,7 @@ class FeatureExtractor:
             feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
             written_ids.add(cache_id)
         if written_ids:
-            record_sample_cache_stems(cache_resolution, sorted(written_ids))
+            record_sample_identity_signatures(cache_resolution, sorted(written_ids))
         return feature_dim
 
     def _populate_tile_cache(

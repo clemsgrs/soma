@@ -122,3 +122,9 @@
 - The compact generated API reference now includes `prefetch_factor` and
   `persistent_workers` in the `EncoderConfig` field list, keeping the checked-
   in snapshot aligned with the dataclass definition.
+- Feature-cache metadata now records only `feature_type` (for example `tile`,
+  `bag`, `slide`) and derives rank from that type at validation/read time
+  instead of persisting a duplicate `feature_rank` metadata field.
+- Cache lookup validation now uses metadata + identity + path existence checks
+  only (no per-sample tensor or tiling payload deserialization), so cache-hit
+  checks are significantly faster on large runs.

@@ -14,11 +14,10 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import torch
-from hs2p.preprocessing import validate_tiling_result_provenance
 from hs2p.wsi.reader import resolve_backend
 from slide2vec.artifacts import TileEmbeddingArtifact
 import slide2vec.progress as slide2vec_progress
-from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
+from slide2vec.utils.tiling_io import load_tiling_process_df
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -28,6 +27,13 @@ CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
 PROCESS_LIST_NAME = "process_list.csv"
 SCHEMA_VERSION = "v1"
+_FEATURE_TYPE_TO_RANK = {
+    "tile": 1,
+    "bag": 2,
+    "slide": 1,
+    "patient": 1,
+    "hierarchical": 3,
+}
 
 
 def _resolve_encoder_precision(
@@ -72,18 +78,18 @@ class FeatureCacheResolution(BaseCacheResolution):
     def missing_sample_ids(self) -> list[str]:
         expected = self.cache_ids
         empty = self.empty_sample_ids
-        cached_stem_by_id = {
-            str(cache_id): str(stem)
-            for cache_id, stem in self.metadata.get("sample_cache_stem_by_id", {}).items()
+        cached_signature_by_id = {
+            str(cache_id): str(signature)
+            for cache_id, signature in self.metadata.get("sample_identity_signature_by_id", {}).items()
         }
         missing: list[str] = []
         for cache_id in expected:
             cache_id = str(cache_id)
             if cache_id in empty:
                 continue
-            expected_stem = str(self.cache_stem_by_id[cache_id])
-            cached_stem = cached_stem_by_id.get(cache_id)
-            if cached_stem is None or cached_stem != expected_stem:
+            expected_signature = str(self.cache_stem_by_id[cache_id])
+            cached_signature = cached_signature_by_id.get(cache_id)
+            if cached_signature is None or cached_signature != expected_signature:
                 missing.append(cache_id)
                 continue
             if not self.feature_path_for_id(cache_id).is_file():
@@ -245,13 +251,15 @@ def build_tile_cache_key(
     preprocessing: PreprocessingConfig | None = None,
     execution: EncoderConfig,
     output_variant: str | None = None,
-    feature_rank: int = 2,
+    feature_type: str = "bag",
 ) -> str:
+    if feature_type not in _FEATURE_TYPE_TO_RANK:
+        raise ValueError(f"Unsupported feature_type '{feature_type}' for tile cache key")
     payload = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "tile",
         "tile_encoder_name": tile_encoder_name,
-        "feature_rank": int(feature_rank),
+        "feature_type": str(feature_type),
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
@@ -650,35 +658,35 @@ def _validate_tiling_cache_contents(
                     complete=False,
                     reason=f"artifact path escapes cache entry for {sample_id}",
                 )
-        try:
-            tiling_result = load_tiling_result_from_row(row)
-            validate_tiling_result_provenance(
-                tiling_result,
-                sample_id=sample.sample_id,
-                image_path=sample.image_path,
-                mask_path=sample.mask_path,
-                tissue_mask_tissue_value=(
-                    int(preprocessing.tissue_mask_tissue_value)
-                    if sample.mask_path is not None
-                    else None
-                ),
-            )
-        except Exception:
-            return CacheValidationResult(complete=False, reason=f"invalid tiling provenance for {sample_id}")
+        row_image_path = row.get("image_path")
+        if row_image_path is not None and str(row_image_path) != str(sample.image_path):
+            return CacheValidationResult(complete=False, reason=f"image path mismatch for {sample_id}")
+        row_mask_path = row.get("mask_path")
+        expected_mask_path = "" if sample.mask_path is None else str(sample.mask_path)
+        if row_mask_path is not None:
+            row_mask_str = str(row_mask_path)
+            if row_mask_str.lower() == "nan":
+                row_mask_str = ""
+            if row_mask_str != expected_mask_path:
+                return CacheValidationResult(complete=False, reason=f"mask path mismatch for {sample_id}")
         expected_requested_tile_size_px = (
             preprocessing.requested_region_size_px
             if preprocessing.requested_region_size_px is not None
             else preprocessing.requested_tile_size_px
         )
-        if int(getattr(tiling_result, "requested_tile_size_px", -1)) != int(expected_requested_tile_size_px):
-            return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
-        if float(getattr(tiling_result, "requested_spacing_um", -1.0)) != float(preprocessing.requested_spacing_um):
-            return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
+        row_tile_size = row.get("requested_tile_size_px")
+        if row_tile_size is not None and str(row_tile_size).strip() not in {"", "nan", "NaN"}:
+            if int(float(row_tile_size)) != int(expected_requested_tile_size_px):
+                return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
+        row_spacing = row.get("requested_spacing_um")
+        if row_spacing is not None and str(row_spacing).strip() not in {"", "nan", "NaN"}:
+            if float(row_spacing) != float(preprocessing.requested_spacing_um):
+                return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
         expected_backend = None
         if expected_backend_provenance is not None:
             expected_backend = expected_backend_provenance.get("backend_by_sample_id", {}).get(str(sample_id))
-        actual_backend = str(getattr(tiling_result, "backend", row.get("backend")))
-        if expected_backend is not None and str(expected_backend) != actual_backend:
+        actual_backend = row.get("backend")
+        if expected_backend is not None and str(expected_backend) != str(actual_backend):
             return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
     return CacheValidationResult(complete=True)
 
@@ -864,15 +872,17 @@ def _build_tile_cache_metadata(
     preprocessing: PreprocessingConfig | None,
     execution: EncoderConfig,
     output_variant: str | None = None,
-    feature_rank: int = 2,
+    feature_type: str = "bag",
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if feature_type not in _FEATURE_TYPE_TO_RANK:
+        raise ValueError(f"Unsupported feature_type '{feature_type}' for tile cache metadata")
     key = build_tile_cache_key(
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
-        feature_rank=feature_rank,
+        feature_type=feature_type,
     )
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -880,15 +890,14 @@ def _build_tile_cache_metadata(
         "cache_key": key,
         "encoder_name": tile_encoder_name,
         "encoder_level": "tile",
-        "preprocessing": preprocessing_signature(preprocessing),
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
             output_variant=output_variant,
         ),
-        "feature_rank": int(feature_rank),
+        "feature_type": str(feature_type),
         "feature_dim": None,
-        "sample_cache_stem_by_id": {},
+        "sample_identity_signature_by_id": {},
     }
     if preprocessing is not None:
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
@@ -925,9 +934,9 @@ def _build_slide_cache_metadata(
             encoder_name=slide_encoder_name,
             output_variant=output_variant,
         ),
-        "feature_rank": 1,
+        "feature_type": "slide",
         "feature_dim": None,
-        "sample_cache_stem_by_id": {},
+        "sample_identity_signature_by_id": {},
     }
     if backend_provenance is not None:
         metadata.update(backend_provenance)
@@ -962,9 +971,9 @@ def _build_patient_cache_metadata(
             encoder_name=patient_encoder_name,
             output_variant=output_variant,
         ),
-        "feature_rank": 1,
+        "feature_type": "patient",
         "feature_dim": None,
-        "sample_cache_stem_by_id": {},
+        "sample_identity_signature_by_id": {},
     }
     if backend_provenance is not None:
         metadata.update(backend_provenance)
@@ -997,9 +1006,9 @@ def _build_hierarchical_cache_metadata(
             encoder_name=tile_encoder_name,
             output_variant=output_variant,
         ),
-        "feature_rank": 3,
+        "feature_type": "hierarchical",
         "feature_dim": None,
-        "sample_cache_stem_by_id": {},
+        "sample_identity_signature_by_id": {},
     }
     if backend_provenance is not None:
         metadata.update(backend_provenance)
@@ -1010,7 +1019,7 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     comparable = dict(metadata)
     comparable.pop("feature_dim", None)
     comparable.pop("empty_sample_ids", None)
-    comparable.pop("sample_cache_stem_by_id", None)
+    comparable.pop("sample_identity_signature_by_id", None)
     return comparable
 
 
@@ -1121,43 +1130,50 @@ def _validate_feature_cache_contents(
     metadata: dict[str, Any],
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
-) -> CacheValidationResult:
-    expected_rank = int(metadata["feature_rank"])
-    feature_dim = metadata.get("feature_dim")
+) -> tuple[CacheValidationResult, int, int]:
+    feature_type = str(metadata.get("feature_type", ""))
+    if feature_type not in _FEATURE_TYPE_TO_RANK:
+        return CacheValidationResult(complete=False, reason="unsupported feature_type metadata"), 0, 0
     empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
     expected_ids = {str(cache_id) for cache_id in cache_ids}
     if not empty_sample_ids.issubset(expected_ids):
-        return CacheValidationResult(complete=False, reason="empty sample metadata mismatch")
-    cached_stem_by_id = {
-        str(cache_id): str(stem)
-        for cache_id, stem in metadata.get("sample_cache_stem_by_id", {}).items()
+        return CacheValidationResult(complete=False, reason="empty sample metadata mismatch"), 0, 0
+    cached_signature_by_id = {
+        str(cache_id): str(signature)
+        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
     }
+    expected = 0
+    present = 0
+    reason: str | None = None
     for cache_id in cache_ids:
         cache_id = str(cache_id)
         path = features_dir / f"{cache_id}.pt"
         if cache_id in empty_sample_ids:
             if path.is_file():
-                return CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}")
+                return (
+                    CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
+                    present,
+                    expected,
+                )
+            continue
+        expected += 1
+        expected_signature = str(cache_stem_by_id[cache_id])
+        cached_signature = cached_signature_by_id.get(cache_id)
+        if cached_signature is None:
+            if reason is None:
+                reason = f"missing cache identity for {cache_id}"
+            continue
+        if cached_signature != expected_signature:
+            if reason is None:
+                reason = f"cache identity mismatch for {cache_id}"
             continue
         if not path.is_file():
-            return CacheValidationResult(complete=False, reason=f"missing feature for {cache_id}")
-        expected_stem = str(cache_stem_by_id[cache_id])
-        cached_stem = cached_stem_by_id.get(cache_id)
-        if cached_stem is None:
-            return CacheValidationResult(complete=False, reason=f"missing cache identity for {cache_id}")
-        if cached_stem != expected_stem:
-            return CacheValidationResult(complete=False, reason=f"cache identity mismatch for {cache_id}")
-        try:
-            tensor = torch.load(path, weights_only=True, map_location="cpu")
-        except Exception:
-            return CacheValidationResult(complete=False, reason=f"corrupt feature for {cache_id}")
-        if tensor.ndim != expected_rank:
-            return CacheValidationResult(complete=False, reason=f"rank mismatch for {cache_id}")
-        if feature_dim is not None:
-            inferred = tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1]
-            if int(feature_dim) != int(inferred):
-                return CacheValidationResult(complete=False, reason=f"dim mismatch for {cache_id}")
-    return CacheValidationResult(complete=True)
+            if reason is None:
+                reason = f"missing feature for {cache_id}"
+            continue
+        present += 1
+    complete = reason is None
+    return CacheValidationResult(complete=complete, reason=reason), present, expected
 
 
 def _emit_cache_state_log(
@@ -1193,34 +1209,6 @@ def _emit_cache_state_log(
     slide2vec_progress.emit_progress_log(message)
 
 
-def _feature_cache_coverage(
-    *,
-    cache_ids: Sequence[str],
-    cache_stem_by_id: dict[str, str],
-    metadata: dict[str, Any],
-    features_dir: Path,
-) -> tuple[int, int]:
-    empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
-    cached_stem_by_id = {
-        str(cache_id): str(stem)
-        for cache_id, stem in metadata.get("sample_cache_stem_by_id", {}).items()
-    }
-    present = 0
-    expected = 0
-    for cache_id in cache_ids:
-        cache_id = str(cache_id)
-        if cache_id in empty_sample_ids:
-            continue
-        expected += 1
-        expected_stem = str(cache_stem_by_id[cache_id])
-        cached_stem = cached_stem_by_id.get(cache_id)
-        if cached_stem != expected_stem:
-            continue
-        if (features_dir / f"{cache_id}.pt").is_file():
-            present += 1
-    return present, expected
-
-
 def _resolve_cache(
     *,
     cache_root: Path,
@@ -1250,17 +1238,11 @@ def _resolve_cache(
         )
         if mismatch_message:
             raise ValueError(mismatch_message)
-        validation = _validate_feature_cache_contents(
+        validation, present, expected = _validate_feature_cache_contents(
             features_dir=features_dir,
             metadata=existing,
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
-        )
-        present, expected = _feature_cache_coverage(
-            cache_ids=cache_ids,
-            cache_stem_by_id=cache_stem_by_id,
-            metadata=existing,
-            features_dir=features_dir,
         )
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
@@ -1320,7 +1302,7 @@ def resolve_tile_cache(
     preprocessing: PreprocessingConfig | None,
     execution: EncoderConfig,
     output_variant: str | None = None,
-    feature_rank: int = 2,
+    feature_type: str = "bag",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
@@ -1329,7 +1311,7 @@ def resolve_tile_cache(
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
-        feature_rank=feature_rank,
+        feature_type=feature_type,
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _sample_stems_for_kind(
@@ -1509,7 +1491,7 @@ def record_empty_sample_ids(resolution: FeatureCacheResolution, empty_sample_ids
     _write_metadata(resolution.metadata_path, metadata)
 
 
-def record_sample_cache_stems(
+def record_sample_identity_signatures(
     resolution: FeatureCacheResolution,
     cache_ids: Sequence[str],
 ) -> None:
@@ -1521,13 +1503,13 @@ def record_sample_cache_stems(
         if metadata_path.is_file()
         else dict(resolution.metadata)
     )
-    stem_map = {
-        str(cache_id): str(stem)
-        for cache_id, stem in metadata.get("sample_cache_stem_by_id", {}).items()
+    signature_map = {
+        str(cache_id): str(signature)
+        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
     }
     for cache_id in cache_ids:
         cache_id = str(cache_id)
         if cache_id in resolution.cache_stem_by_id:
-            stem_map[cache_id] = str(resolution.cache_stem_by_id[cache_id])
-    metadata["sample_cache_stem_by_id"] = stem_map
+            signature_map[cache_id] = str(resolution.cache_stem_by_id[cache_id])
+    metadata["sample_identity_signature_by_id"] = signature_map
     _write_metadata(metadata_path, metadata)

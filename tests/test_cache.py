@@ -20,7 +20,7 @@ from soma.cache import (
     build_tile_cache_key,
     manifest_digest,
     probe_resolved_backends,
-    record_sample_cache_stems,
+    record_sample_identity_signatures,
     resolve_cache_root,
     resolve_feature_payload_dir,
     resolve_tiling_cache,
@@ -332,15 +332,6 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
                 ]
             ),
         ),
-        patch(
-            "soma.cache.load_tiling_result_from_row",
-            return_value=SimpleNamespace(
-                requested_tile_size_px=1792,
-                requested_spacing_um=0.5,
-                backend="openslide",
-            ),
-        ),
-        patch("soma.cache.validate_tiling_result_provenance", return_value=None),
     ):
         refreshed = resolve_tiling_cache(
             cache_root=cache_root,
@@ -395,7 +386,7 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
     metadata["empty_sample_ids"] = ["s2"]
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
-    record_sample_cache_stems(resolution, ["s1"])
+    record_sample_identity_signatures(resolution, ["s1"])
 
     reused = resolve_tile_cache(
         cache_root=cache_root,
@@ -470,7 +461,7 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     for sample_id in dataset.sample_ids:
         torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
-    record_sample_cache_stems(resolution, list(dataset.sample_ids))
+    record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     reused = resolve_tile_cache(
         cache_root=cache_root,
@@ -497,7 +488,7 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
-    record_sample_cache_stems(resolution, ["s1"])
+    record_sample_identity_signatures(resolution, ["s1"])
 
     resumed = resolve_tile_cache(
         cache_root=cache_root,
@@ -524,7 +515,7 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
-    record_sample_cache_stems(resolution, ["s1"])
+    record_sample_identity_signatures(resolution, ["s1"])
 
     with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tile_cache(
@@ -810,7 +801,7 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     for sample_id in dataset.sample_ids:
         torch.save(torch.randn(4, 9, 16), resolution.feature_path_for_id(sample_id))
-    record_sample_cache_stems(resolution, list(dataset.sample_ids))
+    record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     reused = resolve_hierarchical_cache(
         cache_root=cache_root,
@@ -854,7 +845,7 @@ def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path)
     metadata_a["feature_dim"] = 8
     resolution_a.metadata_path.write_text(json.dumps(metadata_a, indent=2, sort_keys=True))
     torch.save(torch.randn(4, 8), resolution_a.feature_path_for_id("s1"))
-    record_sample_cache_stems(resolution_a, ["s1"])
+    record_sample_identity_signatures(resolution_a, ["s1"])
 
     resolution_b = resolve_tile_cache(
         cache_root=cache_root,
@@ -890,7 +881,7 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
     metadata_a["feature_dim"] = 8
     resolution_a.metadata_path.write_text(json.dumps(metadata_a, indent=2, sort_keys=True))
     torch.save(torch.randn(4, 8), resolution_a.feature_path_for_id("s1"))
-    record_sample_cache_stems(resolution_a, ["s1"])
+    record_sample_identity_signatures(resolution_a, ["s1"])
 
     resolution_b = resolve_tile_cache(
         cache_root=cache_root,

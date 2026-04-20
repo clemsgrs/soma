@@ -17,7 +17,7 @@ from slide2vec.inference import load_model
 from soma.cache import (
     FeatureCacheResolution,
     record_feature_dim,
-    record_sample_cache_stems,
+    record_sample_identity_signatures,
     resolve_cache_root,
     resolve_tile_cache,
 )
@@ -112,7 +112,7 @@ class TileFeatureExtractor:
                 preprocessing=None,
                 execution=self._encoder,
                 output_variant=self._encoder.output_variant,
-                feature_rank=1,
+                feature_type="tile",
             )
             if cache_resolution.complete:
                 logger.info(
@@ -230,7 +230,7 @@ class TileFeatureExtractor:
 
         if cache_resolution is not None and feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
-            record_sample_cache_stems(
+            record_sample_identity_signatures(
                 cache_resolution,
                 [record.sample_id for record in records],
             )

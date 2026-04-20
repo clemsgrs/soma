@@ -12,7 +12,7 @@ import torch
 from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
 
-from soma.cache import CacheConfig, record_sample_cache_stems
+from soma.cache import CacheConfig, record_sample_identity_signatures
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
@@ -422,7 +422,7 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
     fake_store_dir = tmp_path / "outputs" / "feature_cache" / "tile" / "abc123"
     (fake_store_dir / "features").mkdir(parents=True, exist_ok=True)
     (fake_store_dir / "cache_metadata.json").write_text(
-        '{"feature_rank": 2, "feature_dim": 8, "sample_ids": ["s0"], "cache_key": "abc123", "encoder_name": "_cutover_tile", "execution": {"output_variant": "default"}}',
+        '{"feature_type": "bag", "feature_dim": 8, "sample_ids": ["s0"], "cache_key": "abc123", "encoder_name": "_cutover_tile", "execution": {"output_variant": "default"}}',
         encoding="utf-8",
     )
     torch.save(torch.ones(2, 8), fake_store_dir / "features" / "s0.pt")
@@ -1002,8 +1002,8 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
     recorded = pd.read_csv(tmp_path / "features" / "process_list.csv").set_index("sample_id")
     assert recorded.loc["s0", "encoder_name"] == _TEST_TILE
     assert recorded.loc["s0", "output_variant"] == "default"
-    assert recorded.loc["s0", "feature_kind"] == "tile"
-    assert recorded.loc["s1", "feature_kind"] == "tile"
+    assert recorded.loc["s0", "feature_kind"] == "bag"
+    assert recorded.loc["s1", "feature_kind"] == "bag"
 
 
 def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
@@ -1023,7 +1023,7 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
         metadata={
             "sample_ids": ["s0", "s1"],
             "empty_sample_ids": ["s1"],
-            "feature_rank": 2,
+            "feature_type": "bag",
             "feature_dim": 8,
             "encoder_name": _TEST_TILE,
             "execution": {"output_variant": "default"},
@@ -1345,7 +1345,7 @@ def test_slide_cache_population_does_not_forward_output_variant_override(tmp_pat
     ):
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
         torch.save(torch.ones(2, 8), cache_resolution.feature_path_for_id("s0"))
-        record_sample_cache_stems(cache_resolution, ["s0"])
+        record_sample_identity_signatures(cache_resolution, ["s0"])
 
     def _fake_aggregate_tiles(
         *,
@@ -1719,7 +1719,7 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
     ):
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
         torch.save(torch.ones(1, 4, 8), cache_resolution.feature_path_for_id("s0"))
-        record_sample_cache_stems(cache_resolution, ["s0"])
+        record_sample_identity_signatures(cache_resolution, ["s0"])
 
     with patch("soma.extraction.load_tilings", return_value=loaded), patch(
         "soma.extraction._validate_runtime"
