@@ -482,6 +482,18 @@ def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
     assert "use_hsv" not in config.segmentation
 
 
+def test_build_preview_config_uses_defaults_when_preview_is_empty():
+    from soma.slide2vec_adapter import build_preview_config
+
+    preview = build_preview_config({})
+
+    assert preview.save_mask_preview is True
+    assert preview.save_tiling_preview is True
+    assert preview.downsample == 32
+    assert preview.tissue_contour_color == (37, 94, 59)
+    assert preview.mask_overlay_alpha == pytest.approx(0.5)
+
+
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     dataset = _make_dataset(tmp_path, with_mask=True)
     tiling_dir = tmp_path / "tiling"

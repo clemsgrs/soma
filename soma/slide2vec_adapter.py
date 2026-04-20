@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from hs2p import SlideSpec
+from hs2p import PreviewConfig, SlideSpec
+from hs2p.configs.loader import default_config as hs2p_default_config
 from hs2p.preprocessing import validate_tiling_result_provenance
 
 from slide2vec import (
@@ -106,6 +107,26 @@ def build_preprocessing_config(
     allowed_fields = set(getattr(Slide2VecPreprocessingConfig, "__dataclass_fields__", {}))
     filtered = {key: value for key, value in payload.items() if key in allowed_fields}
     return Slide2VecPreprocessingConfig(**filtered)
+
+
+def build_preview_config(preview: dict[str, object]) -> PreviewConfig:
+    default_preview = hs2p_default_config.tiling.preview
+    return PreviewConfig(
+        save_mask_preview=bool(preview.get("save_mask_preview", default_preview.save_mask_preview)),
+        save_tiling_preview=bool(
+            preview.get("save_tiling_preview", default_preview.save_tiling_preview)
+        ),
+        downsample=int(preview.get("downsample", default_preview.downsample)),
+        tissue_contour_color=tuple(
+            int(channel)
+            for channel in preview.get(
+                "tissue_contour_color", default_preview.tissue_contour_color
+            )
+        ),
+        mask_overlay_alpha=float(
+            preview.get("mask_overlay_alpha", default_preview.mask_overlay_alpha)
+        ),
+    )
 
 
 def build_execution_options(
