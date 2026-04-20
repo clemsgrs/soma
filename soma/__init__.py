@@ -17,7 +17,7 @@ from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
-from hs2p.wsi import (
+from soma.preprocessing import (
     overlay_mask_on_slide,
     save_overlay_preview,
     write_coordinate_preview,

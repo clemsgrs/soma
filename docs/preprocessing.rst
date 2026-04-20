@@ -49,12 +49,10 @@ Guidance
 Tissue mask preview
 -------------------
 
-Preview rendering is delegated to :mod:`hs2p` so soma does not keep a separate
-renderer in sync. Use the hs2p entrypoints directly, or import them from the
-soma package root:
+Preview rendering is inherited from :mod:`hs2p`:
 
-- :func:`hs2p.wsi.overlay_mask_on_slide` for tissue-mask overlays
-- :func:`hs2p.wsi.save_overlay_preview` for writing mask preview images
-- :func:`hs2p.wsi.write_coordinate_preview` for tile-grid previews
+- :func:`soma.preprocessing.overlay_mask_on_slide` for tissue-mask overlays
+- :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
+- :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
 
 The rendering behavior itself lives upstream.
