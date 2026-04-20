@@ -1039,8 +1039,10 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
     extractor._write_cached_process_list(feature_dir, cache_resolution=resolution)
 
     recorded = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
+    assert recorded.loc["s0", "annotation"] == "tissue"
     assert recorded.loc["s0", "feature_status"] == "success"
     assert recorded.loc["s0", "feature_path"].endswith("s0.pt")
+    assert recorded.loc["s1", "annotation"] == "tissue"
     assert recorded.loc["s1", "feature_status"] == "empty"
     assert pd.isna(recorded.loc["s1", "feature_path"])
 
@@ -1101,7 +1103,10 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
     source_process_list = tiling_dir / "process_list.csv"
-    source_process_list.write_text("sample_id,tiling_status\ns0,success\n", encoding="utf-8")
+    source_process_list.write_text(
+        "sample_id,annotation,tiling_status\ns0,tissue,success\n",
+        encoding="utf-8",
+    )
 
     execution = ExecutionOptions(
         output_dir=tmp_path / "features",
@@ -1109,7 +1114,10 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
         output_format="pt",
     )
 
-    updated_process_list = "sample_id,tiling_status,feature_status,feature_path\ns0,success,success,/tmp/features/s0.pt\n"
+    updated_process_list = (
+        "sample_id,annotation,tiling_status,feature_status,feature_path\n"
+        "s0,tissue,success,success,/tmp/features/s0.pt\n"
+    )
 
     with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
         "soma.extraction.Model.from_preset",
@@ -1142,8 +1150,8 @@ def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec
     tiling_dir.mkdir()
     source_process_list = tiling_dir / "process_list.csv"
     source_process_list.write_text(
-        "sample_id,tiling_status,feature_status,feature_path\n"
-        "s0,success,tbp,\n",
+        "sample_id,annotation,tiling_status,feature_status,feature_path\n"
+        "s0,tissue,success,tbp,\n",
         encoding="utf-8",
     )
 

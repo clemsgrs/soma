@@ -41,6 +41,8 @@
 - The cache regression fixtures now include slide2vec 4.3's required
   `annotation` column on `process_list.csv` rows so the schema matches the
   current tiling loader contract.
+- Feature-cache process lists now also write the `annotation` column so the
+  manifests stay compatible with the same slide2vec loader contract.
 - The public pipeline config now uses `evaluation` instead of `eval`, and the
   docs/examples/reporting helpers were updated to match the new field name.
 - The encoder config now exposes `allow_non_recommended_settings` so soma can
