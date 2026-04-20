@@ -83,8 +83,8 @@ def build_preprocessing_config(
         "adaptive_batching": False,
         "use_supertiles": True,
         "segmentation": {
+            "method": preprocessing.tissue_method,
             "downsample": int(preprocessing.seg_downsample),
-            "use_hsv": preprocessing.tissue_method == "hsv",
         },
         "filtering": {
             "ref_tile_size": int(

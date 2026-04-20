@@ -453,6 +453,7 @@ def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
 
     def _fake_build_preprocessing_config(preprocessing):
         captured["backend"] = preprocessing.backend
+        captured["tissue_method"] = preprocessing.tissue_method
         return SimpleNamespace()
 
     with patch("soma.extraction.build_preprocessing_config", side_effect=_fake_build_preprocessing_config), patch(
@@ -462,7 +463,23 @@ def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
     assert captured["backend"] == "openslide"
+    assert captured["tissue_method"] == "hsv"
     mock_instance.run.assert_called_once()
+
+
+def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
+    from soma.slide2vec_adapter import build_preprocessing_config
+
+    preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        tissue_method="otsu",
+    )
+
+    config = build_preprocessing_config(preprocessing)
+
+    assert config.segmentation["method"] == "otsu"
+    assert "use_hsv" not in config.segmentation
 
 
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
