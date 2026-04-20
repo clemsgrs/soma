@@ -1,5 +1,12 @@
 # Documentation Notes
 
+- Feature cache reuse is now resolved at per-sample/per-patient granularity:
+  cache identity includes `(sample_id, image_path, mask_path)` plus
+  encoder/preprocessing/execution settings, so overlapping samples can be
+  reused across different datasets without reusing unrelated samples.
+- Tiling cache reuse is now resolved at per-sample granularity with
+  `(sample_id, image_path, mask_path)` plus resolved preprocessing identity,
+  so overlapping samples can reuse cached tilings across datasets.
 - The landing page now describes `soma` as a modular framework to streamline
   computational pathology research.
 - The landing page now keeps the main body uncluttered and moves the GitHub

@@ -59,20 +59,35 @@ class CacheValidationResult:
 class FeatureCacheResolution(BaseCacheResolution):
     cache_kind: str
     features_dir: Path
+    cache_ids: tuple[str, ...]
+    cache_stem_by_id: dict[str, str]
 
     @property
     def empty_sample_ids(self) -> set[str]:
         return {str(s) for s in self.metadata.get("empty_sample_ids", [])}
 
+    def feature_path_for_id(self, cache_id: str) -> Path:
+        return self.features_dir / f"{cache_id}.pt"
+
     def missing_sample_ids(self) -> list[str]:
-        expected = self.metadata["sample_ids"]
+        expected = self.cache_ids
         empty = self.empty_sample_ids
+        cached_stem_by_id = {
+            str(cache_id): str(stem)
+            for cache_id, stem in self.metadata.get("sample_cache_stem_by_id", {}).items()
+        }
         missing: list[str] = []
-        for sample_id in expected:
-            if str(sample_id) in empty:
+        for cache_id in expected:
+            cache_id = str(cache_id)
+            if cache_id in empty:
                 continue
-            if not (self.features_dir / f"{sample_id}.pt").is_file():
-                missing.append(str(sample_id))
+            expected_stem = str(self.cache_stem_by_id[cache_id])
+            cached_stem = cached_stem_by_id.get(cache_id)
+            if cached_stem is None or cached_stem != expected_stem:
+                missing.append(cache_id)
+                continue
+            if not self.feature_path_for_id(cache_id).is_file():
+                missing.append(cache_id)
         return missing
 
 
@@ -80,6 +95,8 @@ class FeatureCacheResolution(BaseCacheResolution):
 class TilingCacheResolution(BaseCacheResolution):
     process_list_path: Path
     artifacts_dir: Path
+    cache_ids: tuple[str, ...]
+    cache_stem_by_id: dict[str, str]
 
 
 def _canonical_json(payload: Any) -> str:
@@ -115,6 +132,26 @@ def manifest_digest(manifest_rows: Iterable[dict[str, object]]) -> str:
         key=lambda row: str(row["sample_id"]),
     )
     return hashlib.sha256(_canonical_json(normalized).encode("utf-8")).hexdigest()[:16]
+
+
+def sample_identity_signature(
+    *,
+    sample_id: str,
+    image_path: Path | str,
+    mask_path: Path | str | None,
+) -> str:
+    payload = {
+        "sample_id": str(sample_id),
+        "image_path": str(image_path),
+        "mask_path": str(mask_path) if mask_path is not None else None,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
+def _sample_cache_stem(*, sample_signature: str, identity_payload: dict[str, Any]) -> str:
+    payload = dict(identity_payload)
+    payload["sample_signature"] = str(sample_signature)
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
 def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
@@ -204,41 +241,40 @@ def execution_signature(
 
 def build_tile_cache_key(
     *,
-    dataset: Dataset,
     tile_encoder_name: str,
-    preprocessing: PreprocessingConfig,
+    preprocessing: PreprocessingConfig | None = None,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    feature_rank: int = 2,
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "tile",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
-        "preprocessing": preprocessing_signature(preprocessing),
+        "feature_rank": int(feature_rank),
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
             output_variant=output_variant,
         ),
     }
+    if preprocessing is not None:
+        payload["preprocessing"] = preprocessing_signature(preprocessing)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
 def build_slide_cache_key(
     *,
-    dataset: Dataset,
     slide_encoder_name: str,
-    tile_cache_key: str,
+    tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "slide",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "slide_encoder_name": slide_encoder_name,
-        "tile_cache_key": tile_cache_key,
+        "tile_dependency_signature": tile_dependency_signature,
         "execution": execution_signature(
             execution,
             encoder_name=slide_encoder_name,
@@ -250,18 +286,16 @@ def build_slide_cache_key(
 
 def build_patient_cache_key(
     *,
-    dataset: Dataset,
     patient_encoder_name: str,
-    slide_cache_key: str,
+    tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "patient",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "patient_encoder_name": patient_encoder_name,
-        "slide_cache_key": slide_cache_key,
+        "tile_dependency_signature": tile_dependency_signature,
         "execution": execution_signature(
             execution,
             encoder_name=patient_encoder_name,
@@ -273,7 +307,6 @@ def build_patient_cache_key(
 
 def build_hierarchical_cache_key(
     *,
-    dataset: Dataset,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
@@ -282,7 +315,6 @@ def build_hierarchical_cache_key(
     payload = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "hierarchical",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "tile_encoder_name": tile_encoder_name,
         "preprocessing": preprocessing_signature(preprocessing),
         "execution": execution_signature(
@@ -296,13 +328,11 @@ def build_hierarchical_cache_key(
 
 def build_tiling_cache_key(
     *,
-    dataset: Dataset,
     preprocessing: PreprocessingConfig,
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "tiling",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
         "preprocessing": preprocessing_signature(preprocessing),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
@@ -402,16 +432,21 @@ def build_tile_artifacts_from_cache_payload(
     features_dir: Path,
     loaded_tilings: Sequence[object],
     work_dir: Path,
+    feature_path_by_sample_id: dict[str, Path] | None = None,
 ) -> list[TileEmbeddingArtifact]:
     """Reconstruct TileEmbeddingArtifact objects from cached .pt files."""
     work_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[TileEmbeddingArtifact] = []
     for loaded in loaded_tilings:
-        feature_path = features_dir / f"{loaded.slide.sample_id}.pt"
+        sample_id = str(loaded.slide.sample_id)
+        if feature_path_by_sample_id is not None:
+            feature_path = feature_path_by_sample_id[sample_id]
+        else:
+            feature_path = features_dir / f"{sample_id}.pt"
         tensor = torch.load(feature_path, weights_only=True, map_location="cpu")
-        metadata_path = work_dir / f"{loaded.slide.sample_id}.meta.json"
+        metadata_path = work_dir / f"{sample_id}.meta.json"
         metadata = {
-            "sample_id": loaded.slide.sample_id,
+            "sample_id": sample_id,
             "artifact_type": "tile_embeddings",
             "format": "pt",
             "feature_dim": _feature_dim_from_tensor(tensor),
@@ -427,7 +462,7 @@ def build_tile_artifacts_from_cache_payload(
         )
         artifacts.append(
             TileEmbeddingArtifact(
-                sample_id=loaded.slide.sample_id,
+                sample_id=sample_id,
                 path=feature_path,
                 metadata_path=metadata_path,
                 format="pt",
@@ -449,7 +484,6 @@ def _optional_path(value: Any) -> Path | None:
 
 def _build_tiling_cache_metadata(
     *,
-    dataset: Dataset,
     preprocessing: PreprocessingConfig,
     backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
@@ -459,15 +493,10 @@ def _build_tiling_cache_metadata(
         "schema_version": SCHEMA_VERSION,
         "cache_kind": "tiling",
         "cache_key": build_tiling_cache_key(
-            dataset=dataset,
             preprocessing=preprocessing,
         ),
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
         "requested_backend": str(backend_provenance["requested_backend"]),
-        "backend": backend_provenance.get("backend"),
-        "backend_by_sample_id": dict(backend_provenance["backend_by_sample_id"]),
     }
     if encoder_name is not None:
         metadata["resolved_by_encoder_name"] = str(encoder_name)
@@ -531,13 +560,13 @@ def _tiling_cache_dir(cache_root: Path, key: str) -> Path:
 
 def _canonical_artifact_destination(
     *,
-    sample_id: str,
+    artifact_stem: str,
     column_name: str,
     source_path: Path,
     artifacts_dir: Path,
 ) -> Path:
     suffix = "".join(source_path.suffixes) if source_path.suffixes else source_path.suffix
-    stem = f"{sample_id}.{column_name}"
+    stem = f"{artifact_stem}.{column_name}"
     return artifacts_dir / f"{stem}{suffix}"
 
 
@@ -573,7 +602,8 @@ def _validate_tiling_cache_contents(
     dataset: Dataset,
     process_list_path: Path,
     artifacts_dir: Path,
-    metadata: dict[str, Any],
+    cache_ids: Sequence[str],
+    cache_stem_by_id: dict[str, str],
     preprocessing: PreprocessingConfig,
     expected_backend_provenance: dict[str, Any] | None,
 ) -> CacheValidationResult:
@@ -583,13 +613,22 @@ def _validate_tiling_cache_contents(
         process_df = load_tiling_process_df(process_list_path)
     except Exception:
         return CacheValidationResult(complete=False, reason="process_list.csv could not be loaded")
-    rows_by_sample_id = {
-        str(row["sample_id"]): row
-        for row in process_df.to_dict("records")
-    }
-    for sample_id in metadata["sample_ids"]:
-        sample = dataset.samples[str(sample_id)]
-        row = rows_by_sample_id.get(str(sample_id))
+    rows = process_df.to_dict("records")
+    rows_by_stem: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        stem = row.get("sample_cache_stem")
+        if stem is None or str(stem).strip() == "" or str(stem).lower() == "nan":
+            stem = row.get("sample_id")
+        if stem is None:
+            continue
+        rows_by_stem[str(stem)] = row
+
+    for sample_id in cache_ids:
+        sample_id = str(sample_id)
+        sample = dataset.samples[sample_id]
+        row = rows_by_stem.get(str(cache_stem_by_id[sample_id]))
+        if row is None:
+            row = rows_by_stem.get(sample_id)
         if row is None or row.get("tiling_status") != "success":
             return CacheValidationResult(complete=False, reason=f"invalid tiling row for {sample_id}")
         for column_name in (
@@ -635,14 +674,12 @@ def _validate_tiling_cache_contents(
             return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
         if float(getattr(tiling_result, "requested_spacing_um", -1.0)) != float(preprocessing.requested_spacing_um):
             return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
-        expected_backend = metadata.get("backend_by_sample_id", {}).get(str(sample_id))
+        expected_backend = None
+        if expected_backend_provenance is not None:
+            expected_backend = expected_backend_provenance.get("backend_by_sample_id", {}).get(str(sample_id))
         actual_backend = str(getattr(tiling_result, "backend", row.get("backend")))
         if expected_backend is not None and str(expected_backend) != actual_backend:
             return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
-    if expected_backend_provenance is None:
-        return CacheValidationResult(complete=True)
-    if dict(metadata.get("backend_by_sample_id", {})) != dict(expected_backend_provenance["backend_by_sample_id"]):
-        return CacheValidationResult(complete=False, reason="backend mapping mismatch")
     return CacheValidationResult(complete=True)
 
 
@@ -657,11 +694,15 @@ def resolve_tiling_cache(
     complete_state: str = "hit",
 ) -> TilingCacheResolution:
     metadata = _build_tiling_cache_metadata(
-        dataset=dataset,
         preprocessing=preprocessing,
         backend_provenance=backend_provenance,
         encoder_name=encoder_name,
         requested_preprocessing=requested_preprocessing,
+    )
+    cache_ids = tuple(sorted(dataset.sample_ids))
+    cache_stem_by_id = _sample_stems_for_tiling(
+        dataset=dataset,
+        cache_key=str(metadata["cache_key"]),
     )
     cache_dir = _tiling_cache_dir(cache_root, str(metadata["cache_key"]))
     metadata_path = cache_dir / CACHE_METADATA_NAME
@@ -685,7 +726,8 @@ def resolve_tiling_cache(
             dataset=dataset,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
-            metadata=existing,
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
             preprocessing=preprocessing,
             expected_backend_provenance=backend_provenance,
         )
@@ -706,6 +748,8 @@ def resolve_tiling_cache(
             metadata=existing,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
         )
 
     _write_manifest(manifest_path, dataset_manifest_rows(dataset))
@@ -727,6 +771,8 @@ def resolve_tiling_cache(
         metadata=metadata,
         process_list_path=process_list_path,
         artifacts_dir=artifacts_dir,
+        cache_ids=cache_ids,
+        cache_stem_by_id=cache_stem_by_id,
     )
 
 
@@ -736,10 +782,33 @@ def write_tiling_cache_payload(
     cache_resolution: TilingCacheResolution,
 ) -> None:
     process_df = load_tiling_process_df(live_dir / PROCESS_LIST_NAME)
-    rows: list[dict[str, Any]] = []
+    fieldnames = list(process_df.columns)
+    if "sample_cache_stem" not in fieldnames:
+        try:
+            sample_idx = fieldnames.index("sample_id")
+            fieldnames.insert(sample_idx + 1, "sample_cache_stem")
+        except ValueError:
+            fieldnames.insert(0, "sample_cache_stem")
+
+    rows_by_stem: dict[str, dict[str, Any]] = {}
+    if cache_resolution.process_list_path.is_file():
+        with cache_resolution.process_list_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                stem = row.get("sample_cache_stem")
+                if stem is None or str(stem).strip() == "" or str(stem).lower() == "nan":
+                    stem = row.get("sample_id")
+                if stem is None:
+                    continue
+                rows_by_stem[str(stem)] = dict(row)
+
     for row in process_df.to_dict("records"):
         rewritten = dict(row)
         sample_id = str(row["sample_id"])
+        sample_cache_stem = cache_resolution.cache_stem_by_id.get(sample_id)
+        if sample_cache_stem is None:
+            continue
+        rewritten["sample_cache_stem"] = sample_cache_stem
         for column_name in (
             "coordinates_npz_path",
             "coordinates_meta_path",
@@ -752,16 +821,24 @@ def write_tiling_cache_payload(
                 rewritten[column_name] = None
                 continue
             destination = _canonical_artifact_destination(
-                sample_id=sample_id,
+                artifact_stem=sample_cache_stem,
                 column_name=column_name,
                 source_path=source_path,
                 artifacts_dir=cache_resolution.artifacts_dir,
             )
             _copy_file_to_cache(source=source_path, destination=destination)
             rewritten[column_name] = str(destination.resolve())
-        rows.append(rewritten)
+        rows_by_stem[sample_cache_stem] = rewritten
+
+    extra_columns: list[str] = []
+    for row in rows_by_stem.values():
+        for key in row:
+            if key not in fieldnames and key not in extra_columns:
+                extra_columns.append(key)
+    resolved_fieldnames = [*fieldnames, *extra_columns]
+    rows = [rows_by_stem[key] for key in sorted(rows_by_stem)]
     with cache_resolution.process_list_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(process_df.columns))
+        writer = csv.DictWriter(handle, fieldnames=resolved_fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -783,19 +860,19 @@ def _cache_dir(cache_root: Path, cache_kind: str, key: str) -> Path:
 
 def _build_tile_cache_metadata(
     *,
-    dataset: Dataset,
     tile_encoder_name: str,
-    preprocessing: PreprocessingConfig,
+    preprocessing: PreprocessingConfig | None,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    feature_rank: int = 2,
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
+        feature_rank=feature_rank,
     )
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -803,17 +880,18 @@ def _build_tile_cache_metadata(
         "cache_key": key,
         "encoder_name": tile_encoder_name,
         "encoder_level": "tile",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
             output_variant=output_variant,
         ),
-        "feature_rank": 2,
+        "feature_rank": int(feature_rank),
         "feature_dim": None,
+        "sample_cache_stem_by_id": {},
     }
+    if preprocessing is not None:
+        metadata["preprocessing"] = preprocessing_signature(preprocessing)
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -821,18 +899,16 @@ def _build_tile_cache_metadata(
 
 def _build_slide_cache_metadata(
     *,
-    dataset: Dataset,
     slide_encoder_name: str,
     tile_encoder_name: str,
-    tile_cache_key: str,
+    tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_slide_cache_key(
-        dataset=dataset,
         slide_encoder_name=slide_encoder_name,
-        tile_cache_key=tile_cache_key,
+        tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
     )
@@ -843,9 +919,7 @@ def _build_slide_cache_metadata(
         "encoder_name": slide_encoder_name,
         "encoder_level": "slide",
         "tile_encoder": tile_encoder_name,
-        "tile_cache_key": tile_cache_key,
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "sample_ids": sorted(dataset.sample_ids),
+        "tile_dependency_signature": dict(tile_dependency_signature),
         "execution": execution_signature(
             execution,
             encoder_name=slide_encoder_name,
@@ -853,6 +927,7 @@ def _build_slide_cache_metadata(
         ),
         "feature_rank": 1,
         "feature_dim": None,
+        "sample_cache_stem_by_id": {},
     }
     if backend_provenance is not None:
         metadata.update(backend_provenance)
@@ -861,18 +936,16 @@ def _build_slide_cache_metadata(
 
 def _build_patient_cache_metadata(
     *,
-    dataset: Dataset,
     patient_encoder_name: str,
     tile_encoder_name: str,
-    slide_cache_key: str,
+    tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_patient_cache_key(
-        dataset=dataset,
         patient_encoder_name=patient_encoder_name,
-        slide_cache_key=slide_cache_key,
+        tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
     )
@@ -883,9 +956,7 @@ def _build_patient_cache_metadata(
         "encoder_name": patient_encoder_name,
         "encoder_level": "patient",
         "tile_encoder": tile_encoder_name,
-        "slide_cache_key": slide_cache_key,
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "sample_ids": sorted(dataset.sample_ids),
+        "tile_dependency_signature": dict(tile_dependency_signature),
         "execution": execution_signature(
             execution,
             encoder_name=patient_encoder_name,
@@ -893,6 +964,7 @@ def _build_patient_cache_metadata(
         ),
         "feature_rank": 1,
         "feature_dim": None,
+        "sample_cache_stem_by_id": {},
     }
     if backend_provenance is not None:
         metadata.update(backend_provenance)
@@ -901,7 +973,6 @@ def _build_patient_cache_metadata(
 
 def _build_hierarchical_cache_metadata(
     *,
-    dataset: Dataset,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
@@ -909,7 +980,6 @@ def _build_hierarchical_cache_metadata(
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_hierarchical_cache_key(
-        dataset=dataset,
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
@@ -921,8 +991,6 @@ def _build_hierarchical_cache_metadata(
         "cache_key": key,
         "encoder_name": tile_encoder_name,
         "encoder_level": "tile",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "sample_ids": sorted(dataset.sample_ids),
         "preprocessing": preprocessing_signature(preprocessing),
         "execution": execution_signature(
             execution,
@@ -931,6 +999,7 @@ def _build_hierarchical_cache_metadata(
         ),
         "feature_rank": 3,
         "feature_dim": None,
+        "sample_cache_stem_by_id": {},
     }
     if backend_provenance is not None:
         metadata.update(backend_provenance)
@@ -941,7 +1010,88 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     comparable = dict(metadata)
     comparable.pop("feature_dim", None)
     comparable.pop("empty_sample_ids", None)
+    comparable.pop("sample_cache_stem_by_id", None)
     return comparable
+
+
+def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
+    return {
+        sample_id: sample_identity_signature(
+            sample_id=sample.sample_id,
+            image_path=sample.image_path,
+            mask_path=sample.mask_path,
+        )
+        for sample_id, sample in dataset.samples.items()
+    }
+
+
+def _sample_stems_for_kind(
+    *,
+    dataset: Dataset,
+    cache_kind: str,
+    static_identity_payload: dict[str, Any],
+) -> dict[str, str]:
+    signature_by_sample_id = _sample_identity_payload(dataset)
+    return {
+        sample_id: _sample_cache_stem(
+            sample_signature=signature_by_sample_id[sample_id],
+            identity_payload={
+                "schema_version": SCHEMA_VERSION,
+                "artifact_kind": cache_kind,
+                **static_identity_payload,
+            },
+        )
+        for sample_id in sorted(dataset.sample_ids)
+    }
+
+
+def _patient_stems_for_kind(
+    *,
+    dataset: Dataset,
+    cache_kind: str,
+    static_identity_payload: dict[str, Any],
+) -> dict[str, str]:
+    signature_by_sample_id = _sample_identity_payload(dataset)
+    sample_ids_by_patient: dict[str, list[str]] = {}
+    for sample_id in sorted(dataset.sample_ids):
+        record = dataset.samples[sample_id]
+        if record.patient_id is None:
+            continue
+        sample_ids_by_patient.setdefault(str(record.patient_id), []).append(sample_id)
+    stems: dict[str, str] = {}
+    for patient_id, patient_sample_ids in sample_ids_by_patient.items():
+        patient_sample_signatures = sorted(signature_by_sample_id[sample_id] for sample_id in patient_sample_ids)
+        stems[patient_id] = _sample_cache_stem(
+            sample_signature=hashlib.sha256(
+                _canonical_json({"patient_sample_signatures": patient_sample_signatures}).encode("utf-8")
+            ).hexdigest()[:16],
+            identity_payload={
+                "schema_version": SCHEMA_VERSION,
+                "artifact_kind": cache_kind,
+                "patient_id": str(patient_id),
+                **static_identity_payload,
+            },
+        )
+    return stems
+
+
+def _sample_stems_for_tiling(
+    *,
+    dataset: Dataset,
+    cache_key: str,
+) -> dict[str, str]:
+    signature_by_sample_id = _sample_identity_payload(dataset)
+    return {
+        sample_id: _sample_cache_stem(
+            sample_signature=signature_by_sample_id[sample_id],
+            identity_payload={
+                "schema_version": SCHEMA_VERSION,
+                "artifact_kind": "tiling_sample",
+                "tiling_cache_key": str(cache_key),
+            },
+        )
+        for sample_id in sorted(dataset.sample_ids)
+    }
 
 
 def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
@@ -969,32 +1119,44 @@ def _validate_feature_cache_contents(
     *,
     features_dir: Path,
     metadata: dict[str, Any],
+    cache_ids: Sequence[str],
+    cache_stem_by_id: dict[str, str],
 ) -> CacheValidationResult:
     expected_rank = int(metadata["feature_rank"])
-    sample_ids = [str(s) for s in metadata["sample_ids"]]
-    sample_ids_set = set(sample_ids)
     feature_dim = metadata.get("feature_dim")
     empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
-    if not empty_sample_ids.issubset(sample_ids_set):
+    expected_ids = {str(cache_id) for cache_id in cache_ids}
+    if not empty_sample_ids.issubset(expected_ids):
         return CacheValidationResult(complete=False, reason="empty sample metadata mismatch")
-    for sample_id in sample_ids:
-        if sample_id in empty_sample_ids:
-            if (features_dir / f"{sample_id}.pt").is_file():
-                return CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {sample_id}")
+    cached_stem_by_id = {
+        str(cache_id): str(stem)
+        for cache_id, stem in metadata.get("sample_cache_stem_by_id", {}).items()
+    }
+    for cache_id in cache_ids:
+        cache_id = str(cache_id)
+        path = features_dir / f"{cache_id}.pt"
+        if cache_id in empty_sample_ids:
+            if path.is_file():
+                return CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}")
             continue
-        path = features_dir / f"{sample_id}.pt"
         if not path.is_file():
-            return CacheValidationResult(complete=False, reason=f"missing feature for {sample_id}")
+            return CacheValidationResult(complete=False, reason=f"missing feature for {cache_id}")
+        expected_stem = str(cache_stem_by_id[cache_id])
+        cached_stem = cached_stem_by_id.get(cache_id)
+        if cached_stem is None:
+            return CacheValidationResult(complete=False, reason=f"missing cache identity for {cache_id}")
+        if cached_stem != expected_stem:
+            return CacheValidationResult(complete=False, reason=f"cache identity mismatch for {cache_id}")
         try:
             tensor = torch.load(path, weights_only=True, map_location="cpu")
         except Exception:
-            return CacheValidationResult(complete=False, reason=f"corrupt feature for {sample_id}")
+            return CacheValidationResult(complete=False, reason=f"corrupt feature for {cache_id}")
         if tensor.ndim != expected_rank:
-            return CacheValidationResult(complete=False, reason=f"rank mismatch for {sample_id}")
+            return CacheValidationResult(complete=False, reason=f"rank mismatch for {cache_id}")
         if feature_dim is not None:
             inferred = tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1]
             if int(feature_dim) != int(inferred):
-                return CacheValidationResult(complete=False, reason=f"dim mismatch for {sample_id}")
+                return CacheValidationResult(complete=False, reason=f"dim mismatch for {cache_id}")
     return CacheValidationResult(complete=True)
 
 
@@ -1003,6 +1165,7 @@ def _emit_cache_state_log(
     cache_label: str,
     cache_dir: Path,
     complete: bool,
+    partial: bool = False,
     complete_state: str = "hit",
     reason: str | None = None,
 ) -> None:
@@ -1015,13 +1178,47 @@ def _emit_cache_state_log(
             status = f"\x1b[1;32m{complete_state}\x1b[0m"
         message = f"✓ {cache_label} cache {status}: {cache_path}"
     else:
-        status = "miss"
-        if rich_viz:
-            status = "\x1b[1;31mmiss\x1b[0m"
-        message = f"✗ {cache_label} cache {status}: {cache_path}"
+        if partial:
+            status = "partial"
+            if rich_viz:
+                status = "\x1b[1;33mpartial\x1b[0m"
+            message = f"~ {cache_label} cache {status}: {cache_path}"
+        else:
+            status = "miss"
+            if rich_viz:
+                status = "\x1b[1;31mmiss\x1b[0m"
+            message = f"✗ {cache_label} cache {status}: {cache_path}"
         if reason is not None:
             message = f"{message} ({reason})"
     slide2vec_progress.emit_progress_log(message)
+
+
+def _feature_cache_coverage(
+    *,
+    cache_ids: Sequence[str],
+    cache_stem_by_id: dict[str, str],
+    metadata: dict[str, Any],
+    features_dir: Path,
+) -> tuple[int, int]:
+    empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
+    cached_stem_by_id = {
+        str(cache_id): str(stem)
+        for cache_id, stem in metadata.get("sample_cache_stem_by_id", {}).items()
+    }
+    present = 0
+    expected = 0
+    for cache_id in cache_ids:
+        cache_id = str(cache_id)
+        if cache_id in empty_sample_ids:
+            continue
+        expected += 1
+        expected_stem = str(cache_stem_by_id[cache_id])
+        cached_stem = cached_stem_by_id.get(cache_id)
+        if cached_stem != expected_stem:
+            continue
+        if (features_dir / f"{cache_id}.pt").is_file():
+            present += 1
+    return present, expected
 
 
 def _resolve_cache(
@@ -1030,7 +1227,9 @@ def _resolve_cache(
     cache_kind: str,
     key: str,
     metadata: dict[str, Any],
-    manifest_rows: list[dict[str, object]],
+    cache_ids: Sequence[str],
+    cache_stem_by_id: dict[str, str],
+    manifest_rows: list[dict[str, object]] | None = None,
     initial_reason: str | None = None,
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
@@ -1051,13 +1250,29 @@ def _resolve_cache(
         )
         if mismatch_message:
             raise ValueError(mismatch_message)
-        validation = _validate_feature_cache_contents(features_dir=features_dir, metadata=existing)
+        validation = _validate_feature_cache_contents(
+            features_dir=features_dir,
+            metadata=existing,
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
+        )
+        present, expected = _feature_cache_coverage(
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
+            metadata=existing,
+            features_dir=features_dir,
+        )
+        partial = not validation.complete and present > 0 and expected > 0
+        reason = validation.reason
+        if partial:
+            reason = f"{present}/{expected} present; {expected - present} missing"
         _emit_cache_state_log(
             cache_label="feature",
             cache_dir=cache_dir,
             complete=validation.complete,
+            partial=partial,
             complete_state=complete_state,
-            reason=validation.reason,
+            reason=reason,
         )
         return FeatureCacheResolution(
             key=key,
@@ -1069,9 +1284,12 @@ def _resolve_cache(
             metadata=existing,
             cache_kind=cache_kind,
             features_dir=features_dir,
+            cache_ids=tuple(str(cache_id) for cache_id in cache_ids),
+            cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
         )
 
-    _write_manifest(manifest_path, manifest_rows)
+    if manifest_rows is not None:
+        _write_manifest(manifest_path, manifest_rows)
     _write_metadata(metadata_path, metadata)
     _emit_cache_state_log(
         cache_label="feature",
@@ -1089,6 +1307,8 @@ def _resolve_cache(
         metadata=metadata,
         cache_kind=cache_kind,
         features_dir=features_dir,
+        cache_ids=tuple(str(cache_id) for cache_id in cache_ids),
+        cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
     )
 
 
@@ -1097,25 +1317,33 @@ def resolve_tile_cache(
     cache_root: Path,
     dataset: Dataset,
     tile_encoder_name: str,
-    preprocessing: PreprocessingConfig,
+    preprocessing: PreprocessingConfig | None,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    feature_rank: int = 2,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
-        dataset=dataset,
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
+        feature_rank=feature_rank,
         backend_provenance=backend_provenance,
+    )
+    cache_stem_by_id = _sample_stems_for_kind(
+        dataset=dataset,
+        cache_kind="tile",
+        static_identity_payload={"cache_key": metadata["cache_key"]},
     )
     return _resolve_cache(
         cache_root=cache_root,
         cache_kind="tile",
         key=metadata["cache_key"],
         metadata=metadata,
+        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_stem_by_id=cache_stem_by_id,
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
@@ -1128,26 +1356,43 @@ def resolve_slide_cache(
     dataset: Dataset,
     slide_encoder_name: str,
     tile_encoder_name: str,
-    tile_cache_key: str,
+    tile_preprocessing: PreprocessingConfig,
+    tile_execution: EncoderConfig,
+    tile_output_variant: str | None = None,
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
+    tile_dependency_signature = {
+        "tile_encoder_name": str(tile_encoder_name),
+        "tile_preprocessing": preprocessing_signature(tile_preprocessing),
+        "tile_execution": execution_signature(
+            tile_execution,
+            encoder_name=tile_encoder_name,
+            output_variant=tile_output_variant,
+        ),
+    }
     metadata = _build_slide_cache_metadata(
-        dataset=dataset,
         slide_encoder_name=slide_encoder_name,
         tile_encoder_name=tile_encoder_name,
-        tile_cache_key=tile_cache_key,
+        tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
         backend_provenance=backend_provenance,
+    )
+    cache_stem_by_id = _sample_stems_for_kind(
+        dataset=dataset,
+        cache_kind="slide",
+        static_identity_payload={"cache_key": metadata["cache_key"]},
     )
     return _resolve_cache(
         cache_root=cache_root,
         cache_kind="slide",
         key=metadata["cache_key"],
         metadata=metadata,
+        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_stem_by_id=cache_stem_by_id,
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
@@ -1160,26 +1405,43 @@ def resolve_patient_cache(
     dataset: Dataset,
     patient_encoder_name: str,
     tile_encoder_name: str,
-    slide_cache_key: str,
+    tile_preprocessing: PreprocessingConfig,
+    tile_execution: EncoderConfig,
+    tile_output_variant: str | None = None,
     execution: EncoderConfig,
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
+    tile_dependency_signature = {
+        "tile_encoder_name": str(tile_encoder_name),
+        "tile_preprocessing": preprocessing_signature(tile_preprocessing),
+        "tile_execution": execution_signature(
+            tile_execution,
+            encoder_name=tile_encoder_name,
+            output_variant=tile_output_variant,
+        ),
+    }
     metadata = _build_patient_cache_metadata(
-        dataset=dataset,
         patient_encoder_name=patient_encoder_name,
         tile_encoder_name=tile_encoder_name,
-        slide_cache_key=slide_cache_key,
+        tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
         backend_provenance=backend_provenance,
+    )
+    cache_stem_by_id = _patient_stems_for_kind(
+        dataset=dataset,
+        cache_kind="patient",
+        static_identity_payload={"cache_key": metadata["cache_key"]},
     )
     return _resolve_cache(
         cache_root=cache_root,
         cache_kind="patient",
         key=metadata["cache_key"],
         metadata=metadata,
+        cache_ids=tuple(sorted(cache_stem_by_id.keys())),
+        cache_stem_by_id=cache_stem_by_id,
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
@@ -1198,98 +1460,24 @@ def resolve_hierarchical_cache(
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
-        dataset=dataset,
         tile_encoder_name=tile_encoder_name,
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
         backend_provenance=backend_provenance,
     )
+    cache_stem_by_id = _sample_stems_for_kind(
+        dataset=dataset,
+        cache_kind="hierarchical",
+        static_identity_payload={"cache_key": metadata["cache_key"]},
+    )
     return _resolve_cache(
         cache_root=cache_root,
         cache_kind="hierarchical",
         key=metadata["cache_key"],
         metadata=metadata,
-        manifest_rows=dataset_manifest_rows(dataset),
-        initial_reason="initializing",
-        complete_state=complete_state,
-    )
-
-
-def build_tile_dataset_cache_key(
-    *,
-    dataset: Dataset,
-    tile_encoder_name: str,
-    execution: EncoderConfig,
-    output_variant: str | None = None,
-) -> str:
-    """Build a cache key for tile-dataset features (no preprocessing, 1D output)."""
-    payload = {
-        "schema_version": SCHEMA_VERSION,
-        "artifact_kind": "tile_dataset",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "tile_encoder_name": tile_encoder_name,
-        "execution": execution_signature(
-            execution,
-            encoder_name=tile_encoder_name,
-            output_variant=output_variant,
-        ),
-    }
-    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
-
-
-def _build_tile_dataset_cache_metadata(
-    *,
-    dataset: Dataset,
-    tile_encoder_name: str,
-    execution: EncoderConfig,
-    output_variant: str | None = None,
-) -> dict[str, Any]:
-    key = build_tile_dataset_cache_key(
-        dataset=dataset,
-        tile_encoder_name=tile_encoder_name,
-        execution=execution,
-        output_variant=output_variant,
-    )
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "artifact_kind": "tile_dataset",
-        "cache_key": key,
-        "encoder_name": tile_encoder_name,
-        "encoder_level": "tile",
-        "manifest_digest": manifest_digest(dataset_manifest_rows(dataset)),
-        "sample_ids": sorted(dataset.sample_ids),
-        "execution": execution_signature(
-            execution,
-            encoder_name=tile_encoder_name,
-            output_variant=output_variant,
-        ),
-        "feature_rank": 1,
-        "feature_dim": None,
-    }
-
-
-def resolve_tile_dataset_cache(
-    *,
-    cache_root: Path,
-    dataset: Dataset,
-    tile_encoder_name: str,
-    execution: EncoderConfig,
-    output_variant: str | None = None,
-    complete_state: str = "hit",
-) -> FeatureCacheResolution:
-    """Resolve the feature cache for a tile-image dataset (1D features, no WSI tiling)."""
-    metadata = _build_tile_dataset_cache_metadata(
-        dataset=dataset,
-        tile_encoder_name=tile_encoder_name,
-        execution=execution,
-        output_variant=output_variant,
-    )
-    return _resolve_cache(
-        cache_root=cache_root,
-        cache_kind="tile_dataset",
-        key=metadata["cache_key"],
-        metadata=metadata,
+        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_stem_by_id=cache_stem_by_id,
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
@@ -1297,12 +1485,49 @@ def resolve_tile_dataset_cache(
 
 
 def record_feature_dim(resolution: FeatureCacheResolution, feature_dim: int) -> None:
-    metadata = dict(resolution.metadata)
+    metadata = (
+        _load_metadata(resolution.metadata_path)
+        if resolution.metadata_path.is_file()
+        else dict(resolution.metadata)
+    )
     metadata["feature_dim"] = int(feature_dim)
     _write_metadata(resolution.metadata_path, metadata)
 
 
 def record_empty_sample_ids(resolution: FeatureCacheResolution, empty_sample_ids: Sequence[str]) -> None:
-    metadata = dict(resolution.metadata)
-    metadata["empty_sample_ids"] = sorted({str(sample_id) for sample_id in empty_sample_ids})
+    metadata = (
+        _load_metadata(resolution.metadata_path)
+        if resolution.metadata_path.is_file()
+        else dict(resolution.metadata)
+    )
+    empty_ids: set[str] = {str(s) for s in metadata.get("empty_sample_ids", [])}
+    for sample_id in empty_sample_ids:
+        sample_id = str(sample_id)
+        if sample_id in resolution.cache_stem_by_id:
+            empty_ids.add(sample_id)
+    metadata["empty_sample_ids"] = sorted(empty_ids)
     _write_metadata(resolution.metadata_path, metadata)
+
+
+def record_sample_cache_stems(
+    resolution: FeatureCacheResolution,
+    cache_ids: Sequence[str],
+) -> None:
+    metadata_path = getattr(resolution, "metadata_path", None)
+    if metadata_path is None:
+        return
+    metadata = (
+        _load_metadata(metadata_path)
+        if metadata_path.is_file()
+        else dict(resolution.metadata)
+    )
+    stem_map = {
+        str(cache_id): str(stem)
+        for cache_id, stem in metadata.get("sample_cache_stem_by_id", {}).items()
+    }
+    for cache_id in cache_ids:
+        cache_id = str(cache_id)
+        if cache_id in resolution.cache_stem_by_id:
+            stem_map[cache_id] = str(resolution.cache_stem_by_id[cache_id])
+    metadata["sample_cache_stem_by_id"] = stem_map
+    _write_metadata(metadata_path, metadata)

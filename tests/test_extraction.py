@@ -12,7 +12,7 @@ import torch
 from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
 
-from soma.cache import CacheConfig
+from soma.cache import CacheConfig, record_sample_cache_stems
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
@@ -1032,6 +1032,8 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
         cache_dir=cache_dir,
         features_dir=features_dir,
         cache_kind="tile",
+        cache_ids=("s0", "s1"),
+        feature_path_for_id=lambda sample_id: features_dir / f"{sample_id}.pt",
         empty_sample_ids={"s1"},
     )
     torch.save(torch.ones(2, 8), features_dir / "s0.pt")
@@ -1342,7 +1344,8 @@ def test_slide_cache_population_does_not_forward_output_variant_override(tmp_pat
         num_gpus,
     ):
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(torch.ones(2, 8), cache_resolution.features_dir / "s0.pt")
+        torch.save(torch.ones(2, 8), cache_resolution.feature_path_for_id("s0"))
+        record_sample_cache_stems(cache_resolution, ["s0"])
 
     def _fake_aggregate_tiles(
         *,
@@ -1482,8 +1485,8 @@ def test_multi_gpu_slide_cache_population_uses_slide2vec_pipeline(tmp_path: Path
     assert run_with_coords.called
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
-    assert any((cache_root / "tile").glob("*/features/s0.pt"))
-    assert any((cache_root / "slide").glob("*/features/s0.pt"))
+    assert any((cache_root / "tile").glob("*/features/*.pt"))
+    assert any((cache_root / "slide").glob("*/features/*.pt"))
 
 
 def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):
@@ -1715,7 +1718,8 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
         num_gpus,
     ):
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(torch.ones(1, 4, 8), cache_resolution.features_dir / "s0.pt")
+        torch.save(torch.ones(1, 4, 8), cache_resolution.feature_path_for_id("s0"))
+        record_sample_cache_stems(cache_resolution, ["s0"])
 
     with patch("soma.extraction.load_tilings", return_value=loaded), patch(
         "soma.extraction._validate_runtime"
@@ -1825,6 +1829,7 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
         cache_dir=cache_root / "tile" / "cache",
         features_dir=cache_root / "tile" / "cache" / "features",
         metadata={"encoder_name": _TEST_TILE, "execution": {"output_variant": "default"}},
+        cache_stem_by_id={"s0": "s0"},
         key="tile-cache-key",
         missing_sample_ids=lambda: ["s0"],
     )
@@ -1832,6 +1837,7 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
         cache_dir=cache_root / "slide" / "cache",
         features_dir=cache_root / "slide" / "cache" / "features",
         metadata={"encoder_name": _TEST_SLIDE, "execution": {"output_variant": "default"}},
+        cache_stem_by_id={"s0": "s0"},
         key="slide-cache-key",
         missing_sample_ids=lambda: ["s0"],
     )
@@ -1878,7 +1884,9 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
         "dataset": dataset,
         "slide_encoder_name": _TEST_SLIDE,
         "tile_encoder_name": _TEST_TILE,
-        "tile_cache_key": "tile-cache-key",
+        "tile_preprocessing": resolved_preprocessing,
+        "tile_execution": extractor._encoder,
+        "tile_output_variant": "default",
         "execution": extractor._encoder,
         "output_variant": "default",
         "backend_provenance": backend_provenance,

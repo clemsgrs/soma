@@ -31,8 +31,16 @@ Cache reuse rules
 The shared cache stores reusable upstream artifacts such as tiling and feature
 extraction.
 
-- Tiling is reused when preprocessing matches.
-- Features are reused when the encoder and geometry match.
+- Tiling payloads are reused per sample when preprocessing matches.
+- Tiling reuse keys include sample identity
+  ``(sample_id, image_path, mask_path)`` plus resolved preprocessing settings.
+- Feature payloads are reused per sample (or per patient for patient-level
+  embeddings), not per dataset.
+- Feature reuse keys include sample identity
+  ``(sample_id, image_path, mask_path)`` plus encoder/preprocessing/execution
+  settings.
+- Two datasets can therefore reuse the same cached feature payload for shared
+  samples while still recomputing non-overlapping samples.
 - Cache hits do not replace the run directory, which still records one
   immutable experiment result.
 
