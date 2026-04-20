@@ -38,6 +38,9 @@
   the compact generated reference and the main guide pages.
 - Preview generation now delegates to hs2p's separate overlay and coordinate
   preview entrypoints instead of keeping a custom combined renderer in soma.
+- The cache regression fixtures now include slide2vec 4.3's required
+  `annotation` column on `process_list.csv` rows so the schema matches the
+  current tiling loader contract.
 - The public pipeline config now uses `evaluation` instead of `eval`, and the
   docs/examples/reporting helpers were updated to match the new field name.
 - The encoder config now exposes `allow_non_recommended_settings` so soma can
