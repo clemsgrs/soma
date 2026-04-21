@@ -1139,7 +1139,7 @@ class FeatureExtractor:
         preprocessing: Slide2VecPreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         backend_provenance: dict[str, object],
-        output_variant: str,
+        resolved_output_variant: str,
         num_gpus: int | None,
     ) -> FeatureStore:
         cache_resolution = resolve_tile_cache(
@@ -1168,7 +1168,7 @@ class FeatureExtractor:
             tiling_dir=tiling_dir,
             preprocessing=preprocessing,
             encoder_name=self._encoder.name,
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             num_gpus=num_gpus,
         )
         refreshed = resolve_tile_cache(
@@ -1200,7 +1200,7 @@ class FeatureExtractor:
         preprocessing: Slide2VecPreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         backend_provenance: dict[str, object],
-        output_variant: str,
+        resolved_output_variant: str,
         num_gpus: int | None,
     ) -> FeatureStore:
         cache_resolution = resolve_hierarchical_cache(
@@ -1229,7 +1229,7 @@ class FeatureExtractor:
             tiling_dir=tiling_dir,
             preprocessing=preprocessing,
             encoder_name=self._encoder.name,
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             num_gpus=num_gpus,
         )
         refreshed = resolve_hierarchical_cache(
