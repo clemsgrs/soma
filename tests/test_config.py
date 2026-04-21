@@ -51,7 +51,7 @@ def test_preprocessing_config_defaults():
     assert cfg.read_tile_size_px is None
     assert cfg.read_region_size_px is None
     assert cfg.has_hierarchical_geometry is False
-    assert cfg.tissue_method == "hsv"
+    assert cfg.tissue_method is None
     assert cfg.tissue_threshold == 0.1
     assert cfg.overlap == 0.0
     assert cfg.seg_downsample == 64

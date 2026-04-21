@@ -533,6 +533,11 @@ class FeatureExtractor:
             return preprocessing
         if all(record.mask_path is not None for record in self._dataset.samples.values()):
             return replace(preprocessing, tissue_method="precomputed_mask")
+        if preprocessing.tissue_method is None:
+            raise ValueError(
+                "tissue_method is required when no precomputed tissue mask is provided "
+                "for every sample in the dataset."
+            )
         return preprocessing
 
     def _resolved_output(self) -> dict[str, object]:

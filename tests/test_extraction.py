@@ -16,7 +16,7 @@ from slide2vec import ExecutionOptions
 
 import soma.cache as cache_mod
 from soma.cache import CacheConfig, record_sample_identity_signatures
-from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig
+from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig as _PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
 from slide2vec.encoders.registry import encoder_registry
@@ -29,6 +29,15 @@ from soma.tile_extraction import TileFeatureExtractor, _install_tile_embedding_s
 _TEST_TILE = "_cutover_tile"
 _TEST_SLIDE = "_cutover_slide"
 _TEST_MULTI = "_cutover_multi_spacing"
+_TISSUE_METHOD_SENTINEL = object()
+
+
+def PreprocessingConfig(*args, tissue_method=_TISSUE_METHOD_SENTINEL, **kwargs):
+    if tissue_method is _TISSUE_METHOD_SENTINEL:
+        kwargs.setdefault("tissue_method", "hsv")
+    else:
+        kwargs["tissue_method"] = tissue_method
+    return _PreprocessingConfig(*args, **kwargs)
 
 
 def _register_test_encoders() -> None:
@@ -495,30 +504,16 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
     assert store.load("s0").shape == (2, 8)
 
 
-def test_preprocess_uses_configured_backend_by_default(tmp_path: Path):
+def test_preprocess_requires_tissue_method_without_precomputed_masks(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5, backend="openslide"),
+        _PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5, backend="openslide"),
     )
 
-    captured = {}
-
-    def _fake_build_preprocessing_config(preprocessing):
-        captured["backend"] = preprocessing.backend
-        captured["tissue_method"] = preprocessing.tissue_method
-        return SimpleNamespace()
-
-    with patch("soma.extraction.build_preprocessing_config", side_effect=_fake_build_preprocessing_config), patch(
-        "soma.extraction.Pipeline", autospec=True
-    ) as MockPipeline:
-        mock_instance = MockPipeline.return_value
+    with pytest.raises(ValueError, match="tissue_method is required"):
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
-
-    assert captured["backend"] == "openslide"
-    assert captured["tissue_method"] == "hsv"
-    mock_instance.run.assert_called_once()
 
 
 def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():

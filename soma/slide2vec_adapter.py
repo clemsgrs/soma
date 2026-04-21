@@ -73,6 +73,10 @@ def build_preprocessing_config(
         raise ValueError("requested_tile_size_px must be resolved before extraction")
     if preprocessing.requested_spacing_um is None:
         raise ValueError("requested_spacing_um must be resolved before extraction")
+    if preprocessing.tissue_method is None:
+        raise ValueError(
+            "tissue_method is required unless the dataset provides precomputed masks"
+        )
     payload: dict[str, object] = {
         "backend": preprocessing.backend,
         "requested_spacing_um": float(preprocessing.requested_spacing_um),

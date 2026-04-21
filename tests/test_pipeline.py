@@ -21,7 +21,7 @@ from soma.config import (
     CacheConfig,
     EncoderConfig,
     PipelineConfig,
-    PreprocessingConfig,
+    PreprocessingConfig as _PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -51,6 +51,15 @@ from soma.training.trainer import TrainResult
 D = 16
 NUM_SAMPLES = 8
 FIXED_RUN_ID = "2026-04-09_16-22-10__local"
+_TISSUE_METHOD_SENTINEL = object()
+
+
+def PreprocessingConfig(*args, tissue_method=_TISSUE_METHOD_SENTINEL, **kwargs):
+    if tissue_method is _TISSUE_METHOD_SENTINEL:
+        kwargs.setdefault("tissue_method", "hsv")
+    else:
+        kwargs["tissue_method"] = tissue_method
+    return _PreprocessingConfig(*args, **kwargs)
 
 
 def _expected_run_dir(config: PipelineConfig) -> Path:
@@ -1303,6 +1312,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "slide_run",
             dataset_type="slide",
+            preprocessing=PreprocessingConfig(),
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_slide),
             aggregator=None,
@@ -1314,6 +1324,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "tile_run",
             dataset_type="slide",
+            preprocessing=PreprocessingConfig(),
             cache=CacheConfig(root_dir=shared_cache),
             encoder=EncoderConfig(name=test_tile),
             aggregator=AggregatorConfig(name="mean_pool"),
