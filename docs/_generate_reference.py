@@ -175,6 +175,9 @@ def build_reference_rst() -> str:
     api_rows = [
         ("Pipeline", "Orchestrates the full pipeline: extract → train all folds → summarize"),
         ("train", "Train and evaluate all folds, then summarize"),
+        ("list_models", "List available encoder presets, optionally filtered by level"),
+        ("list_aggregators", "List registered aggregator presets"),
+        ("list_task_heads", "List registered task-head presets"),
         ("Dataset", "Load and validate dataset.csv"),
         ("Splits", "Load and validate splits.csv"),
         ("FeatureExtractor", "Delegates tile/slide feature extraction to slide2vec"),

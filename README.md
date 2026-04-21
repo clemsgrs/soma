@@ -118,7 +118,16 @@ The returned `PipelineResult` includes:
 `soma` ships a command-line interface that runs a full pipeline from a YAML config file:
 
 ```bash
-soma run config.yaml
+soma /path/to/config.yaml
+python -m soma /path/to/config.yaml
+```
+
+You can also inspect the available presets directly from the terminal:
+
+```bash
+soma list encoders --level tile
+soma list aggregators
+soma list tasks
 ```
 
 `examples/` contains a `reference.yaml` documenting every available field, and focused per-task starting points (`slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, `tile_classification.yaml`).

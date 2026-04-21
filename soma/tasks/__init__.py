@@ -12,9 +12,15 @@ from soma.tasks.classification import (
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
 
+
+def list_task_heads() -> list[str]:
+    """Return registered task-head names in a stable order."""
+    return sorted(task_registry.list())
+
 __all__ = [
     "TaskHead",
     "task_registry",
+    "list_task_heads",
     "BinaryClassificationHead",
     "MulticlassClassificationHead",
     "BranchAwareClassificationHead",

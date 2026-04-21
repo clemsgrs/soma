@@ -132,3 +132,9 @@ Notes
   ``region_tile_multiple`` in :class:`soma.config.PreprocessingConfig` to
   control how many tiles fit inside a region.
 - The task head ultimately determines the valid loss and metric pairing.
+
+Discovery helper
+----------------
+
+Use ``soma.list_aggregators()`` to inspect the registered aggregator names
+from code when you are wiring configs or building a UI.

@@ -40,7 +40,7 @@ dependencies = [
 ]
 
 [project.scripts]
-soma = "soma.cli:main"
+soma = "soma.__main__:entrypoint"
 
 [project.urls]
 Homepage = "https://github.com/clemsgrs/soma"

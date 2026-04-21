@@ -16,6 +16,12 @@ Public API
      - Orchestrates the full pipeline: extract → train all folds → summarize
    * - ``train``
      - Train and evaluate all folds, then summarize
+   * - ``list_models``
+     - List available encoder presets, optionally filtered by level
+   * - ``list_aggregators``
+     - List registered aggregator presets
+   * - ``list_task_heads``
+     - List registered task-head presets
    * - ``Dataset``
      - Load and validate dataset.csv
    * - ``Splits``
@@ -37,7 +43,7 @@ Configuration dataclasses
      - Main fields
      - Purpose
    * - ``PreprocessingConfig``
-     - ``backend``, ``requested_tile_size_px``, ``requested_spacing_um``, ``requested_region_size_px``, ``region_tile_multiple``, ``read_tile_size_px``, ``read_region_size_px``, ``tissue_method``, ``tissue_threshold``, ``overlap``, ``seg_downsample``, ``tolerance``, ``ref_tile_size_px``, ``a_t``, ``tissue_mask_tissue_value``, ``preview``, ``hierarchical``, ``npatch``, ``hierarchical_patch_size_px``
+     - ``backend``, ``requested_tile_size_px``, ``requested_spacing_um``, ``requested_region_size_px``, ``region_tile_multiple``, ``read_tile_size_px``, ``read_region_size_px``, ``tissue_method``, ``tissue_threshold``, ``overlap``, ``seg_downsample``, ``sam2_num_workers``, ``tolerance``, ``ref_tile_size_px``, ``a_t``, ``tissue_mask_tissue_value``, ``preview``, ``hierarchical``, ``npatch``, ``hierarchical_patch_size_px``
      - Whole-slide segmentation and tiling geometry
    * - ``ExecutionConfig``
      - ``num_gpus``, ``num_workers``, ``num_preprocessing_workers``, ``prefetch_factor``, ``persistent_workers``, ``precision``

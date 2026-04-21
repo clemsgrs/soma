@@ -58,3 +58,9 @@ Metric compatibility
 ``multiclass_classification`` accepts ``qwk`` as an opt-in metric when the
 class labels have an ordinal interpretation. The task still uses
 cross-entropy loss; the metric only changes how results are summarized.
+
+Discovery helper
+----------------
+
+Use ``soma.list_task_heads()`` to inspect the registered task heads from code
+when you need to populate a selector or validate a config name.
