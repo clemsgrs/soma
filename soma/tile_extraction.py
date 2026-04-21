@@ -17,10 +17,11 @@ from slide2vec.inference import load_model
 from soma.cache import (
     FeatureCacheResolution,
     record_feature_dim,
+    record_sample_identity_signatures,
     resolve_cache_root,
-    resolve_tile_dataset_cache,
+    resolve_tile_cache,
 )
-from soma.config import CacheConfig, EncoderConfig
+from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import build_execution_options
@@ -61,6 +62,38 @@ def _make_tile_extraction_reporter_ctx(feature_dir: Path):
         yield
 
 
+def _install_tile_embedding_summary_patch() -> None:
+    """Ensure slide2vec embedding summaries can render tile-oriented labels."""
+    if getattr(slide2vec_progress, "_soma_tile_embedding_summary_patch_installed", False):
+        return
+
+    base_summary_rows = getattr(slide2vec_progress, "_embedding_summary_rows", None)
+    if not callable(base_summary_rows):
+        return
+
+    def _patched_embedding_summary_rows(payload: dict[str, object]) -> list[tuple[str, str]]:
+        summary_subject = payload.get("summary_subject")
+        if summary_subject is not None:
+            subject = str(summary_subject).strip() or "Samples"
+            if subject.lower() == "tiles":
+                total = int(payload.get("tile_count", payload.get("slide_count", 0)))
+                completed = int(payload.get("tiles_completed", payload.get("slides_completed", 0)))
+            else:
+                total = int(payload.get("slide_count", 0))
+                completed = int(payload.get("slides_completed", 0))
+            failed = max(0, total - completed)
+            return [
+                (subject, str(total)),
+                ("Completed", str(completed)),
+                ("Failed", str(failed)),
+            ]
+
+        return base_summary_rows(payload)
+
+    setattr(slide2vec_progress, "_embedding_summary_rows", _patched_embedding_summary_rows)
+    setattr(slide2vec_progress, "_soma_tile_embedding_summary_patch_installed", True)
+
+
 class TileFeatureExtractor:
     """Encode individual tile images into 1D feature vectors using a tile encoder.
 
@@ -80,10 +113,12 @@ class TileFeatureExtractor:
         dataset: Dataset,
         encoder: EncoderConfig,
         *,
+        execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
+        self._execution = execution
         self._cache = cache or CacheConfig(enabled=False)
 
     def run(self, feature_dir: str | Path) -> FeatureStore:
@@ -104,12 +139,14 @@ class TileFeatureExtractor:
                 self._cache,
                 feature_dir=feature_dir,
             )
-            cache_resolution = resolve_tile_dataset_cache(
+            cache_resolution = resolve_tile_cache(
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
+                preprocessing=None,
                 execution=self._encoder,
                 output_variant=self._encoder.output_variant,
+                feature_type="tile",
             )
             if cache_resolution.complete:
                 logger.info(
@@ -126,6 +163,7 @@ class TileFeatureExtractor:
 
         feature_dim: int | None = None
 
+        _install_tile_embedding_summary_patch()
         with _make_tile_extraction_reporter_ctx(feature_dir):
             logger.info("Loading tile encoder '%s'...", self._encoder.name)
             slide2vec_progress.emit_progress("model.loading", model_name=self._encoder.name)
@@ -146,15 +184,16 @@ class TileFeatureExtractor:
             image_dataset = _TileImageDataset(records, transform)
             execution = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=self._encoder.name,
                 output_dir=out_dir,
-                num_gpus=1,
+                num_gpus=self._execution.num_gpus,
                 save_tile_embeddings=True,
             )
             resolved_num_workers = execution.resolved_num_workers()
             worker_source = (
-                "explicit EncoderConfig.num_workers"
-                if self._encoder.num_workers is not None
+                "explicit ExecutionConfig.num_workers"
+                if self._execution.num_workers is not None
                 else "slide2vec cpu_worker_limit()"
             )
             slide2vec_progress.emit_progress_log(
@@ -214,6 +253,9 @@ class TileFeatureExtractor:
                 "embedding.finished",
                 slide_count=1,
                 slides_completed=1,
+                summary_subject="Tiles",
+                tile_count=processed_samples,
+                tiles_completed=processed_samples,
                 tile_artifacts=processed_samples,
                 slide_artifacts=0,
             )
@@ -222,5 +264,9 @@ class TileFeatureExtractor:
 
         if cache_resolution is not None and feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
+            record_sample_identity_signatures(
+                cache_resolution,
+                [record.sample_id for record in records],
+            )
 
         return FeatureStore(out_dir)

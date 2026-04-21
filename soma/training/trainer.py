@@ -156,14 +156,14 @@ class Trainer:
         ) as live:
             render_panel()
 
-            def on_batch_progress(phase: str, batch_index: int, total_batches: int) -> None:
+            def on_batch_progress(phase: str, processed_items: int, total_items: int) -> None:
                 nonlocal current_batch_progress, current_status
                 current_batch_progress = _format_batch_progress(
-                    batch_index,
-                    total_batches,
+                    processed_items,
+                    total_items,
                     phase=phase,
                 )
-                current_status = f"{phase} batch {batch_index}/{total_batches}"
+                current_status = f"{phase} items {processed_items}/{total_items}"
                 render_panel()
 
             for epoch in range(self._config.epochs):
@@ -263,14 +263,17 @@ class Trainer:
         self._model.train()
         total_loss = 0.0
         total_batches = len(self._train_loader)
+        total_items = _resolve_total_items(self._train_loader, fallback=total_batches)
+        processed_items = 0
         accum_steps = self._config.gradient_accumulation
 
         self._optimizer.zero_grad()
         step = 0
 
         for step, batch in enumerate(self._train_loader, 1):
+            processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
             if on_batch_progress is not None:
-                on_batch_progress("train", step, total_batches)
+                on_batch_progress("train", processed_items, total_items)
             features = batch.features.to(self._device)
             labels = batch.labels.to(self._device)
 
@@ -310,11 +313,13 @@ class Trainer:
         all_logits: list[torch.Tensor] = []
         all_labels: list[torch.Tensor] = []
         total_batches = len(self._tune_loader)
+        total_items = _resolve_total_items(self._tune_loader, fallback=total_batches)
+        processed_items = 0
 
         for batch in self._tune_loader:
-            batch_index = num_batches + 1
+            processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
             if on_batch_progress is not None:
-                on_batch_progress("tune", batch_index, total_batches)
+                on_batch_progress("tune", processed_items, total_items)
             features = batch.features.to(self._device)
             labels = batch.labels.to(self._device)
 
@@ -503,14 +508,32 @@ def _count_trainable_parameters(model: torch.nn.Module) -> int:
     return sum(param.numel() for param in model.parameters() if param.requires_grad)
 
 
-def _format_batch_progress(current_batch: int, total_batches: int, *, phase: str) -> str:
-    frames = "|/-\\"
-    spinner = frames[current_batch % len(frames)]
+def _resolve_total_items(loader: object, *, fallback: int) -> int:
+    dataset = getattr(loader, "dataset", None)
+    if dataset is not None:
+        try:
+            return max(0, int(len(dataset)))
+        except TypeError:
+            pass
+    return max(0, int(fallback))
+
+
+def _infer_batch_item_count(batch: object) -> int:
+    labels = getattr(batch, "labels", None)
+    if labels is not None and hasattr(labels, "shape") and len(labels.shape) > 0:
+        return max(1, int(labels.shape[0]))
+    sample_ids = getattr(batch, "sample_ids", None)
+    if sample_ids is not None:
+        return max(1, int(len(sample_ids)))
+    return 1
+
+
+def _format_batch_progress(current_items: int, total_items: int, *, phase: str) -> str:
     width = 10
-    if total_batches > 0:
-        filled = min(width, int(round(width * current_batch / total_batches)))
+    if total_items > 0:
+        filled = min(width, int(round(width * current_items / total_items)))
     else:
         filled = 0
     bar = "#" * filled + "-" * (width - filled)
-    total_display = f"{total_batches:02d}" if total_batches > 0 else "--"
-    return f"{spinner} {phase} {current_batch:02d}/{total_display} [{bar}]"
+    total_display = str(total_items) if total_items > 0 else "--"
+    return f"{phase} {current_items}/{total_display} [{bar}]"

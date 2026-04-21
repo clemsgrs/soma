@@ -5,9 +5,10 @@ from __future__ import annotations
 import contextlib
 import csv
 import logging
+import os
 import shutil
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -36,6 +37,7 @@ from soma.cache import (
     probe_resolved_backends,
     record_empty_sample_ids,
     record_feature_dim,
+    record_sample_identity_signatures,
     preprocessing_backend_provenance,
     resolve_cache_root,
     resolve_hierarchical_cache,
@@ -46,9 +48,8 @@ from soma.cache import (
     resolve_tile_cache,
     write_tiling_cache_payload,
     write_tiling_cache_stub,
-    write_cache_payload,
 )
-from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.features import FeatureStore
@@ -220,10 +221,22 @@ def _feature_kind_from_rank(feature_rank: int) -> str:
     if int(feature_rank) == 1:
         return "slide"
     if int(feature_rank) == 2:
-        return "tile"
+        return "bag"
     if int(feature_rank) == 3:
         return "hierarchical"
     raise ValueError(f"Unsupported feature rank {feature_rank}")
+
+
+def _feature_rank_from_type(feature_type: str) -> int:
+    if feature_type == "tile":
+        return 1
+    if feature_type == "bag":
+        return 2
+    if feature_type in {"slide", "patient"}:
+        return 1
+    if feature_type == "hierarchical":
+        return 3
+    raise ValueError(f"Unsupported feature type {feature_type}")
 
 
 def _backend_provenance_from_mapping(
@@ -491,12 +504,15 @@ class FeatureExtractor:
         dataset: Dataset,
         encoder: EncoderConfig,
         preprocessing: PreprocessingConfig = PreprocessingConfig(),
+        *,
+        execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig = CacheConfig(),
         output_root: str | Path | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
         self._preprocessing = preprocessing
+        self._execution = execution
         self._cache = cache
         self._output_root = Path(output_root).resolve() if output_root is not None else None
 
@@ -516,6 +532,29 @@ class FeatureExtractor:
             metadata=encoder_info,
         )
 
+    def _resolved_execution_for_cache(
+        self,
+        *,
+        encoder_name: str,
+        resolved_preprocessing: PreprocessingConfig | None,
+        output_variant: str | None,
+    ) -> EncoderConfig:
+        encoder_info = encoder_registry.info(encoder_name)
+        input_size = self._encoder.input_size
+        if input_size is None:
+            recommended_input_size = encoder_info.get("input_size")
+            if recommended_input_size is not None:
+                input_size = int(recommended_input_size)
+        spacing_um = self._encoder.spacing_um
+        if spacing_um is None and resolved_preprocessing is not None:
+            spacing_um = resolved_preprocessing.requested_spacing_um
+        return replace(
+            self._encoder,
+            input_size=input_size,
+            spacing_um=spacing_um,
+            output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
+        )
+
     def preprocess(
         self,
         tiling_dir: str | Path,
@@ -532,6 +571,14 @@ class FeatureExtractor:
             if skip_existing and process_list_path.is_file():
                 return
             preprocessing = build_preprocessing_config(cfg)
+            execution = build_execution_options(
+                self._encoder,
+                execution=self._execution,
+                encoder_name=self._encoder.name,
+                output_dir=tiling_dir,
+                num_gpus=self._execution.num_gpus,
+                save_tile_embeddings=False,
+            )
             pipeline = Pipeline(
                 _load_model(
                     self._encoder.name,
@@ -539,11 +586,7 @@ class FeatureExtractor:
                     allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                 ),
                 preprocessing,
-                execution=ExecutionOptions(
-                    output_dir=tiling_dir,
-                    num_gpus=1,
-                    precision="fp32",
-                ),
+                execution=execution,
             )
             with _suppress_logger_noise_ctx("cucim"):
                 with _forward_tiling_progress_ctx():
@@ -576,6 +619,14 @@ class FeatureExtractor:
             return
 
         preprocessing = build_preprocessing_config(cfg)
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=self._encoder.name,
+            output_dir=tiling_dir,
+            num_gpus=self._execution.num_gpus,
+            save_tile_embeddings=False,
+        )
         pipeline = Pipeline(
             _load_model(
                 self._encoder.name,
@@ -583,18 +634,13 @@ class FeatureExtractor:
                 allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
             ),
             preprocessing,
-            execution=ExecutionOptions(
-                output_dir=tiling_dir,
-                num_gpus=1,
-                precision="fp32",
-            ),
+            execution=execution,
         )
         with _suppress_logger_noise_ctx("cucim"):
             with _forward_tiling_progress_ctx():
                 pipeline.run(slides=build_slide_specs(self._dataset), tiling_only=True)
-        can_publish = (
-            dict(cache_resolution.metadata.get("backend_by_sample_id", {}))
-            == dict(backend_provenance["backend_by_sample_id"])
+        can_publish = str(cache_resolution.metadata.get("requested_backend")) == str(
+            backend_provenance.get("requested_backend")
         )
         if can_publish and process_list_path.is_file():
             write_tiling_cache_payload(
@@ -670,7 +716,9 @@ class FeatureExtractor:
         )
 
         n_slides = len(loaded_tilings)
-        effective_num_gpus = _resolve_num_gpus(num_gpus)
+        effective_num_gpus = _resolve_num_gpus(
+            num_gpus if num_gpus is not None else self._execution.num_gpus
+        )
         should_delegate_embedding_progress = effective_num_gpus > 1
         with _suppress_logger_noise_ctx("cucim"):
             with _make_extraction_reporter_ctx(feature_dir):
@@ -865,7 +913,7 @@ class FeatureExtractor:
         """Write a run-local manifest that points back to the shared cache payloads."""
         process_list_path = feature_dir / "process_list.csv"
         metadata = cache_resolution.metadata
-        sample_ids = [str(sample_id) for sample_id in metadata["sample_ids"]]
+        sample_ids = self._cache_ids_for_resolution(cache_resolution)
         empty_sample_ids = cache_resolution.empty_sample_ids
         artifact_kind = {
             "tile": "tile_embeddings",
@@ -874,10 +922,11 @@ class FeatureExtractor:
             "patient": "patient_embeddings",
         }[cache_resolution.cache_kind]
         cache_dir = cache_resolution.cache_dir.resolve()
-        feature_rank = int(metadata["feature_rank"])
+        feature_type = str(metadata["feature_type"])
+        feature_rank = _feature_rank_from_type(feature_type)
         feature_dim = metadata.get("feature_dim")
         output_variant = metadata.get("execution", {}).get("output_variant")
-        feature_kind = _feature_kind_from_rank(feature_rank)
+        feature_kind = feature_type
         with process_list_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.DictWriter(
                 handle,
@@ -902,7 +951,7 @@ class FeatureExtractor:
                 feature_status = "empty" if sample_id in empty_sample_ids else "success"
                 feature_path = ""
                 if feature_status == "success":
-                    feature_path = str((cache_resolution.features_dir / f"{sample_id}.pt").resolve())
+                    feature_path = str(self._feature_path_for_cache_id(cache_resolution, sample_id).resolve())
                 writer.writerow(
                     {
                         "sample_id": sample_id,
@@ -921,6 +970,53 @@ class FeatureExtractor:
                     }
                 )
 
+    def _materialize_feature_dir_from_cache(
+        self,
+        feature_dir: Path,
+        *,
+        cache_resolution: FeatureCacheResolution,
+    ) -> None:
+        """Materialize run-local sample_id.pt files by linking to shared cache payloads."""
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        cache_ids = self._cache_ids_for_resolution(cache_resolution)
+        expected_names = {f"{sample_id}.pt" for sample_id in cache_ids}
+        for existing in feature_dir.glob("*.pt"):
+            if existing.name not in expected_names:
+                existing.unlink()
+        for sample_id in cache_ids:
+            target = feature_dir / f"{sample_id}.pt"
+            source = self._feature_path_for_cache_id(cache_resolution, sample_id)
+            if sample_id in cache_resolution.empty_sample_ids:
+                if target.exists():
+                    target.unlink()
+                continue
+            if target.exists():
+                target.unlink()
+            if not source.is_file():
+                legacy_source = cache_resolution.features_dir / f"{sample_id}.pt"
+                if legacy_source.is_file():
+                    source = legacy_source
+            try:
+                os.link(source, target)
+            except OSError:
+                shutil.copyfile(source, target)
+
+    @staticmethod
+    def _cache_ids_for_resolution(cache_resolution: FeatureCacheResolution) -> list[str]:
+        cache_ids = getattr(cache_resolution, "cache_ids", None)
+        if cache_ids is not None:
+            return [str(sample_id) for sample_id in cache_ids]
+        return [str(sample_id) for sample_id in cache_resolution.metadata.get("sample_ids", [])]
+
+    @staticmethod
+    def _feature_path_for_cache_id(
+        cache_resolution: FeatureCacheResolution,
+        cache_id: str,
+    ) -> Path:
+        if hasattr(cache_resolution, "feature_path_for_id"):
+            return cache_resolution.feature_path_for_id(cache_id)
+        return cache_resolution.features_dir / f"{cache_id}.pt"
+
     def _extract_uncached(
         self,
         *,
@@ -937,6 +1033,7 @@ class FeatureExtractor:
     ) -> None:
         execution = build_execution_options(
             self._encoder,
+            execution=self._execution,
             encoder_name=self._encoder.name,
             output_dir=feature_dir,
             num_gpus=num_gpus,
@@ -1006,6 +1103,7 @@ class FeatureExtractor:
             with tempfile.TemporaryDirectory(prefix="soma-tiles-") as tmp_dir:
                 temp_execution = build_execution_options(
                     self._encoder,
+                    execution=self._execution,
                     encoder_name=self._encoder.name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
@@ -1049,14 +1147,19 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(cache_resolution.cache_dir)
+            self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
+            return FeatureStore(feature_dir)
 
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
@@ -1073,13 +1176,18 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
-        self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
-        return FeatureStore(refreshed.cache_dir)
+        self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
+        self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
+        return FeatureStore(feature_dir)
 
     def _extract_hierarchical_cached(
         self,
@@ -1100,14 +1208,19 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(cache_resolution.cache_dir)
+            self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
+            return FeatureStore(feature_dir)
 
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
@@ -1124,13 +1237,18 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
-        self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
-        return FeatureStore(refreshed.cache_dir)
+        self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
+        self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
+        return FeatureStore(feature_dir)
 
     def _extract_slide_cached(
         self,
@@ -1159,7 +1277,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
         )
@@ -1168,15 +1290,26 @@ class FeatureExtractor:
             dataset=self._dataset,
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
-            tile_cache_key=tile_cache.key,
-            execution=self._encoder,
+            tile_preprocessing=resolved_preprocessing,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
+            tile_output_variant=str(tile_dependency_output["output_variant"]),
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=slide_cache)
         if tile_cache.complete and slide_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
-            return FeatureStore(slide_cache.cache_dir)
+            self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
+            return FeatureStore(feature_dir)
 
         if num_gpus is not None and num_gpus > 1:
             self._populate_slide_and_tile_caches_distributed(
@@ -1192,7 +1325,30 @@ class FeatureExtractor:
                 output_variant=runtime_output_variant,
                 num_gpus=num_gpus,
             )
-            return FeatureStore(slide_cache.cache_dir)
+            refreshed_slide_cache = resolve_slide_cache(
+                cache_root=cache_root,
+                dataset=self._dataset,
+                slide_encoder_name=self._encoder.name,
+                tile_encoder_name=tile_encoder_name,
+                tile_preprocessing=resolved_preprocessing,
+                tile_execution=self._resolved_execution_for_cache(
+                    encoder_name=tile_encoder_name,
+                    resolved_preprocessing=resolved_preprocessing,
+                    output_variant=str(tile_dependency_output["output_variant"]),
+                ),
+                tile_output_variant=str(tile_dependency_output["output_variant"]),
+                execution=self._resolved_execution_for_cache(
+                    encoder_name=self._encoder.name,
+                    resolved_preprocessing=resolved_preprocessing,
+                    output_variant=output_variant,
+                ),
+                output_variant=output_variant,
+                backend_provenance=backend_provenance,
+                complete_state="populated",
+            )
+            self._write_cached_process_list(feature_dir, cache_resolution=refreshed_slide_cache)
+            self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed_slide_cache)
+            return FeatureStore(feature_dir)
 
         self._populate_tile_cache(
             cache_resolution=tile_cache,
@@ -1209,7 +1365,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1227,14 +1387,25 @@ class FeatureExtractor:
             dataset=self._dataset,
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
-            tile_cache_key=tile_cache.key,
-            execution=self._encoder,
+            tile_preprocessing=resolved_preprocessing,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
+            tile_output_variant=str(tile_dependency_output["output_variant"]),
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
-        self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
-        return FeatureStore(refreshed.cache_dir)
+        self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
+        self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
+        return FeatureStore(feature_dir)
 
     def _extract_patient_cached(
         self,
@@ -1263,7 +1434,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
         )
@@ -1272,15 +1447,26 @@ class FeatureExtractor:
             dataset=self._dataset,
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
-            slide_cache_key=tile_cache.key,
-            execution=self._encoder,
+            tile_preprocessing=resolved_preprocessing,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
+            tile_output_variant=str(tile_dependency_output["output_variant"]),
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
         if tile_cache.complete and patient_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
-            return FeatureStore(patient_cache.cache_dir)
+            self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
+            return FeatureStore(feature_dir)
 
         # Build patient_id_map from dataset.
         patient_id_map = {
@@ -1309,7 +1495,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1328,14 +1518,25 @@ class FeatureExtractor:
             dataset=self._dataset,
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
-            slide_cache_key=tile_cache.key,
-            execution=self._encoder,
+            tile_preprocessing=resolved_preprocessing,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
+            tile_output_variant=str(tile_dependency_output["output_variant"]),
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
-        self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
-        return FeatureStore(refreshed.cache_dir)
+        self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
+        self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
+        return FeatureStore(feature_dir)
 
     def _populate_patient_cache(
         self,
@@ -1365,9 +1566,14 @@ class FeatureExtractor:
                 features_dir=tile_cache.features_dir,
                 loaded_tilings=selected_loaded,
                 work_dir=artifact_dir / "tile_metadata",
+                feature_path_by_sample_id={
+                    loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                    for loaded in selected_loaded
+                },
             )
             slide_exec = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=model_name,
                 output_dir=artifact_dir / "slide_embeddings",
                 num_gpus=num_gpus,
@@ -1375,6 +1581,7 @@ class FeatureExtractor:
             )
             patient_exec = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=model_name,
                 output_dir=artifact_dir / "patient_embeddings",
                 num_gpus=num_gpus,
@@ -1390,13 +1597,43 @@ class FeatureExtractor:
                 slide_execution=slide_exec,
                 patient_execution=patient_exec,
             )
-            feature_dim = write_cache_payload(
-                patient_artifacts,
-                feature_dir=patient_cache.features_dir,
+            feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=patient_artifacts,
+                cache_resolution=patient_cache,
                 id_attr="patient_id",
             )
         if feature_dim is not None:
             record_feature_dim(patient_cache, feature_dim)
+
+    def _write_artifacts_to_cache_resolution(
+        self,
+        *,
+        artifacts: Sequence[object],
+        cache_resolution: FeatureCacheResolution,
+        id_attr: str = "sample_id",
+    ) -> int | None:
+        feature_dim: int | None = None
+        written_ids: set[str] = set()
+        cache_stem_by_id = getattr(cache_resolution, "cache_stem_by_id", None)
+        for artifact in artifacts:
+            cache_id = str(getattr(artifact, id_attr))
+            if cache_stem_by_id is not None and cache_id not in cache_stem_by_id:
+                continue
+            source = Path(artifact.path)
+            destination = self._feature_path_for_cache_id(cache_resolution, cache_id)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                destination.unlink()
+            try:
+                os.link(source, destination)
+            except OSError:
+                shutil.copyfile(source, destination)
+            tensor = torch.load(destination, weights_only=True, map_location="cpu")
+            feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
+            written_ids.add(cache_id)
+        if written_ids:
+            record_sample_identity_signatures(cache_resolution, sorted(written_ids))
+        return feature_dim
 
     def _populate_tile_cache(
         self,
@@ -1424,6 +1661,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-tile-") as tmp_dir:
             execution = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=encoder_name,
                 output_dir=Path(tmp_dir),
                 num_gpus=num_gpus,
@@ -1449,9 +1687,9 @@ class FeatureExtractor:
                     preprocessing=preprocessing,
                     execution=execution,
                 )
-            feature_dim = write_cache_payload(
-                artifacts,
-                feature_dir=cache_resolution.features_dir,
+            feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=artifacts,
+                cache_resolution=cache_resolution,
             )
         if feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
@@ -1484,6 +1722,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-hierarchical-") as tmp_dir:
             execution = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=encoder_name,
                 output_dir=Path(tmp_dir),
                 num_gpus=num_gpus,
@@ -1514,9 +1753,9 @@ class FeatureExtractor:
                 raise ValueError(
                     "slide2vec did not return hierarchical_artifacts for hierarchical cache population"
                 )
-            feature_dim = write_cache_payload(
-                artifacts,
-                feature_dir=cache_resolution.features_dir,
+            feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=artifacts,
+                cache_resolution=cache_resolution,
             )
         if feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
@@ -1553,6 +1792,7 @@ class FeatureExtractor:
                 preprocessing=preprocessing,
                 execution=build_execution_options(
                     self._encoder,
+                    execution=self._execution,
                     encoder_name=model_name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
@@ -1561,13 +1801,13 @@ class FeatureExtractor:
                 tiling_dir=tiling_dir,
                 slides=[loaded.slide for loaded in selected_loaded],
             )
-            tile_feature_dim = write_cache_payload(
-                [a for a in run_result.tile_artifacts if a.sample_id in tile_missing],
-                feature_dir=tile_cache.features_dir,
+            tile_feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=[a for a in run_result.tile_artifacts if a.sample_id in tile_missing],
+                cache_resolution=tile_cache,
             )
-            slide_feature_dim = write_cache_payload(
-                [a for a in run_result.slide_artifacts if a.sample_id in slide_missing],
-                feature_dir=slide_cache.features_dir,
+            slide_feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=[a for a in run_result.slide_artifacts if a.sample_id in slide_missing],
+                cache_resolution=slide_cache,
             )
         if tile_feature_dim is not None:
             record_feature_dim(tile_cache, tile_feature_dim)
@@ -1581,7 +1821,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_cache.metadata["encoder_name"],
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=str(tile_cache.metadata["encoder_name"]),
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
+            ),
             output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1591,8 +1835,18 @@ class FeatureExtractor:
             dataset=self._dataset,
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
-            tile_cache_key=tile_cache.key,
-            execution=self._encoder,
+            tile_preprocessing=resolved_preprocessing,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
+            ),
+            tile_output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1618,6 +1872,10 @@ class FeatureExtractor:
                 features_dir=tile_cache.features_dir,
                 loaded_tilings=selected_loaded,
                 work_dir=artifact_dir / "tile_metadata",
+                feature_path_by_sample_id={
+                    loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                    for loaded in selected_loaded
+                },
             )
             slide_artifacts = _aggregate_tiles(
                 model_name=model_name,
@@ -1627,15 +1885,16 @@ class FeatureExtractor:
                 preprocessing=None,
                 execution=build_execution_options(
                     self._encoder,
+                    execution=self._execution,
                     encoder_name=model_name,
                     output_dir=artifact_dir,
                     num_gpus=num_gpus,
                     save_tile_embeddings=False,
                 ),
             )
-            feature_dim = write_cache_payload(
-                slide_artifacts,
-                feature_dir=slide_cache.features_dir,
+            feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=slide_artifacts,
+                cache_resolution=slide_cache,
             )
         if feature_dim is not None:
             record_feature_dim(slide_cache, feature_dim)

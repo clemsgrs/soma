@@ -1,5 +1,12 @@
 # Documentation Notes
 
+- Feature cache reuse is now resolved at per-sample/per-patient granularity:
+  cache identity includes `(sample_id, image_path, mask_path)` plus
+  encoder/preprocessing/execution settings, so overlapping samples can be
+  reused across different datasets without reusing unrelated samples.
+- Tiling cache reuse is now resolved at per-sample granularity with
+  `(sample_id, image_path, mask_path)` plus resolved preprocessing identity,
+  so overlapping samples can reuse cached tilings across datasets.
 - The landing page now describes `soma` as a modular framework to streamline
   computational pathology research.
 - The landing page now keeps the main body uncluttered and moves the GitHub
@@ -93,6 +100,9 @@
 - Heatmap rendering now mirrors the nested split directory structure from
   `fold_*/attention/` into `fold_*/heatmaps/`, so rendered PNGs preserve the
   same split provenance as the saved attention files.
+- Heatmap attention saving now trims padded batch positions before writing
+  `.npz` files, so the renderer sees one score per real tile instead of
+  inheriting the batch's padded max length.
 - Heatmap rendering now reads tile geometry from the nested coordinates
   metadata structure used by current `hs2p` artifacts.
 - Heatmap rendering now takes an explicit run-local `tiling_dir` so the
@@ -110,9 +120,15 @@
   reporter so encoder loading and batch-level feature extraction follow the
   same spinner/bar UX as slide pipelines, with a single `Embedding tiles`
   bar updated on the cumulative tile count rather than batch count.
+- Tile-only feature extraction now emits tile-specific embedding summary
+  metadata so the final summary panel reports `Tiles` with tile counts
+  instead of the slide-oriented `Slides w/ tiles` label.
+- Live training progress now reports batch status in dataset-item counts
+  (`phase processed_items/total_items`) so progress advances by actual batch
+  size instead of raw batch index.
 - Tile-only feature extraction now uses the shared SLURM-aware CPU worker
-  limit when `EncoderConfig.num_workers` is unset, instead of defaulting tile
-  loading to the main process.
+  limit when `ExecutionConfig.num_workers` is unset, instead of defaulting
+  tile loading to the main process.
 - Tile-only feature extraction now logs the resolved DataLoader worker count
   at runtime so HPC runs can confirm the effective worker budget in the Rich
   progress output.
@@ -123,10 +139,21 @@
   on PyYAML's Python-specific tuple tags.
 - The Sphinx docs build now tolerates lean offline environments by treating
   optional extensions and the Furo theme as optional rather than required.
-- `EncoderConfig` now exposes `prefetch_factor` and `persistent_workers`, and
-  both slide-level and tile-level extraction thread them through the shared
-  `build_execution_options(...)` helper so the tile input pipeline matches the
-  upstream `slide2vec` execution contract.
-- The compact generated API reference now includes `prefetch_factor` and
-  `persistent_workers` in the `EncoderConfig` field list, keeping the checked-
-  in snapshot aligned with the dataclass definition.
+- `ExecutionConfig` now owns runtime tuning knobs like `num_gpus`,
+  `num_workers`, `num_preprocessing_workers`, `prefetch_factor`, and
+  `persistent_workers`, while `EncoderConfig` stays focused on the encoder
+  itself.
+- The compact generated API reference now includes `ExecutionConfig` and the
+  updated `EncoderConfig` field list, keeping the checked-in snapshot aligned
+  with the dataclass definitions.
+- Feature-cache metadata now records only `feature_type` (for example `tile`,
+  `bag`, `slide`) and derives rank from that type at validation/read time
+  instead of persisting a duplicate `feature_rank` metadata field.
+- Cache lookup validation now uses metadata + identity + path existence checks
+  only (no per-sample tensor or tiling payload deserialization), so cache-hit
+  checks are significantly faster on large runs.
+- Feature cache metadata now writes resolved execution geometry in
+  `execution` (`input_size`, `spacing_um`, `output_variant`) rather than
+  leaving unset fields as `null` when users rely on encoder defaults.
+- Cache resolution now logs an explicit `resolving ... cache` line before
+  validation so users can see cache-key/scope progress in the extraction UX.

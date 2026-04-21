@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from unittest.mock import patch
 import csv
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -26,7 +27,8 @@ from soma.config import (
 from soma.dataset import Dataset, FoldSplit, Splits
 from soma.features import FeatureStore
 from soma.output_layout import build_experiment_spec
-from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
+from soma.pipeline import FoldResult, Pipeline, PipelineResult, _evaluate, train, train_one_fold
+from soma.training.collate import BagBatch
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +356,58 @@ class TestTrainOneFold:
         data = np.load(npz_files[0])
         assert "attention" in data
         assert data["attention"].ndim == 1
+
+    def test_evaluate_trims_attention_to_valid_tiles(self, tmp_path: Path):
+        """Padded batch positions should not leak into saved attention arrays."""
+
+        attention_dir = tmp_path / "attention"
+        attention_dir.mkdir()
+
+        batch = BagBatch(
+            features=torch.zeros(2, 4, D),
+            mask=torch.tensor([[True, True, True, False], [True, True, True, True]]),
+            labels=torch.tensor([0, 1], dtype=torch.long),
+            sample_ids=("s0", "s1"),
+        )
+
+        class _DummyTaskHead:
+            def compute_metrics(self, logits, labels):
+                return {"accuracy": 1.0}
+
+            def postprocess(self, logits):
+                probabilities = torch.softmax(logits, dim=-1).cpu().numpy()
+                predicted_labels = logits.argmax(dim=-1).cpu().numpy()
+                return {"probabilities": probabilities, "predicted_labels": predicted_labels}
+
+        class _DummyModel:
+            task_head = _DummyTaskHead()
+
+            def __call__(self, features, mask=None):
+                return SimpleNamespace(
+                    logits=torch.tensor([[0.2, 0.8], [0.7, 0.3]], dtype=torch.float32),
+                    tile_attention=torch.tensor(
+                        [
+                            [0.1, 0.2, 0.3, 0.4],
+                            [0.4, 0.3, 0.2, 0.1],
+                        ],
+                        dtype=torch.float32,
+                    ),
+                )
+
+        _evaluate(
+            _DummyModel(),
+            [batch],
+            "test",
+            {"normal": 0, "tumor": 1},
+            torch.device("cpu"),
+            attention_dir=attention_dir,
+            aggregator_name="abmil",
+        )
+
+        attn_s0 = np.load(attention_dir / "s0.npz")["attention"]
+        attn_s1 = np.load(attention_dir / "s1.npz")["attention"]
+        assert attn_s0.shape == (3,)
+        assert attn_s1.shape == (4,)
 
     def test_no_attention_dir_when_heatmaps_disabled(self, tmp_path: Path):
         """Without heatmaps enabled, no attention/ directory should be written."""
@@ -923,7 +977,7 @@ class TestPipeline:
         from slide2vec.encoders.base import SlideEncoder, TileEncoder
         from slide2vec.encoders.registry import encoder_registry
         from soma.slide2vec_adapter import LoadedTiling
-        from soma.cache import record_feature_dim
+        from soma.cache import record_feature_dim, record_sample_identity_signatures
         from soma.extraction import FeatureExtractor
 
         test_tile = "_test_pipeline_cache_tile"
@@ -1073,8 +1127,9 @@ class TestPipeline:
         ):
             cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
-                torch.save(torch.ones(2, D), cache_resolution.features_dir / f"s{i}.pt")
+                torch.save(torch.ones(2, D), cache_resolution.feature_path_for_id(f"s{i}"))
             record_feature_dim(cache_resolution, D)
+            record_sample_identity_signatures(cache_resolution, [f"s{i}" for i in range(NUM_SAMPLES)])
 
         def _fake_populate_slide_cache(
             self_,
@@ -1088,8 +1143,9 @@ class TestPipeline:
         ):
             slide_cache.features_dir.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
-                torch.save(torch.ones(D), slide_cache.features_dir / f"s{i}.pt")
+                torch.save(torch.ones(D), slide_cache.feature_path_for_id(f"s{i}"))
             record_feature_dim(slide_cache, D)
+            record_sample_identity_signatures(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
 
         with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
             "soma.extraction.torch.cuda.device_count", return_value=1

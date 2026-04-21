@@ -20,6 +20,7 @@ from soma.cache import (
     build_tile_cache_key,
     manifest_digest,
     probe_resolved_backends,
+    record_sample_identity_signatures,
     resolve_cache_root,
     resolve_feature_payload_dir,
     resolve_tiling_cache,
@@ -61,15 +62,12 @@ def test_manifest_digest_stable_under_row_order(tmp_path: Path):
 
 
 def test_tile_cache_key_changes_with_preprocessing(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(requested_tile_size_px=224),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     key_b = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(requested_tile_size_px=256),
         execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -78,15 +76,12 @@ def test_tile_cache_key_changes_with_preprocessing(tmp_path: Path):
 
 
 def test_tile_cache_key_changes_with_tissue_mask_value(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(tissue_mask_tissue_value=1),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     key_b = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(tissue_mask_tissue_value=2),
         execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -95,15 +90,12 @@ def test_tile_cache_key_changes_with_tissue_mask_value(tmp_path: Path):
 
 
 def test_tile_cache_key_changes_with_precision(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     key_b = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="virchow", precision="fp32"),
@@ -112,15 +104,12 @@ def test_tile_cache_key_changes_with_precision(tmp_path: Path):
 
 
 def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="h0-mini",
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="h0-mini", output_variant="cls"),
     )
     key_b = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="h0-mini",
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
@@ -129,15 +118,12 @@ def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
 
 
 def test_tile_cache_key_changes_with_backend(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(backend="auto"),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     key_b = build_tile_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(backend="openslide"),
         execution=EncoderConfig(name="virchow", precision="fp16"),
@@ -146,13 +132,10 @@ def test_tile_cache_key_changes_with_backend(tmp_path: Path):
 
 
 def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_tiling_cache_key(
-        dataset=dataset,
         preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
     )
     key_b = build_tiling_cache_key(
-        dataset=dataset,
         preprocessing=PreprocessingConfig(requested_tile_size_px=256, requested_spacing_um=0.5),
     )
     assert key_a != key_b
@@ -233,8 +216,6 @@ def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
 
     metadata = json.loads(resolution.metadata_path.read_text())
     assert metadata["requested_backend"] == "auto"
-    assert metadata["backend"] == "openslide"
-    assert metadata["backend_by_sample_id"] == {"s1": "openslide", "s2": "openslide"}
     assert metadata["requested_preprocessing"] == {"backend": "auto", "requested_tile_size_px": None}
     assert "raw_preprocessing" not in metadata
     assert resolution.complete is False
@@ -299,6 +280,7 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
 
     recorded = pd.read_csv(resolution.process_list_path)
     assert Path(recorded.loc[0, "coordinates_npz_path"]).parent == resolution.artifacts_dir
+    assert "sample_cache_stem" in set(recorded.columns)
     assert len(list(resolution.artifacts_dir.glob("*.npz"))) == 1
 
 
@@ -342,6 +324,7 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
                 [
                     {
                         "sample_id": "s1",
+                        "sample_cache_stem": resolution.cache_stem_by_id["s1"],
                         "tiling_status": "success",
                         "backend": "openslide",
                         "requested_backend": "openslide",
@@ -349,15 +332,6 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
                 ]
             ),
         ),
-        patch(
-            "soma.cache.load_tiling_result_from_row",
-            return_value=SimpleNamespace(
-                requested_tile_size_px=1792,
-                requested_spacing_um=0.5,
-                backend="openslide",
-            ),
-        ),
-        patch("soma.cache.validate_tiling_result_provenance", return_value=None),
     ):
         refreshed = resolve_tiling_cache(
             cache_root=cache_root,
@@ -411,7 +385,8 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
     metadata["feature_dim"] = 16
     metadata["empty_sample_ids"] = ["s2"]
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 16), resolution.features_dir / "s1.pt")
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    record_sample_identity_signatures(resolution, ["s1"])
 
     reused = resolve_tile_cache(
         cache_root=cache_root,
@@ -426,9 +401,7 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
     key_a = build_hierarchical_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=224,
@@ -438,7 +411,6 @@ def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     key_b = build_hierarchical_cache_key(
-        dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=224,
@@ -451,17 +423,24 @@ def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
 
 
 def test_slide_cache_key_changes_with_upstream_tile_cache_key(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
+    tile_dependency_a = {
+        "tile_encoder_name": "virchow",
+        "tile_preprocessing": {"requested_tile_size_px": 224},
+        "tile_execution": {"output_variant": "default"},
+    }
+    tile_dependency_b = {
+        "tile_encoder_name": "virchow",
+        "tile_preprocessing": {"requested_tile_size_px": 256},
+        "tile_execution": {"output_variant": "default"},
+    }
     key_a = build_slide_cache_key(
-        dataset=dataset,
         slide_encoder_name="prism",
-        tile_cache_key="aaa111",
+        tile_dependency_signature=tile_dependency_a,
         execution=EncoderConfig(name="prism", precision="fp16"),
     )
     key_b = build_slide_cache_key(
-        dataset=dataset,
         slide_encoder_name="prism",
-        tile_cache_key="bbb222",
+        tile_dependency_signature=tile_dependency_b,
         execution=EncoderConfig(name="prism", precision="fp16"),
     )
     assert key_a != key_b
@@ -481,7 +460,8 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     for sample_id in dataset.sample_ids:
-        torch.save(torch.randn(4, 16), resolution.features_dir / f"{sample_id}.pt")
+        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
+    record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     reused = resolve_tile_cache(
         cache_root=cache_root,
@@ -507,7 +487,8 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 16), resolution.features_dir / "s1.pt")
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    record_sample_identity_signatures(resolution, ["s1"])
 
     resumed = resolve_tile_cache(
         cache_root=cache_root,
@@ -518,6 +499,68 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
     )
     assert resumed.complete is False
     assert resumed.missing_sample_ids() == ["s2"]
+
+
+def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata["feature_dim"] = 16
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    record_sample_identity_signatures(resolution, ["s1"])
+
+    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    assert any("feature cache partial" in message for message in messages)
+
+
+def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    assert any("resolving feature cache" in message for message in messages)
+
+
+def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "tiling_cache"
+    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            backend_provenance={
+                "requested_backend": "openslide",
+                "backend": "openslide",
+                "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
+            },
+        )
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    assert any("resolving tiling cache" in message for message in messages)
 
 
 def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
@@ -571,7 +614,7 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
         },
     )
     metadata = json.loads(resolution.metadata_path.read_text())
-    metadata.pop("manifest_digest")
+    metadata.pop("preprocessing")
     metadata["schema_version"] = "v2"
     metadata["unexpected_field"] = "boom"
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
@@ -591,11 +634,112 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
     message = str(excinfo.value)
     assert f"Tiling cache metadata mismatch for {resolution.cache_dir}" in message
     assert "missing=[" in message
-    assert "manifest_digest=" in message
+    assert "preprocessing=" in message
     assert "extra=[" in message
     assert "unexpected_field=" in message
     assert "changed=[" in message
     assert "schema_version:" in message
+
+
+def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    cache_root = tmp_path / "tiling_cache"
+    dataset_a = _make_dataset(
+        tmp_path / "a",
+        rows=[{"sample_id": "s1", "image_path": "/slides/shared.svs", "label": "tumor"}],
+    )
+    dataset_b = _make_dataset(
+        tmp_path / "b",
+        rows=[
+            {"sample_id": "s1", "image_path": "/slides/shared.svs", "label": "tumor"},
+            {"sample_id": "s2", "image_path": "/slides/other.svs", "label": "normal"},
+        ],
+    )
+    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    provenance_a = {
+        "requested_backend": "openslide",
+        "backend": "openslide",
+        "backend_by_sample_id": {"s1": "openslide"},
+    }
+    resolution_a = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset_a,
+        preprocessing=preprocessing,
+        backend_provenance=provenance_a,
+    )
+    stem_a = resolution_a.cache_stem_by_id["s1"]
+    npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_npz_path.npz"
+    meta_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_meta_path.json"
+    npz_a.write_bytes(b"npz")
+    meta_a.write_text("{}", encoding="utf-8")
+    resolution_a.process_list_path.write_text(
+        "sample_id,sample_cache_stem,tiling_status,backend,requested_backend,coordinates_npz_path,coordinates_meta_path\n"
+        f"s1,{stem_a},success,openslide,openslide,{npz_a},{meta_a}\n",
+        encoding="utf-8",
+    )
+
+    resolution_b = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset_b,
+        preprocessing=preprocessing,
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
+        },
+    )
+    assert resolution_b.complete is False
+    assert resolution_b.reused is False
+    assert resolution_b.cache_stem_by_id["s1"] == stem_a
+
+
+def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_path: Path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    cache_root = tmp_path / "tiling_cache"
+    dataset_a = _make_dataset(
+        tmp_path / "a",
+        rows=[{"sample_id": "s1", "image_path": "/slides/path-a.svs", "label": "tumor"}],
+    )
+    dataset_b = _make_dataset(
+        tmp_path / "b",
+        rows=[{"sample_id": "s1", "image_path": "/slides/path-b.svs", "label": "tumor"}],
+    )
+    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    resolution_a = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset_a,
+        preprocessing=preprocessing,
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s1": "openslide"},
+        },
+    )
+    stem_a = resolution_a.cache_stem_by_id["s1"]
+    npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_npz_path.npz"
+    meta_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_meta_path.json"
+    npz_a.write_bytes(b"npz")
+    meta_a.write_text("{}", encoding="utf-8")
+    resolution_a.process_list_path.write_text(
+        "sample_id,sample_cache_stem,tiling_status,backend,requested_backend,coordinates_npz_path,coordinates_meta_path\n"
+        f"s1,{stem_a},success,openslide,openslide,{npz_a},{meta_a}\n",
+        encoding="utf-8",
+    )
+
+    resolution_b = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset_b,
+        preprocessing=preprocessing,
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s1": "openslide"},
+        },
+    )
+    assert resolution_b.complete is False
+    assert resolution_b.cache_stem_by_id["s1"] != stem_a
 
 
 def test_resolve_feature_payload_dir_understands_cache_dir(tmp_path: Path):
@@ -689,7 +833,8 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     for sample_id in dataset.sample_ids:
-        torch.save(torch.randn(4, 9, 16), resolution.features_dir / f"{sample_id}.pt")
+        torch.save(torch.randn(4, 9, 16), resolution.feature_path_for_id(sample_id))
+    record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     reused = resolve_hierarchical_cache(
         cache_root=cache_root,
@@ -705,3 +850,78 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
     )
     assert reused.complete is True
     assert reused.reused is True
+
+
+def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path):
+    cache_root = tmp_path / "feature_cache"
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    dataset_a = _make_dataset(
+        tmp_path / "a",
+        rows=[{"sample_id": "s1", "image_path": "/slides/shared.svs", "label": "tumor"}],
+    )
+    dataset_b = _make_dataset(
+        tmp_path / "b",
+        rows=[
+            {"sample_id": "s1", "image_path": "/slides/shared.svs", "label": "tumor"},
+            {"sample_id": "s2", "image_path": "/slides/other.svs", "label": "normal"},
+        ],
+    )
+    resolution_a = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset_a,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata_a = json.loads(resolution_a.metadata_path.read_text())
+    metadata_a["feature_dim"] = 8
+    resolution_a.metadata_path.write_text(json.dumps(metadata_a, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 8), resolution_a.feature_path_for_id("s1"))
+    record_sample_identity_signatures(resolution_a, ["s1"])
+
+    resolution_b = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset_b,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    assert resolution_b.complete is False
+    assert resolution_b.missing_sample_ids() == ["s2"]
+
+
+def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_path: Path):
+    cache_root = tmp_path / "feature_cache"
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    dataset_a = _make_dataset(
+        tmp_path / "a",
+        rows=[{"sample_id": "s1", "image_path": "/slides/path-a.svs", "label": "tumor"}],
+    )
+    dataset_b = _make_dataset(
+        tmp_path / "b",
+        rows=[{"sample_id": "s1", "image_path": "/slides/path-b.svs", "label": "tumor"}],
+    )
+    resolution_a = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset_a,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata_a = json.loads(resolution_a.metadata_path.read_text())
+    metadata_a["feature_dim"] = 8
+    resolution_a.metadata_path.write_text(json.dumps(metadata_a, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 8), resolution_a.feature_path_for_id("s1"))
+    record_sample_identity_signatures(resolution_a, ["s1"])
+
+    resolution_b = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset_b,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    assert resolution_b.complete is False
+    assert resolution_b.missing_sample_ids() == ["s1"]

@@ -20,6 +20,7 @@ from soma.config import (
     CacheConfig,
     EncoderConfig,
     EvalConfig,
+    ExecutionConfig,
     HeatmapConfig,
     PipelineConfig,
     PreprocessingConfig,
@@ -115,6 +116,7 @@ def build_reference_rst() -> str:
 
     config_rows = [
         ("PreprocessingConfig", _field_names(PreprocessingConfig), "Whole-slide segmentation and tiling geometry"),
+        ("ExecutionConfig", _field_names(ExecutionConfig), "Runtime execution settings"),
         ("PreviewConfig", _field_names(PreviewConfig), "Preview rendering settings"),
         ("EncoderConfig", _field_names(EncoderConfig), "Foundation-model encoder selection and runtime behavior"),
         ("CacheConfig", _field_names(CacheConfig), "Shared cache policy"),

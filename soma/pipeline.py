@@ -857,6 +857,7 @@ class Pipeline:
             extractor = TileFeatureExtractor(
                 self._dataset,
                 self._config.encoder,
+                execution=self._config.execution,
                 cache=cache_config,
             )
             return extractor.run(feature_dir=run_dir / "features")
@@ -878,6 +879,7 @@ class Pipeline:
             self._dataset,
             self._config.encoder,
             preprocessing,
+            execution=self._config.execution,
             cache=cache_config,
         )
         return extractor.run(feature_dir=run_dir / "features")
@@ -943,6 +945,8 @@ def _evaluate(
             from soma.heatmaps import _normalize_attention
             for i, sid in enumerate(batch.sample_ids):
                 attn_i = out.tile_attention[i : i + 1]
+                if hasattr(batch, "mask"):
+                    attn_i = attn_i[..., batch.mask[i]]
                 normalized = _normalize_attention(attn_i, aggregator_name or "")
                 np.savez_compressed(attention_dir / f"{sid}.npz", attention=normalized)
 
