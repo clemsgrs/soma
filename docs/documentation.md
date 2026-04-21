@@ -174,3 +174,16 @@
 - After a successful run, the terminal also prints a compact completion panel
   with the primary split metric, per-split coverage in `real/total` form, and
   the mean placeholder count.
+- Patient-level training now validates required patient embeddings before the
+  training loop starts, and patient manifests can mark tune/test patients as
+  empty so evaluation keeps them via deterministic placeholder predictions.
+- Managed experiment identity now includes `dataset_type`, so tile and slide
+  runs with otherwise similar configs no longer collapse into the same
+  experiment bucket.
+- Fold-summary aggregation now tolerates folds that expose different test split
+  names instead of crashing when a later fold introduces an extra split.
+- Pearson and Spearman metrics now fall back to `0.0` on constant-input cases
+  instead of leaking `NaN` into reports and run summaries.
+- Patient-level subgroup enrichment now resolves subgroup metadata from the
+  patient's slides, so patient-keyed predictions carry subgroup data into CSVs
+  and subgroup reports.
