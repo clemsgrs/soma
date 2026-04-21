@@ -281,56 +281,113 @@ def bh_correct(p_values: list[float]) -> list[float]:
     return list(false_discovery_control(p_values, method="bh"))
 
 
-def compare_run_metrics(
-    runs_fold_metrics: list[list[float]],
+def compare_run_predictions(
+    runs_predictions: list[pd.DataFrame],
+    task_family: str,
+    metric: str,
     *,
     n_permutations: int = 1000,
     seed: int = 42,
 ) -> list[float | None]:
-    """Permutation test comparing each run against the best run per metric.
+    """Sample-level paired permutation test comparing each run against the best.
 
-    Uses paired permutation on per-fold metric values. Requires all runs to
-    have at least 2 folds with the same fold count; otherwise returns None
-    for every run.
+    Aligns runs by sample_id, then for each permutation randomly swaps
+    prediction columns between the best run and one other run for a random
+    subset of samples, recomputes the metric, and builds a null distribution.
+    Works for any number of folds (including single-fold) as long as
+    predictions exist and share sample IDs.
 
     Args:
-        runs_fold_metrics: List of per-run fold metric lists, shape
-            (n_runs, n_folds). Each inner list must have the same length.
+        runs_predictions: Pooled prediction DataFrames, one per run.
+            Each must contain sample_id, true_label, and prediction columns.
+        task_family: Task family string (e.g. 'binary_classification').
+        metric: Metric name to use as the test statistic.
         n_permutations: Number of permutation iterations.
         seed: Random seed for reproducibility.
 
     Returns:
-        List of p-values, one per run. The best run gets p-value 1.0
-        (it is its own reference). Returns [None, ...] when statistical
-        comparison is not possible (single-fold or mismatched fold counts).
+        List of p-values, one per run. The best run gets p-value 1.0.
+        Returns None for a run when comparison is not possible.
     """
-    n_runs = len(runs_fold_metrics)
+    n_runs = len(runs_predictions)
     if n_runs < 2:
         return [None] * n_runs
 
-    fold_counts = [len(m) for m in runs_fold_metrics]
-    n_folds = fold_counts[0]
-    if n_folds < 2 or any(c != n_folds for c in fold_counts):
+    funs = _METRIC_FUNS.get(task_family, {})
+    if metric not in funs:
         return [None] * n_runs
 
+    def _score(df: pd.DataFrame) -> float | None:
+        if df.empty or len(df) < 2:
+            return None
+        try:
+            y_true, y_pred, y_prob = _extract_arrays(df, task_family)
+            return float(funs[metric](y_true, y_pred, y_prob))
+        except Exception:
+            return None
+
+    scores = [_score(df) for df in runs_predictions]
+    valid = [(i, s) for i, s in enumerate(scores) if s is not None]
+    if not valid:
+        return [None] * n_runs
+
+    best_idx, best_score = max(valid, key=lambda x: x[1])
     rng = np.random.default_rng(seed)
-    means = [float(np.mean(m)) for m in runs_fold_metrics]
-    best_idx = int(np.argmax(means))
-    best_folds = np.array(runs_fold_metrics[best_idx], dtype=float)
+
+    pred_cols = [
+        c for c in runs_predictions[best_idx].columns
+        if c not in {"sample_id", "true_label"}
+    ]
+    prob_cols = [c for c in pred_cols if c.startswith("prob_")]
 
     p_values: list[float | None] = []
-    for i, fold_vals in enumerate(runs_fold_metrics):
+    for i, df in enumerate(runs_predictions):
         if i == best_idx:
             p_values.append(1.0)
             continue
-        other_folds = np.array(fold_vals, dtype=float)
-        diffs = best_folds - other_folds
-        observed_delta = abs(float(np.mean(diffs)))
+        if scores[i] is None:
+            p_values.append(None)
+            continue
 
-        # Sign permutation test: for each fold independently, randomly flip
-        # which run is labeled "best" vs "other".
-        all_signs = rng.choice([-1.0, 1.0], size=(n_permutations, n_folds))
-        null_deltas = np.abs(all_signs @ diffs) / n_folds
+        # Align both runs to a common sorted sample order
+        best_df = runs_predictions[best_idx]
+        common_ids = sorted(
+            set(best_df["sample_id"]).intersection(set(df["sample_id"]))
+        )
+        if len(common_ids) < 2:
+            p_values.append(None)
+            continue
+
+        df_a = best_df[best_df["sample_id"].isin(common_ids)].sort_values("sample_id")
+        df_b = df[df["sample_id"].isin(common_ids)].sort_values("sample_id")
+
+        y_true = df_a["true_label"].to_numpy()
+        vals_a = df_a[pred_cols].to_numpy()
+        vals_b = df_b[pred_cols].to_numpy()
+
+        observed_delta = abs(best_score - scores[i])
+
+        null_deltas = np.empty(n_permutations)
+        for p_idx in range(n_permutations):
+            swap = rng.random(len(common_ids)) < 0.5
+            perm_a = np.where(swap[:, None], vals_b, vals_a)
+            perm_b = np.where(swap[:, None], vals_a, vals_b)
+
+            def _df_from(vals: np.ndarray) -> pd.DataFrame:
+                out = pd.DataFrame(vals, columns=pred_cols)
+                out["true_label"] = y_true
+                if prob_cols:
+                    out["predicted_label"] = out[prob_cols].to_numpy().argmax(axis=1)
+                elif "raw_score" in out.columns:
+                    out["predicted_label"] = out["raw_score"].round().astype(int)
+                return out
+
+            ya, ypa, yproba = _extract_arrays(_df_from(perm_a), task_family)
+            yb, ypb, yprobab = _extract_arrays(_df_from(perm_b), task_family)
+            null_deltas[p_idx] = abs(
+                float(funs[metric](ya, ypa, yproba)) - float(funs[metric](yb, ypb, yprobab))
+            )
+
         p_values.append(float(np.mean(null_deltas >= observed_delta)))
 
     return p_values

@@ -391,7 +391,7 @@ def test_generate_report_binary_creates_file(tmp_path: Path) -> None:
     assert report_path.suffix == ".html"
     html = report_path.read_text()
     assert "<!DOCTYPE html>" in html
-    assert "Experiment Report" in html
+    assert "SOMA" in html
 
 
 def test_generate_report_includes_training_timing_summary(tmp_path: Path) -> None:
@@ -433,7 +433,7 @@ def test_generate_report_regression(tmp_path: Path) -> None:
     )
     html = generate_report(run_dir).read_text()
 
-    assert "Prediction Analysis" in html
+    assert "Test Performance" in html
     # ROC curve only appears for classification
     assert "ROC curve" not in html
 

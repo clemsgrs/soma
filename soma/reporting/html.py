@@ -1,17 +1,16 @@
 """HTML report assembly.
 
 render_report(run_data) -> str  produces a fully self-contained HTML page.
-Plotly JS is embedded inline so the report opens without network access.
+Reports are self-contained and offline-capable (no external JS or CSS).
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import plotly
-import plotly.graph_objects as go
 
 from soma.reporting.charts import (
+    SOMA_PALETTE,
     comparison_loss_curves,
     comparison_metric_curves,
     confusion_matrix_chart,
@@ -22,11 +21,10 @@ from soma.reporting.charts import (
     residual_plot,
     roc_curve_chart,
     scatter_predicted_vs_actual,
-    score_distribution_chart,
     subgroup_metric_chart,
     subgroup_stats_heatmap,
 )
-from soma.evaluation.metrics import bh_correct, compare_run_metrics, compute_subgroup_metrics, compute_subgroup_stats
+from soma.evaluation.metrics import bh_correct, compare_run_predictions, compute_subgroup_metrics, compute_subgroup_stats
 from soma.reporting.data import ComparisonData, FoldSlice, RunData, aggregate_fold_predictions, fold_slices_for_split
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
@@ -41,11 +39,13 @@ def render_report(run_data: RunData) -> str:
         run_data: Populated RunData from load_run_data() or run_data_from_result().
 
     Returns:
-        Full HTML string with embedded Plotly JS and all report sections.
+        Full HTML string with all report sections.
     """
     sections: list[str] = []
 
     sections.append(_section_header(run_data))
+    sections.append(_section_hero_metrics(run_data))
+    sections.append(_section_run_context(run_data))
     sections.append(_section_config(run_data))
     sections.append(_section_results_summary(run_data))
     sections.append(_section_training_timing(run_data))
@@ -53,17 +53,24 @@ def render_report(run_data: RunData) -> str:
     sections.append(_section_prediction_analysis(run_data))
     sections.append(_section_subgroup_analysis(run_data))
 
-    body = "\n".join(sections)
-    plotly_js = plotly.offline.get_plotlyjs()
+    body = "\n".join(s for s in sections if s)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Experiment Report — {_run_id(run_data)}</title>
-  <script>{plotly_js}</script>
+  <title>SOMA — {_run_id(run_data)}</title>
   <style>{_css()}</style>
+  <script>
+  function somaTab(groupId, idx) {{
+    var g = document.getElementById(groupId);
+    g.querySelectorAll('.tab-panel').forEach(function(p) {{ p.style.display = 'none'; }});
+    g.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+    document.getElementById(groupId + '-' + idx).style.display = '';
+    g.querySelectorAll('.tab-btn')[idx].classList.add('active');
+  }}
+  </script>
 </head>
 <body>
 {body}
@@ -80,27 +87,101 @@ def _section_header(run_data: RunData) -> str:
     meta = run_data.run_metadata
     run_id = _run_id(run_data)
     status = meta.get("status", "—")
-    started = meta.get("started_at", "—")
-    finished = meta.get("finished_at", "—")
+    status_class = {"completed": "status-ok", "failed": "status-err"}.get(status, "status-run")
     git_sha = meta.get("git_sha") or "—"
     seed = run_data.config.get("training", {}).get("seed", "—")
     num_folds = len(run_data.folds)
 
-    status_class = {"completed": "status-ok", "failed": "status-err"}.get(status, "status-run")
-
     return f"""
-<div class="page-header">
-  <h1>Experiment Report</h1>
-  <div class="run-id">{run_id}</div>
-  <div class="header-meta">
+<header class="site-header">
+  <span class="soma-wordmark">SOMA</span>
+  <span class="header-run-id">{run_id}</span>
+  <div class="header-right">
     <span class="badge {status_class}">{status}</span>
-    <span>{num_folds} fold{"s" if num_folds != 1 else ""}</span>
-    <span>seed&nbsp;{seed}</span>
-    <span>started&nbsp;{started}</span>
-    {f'<span>finished&nbsp;{finished}</span>' if finished != "—" else ""}
-    <span>git&nbsp;<code>{git_sha[:10] if git_sha != "—" else "—"}</code></span>
+    <span class="header-meta-item">{num_folds} fold{"s" if num_folds != 1 else ""}</span>
+    <span class="header-meta-item">seed {seed}</span>
+    <span class="header-meta-item">git <code>{git_sha[:10] if git_sha != "—" else "—"}</code></span>
   </div>
-</div>"""
+</header>"""
+
+
+def _section_hero_metrics(run_data: RunData) -> str:
+    if not run_data.folds:
+        return ""
+
+    all_split_names = _test_split_names(run_data.folds)
+    if not all_split_names or not run_data.metrics:
+        return ""
+
+    # Use the first split for hero display
+    split_name = all_split_names[0]
+    cards = []
+    for metric in run_data.metrics:
+        mean = run_data.summary.get(f"{split_name}/{metric}_mean")
+        std = run_data.summary.get(f"{split_name}/{metric}_std")
+        if mean is None:
+            continue
+        std_html = f'<span class="hero-std">± {std:.3f}</span>' if std is not None else ""
+        split_label = f'<span class="hero-split">{split_name}</span>' if len(all_split_names) > 1 else ""
+        cards.append(f"""
+  <div class="hero-card">
+    <div class="hero-value">{mean:.3f}{std_html}</div>
+    <div class="hero-label">{metric}{split_label}</div>
+  </div>""")
+
+    if not cards:
+        return ""
+
+    return f'<div class="hero-strip"><div class="hero-grid">{"".join(cards)}</div></div>'
+
+
+def _section_run_context(run_data: RunData) -> str:
+    cfg = run_data.config
+
+    def _basename(path: str) -> str:
+        if not path or path == "—":
+            return "—"
+        import os
+        return os.path.basename(path)
+
+    def _get(obj: dict, *keys: str, default: str = "—") -> str:
+        for key in keys:
+            if isinstance(obj, dict) and key in obj:
+                obj = obj[key]
+            else:
+                return default
+        return str(obj) if obj is not None else default
+
+    items = []
+
+    dataset = _basename(_get(cfg, "dataset_csv"))
+    if dataset and dataset != "—":
+        items.append(("Dataset", dataset))
+
+    splits = _basename(_get(cfg, "splits_csv"))
+    if splits and splits != "—":
+        items.append(("Splits", splits))
+
+    encoder = cfg.get("encoder")
+    if encoder:
+        enc_name = _get(cfg, "encoder", "name")
+        if enc_name and enc_name != "—":
+            items.append(("Encoder", enc_name))
+
+    agg = cfg.get("aggregator")
+    if agg:
+        agg_name = _get(cfg, "aggregator", "name")
+        if agg_name and agg_name != "—":
+            items.append(("Aggregator", agg_name))
+
+    if not items:
+        return ""
+
+    chips = "".join(
+        f'<span class="ctx-chip"><span class="ctx-label">{label}</span><span class="ctx-value">{value}</span></span>'
+        for label, value in items
+    )
+    return f'<div class="run-context">{chips}</div>'
 
 
 def _section_config(run_data: RunData) -> str:
@@ -112,8 +193,10 @@ def _section_config(run_data: RunData) -> str:
     )
     return f"""
 <div class="section">
-  <h2>Configuration</h2>
-  <table class="cfg-table"><tbody>{table_html}</tbody></table>
+  <details class="cfg-details">
+    <summary>Configuration</summary>
+    <table class="cfg-table"><tbody>{table_html}</tbody></table>
+  </details>
 </div>"""
 
 
@@ -129,7 +212,6 @@ def _section_results_summary(run_data: RunData) -> str:
     sections = ""
     for split_name in all_split_names:
         coverage_table = _coverage_table(run_data, split_name)
-        # Collect metric names for this split
         all_metric_names: list[str] = []
         for fd in run_data.folds:
             for name in fd.test_metrics.get(split_name, {}):
@@ -260,16 +342,11 @@ def _section_training_curves(run_data: RunData) -> str:
 </div>"""
 
     chart_divs: list[str] = []
-
-    # Loss curves (full width)
     chart_divs.append(_chart_div(loss_curves(run_data.folds), width="full"))
 
-    # Metric curves for user-requested metrics (2-column grid)
     for metric_name in run_data.metrics:
-        fig = metric_curves(run_data.folds, metric_name)
-        chart_divs.append(_chart_div(fig, width="half"))
+        chart_divs.append(_chart_div(metric_curves(run_data.folds, metric_name), width="half"))
 
-    # LR curve
     chart_divs.append(_chart_div(lr_curve(run_data.folds), width="half"))
 
     inner = "\n".join(chart_divs)
@@ -294,36 +371,51 @@ def _section_prediction_analysis(run_data: RunData) -> str:
         if not has_preds:
             continue
 
-        chart_divs: list[str] = []
+        tabs: list[tuple[str, str]] = []  # (label, svg)
         if family in _CLASSIFICATION_FAMILIES:
-            chart_divs.append(_chart_div(roc_curve_chart(slices), width="half"))
+            tabs.append(("ROC curve", roc_curve_chart(slices)))
             if family == "binary_classification":
-                chart_divs.append(_chart_div(pr_curve_chart(slices), width="half"))
-            chart_divs.append(_chart_div(confusion_matrix_chart(slices), width="half"))
-            chart_divs.append(_chart_div(score_distribution_chart(slices), width="half"))
+                tabs.append(("PR curve", pr_curve_chart(slices)))
+            tabs.append(("Confusion matrix", confusion_matrix_chart(slices)))
         elif family in _ORDINAL_FAMILIES:
-            chart_divs.append(_chart_div(confusion_matrix_chart(slices), width="half"))
-            chart_divs.append(_chart_div(score_distribution_chart(slices), width="half"))
+            tabs.append(("Confusion matrix", confusion_matrix_chart(slices)))
         elif family in _REGRESSION_FAMILIES:
-            chart_divs.append(_chart_div(scatter_predicted_vs_actual(slices), width="half"))
-            chart_divs.append(_chart_div(residual_plot(slices), width="half"))
+            tabs.append(("Predicted vs. actual", scatter_predicted_vs_actual(slices)))
+            tabs.append(("Residuals", residual_plot(slices)))
 
-        if not chart_divs:
+        if not tabs:
             continue
 
-        heading = "Prediction Analysis" if len(all_split_names) == 1 else f"Prediction Analysis — {split_name}"
-        inner = "\n".join(chart_divs)
+        heading = f"Test Performance — {split_name}"
         sections += f"""
 <div class="section">
   <h2>{heading}</h2>
-  <div class="chart-grid">{inner}</div>
+  {_tab_group(tabs)}
 </div>"""
 
     return sections
 
 
+def _tab_group(tabs: list[tuple[str, str]]) -> str:
+    import uuid as _uuid
+    group_id = f"tg-{_uuid.uuid4().hex[:8]}"
+
+    btn_html = ""
+    panels_html = ""
+    for i, (label, svg) in enumerate(tabs):
+        tab_id = f"{group_id}-{i}"
+        active_btn = " active" if i == 0 else ""
+        hidden = "" if i == 0 else ' style="display:none"'
+        btn_html += f'<button class="tab-btn{active_btn}" onclick="somaTab(\'{group_id}\',{i})">{label}</button>'
+        panels_html += f'<div class="tab-panel chart-square" id="{tab_id}"{hidden}>{svg}</div>'
+
+    return f"""<div class="tab-group" id="{group_id}">
+  <div class="tab-bar">{btn_html}</div>
+  {panels_html}
+</div>"""
+
+
 def _section_subgroup_analysis(run_data: RunData) -> str:
-    """Subgroup analysis section — only rendered when subgroup columns are configured."""
     if not run_data.subgroup_columns:
         return ""
 
@@ -335,7 +427,6 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
         if all_preds.empty:
             continue
 
-        # Overall (non-subgroup) test metrics: average across folds for this split
         overall: dict[str, float] = {}
         for metric in run_data.metrics:
             vals = [
@@ -349,12 +440,10 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
         sg_metrics = compute_subgroup_metrics(
             run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
         )
-        # Always compute stats from the concatenated predictions (more robust than per-fold)
         sg_stats = compute_subgroup_stats(
             run_data.task_family, run_data.metrics, all_preds, run_data.subgroup_columns
         )
 
-        # Apply BH FDR correction per (column, metric): groups are the family.
         sg_stats_adj: dict[str, dict[str, dict[str, float]]] = {}
         for col, col_stats in sg_stats.items():
             sg_stats_adj[col] = {}
@@ -374,11 +463,6 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
                 continue
             col_stats_adj = sg_stats_adj.get(col, {})
 
-            # Table: groups × metrics
-            # Cell highlight classes (p-values are BH-adjusted):
-            #   subgroup-sig  — p_adj < 0.05 AND deviation ≥ 10% (significant and large)
-            #   subgroup-flag — deviation ≥ 10% but not statistically significant
-            #   subgroup-sig-small — p_adj < 0.05 but small deviation
             header_cells = "<th>Group</th><th>n</th>" + "".join(
                 f"<th>{m}</th>" for m in run_data.metrics
             )
@@ -411,7 +495,7 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
                 rows_html += f"<tr>{cells}</tr>"
 
             table_html = f"""
-<table class="metrics-table">
+<table class="results-table">
   <thead><tr>{header_cells}</tr></thead>
   <tbody>{rows_html}</tbody>
 </table>
@@ -421,7 +505,6 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
   <span class="legend-sig-small">■</span> p_adj&lt;0.05 (small Δ)
 </p>"""
 
-            # Bar charts (one per metric)
             chart_divs = "".join(
                 _chart_div(subgroup_metric_chart(col_data, m, overall.get(m, 0), col), width="half")
                 for m in run_data.metrics
@@ -451,15 +534,12 @@ def _section_subgroup_analysis(run_data: RunData) -> str:
 
 
 def _test_split_names(folds: list) -> list[str]:
-    """Return sorted list of test split names present across all folds."""
     return sorted({split_name for fd in folds for split_name in fd.predictions})
 
 
-def _chart_div(fig: go.Figure, *, width: str = "full") -> str:
-    """Render a Plotly figure as an HTML div fragment."""
-    chart_html = fig.to_html(full_html=False, include_plotlyjs=False)
+def _chart_div(svg: str, *, width: str = "full") -> str:
     css_class = "chart-full" if width == "full" else "chart-half"
-    return f'<div class="{css_class}">{chart_html}</div>'
+    return f'<div class="{css_class}">{svg}</div>'
 
 
 def _run_id(run_data: RunData) -> str:
@@ -479,73 +559,33 @@ def _format_duration_cell(value: object) -> str:
 
 
 def _config_rows(cfg: dict) -> list[tuple[str, str]]:
-    """Extract key config fields as (label, value) pairs for display."""
+    """Flat dot-notation dump of the entire config dict."""
     rows: list[tuple[str, str]] = []
 
-    def _get(obj: dict, *keys: str, default: str = "—") -> str:
-        for key in keys:
-            if isinstance(obj, dict) and key in obj:
-                obj = obj[key]
-            else:
-                return default
-        return str(obj) if obj is not None else default
+    def _flatten(obj: object, prefix: str = "") -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                _flatten(v, f"{prefix}{k}.")
+        elif isinstance(obj, list):
+            rows.append((prefix.rstrip("."), ", ".join(str(i) for i in obj) or "—"))
+        else:
+            rows.append((prefix.rstrip("."), str(obj) if obj is not None else "—"))
 
-    rows.append(("Task", _get(cfg, "task", "name")))
-    rows.append(("Metrics", ", ".join(cfg.get("evaluation", {}).get("metrics") or ["(defaults)"])))
-
-    encoder = cfg.get("encoder")
-    if encoder:
-        rows.append(("Encoder", _get(cfg, "encoder", "name")))
-        rows.append(("Encoder precision", _get(cfg, "encoder", "precision")))
-    else:
-        rows.append(("Encoder", "— (pre-extracted features)"))
-
-    agg = cfg.get("aggregator")
-    if agg:
-        rows.append(("Aggregator", _get(cfg, "aggregator", "name")))
-        agg_params = cfg.get("aggregator", {}).get("params") or {}
-        if agg_params:
-            rows.append(("Aggregator params", str(agg_params)))
-    else:
-        rows.append(("Aggregator", "— (slide-level)"))
-
-    rows.append(("Dataset", _get(cfg, "dataset_csv")))
-    rows.append(("Splits", _get(cfg, "splits_csv")))
-    rows.append(("Output root", _get(cfg, "output_root")))
-
-    training = cfg.get("training", {})
-    rows.append(("Epochs", str(training.get("epochs", "—"))))
-    rows.append(("Learning rate", str(training.get("learning_rate", "—"))))
-    rows.append(("Optimizer", str(training.get("optimizer", "—"))))
-    rows.append(("Scheduler", str(training.get("scheduler", "—"))))
-    rows.append(("Patience", str(training.get("patience", "—"))))
-    rows.append(("Batch size", str(training.get("batch_size", "—"))))
-    rows.append(("Seed", str(training.get("seed", "—"))))
-
-    tags = cfg.get("tags") or []
-    if tags:
-        rows.append(("Tags", ", ".join(tags)))
-
+    _flatten(cfg)
     return [(k, v) for k, v in rows if v and v != "—"]
 
 
 def render_comparison_report(comparison_data: ComparisonData) -> str:
-    """Generate a self-contained HTML comparison report string.
-
-    Args:
-        comparison_data: Populated ComparisonData from load_comparison_data().
-
-    Returns:
-        Full HTML string with embedded Plotly JS and all comparison sections.
-    """
+    """Generate a self-contained HTML comparison report string."""
     sections: list[str] = []
     sections.append(_comparison_section_header(comparison_data))
+    sections.append(_comparison_section_hero_metrics(comparison_data))
+    sections.append(_comparison_section_run_context(comparison_data))
     sections.append(_comparison_section_config_diff(comparison_data))
     sections.append(_comparison_section_metrics(comparison_data))
     sections.append(_comparison_section_curves(comparison_data))
 
     body = "\n".join(s for s in sections if s)
-    plotly_js = plotly.offline.get_plotlyjs()
     n = len(comparison_data.runs)
 
     return f"""<!DOCTYPE html>
@@ -553,9 +593,17 @@ def render_comparison_report(comparison_data: ComparisonData) -> str:
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Run Comparison ({n} runs)</title>
-  <script>{plotly_js}</script>
-  <style>{_css()}{_comparison_css()}</style>
+  <title>SOMA — Run Comparison ({n} runs)</title>
+  <style>{_css()}</style>
+  <script>
+  function somaTab(groupId, idx) {{
+    var g = document.getElementById(groupId);
+    g.querySelectorAll('.tab-panel').forEach(function(p) {{ p.style.display = 'none'; }});
+    g.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+    document.getElementById(groupId + '-' + idx).style.display = '';
+    g.querySelectorAll('.tab-btn')[idx].classList.add('active');
+  }}
+  </script>
 </head>
 <body>
 {body}
@@ -570,25 +618,116 @@ def _comparison_section_header(cd: ComparisonData) -> str:
         for i, label in enumerate(cd.labels)
     )
     return f"""
-<div class="page-header">
-  <h1>Run Comparison</h1>
-  <div class="header-meta">
-    <span>{n} runs</span>
+<header class="site-header">
+  <span class="soma-wordmark">SOMA</span>
+  <span class="header-run-id">Run Comparison</span>
+  <div class="header-right">
+    <span class="header-meta-item">{n} runs</span>
     {label_badges}
   </div>
-</div>"""
+</header>"""
+
+
+def _comparison_section_hero_metrics(cd: ComparisonData) -> str:
+    if not cd.metric_names:
+        return ""
+
+    def _primary_split(run: RunData) -> str:
+        splits = sorted({s for fd in run.folds for s in fd.test_metrics})
+        return splits[0] if splits else "test"
+
+    cards = []
+    for metric in cd.metric_names:
+        means: list[float | None] = []
+        stds: list[float | None] = []
+        for run in cd.runs:
+            split_name = _primary_split(run)
+            val = run.summary.get(f"{split_name}/{metric}_mean")
+            if val is None:
+                val = run.folds[0].test_metrics.get(split_name, {}).get(metric) if run.folds else None
+            means.append(val)
+            std_key = f"{split_name}/{metric}_std"
+            stds.append(run.summary.get(std_key))
+
+        valid = [v for v in means if v is not None]
+        if not valid:
+            continue
+        best_val = max(valid)
+
+        rows = ""
+        for i, (label, val, std) in enumerate(zip(cd.labels, means, stds)):
+            if val is None:
+                continue
+            color = _badge_color(i)
+            is_best = abs(val - best_val) < 1e-9
+            val_weight = "font-weight:700;" if is_best else "font-weight:400;opacity:0.8;"
+            std_html = f'<span style="font-size:0.8rem;color:var(--soma-text-muted)"> ± {std:.3f}</span>' if std is not None else ""
+            best_mark = ' <span style="color:var(--soma-success);font-size:0.9rem">▲</span>' if is_best else ""
+            rows += f"""
+  <div class="comp-hero-row">
+    <span class="run-badge" style="background:{color}">{label}</span>
+    <span class="comp-hero-val" style="color:{color};{val_weight}">{val:.3f}{std_html}{best_mark}</span>
+  </div>"""
+
+        cards.append(f"""
+<div class="comp-hero-card">
+  <div class="comp-hero-metric">{metric.upper()}</div>
+  {rows}
+</div>""")
+
+    if not cards:
+        return ""
+    return f'<div class="hero-strip"><div class="comp-hero-grid">{"".join(cards)}</div></div>'
+
+
+def _comparison_section_run_context(cd: ComparisonData) -> str:
+    import os
+
+    def _basename(v: str) -> str:
+        return os.path.basename(v) if v else "—"
+
+    shared = cd.shared_config
+    diffs = cd.config_diffs
+
+    items: list[str] = []
+
+    # Shared dataset / splits → single chip
+    for key, label in [("dataset_csv", "Dataset"), ("splits_csv", "Splits")]:
+        val = shared.get(key)
+        if val:
+            name = _basename(str(val))
+            items.append(
+                f'<span class="ctx-chip"><span class="ctx-label">{label}</span>'
+                f'<span class="ctx-value">{name}</span></span>'
+            )
+        else:
+            # Differs per run → one chip per run
+            per_run = [diff.get(key) for diff in diffs]
+            if any(v for v in per_run):
+                for i, (label_run, val) in enumerate(zip(cd.labels, per_run)):
+                    if val:
+                        color = _badge_color(i)
+                        items.append(
+                            f'<span class="ctx-chip">'
+                            f'<span class="ctx-label" style="color:{color}">{label_run} {label.lower()}</span>'
+                            f'<span class="ctx-value">{_basename(str(val))}</span></span>'
+                        )
+
+    if not items:
+        return ""
+    return f'<div class="run-context">{"".join(items)}</div>'
 
 
 def _comparison_section_config_diff(cd: ComparisonData) -> str:
     if not any(cd.config_diffs):
-        # All configs identical
         return """
 <div class="section">
-  <h2>Configuration</h2>
-  <p class="muted">All runs share identical configurations.</p>
+  <details class="cfg-details">
+    <summary>Configuration</summary>
+    <p class="muted" style="margin-top:12px">All runs share identical configurations.</p>
+  </details>
 </div>"""
 
-    # Collect all varying keys
     varying_keys: list[str] = []
     for diff in cd.config_diffs:
         for k in diff:
@@ -609,25 +748,26 @@ def _comparison_section_config_diff(cd: ComparisonData) -> str:
         )
         rows_html += f"<tr><td class='cfg-key'>{key}</td>{cells}</tr>"
 
-    # Shared config in a collapsible block
     shared_rows = "".join(
         f"<tr><td class='cfg-key'>{k}</td><td class='cfg-val'><code>{v}</code></td></tr>"
         for k, v in sorted(cd.shared_config.items())
     )
     shared_html = f"""
-<details class="shared-cfg">
+<details class="cfg-details">
   <summary>Shared configuration ({len(cd.shared_config)} fields)</summary>
   <table class="cfg-table" style="margin-top:10px"><tbody>{shared_rows}</tbody></table>
 </details>""" if cd.shared_config else ""
 
     return f"""
 <div class="section">
-  <h2>Configuration differences</h2>
-  <table class="results-table">
-    <thead>{header_row}</thead>
-    <tbody>{rows_html}</tbody>
-  </table>
-  {shared_html}
+  <details class="cfg-details">
+    <summary>Configuration</summary>
+    <table class="results-table" style="margin-top:12px">
+      <thead>{header_row}</thead>
+      <tbody>{rows_html}</tbody>
+    </table>
+    {shared_html}
+  </details>
 </div>"""
 
 
@@ -641,17 +781,21 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
     )
     header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
 
-    # Determine the primary test split name for each run (first sorted).
     def _primary_split(run: RunData) -> str:
         splits = sorted({s for fd in run.folds for s in fd.test_metrics})
         return splits[0] if splits else "test"
 
-    # First pass: collect raw p-values for all (metric, run) pairs so we can
-    # apply BH FDR correction globally across all comparisons.
-    per_metric_data: list[tuple[list[float | None], list[float | None], list[list[float]]]] = []
+    task_family = cd.runs[0].task_family if cd.runs else ""
+
+    # Pooled predictions per run (used for both metric means and statistical test)
+    runs_pooled = [
+        aggregate_fold_predictions(run.folds, _primary_split(run))
+        for run in cd.runs
+    ]
+
+    per_metric_data: list[tuple[list[float | None], list[float | None]]] = []
     for metric in cd.metric_names:
         means: list[float | None] = []
-        fold_values: list[list[float]] = []
         for run in cd.runs:
             split_name = _primary_split(run)
             mean_key = f"{split_name}/{metric}_mean"
@@ -659,18 +803,12 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
             if val is None:
                 val = run.folds[0].test_metrics.get(split_name, {}).get(metric) if run.folds else None
             means.append(val)
-            fold_values.append([
-                fd.test_metrics.get(split_name, {}).get(metric)
-                for fd in run.folds
-                if metric in fd.test_metrics.get(split_name, {})
-            ])
-        raw_p = compare_run_metrics(fold_values)
-        per_metric_data.append((means, raw_p, fold_values))
+        raw_p = compare_run_predictions(runs_pooled, task_family, metric)
+        per_metric_data.append((means, raw_p))
 
-    # Collect all non-None raw p-values, correct, then redistribute.
-    all_keys: list[tuple[int, int]] = []  # (metric_idx, run_idx)
+    all_keys: list[tuple[int, int]] = []
     all_raw_p: list[float] = []
-    for m_idx, (_, raw_p, _) in enumerate(per_metric_data):
+    for m_idx, (_, raw_p) in enumerate(per_metric_data):
         for r_idx, p in enumerate(raw_p):
             if p is not None:
                 all_keys.append((m_idx, r_idx))
@@ -680,7 +818,7 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
 
     rows_html = ""
     for m_idx, metric in enumerate(cd.metric_names):
-        means, _, _ = per_metric_data[m_idx]
+        means, _ = per_metric_data[m_idx]
         valid_means = [v for v in means if v is not None]
         best_val = max(valid_means) if valid_means else None
 
@@ -689,8 +827,8 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
             if val is None:
                 cells += "<td>—</td>"
                 continue
-            std_key = f"{metric}_std"
-            std = cd.runs[i].summary.get(std_key)
+            split_name = _primary_split(cd.runs[i])
+            std = cd.runs[i].summary.get(f"{split_name}/{metric}_std")
             is_best = best_val is not None and abs(val - best_val) < 1e-9
             p_adj = adj_p.get((m_idx, i))
             sig_worse = not is_best and p_adj is not None and p_adj < 0.05
@@ -708,19 +846,10 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
 
         rows_html += f"<tr><td class='metric-name'>{metric}</td>{cells}</tr>"
 
-    # Note when statistical comparison was not possible
-    all_fold_counts = [len(run.folds) for run in cd.runs]
-    stats_note = ""
-    if any(n < 2 for n in all_fold_counts):
-        stats_note = """
+    stats_note = """
   <p class="muted" style="margin-top:8px;font-size:12px;">
-    Statistical comparison requires ≥ 2 folds per run — not available for single-fold runs.
-  </p>"""
-    else:
-        stats_note = """
-  <p class="muted" style="margin-top:8px;font-size:12px;">
-    <span style="background:#f8d7da;padding:2px 6px;border-radius:3px;">■</span>
-    significantly worse than best run (p&lt;0.05, paired permutation test)
+    <span style="background:#fecdd3;padding:2px 6px;border-radius:3px;">■</span>
+    significantly worse than best run (p&lt;0.05, sample-level paired permutation test)
   </p>"""
 
     return f"""
@@ -747,9 +876,7 @@ def _comparison_section_curves(cd: ComparisonData) -> str:
 </div>"""
 
     chart_divs: list[str] = []
-    chart_divs.append(_chart_div(
-        comparison_loss_curves(cd.runs, cd.labels), width="full"
-    ))
+    chart_divs.append(_chart_div(comparison_loss_curves(cd.runs, cd.labels), width="full"))
     for metric_name in cd.metric_names:
         chart_divs.append(_chart_div(
             comparison_metric_curves(cd.runs, cd.labels, metric_name), width="half"
@@ -764,109 +891,301 @@ def _comparison_section_curves(cd: ComparisonData) -> str:
 
 
 def _badge_color(idx: int) -> str:
-    palette = [
-        "#E63946", "#2A9D8F", "#E9C46A", "#264653",
-        "#F4A261", "#A8DADC", "#457B9D", "#1D3557",
-    ]
-    return palette[idx % len(palette)]
-
-
-def _comparison_css() -> str:
-    return """
-.run-badge {
-  display: inline-block;
-  padding: 2px 10px; border-radius: 12px;
-  font-size: 12px; font-weight: 600; color: #fff;
-  margin-right: 6px;
-}
-.best-val { background: #d4edda; }
-.sig-worse { background: #f8d7da; }
-.subgroup-sig { background: #f8d7da; font-weight: 600; }
-.subgroup-flag { background: #fff3cd; font-weight: 600; }
-.subgroup-sig-small { background: #e8d5f5; }
-.subgroup-legend { font-size: 12px; color: #6c757d; margin-top: 6px; }
-.legend-sig { color: #f8d7da; text-shadow: 0 0 1px #666; }
-.legend-flag { color: #fff3cd; text-shadow: 0 0 1px #666; }
-.legend-sig-small { color: #e8d5f5; text-shadow: 0 0 1px #666; }
-.shared-cfg { margin-top: 16px; }
-.shared-cfg summary {
-  cursor: pointer; color: #6c757d; font-size: 13px;
-  padding: 6px 0;
-}
-details[open] summary { margin-bottom: 4px; }
-"""
+    return SOMA_PALETTE[idx % len(SOMA_PALETTE)]
 
 
 def _css() -> str:
     return """
+:root {
+  --soma-bg:           #FFFFFF;
+  --soma-bg-subtle:    #F8FAFC;
+  --soma-bg-card:      #F1F5F9;
+  --soma-text:         #0F172A;
+  --soma-text-muted:   #64748B;
+  --soma-accent:       #7C3AED;
+  --soma-accent-light: #EDE9FE;
+  --soma-border:       #E2E8F0;
+  --soma-header-bg:    #0F172A;
+  --soma-header-text:  #F8FAFC;
+  --soma-success:      #10B981;
+  --soma-danger:       #EF4444;
+  --soma-warning:      #F59E0B;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: Inter, system-ui, sans-serif;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 14px;
-  background: #f8f9fa;
-  color: #1a1a2e;
+  background: var(--soma-bg-subtle);
+  color: var(--soma-text);
   line-height: 1.5;
 }
-.page-header {
-  background: #1a1a2e;
-  color: #fff;
-  padding: 28px 40px 20px;
+/* ---- Header ---- */
+.site-header {
+  background: var(--soma-header-bg);
+  color: var(--soma-header-text);
+  padding: 0 32px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
-.page-header h1 { font-size: 24px; font-weight: 700; margin-bottom: 6px; }
-.run-id { font-family: monospace; font-size: 13px; color: #adb5bd; margin-bottom: 10px; }
-.header-meta {
-  display: flex; flex-wrap: wrap; gap: 16px;
-  font-size: 13px; color: #ced4da;
+.soma-wordmark {
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: var(--soma-accent);
+  flex-shrink: 0;
 }
-.badge {
-  padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600;
+.header-run-id {
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #94A3B8;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.status-ok  { background: #198754; color: #fff; }
-.status-err { background: #dc3545; color: #fff; }
-.status-run { background: #ffc107; color: #000; }
-.section {
-  background: #fff;
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.header-meta-item {
+  font-size: 12px;
+  color: #94A3B8;
+}
+/* ---- Hero metrics ---- */
+.hero-strip {
+  background: var(--soma-bg);
+  border-bottom: 1px solid var(--soma-border);
+  padding: 20px 32px;
+}
+.hero-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.hero-card {
+  background: var(--soma-accent-light);
+  border-left: 4px solid var(--soma-accent);
   border-radius: 8px;
-  margin: 20px 40px;
+  padding: 14px 20px;
+  min-width: 140px;
+}
+.hero-value {
+  font-size: 1.85rem;
+  font-weight: 700;
+  color: var(--soma-accent);
+  line-height: 1.1;
+}
+.hero-std {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--soma-text-muted);
+  margin-left: 4px;
+}
+.hero-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--soma-text-muted);
+  margin-top: 4px;
+}
+.hero-split {
+  font-weight: 400;
+  text-transform: none;
+  margin-left: 4px;
+}
+/* ---- Run context strip ---- */
+.run-context {
+  background: var(--soma-bg);
+  border-bottom: 1px solid var(--soma-border);
+  padding: 10px 32px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.ctx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--soma-bg-subtle);
+  border: 1px solid var(--soma-border);
+  border-radius: 20px;
+  padding: 3px 10px 3px 8px;
+  font-size: 12px;
+}
+.ctx-label {
+  color: var(--soma-text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.ctx-value {
+  color: var(--soma-text);
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 11px;
+}
+/* ---- Badges ---- */
+.badge {
+  padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
+}
+.status-ok  { background: #10B981; color: #fff; }
+.status-err { background: #EF4444; color: #fff; }
+.status-run { background: #F59E0B; color: #000; }
+.run-badge {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 12px;
+  font-size: 11px; font-weight: 600; color: #fff;
+}
+/* ---- Sections ---- */
+.section {
+  background: var(--soma-bg);
+  border-radius: 8px;
+  margin: 20px 32px;
   padding: 24px 28px;
-  box-shadow: 0 1px 4px rgba(0,0,0,.06);
+  box-shadow: 0 1px 3px rgba(0,0,0,.05);
+  border: 1px solid var(--soma-border);
 }
 .section h2 {
-  font-size: 17px; font-weight: 600; margin-bottom: 16px;
-  border-bottom: 1px solid #e9ecef; padding-bottom: 10px;
+  font-size: 15px; font-weight: 600; margin-bottom: 16px;
+  border-bottom: 1px solid var(--soma-border); padding-bottom: 10px;
+  color: var(--soma-text);
 }
-.muted { color: #868e96; font-style: italic; }
-/* Config table */
-.cfg-table { border-collapse: collapse; width: 100%; max-width: 680px; }
-.cfg-table tr:nth-child(even) td { background: #f8f9fa; }
+.section h3 {
+  font-size: 13px; font-weight: 600; margin: 16px 0 8px;
+  color: var(--soma-text-muted);
+}
+.muted { color: var(--soma-text-muted); font-style: italic; }
+/* ---- Config collapsible ---- */
+.cfg-details summary {
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--soma-text);
+  padding-bottom: 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cfg-details summary::before {
+  content: "▶";
+  font-size: 10px;
+  color: var(--soma-text-muted);
+  transition: transform 0.15s;
+}
+.cfg-details[open] summary::before { transform: rotate(90deg); }
+.cfg-details[open] summary { margin-bottom: 16px; border-bottom: 1px solid var(--soma-border); padding-bottom: 10px; }
+.cfg-table { border-collapse: collapse; width: 100%; max-width: 680px; margin-top: 4px; }
+.cfg-table tr:nth-child(even) td { background: var(--soma-bg-subtle); }
 .cfg-key {
-  padding: 6px 12px 6px 0; font-weight: 600; color: #495057;
-  white-space: nowrap; width: 200px; vertical-align: top;
+  padding: 6px 12px 6px 0; font-weight: 600; color: var(--soma-text-muted);
+  white-space: nowrap; width: 200px; vertical-align: top; font-size: 12px;
 }
-.cfg-val { padding: 6px 0; color: #1a1a2e; word-break: break-all; }
-/* Results table */
+.cfg-val { padding: 6px 0; color: var(--soma-text); word-break: break-all; font-size: 12px; }
+/* ---- Results table ---- */
 .results-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .results-table th {
-  background: #f1f3f5; padding: 8px 14px;
-  text-align: right; font-weight: 600; border-bottom: 2px solid #dee2e6;
+  background: var(--soma-bg-subtle); padding: 8px 14px;
+  text-align: right; font-weight: 600; border-bottom: 2px solid var(--soma-border);
+  color: var(--soma-text-muted); font-size: 12px;
 }
 .results-table th:first-child { text-align: left; }
-.results-table td { padding: 7px 14px; text-align: right; border-bottom: 1px solid #f1f3f5; }
+.results-table td { padding: 7px 14px; text-align: right; border-bottom: 1px solid var(--soma-bg-subtle); }
 .results-table td.metric-name { text-align: left; font-weight: 500; }
-.results-table tr:hover td { background: #f8f9fa; }
-/* Chart grid */
-.chart-grid { display: flex; flex-wrap: wrap; gap: 16px; }
-.chart-full  { flex: 1 1 100%; min-width: 0; }
-.chart-half  { flex: 1 1 calc(50% - 8px); min-width: 320px; }
-code { font-family: monospace; font-size: 12px; }
-/* Subgroup analysis */
-.subgroup-sig { background: #f8d7da; font-weight: 600; }
-.subgroup-flag { background: #fff3cd; font-weight: 600; }
-.subgroup-sig-small { background: #e8d5f5; }
-.subgroup-legend { font-size: 12px; color: #6c757d; margin-top: 6px; }
+.results-table tr:hover td { background: var(--soma-bg-subtle); }
+/* ---- Chart grid ---- */
+.chart-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.chart-full { flex: 1 1 100%; min-width: 0; }
+.chart-full svg { width: 100%; height: auto; display: block; }
+.chart-half {
+  flex: 1 1 calc(50% - 6px);
+  max-width: calc(50% - 6px);
+  min-width: 280px;
+  aspect-ratio: 7 / 4.5;
+  overflow: hidden;
+}
+.chart-half svg { width: 100%; height: 100%; display: block; }
+/* ---- Comparison ---- */
+.best-val { background: #D1FAE5; }
+.sig-worse { background: #FEE2E2; }
+/* ---- Subgroup analysis ---- */
+.subgroup-sig { background: #FEE2E2; font-weight: 600; }
+.subgroup-flag { background: #FEF3C7; font-weight: 600; }
+.subgroup-sig-small { background: #EDE9FE; }
+.subgroup-legend { font-size: 12px; color: var(--soma-text-muted); margin-top: 6px; }
+.legend-sig { color: #FEE2E2; text-shadow: 0 0 1px #666; }
+.legend-flag { color: #FEF3C7; text-shadow: 0 0 1px #666; }
+.legend-sig-small { color: #EDE9FE; text-shadow: 0 0 1px #666; }
+/* ---- Comparison hero ---- */
+.comp-hero-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.comp-hero-card {
+  background: var(--soma-bg-subtle);
+  border: 1px solid var(--soma-border);
+  border-radius: 8px;
+  padding: 14px 20px;
+  min-width: 180px;
+}
+.comp-hero-metric {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--soma-text-muted);
+  margin-bottom: 10px;
+}
+.comp-hero-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.comp-hero-row:last-child { margin-bottom: 0; }
+.comp-hero-val {
+  font-size: 1.4rem;
+  line-height: 1.1;
+}
+/* ---- Tabs ---- */
+.tab-group { margin-top: 4px; }
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  border-bottom: 2px solid var(--soma-border);
+  margin-bottom: 16px;
+}
+.tab-btn {
+  padding: 7px 16px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--soma-text-muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -2px;
+  border-radius: 4px 4px 0 0;
+  transition: color 0.1s;
+}
+.tab-btn:hover { color: var(--soma-text); background: var(--soma-bg-subtle); }
+.tab-btn.active { color: var(--soma-accent); border-bottom-color: var(--soma-accent); font-weight: 600; }
+.chart-square { max-width: 560px; }
+.chart-square svg { width: 100%; height: auto; display: block; }
+code { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 12px; }
 @media (max-width: 768px) {
   .section { margin: 12px; padding: 16px; }
-  .chart-half { flex: 1 1 100%; }
-  .page-header { padding: 20px; }
+  .chart-half { flex: 1 1 100%; max-width: 100%; aspect-ratio: unset; }
+  .site-header { padding: 0 16px; }
+  .hero-strip, .run-context { padding: 12px 16px; }
 }
 """

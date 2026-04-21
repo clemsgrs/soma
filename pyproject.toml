@@ -36,7 +36,7 @@ dependencies = [
     "safetensors",
     "transformers",
     "slide2vec[fm]>=4.3.0",
-    "plotly>=5.0",
+    "matplotlib>=3.7",
 ]
 
 [project.scripts]
