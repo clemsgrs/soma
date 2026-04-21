@@ -1468,6 +1468,21 @@ def _setup_patient_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     return dataset_csv, splits_csv, feature_dir
 
 
+def _write_patient_feature_manifest(feature_dir: Path, statuses: dict[str, str]) -> None:
+    rows = []
+    for patient_id, status in statuses.items():
+        rows.append(
+            {
+                "sample_id": patient_id,
+                "feature_status": status,
+                "feature_path": str((feature_dir / f"{patient_id}.pt").resolve())
+                if status == "success"
+                else "",
+            }
+        )
+    pd.DataFrame(rows).to_csv(feature_dir / "process_list.csv", index=False)
+
+
 class TestPatientPipeline:
     def test_train_one_fold_returns_fold_result_and_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
@@ -1510,6 +1525,54 @@ class TestPatientPipeline:
 
         test_ids = {pred.sample_id for pred in result.test_reports["test"].predictions}
         assert test_ids == {"p3"}
+
+    def test_train_one_fold_patient_features_fail_fast_when_missing(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        (feature_dir / "p2.pt").unlink()
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="patient"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                dataset_type="patient",
+                task=TaskConfig(name="binary_classification"),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+                fold_dir=tmp_path / "fold_0",
+            )
+
+    def test_train_one_fold_patient_empty_tune_uses_placeholder_fallback(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        (feature_dir / "p2.pt").unlink()
+        _write_patient_feature_manifest(
+            feature_dir,
+            {
+                "p0": "success",
+                "p1": "success",
+                "p2": "empty",
+                "p3": "success",
+            },
+        )
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=tmp_path / "fold_0",
+        )
+
+        assert [pred.sample_id for pred in result.tune_report.predictions] == ["p2"]
+        assert result.tune_report.predictions[0].is_placeholder is True
+        assert result.tune_report.metrics["coverage"] == pytest.approx(0.0)
 
     def test_train_detects_patient_leakage(self, tmp_path: Path):
         dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)

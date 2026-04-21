@@ -153,6 +153,30 @@ def _format_fold_summary(
     return f"{base} | {' | '.join(extras)}"
 
 
+def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
+    seen: set[str] = set()
+    patient_ids: list[str] = []
+    for record in records:
+        if record.patient_id is None:
+            raise ValueError(
+                f"Sample '{record.sample_id}' has no patient_id. "
+                "All samples must have a patient_id for dataset_type='patient'."
+            )
+        if record.patient_id not in seen:
+            seen.add(record.patient_id)
+            patient_ids.append(record.patient_id)
+    return patient_ids
+
+
+def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, SampleRecord]:
+    placeholder_records: dict[str, SampleRecord] = {}
+    for record in records:
+        if record.patient_id is None or record.patient_id in placeholder_records:
+            continue
+        placeholder_records[record.patient_id] = record
+    return placeholder_records
+
+
 # ---------------------------------------------------------------------------
 # Layer 1 — Standalone step functions
 # ---------------------------------------------------------------------------
@@ -205,14 +229,83 @@ def train_one_fold(
     all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
     if dataset_type == "patient":
         # Patient-level: features are indexed by patient_id; splits are slide-based.
-        # Skip the sample-level manifest check and build records directly from splits.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
         tune_records = [dataset.samples[sid] for sid in fold_split.tune]
         test_records_by_split: dict[str, list[SampleRecord]] = {
             split_name: [dataset.samples[sid] for sid in ids]
             for split_name, ids in fold_split.tests.items()
         }
-        empty_sample_ids_by_split = None
+        train_patient_ids = _patient_ids_for_records(train_records)
+        tune_patient_ids = _patient_ids_for_records(tune_records)
+        test_patient_ids_by_split = {
+            split_name: _patient_ids_for_records(records)
+            for split_name, records in test_records_by_split.items()
+        }
+        raw_train_patient_ids = list(train_patient_ids)
+        raw_tune_patient_ids = list(tune_patient_ids)
+        raw_test_patient_ids_by_split = {
+            split_name: list(patient_ids)
+            for split_name, patient_ids in test_patient_ids_by_split.items()
+        }
+
+        if feature_store.has_feature_manifest:
+            manifest_statuses = feature_store.feature_statuses
+            manifest_patient_ids = set(manifest_statuses)
+            split_patient_ids = (
+                set(train_patient_ids)
+                | set(tune_patient_ids)
+                | {patient_id for ids in test_patient_ids_by_split.values() for patient_id in ids}
+            )
+            missing_manifest_ids = sorted(split_patient_ids - manifest_patient_ids)
+            if missing_manifest_ids:
+                msg = (
+                    f"Patient feature manifest is missing patient(s) required by fold {fold}: "
+                    f"{missing_manifest_ids}"
+                )
+                raise ValueError(msg)
+
+            expected_feature_ids = {
+                patient_id for patient_id, status in manifest_statuses.items() if status == "success"
+            }
+            empty_patient_ids = {
+                patient_id for patient_id, status in manifest_statuses.items() if status == "empty"
+            }
+            unexpected_missing_ids = sorted(expected_feature_ids - set(feature_store.available_samples))
+            if unexpected_missing_ids:
+                msg = (
+                    f"Feature store is missing expected patient embedding(s) for fold {fold}: "
+                    f"{unexpected_missing_ids}"
+                )
+                raise ValueError(msg)
+
+            train_patient_ids = [pid for pid in train_patient_ids if pid in expected_feature_ids]
+            tune_patient_ids = [pid for pid in tune_patient_ids if pid in expected_feature_ids]
+            test_patient_ids_by_split = {
+                split_name: [pid for pid in patient_ids if pid in expected_feature_ids]
+                for split_name, patient_ids in test_patient_ids_by_split.items()
+            }
+            empty_sample_ids_by_split = {
+                "train": [pid for pid in raw_train_patient_ids if pid in empty_patient_ids],
+                "tune": [pid for pid in raw_tune_patient_ids if pid in empty_patient_ids],
+                **{
+                    split_name: [pid for pid in patient_ids if pid in empty_patient_ids]
+                    for split_name, patient_ids in raw_test_patient_ids_by_split.items()
+                },
+            }
+        else:
+            split_patient_ids = (
+                set(train_patient_ids)
+                | set(tune_patient_ids)
+                | {patient_id for ids in test_patient_ids_by_split.values() for patient_id in ids}
+            )
+            missing_patient_ids = sorted(split_patient_ids - set(feature_store.available_samples))
+            if missing_patient_ids:
+                msg = (
+                    f"Patient feature store is missing patient embedding(s) required by fold {fold}: "
+                    f"{missing_patient_ids}"
+                )
+                raise ValueError(msg)
+            empty_sample_ids_by_split = None
     elif feature_store.has_feature_manifest:
         manifest_statuses = feature_store.feature_statuses
         manifest_sample_ids = set(manifest_statuses)
@@ -265,27 +358,50 @@ def train_one_fold(
         }
         empty_sample_ids_by_split = None
 
-    if not train_records:
-        msg = f"Fold {fold} has no training samples with available features"
-        raise ValueError(msg)
-    if not tune_records and not (
-        empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
-    ):
-        msg = f"Fold {fold} has no tuning samples with available features"
-        raise ValueError(msg)
-    for split_name, records in test_records_by_split.items():
-        split_empty_ids = (
-            empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
-        )
-        if not records and not split_empty_ids:
-            msg = f"Fold {fold} has no samples with available features in split '{split_name}'"
+    if dataset_type == "patient":
+        if not train_patient_ids:
+            msg = f"Fold {fold} has no training patients with available features"
             raise ValueError(msg)
+        if not tune_patient_ids and not (
+            empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
+        ):
+            msg = f"Fold {fold} has no tuning patients with available features"
+            raise ValueError(msg)
+        for split_name, patient_ids in test_patient_ids_by_split.items():
+            split_empty_ids = (
+                empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
+            )
+            if not patient_ids and not split_empty_ids:
+                msg = f"Fold {fold} has no patients with available features in split '{split_name}'"
+                raise ValueError(msg)
+        train_count = len(train_patient_ids)
+        tune_count = len(tune_patient_ids)
+        tests_counts = {name: len(patient_ids) for name, patient_ids in test_patient_ids_by_split.items()}
+    else:
+        if not train_records:
+            msg = f"Fold {fold} has no training samples with available features"
+            raise ValueError(msg)
+        if not tune_records and not (
+            empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
+        ):
+            msg = f"Fold {fold} has no tuning samples with available features"
+            raise ValueError(msg)
+        for split_name, records in test_records_by_split.items():
+            split_empty_ids = (
+                empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
+            )
+            if not records and not split_empty_ids:
+                msg = f"Fold {fold} has no samples with available features in split '{split_name}'"
+                raise ValueError(msg)
+        train_count = len(train_records)
+        tune_count = len(tune_records)
+        tests_counts = {name: len(recs) for name, recs in test_records_by_split.items()}
 
     summary = _format_fold_summary(
         fold=fold,
-        train_count=len(train_records),
-        tune_count=len(tune_records),
-        tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
+        train_count=train_count,
+        tune_count=tune_count,
+        tests_counts=tests_counts,
         empty_sample_ids_by_split=empty_sample_ids_by_split,
     )
     logger.info(summary)
@@ -329,22 +445,6 @@ def train_one_fold(
             patient_label_fn = lambda pid, raw: label_map[raw]  # noqa: E731
         _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
 
-        def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
-            seen: set[str] = set()
-            ids: list[str] = []
-            for r in records:
-                if r.patient_id is None:
-                    raise ValueError(
-                        f"Sample '{r.sample_id}' has no patient_id. "
-                        "All samples must have a patient_id for dataset_type='patient'."
-                    )
-                if r.patient_id not in seen:
-                    seen.add(r.patient_id)
-                    ids.append(r.patient_id)
-            return ids
-
-        train_patient_ids = _patient_ids_for_records(train_records)
-        tune_patient_ids = _patient_ids_for_records(tune_records)
         train_loader = DataLoader(
             PatientDataset(train_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
             batch_size=training.batch_size,
@@ -360,7 +460,7 @@ def train_one_fold(
         test_loaders: dict[str, DataLoader] = {
             split_name: DataLoader(
                 PatientDataset(
-                    _patient_ids_for_records(records),
+                    test_patient_ids_by_split[split_name],
                     patient_label_map, feature_store, label_map, label_fn=patient_label_fn,
                 ),
                 batch_size=training.batch_size,
@@ -534,19 +634,22 @@ def train_one_fold(
         tune_loader,
         "tune",
         label_map,
-        device,
-        output_sample_ids=(
-            tuple(_patient_ids_for_records(tune_records))
-            if dataset_type == "patient"
-            else fold_split.tune
-        ),
-        empty_sample_ids=empty_eval_sample_ids.get("tune", []),
-        dataset=dataset,
+            device,
+            output_sample_ids=(
+                tuple(raw_tune_patient_ids)
+                if dataset_type == "patient"
+                else fold_split.tune
+            ),
+            empty_sample_ids=empty_eval_sample_ids.get("tune", []),
+            dataset=dataset,
         label_fn=label_fn,
-        baseline=deterministic_baseline,
-        metric_names=resolved_metric_names,
-        task_family=task_family,
-    )
+            baseline=deterministic_baseline,
+            metric_names=resolved_metric_names,
+            task_family=task_family,
+            placeholder_records_by_id=(
+                _patient_placeholder_records(tune_records) if dataset_type == "patient" else None
+            ),
+        )
 
     test_reports: dict[str, EvaluationReport] = {}
     for split_name, test_loader in test_loaders.items():
@@ -561,7 +664,7 @@ def train_one_fold(
             label_map,
             device,
             output_sample_ids=(
-                tuple(_patient_ids_for_records(test_records_by_split[split_name]))
+                tuple(raw_test_patient_ids_by_split[split_name])
                 if dataset_type == "patient"
                 else fold_split.tests[split_name]
             ),
@@ -573,6 +676,11 @@ def train_one_fold(
             task_family=task_family,
             attention_dir=attention_dir,
             aggregator_name=aggregator.name if aggregator is not None else None,
+            placeholder_records_by_id=(
+                _patient_placeholder_records(test_records_by_split[split_name])
+                if dataset_type == "patient"
+                else None
+            ),
         )
 
     # Save metrics, predictions, and training history
@@ -1188,6 +1296,7 @@ def _make_placeholder_prediction(
     *,
     label_fn,
     baseline: _DeterministicBaseline,
+    sample_id: str | None = None,
 ) -> SamplePrediction:
     true_label = label_fn(record)
     true_value: int | float
@@ -1197,7 +1306,7 @@ def _make_placeholder_prediction(
         true_value = int(true_label)
 
     return SamplePrediction(
-        sample_id=record.sample_id,
+        sample_id=sample_id or record.sample_id,
         true_label=true_value,
         predicted_label=baseline.predicted_label,
         probabilities=list(baseline.probabilities) if baseline.probabilities is not None else None,
@@ -1262,6 +1371,7 @@ def _evaluate_split_with_placeholders(
     task_family: str,
     attention_dir: Path | None = None,
     aggregator_name: str | None = None,
+    placeholder_records_by_id: dict[str, SampleRecord] | None = None,
 ) -> EvaluationReport:
     real_report = (
         _evaluate(
@@ -1278,9 +1388,14 @@ def _evaluate_split_with_placeholders(
     )
     placeholder_predictions = [
         _make_placeholder_prediction(
-            dataset.samples[sample_id],
+            (
+                placeholder_records_by_id[sample_id]
+                if placeholder_records_by_id is not None
+                else dataset.samples[sample_id]
+            ),
             label_fn=label_fn,
             baseline=baseline,
+            sample_id=sample_id,
         )
         for sample_id in empty_sample_ids
     ]
