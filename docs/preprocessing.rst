@@ -34,6 +34,9 @@ Key knobs
    * - ``tissue_method``
      - Tissue segmentation method
      - Keep default unless segmentation is noisy
+   * - ``sam2_num_workers``
+     - Cap on concurrent SAM2 tissue-segmentation workers
+     - Reduce GPU memory pressure on smaller cards
    * - ``tissue_threshold``
      - Segmentation threshold
      - Adjust only if tissue masks are too loose or too strict

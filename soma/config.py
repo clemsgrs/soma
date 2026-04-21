@@ -34,7 +34,9 @@ class PreprocessingConfig:
     The preprocessing backend controls tissue segmentation and tile
     extraction. ``requested_spacing_um`` and ``requested_tile_size_px`` are
     the primary scale-selection knobs. The hierarchical fields are used only
-    when the aggregator requests HIPT-style region geometry.
+    when the aggregator requests HIPT-style region geometry. ``sam2_num_workers``
+    caps concurrent SAM2 tissue-segmentation workers when the backend supports
+    that execution path.
     """
 
     backend: str = "auto"
@@ -48,6 +50,7 @@ class PreprocessingConfig:
     tissue_threshold: float = 0.1
     overlap: float = 0.0
     seg_downsample: int = 64
+    sam2_num_workers: int | None = None
     tolerance: float = 0.05
     ref_tile_size_px: int | None = None
     a_t: int = 4

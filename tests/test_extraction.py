@@ -481,12 +481,14 @@ def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
         requested_tile_size_px=224,
         requested_spacing_um=0.5,
         tissue_method="otsu",
+        sam2_num_workers=4,
     )
 
     config = build_preprocessing_config(preprocessing)
 
     assert config.segmentation["method"] == "otsu"
     assert "use_hsv" not in config.segmentation
+    assert config.segmentation["sam2_num_workers"] == 4
     assert config.preview["save_mask_preview"] is True
     assert config.preview["save_tiling_preview"] is True
     assert config.preview["downsample"] == 32

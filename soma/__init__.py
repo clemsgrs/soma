@@ -14,6 +14,8 @@ from soma.config import (
     TrainingConfig,
     HeatmapConfig,
 )
+from soma.encoders import list_models
+from soma.aggregators import list_aggregators
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
@@ -28,6 +30,7 @@ from soma.training.slide_dataset import SlideBatch, SlideDataset, slide_collate_
 from soma.training.slide_model import SlideModel, SlideModelOutput
 from soma.training.tile_dataset import TileBatch, TileDataset, tile_collate_fn
 from soma.training.tile_model import TileClassifier, TileClassifierOutput
+from soma.tasks import list_task_heads
 
 __all__ = [
     # Config
@@ -43,6 +46,9 @@ __all__ = [
     "TaskConfig",
     "TrainingConfig",
     "HeatmapConfig",
+    "list_models",
+    "list_aggregators",
+    "list_task_heads",
     # Data
     "Dataset",
     "FoldSplit",

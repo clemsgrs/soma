@@ -55,6 +55,7 @@ def test_preprocessing_config_defaults():
     assert cfg.tissue_threshold == 0.1
     assert cfg.overlap == 0.0
     assert cfg.seg_downsample == 64
+    assert cfg.sam2_num_workers is None
     assert cfg.tolerance == 0.05
     assert cfg.ref_tile_size_px is None
     assert cfg.a_t == 4
@@ -303,6 +304,18 @@ def test_preview_color_roundtrip_preserves_tuple(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.preprocessing.preview.tissue_contour_color == (37, 94, 59)
+
+
+def test_preprocessing_sam2_worker_limit_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        preprocessing=PreprocessingConfig(sam2_num_workers=3)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.preprocessing.sam2_num_workers == 3
 
 
 def test_evaluation_metrics_roundtrip(tmp_path: Path):

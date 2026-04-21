@@ -147,3 +147,9 @@ Use this page to choose a valid starting point, then let the runtime validate
 the final combination. If a preset accepts a non-default spacing or input size,
 that is a compatibility choice and not necessarily a performance-improving
 one.
+
+Discovery helpers
+-----------------
+
+Use ``soma.list_models()`` when you want the available encoder presets in code.
+Pass ``level="tile"``, ``"slide"``, or ``"patient"`` to narrow the list.
