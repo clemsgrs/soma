@@ -4,6 +4,9 @@
   cache identity includes `(sample_id, image_path, mask_path)` plus
   encoder/preprocessing/execution settings, so overlapping samples can be
   reused across different datasets without reusing unrelated samples.
+- Slide-level distributed cache refreshes now keep the cache identity output
+  variant stable, so the post-population resolve no longer emits a spurious
+  alternate miss for the same cache entry.
 - Tiling cache reuse is now resolved at per-sample granularity with
   `(sample_id, image_path, mask_path)` plus resolved preprocessing identity,
   so overlapping samples can reuse cached tilings across datasets.

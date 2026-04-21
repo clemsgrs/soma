@@ -14,6 +14,7 @@ import torch
 from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
 
+import soma.cache as cache_mod
 from soma.cache import CacheConfig, record_sample_identity_signatures
 from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -1662,6 +1663,58 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
     assert store.load("s0").shape == (8,)
 
 
+def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_run_with_coordinates(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        preprocessing,
+        execution,
+        tiling_dir,
+        slides,
+    ):
+        assert output_variant is None
+        output_dir = Path(execution.output_dir)
+        tile_artifact = _artifact(sample_id="s0", output_dir=output_dir, kind="tile_embeddings", tensor=torch.ones(2, 8))
+        slide_artifact = _artifact(sample_id="s0", output_dir=output_dir, kind="slide_embeddings", tensor=torch.ones(8))
+        return SimpleNamespace(tile_artifacts=[tile_artifact], slide_artifacts=[slide_artifact])
+
+    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
+        "soma.extraction._validate_runtime"
+    ), patch(
+        "soma.extraction._run_with_coordinates",
+        side_effect=_fake_run_with_coordinates,
+    ), patch.object(FeatureExtractor, "preprocess", autospec=True, return_value=None), patch(
+        "soma.extraction.resolve_slide_cache",
+        wraps=cache_mod.resolve_slide_cache,
+    ) as resolve_slide_cache:
+        store = extractor.extract(
+            feature_dir=tmp_path / "features",
+            tiling_dir=tmp_path / "tiling",
+            num_gpus=2,
+        )
+
+    assert store.is_slide_level is True
+    assert store.load("s0").shape == (8,)
+    assert all(call.kwargs["output_variant"] == "default" for call in resolve_slide_cache.call_args_list)
+
+
 def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
@@ -1989,7 +2042,8 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
             backend_provenance=backend_provenance,
             model_name=_TEST_SLIDE,
             tile_encoder_name=_TEST_TILE,
-            output_variant="default",
+            runtime_output_variant=None,
+            resolved_output_variant="default",
             num_gpus=2,
         )
 

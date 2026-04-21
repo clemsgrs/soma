@@ -11,6 +11,7 @@
 - For compact rich logs, keep the visible status phrase exact and color only the status word or symbol; assert against ANSI-stripped text in tests instead of raw escape sequences.
 - When debugging a verified runtime bug, do not keep speculative import-structure refactors that are not required by the final repro/fix path; revert or clearly separate them from the minimal validated fix.
 - For cache logging, key the user-facing label off the cache type that callers understand (`tiling cache` vs `feature cache`), not the internal directory segment used to store entries.
+- When a resolved cache identity value and a runtime sentinel differ, name them explicitly (`resolved_*` vs `runtime_*`) so the boundary is obvious at the call site.
 - When a field is only used as an internal cache selector, name it after that selector (`cache_kind`) instead of overloading a generic public name like `kind`.
 - If a sample legitimately produces zero tiles, persist that fact in cache metadata and skip it during cache validation instead of treating the missing `.pt` as a cache miss.
 - When a tolerance gate says the resolved spacing is acceptable, treat the actual read geometry as the source of truth for downstream level-0 footprint fields; update both the producer and the consumer together when that contract changes.
