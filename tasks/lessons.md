@@ -47,3 +47,4 @@
 - When using DataLoader workers in tests or lean runtimes, keep the worker payload simple and apply non-picklable transforms in the main process instead of sending lambdas or tensor batches through multiprocessing.
 - If the supported cluster runtime is pinned to an older Python version, do not keep compatibility workarounds for newer interpreters in the core path unless that runtime is actually part of the support matrix.
 - When a dependency renames a config field and backward compatibility is not desired, keep the loader strict and let legacy configs fail fast instead of adding translation shims.
+- When cross-run comparability matters for zero-tile evaluation slides, keep tune/test samples in the prediction outputs with deterministic training-fold fallback predictions and report coverage instead of silently dropping them.

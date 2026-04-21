@@ -346,6 +346,10 @@ def _predictions_to_dataframe(predictions: list) -> pd.DataFrame:
             row["predicted_value"] = p.predicted_value
         if p.raw_score is not None:
             row["raw_score"] = p.raw_score
+        if p.is_placeholder:
+            row["is_placeholder"] = True
+        if p.missing_reason is not None:
+            row["missing_reason"] = p.missing_reason
         rows.append(row)
     return pd.DataFrame(rows)
 

@@ -157,3 +157,17 @@
   leaving unset fields as `null` when users rely on encoder defaults.
 - Cache resolution now logs an explicit `resolving ... cache` line before
   validation so users can see cache-key/scope progress in the extraction UX.
+- Zero-tile tune/test slides now stay in split predictions with deterministic
+  training-fold fallback outputs instead of being dropped, so reported metrics
+  remain directly comparable across runs.
+- Split metrics now include `coverage`, which reports the fraction of samples
+  evaluated with real features rather than deterministic empty-slide fallbacks.
+- Split metrics also record `num_samples`, `num_real_samples`, and
+  `num_placeholder_samples`, and the HTML report surfaces them in a dedicated
+  coverage table alongside the main test metrics.
+- Run-level `summary.json` also aggregates those coverage fields per split
+  (for example `test/coverage_mean`, `test/num_real_samples_mean`) so the
+  compact summary surface carries the same information as the per-fold metrics.
+- After a successful run, the terminal also prints a compact completion panel
+  with the primary split metric, per-split coverage in `real/total` form, and
+  the mean placeholder count.
