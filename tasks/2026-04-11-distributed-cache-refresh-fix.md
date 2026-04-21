@@ -1,4 +1,0 @@
-- [x] Reproduce the distributed cache refresh failure in a focused test.
-- [x] Patch the distributed cache-population helper to receive the resolved cache inputs explicitly.
-- [x] Update docs and lessons if this is a new regression pattern.
-- [x] Run the targeted test file and confirm the bug is fixed.
