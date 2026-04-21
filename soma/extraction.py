@@ -699,7 +699,7 @@ class FeatureExtractor:
             requested_backend=resolved_preprocessing.backend,
             loaded_tilings=loaded_tilings,
         )
-        output_variant = str(resolved_output["output_variant"])
+        resolved_output_variant = str(resolved_output["output_variant"])
         runtime_output_variant = _runtime_output_variant(
             level=level,
             resolved_output=resolved_output,
@@ -755,7 +755,7 @@ class FeatureExtractor:
                             preprocessing=s2v_preprocessing,
                             resolved_preprocessing=resolved_preprocessing,
                             backend_provenance=backend_provenance,
-                            output_variant=output_variant,
+                            resolved_output_variant=resolved_output_variant,
                             num_gpus=effective_num_gpus,
                         )
                     elif level == "tile":
@@ -768,7 +768,7 @@ class FeatureExtractor:
                             preprocessing=s2v_preprocessing,
                             resolved_preprocessing=resolved_preprocessing,
                             backend_provenance=backend_provenance,
-                            output_variant=output_variant,
+                            resolved_output_variant=resolved_output_variant,
                             num_gpus=effective_num_gpus,
                         )
                     elif level == "patient":
@@ -783,7 +783,7 @@ class FeatureExtractor:
                             resolved_preprocessing=resolved_preprocessing,
                             resolved_output=resolved_output,
                             backend_provenance=backend_provenance,
-                            output_variant=output_variant,
+                            resolved_output_variant=resolved_output_variant,
                             runtime_output_variant=runtime_output_variant,
                             num_gpus=effective_num_gpus,
                         )
@@ -799,7 +799,7 @@ class FeatureExtractor:
                             resolved_preprocessing=resolved_preprocessing,
                             resolved_output=resolved_output,
                             backend_provenance=backend_provenance,
-                            output_variant=output_variant,
+                            resolved_output_variant=resolved_output_variant,
                             runtime_output_variant=runtime_output_variant,
                             num_gpus=effective_num_gpus,
                         )
@@ -810,7 +810,7 @@ class FeatureExtractor:
                         store=store,
                         loaded_tilings=loaded_tilings,
                         encoder_name=self._encoder.name,
-                        output_variant=output_variant,
+                        output_variant=resolved_output_variant,
                     )
                 store = FeatureStore(store.feature_dir)
 
@@ -1139,7 +1139,7 @@ class FeatureExtractor:
         preprocessing: Slide2VecPreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         backend_provenance: dict[str, object],
-        output_variant: str,
+        resolved_output_variant: str,
         num_gpus: int | None,
     ) -> FeatureStore:
         cache_resolution = resolve_tile_cache(
@@ -1150,9 +1150,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
@@ -1168,7 +1168,7 @@ class FeatureExtractor:
             tiling_dir=tiling_dir,
             preprocessing=preprocessing,
             encoder_name=self._encoder.name,
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             num_gpus=num_gpus,
         )
         refreshed = resolve_tile_cache(
@@ -1179,9 +1179,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
@@ -1200,7 +1200,7 @@ class FeatureExtractor:
         preprocessing: Slide2VecPreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         backend_provenance: dict[str, object],
-        output_variant: str,
+        resolved_output_variant: str,
         num_gpus: int | None,
     ) -> FeatureStore:
         cache_resolution = resolve_hierarchical_cache(
@@ -1211,9 +1211,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
@@ -1229,7 +1229,7 @@ class FeatureExtractor:
             tiling_dir=tiling_dir,
             preprocessing=preprocessing,
             encoder_name=self._encoder.name,
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             num_gpus=num_gpus,
         )
         refreshed = resolve_hierarchical_cache(
@@ -1240,9 +1240,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
@@ -1263,7 +1263,7 @@ class FeatureExtractor:
         resolved_preprocessing: PreprocessingConfig,
         resolved_output: dict[str, object],
         backend_provenance: dict[str, object],
-        output_variant: str,
+        resolved_output_variant: str,
         runtime_output_variant: str | None,
         num_gpus: int | None,
     ) -> FeatureStore:
@@ -1300,9 +1300,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=slide_cache)
@@ -1322,7 +1322,8 @@ class FeatureExtractor:
                 backend_provenance=backend_provenance,
                 model_name=self._encoder.name,
                 tile_encoder_name=tile_encoder_name,
-                output_variant=runtime_output_variant,
+                runtime_output_variant=runtime_output_variant,
+                resolved_output_variant=resolved_output_variant,
                 num_gpus=num_gpus,
             )
             refreshed_slide_cache = resolve_slide_cache(
@@ -1340,9 +1341,9 @@ class FeatureExtractor:
                 execution=self._resolved_execution_for_cache(
                     encoder_name=self._encoder.name,
                     resolved_preprocessing=resolved_preprocessing,
-                    output_variant=output_variant,
+                    output_variant=resolved_output_variant,
                 ),
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
                 backend_provenance=backend_provenance,
                 complete_state="populated",
             )
@@ -1397,9 +1398,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
@@ -1420,7 +1421,7 @@ class FeatureExtractor:
         resolved_preprocessing: PreprocessingConfig,
         resolved_output: dict[str, object],
         backend_provenance: dict[str, object],
-        output_variant: str,
+        resolved_output_variant: str,
         runtime_output_variant: str | None,
         num_gpus: int | None,
     ) -> FeatureStore:
@@ -1457,9 +1458,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
         )
         self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
@@ -1528,9 +1529,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
@@ -1774,7 +1775,8 @@ class FeatureExtractor:
         backend_provenance: dict[str, object],
         model_name: str,
         tile_encoder_name: str,
-        output_variant: str | None,
+        runtime_output_variant: str | None,
+        resolved_output_variant: str,
         num_gpus: int,
     ) -> None:
         tile_missing = set(tile_cache.missing_sample_ids())
@@ -1787,7 +1789,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-slide-dist-") as tmp_dir:
             run_result = _run_with_coordinates(
                 model_name=model_name,
-                output_variant=output_variant,
+                output_variant=runtime_output_variant,
                 allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                 preprocessing=preprocessing,
                 execution=build_execution_options(
@@ -1845,9 +1847,9 @@ class FeatureExtractor:
             execution=self._resolved_execution_for_cache(
                 encoder_name=self._encoder.name,
                 resolved_preprocessing=resolved_preprocessing,
-                output_variant=output_variant,
+                output_variant=resolved_output_variant,
             ),
-            output_variant=output_variant,
+            output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
         )
