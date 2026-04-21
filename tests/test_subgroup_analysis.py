@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, SubgroupConfig, TaskConfig, TrainingConfig
-from soma.evaluation.metrics import bh_correct, compare_run_metrics
+from soma.evaluation.metrics import bh_correct, compare_run_predictions
 from soma.evaluation.metrics import (
     _extract_arrays,
     compute_subgroup_metrics,
@@ -577,64 +577,113 @@ def test_bh_correct_known_values() -> None:
 
 
 # ---------------------------------------------------------------------------
-# compare_run_metrics
+# compare_run_predictions
 # ---------------------------------------------------------------------------
 
 
-def test_compare_run_metrics_returns_p_values() -> None:
-    """compare_run_metrics returns a p-value per run; best run gets 1.0."""
-    # Run 0 consistently better than run 1
-    run0 = [0.9, 0.88, 0.91, 0.89]
-    run1 = [0.7, 0.72, 0.68, 0.71]
-    p_values = compare_run_metrics([run0, run1], n_permutations=500, seed=0)
+def _make_binary_preds(n: int, prob_1: list[float], seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    true_labels = rng.integers(0, 2, size=n)
+    predicted = (np.array(prob_1) >= 0.5).astype(int)
+    return pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "predicted_label": predicted,
+        "prob_0": [1 - p for p in prob_1],
+        "prob_1": prob_1,
+    })
+
+
+def test_compare_run_predictions_best_gets_1() -> None:
+    """Best run always receives p-value 1.0."""
+    rng = np.random.default_rng(0)
+    n = 60
+    true_labels = (rng.random(n) > 0.5).astype(int)
+    # Run 0: well-separated probabilities
+    prob_good = np.where(true_labels, rng.uniform(0.7, 1.0, n), rng.uniform(0.0, 0.3, n))
+    # Run 1: near-random probabilities
+    prob_bad = rng.uniform(0.3, 0.7, n)
+
+    def _df(prob: np.ndarray) -> pd.DataFrame:
+        return pd.DataFrame({
+            "sample_id": [f"s{i}" for i in range(n)],
+            "true_label": true_labels,
+            "predicted_label": (prob >= 0.5).astype(int),
+            "prob_0": 1 - prob,
+            "prob_1": prob,
+        })
+
+    p_values = compare_run_predictions([_df(prob_good), _df(prob_bad)], "binary_classification", "auroc", seed=0)
 
     assert len(p_values) == 2
-    assert p_values[0] == 1.0  # best run
+    assert p_values[0] == 1.0
     assert p_values[1] is not None
     assert 0.0 <= p_values[1] <= 1.0
 
 
-def test_compare_run_metrics_significant_difference() -> None:
-    """A clearly better run produces a low p-value for the other run.
+def test_compare_run_predictions_significant_difference() -> None:
+    """Clearly better run yields a low p-value for the worse run."""
+    rng = np.random.default_rng(42)
+    n = 100
+    true_labels = (rng.random(n) > 0.5).astype(int)
+    prob_good = np.where(true_labels, rng.uniform(0.75, 1.0, n), rng.uniform(0.0, 0.25, n))
+    prob_bad = rng.uniform(0.4, 0.6, n)  # near-chance
 
-    With 8 folds the minimum sign-permutation p-value is 2/2^8 ≈ 0.008,
-    well below 0.05 for a clear separation.
-    """
-    run0 = [0.95, 0.94, 0.96, 0.95, 0.94, 0.96, 0.95, 0.93]
-    run1 = [0.60, 0.61, 0.59, 0.62, 0.60, 0.58, 0.61, 0.63]
-    p_values = compare_run_metrics([run0, run1], n_permutations=500, seed=42)
+    def _df(prob: np.ndarray) -> pd.DataFrame:
+        return pd.DataFrame({
+            "sample_id": [f"s{i}" for i in range(n)],
+            "true_label": true_labels,
+            "predicted_label": (prob >= 0.5).astype(int),
+            "prob_0": 1 - prob,
+            "prob_1": prob,
+        })
+
+    p_values = compare_run_predictions([_df(prob_good), _df(prob_bad)], "binary_classification", "auroc", n_permutations=500, seed=42)
 
     assert p_values[1] < 0.05
 
 
-def test_compare_run_metrics_no_difference() -> None:
-    """Runs with identical performance produce a high p-value."""
-    vals = [0.80, 0.81, 0.79, 0.80, 0.82]
-    p_values = compare_run_metrics([vals, vals[:]], n_permutations=200, seed=42)
+def test_compare_run_predictions_identical_runs_high_p() -> None:
+    """Identical predictions produce a high p-value."""
+    rng = np.random.default_rng(7)
+    n = 60
+    true_labels = (rng.random(n) > 0.5).astype(int)
+    prob = rng.uniform(0.2, 0.8, n)
 
-    # Both identical → p-value should be high (≥ 0.05)
+    df = pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "predicted_label": (prob >= 0.5).astype(int),
+        "prob_0": 1 - prob,
+        "prob_1": prob,
+    })
+
+    p_values = compare_run_predictions([df, df.copy()], "binary_classification", "auroc", n_permutations=500, seed=0)
+
     assert p_values[1] is not None
     assert p_values[1] >= 0.05
 
 
-def test_compare_run_metrics_single_fold_returns_none() -> None:
-    """Single-fold runs cannot be tested; all p-values are None."""
-    p_values = compare_run_metrics([[0.85], [0.80]])
-    assert all(p is None for p in p_values)
+def test_compare_run_predictions_three_runs() -> None:
+    """With 3 runs best gets p=1.0; others get valid p-values."""
+    rng = np.random.default_rng(0)
+    n = 80
+    true_labels = (rng.random(n) > 0.5).astype(int)
 
+    def _df(prob: np.ndarray) -> pd.DataFrame:
+        return pd.DataFrame({
+            "sample_id": [f"s{i}" for i in range(n)],
+            "true_label": true_labels,
+            "predicted_label": (prob >= 0.5).astype(int),
+            "prob_0": 1 - prob,
+            "prob_1": prob,
+        })
 
-def test_compare_run_metrics_mismatched_folds_returns_none() -> None:
-    """Runs with different fold counts cannot be compared."""
-    p_values = compare_run_metrics([[0.8, 0.82], [0.7, 0.72, 0.71]])
-    assert all(p is None for p in p_values)
+    prob_best = np.where(true_labels, rng.uniform(0.75, 1.0, n), rng.uniform(0.0, 0.25, n))
+    prob_mid  = np.where(true_labels, rng.uniform(0.55, 0.85, n), rng.uniform(0.15, 0.45, n))
+    prob_bad  = rng.uniform(0.4, 0.6, n)
 
-
-def test_compare_run_metrics_three_runs() -> None:
-    """With 3 runs, best gets p=1.0; other two get a p-value."""
-    run0 = [0.95, 0.94, 0.96]  # best
-    run1 = [0.70, 0.71, 0.69]
-    run2 = [0.80, 0.81, 0.79]
-    p_values = compare_run_metrics([run0, run1, run2], n_permutations=200, seed=0)
+    p_values = compare_run_predictions([_df(prob_best), _df(prob_mid), _df(prob_bad)], "binary_classification", "auroc", n_permutations=200, seed=0)
 
     assert len(p_values) == 3
     assert p_values[0] == 1.0

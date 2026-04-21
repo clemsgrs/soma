@@ -1,20 +1,19 @@
-"""Plotly chart builders for experiment reports.
+"""Matplotlib chart builders for experiment reports.
 
-All functions are pure: they take FoldData lists and return plotly Figures.
+All functions are pure: they take FoldData lists and return SVG strings.
 No I/O, no side effects.
-
-Per-fold vs. aggregated strategy:
-- Training curves: one trace per fold overlaid on the same chart.
-- Prediction analysis: predictions aggregated across all folds, with per-fold
-  curves overlaid on ROC/PR plots to show variance.
-- Confusion matrix: summed across all folds.
 """
 
 from __future__ import annotations
 
+import io
+import re
+import uuid
+
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 from sklearn.metrics import (
     auc,
     average_precision_score,
@@ -23,17 +22,65 @@ from sklearn.metrics import (
     roc_curve,
 )
 
+matplotlib.use("Agg")
+
 from soma.reporting.data import FoldData, FoldSlice, RunData, aggregate_slice_predictions
 
-# Consistent color palette for folds
-_FOLD_COLORS = [
-    "#636EFA", "#EF553B", "#00CC96", "#AB63FA",
-    "#FFA15A", "#19D3F3", "#FF6692", "#B6E880",
+SOMA_PALETTE = [
+    "#7C3AED",  # violet (primary)
+    "#0EA5E9",  # sky
+    "#10B981",  # emerald
+    "#F59E0B",  # amber
+    "#EF4444",  # red
+    "#8B5CF6",  # violet-light
+    "#06B6D4",  # cyan
+    "#F97316",  # orange
 ]
+
+plt.rcParams.update({
+    "figure.facecolor": "#F8FAFC",
+    "axes.facecolor": "white",
+    "axes.edgecolor": "#E2E8F0",
+    "grid.color": "#F1F5F9",
+    "grid.linewidth": 0.8,
+    "font.family": "sans-serif",
+    "font.size": 11,
+    "axes.titlesize": 12,
+    "axes.labelsize": 11,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+})
 
 
 def _fold_color(fold: int) -> str:
-    return _FOLD_COLORS[fold % len(_FOLD_COLORS)]
+    return SOMA_PALETTE[fold % len(SOMA_PALETTE)]
+
+
+def _fig_to_svg(fig: plt.Figure) -> str:
+    buf = io.StringIO()
+    fig.savefig(buf, format="svg", bbox_inches="tight")
+    plt.close(fig)
+    svg = buf.getvalue()
+    svg = svg[svg.index("<svg"):]
+    prefix = f"s{uuid.uuid4().hex[:8]}"
+    svg = re.sub(r'id="([^"]+)"', lambda m: f'id="{prefix}-{m.group(1)}"', svg)
+    svg = re.sub(r'(xlink:href|href)="#([^"]+)"', lambda m: f'{m.group(1)}="#{prefix}-{m.group(2)}"', svg)
+    svg = re.sub(r'url\(#([^)]+)\)', lambda m: f'url(#{prefix}-{m.group(1)})', svg)
+    return svg
+
+
+def _apply_soma_style(ax: plt.Axes) -> None:
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.spines["left"].set_color("#E2E8F0")
+    ax.spines["bottom"].set_color("#E2E8F0")
+    ax.grid(True, color="#F1F5F9", linewidth=0.8, zorder=0)
+
+
+def _legend_if_labeled(ax: plt.Axes) -> None:
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend()
 
 
 # ---------------------------------------------------------------------------
@@ -41,9 +88,8 @@ def _fold_color(fold: int) -> str:
 # ---------------------------------------------------------------------------
 
 
-def loss_curves(folds: list[FoldData]) -> go.Figure:
-    """Train and tune loss per epoch, one trace per fold."""
-    fig = go.Figure()
+def loss_curves(folds: list[FoldData]) -> str:
+    fig, (ax_train, ax_tune) = plt.subplots(1, 2, figsize=(9, 4), sharey=False)
     for fd in folds:
         if not fd.training_history:
             continue
@@ -51,32 +97,23 @@ def loss_curves(folds: list[FoldData]) -> go.Figure:
         train_loss = [e["train_loss"] for e in fd.training_history]
         tune_loss = [e["tune_loss"] for e in fd.training_history]
         color = _fold_color(fd.fold)
-        label = f"Fold {fd.fold}"
-        fig.add_trace(go.Scatter(
-            x=epochs, y=train_loss,
-            mode="lines", name=f"{label} train",
-            line=dict(color=color, dash="solid"),
-            legendgroup=label,
-        ))
-        fig.add_trace(go.Scatter(
-            x=epochs, y=tune_loss,
-            mode="lines", name=f"{label} tune",
-            line=dict(color=color, dash="dot"),
-            legendgroup=label,
-        ))
-    fig.update_layout(
-        title="Loss curves",
-        xaxis_title="Epoch",
-        yaxis_title="Loss",
-        legend=dict(groupclick="toggleitem"),
-        **_chart_layout(),
-    )
-    return fig
+        ax_train.plot(epochs, train_loss, color=color, linestyle="-", label=f"Fold {fd.fold}")
+        ax_tune.plot(epochs, tune_loss, color=color, linestyle="-", label=f"Fold {fd.fold}")
+    ax_train.set_title("Train loss")
+    ax_train.set_xlabel("Epoch")
+    ax_train.set_ylabel("Loss")
+    ax_tune.set_title("Tune loss")
+    ax_tune.set_xlabel("Epoch")
+    _apply_soma_style(ax_train)
+    _apply_soma_style(ax_tune)
+    _legend_if_labeled(ax_train)
+    _legend_if_labeled(ax_tune)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
-def metric_curves(folds: list[FoldData], metric_name: str) -> go.Figure:
-    """Tune metric per epoch for a given metric, one trace per fold."""
-    fig = go.Figure()
+def metric_curves(folds: list[FoldData], metric_name: str) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
     for fd in folds:
         if not fd.training_history:
             continue
@@ -84,41 +121,32 @@ def metric_curves(folds: list[FoldData], metric_name: str) -> go.Figure:
         values = [e["tune_metrics"].get(metric_name) for e in fd.training_history]
         if all(v is None for v in values):
             continue
-        fig.add_trace(go.Scatter(
-            x=epochs, y=values,
-            mode="lines", name=f"Fold {fd.fold}",
-            line=dict(color=_fold_color(fd.fold)),
-        ))
-    fig.update_layout(
-        title=f"Tune {metric_name} per epoch",
-        xaxis_title="Epoch",
-        yaxis_title=metric_name,
-        **_chart_layout(),
-    )
-    return fig
+        ax.plot(epochs, values, color=_fold_color(fd.fold), label=f"Fold {fd.fold}")
+    ax.set_title(f"Tune {metric_name} per epoch")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel(metric_name)
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
-def lr_curve(folds: list[FoldData]) -> go.Figure:
-    """Learning rate schedule per epoch, one trace per fold."""
-    fig = go.Figure()
+def lr_curve(folds: list[FoldData]) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
     for fd in folds:
         if not fd.training_history:
             continue
         epochs = [e["epoch"] for e in fd.training_history]
         lrs = [e["lr"] for e in fd.training_history]
-        fig.add_trace(go.Scatter(
-            x=epochs, y=lrs,
-            mode="lines", name=f"Fold {fd.fold}",
-            line=dict(color=_fold_color(fd.fold)),
-        ))
-    fig.update_layout(
-        title="Learning rate",
-        xaxis_title="Epoch",
-        yaxis_title="LR",
-        yaxis_type="log",
-        **_chart_layout(),
-    )
-    return fig
+        ax.plot(epochs, lrs, color=_fold_color(fd.fold), label=f"Fold {fd.fold}")
+    ax.set_title("Learning rate")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("LR")
+    ax.set_yscale("log")
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -126,23 +154,19 @@ def lr_curve(folds: list[FoldData]) -> go.Figure:
 # ---------------------------------------------------------------------------
 
 
-def roc_curve_chart(folds: list[FoldData]) -> go.Figure:
-    """Per-fold ROC curves + pooled ROC curve from aggregated predictions.
-
-    Works for binary (prob_1 column) and multiclass (one-vs-rest on each class,
-    macro-averaged to get one curve per fold).
-    """
-    fig = go.Figure()
+def roc_curve_chart(folds: list[FoldData]) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
 
     all_preds = _aggregate_predictions(folds)
     prob_cols = [c for c in all_preds.columns if c.startswith("prob_")]
 
     if not prob_cols:
-        return _empty_figure("ROC curve (no probability columns found)")
+        ax.text(0.5, 0.5, "No probability columns found", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("ROC curve")
+        return _fig_to_svg(fig)
 
     is_binary = len(prob_cols) == 2
 
-    # Per-fold curves (thinner, semi-transparent)
     for fd in folds:
         if fd.predictions.empty:
             continue
@@ -150,16 +174,9 @@ def roc_curve_chart(folds: list[FoldData]) -> go.Figure:
         if is_binary:
             fpr, tpr, _ = roc_curve(fd.predictions["true_label"], fd.predictions["prob_1"])
             roc_auc = auc(fpr, tpr)
-            fig.add_trace(go.Scatter(
-                x=fpr, y=tpr,
-                mode="lines",
-                name=f"Fold {fd.fold} (AUC={roc_auc:.3f})",
-                line=dict(color=color, width=1.5, dash="dot"),
-                opacity=0.7,
-                legendgroup=f"fold_{fd.fold}",
-            ))
+            ax.plot(fpr, tpr, color=color, linewidth=1.2, linestyle="--", alpha=0.6,
+                    label=f"Fold {fd.fold} (AUC={roc_auc:.3f})")
         else:
-            # One-vs-rest per class, averaged (macro)
             fprs, tprs, aucs = [], [], []
             y_true = fd.predictions["true_label"].values
             for i, col in enumerate(prob_cols):
@@ -172,30 +189,17 @@ def roc_curve_chart(folds: list[FoldData]) -> go.Figure:
                 tprs.append(tpr_i)
                 aucs.append(auc(fpr_i, tpr_i))
             if aucs:
-                # Interpolate to common FPR grid for averaging
                 mean_fpr = np.linspace(0, 1, 200)
                 mean_tpr = np.mean([np.interp(mean_fpr, f, t) for f, t in zip(fprs, tprs)], axis=0)
                 mean_auc = float(np.mean(aucs))
-                fig.add_trace(go.Scatter(
-                    x=mean_fpr, y=mean_tpr,
-                    mode="lines",
-                    name=f"Fold {fd.fold} macro (AUC={mean_auc:.3f})",
-                    line=dict(color=color, width=1.5, dash="dot"),
-                    opacity=0.7,
-                    legendgroup=f"fold_{fd.fold}",
-                ))
+                ax.plot(mean_fpr, mean_tpr, color=color, linewidth=1.2, linestyle="--", alpha=0.6,
+                        label=f"Fold {fd.fold} macro (AUC={mean_auc:.3f})")
 
-    # Pooled curve (bold)
     if not all_preds.empty:
         if is_binary:
             fpr, tpr, _ = roc_curve(all_preds["true_label"], all_preds["prob_1"])
             roc_auc = auc(fpr, tpr)
-            fig.add_trace(go.Scatter(
-                x=fpr, y=tpr,
-                mode="lines",
-                name=f"Pooled (AUC={roc_auc:.3f})",
-                line=dict(color="black", width=2.5),
-            ))
+            ax.plot(fpr, tpr, color=SOMA_PALETTE[0], linewidth=2.5, label=f"Pooled (AUC={roc_auc:.3f})")
         else:
             fprs, tprs, aucs = [], [], []
             y_true = all_preds["true_label"].values
@@ -212,40 +216,30 @@ def roc_curve_chart(folds: list[FoldData]) -> go.Figure:
                 mean_fpr = np.linspace(0, 1, 200)
                 mean_tpr = np.mean([np.interp(mean_fpr, f, t) for f, t in zip(fprs, tprs)], axis=0)
                 mean_auc = float(np.mean(aucs))
-                fig.add_trace(go.Scatter(
-                    x=mean_fpr, y=mean_tpr,
-                    mode="lines",
-                    name=f"Pooled macro (AUC={mean_auc:.3f})",
-                    line=dict(color="black", width=2.5),
-                ))
+                ax.plot(mean_fpr, mean_tpr, color=SOMA_PALETTE[0], linewidth=2.5,
+                        label=f"Pooled macro (AUC={mean_auc:.3f})")
 
-    # Chance diagonal
-    fig.add_trace(go.Scatter(
-        x=[0, 1], y=[0, 1],
-        mode="lines", name="Chance",
-        line=dict(color="gray", dash="dash", width=1),
-        showlegend=False,
-    ))
-    fig.update_layout(
-        title="ROC curve",
-        xaxis_title="False Positive Rate",
-        yaxis_title="True Positive Rate",
-        xaxis=dict(range=[0, 1]),
-        yaxis=dict(range=[0, 1.02]),
-        **_chart_layout(),
-    )
-    return fig
+    ax.plot([0, 1], [0, 1], color="#94A3B8", linestyle="--", linewidth=1)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+    ax.set_title("ROC curve")
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
-def pr_curve_chart(folds: list[FoldData]) -> go.Figure:
-    """Per-fold precision-recall curves + pooled curve (binary classification)."""
-    fig = go.Figure()
+def pr_curve_chart(folds: list[FoldData]) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
     all_preds = _aggregate_predictions(folds)
 
     if all_preds.empty or "prob_1" not in all_preds.columns:
-        return _empty_figure("PR curve (binary only)")
+        ax.text(0.5, 0.5, "PR curve (binary only)", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Precision-Recall curve")
+        return _fig_to_svg(fig)
 
-    # Per-fold
     for fd in folds:
         if fd.predictions.empty or "prob_1" not in fd.predictions.columns:
             continue
@@ -253,111 +247,72 @@ def pr_curve_chart(folds: list[FoldData]) -> go.Figure:
             fd.predictions["true_label"], fd.predictions["prob_1"]
         )
         ap = average_precision_score(fd.predictions["true_label"], fd.predictions["prob_1"])
-        fig.add_trace(go.Scatter(
-            x=recall, y=precision,
-            mode="lines",
-            name=f"Fold {fd.fold} (AP={ap:.3f})",
-            line=dict(color=_fold_color(fd.fold), width=1.5, dash="dot"),
-            opacity=0.7,
-        ))
+        ax.plot(recall, precision, color=_fold_color(fd.fold), linewidth=1.2, linestyle="--", alpha=0.6,
+                label=f"Fold {fd.fold} (AP={ap:.3f})")
 
-    # Pooled
     precision, recall, _ = precision_recall_curve(all_preds["true_label"], all_preds["prob_1"])
     ap = average_precision_score(all_preds["true_label"], all_preds["prob_1"])
-    fig.add_trace(go.Scatter(
-        x=recall, y=precision,
-        mode="lines",
-        name=f"Pooled (AP={ap:.3f})",
-        line=dict(color="black", width=2.5),
-    ))
+    ax.plot(recall, precision, color=SOMA_PALETTE[0], linewidth=2.5, label=f"Pooled (AP={ap:.3f})")
 
-    # Baseline
     pos_rate = float(all_preds["true_label"].mean())
-    fig.add_trace(go.Scatter(
-        x=[0, 1], y=[pos_rate, pos_rate],
-        mode="lines", name="Baseline",
-        line=dict(color="gray", dash="dash", width=1),
-        showlegend=False,
-    ))
-    fig.update_layout(
-        title="Precision-Recall curve",
-        xaxis_title="Recall",
-        yaxis_title="Precision",
-        xaxis=dict(range=[0, 1]),
-        yaxis=dict(range=[0, 1.02]),
-        **_chart_layout(),
-    )
-    return fig
+    ax.axhline(pos_rate, color="#94A3B8", linestyle="--", linewidth=1)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1.02)
+    ax.set_title("Precision-Recall curve")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
-def confusion_matrix_chart(folds: list[FoldData]) -> go.Figure:
-    """Aggregated confusion matrix summed across all folds."""
+def confusion_matrix_chart(folds: list[FoldData]) -> str:
     all_preds = _aggregate_predictions(folds)
     if all_preds.empty or "predicted_label" not in all_preds.columns:
-        return _empty_figure("Confusion matrix")
+        fig, ax = plt.subplots(figsize=(5.5, 5.5))
+        ax.text(0.5, 0.5, "No data available", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("Confusion matrix")
+        return _fig_to_svg(fig)
 
     y_true = all_preds["true_label"].astype(int).values
     y_pred = all_preds["predicted_label"].astype(int).values
     labels = sorted(set(y_true) | set(y_pred))
     cm = confusion_matrix(y_true, y_pred, labels=labels)
-
-    class_names = [f"Class {i}" for i in labels]
-    # Normalize for color (but show raw counts as text)
     cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True).clip(min=1)
 
-    fig = go.Figure(go.Heatmap(
-        z=cm_norm,
-        x=class_names,
-        y=class_names,
-        text=cm,
-        texttemplate="%{text}",
-        colorscale="Blues",
-        showscale=True,
-        colorbar=dict(title="Recall"),
-    ))
-    fig.update_layout(
-        title="Confusion matrix (pooled, row-normalized)",
-        xaxis_title="Predicted",
-        yaxis_title="True",
-        yaxis=dict(autorange="reversed"),
-        **_chart_layout(),
-    )
-    return fig
+    from matplotlib.colors import LinearSegmentedColormap
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+    soma_cmap = LinearSegmentedColormap.from_list("soma", ["#F8FAFC", SOMA_PALETTE[0]])
 
-def score_distribution_chart(folds: list[FoldData]) -> go.Figure:
-    """Histogram of predicted probabilities per class, aggregated across folds."""
-    all_preds = _aggregate_predictions(folds)
-    if all_preds.empty:
-        return _empty_figure("Score distribution")
+    n = len(labels)
+    fig, ax = plt.subplots(figsize=(7, 7))
+    im = ax.imshow(cm_norm, cmap=soma_cmap, vmin=0, vmax=1)
 
-    prob_cols = [c for c in all_preds.columns if c.startswith("prob_")]
-    if not prob_cols:
-        return _empty_figure("Score distribution (no probability columns)")
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="4%", pad=0.1)
+    fig.colorbar(im, cax=cax, label="Recall")
 
-    fig = go.Figure()
-    is_binary = len(prob_cols) == 2
-    col = "prob_1" if is_binary else prob_cols[0]
+    class_names = [f"Class {i}" for i in labels]
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(class_names, rotation=45, ha="right")
+    ax.set_yticklabels(class_names)
 
-    classes = sorted(all_preds["true_label"].unique())
-    for cls in classes:
-        subset = all_preds[all_preds["true_label"] == cls]
-        fig.add_trace(go.Histogram(
-            x=subset[col],
-            name=f"Class {int(cls)}",
-            opacity=0.7,
-            nbinsx=40,
-        ))
+    for i in range(n):
+        for j in range(n):
+            color = "white" if cm_norm[i, j] > 0.5 else "#0F172A"
+            ax.text(j, i, str(cm[i, j]), ha="center", va="center", color=color, fontsize=10)
 
-    score_label = "P(positive)" if is_binary else f"P({prob_cols[0].replace('prob_', 'class ')})"
-    fig.update_layout(
-        title=f"Score distribution by class ({score_label})",
-        xaxis_title=score_label,
-        yaxis_title="Count",
-        barmode="overlay",
-        **_chart_layout(),
-    )
-    return fig
+    n_folds = len([f for f in folds if not getattr(f, "predictions", pd.DataFrame()).empty])
+    fold_note = f"all {n_folds} folds, " if n_folds > 1 else ""
+    ax.set_title(f"Confusion matrix ({fold_note}row-normalized)")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    fig.tight_layout()
+    return _fig_to_svg(fig)
+
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +320,8 @@ def score_distribution_chart(folds: list[FoldData]) -> go.Figure:
 # ---------------------------------------------------------------------------
 
 
-def scatter_predicted_vs_actual(folds: list[FoldData]) -> go.Figure:
-    """Scatter of predicted vs actual values, color-coded by fold."""
-    fig = go.Figure()
+def scatter_predicted_vs_actual(folds: list[FoldData]) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
     all_vals: list[float] = []
 
     for fd in folds:
@@ -376,34 +330,23 @@ def scatter_predicted_vs_actual(folds: list[FoldData]) -> go.Figure:
         y_true = fd.predictions["true_label"].values
         y_pred = fd.predictions["predicted_value"].values
         all_vals.extend(list(y_true) + list(y_pred))
-        fig.add_trace(go.Scatter(
-            x=y_true, y=y_pred,
-            mode="markers",
-            name=f"Fold {fd.fold}",
-            marker=dict(color=_fold_color(fd.fold), size=6, opacity=0.7),
-        ))
+        ax.scatter(y_true, y_pred, color=_fold_color(fd.fold), s=30, alpha=0.7, label=f"Fold {fd.fold}")
 
     if all_vals:
         lo, hi = min(all_vals), max(all_vals)
-        fig.add_trace(go.Scatter(
-            x=[lo, hi], y=[lo, hi],
-            mode="lines", name="Identity",
-            line=dict(color="gray", dash="dash", width=1),
-            showlegend=False,
-        ))
+        ax.plot([lo, hi], [lo, hi], color="#94A3B8", linestyle="--", linewidth=1)
 
-    fig.update_layout(
-        title="Predicted vs. actual",
-        xaxis_title="Actual",
-        yaxis_title="Predicted",
-        **_chart_layout(),
-    )
-    return fig
+    ax.set_title("Predicted vs. actual")
+    ax.set_xlabel("Actual")
+    ax.set_ylabel("Predicted")
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
-def residual_plot(folds: list[FoldData]) -> go.Figure:
-    """Residuals (actual − predicted) vs. predicted, color-coded by fold."""
-    fig = go.Figure()
+def residual_plot(folds: list[FoldData]) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 5.5))
 
     for fd in folds:
         if fd.predictions.empty or "predicted_value" not in fd.predictions.columns:
@@ -411,175 +354,21 @@ def residual_plot(folds: list[FoldData]) -> go.Figure:
         y_true = fd.predictions["true_label"].values
         y_pred = fd.predictions["predicted_value"].values
         residuals = y_true - y_pred
-        fig.add_trace(go.Scatter(
-            x=y_pred, y=residuals,
-            mode="markers",
-            name=f"Fold {fd.fold}",
-            marker=dict(color=_fold_color(fd.fold), size=6, opacity=0.7),
-        ))
+        ax.scatter(y_pred, residuals, color=_fold_color(fd.fold), s=30, alpha=0.7, label=f"Fold {fd.fold}")
 
-    fig.add_hline(y=0, line_dash="dash", line_color="gray", line_width=1)
-    fig.update_layout(
-        title="Residuals vs. predicted",
-        xaxis_title="Predicted",
-        yaxis_title="Residual (actual − predicted)",
-        **_chart_layout(),
-    )
-    return fig
+    ax.axhline(0, color="#94A3B8", linestyle="--", linewidth=1)
+    ax.set_title("Residuals vs. predicted")
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Residual (actual − predicted)")
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Subgroup charts
 # ---------------------------------------------------------------------------
-
-
-_aggregate_predictions = aggregate_slice_predictions
-
-
-def _empty_figure(title: str) -> go.Figure:
-    fig = go.Figure()
-    fig.update_layout(
-        title=title,
-        annotations=[dict(text="No data available", showarrow=False, font_size=14)],
-        **_chart_layout(),
-    )
-    return fig
-
-
-# ---------------------------------------------------------------------------
-# Cross-run comparison charts
-# ---------------------------------------------------------------------------
-
-
-def comparison_loss_curves(runs: list[RunData], labels: list[str]) -> go.Figure:
-    """Train/tune loss curves overlaid across runs.
-
-    Each run contributes one mean line (averaged across folds). When a run
-    has multiple folds a ±1 std shaded band is drawn around the mean.
-    """
-    fig = go.Figure()
-    for run, label, color in zip(runs, labels, _run_colors(len(runs))):
-        _add_comparison_curve(fig, run, label, color, key="train_loss", dash="solid")
-        _add_comparison_curve(fig, run, label, color, key="tune_loss", dash="dot", show_label=False)
-    fig.update_layout(
-        title="Loss curves (cross-run)",
-        xaxis_title="Epoch",
-        yaxis_title="Loss",
-        **_chart_layout(),
-    )
-    return fig
-
-
-def comparison_metric_curves(
-    runs: list[RunData],
-    labels: list[str],
-    metric_name: str,
-) -> go.Figure:
-    """Tune metric curves overlaid across runs.
-
-    Each run contributes one mean line (averaged across folds). When a run
-    has multiple folds a ±1 std shaded band is drawn around the mean.
-    """
-    fig = go.Figure()
-    for run, label, color in zip(runs, labels, _run_colors(len(runs))):
-        _add_comparison_curve(fig, run, label, color, metric_name=metric_name)
-    fig.update_layout(
-        title=f"Tune {metric_name} per epoch (cross-run)",
-        xaxis_title="Epoch",
-        yaxis_title=metric_name,
-        **_chart_layout(),
-    )
-    return fig
-
-
-def _add_comparison_curve(
-    fig: go.Figure,
-    run: RunData,
-    label: str,
-    color: str,
-    *,
-    key: str | None = None,
-    metric_name: str | None = None,
-    dash: str = "solid",
-    show_label: bool = True,
-) -> None:
-    """Add one mean curve (+ optional ±1std band) for a single run."""
-    folds_with_history = [fd for fd in run.folds if fd.training_history]
-    if not folds_with_history:
-        return
-
-    n_epochs = max(len(fd.training_history) for fd in folds_with_history)
-    epochs = list(range(n_epochs))
-
-    per_fold_values = []
-    for fd in folds_with_history:
-        if key is not None:
-            vals = [e[key] for e in fd.training_history]
-        else:
-            vals = [e["tune_metrics"].get(metric_name) for e in fd.training_history]
-            if all(v is None for v in vals):
-                continue
-            vals = [v if v is not None else float("nan") for v in vals]
-        # Pad to n_epochs if this fold stopped early
-        if len(vals) < n_epochs:
-            vals = vals + [float("nan")] * (n_epochs - len(vals))
-        per_fold_values.append(vals)
-
-    if not per_fold_values:
-        return
-
-    arr = np.array(per_fold_values, dtype=float)
-    mean = np.nanmean(arr, axis=0)
-    std = np.nanstd(arr, axis=0) if arr.shape[0] > 1 else None
-
-    trace_label = f"{label} {key or metric_name}" if not show_label else label
-    legend_label = f"{label} (train)" if key == "train_loss" else (
-        f"{label} (tune)" if key == "tune_loss" else label
-    )
-
-    if std is not None:
-        upper = mean + std
-        lower = mean - std
-        # Upper bound (invisible line, fills down to lower)
-        fig.add_trace(go.Scatter(
-            x=epochs, y=upper.tolist(),
-            mode="lines", line=dict(width=0),
-            showlegend=False, hoverinfo="skip",
-            legendgroup=label,
-        ))
-        # Lower bound with fill
-        fig.add_trace(go.Scatter(
-            x=epochs, y=lower.tolist(),
-            mode="lines", line=dict(width=0),
-            fill="tonexty",
-            fillcolor=_hex_to_rgba(color, alpha=0.15),
-            showlegend=False, hoverinfo="skip",
-            legendgroup=label,
-        ))
-
-    fig.add_trace(go.Scatter(
-        x=epochs, y=mean.tolist(),
-        mode="lines",
-        name=legend_label,
-        line=dict(color=color, width=2, dash=dash),
-        legendgroup=label,
-    ))
-
-
-def _run_colors(n: int) -> list[str]:
-    """Return n distinct colors for runs (different palette from fold colors)."""
-    palette = [
-        "#E63946", "#2A9D8F", "#E9C46A", "#264653",
-        "#F4A261", "#A8DADC", "#457B9D", "#1D3557",
-    ]
-    return [palette[i % len(palette)] for i in range(n)]
-
-
-def _hex_to_rgba(hex_color: str, alpha: float = 0.2) -> str:
-    """Convert a hex color string to an rgba() CSS string."""
-    hex_color = hex_color.lstrip("#")
-    r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
-    return f"rgba({r},{g},{b},{alpha})"
 
 
 def subgroup_metric_chart(
@@ -587,72 +376,36 @@ def subgroup_metric_chart(
     metric_name: str,
     overall_value: float,
     column_name: str = "",
-) -> go.Figure:
-    """Bar chart comparing metric values across subgroups.
-
-    Args:
-        subgroup_data: {group_value → {metric: value, "n": count}}
-        metric_name: Which metric to plot.
-        overall_value: Overall (non-subgroup) metric value — shown as a reference line.
-        column_name: Column name for the chart title.
-
-    Returns:
-        Plotly Figure with one bar per group.
-    """
+) -> str:
     groups = [g for g, d in subgroup_data.items() if metric_name in d]
     values = [subgroup_data[g][metric_name] for g in groups]
     ns = [subgroup_data[g].get("n", "") for g in groups]
 
-    colors = [
-        "#2A9D8F" if v >= overall_value else "#E63946"
-        for v in values
-    ]
+    colors = ["#10B981" if v >= overall_value else "#EF4444" for v in values]
 
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=groups,
-        y=values,
-        marker_color=colors,
-        text=[f"n={n}" for n in ns],
-        textposition="outside",
-        name=metric_name,
-    ))
-    fig.add_hline(
-        y=overall_value,
-        line_dash="dash",
-        line_color="gray",
-        annotation_text=f"overall={overall_value:.3f}",
-        annotation_position="top right",
-    )
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
+    bars = ax.bar(groups, values, color=colors)
+    for bar, n in zip(bars, ns):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
+                f"n={n}", ha="center", va="bottom", fontsize=9)
+    ax.axhline(overall_value, color="#94A3B8", linestyle="--", linewidth=1.2,
+               label=f"overall={overall_value:.3f}")
+
     title = f"{metric_name} by {column_name}" if column_name else metric_name
-    fig.update_layout(
-        **_chart_layout(),
-        title=title,
-        xaxis_title=column_name or "Group",
-        yaxis_title=metric_name,
-        showlegend=False,
-    )
-    return fig
+    ax.set_title(title)
+    ax.set_xlabel(column_name or "Group")
+    ax.set_ylabel(metric_name)
+    ax.legend(fontsize=9)
+    _apply_soma_style(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
 def subgroup_stats_heatmap(
     stats: dict[str, dict[str, dict[str, float]]],
     columns: list[str],
     metrics: list[str],
-) -> go.Figure:
-    """Heatmap of permutation-test p-values for subgroup analysis.
-
-    Rows = column×group combinations, columns = metrics.
-    Color scale: green (low p-value / significant) to white (high p-value).
-
-    Args:
-        stats: {column → {group → {metric: p_value}}}
-        columns: Column names (controls row ordering).
-        metrics: Metric names (controls column ordering).
-
-    Returns:
-        Plotly Figure heatmap.
-    """
+) -> str:
     row_labels: list[str] = []
     z: list[list[float]] = []
 
@@ -664,38 +417,121 @@ def subgroup_stats_heatmap(
             z.append([metric_pvals.get(m, float("nan")) for m in metrics])
 
     if not row_labels:
-        fig = go.Figure()
-        fig.update_layout(**_chart_layout(), title="No statistical test results")
-        return fig
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.set_title("No statistical test results")
+        return _fig_to_svg(fig)
 
-    fig = go.Figure(go.Heatmap(
-        z=z,
-        x=metrics,
-        y=row_labels,
-        colorscale=[[0, "#2A9D8F"], [0.05, "#E9C46A"], [1, "#f5f5f5"]],
-        zmin=0,
-        zmax=1,
-        colorbar=dict(title="p-value"),
-        text=[[f"{v:.3f}" if not np.isnan(v) else "—" for v in row] for row in z],
-        texttemplate="%{text}",
-    ))
-    fig.add_shape(
-        type="line", x0=-0.5, x1=len(metrics) - 0.5,
-        y0=-0.5, y1=len(row_labels) - 0.5,
-        line=dict(color="rgba(0,0,0,0)"),
-    )
-    fig.update_layout(
-        **_chart_layout(),
-        title="Permutation test p-values (p < 0.05 = significant)",
-        height=max(400, 40 * len(row_labels)),
-    )
-    return fig
+    z_arr = np.array(z, dtype=float)
+    h = max(4, 0.4 * len(row_labels))
+    fig, ax = plt.subplots(figsize=(max(4, len(metrics) * 1.2), h))
+    cmap = plt.cm.RdYlGn_r
+    im = ax.imshow(z_arr, cmap=cmap, vmin=0, vmax=1, aspect="auto")
+    fig.colorbar(im, ax=ax, label="p-value")
+
+    ax.set_xticks(range(len(metrics)))
+    ax.set_yticks(range(len(row_labels)))
+    ax.set_xticklabels(metrics, rotation=30, ha="right")
+    ax.set_yticklabels(row_labels)
+
+    for i in range(len(row_labels)):
+        for j in range(len(metrics)):
+            val = z_arr[i, j]
+            text = f"{val:.3f}" if not np.isnan(val) else "—"
+            ax.text(j, i, text, ha="center", va="center", fontsize=9,
+                    color="white" if val < 0.3 else "#0F172A")
+
+    ax.set_title("Permutation test p-values (p < 0.05 = significant)")
+    fig.tight_layout()
+    return _fig_to_svg(fig)
 
 
-def _chart_layout() -> dict:
-    return dict(
-        template="plotly_white",
-        height=400,
-        margin=dict(l=50, r=30, t=50, b=50),
-        font=dict(family="Inter, system-ui, sans-serif", size=13),
-    )
+# ---------------------------------------------------------------------------
+# Cross-run comparison charts
+# ---------------------------------------------------------------------------
+
+
+def comparison_loss_curves(runs: list[RunData], labels: list[str]) -> str:
+    fig, (ax_train, ax_tune) = plt.subplots(1, 2, figsize=(9, 4), sharey=False)
+    for run, label, color in zip(runs, labels, _run_colors(len(runs))):
+        _add_mean_band(ax_train, run, label, color, key="train_loss")
+        _add_mean_band(ax_tune, run, label, color, key="tune_loss")
+    ax_train.set_title("Train loss (cross-run)")
+    ax_train.set_xlabel("Epoch")
+    ax_train.set_ylabel("Loss")
+    ax_tune.set_title("Tune loss (cross-run)")
+    ax_tune.set_xlabel("Epoch")
+    _apply_soma_style(ax_train)
+    _apply_soma_style(ax_tune)
+    _legend_if_labeled(ax_train)
+    _legend_if_labeled(ax_tune)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
+
+
+def comparison_metric_curves(runs: list[RunData], labels: list[str], metric_name: str) -> str:
+    fig, ax = plt.subplots(figsize=(5.5, 3.5))
+    for run, label, color in zip(runs, labels, _run_colors(len(runs))):
+        _add_mean_band(ax, run, label, color, metric_name=metric_name)
+    ax.set_title(f"Tune {metric_name} per epoch (cross-run)")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel(metric_name)
+    _apply_soma_style(ax)
+    _legend_if_labeled(ax)
+    fig.tight_layout()
+    return _fig_to_svg(fig)
+
+
+def _add_mean_band(
+    ax: plt.Axes,
+    run: RunData,
+    label: str,
+    color: str,
+    *,
+    key: str | None = None,
+    metric_name: str | None = None,
+    linestyle: str = "-",
+    show_label: bool = True,
+) -> None:
+    folds_with_history = [fd for fd in run.folds if fd.training_history]
+    if not folds_with_history:
+        return
+
+    n_epochs = max(len(fd.training_history) for fd in folds_with_history)
+    epochs = list(range(n_epochs))
+    per_fold_values = []
+
+    for fd in folds_with_history:
+        if key is not None:
+            vals = [e[key] for e in fd.training_history]
+        else:
+            vals = [e["tune_metrics"].get(metric_name) for e in fd.training_history]
+            if all(v is None for v in vals):
+                continue
+            vals = [v if v is not None else float("nan") for v in vals]
+        if len(vals) < n_epochs:
+            vals = vals + [float("nan")] * (n_epochs - len(vals))
+        per_fold_values.append(vals)
+
+    if not per_fold_values:
+        return
+
+    arr = np.array(per_fold_values, dtype=float)
+    mean = np.nanmean(arr, axis=0)
+    std = np.nanstd(arr, axis=0) if arr.shape[0] > 1 else None
+
+    plot_label = label if show_label else None
+    ax.plot(epochs, mean, color=color, linestyle=linestyle, linewidth=2, label=plot_label)
+    if std is not None:
+        r, g, b = int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16)
+        ax.fill_between(epochs, mean - std, mean + std, color=f"#{r:02x}{g:02x}{b:02x}", alpha=0.15)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_aggregate_predictions = aggregate_slice_predictions
+
+
+def _run_colors(n: int) -> list[str]:
+    return [SOMA_PALETTE[i % len(SOMA_PALETTE)] for i in range(n)]
