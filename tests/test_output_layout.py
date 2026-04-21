@@ -81,6 +81,16 @@ def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
     assert spec.splits_checksum
 
 
+def test_build_experiment_spec_distinguishes_dataset_type(tmp_path: Path):
+    slide_config = _make_pipeline_config(tmp_path, aggregator=None, dataset_type="slide")
+    tile_config = _make_pipeline_config(tmp_path, aggregator=None, dataset_type="tile")
+
+    slide_spec = build_experiment_spec(slide_config)
+    tile_spec = build_experiment_spec(tile_config)
+
+    assert slide_spec.experiment_id != tile_spec.experiment_id
+
+
 def test_resolve_managed_output_paths_groups_same_experiment_and_changes_run_dir(tmp_path: Path):
     config = _make_pipeline_config(tmp_path)
 

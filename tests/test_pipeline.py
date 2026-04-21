@@ -26,18 +26,22 @@ from soma.config import (
     TrainingConfig,
 )
 from soma.dataset import Dataset, FoldSplit, Splits
+from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
 from soma.output_layout import build_experiment_spec
 from soma.pipeline import (
     FoldResult,
     Pipeline,
     PipelineResult,
+    _aggregate_fold_metrics,
+    _build_subgroup_data,
     _build_completed_run_panel,
     _evaluate,
     train,
     train_one_fold,
 )
 from soma.training.collate import BagBatch
+from soma.training.trainer import TrainResult
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +767,46 @@ class TestTrain:
         assert "test/num_real_samples_mean" in summary
         assert "test/num_placeholder_samples_mean" in summary
 
+    def test_aggregate_fold_metrics_handles_inconsistent_test_split_names(self):
+        train_result = TrainResult(
+            best_epoch=0,
+            best_tune_loss=0.1,
+            best_tune_metrics={},
+            history=[],
+            checkpoint_path=Path("best_model.pt"),
+        )
+        fold_results = [
+            FoldResult(
+                fold=0,
+                train_result=train_result,
+                tune_report=EvaluationReport(split="tune", metrics={}, predictions=[]),
+                test_reports={
+                    "test": EvaluationReport(
+                        split="test",
+                        metrics={"auroc": 0.8},
+                        predictions=[],
+                    )
+                },
+            ),
+            FoldResult(
+                fold=1,
+                train_result=train_result,
+                tune_report=EvaluationReport(split="tune", metrics={}, predictions=[]),
+                test_reports={
+                    "test_external": EvaluationReport(
+                        split="test_external",
+                        metrics={"auroc": 0.7},
+                        predictions=[],
+                    )
+                },
+            ),
+        ]
+
+        summary = _aggregate_fold_metrics(fold_results)
+
+        assert summary["test/auroc_mean"] == pytest.approx(0.8)
+        assert summary["test_external/auroc_mean"] == pytest.approx(0.7)
+
     def test_completed_run_panel_includes_coverage_summary(self):
         panel = _build_completed_run_panel(
             summary_metrics={
@@ -1468,6 +1512,21 @@ def _setup_patient_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     return dataset_csv, splits_csv, feature_dir
 
 
+def _write_patient_feature_manifest(feature_dir: Path, statuses: dict[str, str]) -> None:
+    rows = []
+    for patient_id, status in statuses.items():
+        rows.append(
+            {
+                "sample_id": patient_id,
+                "feature_status": status,
+                "feature_path": str((feature_dir / f"{patient_id}.pt").resolve())
+                if status == "success"
+                else "",
+            }
+        )
+    pd.DataFrame(rows).to_csv(feature_dir / "process_list.csv", index=False)
+
+
 class TestPatientPipeline:
     def test_train_one_fold_returns_fold_result_and_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
@@ -1510,6 +1569,79 @@ class TestPatientPipeline:
 
         test_ids = {pred.sample_id for pred in result.test_reports["test"].predictions}
         assert test_ids == {"p3"}
+
+    def test_train_one_fold_patient_features_fail_fast_when_missing(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        (feature_dir / "p2.pt").unlink()
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="patient"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                dataset_type="patient",
+                task=TaskConfig(name="binary_classification"),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+                fold_dir=tmp_path / "fold_0",
+            )
+
+    def test_train_one_fold_patient_empty_tune_uses_placeholder_fallback(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        (feature_dir / "p2.pt").unlink()
+        _write_patient_feature_manifest(
+            feature_dir,
+            {
+                "p0": "success",
+                "p1": "success",
+                "p2": "empty",
+                "p3": "success",
+            },
+        )
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=tmp_path / "fold_0",
+        )
+
+        assert [pred.sample_id for pred in result.tune_report.predictions] == ["p2"]
+        assert result.tune_report.predictions[0].is_placeholder is True
+        assert result.tune_report.metrics["coverage"] == pytest.approx(0.0)
+
+    def test_build_subgroup_data_uses_patient_metadata_for_patient_predictions(self, tmp_path: Path):
+        dataset_csv, _, _ = _setup_patient_data(tmp_path)
+        dataset_df = pd.read_csv(dataset_csv)
+        dataset_df["site"] = [
+            "site_a" if patient_id in {"p0", "p2"} else "site_b"
+            for patient_id in dataset_df["patient_id"]
+        ]
+        dataset_df.to_csv(dataset_csv, index=False)
+        dataset = Dataset(dataset_csv)
+        report = EvaluationReport(
+            split="test",
+            metrics={},
+            predictions=[
+                SamplePrediction(sample_id="p2", true_label=1, predicted_label=1),
+                SamplePrediction(sample_id="p3", true_label=0, predicted_label=0),
+            ],
+        )
+
+        subgroup_data = _build_subgroup_data(dataset, report, ["site"])
+
+        assert subgroup_data == {
+            "p2": {"site": "site_a"},
+            "p3": {"site": "site_b"},
+        }
 
     def test_train_detects_patient_leakage(self, tmp_path: Path):
         dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
