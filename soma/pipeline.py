@@ -1436,14 +1436,32 @@ def _build_subgroup_data(
     """Build a mapping of sample_id → subgroup column values for enriching predictions."""
     if not subgroup_columns:
         return {}
-    return {
-        pred.sample_id: {
-            col: dataset.samples[pred.sample_id].metadata.get(col)
-            for col in subgroup_columns
-            if pred.sample_id in dataset.samples
-        }
-        for pred in report.predictions
-    }
+    subgroup_data: dict[str, dict[str, object]] = {}
+    patient_groups = dataset.patient_groups if dataset.has_patient_ids else {}
+    for pred in report.predictions:
+        if pred.sample_id in dataset.samples:
+            subgroup_data[pred.sample_id] = {
+                col: dataset.samples[pred.sample_id].metadata.get(col)
+                for col in subgroup_columns
+            }
+            continue
+
+        patient_records = patient_groups.get(pred.sample_id)
+        if not patient_records:
+            subgroup_data[pred.sample_id] = {}
+            continue
+
+        values: dict[str, object] = {}
+        for col in subgroup_columns:
+            observed_values = {record.metadata.get(col) for record in patient_records}
+            if len(observed_values) > 1:
+                raise ValueError(
+                    f"Patient '{pred.sample_id}' has inconsistent subgroup metadata for column '{col}'."
+                )
+            values[col] = patient_records[0].metadata.get(col)
+        subgroup_data[pred.sample_id] = values
+
+    return subgroup_data
 
 
 def _build_predictions_df(

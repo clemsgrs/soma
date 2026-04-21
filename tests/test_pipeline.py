@@ -26,7 +26,7 @@ from soma.config import (
     TrainingConfig,
 )
 from soma.dataset import Dataset, FoldSplit, Splits
-from soma.evaluation.report import EvaluationReport
+from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
 from soma.output_layout import build_experiment_spec
 from soma.pipeline import (
@@ -34,6 +34,7 @@ from soma.pipeline import (
     Pipeline,
     PipelineResult,
     _aggregate_fold_metrics,
+    _build_subgroup_data,
     _build_completed_run_panel,
     _evaluate,
     train,
@@ -1616,6 +1617,31 @@ class TestPatientPipeline:
         assert [pred.sample_id for pred in result.tune_report.predictions] == ["p2"]
         assert result.tune_report.predictions[0].is_placeholder is True
         assert result.tune_report.metrics["coverage"] == pytest.approx(0.0)
+
+    def test_build_subgroup_data_uses_patient_metadata_for_patient_predictions(self, tmp_path: Path):
+        dataset_csv, _, _ = _setup_patient_data(tmp_path)
+        dataset_df = pd.read_csv(dataset_csv)
+        dataset_df["site"] = [
+            "site_a" if patient_id in {"p0", "p2"} else "site_b"
+            for patient_id in dataset_df["patient_id"]
+        ]
+        dataset_df.to_csv(dataset_csv, index=False)
+        dataset = Dataset(dataset_csv)
+        report = EvaluationReport(
+            split="test",
+            metrics={},
+            predictions=[
+                SamplePrediction(sample_id="p2", true_label=1, predicted_label=1),
+                SamplePrediction(sample_id="p3", true_label=0, predicted_label=0),
+            ],
+        )
+
+        subgroup_data = _build_subgroup_data(dataset, report, ["site"])
+
+        assert subgroup_data == {
+            "p2": {"site": "site_a"},
+            "p3": {"site": "site_b"},
+        }
 
     def test_train_detects_patient_leakage(self, tmp_path: Path):
         dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
