@@ -11,6 +11,7 @@ from soma.config import (
     CacheConfig,
     EncoderConfig,
     EvalConfig,
+    ExecutionConfig,
     PipelineConfig,
     PreprocessingConfig,
     SubgroupConfig,
@@ -140,12 +141,19 @@ def test_encoder_config_defaults():
     assert cfg.name == "uni2"
     assert cfg.precision is None
     assert cfg.batch_size == 32
-    assert cfg.num_workers is None
-    assert cfg.prefetch_factor == 4
-    assert cfg.persistent_workers is True
     assert cfg.output_variant is None
     assert cfg.allow_non_recommended_settings is False
     assert cfg.save_tile_features is False
+
+
+def test_execution_config_defaults():
+    cfg = ExecutionConfig()
+    assert cfg.num_gpus is None
+    assert cfg.num_workers is None
+    assert cfg.num_preprocessing_workers is None
+    assert cfg.prefetch_factor is None
+    assert cfg.persistent_workers is None
+    assert cfg.precision is None
 
 
 def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
@@ -158,22 +166,15 @@ def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
     assert loaded.encoder.output_variant == "cls"
 
 
-def test_encoder_config_roundtrip_with_num_workers(tmp_path: Path):
-    cfg = _make_pipeline_config(encoder=EncoderConfig(name="h0-mini", num_workers=6))
-    yaml_path = tmp_path / "config.yaml"
-
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-
-    assert loaded.encoder.num_workers == 6
-
-
-def test_encoder_config_roundtrip_with_prefetch_and_persistent_workers(tmp_path: Path):
+def test_execution_config_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
-        encoder=EncoderConfig(
-            name="h0-mini",
+        execution=ExecutionConfig(
+            num_gpus=2,
+            num_workers=6,
+            num_preprocessing_workers=0,
             prefetch_factor=8,
             persistent_workers=False,
+            precision="fp16",
         )
     )
     yaml_path = tmp_path / "config.yaml"
@@ -181,8 +182,12 @@ def test_encoder_config_roundtrip_with_prefetch_and_persistent_workers(tmp_path:
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
 
-    assert loaded.encoder.prefetch_factor == 8
-    assert loaded.encoder.persistent_workers is False
+    assert loaded.execution.num_gpus == 2
+    assert loaded.execution.num_workers == 6
+    assert loaded.execution.num_preprocessing_workers == 0
+    assert loaded.execution.prefetch_factor == 8
+    assert loaded.execution.persistent_workers is False
+    assert loaded.execution.precision == "fp16"
 
 
 def test_encoder_config_roundtrip_with_allow_non_recommended_settings(tmp_path: Path):
@@ -239,7 +244,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
 
     assert loaded.cache.enabled == original.cache.enabled
     assert loaded.encoder.name == original.encoder.name
-    assert loaded.encoder.num_workers == original.encoder.num_workers
+    assert loaded.execution == original.execution
     assert loaded.aggregator.name == original.aggregator.name
     assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name

@@ -719,6 +719,13 @@ def resolve_tiling_cache(
     artifacts_dir = cache_dir / "artifacts"
     cache_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    _emit_cache_resolve_log(
+        cache_label="tiling",
+        cache_dir=cache_dir,
+        key=str(metadata["cache_key"]),
+        scope_name="samples",
+        scope_count=len(cache_ids),
+    )
 
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)
@@ -1209,6 +1216,19 @@ def _emit_cache_state_log(
     slide2vec_progress.emit_progress_log(message)
 
 
+def _emit_cache_resolve_log(
+    *,
+    cache_label: str,
+    cache_dir: Path,
+    key: str,
+    scope_name: str,
+    scope_count: int,
+) -> None:
+    slide2vec_progress.emit_progress_log(
+        f"… resolving {cache_label} cache ({scope_name}={int(scope_count)}, key={str(key)[:16]}): {cache_dir.resolve()}"
+    )
+
+
 def _resolve_cache(
     *,
     cache_root: Path,
@@ -1227,6 +1247,13 @@ def _resolve_cache(
     manifest_path = cache_dir / MANIFEST_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
     features_dir.mkdir(parents=True, exist_ok=True)
+    _emit_cache_resolve_log(
+        cache_label="feature",
+        cache_dir=cache_dir,
+        key=key,
+        scope_name="artifacts",
+        scope_count=len(cache_ids),
+    )
 
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)

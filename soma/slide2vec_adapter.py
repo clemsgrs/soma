@@ -15,7 +15,7 @@ from slide2vec import (
 )
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
-from soma.config import EncoderConfig, PreprocessingConfig, PreviewConfig
+from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, PreviewConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.encoders.validation import resolve_encoder_precision
 
@@ -117,20 +117,29 @@ def build_preview_config(preview: dict[str, object] | None = None) -> PreviewCon
 def build_execution_options(
     encoder: EncoderConfig,
     *,
+    execution: ExecutionConfig | None = None,
     encoder_name: str | None = None,
     output_dir: Path,
     num_gpus: int | None,
     save_tile_embeddings: bool,
 ) -> ExecutionOptions:
+    execution = execution or ExecutionConfig()
+    num_gpus_value = num_gpus if num_gpus is not None else execution.num_gpus
+    precision = execution.precision
+    if precision is None:
+        precision = resolve_encoder_precision(encoder, encoder_name=encoder_name)
+    prefetch_factor = 4 if execution.prefetch_factor is None else int(execution.prefetch_factor)
+    persistent_workers = True if execution.persistent_workers is None else bool(execution.persistent_workers)
     return ExecutionOptions(
         output_dir=output_dir,
         output_format="pt",
         batch_size=int(encoder.batch_size),
-        num_workers=int(encoder.num_workers) if encoder.num_workers is not None else None,
-        num_gpus=1 if num_gpus is None else int(num_gpus),
-        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
-        prefetch_factor=int(encoder.prefetch_factor),
-        persistent_workers=bool(encoder.persistent_workers),
+        num_workers=execution.num_workers,
+        num_preprocessing_workers=execution.num_preprocessing_workers,
+        num_gpus=num_gpus_value,
+        precision=precision,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
         save_tile_embeddings=save_tile_embeddings,
         save_latents=False,
     )

@@ -8,7 +8,7 @@ import logging
 import os
 import shutil
 import tempfile
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -49,7 +49,7 @@ from soma.cache import (
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
-from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.features import FeatureStore
@@ -504,12 +504,15 @@ class FeatureExtractor:
         dataset: Dataset,
         encoder: EncoderConfig,
         preprocessing: PreprocessingConfig = PreprocessingConfig(),
+        *,
+        execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig = CacheConfig(),
         output_root: str | Path | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
         self._preprocessing = preprocessing
+        self._execution = execution
         self._cache = cache
         self._output_root = Path(output_root).resolve() if output_root is not None else None
 
@@ -529,6 +532,29 @@ class FeatureExtractor:
             metadata=encoder_info,
         )
 
+    def _resolved_execution_for_cache(
+        self,
+        *,
+        encoder_name: str,
+        resolved_preprocessing: PreprocessingConfig | None,
+        output_variant: str | None,
+    ) -> EncoderConfig:
+        encoder_info = encoder_registry.info(encoder_name)
+        input_size = self._encoder.input_size
+        if input_size is None:
+            recommended_input_size = encoder_info.get("input_size")
+            if recommended_input_size is not None:
+                input_size = int(recommended_input_size)
+        spacing_um = self._encoder.spacing_um
+        if spacing_um is None and resolved_preprocessing is not None:
+            spacing_um = resolved_preprocessing.requested_spacing_um
+        return replace(
+            self._encoder,
+            input_size=input_size,
+            spacing_um=spacing_um,
+            output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
+        )
+
     def preprocess(
         self,
         tiling_dir: str | Path,
@@ -545,6 +571,14 @@ class FeatureExtractor:
             if skip_existing and process_list_path.is_file():
                 return
             preprocessing = build_preprocessing_config(cfg)
+            execution = build_execution_options(
+                self._encoder,
+                execution=self._execution,
+                encoder_name=self._encoder.name,
+                output_dir=tiling_dir,
+                num_gpus=self._execution.num_gpus,
+                save_tile_embeddings=False,
+            )
             pipeline = Pipeline(
                 _load_model(
                     self._encoder.name,
@@ -552,11 +586,7 @@ class FeatureExtractor:
                     allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
                 ),
                 preprocessing,
-                execution=ExecutionOptions(
-                    output_dir=tiling_dir,
-                    num_gpus=1,
-                    precision="fp32",
-                ),
+                execution=execution,
             )
             with _suppress_logger_noise_ctx("cucim"):
                 with _forward_tiling_progress_ctx():
@@ -589,6 +619,14 @@ class FeatureExtractor:
             return
 
         preprocessing = build_preprocessing_config(cfg)
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=self._encoder.name,
+            output_dir=tiling_dir,
+            num_gpus=self._execution.num_gpus,
+            save_tile_embeddings=False,
+        )
         pipeline = Pipeline(
             _load_model(
                 self._encoder.name,
@@ -596,11 +634,7 @@ class FeatureExtractor:
                 allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
             ),
             preprocessing,
-            execution=ExecutionOptions(
-                output_dir=tiling_dir,
-                num_gpus=1,
-                precision="fp32",
-            ),
+            execution=execution,
         )
         with _suppress_logger_noise_ctx("cucim"):
             with _forward_tiling_progress_ctx():
@@ -682,7 +716,9 @@ class FeatureExtractor:
         )
 
         n_slides = len(loaded_tilings)
-        effective_num_gpus = _resolve_num_gpus(num_gpus)
+        effective_num_gpus = _resolve_num_gpus(
+            num_gpus if num_gpus is not None else self._execution.num_gpus
+        )
         should_delegate_embedding_progress = effective_num_gpus > 1
         with _suppress_logger_noise_ctx("cucim"):
             with _make_extraction_reporter_ctx(feature_dir):
@@ -997,6 +1033,7 @@ class FeatureExtractor:
     ) -> None:
         execution = build_execution_options(
             self._encoder,
+            execution=self._execution,
             encoder_name=self._encoder.name,
             output_dir=feature_dir,
             num_gpus=num_gpus,
@@ -1066,6 +1103,7 @@ class FeatureExtractor:
             with tempfile.TemporaryDirectory(prefix="soma-tiles-") as tmp_dir:
                 temp_execution = build_execution_options(
                     self._encoder,
+                    execution=self._execution,
                     encoder_name=self._encoder.name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
@@ -1109,7 +1147,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
@@ -1134,7 +1176,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1162,7 +1208,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
@@ -1187,7 +1237,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1223,7 +1277,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
         )
@@ -1233,9 +1291,17 @@ class FeatureExtractor:
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._encoder,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
@@ -1265,9 +1331,17 @@ class FeatureExtractor:
                 slide_encoder_name=self._encoder.name,
                 tile_encoder_name=tile_encoder_name,
                 tile_preprocessing=resolved_preprocessing,
-                tile_execution=self._encoder,
+                tile_execution=self._resolved_execution_for_cache(
+                    encoder_name=tile_encoder_name,
+                    resolved_preprocessing=resolved_preprocessing,
+                    output_variant=str(tile_dependency_output["output_variant"]),
+                ),
                 tile_output_variant=str(tile_dependency_output["output_variant"]),
-                execution=self._encoder,
+                execution=self._resolved_execution_for_cache(
+                    encoder_name=self._encoder.name,
+                    resolved_preprocessing=resolved_preprocessing,
+                    output_variant=output_variant,
+                ),
                 output_variant=output_variant,
                 backend_provenance=backend_provenance,
                 complete_state="populated",
@@ -1291,7 +1365,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1310,9 +1388,17 @@ class FeatureExtractor:
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._encoder,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1348,7 +1434,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
         )
@@ -1358,9 +1448,17 @@ class FeatureExtractor:
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._encoder,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
         )
@@ -1397,7 +1495,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1417,9 +1519,17 @@ class FeatureExtractor:
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._encoder,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_dependency_output["output_variant"]),
+            ),
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1463,6 +1573,7 @@ class FeatureExtractor:
             )
             slide_exec = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=model_name,
                 output_dir=artifact_dir / "slide_embeddings",
                 num_gpus=num_gpus,
@@ -1470,6 +1581,7 @@ class FeatureExtractor:
             )
             patient_exec = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=model_name,
                 output_dir=artifact_dir / "patient_embeddings",
                 num_gpus=num_gpus,
@@ -1549,6 +1661,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-tile-") as tmp_dir:
             execution = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=encoder_name,
                 output_dir=Path(tmp_dir),
                 num_gpus=num_gpus,
@@ -1609,6 +1722,7 @@ class FeatureExtractor:
         with tempfile.TemporaryDirectory(prefix="soma-cache-hierarchical-") as tmp_dir:
             execution = build_execution_options(
                 self._encoder,
+                execution=self._execution,
                 encoder_name=encoder_name,
                 output_dir=Path(tmp_dir),
                 num_gpus=num_gpus,
@@ -1678,6 +1792,7 @@ class FeatureExtractor:
                 preprocessing=preprocessing,
                 execution=build_execution_options(
                     self._encoder,
+                    execution=self._execution,
                     encoder_name=model_name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
@@ -1706,7 +1821,11 @@ class FeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_cache.metadata["encoder_name"],
             preprocessing=resolved_preprocessing,
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=str(tile_cache.metadata["encoder_name"]),
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
+            ),
             output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1717,9 +1836,17 @@ class FeatureExtractor:
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._encoder,
+            tile_execution=self._resolved_execution_for_cache(
+                encoder_name=tile_encoder_name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
+            ),
             tile_output_variant=str(tile_cache.metadata["execution"]["output_variant"]),
-            execution=self._encoder,
+            execution=self._resolved_execution_for_cache(
+                encoder_name=self._encoder.name,
+                resolved_preprocessing=resolved_preprocessing,
+                output_variant=output_variant,
+            ),
             output_variant=output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
@@ -1758,6 +1885,7 @@ class FeatureExtractor:
                 preprocessing=None,
                 execution=build_execution_options(
                     self._encoder,
+                    execution=self._execution,
                     encoder_name=model_name,
                     output_dir=artifact_dir,
                     num_gpus=num_gpus,

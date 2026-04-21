@@ -14,7 +14,7 @@ from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer, TrainResult
+from soma.training.trainer import Trainer, TrainResult, _format_batch_progress
 from soma.training.seed import seed_everything
 
 
@@ -245,3 +245,32 @@ class TestSeedEverything:
         seed_everything(123)
         b = torch.randn(5)
         assert torch.equal(a, b)
+
+
+class TestTrainingProgressFormatting:
+    def test_format_batch_progress_uses_item_counts(self):
+        text = _format_batch_progress(87, 10000, phase="train")
+        assert "train 87/10000" in text
+
+    def test_train_epoch_progress_reports_processed_items(self, tmp_path: Path):
+        seed_everything(42)
+        model = _make_model()
+        train_loader = _make_synthetic_loader(5, seed=0)  # batch_size=2 => 2, 2, 1
+        tune_loader = _make_synthetic_loader(4, seed=1)
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            tune_loader=tune_loader,
+            config=TrainingConfig(epochs=1, patience=10),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+
+        updates: list[tuple[str, int, int]] = []
+        trainer._train_epoch(on_batch_progress=lambda phase, current, total: updates.append((phase, current, total)))
+
+        assert updates == [
+            ("train", 2, 5),
+            ("train", 4, 5),
+            ("train", 5, 5),
+        ]

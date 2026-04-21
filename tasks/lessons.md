@@ -40,6 +40,7 @@
 - When the tile loader has worker processes, set `persistent_workers=True` and use non-blocking H2D copies so the input pipeline can overlap CPU and GPU work.
 - When soma exposes slide2vec execution knobs on `EncoderConfig`, thread them through the shared `build_execution_options(...)` helper instead of reimplementing loader defaults in each extraction path.
 - When `feature_type` is part of cache metadata, do not persist a duplicate `feature_rank` field for compatibility; derive rank from `feature_type` at read time.
+- Cache metadata should store resolved execution values, not just raw config defaults; fill `execution.input_size`/`spacing_um`/`output_variant` with effective runtime values used for cache identity.
 - Keep preview defaults in soma's own config surface when soma owns the preprocessing contract; do not reach across to another package just to fill in omitted preview fields.
 - When serializing frozen config dataclasses to YAML, normalize tuples and paths into plain primitives before dumping and restore any typed fields explicitly on load; do not rely on PyYAML's Python-specific tags.
 - When a docs build must pass in lean or offline environments, treat optional Sphinx extensions and themes as optional and avoid remote inventory fetches in the default config.

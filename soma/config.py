@@ -70,8 +70,20 @@ class PreprocessingConfig:
 
 
 @dataclass(frozen=True)
+class ExecutionConfig:
+    """Runtime execution settings for preprocessing and feature extraction."""
+
+    num_gpus: int | None = None
+    num_workers: int | None = None
+    num_preprocessing_workers: int | None = None
+    prefetch_factor: int | None = None
+    persistent_workers: bool | None = None
+    precision: str | None = None
+
+
+@dataclass(frozen=True)
 class EncoderConfig:
-    """Foundation-model encoder selection and runtime settings.
+    """Foundation-model encoder selection and model-adjacent settings.
 
     ``name`` selects the encoder preset. ``spacing_um`` and ``input_size``
     describe the preset's native geometry and compatibility envelope. Other
@@ -80,17 +92,11 @@ class EncoderConfig:
     preset-specific feature variants when the encoder supports them.
     ``allow_non_recommended_settings`` opts into slide2vec's warning-only mode
     when intentionally sweeping non-default geometry or variant settings.
-    ``num_workers``, ``prefetch_factor``, and ``persistent_workers`` tune the
-    tile input pipeline when slide2vec-backed extraction resolves its DataLoader
-    settings.
     """
 
     name: str
     precision: str | None = None
     batch_size: int = 32
-    num_workers: int | None = None
-    prefetch_factor: int = 4
-    persistent_workers: bool = True
     adaptive_batching: bool = False
     input_size: int | None = None
     spacing_um: float | None = None
@@ -201,6 +207,8 @@ class PipelineConfig:
             patient-level aggregation. ``aggregator`` must be ``None`` unless
             ``dataset_type`` is ``"slide"``.
         preprocessing: Whole-slide preprocessing and tiling settings.
+        execution: Runtime execution settings for preprocessing and feature
+            extraction.
         cache: Shared cache policy.
         encoder: Foundation-model encoder configuration, or ``None`` for
             workflows that do not need one.
@@ -218,6 +226,7 @@ class PipelineConfig:
     output_root: str | Path
     dataset_type: str
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
     aggregator: AggregatorConfig | None = None
@@ -310,6 +319,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
     """Reconstruct a PipelineConfig from a plain dict."""
     encoder_data = data.get("encoder")
     heatmap_data = data.get("heatmaps")
+    execution_data = data.get("execution") or {}
     preprocessing_data = dict(data.get("preprocessing", {}))
     preview_data = dict(preprocessing_data.pop("preview", {}))
     tissue_contour_color = preview_data.get("tissue_contour_color")
@@ -324,6 +334,7 @@ def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
             **preprocessing_data,
             preview=PreviewConfig(**preview_data),
         ),
+        execution=ExecutionConfig(**execution_data),
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
         aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,

@@ -530,6 +530,39 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
     assert any("feature cache partial" in message for message in messages)
 
 
+def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    assert any("resolving feature cache" in message for message in messages)
+
+
+def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "tiling_cache"
+    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            backend_provenance={
+                "requested_backend": "openslide",
+                "backend": "openslide",
+                "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
+            },
+        )
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    assert any("resolving tiling cache" in message for message in messages)
+
+
 def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"

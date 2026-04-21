@@ -2,25 +2,27 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
+import slide2vec.progress as slide2vec_progress
 import torch
 from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
 
 from soma.cache import CacheConfig, record_sample_identity_signatures
-from soma.config import EncoderConfig, PreprocessingConfig
+from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
 from slide2vec.encoders.registry import encoder_registry
 from soma.extraction import FeatureExtractor, _load_model, _run_with_coordinates, _validate_runtime
 from soma.slide2vec_adapter import LoadedTiling
 from soma.slide2vec_adapter import load_tilings
-from soma.tile_extraction import TileFeatureExtractor
+from soma.tile_extraction import TileFeatureExtractor, _install_tile_embedding_summary_patch
 
 
 _TEST_TILE = "_cutover_tile"
@@ -168,6 +170,7 @@ def test_build_execution_options_uses_cpu_budget_for_tiling_workers(monkeypatch,
 
     execution = adapter.build_execution_options(
         EncoderConfig(name=_TEST_TILE),
+        execution=ExecutionConfig(),
         output_dir=tmp_path,
         num_gpus=None,
         save_tile_embeddings=False,
@@ -183,7 +186,8 @@ def test_build_execution_options_forwards_explicit_num_workers(tmp_path: Path):
     from soma import slide2vec_adapter as adapter
 
     execution = adapter.build_execution_options(
-        EncoderConfig(name=_TEST_TILE, num_workers=6),
+        EncoderConfig(name=_TEST_TILE),
+        execution=ExecutionConfig(num_workers=6),
         output_dir=tmp_path,
         num_gpus=None,
         save_tile_embeddings=False,
@@ -196,8 +200,8 @@ def test_build_execution_options_forwards_worker_pipeline_tuning(tmp_path: Path)
     from soma import slide2vec_adapter as adapter
 
     execution = adapter.build_execution_options(
-        EncoderConfig(
-            name=_TEST_TILE,
+        EncoderConfig(name=_TEST_TILE),
+        execution=ExecutionConfig(
             num_workers=6,
             prefetch_factor=8,
             persistent_workers=False,
@@ -286,6 +290,7 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
         dataset,
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        execution=ExecutionConfig(num_preprocessing_workers=0),
     )
     with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
         "soma.extraction.resolve_tiling_cache",
@@ -294,6 +299,7 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
         mock_instance = MockPipeline.return_value
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
     MockPipeline.assert_called_once()
+    assert MockPipeline.call_args.kwargs["execution"].num_preprocessing_workers == 0
     mock_instance.run.assert_called_once()
 
 
@@ -597,7 +603,8 @@ def test_tile_feature_extractor_does_not_require_eval_method(tmp_path: Path):
     with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE, num_workers=0),
+            EncoderConfig(name=_TEST_TILE),
+            execution=ExecutionConfig(num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -635,7 +642,8 @@ def test_tile_feature_extractor_keeps_encoder_inputs_in_float32(tmp_path: Path):
     with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE, num_workers=0),
+            EncoderConfig(name=_TEST_TILE),
+            execution=ExecutionConfig(num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -706,6 +714,7 @@ def test_tile_feature_extractor_uses_cpu_worker_budget_when_num_workers_is_unset
         store = TileFeatureExtractor(
             dataset,
             EncoderConfig(name=_TEST_TILE),
+            execution=ExecutionConfig(),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -769,6 +778,8 @@ def test_tile_feature_extractor_enables_persistent_workers_for_worker_based_load
             dataset,
             EncoderConfig(
                 name=_TEST_TILE,
+            ),
+            execution=ExecutionConfig(
                 num_workers=12,
                 prefetch_factor=6,
                 persistent_workers=False,
@@ -836,7 +847,8 @@ def test_tile_feature_extractor_renders_rich_progress_for_model_loading_and_batc
     ):
         store = TileFeatureExtractor(
             dataset,
-            EncoderConfig(name=_TEST_TILE, batch_size=2, num_workers=0),
+            EncoderConfig(name=_TEST_TILE, batch_size=2),
+            execution=ExecutionConfig(num_workers=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -875,9 +887,50 @@ def test_tile_feature_extractor_renders_rich_progress_for_model_loading_and_batc
     assert fake_reporter.events[-1][1] == {
         "slide_count": 1,
         "slides_completed": 1,
+        "summary_subject": "Tiles",
+        "tile_count": 3,
+        "tiles_completed": 3,
         "tile_artifacts": 3,
         "slide_artifacts": 0,
     }
+
+
+def test_tile_embedding_finished_summary_rows_are_tile_oriented(monkeypatch: pytest.MonkeyPatch):
+    def _base_embedding_summary_rows(payload: dict[str, object]) -> list[tuple[str, str]]:
+        slide_count = int(payload["slide_count"])
+        completed = int(payload["slides_completed"])
+        failed = max(0, slide_count - completed)
+        return [
+            ("Slides w/ tiles", str(slide_count)),
+            ("Completed", str(completed)),
+            ("Failed", str(failed)),
+        ]
+
+    monkeypatch.setattr(
+        slide2vec_progress,
+        "_embedding_summary_rows",
+        _base_embedding_summary_rows,
+        raising=True,
+    )
+    monkeypatch.setattr(
+        slide2vec_progress,
+        "_soma_tile_embedding_summary_patch_installed",
+        False,
+        raising=False,
+    )
+
+    _install_tile_embedding_summary_patch()
+
+    rows = slide2vec_progress._embedding_summary_rows(
+        {
+            "slide_count": 1,
+            "slides_completed": 1,
+            "summary_subject": "Tiles",
+            "tile_count": 42,
+            "tiles_completed": 40,
+        }
+    )
+    assert rows == [("Tiles", "42"), ("Completed", "40"), ("Failed", "2")]
 
 
 def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
@@ -1421,6 +1474,48 @@ def test_slide_cache_population_does_not_forward_output_variant_override(tmp_pat
     assert store.load("s0").shape == (8,)
 
 
+def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_embed_tiles(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ]
+
+    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
+        "soma.extraction._validate_runtime"
+    ), patch(
+        "soma.extraction._embed_tiles",
+        side_effect=_fake_embed_tiles,
+    ):
+        extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+
+    metadata_path = next((cache_root / "tile").glob("*/cache_metadata.json"))
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert metadata["execution"]["input_size"] == 224
+    assert metadata["execution"]["output_variant"] == "default"
+    assert metadata["execution"]["spacing_um"] == 0.5
+
+
 def test_multi_gpu_uncached_extraction_uses_slide2vec_pipeline(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
@@ -1904,7 +1999,11 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
         "dataset": dataset,
         "tile_encoder_name": _TEST_TILE,
         "preprocessing": resolved_preprocessing,
-        "execution": extractor._encoder,
+        "execution": extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_TILE,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
         "output_variant": "default",
         "backend_provenance": backend_provenance,
         "complete_state": "populated",
@@ -1915,9 +2014,17 @@ def test_distributed_slide_and_tile_cache_refresh_uses_resolved_inputs(tmp_path:
         "slide_encoder_name": _TEST_SLIDE,
         "tile_encoder_name": _TEST_TILE,
         "tile_preprocessing": resolved_preprocessing,
-        "tile_execution": extractor._encoder,
+        "tile_execution": extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_TILE,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
         "tile_output_variant": "default",
-        "execution": extractor._encoder,
+        "execution": extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_SLIDE,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
         "output_variant": "default",
         "backend_provenance": backend_provenance,
         "complete_state": "populated",
