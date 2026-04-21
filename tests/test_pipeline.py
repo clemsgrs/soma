@@ -26,18 +26,21 @@ from soma.config import (
     TrainingConfig,
 )
 from soma.dataset import Dataset, FoldSplit, Splits
+from soma.evaluation.report import EvaluationReport
 from soma.features import FeatureStore
 from soma.output_layout import build_experiment_spec
 from soma.pipeline import (
     FoldResult,
     Pipeline,
     PipelineResult,
+    _aggregate_fold_metrics,
     _build_completed_run_panel,
     _evaluate,
     train,
     train_one_fold,
 )
 from soma.training.collate import BagBatch
+from soma.training.trainer import TrainResult
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +765,46 @@ class TestTrain:
         assert "test/num_samples_mean" in summary
         assert "test/num_real_samples_mean" in summary
         assert "test/num_placeholder_samples_mean" in summary
+
+    def test_aggregate_fold_metrics_handles_inconsistent_test_split_names(self):
+        train_result = TrainResult(
+            best_epoch=0,
+            best_tune_loss=0.1,
+            best_tune_metrics={},
+            history=[],
+            checkpoint_path=Path("best_model.pt"),
+        )
+        fold_results = [
+            FoldResult(
+                fold=0,
+                train_result=train_result,
+                tune_report=EvaluationReport(split="tune", metrics={}, predictions=[]),
+                test_reports={
+                    "test": EvaluationReport(
+                        split="test",
+                        metrics={"auroc": 0.8},
+                        predictions=[],
+                    )
+                },
+            ),
+            FoldResult(
+                fold=1,
+                train_result=train_result,
+                tune_report=EvaluationReport(split="tune", metrics={}, predictions=[]),
+                test_reports={
+                    "test_external": EvaluationReport(
+                        split="test_external",
+                        metrics={"auroc": 0.7},
+                        predictions=[],
+                    )
+                },
+            ),
+        ]
+
+        summary = _aggregate_fold_metrics(fold_results)
+
+        assert summary["test/auroc_mean"] == pytest.approx(0.8)
+        assert summary["test_external/auroc_mean"] == pytest.approx(0.7)
 
     def test_completed_run_panel_includes_coverage_summary(self):
         panel = _build_completed_run_panel(

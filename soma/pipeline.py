@@ -1553,9 +1553,14 @@ def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
     test_split_names = sorted({s for fr in fold_results for s in fr.test_reports})
 
     for split_name in test_split_names:
-        metric_keys = list(fold_results[0].test_reports[split_name].metrics.keys())
+        split_reports = [fr.test_reports[split_name] for fr in fold_results if split_name in fr.test_reports]
+        if not split_reports:
+            continue
+        metric_keys = list(split_reports[0].metrics.keys())
         for key in metric_keys:
-            values = [fr.test_reports[split_name].metrics[key] for fr in fold_results]
+            values = [report.metrics[key] for report in split_reports if key in report.metrics]
+            if not values:
+                continue
             summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
             summary[f"{split_name}/{key}_std"] = float(np.std(values))
 
