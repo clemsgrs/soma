@@ -128,10 +128,18 @@ def _section_results_summary(run_data: RunData) -> str:
 
     sections = ""
     for split_name in all_split_names:
+        coverage_table = _coverage_table(run_data, split_name)
         # Collect metric names for this split
         all_metric_names: list[str] = []
         for fd in run_data.folds:
             for name in fd.test_metrics.get(split_name, {}):
+                if name in {
+                    "coverage",
+                    "num_samples",
+                    "num_real_samples",
+                    "num_placeholder_samples",
+                }:
+                    continue
                 if name not in all_metric_names:
                     all_metric_names.append(name)
 
@@ -156,6 +164,7 @@ def _section_results_summary(run_data: RunData) -> str:
         sections += f"""
 <div class="section">
   <h2>{heading}</h2>
+  {coverage_table}
   <table class="results-table">
     <thead>{header_row}</thead>
     <tbody>{rows_html}</tbody>
@@ -163,6 +172,55 @@ def _section_results_summary(run_data: RunData) -> str:
 </div>"""
 
     return sections
+
+
+def _coverage_table(run_data: RunData, split_name: str) -> str:
+    rows: list[str] = []
+    total_real = 0
+    total_samples = 0
+    total_placeholder = 0
+    has_any = False
+
+    for fd in run_data.folds:
+        metrics = fd.test_metrics.get(split_name, {})
+        num_samples = metrics.get("num_samples")
+        num_real = metrics.get("num_real_samples")
+        num_placeholder = metrics.get("num_placeholder_samples")
+        coverage = metrics.get("coverage")
+        if num_samples is None or num_real is None or num_placeholder is None or coverage is None:
+            continue
+        has_any = True
+        total_real += int(num_real)
+        total_samples += int(num_samples)
+        total_placeholder += int(num_placeholder)
+        rows.append(
+            "<tr>"
+            f"<td>Fold {fd.fold}</td>"
+            f"<td>{coverage * 100:.1f}% ({int(num_real)}/{int(num_samples)})</td>"
+            f"<td>{int(num_real)}</td>"
+            f"<td>{int(num_placeholder)}</td>"
+            "</tr>"
+        )
+
+    if not has_any:
+        return ""
+
+    total_coverage = (total_real / total_samples) if total_samples else 0.0
+    rows.append(
+        "<tr>"
+        "<td><strong>Overall</strong></td>"
+        f"<td><strong>{total_coverage * 100:.1f}% ({total_real}/{total_samples})</strong></td>"
+        f"<td><strong>{total_real}</strong></td>"
+        f"<td><strong>{total_placeholder}</strong></td>"
+        "</tr>"
+    )
+
+    return f"""
+  <table class="results-table coverage-table">
+    <thead><tr><th>Fold</th><th>Coverage</th><th>Real-feature predictions</th><th>Placeholder predictions</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+"""
 
 
 def _section_training_timing(run_data: RunData) -> str:

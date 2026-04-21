@@ -43,6 +43,7 @@ from soma.config import (
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats, resolve_metrics
+from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
@@ -102,24 +103,54 @@ class PipelineResult:
     run_dir: Path
 
 
+@dataclass(frozen=True)
+class _DeterministicBaseline:
+    """Deterministic fallback prediction derived from the training split."""
+
+    task_family: str
+    probabilities: list[float] | None = None
+    predicted_label: int | None = None
+    predicted_value: float | None = None
+    raw_score: float | None = None
+
+
 def _format_fold_summary(
     fold: int,
     train_count: int,
     tune_count: int,
     tests_counts: dict[str, int],
-    dropped_by_split: dict[str, list[str]] | None = None,
+    empty_sample_ids_by_split: dict[str, list[str]] | None = None,
 ) -> str:
     tests_str = " ".join(f"{name}={count}" for name, count in sorted(tests_counts.items()))
     base = f"Fold {fold}: train={train_count} tune={tune_count} {tests_str}"
-    if not dropped_by_split:
+    if not empty_sample_ids_by_split:
         return base
 
-    dropped_counts = {split: len(sample_ids) for split, sample_ids in dropped_by_split.items()}
-    if not any(dropped_counts.values()):
+    empty_counts = {
+        split: len(sample_ids) for split, sample_ids in empty_sample_ids_by_split.items()
+    }
+    if not any(empty_counts.values()):
         return base
 
-    dropped_text = ", ".join(f"{split}={count}" for split, count in dropped_counts.items())
-    return f"{base} | dropped empty: {dropped_text}"
+    extras: list[str] = []
+    train_empty = empty_counts.get("train", 0)
+    if train_empty:
+        extras.append(f"train empty dropped={train_empty}")
+
+    eval_fallback_counts = {
+        split: count
+        for split, count in empty_counts.items()
+        if split != "train" and count
+    }
+    if eval_fallback_counts:
+        fallback_text = ", ".join(
+            f"{split}={count}" for split, count in sorted(eval_fallback_counts.items())
+        )
+        extras.append(f"eval empty fallback={fallback_text}")
+
+    if not extras:
+        return base
+    return f"{base} | {' | '.join(extras)}"
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +212,7 @@ def train_one_fold(
             split_name: [dataset.samples[sid] for sid in ids]
             for split_name, ids in fold_split.tests.items()
         }
-        dropped_by_split = None
+        empty_sample_ids_by_split = None
     elif feature_store.has_feature_manifest:
         manifest_statuses = feature_store.feature_statuses
         manifest_sample_ids = set(manifest_statuses)
@@ -208,7 +239,7 @@ def train_one_fold(
             )
             raise ValueError(msg)
 
-        dropped_by_split = {
+        empty_sample_ids_by_split = {
             "train": [sid for sid in fold_split.train if sid in empty_sample_ids],
             "tune": [sid for sid in fold_split.tune if sid in empty_sample_ids],
             **{
@@ -232,16 +263,21 @@ def train_one_fold(
             split_name: [dataset.samples[sid] for sid in ids]
             for split_name, ids in fold_split.tests.items()
         }
-        dropped_by_split = None
+        empty_sample_ids_by_split = None
 
     if not train_records:
         msg = f"Fold {fold} has no training samples with available features"
         raise ValueError(msg)
-    if not tune_records:
+    if not tune_records and not (
+        empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
+    ):
         msg = f"Fold {fold} has no tuning samples with available features"
         raise ValueError(msg)
     for split_name, records in test_records_by_split.items():
-        if not records:
+        split_empty_ids = (
+            empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
+        )
+        if not records and not split_empty_ids:
             msg = f"Fold {fold} has no samples with available features in split '{split_name}'"
             raise ValueError(msg)
 
@@ -250,7 +286,7 @@ def train_one_fold(
         train_count=len(train_records),
         tune_count=len(tune_records),
         tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
-        dropped_by_split=dropped_by_split,
+        empty_sample_ids_by_split=empty_sample_ids_by_split,
     )
     logger.info(summary)
 
@@ -273,6 +309,14 @@ def train_one_fold(
         label_fn = lambda record: float(record.label)  # noqa: E731
     else:
         label_fn = lambda record: label_map[record.label]  # noqa: E731
+    task_family = task_cls.task_family
+    resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
+    deterministic_baseline = _build_deterministic_baseline(
+        train_records,
+        label_fn=label_fn,
+        task_family=task_family,
+        num_classes=len(label_map),
+    )
 
     if dataset_type == "patient":
         # Patient-level path: pretrained patient encoder produced (D,) per patient
@@ -484,7 +528,25 @@ def train_one_fold(
         and not feature_store.is_hierarchical
     )
 
-    tune_report = _evaluate(model, tune_loader, "tune", label_map, device)
+    empty_eval_sample_ids = empty_sample_ids_by_split or {}
+    tune_report = _evaluate_split_with_placeholders(
+        model,
+        tune_loader,
+        "tune",
+        label_map,
+        device,
+        output_sample_ids=(
+            tuple(_patient_ids_for_records(tune_records))
+            if dataset_type == "patient"
+            else fold_split.tune
+        ),
+        empty_sample_ids=empty_eval_sample_ids.get("tune", []),
+        dataset=dataset,
+        label_fn=label_fn,
+        baseline=deterministic_baseline,
+        metric_names=resolved_metric_names,
+        task_family=task_family,
+    )
 
     test_reports: dict[str, EvaluationReport] = {}
     for split_name, test_loader in test_loaders.items():
@@ -492,8 +554,23 @@ def train_one_fold(
         if save_attention:
             attention_dir = fold_dir / "attention" / split_name
             attention_dir.mkdir(parents=True, exist_ok=True)
-        test_reports[split_name] = _evaluate(
-            model, test_loader, split_name, label_map, device,
+        test_reports[split_name] = _evaluate_split_with_placeholders(
+            model,
+            test_loader,
+            split_name,
+            label_map,
+            device,
+            output_sample_ids=(
+                tuple(_patient_ids_for_records(test_records_by_split[split_name]))
+                if dataset_type == "patient"
+                else fold_split.tests[split_name]
+            ),
+            empty_sample_ids=empty_eval_sample_ids.get(split_name, []),
+            dataset=dataset,
+            label_fn=label_fn,
+            baseline=deterministic_baseline,
+            metric_names=resolved_metric_names,
+            task_family=task_family,
             attention_dir=attention_dir,
             aggregator_name=aggregator.name if aggregator is not None else None,
         )
@@ -648,6 +725,66 @@ def _build_run_summary_panel(
     return Panel.fit(
         grid,
         title="[bold]run summary[/bold]",
+        border_style="dim",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+
+
+def _build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold", justify="right", no_wrap=True)
+    grid.add_column()
+
+    split_names = sorted({key.split("/", 1)[0] for key in summary_metrics if "/" in key})
+    for split_name in split_names:
+        primary_metric_name: str | None = None
+        primary_metric_mean: float | None = None
+        for key, value in summary_metrics.items():
+            prefix = f"{split_name}/"
+            if not key.startswith(prefix) or not key.endswith("_mean"):
+                continue
+            metric_name = key[len(prefix):-5]
+            if metric_name in {
+                "coverage",
+                "num_samples",
+                "num_real_samples",
+                "num_placeholder_samples",
+            }:
+                continue
+            primary_metric_name = metric_name
+            primary_metric_mean = value
+            break
+
+        coverage = summary_metrics.get(f"{split_name}/coverage_mean")
+        num_samples = summary_metrics.get(f"{split_name}/num_samples_mean")
+        num_real = summary_metrics.get(f"{split_name}/num_real_samples_mean")
+        num_placeholder = summary_metrics.get(f"{split_name}/num_placeholder_samples_mean")
+        if (
+            coverage is None
+            or num_samples is None
+            or num_real is None
+            or num_placeholder is None
+        ):
+            continue
+        metric_text = (
+            f"{primary_metric_name}={primary_metric_mean:.4f}  ·  "
+            if primary_metric_name is not None and primary_metric_mean is not None
+            else ""
+        )
+        coverage_text = (
+            f"{metric_text}{coverage * 100:.1f}%"
+            f" ({int(round(num_real))}/{int(round(num_samples))})"
+            f"  ·  placeholder={int(round(num_placeholder))}"
+        )
+        grid.add_row(f"{split_name} coverage", coverage_text)
+
+    if not grid.rows:
+        grid.add_row("coverage", "[dim]—[/dim]")
+
+    return Panel.fit(
+        grid,
+        title="[bold]completed run[/bold]",
         border_style="dim",
         box=box.ROUNDED,
         padding=(0, 1),
@@ -823,6 +960,7 @@ class Pipeline:
             finished_at=datetime.now().astimezone().isoformat(),
             summary_metrics=result.summary,
         )
+        Console().print(_build_completed_run_panel(summary_metrics=result.summary))
         write_run_metadata(layout.run_dir, completed_metadata)
         update_run_index(layout.index_dir / "runs.csv", completed_metadata)
         update_experiment_index(
@@ -1009,6 +1147,156 @@ def _records_for_sample_ids(
     ]
 
 
+def _build_deterministic_baseline(
+    train_records: list[SampleRecord],
+    *,
+    label_fn,
+    task_family: str,
+    num_classes: int,
+) -> _DeterministicBaseline:
+    if not train_records:
+        raise ValueError("Cannot build a deterministic baseline without training records")
+
+    if task_family in {"binary_classification", "multiclass_classification"}:
+        labels = np.asarray([int(label_fn(record)) for record in train_records], dtype=int)
+        counts = np.bincount(labels, minlength=num_classes).astype(float)
+        probabilities = (counts / counts.sum()).tolist()
+        return _DeterministicBaseline(
+            task_family=task_family,
+            probabilities=probabilities,
+            predicted_label=int(np.argmax(probabilities)),
+        )
+
+    if task_family == "ordinal_classification":
+        raw_score = float(np.mean([int(label_fn(record)) for record in train_records]))
+        predicted_label = int(np.clip(np.rint(raw_score), 0, max(num_classes - 1, 0)))
+        return _DeterministicBaseline(
+            task_family=task_family,
+            predicted_label=predicted_label,
+            raw_score=raw_score,
+        )
+
+    predicted_value = float(np.mean([float(label_fn(record)) for record in train_records]))
+    return _DeterministicBaseline(
+        task_family=task_family,
+        predicted_value=predicted_value,
+    )
+
+
+def _make_placeholder_prediction(
+    record: SampleRecord,
+    *,
+    label_fn,
+    baseline: _DeterministicBaseline,
+) -> SamplePrediction:
+    true_label = label_fn(record)
+    true_value: int | float
+    if baseline.task_family == "regression":
+        true_value = float(true_label)
+    else:
+        true_value = int(true_label)
+
+    return SamplePrediction(
+        sample_id=record.sample_id,
+        true_label=true_value,
+        predicted_label=baseline.predicted_label,
+        probabilities=list(baseline.probabilities) if baseline.probabilities is not None else None,
+        predicted_value=baseline.predicted_value,
+        raw_score=baseline.raw_score,
+        is_placeholder=True,
+        missing_reason="no_tiles",
+    )
+
+
+def _compute_metrics_from_predictions(
+    predictions: list[SamplePrediction],
+    *,
+    task_family: str,
+    metric_names: list[str],
+) -> dict[str, float]:
+    if not predictions:
+        return {
+            "coverage": 0.0,
+            "num_samples": 0,
+            "num_real_samples": 0,
+            "num_placeholder_samples": 0,
+        }
+
+    if task_family in {"binary_classification", "multiclass_classification"}:
+        y_true = np.asarray([int(pred.true_label) for pred in predictions], dtype=int)
+        y_pred = np.asarray([int(pred.predicted_label) for pred in predictions], dtype=int)
+        y_prob = np.asarray([pred.probabilities for pred in predictions], dtype=float)
+        metrics = compute_metrics(task_family, metric_names, y_true, y_pred, y_prob=y_prob)
+    elif task_family == "ordinal_classification":
+        y_true = np.asarray([int(pred.true_label) for pred in predictions], dtype=int)
+        y_pred = np.asarray([int(pred.predicted_label) for pred in predictions], dtype=int)
+        metrics = compute_metrics(task_family, metric_names, y_true, y_pred)
+    else:
+        y_true = np.asarray([float(pred.true_label) for pred in predictions], dtype=float)
+        y_pred = np.asarray([float(pred.predicted_value) for pred in predictions], dtype=float)
+        metrics = compute_metrics(task_family, metric_names, y_true, y_pred)
+
+    num_placeholder = sum(1 for pred in predictions if pred.is_placeholder)
+    num_samples = len(predictions)
+    num_real = num_samples - num_placeholder
+    metrics["coverage"] = float(num_real / num_samples)
+    metrics["num_samples"] = num_samples
+    metrics["num_real_samples"] = num_real
+    metrics["num_placeholder_samples"] = num_placeholder
+    return metrics
+
+
+def _evaluate_split_with_placeholders(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    split_name: str,
+    label_map: dict[str | int, int],
+    device: torch.device,
+    *,
+    output_sample_ids: tuple[str, ...],
+    empty_sample_ids: list[str],
+    dataset: Dataset,
+    label_fn,
+    baseline: _DeterministicBaseline,
+    metric_names: list[str],
+    task_family: str,
+    attention_dir: Path | None = None,
+    aggregator_name: str | None = None,
+) -> EvaluationReport:
+    real_report = (
+        _evaluate(
+            model,
+            loader,
+            split_name,
+            label_map,
+            device,
+            attention_dir=attention_dir,
+            aggregator_name=aggregator_name,
+        )
+        if len(loader.dataset) > 0
+        else EvaluationReport(split=split_name, metrics={}, predictions=[])
+    )
+    placeholder_predictions = [
+        _make_placeholder_prediction(
+            dataset.samples[sample_id],
+            label_fn=label_fn,
+            baseline=baseline,
+        )
+        for sample_id in empty_sample_ids
+    ]
+    predictions_by_id = {
+        pred.sample_id: pred
+        for pred in [*real_report.predictions, *placeholder_predictions]
+    }
+    full_predictions = [predictions_by_id[sample_id] for sample_id in output_sample_ids]
+    metrics = _compute_metrics_from_predictions(
+        full_predictions,
+        task_family=task_family,
+        metric_names=metric_names,
+    )
+    return EvaluationReport(split=split_name, metrics=metrics, predictions=full_predictions)
+
+
 def _save_metrics(
     tune_report: EvaluationReport,
     test_reports: dict[str, EvaluationReport],
@@ -1060,6 +1348,10 @@ def _build_predictions_df(
             row["raw_score"] = pred.raw_score
         if pred.predicted_value is not None:
             row["predicted_value"] = pred.predicted_value
+        if pred.is_placeholder:
+            row["is_placeholder"] = True
+        if pred.missing_reason is not None:
+            row["missing_reason"] = pred.missing_reason
         if subgroup_data and pred.sample_id in subgroup_data:
             row.update(subgroup_data[pred.sample_id])
         rows.append(row)
@@ -1078,13 +1370,27 @@ def _save_predictions(
 
         first = report.predictions[0]
         extra_cols = sorted(next(iter(subgroup_data.values()))) if subgroup_data else []
+        placeholder_cols: list[str] = []
+        if any(pred.is_placeholder for pred in report.predictions):
+            placeholder_cols.append("is_placeholder")
+        if any(pred.missing_reason is not None for pred in report.predictions):
+            placeholder_cols.append("missing_reason")
+
+        def _write_row(writer: csv.DictWriter, row: dict, pred: SamplePrediction) -> None:
+            if "is_placeholder" in placeholder_cols:
+                row["is_placeholder"] = pred.is_placeholder
+            if "missing_reason" in placeholder_cols:
+                row["missing_reason"] = pred.missing_reason or ""
+            if subgroup_data and pred.sample_id in subgroup_data:
+                row.update(subgroup_data[pred.sample_id])
+            writer.writerow(row)
 
         if first.probabilities is not None:
             # Classification: include class probabilities
             num_classes = len(first.probabilities)
             fieldnames = ["sample_id", "true_label", "predicted_label"] + [
                 f"prob_{i}" for i in range(num_classes)
-            ] + extra_cols
+            ] + placeholder_cols + extra_cols
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for pred in report.predictions:
@@ -1095,12 +1401,10 @@ def _save_predictions(
                 }
                 for i, p in enumerate(pred.probabilities):  # type: ignore[arg-type]
                     row[f"prob_{i}"] = f"{p:.6f}"
-                if subgroup_data and pred.sample_id in subgroup_data:
-                    row.update(subgroup_data[pred.sample_id])
-                writer.writerow(row)
+                _write_row(writer, row, pred)
         elif first.raw_score is not None:
             # Ordinal classification: integer prediction + raw continuous score
-            fieldnames = ["sample_id", "true_label", "predicted_label", "raw_score"] + extra_cols
+            fieldnames = ["sample_id", "true_label", "predicted_label", "raw_score"] + placeholder_cols + extra_cols
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for pred in report.predictions:
@@ -1110,12 +1414,10 @@ def _save_predictions(
                     "predicted_label": pred.predicted_label,
                     "raw_score": f"{pred.raw_score:.6f}",
                 }
-                if subgroup_data and pred.sample_id in subgroup_data:
-                    row.update(subgroup_data[pred.sample_id])
-                writer.writerow(row)
+                _write_row(writer, row, pred)
         else:
             # Regression: predicted continuous value
-            fieldnames = ["sample_id", "true_label", "predicted_value"] + extra_cols
+            fieldnames = ["sample_id", "true_label", "predicted_value"] + placeholder_cols + extra_cols
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for pred in report.predictions:
@@ -1124,9 +1426,7 @@ def _save_predictions(
                     "true_label": pred.true_label,
                     "predicted_value": f"{pred.predicted_value:.6f}",
                 }
-                if subgroup_data and pred.sample_id in subgroup_data:
-                    row.update(subgroup_data[pred.sample_id])
-                writer.writerow(row)
+                _write_row(writer, row, pred)
 
 
 def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:

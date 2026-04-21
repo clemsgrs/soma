@@ -338,6 +338,39 @@ def test_predictions_csv_no_extra_cols_when_no_subgroups(tmp_path: Path) -> None
     assert set(df.columns) == {"sample_id", "true_label", "predicted_label", "prob_0", "prob_1"}
 
 
+def test_predictions_csv_includes_placeholder_columns_when_present(tmp_path: Path) -> None:
+    """_save_predictions includes placeholder provenance for fallback rows."""
+    from soma.evaluation.report import EvaluationReport, SamplePrediction
+    from soma.pipeline import _save_predictions
+
+    predictions = [
+        SamplePrediction(
+            sample_id="s0",
+            true_label=0,
+            predicted_label=0,
+            probabilities=[0.5, 0.5],
+            is_placeholder=True,
+            missing_reason="no_tiles",
+        ),
+    ]
+    report = EvaluationReport(split="test", metrics={"coverage": 0.0}, predictions=predictions)
+    path = tmp_path / "predictions.csv"
+    _save_predictions(report, path)
+
+    df = pd.read_csv(path)
+    assert set(df.columns) == {
+        "sample_id",
+        "true_label",
+        "predicted_label",
+        "prob_0",
+        "prob_1",
+        "is_placeholder",
+        "missing_reason",
+    }
+    assert bool(df.loc[0, "is_placeholder"]) is True
+    assert df.loc[0, "missing_reason"] == "no_tiles"
+
+
 # ---------------------------------------------------------------------------
 # Subgroup metrics JSON saved to disk
 # ---------------------------------------------------------------------------

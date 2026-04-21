@@ -17,6 +17,7 @@ from soma.reporting import generate_report, load_run_data
 from soma.reporting.data import FoldData, RunData, run_data_from_result
 from soma.reporting.html import render_report
 from soma.training.trainer import EpochLog, TrainResult
+from dataclasses import replace
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +204,28 @@ def test_load_run_data_binary(tmp_path: Path) -> None:
     assert "prob_1" in run_data.folds[0].predictions["test"].columns
 
 
+def test_load_run_data_preserves_coverage_counts(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
+    fold_dir = run_dir / "fold_0"
+    metrics_data = json.loads((fold_dir / "metrics.json").read_text())
+    metrics_data["test"].update(
+        {
+            "coverage": 0.9,
+            "num_samples": 10,
+            "num_real_samples": 9,
+            "num_placeholder_samples": 1,
+        }
+    )
+    (fold_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
+
+    run_data = load_run_data(run_dir)
+    test_metrics = run_data.folds[0].test_metrics["test"]
+    assert test_metrics["coverage"] == 0.9
+    assert test_metrics["num_samples"] == 10
+    assert test_metrics["num_real_samples"] == 9
+    assert test_metrics["num_placeholder_samples"] == 1
+
+
 def test_load_run_data_multi_fold(tmp_path: Path) -> None:
     """load_run_data discovers and sorts fold directories correctly."""
     run_dir = _make_run_dir(tmp_path, n_folds=3)
@@ -326,6 +349,34 @@ def test_run_data_from_result(tmp_path: Path) -> None:
     assert len(fd.predictions["test"]) == 2
 
 
+def test_run_data_from_result_preserves_coverage_counts(tmp_path: Path) -> None:
+    result, config = _make_mock_pipeline_result(tmp_path)
+    result.fold_results[0].tune_report = replace(
+        result.fold_results[0].tune_report,
+        metrics={
+            "auroc": 0.65,
+            "coverage": 0.75,
+            "num_samples": 4,
+            "num_real_samples": 3,
+            "num_placeholder_samples": 1,
+        },
+    )
+    result.fold_results[0].test_reports["test"] = replace(
+        result.fold_results[0].test_reports["test"],
+        metrics={
+            "auroc": 0.60,
+            "coverage": 0.5,
+            "num_samples": 2,
+            "num_real_samples": 1,
+            "num_placeholder_samples": 1,
+        },
+    )
+
+    run_data = run_data_from_result(result, config)
+    assert run_data.folds[0].tune_metrics["coverage"] == 0.75
+    assert run_data.folds[0].test_metrics["test"]["num_placeholder_samples"] == 1
+
+
 # ---------------------------------------------------------------------------
 # HTML generation
 # ---------------------------------------------------------------------------
@@ -352,6 +403,27 @@ def test_generate_report_includes_training_timing_summary(tmp_path: Path) -> Non
     assert "Elapsed" in html
     assert "Average epoch" in html
     assert "<th>ETA</th>" not in html
+
+
+def test_generate_report_includes_coverage_summary(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
+    fold_dir = run_dir / "fold_0"
+    metrics_data = json.loads((fold_dir / "metrics.json").read_text())
+    metrics_data["test"].update(
+        {
+            "coverage": 0.9,
+            "num_samples": 10,
+            "num_real_samples": 9,
+            "num_placeholder_samples": 1,
+        }
+    )
+    (fold_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
+
+    html = generate_report(run_dir).read_text()
+    assert "Coverage" in html
+    assert "90.0% (9/10)" in html
+    assert "Placeholder predictions" in html
+    assert ">1<" in html
 
 
 def test_generate_report_regression(tmp_path: Path) -> None:

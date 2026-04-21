@@ -14,6 +14,7 @@ import pandas as pd
 import torch
 import pytest
 import yaml
+from rich.console import Console
 
 from soma.config import (
     AggregatorConfig,
@@ -27,7 +28,15 @@ from soma.config import (
 from soma.dataset import Dataset, FoldSplit, Splits
 from soma.features import FeatureStore
 from soma.output_layout import build_experiment_spec
-from soma.pipeline import FoldResult, Pipeline, PipelineResult, _evaluate, train, train_one_fold
+from soma.pipeline import (
+    FoldResult,
+    Pipeline,
+    PipelineResult,
+    _build_completed_run_panel,
+    _evaluate,
+    train,
+    train_one_fold,
+)
 from soma.training.collate import BagBatch
 
 
@@ -225,7 +234,7 @@ class TestTrainOneFold:
         assert (fold_dir / "best_model.pt").exists()
         messages = [record.getMessage() for record in caplog.records]
         assert any(
-            message == "Fold 0: train=5 tune=1 test=1 | dropped empty: train=1, tune=0, test=0"
+            message == "Fold 0: train=5 tune=1 test=1 | train empty dropped=1"
             for message in messages
         )
         assert not any(record.levelno >= logging.WARNING for record in caplog.records)
@@ -326,6 +335,71 @@ class TestTrainOneFold:
         assert "sample_id" in preds_df.columns
         assert "true_label" in preds_df.columns
         assert "predicted_label" in preds_df.columns
+
+    def test_empty_tune_and_test_samples_use_deterministic_baselines(
+        self, tmp_path: Path
+    ):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        for sample_id in ("s6", "s7"):
+            (feature_dir / f"{sample_id}.pt").unlink()
+        _write_feature_manifest(
+            feature_dir,
+            {
+                "s0": "success",
+                "s1": "success",
+                "s2": "success",
+                "s3": "success",
+                "s4": "success",
+                "s5": "success",
+                "s6": "empty",
+                "s7": "empty",
+            },
+        )
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        fold_dir = tmp_path / "fold_empty_eval"
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=fold_dir,
+        )
+
+        tune_predictions = result.tune_report.predictions
+        assert [pred.sample_id for pred in tune_predictions] == ["s6"]
+        assert tune_predictions[0].probabilities == [0.5, 0.5]
+        assert tune_predictions[0].predicted_label == 0
+        assert tune_predictions[0].is_placeholder is True
+        assert tune_predictions[0].missing_reason == "no_tiles"
+        assert result.tune_report.metrics["coverage"] == 0.0
+
+        test_predictions = result.test_reports["test"].predictions
+        assert [pred.sample_id for pred in test_predictions] == ["s7"]
+        assert test_predictions[0].probabilities == [0.5, 0.5]
+        assert test_predictions[0].predicted_label == 0
+        assert test_predictions[0].is_placeholder is True
+        assert test_predictions[0].missing_reason == "no_tiles"
+        assert result.test_reports["test"].metrics["coverage"] == 0.0
+
+        metrics = json.loads((fold_dir / "metrics.json").read_text())
+        assert metrics["tune"]["coverage"] == 0.0
+        assert metrics["test"]["coverage"] == 0.0
+        assert metrics["tune"]["num_samples"] == 1
+        assert metrics["tune"]["num_real_samples"] == 0
+        assert metrics["tune"]["num_placeholder_samples"] == 1
+        assert metrics["test"]["num_samples"] == 1
+        assert metrics["test"]["num_real_samples"] == 0
+        assert metrics["test"]["num_placeholder_samples"] == 1
+
+        preds_df = pd.read_csv(fold_dir / "predictions_test.csv")
+        assert preds_df["sample_id"].tolist() == ["s7"]
+        assert preds_df["is_placeholder"].tolist() == [True]
+        assert preds_df["missing_reason"].tolist() == ["no_tiles"]
 
     def test_saves_attention_npz_when_heatmaps_enabled(self, tmp_path: Path):
         """With heatmaps.enabled, attention .npz files should be written during the test pass."""
@@ -651,6 +725,64 @@ class TestTrain:
         summary = json.loads((run_dir / "summary.json").read_text())
         assert "test/auroc_mean" in summary
 
+    def test_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        for sample_id in ("s6", "s7"):
+            (feature_dir / f"{sample_id}.pt").unlink()
+        _write_feature_manifest(
+            feature_dir,
+            {
+                "s0": "success",
+                "s1": "success",
+                "s2": "success",
+                "s3": "success",
+                "s4": "success",
+                "s5": "success",
+                "s6": "empty",
+                "s7": "empty",
+            },
+        )
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        run_dir = tmp_path / "output"
+
+        train(
+            feature_store=store,
+            dataset=dataset,
+            splits=splits,
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            run_dir=run_dir,
+        )
+
+        summary = json.loads((run_dir / "summary.json").read_text())
+        assert "test/coverage_mean" in summary
+        assert "test/num_samples_mean" in summary
+        assert "test/num_real_samples_mean" in summary
+        assert "test/num_placeholder_samples_mean" in summary
+
+    def test_completed_run_panel_includes_coverage_summary(self):
+        panel = _build_completed_run_panel(
+            summary_metrics={
+                "test/auroc_mean": 0.75,
+                "test/auroc_std": 0.02,
+                "test/coverage_mean": 0.9,
+                "test/num_samples_mean": 10.0,
+                "test/num_real_samples_mean": 9.0,
+                "test/num_placeholder_samples_mean": 1.0,
+            }
+        )
+        console = Console(record=True, width=120)
+        console.print(panel)
+        rendered = console.export_text()
+
+        assert "coverage" in rendered.lower()
+        assert "auroc=0.7500" in rendered
+        assert "90.0% (9/10)" in rendered
+        assert "placeholder=1" in rendered
+
     def test_fold_subdirectories(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
         dataset = Dataset(dataset_csv)
@@ -771,6 +903,43 @@ class TestPipeline:
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
         assert "test/auroc_mean" in summary
+
+    def test_run_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        for sample_id in ("s6", "s7"):
+            (feature_dir / f"{sample_id}.pt").unlink()
+        _write_feature_manifest(
+            feature_dir,
+            {
+                "s0": "success",
+                "s1": "success",
+                "s2": "success",
+                "s3": "success",
+                "s4": "success",
+                "s5": "success",
+                "s6": "empty",
+                "s7": "empty",
+            },
+        )
+        output_root = tmp_path / "output"
+
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=output_root,
+            dataset_type="slide",
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            Pipeline(config, feature_dir=feature_dir).run()
+
+        summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
+        assert "test/coverage_mean" in summary
+        assert "test/num_samples_mean" in summary
+        assert "test/num_real_samples_mean" in summary
+        assert "test/num_placeholder_samples_mean" in summary
 
     def test_run_multi_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)

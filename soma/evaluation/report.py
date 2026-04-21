@@ -16,6 +16,8 @@ class SamplePrediction:
     probabilities: list[float] | None = None
     predicted_value: float | None = None
     raw_score: float | None = None
+    is_placeholder: bool = False
+    missing_reason: str | None = None
 
 
 @dataclass(frozen=True)
