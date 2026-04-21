@@ -216,6 +216,12 @@ class TestOrdinalClassificationMetrics:
         m = compute_metrics("ordinal_classification", ["spearman"], y_true, y_pred)
         assert m["spearman"] == pytest.approx(1.0, abs=1e-6)
 
+    def test_constant_input_spearman_uses_finite_fallback(self):
+        y_true = np.array([2, 2, 2])
+        y_pred = np.array([2, 2, 2])
+        m = compute_metrics("ordinal_classification", ["spearman"], y_true, y_pred)
+        assert m["spearman"] == pytest.approx(0.0)
+
 
 # ---------------------------------------------------------------------------
 # Regression metrics
@@ -267,6 +273,13 @@ class TestRegressionMetrics:
         m = compute_metrics("regression", ["pearson", "spearman"], y_true, y_pred)
         assert m["pearson"] == pytest.approx(1.0, abs=1e-6)
         assert m["spearman"] == pytest.approx(1.0, abs=1e-6)
+
+    def test_pearson_and_spearman_constant_inputs_use_finite_fallback(self):
+        y_true = np.array([1.0, 1.0, 1.0])
+        y_pred = np.array([2.0, 2.0, 2.0])
+        m = compute_metrics("regression", ["pearson", "spearman"], y_true, y_pred)
+        assert m["pearson"] == pytest.approx(0.0)
+        assert m["spearman"] == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------

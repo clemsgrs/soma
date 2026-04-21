@@ -153,9 +153,14 @@ def _mae(y_true, y_pred, y_prob) -> float:
     return float(mean_absolute_error(y_true, y_pred))
 
 
+def _finite_correlation(statistic: float) -> float:
+    value = float(statistic)
+    return value if np.isfinite(value) else 0.0
+
+
 def _spearman(y_true, y_pred, y_prob) -> float:
     result = spearmanr(y_true, y_pred)
-    return float(result.statistic)
+    return _finite_correlation(result.statistic)
 
 
 def _mse(y_true, y_pred, y_prob) -> float:
@@ -172,7 +177,7 @@ def _r2(y_true, y_pred, y_prob) -> float:
 
 def _pearson(y_true, y_pred, y_prob) -> float:
     result = pearsonr(y_true, y_pred)
-    return float(result.statistic)
+    return _finite_correlation(result.statistic)
 
 
 _METRIC_FUNS: dict[str, dict[str, _Fn]] = {
