@@ -527,11 +527,10 @@ class FeatureExtractor:
     def _effective_preprocessing(self) -> PreprocessingConfig:
         """Resolve preprocessing, then prefer precomputed masks when every slide has one."""
         preprocessing = self._resolved_preprocessing()
-        if preprocessing.tissue_method == "precomputed_mask":
-            return preprocessing
-        if not self._dataset.samples:
-            return preprocessing
-        if all(record.mask_path is not None for record in self._dataset.samples.values()):
+        has_precomputed_masks = all(
+            record.mask_path is not None for record in self._dataset.samples.values()
+        )
+        if preprocessing.tissue_method == "precomputed_mask" or has_precomputed_masks:
             return replace(preprocessing, tissue_method="precomputed_mask")
         if preprocessing.tissue_method is None:
             raise ValueError(
