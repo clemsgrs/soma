@@ -329,6 +329,28 @@ def test_preprocess_forwards_mask_path_to_slide2vec_pipeline(tmp_path: Path):
     assert slides[0].mask_path == Path(tmp_path / "s0-mask.tif")
 
 
+def test_preprocess_uses_precomputed_mask_method_when_every_slide_has_mask(tmp_path: Path):
+    dataset = _make_dataset(tmp_path, with_mask=True)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        execution=ExecutionConfig(num_preprocessing_workers=0),
+    )
+
+    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.resolve_tiling_cache",
+        return_value=SimpleNamespace(
+            complete=False,
+            metadata={"backend_by_sample_id": {"s0": "openslide"}, "requested_backend": "auto"},
+        ),
+    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+        extractor.preprocess(tiling_dir=tmp_path / "tiling")
+
+    preprocessing = MockPipeline.call_args.args[1]
+    assert preprocessing.segmentation["method"] == "precomputed_mask"
+
+
 def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
