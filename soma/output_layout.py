@@ -61,6 +61,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "path": str(splits_path),
             "checksum": _sha256_file(splits_path),
         },
+        "dataset_type": config.dataset_type,
         "preprocessing": asdict(config.preprocessing),
         "cache": {
             "enabled": config.cache.enabled,
