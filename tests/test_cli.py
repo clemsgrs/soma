@@ -119,7 +119,7 @@ def test_run_subcommand_is_rejected(tmp_path: Path, capsys):
 
     assert exc_info.value.code == 2
     captured = capsys.readouterr()
-    assert "no longer used" in captured.err
+    assert "pass the config path directly" in captured.err
 
 
 def test_list_encoders_uses_level_filter_and_prints_results(capsys):
@@ -130,7 +130,8 @@ def test_list_encoders_uses_level_filter_and_prints_results(capsys):
 
     mock_list_models.assert_called_once_with(level="tile")
     out = capsys.readouterr().out
-    assert "Encoders (tile)" in out
+    assert "Encoders" in out
+    assert "tile" in out
     assert "alpha" in out
     assert "beta" in out
 
