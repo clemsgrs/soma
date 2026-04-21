@@ -524,6 +524,21 @@ class FeatureExtractor:
             model_metadata=encoder_info,
         )
 
+    def _effective_preprocessing(self) -> PreprocessingConfig:
+        """Resolve preprocessing, then prefer precomputed masks when every slide has one."""
+        preprocessing = self._resolved_preprocessing()
+        has_precomputed_masks = all(
+            record.mask_path is not None for record in self._dataset.samples.values()
+        )
+        if preprocessing.tissue_method == "precomputed_mask" or has_precomputed_masks:
+            return replace(preprocessing, tissue_method="precomputed_mask")
+        if preprocessing.tissue_method is None:
+            raise ValueError(
+                "tissue_method is required when no precomputed tissue mask is provided "
+                "for every sample in the dataset."
+            )
+        return preprocessing
+
     def _resolved_output(self) -> dict[str, object]:
         encoder_info = encoder_registry.info(self._encoder.name)
         return resolve_encoder_output(
@@ -564,7 +579,7 @@ class FeatureExtractor:
         """Preprocess all slides via slide2vec/hs2p tiling orchestration."""
         tiling_dir = Path(tiling_dir).resolve()
         tiling_dir.mkdir(parents=True, exist_ok=True)
-        cfg = self._resolved_preprocessing()
+        cfg = self._effective_preprocessing()
         ensure_supported_mask_value(self._dataset, cfg)
         process_list_path = tiling_dir / "process_list.csv"
         if not self._cache.enabled:
@@ -679,7 +694,7 @@ class FeatureExtractor:
         encoder_info = encoder_registry.info(self._encoder.name)
         level = resolve_encoder_level(self._encoder.name, encoder_info)
         resolved_output = self._resolved_output()
-        resolved_preprocessing = self._resolved_preprocessing()
+        resolved_preprocessing = self._effective_preprocessing()
         ensure_supported_mask_value(self._dataset, resolved_preprocessing)
         is_hierarchical = resolved_preprocessing.region_tile_multiple is not None
 
