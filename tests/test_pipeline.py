@@ -103,6 +103,36 @@ def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     return dataset_csv, splits_csv, feature_dir
 
 
+def _setup_train_test_only_data(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Create dataset.csv, splits.csv, and feature files with no tune split."""
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": [f"s{i}" for i in range(NUM_SAMPLES)],
+            "image_path": [f"/slides/s{i}.svs" for i in range(NUM_SAMPLES)],
+            "label": ["tumor" if i % 2 == 0 else "normal" for i in range(NUM_SAMPLES)],
+        }
+    ).to_csv(dataset_csv, index=False)
+
+    splits_csv = tmp_path / "splits.csv"
+    pd.DataFrame(
+        {
+            "fold": [0] * NUM_SAMPLES,
+            "sample_id": [f"s{i}" for i in range(NUM_SAMPLES)],
+            "split": ["train"] * 6 + ["test"] * 2,
+        }
+    ).to_csv(splits_csv, index=False)
+
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.manual_seed(42)
+    for i in range(NUM_SAMPLES):
+        n_tiles = 5 + i
+        torch.save(torch.randn(n_tiles, D), feature_dir / f"s{i}.pt")
+
+    return dataset_csv, splits_csv, feature_dir
+
+
 def _write_feature_manifest(feature_dir: Path, statuses: dict[str, str]) -> None:
     rows = []
     for sample_id, status in statuses.items():
@@ -282,6 +312,59 @@ class TestTrainOneFold:
                 training=TrainingConfig(epochs=2, patience=10, batch_size=2),
                 fold_dir=tmp_path / "fold_missing_feature",
             )
+
+    def test_requires_tune_split_by_default_when_missing(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="no tuning samples"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="binary_classification"),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+                fold_dir=tmp_path / "fold_missing_tune",
+            )
+
+    def test_allow_missing_tune_uses_train_split_as_tune_with_warning(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        caplog.set_level(logging.WARNING, logger="soma.pipeline")
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(
+                epochs=2,
+                patience=10,
+                batch_size=2,
+                allow_missing_tune=True,
+            ),
+            fold_dir=tmp_path / "fold_allow_missing_tune",
+        )
+
+        assert [pred.sample_id for pred in result.tune_report.predictions] == [
+            f"s{i}" for i in range(6)
+        ]
+        assert result.tune_report.split == "tune"
+        assert result.tune_report.metrics["num_samples"] == 6
+        assert any(
+            record.levelno == logging.WARNING
+            and record.getMessage()
+            == "Fold 0 has no tuning samples with available features; using train split as tune because allow_missing_tune=True"
+            for record in caplog.records
+        )
 
     def test_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)

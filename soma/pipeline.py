@@ -242,6 +242,7 @@ def train_one_fold(
             for split_name, records in test_records_by_split.items()
         }
         raw_train_patient_ids = list(train_patient_ids)
+        raw_train_placeholder_records = _patient_placeholder_records(train_records)
         raw_tune_patient_ids = list(tune_patient_ids)
         raw_test_patient_ids_by_split = {
             split_name: list(patient_ids)
@@ -362,11 +363,21 @@ def train_one_fold(
         if not train_patient_ids:
             msg = f"Fold {fold} has no training patients with available features"
             raise ValueError(msg)
-        if not tune_patient_ids and not (
+        fallback_to_train = not tune_patient_ids and not (
             empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
-        ):
+        )
+        if fallback_to_train and not training.allow_missing_tune:
             msg = f"Fold {fold} has no tuning patients with available features"
             raise ValueError(msg)
+        if fallback_to_train and training.allow_missing_tune:
+            logger.warning(
+                "Fold %s has no tuning patients with available features; "
+                "using train split as tune because allow_missing_tune=True",
+                fold,
+            )
+            tune_patient_ids = list(train_patient_ids)
+            raw_tune_patient_ids = list(raw_train_patient_ids)
+            tune_records = list(train_records)
         for split_name, patient_ids in test_patient_ids_by_split.items():
             split_empty_ids = (
                 empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
@@ -381,11 +392,19 @@ def train_one_fold(
         if not train_records:
             msg = f"Fold {fold} has no training samples with available features"
             raise ValueError(msg)
-        if not tune_records and not (
+        fallback_to_train = not tune_records and not (
             empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
-        ):
+        )
+        if fallback_to_train and not training.allow_missing_tune:
             msg = f"Fold {fold} has no tuning samples with available features"
             raise ValueError(msg)
+        if fallback_to_train and training.allow_missing_tune:
+            logger.warning(
+                "Fold %s has no tuning samples with available features; "
+                "using train split as tune because allow_missing_tune=True",
+                fold,
+            )
+            tune_records = list(train_records)
         for split_name, records in test_records_by_split.items():
             split_empty_ids = (
                 empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
@@ -629,27 +648,41 @@ def train_one_fold(
     )
 
     empty_eval_sample_ids = empty_sample_ids_by_split or {}
+    if dataset_type == "patient":
+        tune_output_sample_ids = (
+            tuple(raw_train_patient_ids) if fallback_to_train else tuple(raw_tune_patient_ids)
+        )
+        tune_placeholder_records = (
+            raw_train_placeholder_records if fallback_to_train else _patient_placeholder_records(tune_records)
+        )
+        tune_empty_sample_ids = (
+            empty_eval_sample_ids.get("train", [])
+            if fallback_to_train
+            else empty_eval_sample_ids.get("tune", [])
+        )
+    else:
+        tune_output_sample_ids = fold_split.train if fallback_to_train else fold_split.tune
+        tune_placeholder_records = None
+        tune_empty_sample_ids = (
+            empty_eval_sample_ids.get("train", [])
+            if fallback_to_train
+            else empty_eval_sample_ids.get("tune", [])
+        )
     tune_report = _evaluate_split_with_placeholders(
         model,
         tune_loader,
         "tune",
         label_map,
-            device,
-            output_sample_ids=(
-                tuple(raw_tune_patient_ids)
-                if dataset_type == "patient"
-                else fold_split.tune
-            ),
-            empty_sample_ids=empty_eval_sample_ids.get("tune", []),
-            dataset=dataset,
+        device,
+        output_sample_ids=tune_output_sample_ids,
+        empty_sample_ids=tune_empty_sample_ids,
+        dataset=dataset,
         label_fn=label_fn,
-            baseline=deterministic_baseline,
-            metric_names=resolved_metric_names,
-            task_family=task_family,
-            placeholder_records_by_id=(
-                _patient_placeholder_records(tune_records) if dataset_type == "patient" else None
-            ),
-        )
+        baseline=deterministic_baseline,
+        metric_names=resolved_metric_names,
+        task_family=task_family,
+        placeholder_records_by_id=tune_placeholder_records,
+    )
 
     test_reports: dict[str, EvaluationReport] = {}
     for split_name, test_loader in test_loaders.items():

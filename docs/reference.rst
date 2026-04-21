@@ -67,7 +67,7 @@ Configuration dataclasses
      - ``metrics``, ``subgroups``
      - Metric and subgroup reporting
    * - ``TrainingConfig``
-     - ``seed``, ``epochs``, ``learning_rate``, ``weight_decay``, ``optimizer``, ``scheduler``, ``patience``, ``batch_size``, ``gradient_accumulation``
+     - ``seed``, ``epochs``, ``learning_rate``, ``weight_decay``, ``optimizer``, ``scheduler``, ``patience``, ``batch_size``, ``gradient_accumulation``, ``allow_missing_tune``
      - Training hyperparameters
    * - ``HeatmapConfig``
      - ``enabled``, ``cmap``, ``alpha``, ``blur_sigma``

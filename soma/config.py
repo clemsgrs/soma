@@ -172,7 +172,8 @@ class TrainingConfig:
 
     ``batch_size`` and ``gradient_accumulation`` control the effective batch
     size, while ``epochs``, ``learning_rate``, ``optimizer``, ``scheduler``,
-    and ``patience`` define the optimization schedule.
+    and ``patience`` define the optimization schedule. ``allow_missing_tune``
+    enables a deliberate train-as-tune fallback when a fold has no tune split.
     """
 
     seed: int = 0
@@ -184,6 +185,7 @@ class TrainingConfig:
     patience: int = 10
     batch_size: int = 1
     gradient_accumulation: int = 1
+    allow_missing_tune: bool = False
 
 
 @dataclass(frozen=True)
