@@ -755,7 +755,7 @@ class FeatureExtractor:
                             preprocessing=s2v_preprocessing,
                             resolved_preprocessing=resolved_preprocessing,
                             backend_provenance=backend_provenance,
-                            output_variant=resolved_output_variant,
+                            resolved_output_variant=resolved_output_variant,
                             num_gpus=effective_num_gpus,
                         )
                     elif level == "tile":
@@ -768,7 +768,7 @@ class FeatureExtractor:
                             preprocessing=s2v_preprocessing,
                             resolved_preprocessing=resolved_preprocessing,
                             backend_provenance=backend_provenance,
-                            output_variant=resolved_output_variant,
+                            resolved_output_variant=resolved_output_variant,
                             num_gpus=effective_num_gpus,
                         )
                     elif level == "patient":
