@@ -1,0 +1,6 @@
+- Slide-level models can still hit `fp32` even when the preset recommends `fp16`; wrap the `encode_slide(...)` call itself in autocast, not just the tile-encoding path.
+- Comparison/report code should reuse stored prediction fields instead of recomputing them from auxiliary values like `raw_score`; even small reconstruction differences can change metric behavior and warnings.
+- Report comparison paths should fail loudly when required prediction columns are missing, rather than silently fabricating them from probabilities or raw scores.
+- When aggregating folds, preserve the stored `predicted_label` if there is no stronger signal to recompute from; label-only inputs should not lose their prediction column.
+- When aggregating label-only duplicates, keep the stored label only if all duplicate rows agree; conflicting labels should raise instead of being arbitrarily merged.
+- Cross-run comparison reports should live in a dedicated comparison directory under the shared output root and use `index.html`; never anchor them to a run directory or a fixed shared filename.

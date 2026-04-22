@@ -8,3 +8,4 @@
 - 2026-04-22: Fold aggregation preserves label-only `predicted_label` values when no probability or raw-score signal is available, instead of dropping the label column.
 - 2026-04-22: Fold aggregation now raises on conflicting label-only duplicates instead of arbitrarily choosing a `predicted_label`.
 - 2026-04-22: Fixed the completed-run console summary to render single-fold coverage from plain `summary.json` keys (`coverage`, `num_samples`, etc.) as well as multi-fold aggregated keys (`*_mean`/`*_std`).
+- 2026-04-22: Moved cross-run comparison reports into dedicated bundle directories under the shared `output_root`, with `index.html` as the entry point instead of a shared `comparison.html` file beside one run.

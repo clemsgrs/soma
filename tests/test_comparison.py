@@ -52,12 +52,13 @@ def _make_run_dir(
 ) -> Path:
     run_dir = tmp_path / run_id
     run_dir.mkdir(parents=True)
+    output_root = tmp_path.parent / "output"
 
     metrics = ["auroc"]
     config = {
         "dataset_csv": "/data/dataset.csv",
         "splits_csv": "/data/splits.csv",
-        "output_root": "/output",
+        "output_root": str(output_root),
         "task": {"name": "binary_classification", "params": {}},
         "evaluation": {"metrics": metrics, "subgroups": {"columns": []}},
         "encoder": None,
@@ -203,20 +204,24 @@ def test_compare_runs_creates_html(tmp_path: Path) -> None:
     run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")
     run2 = _make_run_dir(tmp_path / "r2", aggregator="clam_sb", run_id="run2")
 
-    report_path = compare_runs([run1, run2], output_path=tmp_path / "comparison.html")
+    report_dir = tmp_path / "comparison_reports"
+    report_path = compare_runs([run1, run2], output_dir=report_dir)
 
     assert report_path.exists()
+    assert report_path == report_dir / "index.html"
     html = report_path.read_text()
     assert "<!DOCTYPE html>" in html
     assert "Run Comparison" in html
 
 
-def test_compare_runs_default_output_path(tmp_path: Path) -> None:
-    """Default output_path is parent-of-first-run-dir / comparison.html."""
+def test_compare_runs_default_output_dir(tmp_path: Path) -> None:
+    """Default output_dir is a comparison bundle under the shared output root."""
     run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")
     run2 = _make_run_dir(tmp_path / "r2", aggregator="clam_sb", run_id="run2")
 
     report_path = compare_runs([run1, run2])
 
-    assert report_path == run1.parent / "comparison.html"
+    assert report_path.parent.parent == tmp_path / "output" / "comparisons"
+    assert report_path.parent.name.startswith("abmil-vs-clam-sb__")
+    assert report_path.name == "index.html"
     assert report_path.exists()

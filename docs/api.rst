@@ -153,6 +153,9 @@ Use ``compare_runs`` to generate a cross-run comparison report:
        labels=["ABMIL", "TransMIL"],
    )
 
+The report is written to ``<shared output_root>/comparisons/<comparison-id>/index.html``
+unless you pass ``output_dir`` explicitly.
+
 For more detail on what the generated HTML report contains, how subgroup
 analysis is summarized, and how comparison statistics are computed, see the
 :doc:`reporting guide <reporting>`.
