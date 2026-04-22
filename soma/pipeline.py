@@ -782,8 +782,10 @@ def train(
     if dataset_type == "patient":
         splits.validate_no_patient_leakage(dataset)
 
+    single_fold = splits.num_folds == 1
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
+        fold_dir = run_dir if single_fold else run_dir / f"fold_{fold_idx}"
         result = train_one_fold(
             feature_store=feature_store,
             dataset=dataset,
@@ -793,7 +795,7 @@ def train(
             task=task,
             evaluation=evaluation,
             training=training,
-            fold_dir=run_dir / f"fold_{fold_idx}",
+            fold_dir=fold_dir,
             fold=fold_idx,
             preprocessing=preprocessing,
             heatmaps=heatmaps,
@@ -1596,10 +1598,12 @@ def _save_predictions(
 
 
 def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
-    """Compute mean and std of each metric across folds, namespaced by test split."""
+    """Compute per-split metrics summary. For a single fold, emit values directly.
+    For multiple folds, emit mean and std."""
     if not fold_results:
         return {}
 
+    single_fold = len(fold_results) == 1
     summary: dict[str, float] = {}
     test_split_names = sorted({s for fr in fold_results for s in fr.test_reports})
 
@@ -1612,8 +1616,11 @@ def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
             values = [report.metrics[key] for report in split_reports if key in report.metrics]
             if not values:
                 continue
-            summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
-            summary[f"{split_name}/{key}_std"] = float(np.std(values))
+            if single_fold:
+                summary[f"{split_name}/{key}"] = float(values[0])
+            else:
+                summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
+                summary[f"{split_name}/{key}_std"] = float(np.std(values))
 
     return summary
 

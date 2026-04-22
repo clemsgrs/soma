@@ -819,7 +819,7 @@ class TestTrain:
         )
 
         summary = json.loads((run_dir / "summary.json").read_text())
-        assert "test/auroc_mean" in summary
+        assert "test/auroc" in summary
 
     def test_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -854,10 +854,10 @@ class TestTrain:
         )
 
         summary = json.loads((run_dir / "summary.json").read_text())
-        assert "test/coverage_mean" in summary
-        assert "test/num_samples_mean" in summary
-        assert "test/num_real_samples_mean" in summary
-        assert "test/num_placeholder_samples_mean" in summary
+        assert "test/coverage" in summary
+        assert "test/num_samples" in summary
+        assert "test/num_real_samples" in summary
+        assert "test/num_placeholder_samples" in summary
 
     def test_aggregate_fold_metrics_handles_inconsistent_test_split_names(self):
         train_result = TrainResult(
@@ -999,7 +999,7 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "best_model.pt").exists()
 
     def test_run_saves_config_yaml(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1038,7 +1038,7 @@ class TestPipeline:
         summary_path = _expected_run_dir(config) / "summary.json"
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
-        assert "test/auroc_mean" in summary
+        assert "test/auroc" in summary
 
     def test_run_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1072,10 +1072,10 @@ class TestPipeline:
             Pipeline(config, feature_dir=feature_dir).run()
 
         summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
-        assert "test/coverage_mean" in summary
-        assert "test/num_samples_mean" in summary
-        assert "test/num_real_samples_mean" in summary
-        assert "test/num_placeholder_samples_mean" in summary
+        assert "test/coverage" in summary
+        assert "test/num_samples" in summary
+        assert "test/num_real_samples" in summary
+        assert "test/num_placeholder_samples" in summary
 
     def test_run_multi_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
@@ -1189,7 +1189,7 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "best_model.pt").exists()
         assert "auroc" in result.fold_results[0].test_reports["test"].metrics
 
     def test_resolve_preprocessing_populates_hipt_geometry(self, tmp_path: Path):

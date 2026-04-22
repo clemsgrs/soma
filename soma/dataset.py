@@ -11,7 +11,7 @@ import pandas as pd
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"mask_path", "patient_id"}
-REQUIRED_SPLITS_COLUMNS = {"fold", "sample_id", "split"}
+REQUIRED_SPLITS_COLUMNS = {"sample_id", "split"}
 
 
 def _is_valid_split_name(name: str) -> bool:
@@ -162,18 +162,23 @@ class FoldSplit:
 
 
 class Splits:
-    """Loads user-provided splits from a CSV with columns: fold, sample_id, split.
+    """Loads user-provided splits from a CSV with columns: sample_id, split[, fold].
 
-    Valid split names are ``"train"``, ``"tune"``, or any name starting with
-    ``"test"`` (e.g. ``"test"``, ``"test_external"``, ``"test_prospective"``).
-    Validates that all sample_ids exist in the dataset, split names are valid,
-    and no sample appears twice within the same fold.
+    The ``fold`` column is optional. When absent, all rows are treated as a
+    single split (no cross-validation). Valid split names are ``"train"``,
+    ``"tune"``, or any name starting with ``"test"`` (e.g. ``"test"``,
+    ``"test_external"``, ``"test_prospective"``). Validates that all sample_ids
+    exist in the dataset, split names are valid, and no sample appears twice
+    within the same fold.
     """
 
     def __init__(self, splits_csv: str | Path, dataset: Dataset) -> None:
         self._path = Path(splits_csv)
         df = pd.read_csv(self._path)
         self._validate_columns(df)
+        if "fold" not in df.columns:
+            df = df.copy()
+            df["fold"] = 0
         self._validate_values(df, dataset)
         self._folds = self._build_folds(df)
 

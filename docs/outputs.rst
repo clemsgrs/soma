@@ -2,7 +2,7 @@ Run Outputs
 ===========
 
 Each pipeline run writes a self-contained bundle beneath ``output_root``.
-The bundle captures the resolved configuration, fold-level artifacts, and the
+The bundle captures the resolved configuration, per-fold artifacts, and the
 metrics needed to compare experiments reproducibly.
 
 The shared cache, which stores reusable upstream artifacts such as tiling and
@@ -14,41 +14,53 @@ Run directory contents
 The main run directory contains:
 
 - the resolved pipeline configuration
-- fold checkpoints and fold-level summaries
+- model checkpoints and per-fold summaries
 - per-split predictions
 - per-split subgroup metrics
 - attention artifacts when heatmaps are enabled
 - the final HTML report
 
+Layout: single split vs cross-validation
+-----------------------------------------
+
+When ``splits.csv`` has no ``fold`` column (or a single fold value), all
+artifacts are written directly inside the run directory:
+
+- ``best_model.pt``, ``metrics.json``, ``training_history.json``
+- ``predictions_<split>.csv``
+- ``attention/<sample_id>.npz`` (if heatmaps enabled)
+- ``heatmaps/<sample_id>.png``
+
+When ``splits.csv`` defines multiple folds, each fold gets its own subdirectory:
+
+- ``fold_0/``, ``fold_1/``, … containing the same per-fold files above
+
 Split-specific artifacts
 ------------------------
 
 When a dataset defines multiple test splits, each split gets its own set of
-artifacts. Common filenames include:
+artifacts, e.g. ``predictions_test.csv`` and ``predictions_test_external.csv``.
 
-- ``predictions_<split>.csv``
-- ``subgroup_metrics_<split>.json``
-- ``fold_N/attention/<sample_id>.npz``
-- ``fold_N/heatmaps/<sample_id>.png``
+Metric keys in ``summary.json`` are prefixed by split name:
 
-Metric keys in ``summary.json`` are prefixed by split name, for example
-``test/auroc_mean`` and ``test_external/auroc_mean``.
+- **Single fold**: ``test/auroc``, ``test_external/auroc``
+- **Cross-validation**: ``test/auroc_mean``, ``test/auroc_std``
 
 Saved timing data
 -----------------
 
-Each fold writes ``training_history.json`` with the elapsed time and average
-epoch time recorded during training. The HTML report includes the same timing
-information in a dedicated training section, while the ETA remains a live-only
-display field.
+``training_history.json`` records the elapsed time and average epoch time for
+each epoch. The HTML report includes the same timing information in a dedicated
+training section, while the ETA remains a live-only display field.
 
 Heatmap artifacts
 -----------------
 
 When ``HeatmapConfig.enabled`` is true, the pipeline stores raw attention
-scores under ``fold_N/attention/<sample_id>.npz`` and rendered overlays under
-``fold_N/heatmaps/``. The rendered overlays can be regenerated with different
-visual settings without rerunning inference.
+scores in ``attention/<sample_id>.npz`` and rendered overlays in ``heatmaps/``
+(directly in the run directory for single-fold runs, inside each ``fold_N/``
+subdir for cross-validation). The rendered overlays can be regenerated with
+different visual settings without rerunning inference.
 
 Aggregators that support attention extraction: ``abmil``, ``clam_sb``,
 ``clam_mb``, ``dsmil``. Heatmaps are skipped for ``mean_pool``, ``max_pool``,

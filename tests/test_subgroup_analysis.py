@@ -83,12 +83,11 @@ def _make_run_dir(
     }
     (run_dir / "config.yaml").write_text(yaml.dump(config))
     (run_dir / "run.yaml").write_text(yaml.dump({"run_id": "test-run", "status": "completed"}))
-    (run_dir / "summary.json").write_text(json.dumps({"test/auroc_mean": 0.85, "test/auroc_std": 0.02}))
+    (run_dir / "summary.json").write_text(json.dumps({"test/auroc": 0.85}))
 
-    fold_dir = run_dir / "fold_0"
-    fold_dir.mkdir()
-    (fold_dir / "training_history.json").write_text(json.dumps([]))
-    (fold_dir / "metrics.json").write_text(json.dumps({
+    # single-fold: flat layout, artifacts directly in run_dir
+    (run_dir / "training_history.json").write_text(json.dumps([]))
+    (run_dir / "metrics.json").write_text(json.dumps({
         "tune": {"auroc": 0.82},
         "test": {"auroc": 0.85},
     }))
@@ -97,14 +96,14 @@ def _make_run_dir(
     if subgroup_columns:
         # Keep subgroup columns in the predictions CSV (as enriched by pipeline)
         df[subgroup_columns].to_csv.__doc__  # access check
-        df.to_csv(fold_dir / "predictions_test.csv", index=False)
+        df.to_csv(run_dir / "predictions_test.csv", index=False)
     else:
         df[["sample_id", "true_label", "predicted_label", "prob_0", "prob_1"]].to_csv(
-            fold_dir / "predictions_test.csv", index=False
+            run_dir / "predictions_test.csv", index=False
         )
 
     if subgroup_metrics_data is not None:
-        (fold_dir / "subgroup_metrics_test.json").write_text(json.dumps(subgroup_metrics_data))
+        (run_dir / "subgroup_metrics_test.json").write_text(json.dumps(subgroup_metrics_data))
 
     return run_dir
 

@@ -113,19 +113,28 @@ def _section_hero_metrics(run_data: RunData) -> str:
     if not all_split_names or not run_data.metrics:
         return ""
 
+    single_fold = len(run_data.folds) == 1
     # Use the first split for hero display
     split_name = all_split_names[0]
     cards = []
     for metric in run_data.metrics:
-        mean = run_data.summary.get(f"{split_name}/{metric}_mean")
-        std = run_data.summary.get(f"{split_name}/{metric}_std")
-        if mean is None:
-            continue
-        std_html = f'<span class="hero-std">± {std:.3f}</span>' if std is not None else ""
+        if single_fold:
+            value = run_data.summary.get(f"{split_name}/{metric}")
+            if value is None:
+                continue
+            std_html = ""
+            value_str = f"{value:.3f}"
+        else:
+            value = run_data.summary.get(f"{split_name}/{metric}_mean")
+            std = run_data.summary.get(f"{split_name}/{metric}_std")
+            if value is None:
+                continue
+            std_html = f'<span class="hero-std">± {std:.3f}</span>' if std is not None else ""
+            value_str = f"{value:.3f}"
         split_label = f'<span class="hero-split">{split_name}</span>' if len(all_split_names) > 1 else ""
         cards.append(f"""
   <div class="hero-card">
-    <div class="hero-value">{mean:.3f}{std_html}</div>
+    <div class="hero-value">{value_str}{std_html}</div>
     <div class="hero-label">{metric}{split_label}</div>
   </div>""")
 
@@ -205,9 +214,13 @@ def _section_results_summary(run_data: RunData) -> str:
         return ""
 
     all_split_names = _test_split_names(run_data.folds)
+    single_fold = len(run_data.folds) == 1
 
-    fold_headers = "".join(f"<th>Fold {fd.fold}</th>" for fd in run_data.folds)
-    header_row = f"<tr><th>Metric</th>{fold_headers}<th>Mean ± Std</th></tr>"
+    if single_fold:
+        header_row = "<tr><th>Metric</th><th>Value</th></tr>"
+    else:
+        fold_headers = "".join(f"<th>Fold {fd.fold}</th>" for fd in run_data.folds)
+        header_row = f"<tr><th>Metric</th>{fold_headers}<th>Mean ± Std</th></tr>"
 
     sections = ""
     for split_name in all_split_names:
@@ -227,20 +240,25 @@ def _section_results_summary(run_data: RunData) -> str:
 
         rows_html = ""
         for metric in all_metric_names:
-            fold_vals = [fd.test_metrics.get(split_name, {}).get(metric) for fd in run_data.folds]
-            fold_cells = "".join(
-                f'<td>{v:.4f}</td>' if v is not None else "<td>—</td>"
-                for v in fold_vals
-            )
-            mean_std = run_data.summary.get(f"{split_name}/{metric}_mean")
-            std = run_data.summary.get(f"{split_name}/{metric}_std")
-            if mean_std is not None and std is not None:
-                summary_cell = f"<td><strong>{mean_std:.4f}</strong> ± {std:.4f}</td>"
-            elif mean_std is not None:
-                summary_cell = f"<td><strong>{mean_std:.4f}</strong></td>"
+            if single_fold:
+                v = run_data.folds[0].test_metrics.get(split_name, {}).get(metric)
+                value_cell = f"<td><strong>{v:.4f}</strong></td>" if v is not None else "<td>—</td>"
+                rows_html += f"<tr><td class='metric-name'>{metric}</td>{value_cell}</tr>"
             else:
-                summary_cell = "<td>—</td>"
-            rows_html += f"<tr><td class='metric-name'>{metric}</td>{fold_cells}{summary_cell}</tr>"
+                fold_vals = [fd.test_metrics.get(split_name, {}).get(metric) for fd in run_data.folds]
+                fold_cells = "".join(
+                    f'<td>{v:.4f}</td>' if v is not None else "<td>—</td>"
+                    for v in fold_vals
+                )
+                mean_std = run_data.summary.get(f"{split_name}/{metric}_mean")
+                std = run_data.summary.get(f"{split_name}/{metric}_std")
+                if mean_std is not None and std is not None:
+                    summary_cell = f"<td><strong>{mean_std:.4f}</strong> ± {std:.4f}</td>"
+                elif mean_std is not None:
+                    summary_cell = f"<td><strong>{mean_std:.4f}</strong></td>"
+                else:
+                    summary_cell = "<td>—</td>"
+                rows_html += f"<tr><td class='metric-name'>{metric}</td>{fold_cells}{summary_cell}</tr>"
 
         heading = "Test Results" if len(all_split_names) == 1 else f"Test Results — {split_name}"
         sections += f"""
@@ -262,6 +280,7 @@ def _coverage_table(run_data: RunData, split_name: str) -> str:
     total_samples = 0
     total_placeholder = 0
     has_any = False
+    single_fold = len(run_data.folds) == 1
 
     for fd in run_data.folds:
         metrics = fd.test_metrics.get(split_name, {})
@@ -275,19 +294,34 @@ def _coverage_table(run_data: RunData, split_name: str) -> str:
         total_real += int(num_real)
         total_samples += int(num_samples)
         total_placeholder += int(num_placeholder)
-        rows.append(
-            "<tr>"
-            f"<td>Fold {fd.fold}</td>"
-            f"<td>{coverage * 100:.1f}% ({int(num_real)}/{int(num_samples)})</td>"
-            f"<td>{int(num_real)}</td>"
-            f"<td>{int(num_placeholder)}</td>"
-            "</tr>"
-        )
+        if not single_fold:
+            rows.append(
+                "<tr>"
+                f"<td>Fold {fd.fold}</td>"
+                f"<td>{coverage * 100:.1f}% ({int(num_real)}/{int(num_samples)})</td>"
+                f"<td>{int(num_real)}</td>"
+                f"<td>{int(num_placeholder)}</td>"
+                "</tr>"
+            )
 
     if not has_any:
         return ""
 
     total_coverage = (total_real / total_samples) if total_samples else 0.0
+    if single_fold:
+        summary_row = (
+            "<tr>"
+            f"<td><strong>{total_coverage * 100:.1f}% ({total_real}/{total_samples})</strong></td>"
+            f"<td><strong>{total_real}</strong></td>"
+            f"<td><strong>{total_placeholder}</strong></td>"
+            "</tr>"
+        )
+        return f"""
+  <table class="results-table coverage-table">
+    <thead><tr><th>Coverage</th><th>Real-feature predictions</th><th>Placeholder predictions</th></tr></thead>
+    <tbody>{summary_row}</tbody>
+  </table>"""
+
     rows.append(
         "<tr>"
         "<td><strong>Overall</strong></td>"

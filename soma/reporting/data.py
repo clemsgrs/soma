@@ -154,7 +154,8 @@ def load_run_data(run_dir: str | Path) -> RunData:
 
     Args:
         run_dir: Path to a completed run directory (contains config.yaml, run.yaml,
-            summary.json, fold_N/ subdirectories).
+            summary.json, and either artifacts directly in run_dir for single-fold
+            runs or fold_N/ subdirectories for cross-validation runs).
 
     Returns:
         RunData populated from disk artifacts.
@@ -174,14 +175,18 @@ def load_run_data(run_dir: str | Path) -> RunData:
     metrics = resolve_metrics(task_family, config.get("evaluation", {}).get("metrics") or [])
     subgroup_columns = list(config.get("evaluation", {}).get("subgroups", {}).get("columns") or [])
 
-    folds = []
-    fold_dirs = sorted(
-        run_dir.glob("fold_*"),
-        key=lambda p: int(p.name.split("_")[1]),
-    )
-    for fold_dir in fold_dirs:
-        fold_idx = int(fold_dir.name.split("_")[1])
+    # Detect layout: flat (single fold, artifacts in run_dir) vs nested (fold_N/ subdirs)
+    flat_layout = (run_dir / "metrics.json").exists()
+    if flat_layout:
+        fold_dirs_indexed = [(run_dir, 0)]
+    else:
+        fold_dirs_indexed = [
+            (p, int(p.name.split("_")[1]))
+            for p in sorted(run_dir.glob("fold_*"), key=lambda p: int(p.name.split("_")[1]))
+        ]
 
+    folds = []
+    for fold_dir, fold_idx in fold_dirs_indexed:
         history_path = fold_dir / "training_history.json"
         training_history = json.loads(history_path.read_text()) if history_path.exists() else []
 
