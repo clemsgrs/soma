@@ -919,6 +919,25 @@ class TestTrain:
         assert "90.0% (9/10)" in rendered
         assert "placeholder=1" in rendered
 
+    def test_completed_run_panel_includes_single_fold_coverage_summary(self):
+        panel = _build_completed_run_panel(
+            summary_metrics={
+                "test/auroc": 0.75,
+                "test/coverage": 0.9,
+                "test/num_samples": 10.0,
+                "test/num_real_samples": 9.0,
+                "test/num_placeholder_samples": 1.0,
+            }
+        )
+        console = Console(record=True, width=120)
+        console.print(panel)
+        rendered = console.export_text()
+
+        assert "coverage" in rendered.lower()
+        assert "auroc=0.7500" in rendered
+        assert "90.0% (9/10)" in rendered
+        assert "placeholder=1" in rendered
+
     def test_fold_subdirectories(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
         dataset = Dataset(dataset_csv)
