@@ -194,6 +194,7 @@ def train_one_fold(
     evaluation: EvalConfig | None = None,
     aggregator: AggregatorConfig | None = None,
     fold: int = 0,
+    num_folds: int = 1,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
 ) -> FoldResult:
@@ -359,21 +360,23 @@ def train_one_fold(
         }
         empty_sample_ids_by_split = None
 
+    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+
     if dataset_type == "patient":
         if not train_patient_ids:
-            msg = f"Fold {fold} has no training patients with available features"
+            msg = f"{_fp} has no training patients with available features"
             raise ValueError(msg)
         fallback_to_train = not tune_patient_ids and not (
             empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
         )
         if fallback_to_train and not training.allow_missing_tune:
-            msg = f"Fold {fold} has no tuning patients with available features"
+            msg = f"{_fp} has no tuning patients with available features"
             raise ValueError(msg)
         if fallback_to_train and training.allow_missing_tune:
             logger.warning(
-                "Fold %s has no tuning patients with available features; "
+                "%s has no tuning patients with available features; "
                 "using train split as tune because allow_missing_tune=True",
-                fold,
+                _fp,
             )
             tune_patient_ids = list(train_patient_ids)
             raw_tune_patient_ids = list(raw_train_patient_ids)
@@ -383,26 +386,26 @@ def train_one_fold(
                 empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
             )
             if not patient_ids and not split_empty_ids:
-                msg = f"Fold {fold} has no patients with available features in split '{split_name}'"
+                msg = f"{_fp} has no patients with available features in split '{split_name}'"
                 raise ValueError(msg)
         train_count = len(train_patient_ids)
         tune_count = len(tune_patient_ids)
         tests_counts = {name: len(patient_ids) for name, patient_ids in test_patient_ids_by_split.items()}
     else:
         if not train_records:
-            msg = f"Fold {fold} has no training samples with available features"
+            msg = f"{_fp} has no training samples with available features"
             raise ValueError(msg)
         fallback_to_train = not tune_records and not (
             empty_sample_ids_by_split and empty_sample_ids_by_split.get("tune")
         )
         if fallback_to_train and not training.allow_missing_tune:
-            msg = f"Fold {fold} has no tuning samples with available features"
+            msg = f"{_fp} has no tuning samples with available features"
             raise ValueError(msg)
         if fallback_to_train and training.allow_missing_tune:
             logger.warning(
-                "Fold %s has no tuning samples with available features; "
+                "%s has no tuning samples with available features; "
                 "using train split as tune because allow_missing_tune=True",
-                fold,
+                _fp,
             )
             tune_records = list(train_records)
         for split_name, records in test_records_by_split.items():
@@ -410,7 +413,7 @@ def train_one_fold(
                 empty_sample_ids_by_split.get(split_name, []) if empty_sample_ids_by_split else []
             )
             if not records and not split_empty_ids:
-                msg = f"Fold {fold} has no samples with available features in split '{split_name}'"
+                msg = f"{_fp} has no samples with available features in split '{split_name}'"
                 raise ValueError(msg)
         train_count = len(train_records)
         tune_count = len(tune_records)
@@ -782,8 +785,10 @@ def train(
     if dataset_type == "patient":
         splits.validate_no_patient_leakage(dataset)
 
+    single_fold = splits.num_folds == 1
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
+        fold_dir = run_dir if single_fold else run_dir / f"fold_{fold_idx}"
         result = train_one_fold(
             feature_store=feature_store,
             dataset=dataset,
@@ -793,8 +798,9 @@ def train(
             task=task,
             evaluation=evaluation,
             training=training,
-            fold_dir=run_dir / f"fold_{fold_idx}",
+            fold_dir=fold_dir,
             fold=fold_idx,
+            num_folds=splits.num_folds,
             preprocessing=preprocessing,
             heatmaps=heatmaps,
         )
@@ -1596,10 +1602,12 @@ def _save_predictions(
 
 
 def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
-    """Compute mean and std of each metric across folds, namespaced by test split."""
+    """Compute per-split metrics summary. For a single fold, emit values directly.
+    For multiple folds, emit mean and std."""
     if not fold_results:
         return {}
 
+    single_fold = len(fold_results) == 1
     summary: dict[str, float] = {}
     test_split_names = sorted({s for fr in fold_results for s in fr.test_reports})
 
@@ -1612,8 +1620,11 @@ def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
             values = [report.metrics[key] for report in split_reports if key in report.metrics]
             if not values:
                 continue
-            summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
-            summary[f"{split_name}/{key}_std"] = float(np.std(values))
+            if single_fold:
+                summary[f"{split_name}/{key}"] = float(values[0])
+            else:
+                summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
+                summary[f"{split_name}/{key}_std"] = float(np.std(values))
 
     return summary
 

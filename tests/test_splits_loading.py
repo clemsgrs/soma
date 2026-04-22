@@ -136,6 +136,22 @@ def test_missing_column_raises(tmp_path: Path, dataset: Dataset):
         Splits(path, dataset)
 
 
+def test_fold_column_is_optional(tmp_path: Path, dataset: Dataset):
+    """splits.csv without a fold column is treated as a single fold."""
+    df = pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "train", "train", "train", "tune", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    splits = Splits(path, dataset)
+    assert splits.num_folds == 1
+    assert set(splits.folds[0].train) == {"s1", "s2", "s3", "s4"}
+    assert splits.folds[0].tests == {"test": ("s6",)}
+
+
 def test_accepts_string_path(splits_csv: Path, dataset: Dataset):
     splits = Splits(str(splits_csv), dataset)
     assert splits.num_folds == 1

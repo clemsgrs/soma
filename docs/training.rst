@@ -65,7 +65,8 @@ epoch timing. The estimated time remaining is shown only in the live display.
 Saved timing artifacts
 ----------------------
 
-The training history saved under ``fold_N/training_history.json`` includes the
-elapsed time and average epoch time for each fold. Those values also appear in
-the HTML report so completed runs can be compared without reopening the live
-console.
+The training history is saved as ``training_history.json`` (directly in the
+run directory for single-fold runs, inside ``fold_N/`` for cross-validation).
+It records the elapsed time and average epoch time for each epoch. Those values
+also appear in the HTML report so completed runs can be compared without
+reopening the live console.

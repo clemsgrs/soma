@@ -94,7 +94,10 @@ def save_attention(
     feature_dim = feature_store.feature_dim
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    for fold_dir in sorted(run_dir.glob("fold_*")):
+    flat_layout = (run_dir / "best_model.pt").is_file()
+    fold_dirs = [run_dir] if flat_layout else sorted(run_dir.glob("fold_*"))
+
+    for fold_dir in fold_dirs:
         checkpoint_path = fold_dir / "best_model.pt"
         predictions_path = fold_dir / "predictions.csv"
         if not checkpoint_path.is_file():
@@ -144,7 +147,7 @@ def save_attention(
                 np.savez_compressed(attention_dir / f"{sample_id}.npz", attention=attention)
                 logger.debug("Saved attention for %s → %s", sample_id, attention_dir / f"{sample_id}.npz")
 
-        logger.info("Saved attention scores for fold %s to %s", fold_dir.name, attention_dir)
+        logger.info("Saved attention scores for %s to %s", fold_dir.name, attention_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +182,10 @@ def render_heatmaps(
     run_dir = Path(run_dir)
     coord_map = _build_coordinate_map(Path(tiling_dir))
 
-    for fold_dir in sorted(run_dir.glob("fold_*")):
+    flat_layout = (run_dir / "attention").is_dir() and not any(run_dir.glob("fold_*"))
+    fold_dirs = [run_dir] if flat_layout else sorted(run_dir.glob("fold_*"))
+
+    for fold_dir in fold_dirs:
         attention_dir = fold_dir / "attention"
         if not attention_dir.is_dir():
             logger.debug("render_heatmaps: no attention dir in %s, skipping", fold_dir)
@@ -236,7 +242,7 @@ def render_heatmaps(
                     )
                     _save_heatmap(img, branch_heatmap_path)
 
-        logger.info("Rendered heatmaps for fold %s to %s", fold_dir.name, heatmap_dir)
+        logger.info("Rendered heatmaps for %s to %s", fold_dir.name, heatmap_dir)
 
 
 # ---------------------------------------------------------------------------

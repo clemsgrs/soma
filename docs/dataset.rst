@@ -22,7 +22,8 @@ Splits format
 -------------
 
 ``splits.csv``
-  | Required columns: ``fold``, ``sample_id``, ``split``.
+  | Required columns: ``sample_id``, ``split``.
+  | Optional column: ``fold`` (integer). Omit it for a single train/tune/test split; include it with distinct values (0, 1, 2, …) for cross-validation.
   | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
 
 Practical notes

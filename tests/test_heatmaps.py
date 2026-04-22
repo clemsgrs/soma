@@ -262,8 +262,7 @@ def test_render_attention_heatmap_blur(fake_slide_patch, tmp_path):
 
 def test_render_heatmaps_single_branch(tmp_path):
     """Single-branch attention → one PNG per sample."""
-    # Write fold structure
-    fold_dir = tmp_path / "fold_0"
+    fold_dir = tmp_path
     attn_dir = fold_dir / "attention"
     attn_dir.mkdir(parents=True)
     tiling_dir = tmp_path / "tiling"
@@ -301,7 +300,7 @@ def test_render_heatmaps_single_branch(tmp_path):
 
 def test_render_heatmaps_single_branch_nested_split_dir(tmp_path):
     """Attention nested under a split directory should still render."""
-    fold_dir = tmp_path / "fold_0"
+    fold_dir = tmp_path
     attn_dir = fold_dir / "attention" / "test"
     attn_dir.mkdir(parents=True)
     tiling_dir = tmp_path / "tiling"
@@ -336,7 +335,7 @@ def test_render_heatmaps_single_branch_nested_split_dir(tmp_path):
 
 def test_render_heatmaps_reads_nested_tiling_metadata(tmp_path):
     """Current hs2p metadata nests tile geometry under meta['tiling']."""
-    fold_dir = tmp_path / "fold_0"
+    fold_dir = tmp_path
     attn_dir = fold_dir / "attention" / "test"
     attn_dir.mkdir(parents=True)
     tiling_dir = tmp_path / "tiling"
@@ -370,7 +369,7 @@ def test_render_heatmaps_reads_nested_tiling_metadata(tmp_path):
 
 def test_render_heatmaps_clam_mb_multi_branch(tmp_path):
     """Multi-branch attention (n_classes, N) → one PNG per class."""
-    fold_dir = tmp_path / "fold_0"
+    fold_dir = tmp_path
     attn_dir = fold_dir / "attention"
     attn_dir.mkdir(parents=True)
     tiling_dir = tmp_path / "tiling"
@@ -411,7 +410,7 @@ def test_render_heatmaps_clam_mb_multi_branch(tmp_path):
 
 def test_render_heatmaps_skips_unknown_sample(tmp_path):
     """Samples not in the dataset are skipped without error."""
-    fold_dir = tmp_path / "fold_0"
+    fold_dir = tmp_path
     attn_dir = fold_dir / "attention"
     attn_dir.mkdir(parents=True)
     tiling_dir = tmp_path / "tiling"
@@ -461,7 +460,7 @@ def test_save_attention_skips_no_attention_aggregator(tmp_path):
 
     # Should return without error, writing nothing
     save_attention(tmp_path, dataset, feature_store)
-    assert not list(tmp_path.glob("fold_*/attention/*.npz"))
+    assert not list((tmp_path / "attention").glob("*.npz"))
 
 
 def test_save_attention_skips_slide_level_features(tmp_path):
@@ -483,4 +482,4 @@ def test_save_attention_skips_slide_level_features(tmp_path):
 
     dataset = MagicMock()
     save_attention(tmp_path, dataset, feature_store)
-    assert not list(tmp_path.glob("fold_*/attention/*.npz"))
+    assert not list((tmp_path / "attention").glob("*.npz"))

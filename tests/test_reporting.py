@@ -102,31 +102,38 @@ def _make_run_dir(
     }
     (run_dir / "run.yaml").write_text(_to_yaml(run_metadata))
 
-    # summary with mean/std for each metric (always prefixed by split name)
     resolved = resolve_metrics(task_name, metrics or [])
+    single_fold = n_folds == 1
+
+    # summary keys: plain for single fold, mean/std for multi-fold
     summary = {}
     for m in resolved:
-        summary[f"test/{m}_mean"] = 0.75
-        summary[f"test/{m}_std"] = 0.02
+        if single_fold:
+            summary[f"test/{m}"] = 0.75
+        else:
+            summary[f"test/{m}_mean"] = 0.75
+            summary[f"test/{m}_std"] = 0.02
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
 
     preds_fn = predictions_fn or (
         _make_regression_predictions if task_name == "regression" else _make_binary_predictions
     )
 
+    metrics_data = {
+        "tune": {m: 0.80 for m in resolved},
+        "test": {m: 0.75 for m in resolved},
+    }
+
     for fold_idx in range(n_folds):
-        fold_dir = run_dir / f"fold_{fold_idx}"
-        fold_dir.mkdir()
+        fold_dir = run_dir if single_fold else run_dir / f"fold_{fold_idx}"
+        if not single_fold:
+            fold_dir.mkdir()
 
         if include_history:
             (fold_dir / "training_history.json").write_text(
                 json.dumps(_make_training_history())
             )
 
-        metrics_data = {
-            "tune": {m: 0.80 for m in resolved},
-            "test": {m: 0.75 for m in resolved},
-        }
         (fold_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
         preds_fn().to_csv(fold_dir / "predictions_test.csv", index=False)
 
@@ -206,7 +213,7 @@ def test_load_run_data_binary(tmp_path: Path) -> None:
 
 def test_load_run_data_preserves_coverage_counts(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
-    fold_dir = run_dir / "fold_0"
+    fold_dir = run_dir  # single-fold: flat layout
     metrics_data = json.loads((fold_dir / "metrics.json").read_text())
     metrics_data["test"].update(
         {
@@ -312,7 +319,7 @@ def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
 
     result = MagicMock()
     result.fold_results = [fold_result]
-    result.summary = {"test/auroc_mean": 0.60, "test/auroc_std": 0.0}
+    result.summary = {"test/auroc": 0.60}
     result.run_dir = run_dir
 
     config = PipelineConfig(
@@ -407,7 +414,7 @@ def test_generate_report_includes_training_timing_summary(tmp_path: Path) -> Non
 
 def test_generate_report_includes_coverage_summary(tmp_path: Path) -> None:
     run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
-    fold_dir = run_dir / "fold_0"
+    fold_dir = run_dir  # single-fold: flat layout
     metrics_data = json.loads((fold_dir / "metrics.json").read_text())
     metrics_data["test"].update(
         {
