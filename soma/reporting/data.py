@@ -388,6 +388,7 @@ class ComparisonData:
     """All data needed to render a cross-run comparison report."""
 
     runs: list[RunData]
+    run_dirs: list[Path]
     labels: list[str]           # one short label per run
     shared_config: dict         # flat key → value for fields identical across all runs
     config_diffs: list[dict]    # one flat dict per run, containing only varying fields
@@ -433,6 +434,7 @@ def load_comparison_data(
 
     return ComparisonData(
         runs=runs,
+        run_dirs=run_dirs,
         labels=resolved_labels,
         shared_config=shared_config,
         config_diffs=config_diffs,

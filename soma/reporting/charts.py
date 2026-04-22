@@ -27,21 +27,21 @@ matplotlib.use("Agg")
 from soma.reporting.data import FoldData, FoldSlice, RunData, aggregate_slice_predictions
 
 SOMA_PALETTE = [
-    "#7C3AED",  # violet (primary)
-    "#0EA5E9",  # sky
-    "#10B981",  # emerald
-    "#F59E0B",  # amber
-    "#EF4444",  # red
-    "#8B5CF6",  # violet-light
-    "#06B6D4",  # cyan
-    "#F97316",  # orange
+    "#E2558A",  # soma pink
+    "#B52B65",  # deep rose
+    "#F472B6",  # light pink
+    "#FB7185",  # coral rose
+    "#EC4899",  # magenta pink
+    "#F9A8D4",  # blush
+    "#DB2777",  # ruby rose
+    "#C084FC",  # soft lavender accent
 ]
 
 plt.rcParams.update({
-    "figure.facecolor": "#F8FAFC",
-    "axes.facecolor": "white",
-    "axes.edgecolor": "#E2E8F0",
-    "grid.color": "#F1F5F9",
+    "figure.facecolor": "#FFF7FA",
+    "axes.facecolor": "#FFFDFE",
+    "axes.edgecolor": "#E9D5DF",
+    "grid.color": "#F8E2EA",
     "grid.linewidth": 0.8,
     "font.family": "sans-serif",
     "font.size": 11,
@@ -72,9 +72,9 @@ def _fig_to_svg(fig: plt.Figure) -> str:
 def _apply_soma_style(ax: plt.Axes) -> None:
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_color("#E2E8F0")
-    ax.spines["bottom"].set_color("#E2E8F0")
-    ax.grid(True, color="#F1F5F9", linewidth=0.8, zorder=0)
+    ax.spines["left"].set_color("#E9D5DF")
+    ax.spines["bottom"].set_color("#E9D5DF")
+    ax.grid(True, color="#F8E2EA", linewidth=0.8, zorder=0)
 
 
 def _legend_if_labeled(ax: plt.Axes) -> None:
@@ -219,7 +219,7 @@ def roc_curve_chart(folds: list[FoldData]) -> str:
                 ax.plot(mean_fpr, mean_tpr, color=SOMA_PALETTE[0], linewidth=2.5,
                         label=f"Pooled macro (AUC={mean_auc:.3f})")
 
-    ax.plot([0, 1], [0, 1], color="#94A3B8", linestyle="--", linewidth=1)
+    ax.plot([0, 1], [0, 1], color="#C08497", linestyle="--", linewidth=1)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.02)
     ax.set_title("ROC curve")
@@ -255,7 +255,7 @@ def pr_curve_chart(folds: list[FoldData]) -> str:
     ax.plot(recall, precision, color=SOMA_PALETTE[0], linewidth=2.5, label=f"Pooled (AP={ap:.3f})")
 
     pos_rate = float(all_preds["true_label"].mean())
-    ax.axhline(pos_rate, color="#94A3B8", linestyle="--", linewidth=1)
+    ax.axhline(pos_rate, color="#C08497", linestyle="--", linewidth=1)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1.02)
     ax.set_title("Precision-Recall curve")
@@ -284,7 +284,7 @@ def confusion_matrix_chart(folds: list[FoldData]) -> str:
     from matplotlib.colors import LinearSegmentedColormap
     from mpl_toolkits.axes_grid1 import make_axes_locatable
 
-    soma_cmap = LinearSegmentedColormap.from_list("soma", ["#F8FAFC", SOMA_PALETTE[0]])
+    soma_cmap = LinearSegmentedColormap.from_list("soma", ["#FFF7FA", SOMA_PALETTE[0]])
 
     n = len(labels)
     fig, ax = plt.subplots(figsize=(7, 7))
@@ -334,7 +334,7 @@ def scatter_predicted_vs_actual(folds: list[FoldData]) -> str:
 
     if all_vals:
         lo, hi = min(all_vals), max(all_vals)
-        ax.plot([lo, hi], [lo, hi], color="#94A3B8", linestyle="--", linewidth=1)
+        ax.plot([lo, hi], [lo, hi], color="#C08497", linestyle="--", linewidth=1)
 
     ax.set_title("Predicted vs. actual")
     ax.set_xlabel("Actual")
@@ -356,7 +356,7 @@ def residual_plot(folds: list[FoldData]) -> str:
         residuals = y_true - y_pred
         ax.scatter(y_pred, residuals, color=_fold_color(fd.fold), s=30, alpha=0.7, label=f"Fold {fd.fold}")
 
-    ax.axhline(0, color="#94A3B8", linestyle="--", linewidth=1)
+    ax.axhline(0, color="#C08497", linestyle="--", linewidth=1)
     ax.set_title("Residuals vs. predicted")
     ax.set_xlabel("Predicted")
     ax.set_ylabel("Residual (actual − predicted)")
@@ -381,14 +381,14 @@ def subgroup_metric_chart(
     values = [subgroup_data[g][metric_name] for g in groups]
     ns = [subgroup_data[g].get("n", "") for g in groups]
 
-    colors = ["#10B981" if v >= overall_value else "#EF4444" for v in values]
+    colors = [SOMA_PALETTE[0] if v >= overall_value else SOMA_PALETTE[1] for v in values]
 
     fig, ax = plt.subplots(figsize=(5.5, 3.5))
     bars = ax.bar(groups, values, color=colors)
     for bar, n in zip(bars, ns):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
                 f"n={n}", ha="center", va="bottom", fontsize=9)
-    ax.axhline(overall_value, color="#94A3B8", linestyle="--", linewidth=1.2,
+    ax.axhline(overall_value, color="#C08497", linestyle="--", linewidth=1.2,
                label=f"overall={overall_value:.3f}")
 
     title = f"{metric_name} by {column_name}" if column_name else metric_name

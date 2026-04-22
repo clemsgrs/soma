@@ -225,3 +225,74 @@ def test_compare_runs_default_output_dir(tmp_path: Path) -> None:
     assert report_path.parent.name.startswith("abmil-vs-clam-sb__")
     assert report_path.name == "index.html"
     assert report_path.exists()
+
+
+def test_compare_runs_overview_ranks_runs_and_metrics(tmp_path: Path) -> None:
+    """The overview tab should rank runs and order metrics by best score."""
+    metric_names = ["auroc", "balanced_accuracy"]
+    run_specs = [
+        ("alpha", 0.94, 0.83),
+        ("beta", 0.89, 0.79),
+        ("gamma", 0.82, 0.77),
+        ("delta", 0.75, 0.73),
+    ]
+    run_dirs = []
+    for idx, (run_id, auroc, bal_acc) in enumerate(run_specs):
+        run_dir = _make_run_dir(
+            tmp_path / run_id,
+            aggregator=f"model_{idx}",
+            run_id=run_id,
+            n_folds=2,
+        )
+        config = yaml.safe_load((run_dir / "config.yaml").read_text())
+        config["evaluation"]["metrics"] = metric_names
+        (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        summary = {
+            "test/auroc_mean": auroc,
+            "test/auroc_std": 0.01,
+            "test/balanced_accuracy_mean": bal_acc,
+            "test/balanced_accuracy_std": 0.02,
+        }
+        (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+        run_dirs.append(run_dir)
+
+    report_path = compare_runs(
+        run_dirs,
+        output_dir=tmp_path / "comparison",
+        labels=[spec[0] for spec in run_specs],
+    )
+    html = report_path.read_text()
+
+    assert 'class="tab-group"' in html
+    assert "overview-layout" in html
+    assert "Cross-run comparison" in html
+    assert "Dataset context" in html
+    assert "Overview" in html
+    assert "Train plots" in html
+    assert "Test results" in html
+    assert "Statistical analysis" in html
+    assert "Configuration" in html
+    assert "Dataset CSV" in html
+    assert "Splits CSV" in html
+
+    overview_start = html.index('id="overview-tab"')
+    overview_end = html.index('id="train-plots-tab"')
+    overview_html = html[overview_start:overview_end]
+
+    assert overview_html.index('data-metric="auroc"') < overview_html.index('data-metric="balanced_accuracy"')
+    assert overview_html.index("alpha") < overview_html.index("beta") < overview_html.index("gamma") < overview_html.index("delta")
+    assert 'podium-gold' in overview_html
+    assert 'podium-silver' in overview_html
+    assert 'podium-bronze' in overview_html
+    assert 'soma-brand-rank' in overview_html
+    assert 'Rank</th>' in overview_html
+    assert 'rank-link' in overview_html
+    assert 'Open report for alpha' in overview_html
+    assert 'Metrics' not in overview_html
+    assert 'Dataset CSV' in overview_html
+    assert 'Splits CSV' in overview_html
+
+    config_start = html.index('id="configuration-tab"')
+    config_html = html[config_start:]
+    assert "Varying fields" in config_html
+    assert "Shared fields" in config_html
