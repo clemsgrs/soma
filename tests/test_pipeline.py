@@ -362,7 +362,7 @@ class TestTrainOneFold:
         assert any(
             record.levelno == logging.WARNING
             and record.getMessage()
-            == "Fold 0 has no tuning samples with available features; using train split as tune because allow_missing_tune=True"
+            == "Run has no tuning samples with available features; using train split as tune because allow_missing_tune=True"
             for record in caplog.records
         )
 
