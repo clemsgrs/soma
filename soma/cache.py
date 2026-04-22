@@ -104,6 +104,10 @@ class TilingCacheResolution(BaseCacheResolution):
     cache_ids: tuple[str, ...]
     cache_stem_by_id: dict[str, str]
 
+    @property
+    def previews_dir(self) -> Path:
+        return self.cache_dir / "previews"
+
 
 def _canonical_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
@@ -572,9 +576,18 @@ def _canonical_artifact_destination(
     column_name: str,
     source_path: Path,
     artifacts_dir: Path,
+    previews_dir: Path,
 ) -> Path:
+    if column_name == "mask_preview_path":
+        return previews_dir / "mask" / f"{artifact_stem}.jpg"
+    if column_name == "tiling_preview_path":
+        return previews_dir / "tiling" / f"{artifact_stem}.jpg"
+    if column_name == "coordinates_npz_path":
+        return artifacts_dir / f"{artifact_stem}.coordinates.npz"
+    if column_name == "coordinates_meta_path":
+        return artifacts_dir / f"{artifact_stem}.coordinates.meta.json"
     suffix = "".join(source_path.suffixes) if source_path.suffixes else source_path.suffix
-    stem = f"{artifact_stem}.{column_name}"
+    stem = f"{artifact_stem}.{column_name.removesuffix('_path')}"
     return artifacts_dir / f"{stem}{suffix}"
 
 
@@ -610,6 +623,7 @@ def _validate_tiling_cache_contents(
     dataset: Dataset,
     process_list_path: Path,
     artifacts_dir: Path,
+    previews_dir: Path,
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
     preprocessing: PreprocessingConfig,
@@ -651,9 +665,9 @@ def _validate_tiling_cache_contents(
                 continue
             if not candidate.is_file():
                 return CacheValidationResult(complete=False, reason=f"missing artifact for {sample_id}")
-            try:
-                candidate.resolve().relative_to(artifacts_dir.resolve())
-            except ValueError:
+            resolved_candidate = candidate.resolve()
+            expected_root = previews_dir if column_name in {"mask_preview_path", "tiling_preview_path"} else artifacts_dir
+            if not _is_relative_to(resolved_candidate, expected_root.resolve()):
                 return CacheValidationResult(
                     complete=False,
                     reason=f"artifact path escapes cache entry for {sample_id}",
@@ -691,6 +705,14 @@ def _validate_tiling_cache_contents(
     return CacheValidationResult(complete=True)
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def resolve_tiling_cache(
     *,
     cache_root: Path,
@@ -717,8 +739,10 @@ def resolve_tiling_cache(
     manifest_path = cache_dir / MANIFEST_NAME
     process_list_path = cache_dir / PROCESS_LIST_NAME
     artifacts_dir = cache_dir / "artifacts"
+    previews_dir = cache_dir / "previews"
     cache_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    previews_dir.mkdir(parents=True, exist_ok=True)
     _emit_cache_resolve_log(
         cache_label="tiling",
         cache_dir=cache_dir,
@@ -741,6 +765,7 @@ def resolve_tiling_cache(
             dataset=dataset,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
+            previews_dir=previews_dir,
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
             preprocessing=preprocessing,
@@ -840,6 +865,7 @@ def write_tiling_cache_payload(
                 column_name=column_name,
                 source_path=source_path,
                 artifacts_dir=cache_resolution.artifacts_dir,
+                previews_dir=cache_resolution.previews_dir,
             )
             _copy_file_to_cache(source=source_path, destination=destination)
             rewritten[column_name] = str(destination.resolve())
