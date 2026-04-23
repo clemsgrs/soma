@@ -103,6 +103,8 @@ def build_preprocessing_config(
     }
     if preprocessing.sam2_num_workers is not None:
         payload["segmentation"]["sam2_num_workers"] = int(preprocessing.sam2_num_workers)
+    if preprocessing.sam2_device is not None:
+        payload["segmentation"]["sam2_device"] = str(preprocessing.sam2_device)
     if preprocessing.requested_region_size_px is not None:
         payload["requested_region_size_px"] = int(preprocessing.requested_region_size_px)
     if preprocessing.region_tile_multiple is not None:

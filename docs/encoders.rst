@@ -2,9 +2,9 @@ Encoders
 ========
 
 Encoder choice sets the representation space. In `soma`, the encoder is
-selected by ``EncoderConfig.name`` and configured through fields that describe
-its native geometry and runtime behavior, including spacing, batch size, and
-output variant.
+selected by ``EncoderConfig.name`` and configured through runtime behavior
+fields such as precision, batch size, and output variant. Geometry is handled
+through preprocessing, not the encoder config itself.
 
 The main configuration object is :class:`soma.config.EncoderConfig`.
 
@@ -144,9 +144,8 @@ Patient-level encoders
 
 Compatibility is enforced by the code and by ``PipelineConfig`` validation.
 Use this page to choose a valid starting point, then let the runtime validate
-the final combination. If a preset accepts a non-default spacing or input size,
-that is a compatibility choice and not necessarily a performance-improving
-one.
+the final combination. The spacing table is a reference for selecting
+preprocessing geometry, not a separate encoder knob.
 
 Discovery helpers
 -----------------

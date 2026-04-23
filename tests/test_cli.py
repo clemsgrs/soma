@@ -90,12 +90,13 @@ def test_run_invalid_yaml_exits(tmp_path: Path, capsys):
 
 
 def test_run_invalid_config_content_exits(tmp_path: Path, capsys):
-    # Valid YAML but missing required fields (no task)
+    # Valid YAML but invalid dataset_type.
     raw = {
-        "dataset_csv": "data.csv",
-        "splits_csv": "splits.csv",
-        "output_root": "out",
-        "dataset_type": "slide",
+        "data": {
+            "dataset_csv": "data.csv",
+            "splits_csv": "splits.csv",
+            "dataset_type": "case",
+        }
     }
     config_path = tmp_path / "config.yaml"
     with config_path.open("w") as f:

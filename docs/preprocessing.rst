@@ -34,6 +34,9 @@ Key knobs
    * - ``tissue_method``
      - Tissue segmentation method
      - Keep default unless segmentation is noisy
+   * - ``sam2_device``
+     - Device used for SAM2 tissue segmentation
+     - Set explicitly when running SAM2 on GPU
    * - ``sam2_num_workers``
      - Cap on concurrent SAM2 tissue-segmentation workers
      - Reduce GPU memory pressure on smaller cards

@@ -8,7 +8,10 @@ here so the Sphinx reference stays accurate.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
+from importlib import resources
 from pathlib import Path
+import copy
 from typing import Any
 
 import yaml
@@ -27,6 +30,128 @@ def _default_preview_config() -> PreviewConfig:
     )
 
 
+def _config_resource_path() -> resources.abc.Traversable:
+    return resources.files("soma.configs").joinpath("default.yaml")
+
+
+@lru_cache(maxsize=1)
+def _load_default_config_data() -> dict[str, Any]:
+    with _config_resource_path().open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    if not isinstance(data, dict):
+        raise ValueError("Bundled default config must be a mapping")
+    return data
+
+
+def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge two plain dicts without mutating either input."""
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if (
+            key in merged
+            and isinstance(merged[key], dict)
+            and isinstance(value, dict)
+        ):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a user-supplied config into the canonical nested layout."""
+    if not isinstance(data, dict):
+        raise TypeError("Config file must contain a mapping at the top level")
+
+    allowed_sections = {
+        "run",
+        "data",
+        "preprocessing",
+        "encoder",
+        "aggregation",
+        "task",
+        "evaluation",
+        "training",
+        "execution",
+        "cache",
+        "reports",
+    }
+    unknown_keys = [key for key in data if key not in allowed_sections]
+    if unknown_keys:
+        raise ValueError(
+            "Config file uses unsupported top-level keys: "
+            + ", ".join(sorted(str(key) for key in unknown_keys))
+            + ". Use the nested run/data/preprocessing/encoder/aggregation/task/"
+            "evaluation/training/execution/cache/reports layout."
+        )
+
+    layout: dict[str, Any] = {}
+
+    for section in ("run", "data", "reports"):
+        if section in data:
+            value = data[section]
+            if not isinstance(value, dict):
+                raise TypeError(f"Config section '{section}' must be a mapping")
+            layout[section] = copy.deepcopy(value)
+
+    for section in (
+        "preprocessing",
+        "encoder",
+        "aggregation",
+        "task",
+        "evaluation",
+        "training",
+        "execution",
+        "cache",
+    ):
+        if section in data:
+            value = data[section]
+            if section == "aggregation":
+                if value is not None and not isinstance(value, dict):
+                    raise TypeError("Config section 'aggregation' must be a mapping or null")
+            elif value is not None and not isinstance(value, dict):
+                raise TypeError(f"Config section '{section}' must be a mapping")
+            layout[section] = copy.deepcopy(value)
+
+    return layout
+
+
+def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
+    run_data = data.get("run", {})
+    data_data = data.get("data", {})
+    preprocessing_data = dict(data.get("preprocessing", {}))
+    preview_data = dict(preprocessing_data.pop("preview", {}))
+    tissue_contour_color = preview_data.get("tissue_contour_color")
+    if isinstance(tissue_contour_color, list):
+        preview_data["tissue_contour_color"] = tuple(tissue_contour_color)
+
+    reporting_data = data.get("reports", {})
+    heatmap_data = reporting_data.get("heatmaps")
+    training_data = dict(data.get("training", {}))
+    if "seed" in run_data and "seed" not in training_data:
+        training_data["seed"] = run_data["seed"]
+
+    return PipelineConfig(
+        dataset_csv=data_data["dataset_csv"],
+        splits_csv=data_data["splits_csv"],
+        output_root=run_data["output_root"],
+        dataset_type=data_data["dataset_type"],
+        preprocessing=PreprocessingConfig(
+            **preprocessing_data,
+            preview=PreviewConfig(**preview_data),
+        ),
+        execution=ExecutionConfig(**data.get("execution", {})),
+        cache=CacheConfig(**data.get("cache", {})),
+        encoder=EncoderConfig(**data["encoder"]) if data.get("encoder") is not None else None,
+        aggregator=AggregatorConfig(**data["aggregation"]) if data.get("aggregation") else None,
+        task=_load_task_config(data),
+        evaluation=_load_evaluation_config(data),
+        training=TrainingConfig(**training_data),
+        heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
+        tags=list(run_data.get("tags", [])),
+    )
+
+
 @dataclass(frozen=True)
 class PreprocessingConfig:
     """Whole-slide preprocessing, tiling, and geometry settings.
@@ -34,9 +159,9 @@ class PreprocessingConfig:
     The preprocessing backend controls tissue segmentation and tile
     extraction. ``requested_spacing_um`` and ``requested_tile_size_px`` are
     the primary scale-selection knobs. The hierarchical fields are used only
-    when the aggregator requests HIPT-style region geometry. ``sam2_num_workers``
-    caps concurrent SAM2 tissue-segmentation workers when the backend supports
-    that execution path.
+    when the aggregator requests HIPT-style region geometry. ``sam2_device``
+    and ``sam2_num_workers`` tune SAM2 tissue-segmentation execution when the
+    backend supports that path.
     """
 
     backend: str = "auto"
@@ -50,6 +175,7 @@ class PreprocessingConfig:
     tissue_threshold: float = 0.1
     overlap: float = 0.0
     seg_downsample: int = 64
+    sam2_device: str = "cpu"
     sam2_num_workers: int | None = None
     tolerance: float = 0.05
     ref_tile_size_px: int | None = None
@@ -88,21 +214,16 @@ class ExecutionConfig:
 class EncoderConfig:
     """Foundation-model encoder selection and model-adjacent settings.
 
-    ``name`` selects the encoder preset. ``spacing_um`` and ``input_size``
-    describe the preset's native geometry and compatibility envelope. Other
-    values may be accepted by a preset, but they should be treated as
-    compatibility choices and may be suboptimal. ``output_variant`` exposes
+    ``name`` selects the encoder preset. ``output_variant`` exposes
     preset-specific feature variants when the encoder supports them.
     ``allow_non_recommended_settings`` opts into slide2vec's warning-only mode
-    when intentionally sweeping non-default geometry or variant settings.
+    when intentionally sweeping non-default runtime settings.
     """
 
     name: str
     precision: str | None = None
     batch_size: int = 32
     adaptive_batching: bool = False
-    input_size: int | None = None
-    spacing_um: float | None = None
     output_variant: str | None = None
     allow_non_recommended_settings: bool = False
     save_tile_features: bool = False
@@ -267,11 +388,6 @@ class PipelineConfig:
 # --- YAML serialization ---
 
 
-def _config_to_dict(config: PipelineConfig) -> dict[str, Any]:
-    """Convert a PipelineConfig to a plain dict suitable for YAML."""
-    return _normalize_yaml_value(asdict(config))
-
-
 def _normalize_yaml_value(obj: Any) -> Any:
     """Recursively normalize dataclass output into YAML-safe primitives."""
     if isinstance(obj, Path):
@@ -285,9 +401,52 @@ def _normalize_yaml_value(obj: Any) -> Any:
     return obj
 
 
+def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
+    """Convert a PipelineConfig into the canonical nested YAML layout."""
+    data = {
+        "run": {
+            "output_root": _normalize_yaml_value(config.output_root),
+            "seed": config.training.seed,
+            "tags": _normalize_yaml_value(config.tags),
+        },
+        "data": {
+            "dataset_csv": _normalize_yaml_value(config.dataset_csv),
+            "splits_csv": _normalize_yaml_value(config.splits_csv),
+            "dataset_type": config.dataset_type,
+        },
+        "preprocessing": _normalize_yaml_value(asdict(config.preprocessing)),
+        "execution": _normalize_yaml_value(asdict(config.execution)),
+        "cache": _normalize_yaml_value(asdict(config.cache)),
+        "task": _normalize_yaml_value(asdict(config.task)),
+        "evaluation": _normalize_yaml_value(asdict(config.evaluation)),
+        "training": _normalize_yaml_value(
+            {
+                key: value
+                for key, value in asdict(config.training).items()
+                if key != "seed"
+            }
+        ),
+        "reports": {
+            "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
+        },
+    }
+    data["preprocessing"]["preview"] = _normalize_yaml_value(asdict(config.preprocessing.preview))
+    data["encoder"] = (
+        _normalize_yaml_value(asdict(config.encoder))
+        if config.encoder is not None
+        else None
+    )
+    data["aggregation"] = (
+        _normalize_yaml_value(asdict(config.aggregator))
+        if config.aggregator is not None
+        else None
+    )
+    return data
+
+
 def save_config(config: PipelineConfig, path: Path | str) -> None:
-    """Serialize a PipelineConfig to a YAML file."""
-    data = _config_to_dict(config)
+    """Serialize a PipelineConfig to a fully resolved nested YAML file."""
+    data = _deep_merge_dicts(_load_default_config_data(), _config_to_layout_dict(config))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -295,10 +454,13 @@ def save_config(config: PipelineConfig, path: Path | str) -> None:
 
 
 def load_config(path: Path | str) -> PipelineConfig:
-    """Load a PipelineConfig from a YAML file."""
+    """Load a PipelineConfig from YAML, merging bundled defaults first."""
     with open(path) as f:
-        data = yaml.safe_load(f)
-    return _dict_to_config(data)
+        raw_data = yaml.safe_load(f) or {}
+    if not isinstance(raw_data, dict):
+        raise TypeError("Config file must contain a top-level mapping")
+    canonical = _deep_merge_dicts(_load_default_config_data(), _layout_to_config_dict(raw_data))
+    return _layout_to_pipeline_config(canonical)
 
 
 def _load_task_config(data: dict[str, Any]) -> TaskConfig:
@@ -317,35 +479,4 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
     return EvalConfig(
         metrics=evaluation_data.get("metrics", []),
         subgroups=SubgroupConfig(columns=columns),
-    )
-
-
-def _dict_to_config(data: dict[str, Any]) -> PipelineConfig:
-    """Reconstruct a PipelineConfig from a plain dict."""
-    encoder_data = data.get("encoder")
-    heatmap_data = data.get("heatmaps")
-    execution_data = data.get("execution") or {}
-    preprocessing_data = dict(data.get("preprocessing", {}))
-    preview_data = dict(preprocessing_data.pop("preview", {}))
-    tissue_contour_color = preview_data.get("tissue_contour_color")
-    if isinstance(tissue_contour_color, list):
-        preview_data["tissue_contour_color"] = tuple(tissue_contour_color)
-    return PipelineConfig(
-        dataset_csv=data["dataset_csv"],
-        splits_csv=data["splits_csv"],
-        output_root=data["output_root"],
-        dataset_type=data["dataset_type"],
-        preprocessing=PreprocessingConfig(
-            **preprocessing_data,
-            preview=PreviewConfig(**preview_data),
-        ),
-        execution=ExecutionConfig(**execution_data),
-        cache=CacheConfig(**data.get("cache", {})),
-        encoder=EncoderConfig(**encoder_data) if encoder_data is not None else None,
-        aggregator=AggregatorConfig(**data["aggregator"]) if data.get("aggregator") else None,
-        task=_load_task_config(data),
-        evaluation=_load_evaluation_config(data),
-        training=TrainingConfig(**data.get("training", {})),
-        heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
-        tags=data.get("tags", []),
     )

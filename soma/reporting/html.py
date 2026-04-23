@@ -89,7 +89,7 @@ def _section_header(run_data: RunData) -> str:
     status = meta.get("status", "—")
     status_class = {"completed": "status-ok", "failed": "status-err"}.get(status, "status-run")
     git_sha = meta.get("git_sha") or "—"
-    seed = run_data.config.get("training", {}).get("seed", "—")
+    seed = run_data.config.get("run", {}).get("seed", run_data.config.get("training", {}).get("seed", "—"))
     num_folds = len(run_data.folds)
 
     return f"""

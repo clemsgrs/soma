@@ -554,19 +554,8 @@ class FeatureExtractor:
         resolved_preprocessing: PreprocessingConfig | None,
         output_variant: str | None,
     ) -> EncoderConfig:
-        encoder_info = encoder_registry.info(encoder_name)
-        input_size = self._encoder.input_size
-        if input_size is None:
-            recommended_input_size = encoder_info.get("input_size")
-            if recommended_input_size is not None:
-                input_size = int(recommended_input_size)
-        spacing_um = self._encoder.spacing_um
-        if spacing_um is None and resolved_preprocessing is not None:
-            spacing_um = resolved_preprocessing.requested_spacing_um
         return replace(
             self._encoder,
-            input_size=input_size,
-            spacing_um=spacing_um,
             output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
         )
 

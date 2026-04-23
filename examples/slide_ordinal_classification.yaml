@@ -1,25 +1,23 @@
-# Slide-level ordinal classification with ABMIL
-# Typical use case: Gleason grading, tumour staging (ordered discrete grades)
-# Run with: soma run examples/slide_ordinal_classification.yaml
+run:
+  output_root: runs/ordinal
+  seed: 0
+  tags: []
 
-dataset_csv: data/dataset.csv
-splits_csv: data/splits.csv
-output_root: runs/ordinal
-
-dataset_type: slide
+data:
+  dataset_csv: data/dataset.csv
+  splits_csv: data/splits.csv
+  dataset_type: slide
 
 preprocessing:
-  # spacing and tile size are auto-resolved from the encoder's preset values
   tissue_threshold: 0.1
 
 cache:
   enabled: true
-  # root_dir defaults to <output_root>/ (feature_cache/ and tiling_cache/ alongside) — set explicitly to share across runs
 
 encoder:
   name: uni2
 
-aggregator:
+aggregation:
   name: abmil
 
 task:

@@ -1,29 +1,15 @@
-# soma reference configuration — canonical nested layout
-# Run with: soma /path/to/config.yaml
-#
-# This file shows the full user-facing YAML shape. For most runs, start from
-# this file or from soma/configs/default.yaml and only change the blocks you
-# care about.
-
 run:
-  # Output directory for run artifacts.
-  output_root: runs/my_experiment
-  # Run seed used by training and reproducibility helpers.
+  output_root: runs
   seed: 0
-  # Free-form labels stored in the run metadata and report.
   tags:
     - baseline
 
 data:
-  # Dataset manifest and split manifest.
   dataset_csv: data/dataset.csv
   splits_csv: data/splits.csv
-  # Input mode for the pipeline.
-  # Options: slide | tile | patient
   dataset_type: slide
 
 preprocessing:
-  # WSI backend. Options: auto | openslide | cucim | asap | vips
   backend: auto
   requested_tile_size_px: null
   requested_spacing_um: null
@@ -63,7 +49,6 @@ cache:
   save_tile_features_for_slide: true
 
 encoder:
-  # Foundation-model encoder.
   name: uni2
   precision: null
   batch_size: 32
@@ -73,7 +58,6 @@ encoder:
   save_tile_features: false
 
 aggregation:
-  # MIL aggregator.
   name: abmil
   params:
     hidden_dim: 256

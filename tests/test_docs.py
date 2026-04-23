@@ -17,15 +17,15 @@ def _load_reference_generator():
     return module, docs_dir
 
 
-def test_reference_generator_matches_checked_in_file() -> None:
+def test_cli_generator_matches_checked_in_file() -> None:
     generator, docs_dir = _load_reference_generator()
-    generated = generator.build_reference_rst().strip()
-    checked_in = (docs_dir / "reference.rst").read_text(encoding="utf-8").strip()
+    generated = generator.build_cli_rst().strip()
+    checked_in = (docs_dir / "cli.rst").read_text(encoding="utf-8").strip()
 
     assert generated == checked_in
-    assert "Compact Parameter Reference" in generated
-    assert "Aggregator registry" in generated
-    assert "Task registry" in generated
+    assert "CLI Guide" in generated
+    assert "Available commands" in generated
+    assert "What the CLI expects" in generated
 
 
 def test_sphinx_docs_build(tmp_path: Path) -> None:
@@ -41,4 +41,4 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
     assert "Made with" not in index_html
     assert "@pradyunsg" not in index_html
     assert (out_dir / "index.html").exists()
-    assert (out_dir / "reference.html").exists()
+    assert (out_dir / "cli.html").exists()

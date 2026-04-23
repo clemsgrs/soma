@@ -122,6 +122,12 @@ soma /path/to/config.yaml
 python -m soma /path/to/config.yaml
 ```
 
+The YAML layout is grouped by concern: `run`, `data`, `preprocessing`,
+`encoder`, `aggregation`, `task`, `evaluation`, `training`, `execution`,
+`cache`, and `reports`. `soma` merges your file on top of the bundled
+`soma/configs/default.yaml`, so you usually only need to edit the blocks you
+want to change.
+
 You can also inspect the available presets directly from the terminal:
 
 ```bash
@@ -143,7 +149,7 @@ soma list tasks
 - [Training and Evaluation](docs/training.rst)
 - [Caching](docs/caching.rst)
 - [Run Outputs](docs/outputs.rst)
-- [Compact Parameter Reference](docs/reference.rst)
+- [CLI Guide](docs/cli.rst)
 
 ## License
 

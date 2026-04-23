@@ -105,15 +105,17 @@ class TestValidateEncoderConfig:
 
     def test_spacing_mismatch(self):
         warnings = validate_encoder_config(
-            EncoderConfig(name="uni2", spacing_um=1.0),
+            EncoderConfig(name="uni2"),
             _metadata(supported_spacing_um=0.5),
+            preprocessing_config=PreprocessingConfig(requested_spacing_um=1.0),
         )
         assert any("spacing" in w.lower() for w in warnings)
 
     def test_spacing_matches_one_of_multiple(self):
         warnings = validate_encoder_config(
-            EncoderConfig(name="model", spacing_um=1.0),
+            EncoderConfig(name="model"),
             _metadata(supported_spacing_um=[0.5, 1.0]),
+            preprocessing_config=PreprocessingConfig(requested_spacing_um=1.0),
         )
         assert not any("spacing" in w.lower() for w in warnings)
 
@@ -124,25 +126,20 @@ class TestValidateEncoderConfig:
                 _metadata(supported_spacing_um=[0.5, 1.0]),
             )
 
-    def test_input_size_mismatch(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="uni2", input_size=512),
-            _metadata(input_size=224),
-        )
-        assert any("input_size" in w.lower() for w in warnings)
-
     def test_requested_spacing_match_does_not_warn_when_read_spacing_differs(self):
         warnings = validate_encoder_config(
-            EncoderConfig(name="uni2", spacing_um=0.5),
+            EncoderConfig(name="uni2"),
             _metadata(supported_spacing_um=0.5),
+            preprocessing_config=PreprocessingConfig(requested_spacing_um=0.5),
             tiling_result=_tiling_result(read_spacing_um=0.75),
         )
         assert not any("spacing" in w.lower() for w in warnings)
 
     def test_requested_spacing_mismatch_with_tiling_warns(self):
         warnings = validate_encoder_config(
-            EncoderConfig(name="uni2", spacing_um=0.5),
+            EncoderConfig(name="uni2"),
             _metadata(supported_spacing_um=0.5),
+            preprocessing_config=PreprocessingConfig(requested_spacing_um=0.5),
             tiling_result=_tiling_result(
                 requested_spacing_um=0.75,
                 read_spacing_um=0.5,
@@ -169,7 +166,6 @@ class TestValidateEncoderConfig:
                 level="slide",
                 tile_encoder="test-validate-slide-base",
                 tile_encoder_output_variant="default",
-                input_size=None,
             ),
             preprocessing_config=PreprocessingConfig(requested_tile_size_px=256),
         )
@@ -183,7 +179,6 @@ class TestValidateEncoderConfig:
                     level="slide",
                     tile_encoder="test-validate-slide-base",
                     tile_encoder_output_variant="default",
-                    input_size=None,
                 ),
             )
 
