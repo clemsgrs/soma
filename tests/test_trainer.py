@@ -199,6 +199,47 @@ class TestTrainerWithSlideModel:
         assert len(result.history) == 3
         assert result.checkpoint_path.exists()
 
+    def test_fit_with_half_precision_slide_features(self, tmp_path: Path):
+        """Trainer should accept cached slide features stored in fp16."""
+        from torch.utils.data import DataLoader
+        from soma.features import FeatureStore
+        from soma.training.slide_dataset import slide_collate_fn
+        from soma.training.slide_model import SlideModel
+
+        seed_everything(42)
+        D = 16
+        model = SlideModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
+
+        feature_dir = tmp_path / "features"
+        feature_dir.mkdir()
+        for i in range(8):
+            torch.save(torch.randn(D, dtype=torch.float16), feature_dir / f"s{i}.pt")
+        store = FeatureStore(feature_dir)
+        train_loader = DataLoader(
+            [(store.load(f"s{i}"), i % 2, f"s{i}") for i in range(6)],
+            batch_size=2,
+            collate_fn=slide_collate_fn,
+        )
+        tune_loader = DataLoader(
+            [(store.load(f"s{i}"), i % 2, f"s{i}") for i in range(6, 8)],
+            batch_size=2,
+            collate_fn=slide_collate_fn,
+        )
+
+        config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=1)
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            tune_loader=tune_loader,
+            config=config,
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        result = trainer.fit()
+
+        assert isinstance(result, TrainResult)
+        assert result.checkpoint_path.exists()
+
 
 class TestTrainerWithRegressionHead:
     def test_fit_with_regression_model(self, tmp_path: Path):

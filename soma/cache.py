@@ -1169,6 +1169,68 @@ def _load_metadata(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _normalized_manifest_rows(rows: Iterable[dict[str, object]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for row in rows:
+        mask_path = row.get("mask_path")
+        mask_text = ""
+        if mask_path is not None:
+            mask_text = str(mask_path)
+            if mask_text.lower() == "nan":
+                mask_text = ""
+        normalized.append(
+            {
+                "sample_id": str(row["sample_id"]),
+                "image_path": str(row["image_path"]),
+                "mask_path": mask_text,
+            }
+        )
+    return sorted(normalized, key=lambda row: row["sample_id"])
+
+
+def _manifest_matches_dataset(manifest_path: Path, dataset: Dataset) -> bool:
+    if not manifest_path.is_file():
+        return False
+    try:
+        with manifest_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+    except Exception:
+        return False
+    return _normalized_manifest_rows(rows) == _normalized_manifest_rows(dataset_manifest_rows(dataset))
+
+
+def _backfill_feature_cache_identity_metadata(
+    *,
+    metadata_path: Path,
+    metadata: dict[str, Any],
+    dataset: Dataset,
+    cache_ids: Sequence[str],
+    cache_stem_by_id: dict[str, str],
+) -> dict[str, Any]:
+    if not _manifest_matches_dataset(metadata_path.parent / MANIFEST_NAME, dataset):
+        return metadata
+
+    signature_map = {
+        str(cache_id): str(signature)
+        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
+    }
+    changed = False
+    for cache_id in cache_ids:
+        cache_id = str(cache_id)
+        expected_signature = str(cache_stem_by_id[cache_id])
+        if signature_map.get(cache_id) is None:
+            signature_map[cache_id] = expected_signature
+            changed = True
+
+    if changed:
+        updated = dict(metadata)
+        updated["sample_identity_signature_by_id"] = signature_map
+        _write_metadata(metadata_path, updated)
+        return updated
+    return metadata
+
+
 def _validate_feature_cache_contents(
     *,
     features_dir: Path,
@@ -1272,6 +1334,7 @@ def _resolve_cache(
     cache_root: Path,
     cache_kind: str,
     key: str,
+    dataset: Dataset,
     metadata: dict[str, Any],
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
@@ -1295,6 +1358,13 @@ def _resolve_cache(
 
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)
+        existing = _backfill_feature_cache_identity_metadata(
+            metadata_path=metadata_path,
+            metadata=existing,
+            dataset=dataset,
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
+        )
         mismatch_message = _format_cache_metadata_mismatch(
             cache_label="Feature cache",
             cache_dir=cache_dir,
@@ -1312,7 +1382,13 @@ def _resolve_cache(
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
         if partial:
-            reason = f"{present}/{expected} present; {expected - present} missing"
+            missing = expected - present
+            feature_word = "feature file" if present == 1 else "feature files"
+            missing_word = "sample" if missing == 1 else "samples"
+            reason = (
+                f"{present}/{expected} {feature_word} already materialized on disk; "
+                f"embedding the {missing} missing {missing_word}"
+            )
         _emit_cache_state_log(
             cache_label="feature",
             cache_dir=cache_dir,
@@ -1388,6 +1464,7 @@ def resolve_tile_cache(
         cache_root=cache_root,
         cache_kind="tile",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(dataset.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
@@ -1437,6 +1514,7 @@ def resolve_slide_cache(
         cache_root=cache_root,
         cache_kind="slide",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(dataset.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
@@ -1486,6 +1564,7 @@ def resolve_patient_cache(
         cache_root=cache_root,
         cache_kind="patient",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(cache_stem_by_id.keys())),
         cache_stem_by_id=cache_stem_by_id,
@@ -1522,6 +1601,7 @@ def resolve_hierarchical_cache(
         cache_root=cache_root,
         cache_kind="hierarchical",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(dataset.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,

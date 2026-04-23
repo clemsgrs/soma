@@ -190,10 +190,10 @@ class TileFeatureExtractor:
                 num_gpus=self._execution.num_gpus,
                 save_tile_embeddings=True,
             )
-            resolved_num_workers = execution.resolved_num_workers()
+            resolved_num_workers = execution.resolved_num_workers_per_gpu()
             worker_source = (
-                "explicit ExecutionConfig.num_workers"
-                if self._execution.num_workers is not None
+                "explicit ExecutionConfig.num_workers_per_gpu"
+                if self._execution.num_workers_per_gpu is not None
                 else "slide2vec cpu_worker_limit()"
             )
             slide2vec_progress.emit_progress_log(
@@ -206,7 +206,6 @@ class TileFeatureExtractor:
                 "pin_memory": torch.cuda.is_available(),
             }
             if resolved_num_workers > 0:
-                loader_kwargs["persistent_workers"] = execution.persistent_workers
                 loader_kwargs["prefetch_factor"] = execution.prefetch_factor
             loader = DataLoader(image_dataset, **loader_kwargs)
 

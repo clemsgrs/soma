@@ -6,6 +6,7 @@ from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import torch
 from hs2p import SlideSpec
 from hs2p.preprocessing import validate_tiling_result_provenance
 
@@ -13,6 +14,7 @@ from slide2vec import (
     ExecutionOptions,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
+import slide2vec.api as slide2vec_api
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, PreviewConfig
@@ -131,21 +133,28 @@ def build_execution_options(
 ) -> ExecutionOptions:
     execution = execution or ExecutionConfig()
     num_gpus_value = num_gpus if num_gpus is not None else execution.num_gpus
+    resolved_num_gpus = (
+        int(num_gpus_value)
+        if num_gpus_value is not None
+        else (torch.cuda.device_count() if torch.cuda.is_available() else 1)
+    )
     precision = execution.precision
     if precision is None:
         precision = resolve_encoder_precision(encoder, encoder_name=encoder_name)
     prefetch_factor = 4 if execution.prefetch_factor is None else int(execution.prefetch_factor)
-    persistent_workers = True if execution.persistent_workers is None else bool(execution.persistent_workers)
+    if execution.num_workers_per_gpu is None:
+        num_workers_per_gpu = max(1, slide2vec_api.cpu_worker_limit() // max(1, resolved_num_gpus))
+    else:
+        num_workers_per_gpu = int(execution.num_workers_per_gpu)
     return ExecutionOptions(
         output_dir=output_dir,
         output_format="pt",
         batch_size=int(encoder.batch_size),
-        num_workers=execution.num_workers,
+        num_workers_per_gpu=num_workers_per_gpu,
         num_preprocessing_workers=execution.num_preprocessing_workers,
         num_gpus=num_gpus_value,
         precision=precision,
         prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers,
         save_tile_embeddings=save_tile_embeddings,
         save_latents=False,
     )

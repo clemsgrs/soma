@@ -1460,17 +1460,22 @@ class TestPipeline:
         def _fake_populate_slide_cache(
             self_,
             *,
-            slide_cache,
             tile_cache,
+            slide_cache,
             loaded_tilings,
+            preprocessing,
             model_name,
             output_variant,
             num_gpus,
         ):
+            tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
             slide_cache.features_dir.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
+                torch.save(torch.ones(2, D), tile_cache.feature_path_for_id(f"s{i}"))
                 torch.save(torch.ones(D), slide_cache.feature_path_for_id(f"s{i}"))
+            record_feature_dim(tile_cache, D)
             record_feature_dim(slide_cache, D)
+            record_sample_identity_signatures(tile_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
             record_sample_identity_signatures(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
 
         with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(

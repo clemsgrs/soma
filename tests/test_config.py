@@ -150,10 +150,9 @@ def test_encoder_config_defaults():
 def test_execution_config_defaults():
     cfg = ExecutionConfig()
     assert cfg.num_gpus is None
-    assert cfg.num_workers is None
+    assert cfg.num_workers_per_gpu is None
     assert cfg.num_preprocessing_workers is None
     assert cfg.prefetch_factor is None
-    assert cfg.persistent_workers is None
     assert cfg.precision is None
 
 
@@ -171,10 +170,9 @@ def test_execution_config_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
         execution=ExecutionConfig(
             num_gpus=2,
-            num_workers=6,
+            num_workers_per_gpu=6,
             num_preprocessing_workers=0,
             prefetch_factor=8,
-            persistent_workers=False,
             precision="fp16",
         )
     )
@@ -184,10 +182,9 @@ def test_execution_config_roundtrip(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.execution.num_gpus == 2
-    assert loaded.execution.num_workers == 6
+    assert loaded.execution.num_workers_per_gpu == 6
     assert loaded.execution.num_preprocessing_workers == 0
     assert loaded.execution.prefetch_factor == 8
-    assert loaded.execution.persistent_workers is False
     assert loaded.execution.precision == "fp16"
 
 

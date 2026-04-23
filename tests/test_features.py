@@ -44,6 +44,18 @@ def test_load_single_slide(feature_dir: Path):
     assert features.dtype == torch.float32
 
 
+def test_load_half_precision_features_are_upcast_to_float32(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.save(torch.randn(12, 64, dtype=torch.float16), feature_dir / "s1.pt")
+
+    store = FeatureStore(feature_dir)
+    features = store.load("s1")
+
+    assert features.shape == (12, 64)
+    assert features.dtype == torch.float32
+
+
 def test_load_unknown_slide_raises(feature_dir: Path):
     store = FeatureStore(feature_dir)
     with pytest.raises(KeyError, match="s99"):

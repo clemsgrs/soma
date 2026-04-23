@@ -548,6 +548,45 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
 
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
     assert any("feature cache partial" in message for message in messages)
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample"
+        in message
+        for message in messages
+    )
+
+
+def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata.pop("sample_identity_signature_by_id", None)
+    metadata["feature_dim"] = 16
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+
+    reused = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+
+    refreshed_metadata = json.loads(reused.metadata_path.read_text())
+    assert refreshed_metadata["sample_identity_signature_by_id"] == {
+        "s1": reused.cache_stem_by_id["s1"],
+        "s2": reused.cache_stem_by_id["s2"],
+    }
+    assert reused.complete is False
+    assert reused.reused is False
+    assert reused.missing_sample_ids() == ["s2"]
 
 
 def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):

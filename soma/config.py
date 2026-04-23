@@ -74,13 +74,17 @@ class PreprocessingConfig:
 
 @dataclass(frozen=True)
 class ExecutionConfig:
-    """Runtime execution settings for preprocessing and feature extraction."""
+    """Runtime execution settings for preprocessing and feature extraction.
+
+    ``num_workers_per_gpu`` is the CPU DataLoader budget for each GPU rank.
+    ``None`` means auto-size the per-rank worker count from the available CPU
+    budget and the resolved GPU count.
+    """
 
     num_gpus: int | None = None
-    num_workers: int | None = None
+    num_workers_per_gpu: int | None = None
     num_preprocessing_workers: int | None = None
     prefetch_factor: int | None = None
-    persistent_workers: bool | None = None
     precision: str | None = None
 
 
