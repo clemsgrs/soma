@@ -9,3 +9,8 @@
 - 2026-04-22: Fold aggregation now raises on conflicting label-only duplicates instead of arbitrarily choosing a `predicted_label`.
 - 2026-04-22: Fixed the completed-run console summary to render single-fold coverage from plain `summary.json` keys (`coverage`, `num_samples`, etc.) as well as multi-fold aggregated keys (`*_mean`/`*_std`).
 - 2026-04-22: Moved cross-run comparison reports into dedicated bundle directories under the shared `output_root`, with `index.html` as the entry point instead of a shared `comparison.html` file beside one run.
+- 2026-04-22: Updated the `slide2vec` torchrun launcher to use standalone rendezvous for single-node GPU jobs, avoiding collisions on the default `29500` port.
+- 2026-04-23: Feature manifest generation now reuses existing rank and dimensionality metadata when available, so cached runs no longer need to reopen a `.pt` file just to infer feature shape.
+- 2026-04-23: Slide-level cache population now writes slide embeddings directly into `feature_cache/.../features/` as each slide is aggregated, instead of staging everything through a temp directory first.
+- 2026-04-23: Patient-level, tile-level, and hierarchical cache population now also target the shared cache directory directly, so their intermediate outputs appear in the live cache instead of a temp staging directory.
+- 2026-04-23: Fixed the `unicorn-task1.py` post-embedding training failure by materializing cache-backed run-local feature files as independent atomic copies instead of hardlinks. This avoids a CIFS fresh-write/hardlink handoff race before training starts.

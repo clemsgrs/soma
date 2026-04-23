@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import json
 import logging
 import os
 import shutil
@@ -12,6 +13,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
 import torch
 import hs2p.progress as hs2p_progress
 from slide2vec import (
@@ -30,6 +32,10 @@ from slide2vec.encoders.registry import (
 from slide2vec.encoders.validation import (
     validate_encoder_config as validate_slide2vec_encoder_config,
 )
+from slide2vec.inference import _slide_encode_autocast_ctx
+from slide2vec.runtime.embedding import build_slide_embedding_metadata
+from slide2vec.runtime.tiling import load_tiling_result_from_paths, scale_coordinates
+from slide2vec.utils.coordinates import coordinate_arrays
 
 from soma.cache import (
     FeatureCacheResolution,
@@ -46,6 +52,7 @@ from soma.cache import (
     resolve_tiling_cache,
     resolve_tiling_cache_root,
     resolve_tile_cache,
+    write_feature_payload,
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
@@ -211,6 +218,21 @@ def _validate_runtime(
     )
 
 
+def _validate_preprocessing_runtime(
+    *,
+    encoder_name: str,
+    encoder: EncoderConfig,
+    preprocessing: PreprocessingConfig,
+) -> None:
+    validate_slide2vec_encoder_config(
+        encoder_name,
+        requested_tile_size_px=int(preprocessing.requested_tile_size_px),
+        requested_spacing_um=float(preprocessing.requested_spacing_um),
+        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
+        allow_non_recommended=bool(encoder.allow_non_recommended_settings),
+    )
+
+
 def _runtime_output_variant(*, level: str, resolved_output: dict[str, object]) -> str | None:
     if level == "slide":
         return None
@@ -237,6 +259,32 @@ def _feature_rank_from_type(feature_type: str) -> int:
     if feature_type == "hierarchical":
         return 3
     raise ValueError(f"Unsupported feature type {feature_type}")
+
+
+def _feature_rank_from_artifact_type(artifact_type: str) -> int:
+    normalized = artifact_type.removesuffix("_embeddings")
+    if normalized in {"slide", "patient"}:
+        return 1
+    if normalized == "tile":
+        return 2
+    if normalized == "hierarchical":
+        return 3
+    raise ValueError(f"Unsupported artifact_type {artifact_type}")
+
+
+def _feature_summary_from_sidecar(feature_dir: Path) -> tuple[int, int] | None:
+    sample_ids = sorted(path.stem for path in feature_dir.glob("*.pt"))
+    if not sample_ids:
+        return None
+    meta_path = feature_dir / f"{sample_ids[0]}.meta.json"
+    if not meta_path.is_file():
+        return None
+    metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    feature_dim = metadata.get("feature_dim")
+    artifact_type = str(metadata.get("artifact_type", ""))
+    if feature_dim is None or not artifact_type:
+        return None
+    return _feature_rank_from_artifact_type(artifact_type), int(feature_dim)
 
 
 def _backend_provenance_from_mapping(
@@ -421,6 +469,57 @@ def _aggregate_tiles(
     )
 
 
+def _write_slide_cache_payload(
+    *,
+    model: Model,
+    loaded_backend,
+    tile_artifact,
+    feature_dir: Path,
+    execution: ExecutionOptions,
+) -> int | None:
+    metadata = tile_artifact.metadata
+    num_tiles = int(metadata["num_tiles"])
+    if num_tiles == 0:
+        return None
+    coordinates_npz_path = metadata.get("coordinates_npz_path")
+    coordinates_meta_path = metadata.get("coordinates_meta_path")
+    if not coordinates_npz_path or not coordinates_meta_path:
+        raise ValueError(
+            f"Tile artifact for {tile_artifact.sample_id} is missing tiling metadata paths required for slide aggregation"
+        )
+    tiling_result = load_tiling_result_from_paths(
+        Path(coordinates_npz_path),
+        Path(coordinates_meta_path),
+    )
+    x_values, y_values = coordinate_arrays(tiling_result)
+    coordinates = np.column_stack((x_values, y_values))
+    if model.name == "prov-gigapath":
+        coordinates = scale_coordinates(
+            coordinates,
+            float(tiling_result.base_spacing_um),
+            float(tiling_result.requested_spacing_um),
+        )
+    coordinate_tensor = torch.tensor(coordinates, dtype=torch.int, device=loaded_backend.device)
+    tile_features = torch.load(tile_artifact.path, map_location=loaded_backend.device, weights_only=True)
+    if not torch.is_tensor(tile_features):
+        tile_features = torch.as_tensor(tile_features)
+    tile_features = tile_features.to(loaded_backend.device)
+    with _slide_encode_autocast_ctx(loaded_backend.device, execution.precision):
+        with torch.inference_mode():
+            slide_embedding = loaded_backend.model.encode_slide(
+                tile_features,
+                coordinate_tensor,
+                tile_size_lv0=int(tiling_result.tile_size_lv0),
+            ).detach().cpu()
+    write_feature_payload(
+        feature_dir=feature_dir,
+        sample_id=tile_artifact.sample_id,
+        tensor=slide_embedding,
+        metadata=build_slide_embedding_metadata(model, image_path=metadata["image_path"]),
+    )
+    return int(slide_embedding.shape[-1]) if slide_embedding.ndim else 1
+
+
 def _aggregate_patients(
     *,
     model_name: str,
@@ -581,6 +680,11 @@ class FeatureExtractor:
         tiling_dir.mkdir(parents=True, exist_ok=True)
         cfg = self._effective_preprocessing()
         ensure_supported_mask_value(self._dataset, cfg)
+        _validate_preprocessing_runtime(
+            encoder_name=self._encoder.name,
+            encoder=self._encoder,
+            preprocessing=cfg,
+        )
         process_list_path = tiling_dir / "process_list.csv"
         if not self._cache.enabled:
             if skip_existing and process_list_path.is_file():
@@ -853,7 +957,28 @@ class FeatureExtractor:
         feature_root = store.feature_dir.resolve()
         if feature_root != feature_dir.resolve():
             manifest_roots.add(feature_root.parent.resolve())
-        feature_kind = _feature_kind_from_rank(store.feature_rank)
+        feature_rank: int | None = None
+        feature_dim: int | None = None
+        if store.feature_manifest_path is not None and store.feature_manifest_path.is_file():
+            with store.feature_manifest_path.open(newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    rank_value = row.get("feature_rank")
+                    dim_value = row.get("feature_dim")
+                    if not rank_value or not dim_value:
+                        continue
+                    feature_rank = int(rank_value)
+                    feature_dim = int(dim_value)
+                    break
+        if feature_rank is None or feature_dim is None:
+            summary = _feature_summary_from_sidecar(feature_root)
+            if summary is None:
+                raise ValueError(
+                    "Could not determine feature rank and dimensionality from the current "
+                    "manifest or artifact sidecars"
+                )
+            feature_rank, feature_dim = summary
+        feature_kind = _feature_kind_from_rank(feature_rank)
 
         rows = []
         for loaded in loaded_tilings:
@@ -870,8 +995,8 @@ class FeatureExtractor:
                     "feature_status": feature_status,
                     "feature_path": feature_path,
                     "num_tiles": num_tiles,
-                    "feature_rank": store.feature_rank,
-                    "feature_dim": store.feature_dim,
+                    "feature_rank": feature_rank,
+                    "feature_dim": feature_dim,
                     "encoder_name": encoder_name,
                     "output_variant": output_variant,
                     "feature_kind": feature_kind,
@@ -991,7 +1116,7 @@ class FeatureExtractor:
         *,
         cache_resolution: FeatureCacheResolution,
     ) -> None:
-        """Materialize run-local sample_id.pt files by linking to shared cache payloads."""
+        """Materialize run-local sample_id.pt files as independent cache payload copies."""
         feature_dir.mkdir(parents=True, exist_ok=True)
         cache_ids = self._cache_ids_for_resolution(cache_resolution)
         expected_names = {f"{sample_id}.pt" for sample_id in cache_ids}
@@ -1005,16 +1130,32 @@ class FeatureExtractor:
                 if target.exists():
                     target.unlink()
                 continue
-            if target.exists():
-                target.unlink()
             if not source.is_file():
                 legacy_source = cache_resolution.features_dir / f"{sample_id}.pt"
                 if legacy_source.is_file():
                     source = legacy_source
-            try:
-                os.link(source, target)
-            except OSError:
-                shutil.copyfile(source, target)
+            if source.resolve() == target.resolve():
+                continue
+            if target.exists():
+                target.unlink()
+            self._copy_feature_payload_atomic(source, target)
+
+    @staticmethod
+    def _copy_feature_payload_atomic(source: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f".{target.stem}.",
+            suffix=target.suffix,
+            dir=target.parent,
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+        try:
+            shutil.copyfile(source, tmp_path)
+            os.replace(tmp_path, target)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                tmp_path.unlink()
 
     @staticmethod
     def _cache_ids_for_resolution(cache_resolution: FeatureCacheResolution) -> list[str]:
@@ -1576,48 +1717,46 @@ class FeatureExtractor:
             loaded for loaded in loaded_tilings
             if loaded.slide.sample_id not in missing_sample_ids
         ]
-        with tempfile.TemporaryDirectory(prefix="soma-cache-patient-") as tmp_dir:
-            artifact_dir = Path(tmp_dir)
-            tile_artifacts = build_tile_artifacts_from_cache_payload(
-                features_dir=tile_cache.features_dir,
-                loaded_tilings=selected_loaded,
-                work_dir=artifact_dir / "tile_metadata",
-                feature_path_by_sample_id={
-                    loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
-                    for loaded in selected_loaded
-                },
-            )
-            slide_exec = build_execution_options(
-                self._encoder,
-                execution=self._execution,
-                encoder_name=model_name,
-                output_dir=artifact_dir / "slide_embeddings",
-                num_gpus=num_gpus,
-                save_tile_embeddings=False,
-            )
-            patient_exec = build_execution_options(
-                self._encoder,
-                execution=self._execution,
-                encoder_name=model_name,
-                output_dir=artifact_dir / "patient_embeddings",
-                num_gpus=num_gpus,
-                save_tile_embeddings=False,
-            )
-            patient_artifacts = _aggregate_patients(
-                model_name=model_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                tile_artifacts=tile_artifacts,
-                patient_id_map=patient_id_map,
-                preprocessing=None,
-                slide_execution=slide_exec,
-                patient_execution=patient_exec,
-            )
-            feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=patient_artifacts,
-                cache_resolution=patient_cache,
-                id_attr="patient_id",
-            )
+        tile_artifacts = build_tile_artifacts_from_cache_payload(
+            features_dir=tile_cache.features_dir,
+            loaded_tilings=selected_loaded,
+            work_dir=patient_cache.cache_dir / "tile_metadata",
+            feature_path_by_sample_id={
+                loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                for loaded in selected_loaded
+            },
+        )
+        slide_exec = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=model_name,
+            output_dir=patient_cache.cache_dir,
+            num_gpus=num_gpus,
+            save_tile_embeddings=False,
+        )
+        patient_exec = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=model_name,
+            output_dir=patient_cache.cache_dir,
+            num_gpus=num_gpus,
+            save_tile_embeddings=False,
+        )
+        patient_artifacts = _aggregate_patients(
+            model_name=model_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            tile_artifacts=tile_artifacts,
+            patient_id_map=patient_id_map,
+            preprocessing=None,
+            slide_execution=slide_exec,
+            patient_execution=patient_exec,
+        )
+        feature_dim = self._write_artifacts_to_cache_resolution(
+            artifacts=patient_artifacts,
+            cache_resolution=patient_cache,
+            id_attr="patient_id",
+        )
         if feature_dim is not None:
             record_feature_dim(patient_cache, feature_dim)
 
@@ -1638,12 +1777,13 @@ class FeatureExtractor:
             source = Path(artifact.path)
             destination = self._feature_path_for_cache_id(cache_resolution, cache_id)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            if destination.exists():
-                destination.unlink()
-            try:
-                os.link(source, destination)
-            except OSError:
-                shutil.copyfile(source, destination)
+            if source.resolve() != destination.resolve():
+                if destination.exists():
+                    destination.unlink()
+                try:
+                    os.link(source, destination)
+                except OSError:
+                    shutil.copyfile(source, destination)
             tensor = torch.load(destination, weights_only=True, map_location="cpu")
             feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
             written_ids.add(cache_id)
@@ -1674,39 +1814,38 @@ class FeatureExtractor:
             for loaded, tiling in zip(loaded_tilings, prepared_tilings)
             if loaded.slide.sample_id in wanted
         ]
-        with tempfile.TemporaryDirectory(prefix="soma-cache-tile-") as tmp_dir:
-            execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
-                encoder_name=encoder_name,
-                output_dir=Path(tmp_dir),
-                num_gpus=num_gpus,
-                save_tile_embeddings=True,
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=encoder_name,
+            output_dir=cache_resolution.cache_dir,
+            num_gpus=num_gpus,
+            save_tile_embeddings=True,
+        )
+        if num_gpus is not None and num_gpus > 1:
+            artifacts = _run_with_coordinates(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                preprocessing=preprocessing,
+                execution=execution,
+                tiling_dir=tiling_dir,
+                slides=[loaded.slide for loaded in selected_loaded],
+            ).tile_artifacts
+        else:
+            artifacts = _embed_tiles(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                slides=[loaded.slide for loaded in selected_loaded],
+                tiling_results=selected_tilings,
+                preprocessing=preprocessing,
+                execution=execution,
             )
-            if num_gpus is not None and num_gpus > 1:
-                artifacts = _run_with_coordinates(
-                    model_name=encoder_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                    preprocessing=preprocessing,
-                    execution=execution,
-                    tiling_dir=tiling_dir,
-                    slides=[loaded.slide for loaded in selected_loaded],
-                ).tile_artifacts
-            else:
-                artifacts = _embed_tiles(
-                    model_name=encoder_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                    slides=[loaded.slide for loaded in selected_loaded],
-                    tiling_results=selected_tilings,
-                    preprocessing=preprocessing,
-                    execution=execution,
-                )
-            feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=artifacts,
-                cache_resolution=cache_resolution,
-            )
+        feature_dim = self._write_artifacts_to_cache_resolution(
+            artifacts=artifacts,
+            cache_resolution=cache_resolution,
+        )
         if feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
         if empty_sample_ids:
@@ -1735,44 +1874,43 @@ class FeatureExtractor:
             for loaded, tiling in zip(loaded_tilings, prepared_tilings)
             if loaded.slide.sample_id in wanted
         ]
-        with tempfile.TemporaryDirectory(prefix="soma-cache-hierarchical-") as tmp_dir:
-            execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
-                encoder_name=encoder_name,
-                output_dir=Path(tmp_dir),
-                num_gpus=num_gpus,
-                save_tile_embeddings=True,
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=encoder_name,
+            output_dir=cache_resolution.cache_dir,
+            num_gpus=num_gpus,
+            save_tile_embeddings=True,
+        )
+        if num_gpus is not None and num_gpus > 1:
+            result = _run_with_coordinates(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                preprocessing=preprocessing,
+                execution=execution,
+                tiling_dir=tiling_dir,
+                slides=[loaded.slide for loaded in selected_loaded],
             )
-            if num_gpus is not None and num_gpus > 1:
-                result = _run_with_coordinates(
-                    model_name=encoder_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                    preprocessing=preprocessing,
-                    execution=execution,
-                    tiling_dir=tiling_dir,
-                    slides=[loaded.slide for loaded in selected_loaded],
-                )
-            else:
-                result = _embed_tiles(
-                    model_name=encoder_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                    slides=[loaded.slide for loaded in selected_loaded],
-                    tiling_results=selected_tilings,
-                    preprocessing=preprocessing,
-                    execution=execution,
-                )
-            artifacts = getattr(result, "hierarchical_artifacts", None)
-            if artifacts is None:
-                raise ValueError(
-                    "slide2vec did not return hierarchical_artifacts for hierarchical cache population"
-                )
-            feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=artifacts,
-                cache_resolution=cache_resolution,
+        else:
+            result = _embed_tiles(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                slides=[loaded.slide for loaded in selected_loaded],
+                tiling_results=selected_tilings,
+                preprocessing=preprocessing,
+                execution=execution,
             )
+        artifacts = getattr(result, "hierarchical_artifacts", None)
+        if artifacts is None:
+            raise ValueError(
+                "slide2vec did not return hierarchical_artifacts for hierarchical cache population"
+            )
+        feature_dim = self._write_artifacts_to_cache_resolution(
+            artifacts=artifacts,
+            cache_resolution=cache_resolution,
+        )
         if feature_dim is not None:
             record_feature_dim(cache_resolution, feature_dim)
         if empty_sample_ids:
@@ -1801,31 +1939,30 @@ class FeatureExtractor:
             return
         empty_sample_ids = _empty_sample_ids_from_loaded_tilings(loaded_tilings)
         selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in run_ids]
-        with tempfile.TemporaryDirectory(prefix="soma-cache-slide-dist-") as tmp_dir:
-            run_result = _run_with_coordinates(
-                model_name=model_name,
-                output_variant=runtime_output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                preprocessing=preprocessing,
-                execution=build_execution_options(
-                    self._encoder,
-                    execution=self._execution,
-                    encoder_name=model_name,
-                    output_dir=Path(tmp_dir),
-                    num_gpus=num_gpus,
-                    save_tile_embeddings=True,
-                ),
-                tiling_dir=tiling_dir,
-                slides=[loaded.slide for loaded in selected_loaded],
-            )
-            tile_feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=[a for a in run_result.tile_artifacts if a.sample_id in tile_missing],
-                cache_resolution=tile_cache,
-            )
-            slide_feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=[a for a in run_result.slide_artifacts if a.sample_id in slide_missing],
-                cache_resolution=slide_cache,
-            )
+        run_result = _run_with_coordinates(
+            model_name=model_name,
+            output_variant=runtime_output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            preprocessing=preprocessing,
+            execution=build_execution_options(
+                self._encoder,
+                execution=self._execution,
+                encoder_name=model_name,
+                output_dir=slide_cache.cache_dir,
+                num_gpus=num_gpus,
+                save_tile_embeddings=True,
+            ),
+            tiling_dir=tiling_dir,
+            slides=[loaded.slide for loaded in selected_loaded],
+        )
+        tile_feature_dim = self._write_artifacts_to_cache_resolution(
+            artifacts=[a for a in run_result.tile_artifacts if a.sample_id in tile_missing],
+            cache_resolution=tile_cache,
+        )
+        slide_feature_dim = self._write_artifacts_to_cache_resolution(
+            artifacts=[a for a in run_result.slide_artifacts if a.sample_id in slide_missing],
+            cache_resolution=slide_cache,
+        )
         if tile_feature_dim is not None:
             record_feature_dim(tile_cache, tile_feature_dim)
         if slide_feature_dim is not None:
@@ -1882,39 +2019,54 @@ class FeatureExtractor:
         missing = set(slide_cache.missing_sample_ids())
         if not missing:
             return
-        selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in missing]
-        with tempfile.TemporaryDirectory(prefix="soma-cache-slide-") as tmp_dir:
-            artifact_dir = Path(tmp_dir)
-            tile_artifacts = build_tile_artifacts_from_cache_payload(
-                features_dir=tile_cache.features_dir,
-                loaded_tilings=selected_loaded,
-                work_dir=artifact_dir / "tile_metadata",
-                feature_path_by_sample_id={
-                    loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
-                    for loaded in selected_loaded
-                },
+        empty_sample_ids = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
+        selected_loaded = [
+            loaded
+            for loaded in loaded_tilings
+            if loaded.slide.sample_id in missing and loaded.slide.sample_id not in empty_sample_ids
+        ]
+        tile_artifacts = build_tile_artifacts_from_cache_payload(
+            features_dir=tile_cache.features_dir,
+            loaded_tilings=selected_loaded,
+            work_dir=slide_cache.cache_dir / "tile_metadata",
+            feature_path_by_sample_id={
+                loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                for loaded in selected_loaded
+            },
+        )
+        loaded_model = _load_model(
+            model_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+        )
+        backend = loaded_model._load_backend()
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=model_name,
+            output_dir=slide_cache.cache_dir,
+            num_gpus=num_gpus,
+            save_tile_embeddings=False,
+        )
+        feature_dim: int | None = None
+        written_ids: list[str] = []
+        for tile_artifact in tile_artifacts:
+            result_dim = _write_slide_cache_payload(
+                model=loaded_model,
+                loaded_backend=backend,
+                tile_artifact=tile_artifact,
+                feature_dir=slide_cache.features_dir,
+                execution=execution,
             )
-            slide_artifacts = _aggregate_tiles(
-                model_name=model_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                tile_artifacts=tile_artifacts,
-                preprocessing=None,
-                execution=build_execution_options(
-                    self._encoder,
-                    execution=self._execution,
-                    encoder_name=model_name,
-                    output_dir=artifact_dir,
-                    num_gpus=num_gpus,
-                    save_tile_embeddings=False,
-                ),
-            )
-            feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=slide_artifacts,
-                cache_resolution=slide_cache,
-            )
+            if result_dim is not None:
+                feature_dim = result_dim
+                written_ids.append(tile_artifact.sample_id)
+        if written_ids:
+            record_sample_identity_signatures(slide_cache, written_ids)
         if feature_dim is not None:
             record_feature_dim(slide_cache, feature_dim)
+        if empty_sample_ids:
+            record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
 
     def run(
         self,

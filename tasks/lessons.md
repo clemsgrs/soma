@@ -4,3 +4,7 @@
 - When aggregating folds, preserve the stored `predicted_label` if there is no stronger signal to recompute from; label-only inputs should not lose their prediction column.
 - When aggregating label-only duplicates, keep the stored label only if all duplicate rows agree; conflicting labels should raise instead of being arbitrarily merged.
 - Cross-run comparison reports should live in a dedicated comparison directory under the shared output root and use `index.html`; never anchor them to a run directory or a fixed shared filename.
+- When writing a cache artifact atomically, prefer a simple `NamedTemporaryFile(..., delete=False)` plus `os.replace(...)` flow over manual `mkstemp`/`os.close` bookkeeping unless you need the raw file descriptor.
+- If the user explicitly asks for direct-to-cache writing, do not preserve temp-file staging out of habit; write to the final path directly and keep the implementation minimal.
+- If the user later asks for atomicity, restore the temp-file + `os.replace(...)` path in the same directory; direct writes are not an acceptable substitute for atomic saves.
+- If metadata is required for control flow, access it directly and let missing keys fail loudly instead of masking them with defaults.

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -34,6 +35,20 @@ _FEATURE_TYPE_TO_RANK = {
     "patient": 1,
     "hierarchical": 3,
 }
+
+_CACHE_KIND_TO_FEATURES_SUBDIR = {
+    "tile": "tile_embeddings",
+    "slide": "slide_embeddings",
+    "patient": "patient_embeddings",
+    "hierarchical": "hierarchical_embeddings",
+}
+
+
+def _features_subdir_for_kind(cache_kind: str) -> str:
+    try:
+        return _CACHE_KIND_TO_FEATURES_SUBDIR[cache_kind]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported cache_kind '{cache_kind}' for features_dir resolution") from exc
 
 
 def _resolve_encoder_precision(
@@ -381,8 +396,6 @@ def resolve_feature_payload_dir(path: Path | str) -> Path:
     and plain directories.
     """
     root = Path(path)
-    if (root / "cache_metadata.json").is_file() and (root / "features").is_dir():
-        return root / "features"
     for subdir in ("patient_embeddings", "slide_embeddings", "hierarchical_embeddings", "tile_embeddings"):
         candidate = root / subdir
         if candidate.is_dir():
@@ -396,15 +409,40 @@ def _feature_dim_from_tensor(tensor: torch.Tensor) -> int:
 
 def _materialize_pt_artifact(*, artifact_path: Path, output_path: Path) -> torch.Tensor:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        output_path.unlink()
-    try:
-        os.link(artifact_path, output_path)
-    except OSError:
-        shutil.copyfile(artifact_path, output_path)
-        with contextlib.suppress(OSError):
-            artifact_path.unlink()
+    if artifact_path.resolve() != output_path.resolve():
+        if output_path.exists():
+            output_path.unlink()
+        try:
+            os.link(artifact_path, output_path)
+        except OSError:
+            shutil.copyfile(artifact_path, output_path)
+            with contextlib.suppress(OSError):
+                artifact_path.unlink()
     return torch.load(output_path, weights_only=True, map_location="cpu")
+
+
+def write_feature_payload(
+    *,
+    feature_dir: Path,
+    sample_id: str,
+    tensor: torch.Tensor,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Write a sample-level feature tensor directly into a cache feature directory."""
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    output_path = feature_dir / f"{sample_id}.pt"
+    with tempfile.NamedTemporaryFile(prefix=f".{sample_id}.", suffix=".pt", dir=feature_dir, delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+    try:
+        torch.save(tensor.detach().cpu(), tmp_path)
+        os.replace(tmp_path, output_path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+    if metadata is not None:
+        metadata_path = feature_dir / f"{sample_id}.meta.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    return output_path
 
 
 def write_cache_payload(
@@ -1242,7 +1280,7 @@ def _resolve_cache(
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
-    features_dir = cache_dir / "features"
+    features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)

@@ -135,7 +135,7 @@ def test_load_slide_features(slide_feature_dir: Path):
 
 def test_cache_directory_resolves_to_features_payload(tmp_path: Path):
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
-    features_dir = cache_dir / "features"
+    features_dir = cache_dir / "tile_embeddings"
     features_dir.mkdir(parents=True)
     (cache_dir / "cache_metadata.json").write_text("{}")
     torch.save(torch.randn(10, 32), features_dir / "s1.pt")
