@@ -28,6 +28,7 @@ from soma.cache import (
     resolve_hierarchical_cache,
     resolve_slide_cache,
     resolve_tile_cache,
+    write_feature_payload,
     write_tiling_cache_payload,
     write_tiling_cache_stub,
     write_cache_payload,
@@ -284,6 +285,25 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     assert len(list(resolution.artifacts_dir.glob("*.npz"))) == 1
 
 
+def test_write_feature_payload_writes_tensor_directly_to_features_dir(tmp_path: Path):
+    feature_dir = tmp_path / "feature_cache" / "slide" / "abc123" / "slide_embeddings"
+    tensor = torch.ones(3, 4)
+
+    output_path = write_feature_payload(
+        feature_dir=feature_dir,
+        sample_id="s1",
+        tensor=tensor,
+        metadata={"feature_dim": 4, "artifact_type": "slide_embeddings"},
+    )
+
+    assert output_path == feature_dir / "s1.pt"
+    assert output_path.is_file()
+    assert torch.equal(torch.load(output_path, weights_only=True, map_location="cpu"), tensor)
+    metadata = json.loads((feature_dir / "s1.meta.json").read_text(encoding="utf-8"))
+    assert metadata["feature_dim"] == 4
+    assert metadata["artifact_type"] == "slide_embeddings"
+
+
 def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
     dataset = _make_dataset(
         tmp_path,
@@ -528,6 +548,45 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
 
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
     assert any("feature cache partial" in message for message in messages)
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample"
+        in message
+        for message in messages
+    )
+
+
+def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata.pop("sample_identity_signature_by_id", None)
+    metadata["feature_dim"] = 16
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+
+    reused = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+
+    refreshed_metadata = json.loads(reused.metadata_path.read_text())
+    assert refreshed_metadata["sample_identity_signature_by_id"] == {
+        "s1": reused.cache_stem_by_id["s1"],
+        "s2": reused.cache_stem_by_id["s2"],
+    }
+    assert reused.complete is False
+    assert reused.reused is False
+    assert reused.missing_sample_ids() == ["s2"]
 
 
 def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
@@ -744,7 +803,7 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
 
 def test_resolve_feature_payload_dir_understands_cache_dir(tmp_path: Path):
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
-    features_dir = cache_dir / "features"
+    features_dir = cache_dir / "tile_embeddings"
     features_dir.mkdir(parents=True)
     (cache_dir / CACHE_METADATA_NAME).write_text("{}")
     assert resolve_feature_payload_dir(cache_dir) == features_dir

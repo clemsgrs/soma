@@ -919,6 +919,25 @@ class TestTrain:
         assert "90.0% (9/10)" in rendered
         assert "placeholder=1" in rendered
 
+    def test_completed_run_panel_includes_single_fold_coverage_summary(self):
+        panel = _build_completed_run_panel(
+            summary_metrics={
+                "test/auroc": 0.75,
+                "test/coverage": 0.9,
+                "test/num_samples": 10.0,
+                "test/num_real_samples": 9.0,
+                "test/num_placeholder_samples": 1.0,
+            }
+        )
+        console = Console(record=True, width=120)
+        console.print(panel)
+        rendered = console.export_text()
+
+        assert "coverage" in rendered.lower()
+        assert "auroc=0.7500" in rendered
+        assert "90.0% (9/10)" in rendered
+        assert "placeholder=1" in rendered
+
     def test_fold_subdirectories(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
         dataset = Dataset(dataset_csv)
@@ -1441,17 +1460,22 @@ class TestPipeline:
         def _fake_populate_slide_cache(
             self_,
             *,
-            slide_cache,
             tile_cache,
+            slide_cache,
             loaded_tilings,
+            preprocessing,
             model_name,
             output_variant,
             num_gpus,
         ):
+            tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
             slide_cache.features_dir.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
+                torch.save(torch.ones(2, D), tile_cache.feature_path_for_id(f"s{i}"))
                 torch.save(torch.ones(D), slide_cache.feature_path_for_id(f"s{i}"))
+            record_feature_dim(tile_cache, D)
             record_feature_dim(slide_cache, D)
+            record_sample_identity_signatures(tile_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
             record_sample_identity_signatures(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
 
         with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
@@ -1476,7 +1500,6 @@ class TestPipeline:
         ) as populate_slide_cache:
             with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
                 Pipeline(slide_config).run()
-            assert populate_tile_cache.called
             assert populate_slide_cache.called
 
         with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(

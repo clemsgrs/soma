@@ -97,8 +97,8 @@ encoder:
   # Inference batch size (lower if running out of GPU memory).
   batch_size: 32
 
-  # Number of DataLoader workers. null = auto.
-  num_workers: null
+  # Number of DataLoader workers per GPU. null = auto, then split across GPUs.
+  num_workers_per_gpu: null
 
   # Use adaptive batching to maximise GPU utilisation.
   adaptive_batching: false

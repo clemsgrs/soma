@@ -317,6 +317,14 @@ def compare_run_predictions(
     if metric not in funs:
         return [None] * n_runs
 
+    required_pred_col = "predicted_value" if task_family == "regression" else "predicted_label"
+    missing_required = [i for i, df in enumerate(runs_predictions) if required_pred_col not in df.columns]
+    if missing_required:
+        raise ValueError(
+            f"compare_run_predictions requires '{required_pred_col}' for task_family='{task_family}'. "
+            f"Missing in runs: {missing_required}."
+        )
+
     def _score(df: pd.DataFrame) -> float | None:
         if df.empty or len(df) < 2:
             return None
@@ -334,11 +342,23 @@ def compare_run_predictions(
     best_idx, best_score = max(valid, key=lambda x: x[1])
     rng = np.random.default_rng(seed)
 
-    pred_cols = [
-        c for c in runs_predictions[best_idx].columns
-        if c not in {"sample_id", "true_label"}
-    ]
+    def _prediction_cols(df: pd.DataFrame) -> list[str]:
+        return [
+            c for c in df.columns
+            if c in {required_pred_col, "raw_score"} or c.startswith("prob_")
+        ]
+
+    metric_needs_probabilities = task_family in {"binary_classification", "multiclass_classification"} and metric in {
+        "auroc",
+        "auprc",
+        "auroc_macro",
+    }
+
+    pred_cols = _prediction_cols(runs_predictions[best_idx])
     prob_cols = [c for c in pred_cols if c.startswith("prob_")]
+
+    best_df = runs_predictions[best_idx]
+    best_ids = set(best_df["sample_id"])
 
     p_values: list[float | None] = []
     for i, df in enumerate(runs_predictions):
@@ -350,10 +370,7 @@ def compare_run_predictions(
             continue
 
         # Align both runs to a common sorted sample order
-        best_df = runs_predictions[best_idx]
-        common_ids = sorted(
-            set(best_df["sample_id"]).intersection(set(df["sample_id"]))
-        )
+        common_ids = sorted(best_ids.intersection(df["sample_id"]))
         if len(common_ids) < 2:
             p_values.append(None)
             continue
@@ -362,26 +379,29 @@ def compare_run_predictions(
         df_b = df[df["sample_id"].isin(common_ids)].sort_values("sample_id")
 
         y_true = df_a["true_label"].to_numpy()
-        vals_a = df_a[pred_cols].to_numpy()
-        vals_b = df_b[pred_cols].to_numpy()
+        shared_pred_cols = [c for c in pred_cols if c in df_b.columns]
+        if not shared_pred_cols:
+            p_values.append(None)
+            continue
+        shared_prob_cols = [c for c in prob_cols if c in shared_pred_cols]
+        if metric_needs_probabilities and len(shared_prob_cols) != len(prob_cols):
+            p_values.append(None)
+            continue
+        vals_a = df_a[shared_pred_cols].to_numpy()
+        vals_b = df_b[shared_pred_cols].to_numpy()
 
         observed_delta = abs(best_score - scores[i])
+
+        def _df_from(vals: np.ndarray, cols: list[str] = shared_pred_cols, yt: np.ndarray = y_true) -> pd.DataFrame:
+            out = pd.DataFrame(vals, columns=cols)
+            out["true_label"] = yt
+            return out
 
         null_deltas = np.empty(n_permutations)
         for p_idx in range(n_permutations):
             swap = rng.random(len(common_ids)) < 0.5
             perm_a = np.where(swap[:, None], vals_b, vals_a)
             perm_b = np.where(swap[:, None], vals_a, vals_b)
-
-            def _df_from(vals: np.ndarray) -> pd.DataFrame:
-                out = pd.DataFrame(vals, columns=pred_cols)
-                out["true_label"] = y_true
-                if prob_cols:
-                    out["predicted_label"] = out[prob_cols].to_numpy().argmax(axis=1)
-                elif "raw_score" in out.columns:
-                    out["predicted_label"] = out["raw_score"].round().astype(int)
-                return out
-
             ya, ypa, yproba = _extract_arrays(_df_from(perm_a), task_family)
             yb, ypb, yprobab = _extract_arrays(_df_from(perm_b), task_family)
             null_deltas[p_idx] = abs(
