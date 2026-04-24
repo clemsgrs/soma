@@ -881,15 +881,27 @@ def _build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
     grid.add_column(style="bold", justify="right", no_wrap=True)
     grid.add_column()
 
+    def _split_metric(split_name: str, metric: str) -> float | None:
+        for suffix in ("_mean", ""):
+            key = f"{split_name}/{metric}{suffix}"
+            if key in summary_metrics:
+                return summary_metrics[key]
+        return None
+
     split_names = sorted({key.split("/", 1)[0] for key in summary_metrics if "/" in key})
     for split_name in split_names:
         primary_metric_name: str | None = None
         primary_metric_mean: float | None = None
         for key, value in summary_metrics.items():
             prefix = f"{split_name}/"
-            if not key.startswith(prefix) or not key.endswith("_mean"):
+            if not key.startswith(prefix):
                 continue
-            metric_name = key[len(prefix):-5]
+            if key.endswith("_mean"):
+                metric_name = key[len(prefix):-5]
+            else:
+                metric_name = key[len(prefix):]
+            if metric_name.endswith("_std"):
+                continue
             if metric_name in {
                 "coverage",
                 "num_samples",
@@ -901,10 +913,10 @@ def _build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
             primary_metric_mean = value
             break
 
-        coverage = summary_metrics.get(f"{split_name}/coverage_mean")
-        num_samples = summary_metrics.get(f"{split_name}/num_samples_mean")
-        num_real = summary_metrics.get(f"{split_name}/num_real_samples_mean")
-        num_placeholder = summary_metrics.get(f"{split_name}/num_placeholder_samples_mean")
+        coverage = _split_metric(split_name, "coverage")
+        num_samples = _split_metric(split_name, "num_samples")
+        num_real = _split_metric(split_name, "num_real_samples")
+        num_placeholder = _split_metric(split_name, "num_placeholder_samples")
         if (
             coverage is None
             or num_samples is None

@@ -139,15 +139,21 @@ class FeatureStore:
     def load(self, sample_id: str) -> torch.Tensor:
         """Load tile embeddings for a single sample.
 
-        Returns the stored feature tensor unchanged.
+        Floating-point features are normalized to ``float32`` so downstream
+        linear layers do not fail when caches were written in fp16/bf16.
         """
         if sample_id not in self._index:
             msg = f"Sample '{sample_id}' not found in feature store. Available: {sorted(self._index)}"
             raise KeyError(msg)
         tensor = load_array(self._index[sample_id])
         if torch.is_tensor(tensor):
+            if tensor.is_floating_point() and tensor.dtype != torch.float32:
+                return tensor.float()
             return tensor
-        return torch.as_tensor(tensor)
+        tensor = torch.as_tensor(tensor)
+        if tensor.is_floating_point() and tensor.dtype != torch.float32:
+            return tensor.float()
+        return tensor
 
     def validate_coverage(self, sample_ids: list[str]) -> None:
         """Check that all requested sample IDs have features on disk."""

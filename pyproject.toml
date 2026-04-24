@@ -35,7 +35,7 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "slide2vec[fm]>=4.3.0",
+    "slide2vec[fm]>=4.4.0",
     "matplotlib>=3.7",
 ]
 

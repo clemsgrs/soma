@@ -43,8 +43,8 @@ Run comparison
 --------------
 
 Given two or more completed run directories, ``compare_runs`` generates a
-single HTML report that shows per-metric tables side by side, config diffs
-(keys that differ between runs are highlighted), and statistical tests:
+comparison report bundle that shows per-metric tables side by side, config
+diffs (keys that differ between runs are highlighted), and statistical tests:
 
 .. code-block:: python
 
@@ -57,6 +57,10 @@ single HTML report that shows per-metric tables side by side, config diffs
 
 When ``labels`` is omitted, labels are auto-derived from the config diff
 (e.g., the aggregator name if that is the only varying field).
+
+By default, the report is written beneath the shared ``output_root`` in
+``comparisons/<comparison-id>/index.html``. Pass ``output_dir`` to override
+the directory that receives the report bundle.
 
 Subgroup analysis
 -----------------

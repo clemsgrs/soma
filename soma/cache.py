@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -35,6 +36,20 @@ _FEATURE_TYPE_TO_RANK = {
     "patient": 1,
     "hierarchical": 3,
 }
+
+_CACHE_KIND_TO_FEATURES_SUBDIR = {
+    "tile": "tile_embeddings",
+    "slide": "slide_embeddings",
+    "patient": "patient_embeddings",
+    "hierarchical": "hierarchical_embeddings",
+}
+
+
+def _features_subdir_for_kind(cache_kind: str) -> str:
+    try:
+        return _CACHE_KIND_TO_FEATURES_SUBDIR[cache_kind]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported cache_kind '{cache_kind}' for features_dir resolution") from exc
 
 
 def _resolve_encoder_precision(
@@ -104,6 +119,10 @@ class TilingCacheResolution(BaseCacheResolution):
     artifacts_dir: Path
     cache_ids: tuple[str, ...]
     cache_stem_by_id: dict[str, str]
+
+    @property
+    def previews_dir(self) -> Path:
+        return self.cache_dir / "previews"
 
 
 def _canonical_json(payload: Any) -> str:
@@ -405,8 +424,6 @@ def resolve_feature_payload_dir(path: Path | str) -> Path:
     and plain directories.
     """
     root = Path(path)
-    if (root / "cache_metadata.json").is_file() and (root / "features").is_dir():
-        return root / "features"
     for subdir in ("patient_embeddings", "slide_embeddings", "hierarchical_embeddings", "tile_embeddings"):
         candidate = root / subdir
         if candidate.is_dir():
@@ -420,15 +437,40 @@ def _feature_dim_from_tensor(tensor: torch.Tensor) -> int:
 
 def _materialize_pt_artifact(*, artifact_path: Path, output_path: Path) -> torch.Tensor:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.exists():
-        output_path.unlink()
-    try:
-        os.link(artifact_path, output_path)
-    except OSError:
-        shutil.copyfile(artifact_path, output_path)
-        with contextlib.suppress(OSError):
-            artifact_path.unlink()
+    if artifact_path.resolve() != output_path.resolve():
+        if output_path.exists():
+            output_path.unlink()
+        try:
+            os.link(artifact_path, output_path)
+        except OSError:
+            shutil.copyfile(artifact_path, output_path)
+            with contextlib.suppress(OSError):
+                artifact_path.unlink()
     return torch.load(output_path, weights_only=True, map_location="cpu")
+
+
+def write_feature_payload(
+    *,
+    feature_dir: Path,
+    sample_id: str,
+    tensor: torch.Tensor,
+    metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Write a sample-level feature tensor directly into a cache feature directory."""
+    feature_dir.mkdir(parents=True, exist_ok=True)
+    output_path = feature_dir / f"{sample_id}.pt"
+    with tempfile.NamedTemporaryFile(prefix=f".{sample_id}.", suffix=".pt", dir=feature_dir, delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+    try:
+        torch.save(tensor.detach().cpu(), tmp_path)
+        os.replace(tmp_path, output_path)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+    if metadata is not None:
+        metadata_path = feature_dir / f"{sample_id}.meta.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    return output_path
 
 
 def write_cache_payload(
@@ -596,9 +638,18 @@ def _canonical_artifact_destination(
     column_name: str,
     source_path: Path,
     artifacts_dir: Path,
+    previews_dir: Path,
 ) -> Path:
+    if column_name == "mask_preview_path":
+        return previews_dir / "mask" / f"{artifact_stem}.jpg"
+    if column_name == "tiling_preview_path":
+        return previews_dir / "tiling" / f"{artifact_stem}.jpg"
+    if column_name == "coordinates_npz_path":
+        return artifacts_dir / f"{artifact_stem}.coordinates.npz"
+    if column_name == "coordinates_meta_path":
+        return artifacts_dir / f"{artifact_stem}.coordinates.meta.json"
     suffix = "".join(source_path.suffixes) if source_path.suffixes else source_path.suffix
-    stem = f"{artifact_stem}.{column_name}"
+    stem = f"{artifact_stem}.{column_name.removesuffix('_path')}"
     return artifacts_dir / f"{stem}{suffix}"
 
 
@@ -634,6 +685,7 @@ def _validate_tiling_cache_contents(
     dataset: Dataset,
     process_list_path: Path,
     artifacts_dir: Path,
+    previews_dir: Path,
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
     preprocessing: PreprocessingConfig,
@@ -675,9 +727,9 @@ def _validate_tiling_cache_contents(
                 continue
             if not candidate.is_file():
                 return CacheValidationResult(complete=False, reason=f"missing artifact for {sample_id}")
-            try:
-                candidate.resolve().relative_to(artifacts_dir.resolve())
-            except ValueError:
+            resolved_candidate = candidate.resolve()
+            expected_root = previews_dir if column_name in {"mask_preview_path", "tiling_preview_path"} else artifacts_dir
+            if not _is_relative_to(resolved_candidate, expected_root.resolve()):
                 return CacheValidationResult(
                     complete=False,
                     reason=f"artifact path escapes cache entry for {sample_id}",
@@ -715,6 +767,14 @@ def _validate_tiling_cache_contents(
     return CacheValidationResult(complete=True)
 
 
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
 def resolve_tiling_cache(
     *,
     cache_root: Path,
@@ -741,8 +801,10 @@ def resolve_tiling_cache(
     manifest_path = cache_dir / MANIFEST_NAME
     process_list_path = cache_dir / PROCESS_LIST_NAME
     artifacts_dir = cache_dir / "artifacts"
+    previews_dir = cache_dir / "previews"
     cache_dir.mkdir(parents=True, exist_ok=True)
     artifacts_dir.mkdir(parents=True, exist_ok=True)
+    previews_dir.mkdir(parents=True, exist_ok=True)
     _emit_cache_resolve_log(
         cache_label="tiling",
         cache_dir=cache_dir,
@@ -765,6 +827,7 @@ def resolve_tiling_cache(
             dataset=dataset,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
+            previews_dir=previews_dir,
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
             preprocessing=preprocessing,
@@ -864,6 +927,7 @@ def write_tiling_cache_payload(
                 column_name=column_name,
                 source_path=source_path,
                 artifacts_dir=cache_resolution.artifacts_dir,
+                previews_dir=cache_resolution.previews_dir,
             )
             _copy_file_to_cache(source=source_path, destination=destination)
             rewritten[column_name] = str(destination.resolve())
@@ -1159,6 +1223,68 @@ def _load_metadata(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _normalized_manifest_rows(rows: Iterable[dict[str, object]]) -> list[dict[str, str]]:
+    normalized: list[dict[str, str]] = []
+    for row in rows:
+        mask_path = row.get("mask_path")
+        mask_text = ""
+        if mask_path is not None:
+            mask_text = str(mask_path)
+            if mask_text.lower() == "nan":
+                mask_text = ""
+        normalized.append(
+            {
+                "sample_id": str(row["sample_id"]),
+                "image_path": str(row["image_path"]),
+                "mask_path": mask_text,
+            }
+        )
+    return sorted(normalized, key=lambda row: row["sample_id"])
+
+
+def _manifest_matches_dataset(manifest_path: Path, dataset: Dataset) -> bool:
+    if not manifest_path.is_file():
+        return False
+    try:
+        with manifest_path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+    except Exception:
+        return False
+    return _normalized_manifest_rows(rows) == _normalized_manifest_rows(dataset_manifest_rows(dataset))
+
+
+def _backfill_feature_cache_identity_metadata(
+    *,
+    metadata_path: Path,
+    metadata: dict[str, Any],
+    dataset: Dataset,
+    cache_ids: Sequence[str],
+    cache_stem_by_id: dict[str, str],
+) -> dict[str, Any]:
+    if not _manifest_matches_dataset(metadata_path.parent / MANIFEST_NAME, dataset):
+        return metadata
+
+    signature_map = {
+        str(cache_id): str(signature)
+        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
+    }
+    changed = False
+    for cache_id in cache_ids:
+        cache_id = str(cache_id)
+        expected_signature = str(cache_stem_by_id[cache_id])
+        if signature_map.get(cache_id) is None:
+            signature_map[cache_id] = expected_signature
+            changed = True
+
+    if changed:
+        updated = dict(metadata)
+        updated["sample_identity_signature_by_id"] = signature_map
+        _write_metadata(metadata_path, updated)
+        return updated
+    return metadata
+
+
 def _validate_feature_cache_contents(
     *,
     features_dir: Path,
@@ -1262,6 +1388,7 @@ def _resolve_cache(
     cache_root: Path,
     cache_kind: str,
     key: str,
+    dataset: Dataset,
     metadata: dict[str, Any],
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
@@ -1270,7 +1397,7 @@ def _resolve_cache(
     complete_state: str = "hit",
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
-    features_dir = cache_dir / "features"
+    features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1285,6 +1412,13 @@ def _resolve_cache(
 
     if metadata_path.is_file():
         existing = _load_metadata(metadata_path)
+        existing = _backfill_feature_cache_identity_metadata(
+            metadata_path=metadata_path,
+            metadata=existing,
+            dataset=dataset,
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
+        )
         mismatch_message = _format_cache_metadata_mismatch(
             cache_label="Feature cache",
             cache_dir=cache_dir,
@@ -1302,7 +1436,13 @@ def _resolve_cache(
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
         if partial:
-            reason = f"{present}/{expected} present; {expected - present} missing"
+            missing = expected - present
+            feature_word = "feature file" if present == 1 else "feature files"
+            missing_word = "sample" if missing == 1 else "samples"
+            reason = (
+                f"{present}/{expected} {feature_word} already materialized on disk; "
+                f"embedding the {missing} missing {missing_word}"
+            )
         _emit_cache_state_log(
             cache_label="feature",
             cache_dir=cache_dir,
@@ -1378,6 +1518,7 @@ def resolve_tile_cache(
         cache_root=cache_root,
         cache_kind="tile",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(dataset.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
@@ -1428,6 +1569,7 @@ def resolve_slide_cache(
         cache_root=cache_root,
         cache_kind="slide",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(dataset.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
@@ -1478,6 +1620,7 @@ def resolve_patient_cache(
         cache_root=cache_root,
         cache_kind="patient",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(cache_stem_by_id.keys())),
         cache_stem_by_id=cache_stem_by_id,
@@ -1514,6 +1657,7 @@ def resolve_hierarchical_cache(
         cache_root=cache_root,
         cache_kind="hierarchical",
         key=metadata["cache_key"],
+        dataset=dataset,
         metadata=metadata,
         cache_ids=tuple(sorted(dataset.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,

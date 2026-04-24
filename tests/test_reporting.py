@@ -416,7 +416,7 @@ def test_generate_report_includes_training_timing_summary(tmp_path: Path) -> Non
     run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
     html = generate_report(run_dir).read_text()
 
-    assert "Training Timing" in html
+    assert "Elapsed Time" in html
     assert "Elapsed" in html
     assert "Average epoch" in html
     assert "<th>ETA</th>" not in html
@@ -497,3 +497,38 @@ def test_generate_report_multi_fold(tmp_path: Path) -> None:
     assert "Fold 1" in html
     assert "Fold 2" in html
     assert "Mean" in html or "±" in html
+
+
+def test_generate_report_uses_tabbed_sections(tmp_path: Path) -> None:
+    """generate_report lays out the main sections as tabs instead of stacked blocks."""
+    run_dir = _make_run_dir(tmp_path, n_folds=3)
+    html = generate_report(run_dir).read_text()
+
+    assert 'class="tab-group"' in html
+    assert "overview-layout" in html
+    assert "Run summary" in html
+    assert "Overview" in html
+    assert "Training results" in html
+    assert "Test results" in html
+    assert "Configuration" in html
+    assert "Dataset CSV" in html
+    assert "Splits CSV" in html
+    assert "Spacing" in html
+    assert "Training configuration" in html
+    assert "abmil" in html
+    assert "Main results" in html
+    assert "Task head" in html
+    assert html.index("Main results") < html.index("Main configuration")
+
+
+def test_generate_report_single_fold_omits_fold_specific_tab(tmp_path: Path) -> None:
+    """Single-fold reports stay compact and expose the main tabs only."""
+    run_dir = _make_run_dir(tmp_path, n_folds=1)
+    html = generate_report(run_dir).read_text()
+
+    assert 'class="tab-group"' in html
+    assert "Run summary" in html
+    assert "Training configuration" in html
+    assert "Elapsed Time" in html
+    assert "Configuration" in html
+    assert '<details class="cfg-details">' not in html

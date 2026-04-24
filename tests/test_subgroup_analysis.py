@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -489,6 +490,32 @@ def test_aggregate_fold_predictions_averages_probs() -> None:
     assert result["prob_1"].iloc[0] == pytest.approx(0.3)
 
 
+def test_aggregate_fold_predictions_preserves_predicted_label_without_higher_signal() -> None:
+    """Label-only duplicates keep the stored predicted_label."""
+    fold0 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+    }))
+    fold1 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+    }))
+    result = aggregate_fold_predictions([fold0, fold1], "test")
+    assert len(result) == 1
+    assert result["predicted_label"].iloc[0] == 0
+
+
+def test_aggregate_fold_predictions_raises_on_conflicting_label_only_duplicates() -> None:
+    """Conflicting label-only duplicates must fail instead of picking one arbitrarily."""
+    fold0 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
+    }))
+    fold1 = _fold(pd.DataFrame({
+        "sample_id": ["s0"], "true_label": [0], "predicted_label": [1],
+    }))
+
+    with pytest.raises(ValueError, match="conflicting predicted_label values"):
+        aggregate_fold_predictions([fold0, fold1], "test")
+
+
 def test_aggregate_fold_predictions_recomputes_predicted_label() -> None:
     """predicted_label is recomputed as argmax of averaged probs."""
     fold0 = _fold(pd.DataFrame({
@@ -687,3 +714,73 @@ def test_compare_run_predictions_three_runs() -> None:
     assert len(p_values) == 3
     assert p_values[0] == 1.0
     assert all(p is None or 0.0 <= p <= 1.0 for p in p_values)
+
+def test_compare_run_predictions_handles_runs_without_probabilities() -> None:
+    """Label-based metrics should compare runs even if one lacks prob_* columns."""
+    n = 40
+    true_labels = np.array([0, 1] * (n // 2))
+    good_pred = true_labels.copy()
+    bad_pred = 1 - true_labels
+
+    good = pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "predicted_label": good_pred,
+        "prob_0": 1.0 - good_pred.astype(float),
+        "prob_1": good_pred.astype(float),
+    })
+    bad = pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "predicted_label": bad_pred,
+    })
+
+    p_values = compare_run_predictions([good, bad], "binary_classification", "accuracy", n_permutations=200, seed=0)
+
+    assert len(p_values) == 2
+    assert p_values[0] == 1.0
+    assert p_values[1] is not None
+    assert 0.0 <= p_values[1] <= 1.0
+
+
+def test_compare_run_predictions_requires_predicted_label() -> None:
+    """Comparison must fail loudly when a classification run omits predicted_label."""
+    n = 20
+    true_labels = np.array([0, 1] * (n // 2))
+    left = pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "predicted_label": true_labels,
+        "prob_0": 1.0 - true_labels.astype(float),
+        "prob_1": true_labels.astype(float),
+    })
+    right = pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "prob_0": 1.0 - true_labels.astype(float),
+        "prob_1": true_labels.astype(float),
+    })
+
+    with pytest.raises(ValueError, match="requires 'predicted_label'"):
+        compare_run_predictions([left, right], "binary_classification", "accuracy", seed=0)
+
+
+def test_compare_run_predictions_preserves_ordinal_predicted_label() -> None:
+    """Ordinal comparison should use the stored clipped label, not raw_score rounding."""
+    n = 24
+    true_labels = np.array([0, 1, 2, 3, 4, 5] * 4)
+    df = pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": true_labels,
+        "predicted_label": true_labels,
+        "raw_score": np.array([5.6] * n),
+    })
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("error")
+        p_values = compare_run_predictions([df, df.copy()], "ordinal_classification", "balanced_accuracy", n_permutations=50, seed=0)
+
+    assert caught == []
+    assert p_values[0] == 1.0
+    assert p_values[1] is not None
+    assert 0.0 <= p_values[1] <= 1.0

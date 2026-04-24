@@ -28,6 +28,7 @@ from soma.cache import (
     resolve_hierarchical_cache,
     resolve_slide_cache,
     resolve_tile_cache,
+    write_feature_payload,
     write_tiling_cache_payload,
     write_tiling_cache_stub,
     write_cache_payload,
@@ -237,20 +238,26 @@ def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
     canonical_process_list = resolution.cache_dir / "process_list.csv"
     canonical_process_list.write_text(
         "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,"
-        "coordinates_npz_path,coordinates_meta_path,annotation,error,traceback\n"
-        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's1.npz'},{resolution.artifacts_dir / 's1.meta.json'},,,\n"
-        f"s2,/slides/s2.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's2.npz'},{resolution.artifacts_dir / 's2.meta.json'},,,\n",
+        "coordinates_npz_path,coordinates_meta_path,mask_preview_path,tiling_preview_path,annotation,error,traceback\n"
+        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's1.coordinates.npz'},{resolution.artifacts_dir / 's1.coordinates.meta.json'},{resolution.previews_dir / 'mask' / 's1.jpg'},{resolution.previews_dir / 'tiling' / 's1.jpg'},,,\n"
+        f"s2,/slides/s2.svs,,openslide,openslide,success,1,{resolution.artifacts_dir / 's2.coordinates.npz'},{resolution.artifacts_dir / 's2.coordinates.meta.json'},{resolution.previews_dir / 'mask' / 's2.jpg'},{resolution.previews_dir / 'tiling' / 's2.jpg'},,,\n",
         encoding="utf-8",
     )
     for sample_id in dataset.sample_ids:
-        (resolution.artifacts_dir / f"{sample_id}.npz").write_bytes(b"npz")
-        (resolution.artifacts_dir / f"{sample_id}.meta.json").write_text("{}", encoding="utf-8")
+        (resolution.artifacts_dir / f"{sample_id}.coordinates.npz").write_bytes(b"npz")
+        (resolution.artifacts_dir / f"{sample_id}.coordinates.meta.json").write_text("{}", encoding="utf-8")
+        (resolution.previews_dir / "mask" / f"{sample_id}.jpg").parent.mkdir(parents=True, exist_ok=True)
+        (resolution.previews_dir / "mask" / f"{sample_id}.jpg").write_bytes(b"mask")
+        (resolution.previews_dir / "tiling" / f"{sample_id}.jpg").parent.mkdir(parents=True, exist_ok=True)
+        (resolution.previews_dir / "tiling" / f"{sample_id}.jpg").write_bytes(b"tiling")
 
     write_tiling_cache_stub(tiling_dir=tmp_path / "run" / "tiling", cache_resolution=resolution)
 
     stub_process_list = pd.read_csv(tmp_path / "run" / "tiling" / "process_list.csv").set_index("sample_id")
     assert Path(stub_process_list.loc["s1", "coordinates_meta_path"]).is_absolute()
     assert Path(stub_process_list.loc["s1", "coordinates_meta_path"]).parent == resolution.artifacts_dir
+    assert Path(stub_process_list.loc["s1", "mask_preview_path"]).parent == resolution.previews_dir / "mask"
+    assert Path(stub_process_list.loc["s1", "tiling_preview_path"]).parent == resolution.previews_dir / "tiling"
     assert (tmp_path / "run" / "tiling" / "README.txt").is_file()
 
 
@@ -258,11 +265,13 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     dataset = _make_dataset(tmp_path, rows=[{"sample_id": "s1", "image_path": "/slides/s1.svs", "label": "tumor"}])
     live_dir = tmp_path / "live"
     live_dir.mkdir()
-    (live_dir / "s1.npz").write_bytes(b"npz")
-    (live_dir / "s1.meta.json").write_text("{}", encoding="utf-8")
+    (live_dir / "s1.coordinates.npz").write_bytes(b"npz")
+    (live_dir / "s1.coordinates.meta.json").write_text("{}", encoding="utf-8")
+    (live_dir / "s1.mask.jpg").write_bytes(b"mask")
+    (live_dir / "s1.tiling.jpg").write_bytes(b"tiling")
     (live_dir / "process_list.csv").write_text(
-        "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,annotation,error,traceback\n"
-        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{live_dir / 's1.npz'},{live_dir / 's1.meta.json'},,,\n",
+        "sample_id,image_path,mask_path,requested_backend,backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,mask_preview_path,tiling_preview_path,annotation,error,traceback\n"
+        f"s1,/slides/s1.svs,,openslide,openslide,success,1,{live_dir / 's1.coordinates.npz'},{live_dir / 's1.coordinates.meta.json'},{live_dir / 's1.mask.jpg'},{live_dir / 's1.tiling.jpg'},,,\n",
         encoding="utf-8",
     )
     resolution = resolve_tiling_cache(
@@ -280,8 +289,32 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
 
     recorded = pd.read_csv(resolution.process_list_path)
     assert Path(recorded.loc[0, "coordinates_npz_path"]).parent == resolution.artifacts_dir
+    assert Path(recorded.loc[0, "coordinates_npz_path"]).name == f"{resolution.cache_stem_by_id['s1']}.coordinates.npz"
+    assert Path(recorded.loc[0, "coordinates_meta_path"]).name == f"{resolution.cache_stem_by_id['s1']}.coordinates.meta.json"
+    assert Path(recorded.loc[0, "mask_preview_path"]).parent == resolution.previews_dir / "mask"
+    assert Path(recorded.loc[0, "tiling_preview_path"]).parent == resolution.previews_dir / "tiling"
     assert "sample_cache_stem" in set(recorded.columns)
     assert len(list(resolution.artifacts_dir.glob("*.npz"))) == 1
+    assert len(list((resolution.previews_dir / "mask").glob("*.jpg"))) == 1
+
+
+def test_write_feature_payload_writes_tensor_directly_to_features_dir(tmp_path: Path):
+    feature_dir = tmp_path / "feature_cache" / "slide" / "abc123" / "slide_embeddings"
+    tensor = torch.ones(3, 4)
+
+    output_path = write_feature_payload(
+        feature_dir=feature_dir,
+        sample_id="s1",
+        tensor=tensor,
+        metadata={"feature_dim": 4, "artifact_type": "slide_embeddings"},
+    )
+
+    assert output_path == feature_dir / "s1.pt"
+    assert output_path.is_file()
+    assert torch.equal(torch.load(output_path, weights_only=True, map_location="cpu"), tensor)
+    metadata = json.loads((feature_dir / "s1.meta.json").read_text(encoding="utf-8"))
+    assert metadata["feature_dim"] == 4
+    assert metadata["artifact_type"] == "slide_embeddings"
 
 
 def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
@@ -528,6 +561,45 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
 
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
     assert any("feature cache partial" in message for message in messages)
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample"
+        in message
+        for message in messages
+    )
+
+
+def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata.pop("sample_identity_signature_by_id", None)
+    metadata["feature_dim"] = 16
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+
+    reused = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+
+    refreshed_metadata = json.loads(reused.metadata_path.read_text())
+    assert refreshed_metadata["sample_identity_signature_by_id"] == {
+        "s1": reused.cache_stem_by_id["s1"],
+        "s2": reused.cache_stem_by_id["s2"],
+    }
+    assert reused.complete is False
+    assert reused.reused is False
+    assert reused.missing_sample_ids() == ["s2"]
 
 
 def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
@@ -669,13 +741,19 @@ def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Pat
         backend_provenance=provenance_a,
     )
     stem_a = resolution_a.cache_stem_by_id["s1"]
-    npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_npz_path.npz"
-    meta_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_meta_path.json"
+    npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates.npz"
+    meta_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates.meta.json"
+    mask_preview_a = resolution_a.previews_dir / "mask" / f"{stem_a}.jpg"
+    tiling_preview_a = resolution_a.previews_dir / "tiling" / f"{stem_a}.jpg"
     npz_a.write_bytes(b"npz")
     meta_a.write_text("{}", encoding="utf-8")
+    mask_preview_a.parent.mkdir(parents=True, exist_ok=True)
+    mask_preview_a.write_bytes(b"mask")
+    tiling_preview_a.parent.mkdir(parents=True, exist_ok=True)
+    tiling_preview_a.write_bytes(b"tiling")
     resolution_a.process_list_path.write_text(
-        "sample_id,sample_cache_stem,tiling_status,backend,requested_backend,coordinates_npz_path,coordinates_meta_path\n"
-        f"s1,{stem_a},success,openslide,openslide,{npz_a},{meta_a}\n",
+        "sample_id,sample_cache_stem,tiling_status,backend,requested_backend,coordinates_npz_path,coordinates_meta_path,mask_preview_path,tiling_preview_path\n"
+        f"s1,{stem_a},success,openslide,openslide,{npz_a},{meta_a},{mask_preview_a},{tiling_preview_a}\n",
         encoding="utf-8",
     )
 
@@ -718,8 +796,8 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
         },
     )
     stem_a = resolution_a.cache_stem_by_id["s1"]
-    npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_npz_path.npz"
-    meta_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates_meta_path.json"
+    npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates.npz"
+    meta_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates.meta.json"
     npz_a.write_bytes(b"npz")
     meta_a.write_text("{}", encoding="utf-8")
     resolution_a.process_list_path.write_text(
@@ -744,7 +822,7 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
 
 def test_resolve_feature_payload_dir_understands_cache_dir(tmp_path: Path):
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
-    features_dir = cache_dir / "features"
+    features_dir = cache_dir / "tile_embeddings"
     features_dir.mkdir(parents=True)
     (cache_dir / CACHE_METADATA_NAME).write_text("{}")
     assert resolve_feature_payload_dir(cache_dir) == features_dir

@@ -105,6 +105,23 @@ def _aggregate_dataframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
     if not df["sample_id"].duplicated().any():
         return df
 
+    has_prob_signal = any(c.startswith("prob_") for c in df.columns)
+    has_raw_signal = "raw_score" in df.columns
+    if "predicted_label" in df.columns and not has_prob_signal and not has_raw_signal:
+        label_conflicts = (
+            df.groupby("sample_id", sort=False)["predicted_label"]
+            .nunique(dropna=False)
+        )
+        conflicting = label_conflicts[label_conflicts > 1].index.tolist()
+        if conflicting:
+            preview = ", ".join(map(str, conflicting[:5]))
+            suffix = "" if len(conflicting) <= 5 else f" (+{len(conflicting) - 5} more)"
+            raise ValueError(
+                "Cannot aggregate duplicate samples with conflicting predicted_label "
+                f"values and no probability/raw-score signal. Conflicting sample_ids: "
+                f"{preview}{suffix}."
+            )
+
     # Classify columns in one pass
     prob_cols: list[str] = []
     mean_cols: list[str] = []
@@ -120,7 +137,9 @@ def _aggregate_dataframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
         else:
             fixed_cols.append(c)
 
-    agg = {c: "first" for c in fixed_cols}
+    agg: dict[str, str] = {c: "first" for c in fixed_cols}
+    if "predicted_label" in df.columns:
+        agg["predicted_label"] = "first"
     agg.update({c: "mean" for c in mean_cols})
     result = df.groupby("sample_id", sort=False).agg(agg).reset_index()
 
@@ -356,6 +375,7 @@ class ComparisonData:
     """All data needed to render a cross-run comparison report."""
 
     runs: list[RunData]
+    run_dirs: list[Path]
     labels: list[str]           # one short label per run
     shared_config: dict         # flat key → value for fields identical across all runs
     config_diffs: list[dict]    # one flat dict per run, containing only varying fields
@@ -401,6 +421,7 @@ def load_comparison_data(
 
     return ComparisonData(
         runs=runs,
+        run_dirs=run_dirs,
         labels=resolved_labels,
         shared_config=shared_config,
         config_diffs=config_diffs,

@@ -6,6 +6,10 @@ Reports are self-contained and offline-capable (no external JS or CSS).
 
 from __future__ import annotations
 
+import os
+import uuid
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -25,6 +29,7 @@ from soma.reporting.charts import (
     subgroup_stats_heatmap,
 )
 from soma.evaluation.metrics import bh_correct, compare_run_predictions, compute_subgroup_metrics, compute_subgroup_stats
+from soma.output_layout import _slugify
 from soma.reporting.data import ComparisonData, FoldSlice, RunData, aggregate_fold_predictions, fold_slices_for_split
 
 _CLASSIFICATION_FAMILIES = {"binary_classification", "multiclass_classification"}
@@ -41,19 +46,12 @@ def render_report(run_data: RunData) -> str:
     Returns:
         Full HTML string with all report sections.
     """
-    sections: list[str] = []
-
-    sections.append(_section_header(run_data))
-    sections.append(_section_hero_metrics(run_data))
-    sections.append(_section_run_context(run_data))
-    sections.append(_section_config(run_data))
-    sections.append(_section_results_summary(run_data))
-    sections.append(_section_training_timing(run_data))
-    sections.append(_section_training_curves(run_data))
-    sections.append(_section_prediction_analysis(run_data))
-    sections.append(_section_subgroup_analysis(run_data))
-
-    body = "\n".join(s for s in sections if s)
+    body = "\n".join(
+        part for part in [
+            _section_header(run_data),
+            _single_run_tabs(run_data),
+        ] if part
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -65,10 +63,30 @@ def render_report(run_data: RunData) -> str:
   <script>
   function somaTab(groupId, idx) {{
     var g = document.getElementById(groupId);
-    g.querySelectorAll('.tab-panel').forEach(function(p) {{ p.style.display = 'none'; }});
-    g.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
-    document.getElementById(groupId + '-' + idx).style.display = '';
-    g.querySelectorAll('.tab-btn')[idx].classList.add('active');
+    var panelsRoot = g.querySelector('.tab-panels');
+    if (panelsRoot) {{
+      Array.from(panelsRoot.children).forEach(function(p) {{
+        if (p.classList && p.classList.contains('tab-panel')) {{
+          p.style.display = 'none';
+        }}
+      }});
+    }}
+    var barRoot = g.querySelector('.tab-bar');
+    if (barRoot) {{
+      Array.from(barRoot.children).forEach(function(b) {{
+        if (b.classList && b.classList.contains('tab-btn')) {{
+          b.classList.remove('active');
+        }}
+      }});
+    }}
+    var panel = document.getElementById(idx);
+    if (panel) {{
+      panel.style.display = '';
+    }}
+    var btn = g.querySelector('[data-target=\"' + idx + '\"]');
+    if (btn) {{
+      btn.classList.add('active');
+    }}
   }}
   </script>
 </head>
@@ -105,7 +123,175 @@ def _section_header(run_data: RunData) -> str:
 </header>"""
 
 
-def _section_hero_metrics(run_data: RunData) -> str:
+def _single_run_tabs(run_data: RunData) -> str:
+    tabs: list[tuple[str, str]] = [
+        ("Overview", _single_run_overview_tab(run_data)),
+        ("Training results", _single_run_train_tab(run_data)),
+        ("Test results", _single_run_test_tab(run_data)),
+        ("Configuration", _single_run_config_tab(run_data)),
+    ]
+
+    return _tab_shell(tabs, group_id="single-run-tabs")
+
+
+def _single_run_overview_tab(run_data: RunData) -> str:
+    status = run_data.run_metadata.get("status", "—")
+    fold_label = f"{len(run_data.folds)} fold{'s' if len(run_data.folds) != 1 else ''}"
+
+    return f"""
+<div class="overview-layout">
+  <section class="overview-banner">
+    <div class="overview-banner-copy">
+      <div class="overview-kicker">Single run</div>
+      <h2>Run summary</h2>
+      <p>Key configuration and headline metrics, arranged for quick scanning.</p>
+    </div>
+    <div class="overview-banner-meta">
+      <span>{fold_label}</span>
+      <span>{status}</span>
+    </div>
+  </section>
+  <div class="overview-grid">
+    <section class="overview-panel">
+      <div class="overview-panel-head">
+        <h3>Main results</h3>
+        <p>Headline metrics from the primary evaluation split.</p>
+      </div>
+      {_overview_results_panel(run_data)}
+    </section>
+    <section class="overview-panel">
+      <div class="overview-panel-head">
+        <h3>Main configuration</h3>
+        <p>Dataset, spacing, encoder, and task head.</p>
+      </div>
+      {_overview_config_panel(_overview_config_items(run_data))}
+    </section>
+  </div>
+</div>"""
+
+
+def _single_run_train_tab(run_data: RunData) -> str:
+    parts = [_training_summary_panel(run_data)]
+    timing = _section_training_timing(run_data)
+    if timing:
+        parts.append(timing)
+    curves = _section_training_curves(run_data)
+    if curves:
+        parts.append(curves)
+    return "".join(parts) or '<div class="section"><p class="muted">No training history available.</p></div>'
+
+
+def _single_run_test_tab(run_data: RunData) -> str:
+    parts = []
+    summary = _section_results_summary(run_data)
+    if summary:
+        parts.append(summary)
+    preds = _section_prediction_analysis(run_data)
+    if preds:
+        parts.append(preds)
+    stats = _section_subgroup_analysis(run_data)
+    if stats:
+        parts.append(stats)
+    return "".join(parts) or '<div class="section"><p class="muted">No test results available.</p></div>'
+
+
+def _single_run_config_tab(run_data: RunData) -> str:
+    return _section_config(run_data) or '<div class="section"><p class="muted">No configuration available.</p></div>'
+
+
+def _overview_config_items(run_data: RunData) -> list[tuple[str, str]]:
+    cfg = run_data.config
+
+    def _spacing(value: object) -> str:
+        if value is None:
+            return "Not set"
+        try:
+            return f"{float(value):.2f} um"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _nested_value(*keys: str) -> str:
+        obj: object = cfg
+        for key in keys:
+            if not isinstance(obj, dict) or key not in obj:
+                return "—"
+            obj = obj[key]
+        if obj in (None, "", "None"):
+            return "—"
+        return str(obj)
+
+    items: list[tuple[str, str]] = []
+    dataset_csv = _basename(cfg.get("dataset_csv"))
+    if dataset_csv != "—":
+        items.append(("Dataset CSV", dataset_csv))
+
+    splits_csv = _basename(cfg.get("splits_csv"))
+    if splits_csv != "—":
+        items.append(("Splits CSV", splits_csv))
+
+    items.append(("Spacing", _spacing(cfg.get("preprocessing", {}).get("requested_spacing_um"))))
+
+    encoder = _nested_value("encoder", "name")
+    if encoder != "—":
+        items.append(("Encoder", encoder))
+
+    aggregator = _nested_value("aggregator", "name")
+    if aggregator != "—":
+        items.append(("Aggregator", aggregator))
+
+    task_head = _nested_value("task", "name")
+    if task_head != "—":
+        items.append(("Task head", task_head))
+
+    return items
+
+
+def _overview_config_panel(items: list[tuple[str, str]]) -> str:
+    rows = "".join(
+        f"""
+        <div class="overview-spec">
+          <div class="overview-spec-label">{label}</div>
+          <div class="overview-spec-value">{value}</div>
+        </div>"""
+        for label, value in items
+    )
+    return f'<div class="overview-spec-grid">{rows}</div>'
+
+
+def _overview_results_panel(run_data: RunData) -> str:
+    cards = _hero_metric_cards(run_data)
+    return f'<div class="overview-metrics">{cards}</div>' if cards else '<p class="muted">No summary metrics available.</p>'
+
+
+def _training_summary_panel(run_data: RunData) -> str:
+    cfg = run_data.config.get("training", {})
+    items = [
+        ("Epochs", str(cfg.get("epochs", "—"))),
+        ("Batch size", str(cfg.get("batch_size", "—"))),
+        ("Learning rate", str(cfg.get("learning_rate", "—"))),
+        ("Optimizer", str(cfg.get("optimizer", "—"))),
+        ("Scheduler", str(cfg.get("scheduler", "—"))),
+        ("Patience", str(cfg.get("patience", "—"))),
+    ]
+    grad_accum = cfg.get("gradient_accumulation")
+    if grad_accum not in (None, "", 1, "1"):
+        items.append(("Gradient accumulation", str(grad_accum)))
+    cells = "".join(
+        f"""
+        <div class="training-spec">
+          <div class="training-spec-label">{label}</div>
+          <div class="training-spec-value">{value}</div>
+        </div>"""
+        for label, value in items
+    )
+    return f"""
+<div class="section section-compact">
+  <h2>Training configuration</h2>
+  <div class="training-spec-grid">{cells}</div>
+</div>"""
+
+
+def _hero_metric_cards(run_data: RunData) -> str:
     if not run_data.folds:
         return ""
 
@@ -114,7 +300,6 @@ def _section_hero_metrics(run_data: RunData) -> str:
         return ""
 
     single_fold = len(run_data.folds) == 1
-    # Use the first split for hero display
     split_name = all_split_names[0]
     cards = []
     for metric in run_data.metrics:
@@ -123,74 +308,19 @@ def _section_hero_metrics(run_data: RunData) -> str:
             if value is None:
                 continue
             std_html = ""
-            value_str = f"{value:.3f}"
         else:
             value = run_data.summary.get(f"{split_name}/{metric}_mean")
             std = run_data.summary.get(f"{split_name}/{metric}_std")
             if value is None:
                 continue
             std_html = f'<span class="hero-std">± {std:.3f}</span>' if std is not None else ""
-            value_str = f"{value:.3f}"
-        split_label = f'<span class="hero-split">{split_name}</span>' if len(all_split_names) > 1 else ""
         cards.append(f"""
   <div class="hero-card">
-    <div class="hero-value">{value_str}{std_html}</div>
-    <div class="hero-label">{metric}{split_label}</div>
+    <div class="hero-value">{value:.3f}{std_html}</div>
+    <div class="hero-label">{metric}</div>
   </div>""")
 
-    if not cards:
-        return ""
-
-    return f'<div class="hero-strip"><div class="hero-grid">{"".join(cards)}</div></div>'
-
-
-def _section_run_context(run_data: RunData) -> str:
-    cfg = run_data.config
-
-    def _basename(path: str) -> str:
-        if not path or path == "—":
-            return "—"
-        import os
-        return os.path.basename(path)
-
-    def _get(obj: dict, *keys: str, default: str = "—") -> str:
-        for key in keys:
-            if isinstance(obj, dict) and key in obj:
-                obj = obj[key]
-            else:
-                return default
-        return str(obj) if obj is not None else default
-
-    items = []
-
-    dataset = _basename(_get(cfg, "dataset_csv"))
-    if dataset and dataset != "—":
-        items.append(("Dataset", dataset))
-
-    splits = _basename(_get(cfg, "splits_csv"))
-    if splits and splits != "—":
-        items.append(("Splits", splits))
-
-    encoder = cfg.get("encoder")
-    if encoder:
-        enc_name = _get(cfg, "encoder", "name")
-        if enc_name and enc_name != "—":
-            items.append(("Encoder", enc_name))
-
-    agg = cfg.get("aggregator")
-    if agg:
-        agg_name = _get(cfg, "aggregator", "name")
-        if agg_name and agg_name != "—":
-            items.append(("Aggregator", agg_name))
-
-    if not items:
-        return ""
-
-    chips = "".join(
-        f'<span class="ctx-chip"><span class="ctx-label">{label}</span><span class="ctx-value">{value}</span></span>'
-        for label, value in items
-    )
-    return f'<div class="run-context">{chips}</div>'
+    return "".join(cards)
 
 
 def _section_config(run_data: RunData) -> str:
@@ -202,10 +332,9 @@ def _section_config(run_data: RunData) -> str:
     )
     return f"""
 <div class="section">
-  <details class="cfg-details">
-    <summary>Configuration</summary>
-    <table class="cfg-table"><tbody>{table_html}</tbody></table>
-  </details>
+  <h2>Configuration</h2>
+  <p class="section-note">Complete flattened configuration for reproducibility and auditing.</p>
+  <table class="cfg-table"><tbody>{table_html}</tbody></table>
 </div>"""
 
 
@@ -358,7 +487,7 @@ def _section_training_timing(run_data: RunData) -> str:
 
     return f"""
 <div class="section">
-  <h2>Training Timing</h2>
+  <h2>Elapsed Time</h2>
   <table class="results-table">
     <thead><tr><th>Fold</th><th>Elapsed</th><th>Average epoch</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>
@@ -421,9 +550,11 @@ def _section_prediction_analysis(run_data: RunData) -> str:
             continue
 
         heading = f"Test Performance — {split_name}"
+        default_label = tabs[0][0]
         sections += f"""
 <div class="section">
   <h2>{heading}</h2>
+  <p class="section-note">{default_label} is shown first by default. Use the tabs to inspect alternate diagnostics.</p>
   {_tab_group(tabs)}
 </div>"""
 
@@ -431,21 +562,31 @@ def _section_prediction_analysis(run_data: RunData) -> str:
 
 
 def _tab_group(tabs: list[tuple[str, str]]) -> str:
-    import uuid as _uuid
-    group_id = f"tg-{_uuid.uuid4().hex[:8]}"
+    chart_tabs = [(label, f'<div class="chart-panel"><div class="chart-square">{svg}</div></div>') for label, svg in tabs]
+    return _tab_shell(chart_tabs)
 
+
+def _tab_shell(tabs: list[tuple[str, str]], *, group_id: str | None = None) -> str:
+    resolved_tabs = [t for t in tabs if t[1]]
+    if not resolved_tabs:
+        return ""
+
+    resolved_group_id = group_id or f"tg-{uuid.uuid4().hex[:8]}"
     btn_html = ""
     panels_html = ""
-    for i, (label, svg) in enumerate(tabs):
-        tab_id = f"{group_id}-{i}"
+    for i, (label, html) in enumerate(resolved_tabs):
+        tab_id = f"{_slugify(label)}-tab" if group_id else f"{resolved_group_id}-{_slugify(label)}"
         active_btn = " active" if i == 0 else ""
         hidden = "" if i == 0 else ' style="display:none"'
-        btn_html += f'<button class="tab-btn{active_btn}" onclick="somaTab(\'{group_id}\',{i})">{label}</button>'
-        panels_html += f'<div class="tab-panel chart-square" id="{tab_id}"{hidden}>{svg}</div>'
+        btn_html += (
+            f'<button class="tab-btn{active_btn}" data-target="{tab_id}" '
+            f'onclick="somaTab(\'{resolved_group_id}\',\'{tab_id}\')">{label}</button>'
+        )
+        panels_html += f'<div class="tab-panel" id="{tab_id}"{hidden}>{html}</div>'
 
-    return f"""<div class="tab-group" id="{group_id}">
+    return f"""<div class="tab-group" id="{resolved_group_id}">
   <div class="tab-bar">{btn_html}</div>
-  {panels_html}
+  <div class="tab-panels">{panels_html}</div>
 </div>"""
 
 
@@ -576,6 +717,15 @@ def _chart_div(svg: str, *, width: str = "full") -> str:
     return f'<div class="{css_class}">{svg}</div>'
 
 
+def _basename(path: object) -> str:
+    return os.path.basename(str(path)) if path else "—"
+
+
+def _primary_split(run: RunData) -> str:
+    splits = sorted({s for fd in run.folds for s in fd.test_metrics})
+    return splits[0] if splits else "test"
+
+
 def _run_id(run_data: RunData) -> str:
     return run_data.run_metadata.get("run_id") or "—"
 
@@ -609,17 +759,344 @@ def _config_rows(cfg: dict) -> list[tuple[str, str]]:
     return [(k, v) for k, v in rows if v and v != "—"]
 
 
+def _comparison_tabs(cd: ComparisonData) -> str:
+    tabs: list[tuple[str, str]] = [
+        ("Overview", _comparison_overview_tab(cd)),
+        ("Train plots", _comparison_section_curves(cd)),
+        ("Test results", _comparison_test_results_tab(cd)),
+        ("Statistical analysis", _comparison_section_metrics(cd)),
+        ("Configuration", _comparison_configuration_tab(cd)),
+    ]
+
+    if any(len(run.folds) > 1 for run in cd.runs):
+        fold_tab = _comparison_fold_tab(cd)
+        if fold_tab:
+            tabs.insert(3, ("Fold-specific results", fold_tab))
+
+    return _tab_shell(tabs, group_id="comparison-tabs")
+
+
+def _sorted_metric_names(cd: ComparisonData) -> list[str]:
+    metric_scores: list[tuple[float, int, str]] = []
+    for idx, metric in enumerate(cd.metric_names):
+        values: list[float] = []
+        for run in cd.runs:
+            split = _primary_split(run)
+            val = run.summary.get(f"{split}/{metric}_mean")
+            if val is None and run.folds:
+                val = run.folds[0].test_metrics.get(split, {}).get(metric)
+            if val is not None:
+                values.append(float(val))
+        metric_scores.append((max(values) if values else float("-inf"), idx, metric))
+    metric_scores.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+    return [metric for _, _, metric in metric_scores]
+
+
+def _comparison_overview_tab(cd: ComparisonData) -> str:
+    metric_names = _sorted_metric_names(cd)
+    primary_metric = metric_names[0] if metric_names else "—"
+    top_run = cd.labels[0] if cd.labels else "—"
+    if metric_names:
+        ranked = []
+        for idx, run in enumerate(cd.runs):
+            split_name = _primary_split(run)
+            value = run.summary.get(f"{split_name}/{primary_metric}_mean")
+            if value is None and run.folds:
+                value = run.folds[0].test_metrics.get(split_name, {}).get(primary_metric)
+            ranked.append((float("-inf") if value is None else float(value), idx))
+        ranked.sort(reverse=True)
+        if ranked:
+            top_run = cd.labels[ranked[0][1]]
+
+    def _display_path(key: str) -> str:
+        if key in cd.shared_config and cd.shared_config[key]:
+            return _basename(cd.shared_config[key])
+        values: list[str] = []
+        for diff in cd.config_diffs:
+            value = diff.get(key)
+            if value:
+                values.append(_basename(value))
+        if values:
+            return " / ".join(values[:2]) + (" …" if len(values) > 2 else "")
+        return "—"
+
+    dataset_items = [
+        ("Dataset CSV", _display_path("dataset_csv")),
+        ("Splits CSV", _display_path("splits_csv")),
+    ]
+
+    dataset_context = _overview_config_panel(dataset_items)
+
+    return f"""
+<div class="overview-layout">
+  <section class="overview-banner">
+    <div class="overview-banner-copy">
+      <div class="overview-kicker">Cross-run comparison</div>
+      <h2>Run ranking</h2>
+      <p>Comparing multiple runs on the same dataset.</p>
+    </div>
+    <div class="overview-banner-meta">
+      <span>{len(cd.runs)} run{"s" if len(cd.runs) != 1 else ""}</span>
+      <span>{len(metric_names)} metric{"s" if len(metric_names) != 1 else ""}</span>
+    </div>
+  </section>
+  <div class="overview-grid">
+    <section class="overview-panel overview-panel-wide">
+      <div class="overview-panel-head">
+        <h3>Ranking</h3>
+        <p>Sorted by {primary_metric}.</p>
+      </div>
+      {_comparison_ranking_table(cd)}
+    </section>
+    <section class="overview-panel">
+      <div class="overview-panel-head">
+        <h3>Dataset context</h3>
+        <p>Shared setup used by the compared runs.</p>
+      </div>
+      {dataset_context}
+    </section>
+  </div>
+</div>"""
+
+
+def _comparison_test_results_tab(cd: ComparisonData) -> str:
+    matrix = _comparison_metric_matrix(cd)
+    return matrix or '<div class="section"><p class="muted">No test results available.</p></div>'
+
+
+def _comparison_configuration_tab(cd: ComparisonData) -> str:
+    varying = _comparison_section_config_varying(cd)
+    shared = _comparison_section_config_shared(cd)
+    parts = [part for part in [varying, shared] if part]
+    return "".join(parts) or '<div class="section"><p class="muted">No configuration details available.</p></div>'
+
+
+def _comparison_fold_tab(cd: ComparisonData) -> str:
+    rows: list[str] = []
+    for i, run in enumerate(cd.runs):
+        split_names = _test_split_names(run.folds)
+        if not split_names:
+            continue
+        for split_name in split_names:
+            rows.append(
+                f"<tr><td class='metric-name'>{cd.labels[i]}</td><td>{split_name}</td><td>{len(run.folds)}</td></tr>"
+            )
+    if not rows:
+        return ""
+    return f"""
+<div class="section">
+  <h2>Fold-specific results</h2>
+  <table class="results-table">
+    <thead><tr><th>Run</th><th>Split</th><th>Folds</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+</div>"""
+
+
+def _comparison_ranking_table(cd: ComparisonData) -> str:
+    if not cd.metric_names:
+        return '<p class="muted">No comparison metrics available.</p>'
+
+    metric_names = _sorted_metric_names(cd)
+    primary_metric = metric_names[0]
+
+    ranked_rows: list[tuple[int, int, list[float | None]]] = []
+    for idx, run in enumerate(cd.runs):
+        split_name = _primary_split(run)
+        values: list[float | None] = []
+        for metric in metric_names:
+            val = run.summary.get(f"{split_name}/{metric}_mean")
+            if val is None and run.folds:
+                val = run.folds[0].test_metrics.get(split_name, {}).get(metric)
+            values.append(val)
+        ranked_rows.append((idx, 0, values))
+
+    def _sort_key(item: tuple[int, int, list[float | None]]) -> list:
+        idx, _, values = item
+        return [float("-inf") if v is None else float(v) for v in values] + [-idx]
+
+    ranked_rows = sorted(ranked_rows, key=_sort_key, reverse=True)
+
+    header_cells = "".join(
+        f'<th class="metric-col" data-metric="{metric}">{metric}</th>'
+        for metric in metric_names
+    )
+    rows_html = ""
+    podium_classes = ["podium-gold", "podium-silver", "podium-bronze"]
+    for rank, (idx, _, values) in enumerate(ranked_rows, start=1):
+        label = cd.labels[idx]
+        row_class = podium_classes[rank - 1] if rank <= 3 else "soma-brand-rank"
+        rank_class = f"rank-{rank}"
+        run_href = _run_report_href(cd.run_dirs[idx])
+        run_link = (
+            f'<a class="rank-link" href="{run_href}" target="_blank" rel="noopener" '
+            f'aria-label="Open report for {label}" title="Open report for {label}">'
+            f'<span class="rank-link-label">{label}</span>'
+            f'<span class="rank-link-arrow" aria-hidden="true">↗</span>'
+            f'</a>'
+        )
+        cells = [
+            f'<td class="rank-cell"><span class="rank-pill {row_class}">{rank}</span></td>',
+            f'<td class="rank-name">{run_link}</td>',
+        ]
+        for metric, value in zip(metric_names, values):
+            display = "—" if value is None else f"{value:.3f}"
+            cells.append(f'<td class="rank-metric">{display}</td>')
+        rows_html += f'<tr class="rank-row {rank_class}" data-rank="{rank}" data-label="{label}">{"".join(cells)}</tr>'
+
+    return f"""
+<table class="results-table ranking-table">
+  <thead><tr><th>Rank</th><th>Run</th>{header_cells}</tr></thead>
+  <tbody>{rows_html}</tbody>
+</table>
+"""
+
+
+def _run_report_href(run_dir: Path) -> str:
+    return (Path(run_dir) / "report.html").resolve().as_uri()
+
+
+def _comparison_metric_matrix(cd: ComparisonData) -> str:
+    if not cd.metric_names:
+        return ""
+
+    metric_names = _sorted_metric_names(cd)
+    col_headers = "".join(
+        f'<th><span class="run-badge" style="background:{_badge_color(i)}">{label}</span></th>'
+        for i, label in enumerate(cd.labels)
+    )
+    header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
+
+    primary_splits = [_primary_split(run) for run in cd.runs]
+
+    rows_html = ""
+    for metric in metric_names:
+        cells = []
+        vals: list[float | None] = []
+        for i, run in enumerate(cd.runs):
+            split_name = primary_splits[i]
+            val = run.summary.get(f"{split_name}/{metric}_mean")
+            if val is None and run.folds:
+                val = run.folds[0].test_metrics.get(split_name, {}).get(metric)
+            vals.append(val)
+        valid = [v for v in vals if v is not None]
+        best_val = max(valid) if valid else None
+        for i, val in enumerate(vals):
+            if val is None:
+                cells.append("<td>—</td>")
+                continue
+            is_best = best_val is not None and abs(val - best_val) < 1e-9
+            cell_class = "best-val" if is_best else ""
+            std = cd.runs[i].summary.get(f"{primary_splits[i]}/{metric}_std")
+            std_str = f" <span class='metric-std'>± {std:.3f}</span>" if std is not None else ""
+            cells.append(f"<td class='{cell_class}'><strong>{val:.3f}</strong>{std_str}</td>")
+        rows_html += f"<tr><td class='metric-name'>{metric}</td>{''.join(cells)}</tr>"
+
+    return f"""
+<div class="section">
+  <h2>Test results</h2>
+  <table class="results-table">
+    <thead>{header_row}</thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>"""
+
+
+def _comparison_section_metrics(cd: ComparisonData) -> str:
+    if not cd.metric_names:
+        return ""
+
+    col_headers = "".join(
+        f'<th><span class="run-badge" style="background:{_badge_color(i)}">{label}</span></th>'
+        for i, label in enumerate(cd.labels)
+    )
+    header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
+
+    task_family = cd.runs[0].task_family if cd.runs else ""
+    primary_splits = [_primary_split(run) for run in cd.runs]
+
+    runs_pooled = [
+        aggregate_fold_predictions(run.folds, primary_splits[i])
+        for i, run in enumerate(cd.runs)
+    ]
+
+    per_metric_data: list[tuple[list[float | None], list[float | None]]] = []
+    for metric in cd.metric_names:
+        means: list[float | None] = []
+        for i, run in enumerate(cd.runs):
+            split_name = primary_splits[i]
+            mean_key = f"{split_name}/{metric}_mean"
+            val = run.summary.get(mean_key)
+            if val is None:
+                val = run.folds[0].test_metrics.get(split_name, {}).get(metric) if run.folds else None
+            means.append(val)
+        raw_p = compare_run_predictions(runs_pooled, task_family, metric)
+        per_metric_data.append((means, raw_p))
+
+    all_keys: list[tuple[int, int]] = []
+    all_raw_p: list[float] = []
+    for m_idx, (_, raw_p) in enumerate(per_metric_data):
+        for r_idx, p in enumerate(raw_p):
+            if p is not None:
+                all_keys.append((m_idx, r_idx))
+                all_raw_p.append(p)
+    corrected = bh_correct(all_raw_p)
+    adj_p: dict[tuple[int, int], float] = dict(zip(all_keys, corrected))
+
+    rows_html = ""
+    for m_idx, metric in enumerate(cd.metric_names):
+        means, _ = per_metric_data[m_idx]
+        valid_means = [v for v in means if v is not None]
+        best_val = max(valid_means) if valid_means else None
+
+        cells = ""
+        for i, val in enumerate(means):
+            if val is None:
+                cells += "<td>—</td>"
+                continue
+            std = cd.runs[i].summary.get(f"{primary_splits[i]}/{metric}_std")
+            is_best = best_val is not None and abs(val - best_val) < 1e-9
+            p_adj = adj_p.get((m_idx, i))
+            sig_worse = not is_best and p_adj is not None and p_adj < 0.05
+            if is_best:
+                cell_class = " class='best-val'"
+                tip = ""
+            elif sig_worse:
+                cell_class = " class='sig-worse'"
+                tip = f" title='significantly worse than best (p_adj={p_adj:.3f})'"
+            else:
+                cell_class = ""
+                tip = f" title='p_adj={p_adj:.3f}'" if p_adj is not None else ""
+            std_str = f" ± {std:.4f}" if std is not None else ""
+            cells += f"<td{cell_class}{tip}><strong>{val:.4f}</strong>{std_str}</td>"
+
+        rows_html += f"<tr><td class='metric-name'>{metric}</td>{cells}</tr>"
+
+    stats_note = """
+  <p class="muted" style="margin-top:8px;font-size:12px;">
+    <span style="background:#fecdd3;padding:2px 6px;border-radius:3px;">■</span>
+    significantly worse than best run (p&lt;0.05, sample-level paired permutation test)
+  </p>"""
+
+    return f"""
+<div class="section">
+  <h2>Statistical analysis</h2>
+  <table class="results-table">
+    <thead>{header_row}</thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+  {stats_note}
+</div>"""
+
+
 def render_comparison_report(comparison_data: ComparisonData) -> str:
     """Generate a self-contained HTML comparison report string."""
-    sections: list[str] = []
-    sections.append(_comparison_section_header(comparison_data))
-    sections.append(_comparison_section_hero_metrics(comparison_data))
-    sections.append(_comparison_section_run_context(comparison_data))
-    sections.append(_comparison_section_config_diff(comparison_data))
-    sections.append(_comparison_section_metrics(comparison_data))
-    sections.append(_comparison_section_curves(comparison_data))
-
-    body = "\n".join(s for s in sections if s)
+    body = "\n".join(
+        part for part in [
+            _comparison_section_header(comparison_data),
+            _comparison_tabs(comparison_data),
+        ] if part
+    )
     n = len(comparison_data.runs)
 
     return f"""<!DOCTYPE html>
@@ -632,10 +1109,22 @@ def render_comparison_report(comparison_data: ComparisonData) -> str:
   <script>
   function somaTab(groupId, idx) {{
     var g = document.getElementById(groupId);
-    g.querySelectorAll('.tab-panel').forEach(function(p) {{ p.style.display = 'none'; }});
-    g.querySelectorAll('.tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
-    document.getElementById(groupId + '-' + idx).style.display = '';
-    g.querySelectorAll('.tab-btn')[idx].classList.add('active');
+    var panelsRoot = g.querySelector('.tab-panels');
+    if (panelsRoot) {{
+      panelsRoot.querySelectorAll(':scope > .tab-panel').forEach(function(p) {{ p.style.display = 'none'; }});
+    }}
+    var bar = g.querySelector('.tab-bar');
+    if (bar) {{
+      bar.querySelectorAll(':scope > .tab-btn').forEach(function(b) {{ b.classList.remove('active'); }});
+    }}
+    var panel = document.getElementById(idx);
+    if (panel) {{
+      panel.style.display = '';
+    }}
+    var btn = g.querySelector('[data-target=\"' + idx + '\"]');
+    if (btn) {{
+      btn.classList.add('active');
+    }}
   }}
   </script>
 </head>
@@ -665,10 +1154,6 @@ def _comparison_section_header(cd: ComparisonData) -> str:
 def _comparison_section_hero_metrics(cd: ComparisonData) -> str:
     if not cd.metric_names:
         return ""
-
-    def _primary_split(run: RunData) -> str:
-        splits = sorted({s for fd in run.folds for s in fd.test_metrics})
-        return splits[0] if splits else "test"
 
     cards = []
     for metric in cd.metric_names:
@@ -715,11 +1200,6 @@ def _comparison_section_hero_metrics(cd: ComparisonData) -> str:
 
 
 def _comparison_section_run_context(cd: ComparisonData) -> str:
-    import os
-
-    def _basename(v: str) -> str:
-        return os.path.basename(v) if v else "—"
-
     shared = cd.shared_config
     diffs = cd.config_diffs
 
@@ -752,14 +1232,12 @@ def _comparison_section_run_context(cd: ComparisonData) -> str:
     return f'<div class="run-context">{"".join(items)}</div>'
 
 
-def _comparison_section_config_diff(cd: ComparisonData) -> str:
+def _comparison_section_config_varying(cd: ComparisonData) -> str:
     if not any(cd.config_diffs):
         return """
 <div class="section">
-  <details class="cfg-details">
-    <summary>Configuration</summary>
-    <p class="muted" style="margin-top:12px">All runs share identical configurations.</p>
-  </details>
+  <h2>Varying fields</h2>
+  <p class="section-note">All runs share identical configurations.</p>
 </div>"""
 
     varying_keys: list[str] = []
@@ -782,120 +1260,31 @@ def _comparison_section_config_diff(cd: ComparisonData) -> str:
         )
         rows_html += f"<tr><td class='cfg-key'>{key}</td>{cells}</tr>"
 
+    return f"""
+<div class="section">
+  <h2>Varying fields</h2>
+  <p class="section-note">The table highlights only the values that differ across runs.</p>
+  <table class="results-table" style="margin-top:12px">
+    <thead>{header_row}</thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>"""
+
+
+def _comparison_section_config_shared(cd: ComparisonData) -> str:
+    if not cd.shared_config:
+        return ""
+
     shared_rows = "".join(
         f"<tr><td class='cfg-key'>{k}</td><td class='cfg-val'><code>{v}</code></td></tr>"
         for k, v in sorted(cd.shared_config.items())
     )
-    shared_html = f"""
-<details class="cfg-details">
-  <summary>Shared configuration ({len(cd.shared_config)} fields)</summary>
-  <table class="cfg-table" style="margin-top:10px"><tbody>{shared_rows}</tbody></table>
-</details>""" if cd.shared_config else ""
-
     return f"""
 <div class="section">
-  <details class="cfg-details">
-    <summary>Configuration</summary>
-    <table class="results-table" style="margin-top:12px">
-      <thead>{header_row}</thead>
-      <tbody>{rows_html}</tbody>
-    </table>
-    {shared_html}
-  </details>
+  <h2>Shared fields</h2>
+  <p class="section-note">These settings are identical across runs.</p>
+  <table class="cfg-table"><tbody>{shared_rows}</tbody></table>
 </div>"""
-
-
-def _comparison_section_metrics(cd: ComparisonData) -> str:
-    if not cd.metric_names:
-        return ""
-
-    col_headers = "".join(
-        f'<th><span class="run-badge" style="background:{_badge_color(i)}">{label}</span></th>'
-        for i, label in enumerate(cd.labels)
-    )
-    header_row = f"<tr><th>Metric</th>{col_headers}</tr>"
-
-    def _primary_split(run: RunData) -> str:
-        splits = sorted({s for fd in run.folds for s in fd.test_metrics})
-        return splits[0] if splits else "test"
-
-    task_family = cd.runs[0].task_family if cd.runs else ""
-
-    # Pooled predictions per run (used for both metric means and statistical test)
-    runs_pooled = [
-        aggregate_fold_predictions(run.folds, _primary_split(run))
-        for run in cd.runs
-    ]
-
-    per_metric_data: list[tuple[list[float | None], list[float | None]]] = []
-    for metric in cd.metric_names:
-        means: list[float | None] = []
-        for run in cd.runs:
-            split_name = _primary_split(run)
-            mean_key = f"{split_name}/{metric}_mean"
-            val = run.summary.get(mean_key)
-            if val is None:
-                val = run.folds[0].test_metrics.get(split_name, {}).get(metric) if run.folds else None
-            means.append(val)
-        raw_p = compare_run_predictions(runs_pooled, task_family, metric)
-        per_metric_data.append((means, raw_p))
-
-    all_keys: list[tuple[int, int]] = []
-    all_raw_p: list[float] = []
-    for m_idx, (_, raw_p) in enumerate(per_metric_data):
-        for r_idx, p in enumerate(raw_p):
-            if p is not None:
-                all_keys.append((m_idx, r_idx))
-                all_raw_p.append(p)
-    corrected = bh_correct(all_raw_p)
-    adj_p: dict[tuple[int, int], float] = dict(zip(all_keys, corrected))
-
-    rows_html = ""
-    for m_idx, metric in enumerate(cd.metric_names):
-        means, _ = per_metric_data[m_idx]
-        valid_means = [v for v in means if v is not None]
-        best_val = max(valid_means) if valid_means else None
-
-        cells = ""
-        for i, val in enumerate(means):
-            if val is None:
-                cells += "<td>—</td>"
-                continue
-            split_name = _primary_split(cd.runs[i])
-            std = cd.runs[i].summary.get(f"{split_name}/{metric}_std")
-            is_best = best_val is not None and abs(val - best_val) < 1e-9
-            p_adj = adj_p.get((m_idx, i))
-            sig_worse = not is_best and p_adj is not None and p_adj < 0.05
-            if is_best:
-                cell_class = " class='best-val'"
-                tip = ""
-            elif sig_worse:
-                cell_class = " class='sig-worse'"
-                tip = f" title='significantly worse than best (p_adj={p_adj:.3f})'"
-            else:
-                cell_class = ""
-                tip = f" title='p_adj={p_adj:.3f}'" if p_adj is not None else ""
-            std_str = f" ± {std:.4f}" if std is not None else ""
-            cells += f"<td{cell_class}{tip}><strong>{val:.4f}</strong>{std_str}</td>"
-
-        rows_html += f"<tr><td class='metric-name'>{metric}</td>{cells}</tr>"
-
-    stats_note = """
-  <p class="muted" style="margin-top:8px;font-size:12px;">
-    <span style="background:#fecdd3;padding:2px 6px;border-radius:3px;">■</span>
-    significantly worse than best run (p&lt;0.05, sample-level paired permutation test)
-  </p>"""
-
-    return f"""
-<div class="section">
-  <h2>Metrics comparison</h2>
-  <table class="results-table">
-    <thead>{header_row}</thead>
-    <tbody>{rows_html}</tbody>
-  </table>
-  {stats_note}
-</div>"""
-
 
 def _comparison_section_curves(cd: ComparisonData) -> str:
     has_history = any(
@@ -932,14 +1321,15 @@ def _css() -> str:
     return """
 :root {
   --soma-bg:           #FFFFFF;
-  --soma-bg-subtle:    #F8FAFC;
-  --soma-bg-card:      #F1F5F9;
+  --soma-bg-subtle:    #FFF7FA;
+  --soma-bg-card:      #FFF0F5;
   --soma-text:         #0F172A;
   --soma-text-muted:   #64748B;
-  --soma-accent:       #7C3AED;
-  --soma-accent-light: #EDE9FE;
-  --soma-border:       #E2E8F0;
-  --soma-header-bg:    #0F172A;
+  --soma-accent:       #E2558A;
+  --soma-accent-light: #FCE3ED;
+  --soma-accent-deep:  #B52B65;
+  --soma-border:       #E9D5DF;
+  --soma-header-bg:    #171018;
   --soma-header-text:  #F8FAFC;
   --soma-success:      #10B981;
   --soma-danger:       #EF4444;
@@ -949,7 +1339,9 @@ def _css() -> str:
 body {
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 14px;
-  background: var(--soma-bg-subtle);
+  background:
+    radial-gradient(circle at top left, rgba(226, 85, 138, 0.08), transparent 35%),
+    linear-gradient(180deg, #fff9fc 0%, #fff6f9 42%, #f8f5f8 100%);
   color: var(--soma-text);
   line-height: 1.5;
 }
@@ -957,14 +1349,15 @@ body {
 .site-header {
   background: var(--soma-header-bg);
   color: var(--soma-header-text);
-  padding: 0 32px;
-  height: 52px;
+  padding: 0 28px;
+  height: 58px;
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 14px;
   position: sticky;
   top: 0;
   z-index: 100;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
 }
 .soma-wordmark {
   font-weight: 800;
@@ -993,27 +1386,25 @@ body {
   color: #94A3B8;
 }
 /* ---- Hero metrics ---- */
-.hero-strip {
-  background: var(--soma-bg);
-  border-bottom: 1px solid var(--soma-border);
-  padding: 20px 32px;
-}
-.hero-grid {
-  display: flex;
-  flex-wrap: wrap;
+.overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px;
 }
 .hero-card {
-  background: var(--soma-accent-light);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,246,250,0.92));
+  border: 1px solid rgba(226,85,138,0.18);
   border-left: 4px solid var(--soma-accent);
-  border-radius: 8px;
-  padding: 14px 20px;
-  min-width: 140px;
+  border-radius: 20px;
+  padding: 14px 16px;
+  min-width: 0;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.03);
 }
 .hero-value {
-  font-size: 1.85rem;
+  font-size: 1.9rem;
   font-weight: 700;
-  color: var(--soma-accent);
+  color: var(--soma-accent-deep);
   line-height: 1.1;
 }
 .hero-std {
@@ -1030,72 +1421,168 @@ body {
   color: var(--soma-text-muted);
   margin-top: 4px;
 }
-.hero-split {
-  font-weight: 400;
-  text-transform: none;
-  margin-left: 4px;
-}
-/* ---- Run context strip ---- */
-.run-context {
-  background: var(--soma-bg);
-  border-bottom: 1px solid var(--soma-border);
-  padding: 10px 32px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-}
-.ctx-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--soma-bg-subtle);
-  border: 1px solid var(--soma-border);
-  border-radius: 20px;
-  padding: 3px 10px 3px 8px;
-  font-size: 12px;
-}
-.ctx-label {
-  color: var(--soma-text-muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 10px;
-}
-.ctx-value {
-  color: var(--soma-text);
-  font-family: ui-monospace, 'JetBrains Mono', monospace;
-  font-size: 11px;
-}
 /* ---- Badges ---- */
 .badge {
-  padding: 2px 10px; border-radius: 12px; font-size: 11px; font-weight: 600;
+  padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
 }
 .status-ok  { background: #10B981; color: #fff; }
 .status-err { background: #EF4444; color: #fff; }
 .status-run { background: #F59E0B; color: #000; }
 .run-badge {
   display: inline-block;
-  padding: 2px 10px; border-radius: 12px;
-  font-size: 11px; font-weight: 600; color: #fff;
+  padding: 2px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; color: #fff;
 }
 /* ---- Sections ---- */
 .section {
   background: var(--soma-bg);
-  border-radius: 8px;
-  margin: 20px 32px;
-  padding: 24px 28px;
-  box-shadow: 0 1px 3px rgba(0,0,0,.05);
+  border-radius: 18px;
+  margin: 18px 28px;
+  padding: 22px 24px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.04);
   border: 1px solid var(--soma-border);
 }
+.section-compact {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
 .section h2 {
-  font-size: 15px; font-weight: 600; margin-bottom: 16px;
+  font-size: 15px; font-weight: 700; margin-bottom: 16px;
   border-bottom: 1px solid var(--soma-border); padding-bottom: 10px;
   color: var(--soma-text);
 }
 .section h3 {
   font-size: 13px; font-weight: 600; margin: 16px 0 8px;
   color: var(--soma-text-muted);
+}
+.tab-stack {
+  display: flex;
+  flex-direction: column;
+}
+.overview-layout {
+  display: grid;
+  gap: 16px;
+}
+.overview-banner {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: end;
+  padding: 22px 24px;
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at top left, rgba(226, 85, 138, 0.16), transparent 38%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.99), rgba(252, 227, 237, 0.92));
+  border: 1px solid rgba(226, 85, 138, 0.18);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
+}
+.overview-banner-copy {
+  max-width: 52ch;
+}
+.overview-banner-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--soma-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.overview-banner-meta span {
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(226, 85, 138, 0.14);
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+.overview-kicker {
+  color: var(--soma-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.overview-banner h2 {
+  font-size: 22px;
+  line-height: 1.12;
+  margin-bottom: 8px;
+  border: 0;
+  padding: 0;
+}
+.overview-banner p {
+  max-width: 54ch;
+  color: var(--soma-text-muted);
+  font-size: 13px;
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.overview-panel {
+  background: linear-gradient(180deg, #ffffff, #fffafc);
+  border: 1px solid var(--soma-border);
+  border-radius: 22px;
+  padding: 20px 22px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 12px 28px rgba(15, 23, 42, 0.03);
+}
+.overview-panel-wide {
+  width: 100%;
+}
+.overview-panel-head {
+  margin-bottom: 16px;
+}
+.overview-inline-head {
+  margin-bottom: 12px;
+}
+.overview-panel-head h3 {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--soma-text);
+  margin-bottom: 4px;
+}
+.overview-panel-head p {
+  color: var(--soma-text-muted);
+  font-size: 12px;
+}
+.overview-panel-foot {
+  margin-top: 16px;
+}
+.overview-spec-grid,
+.training-spec-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.overview-spec,
+.training-spec {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(226, 85, 138, 0.05);
+  border: 1px solid rgba(226, 85, 138, 0.12);
+}
+.overview-spec-label,
+.training-spec-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--soma-text-muted);
+  margin-bottom: 6px;
+}
+.overview-spec-value,
+.training-spec-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--soma-text);
+  word-break: break-word;
+}
+.overview-spec-grid > .overview-spec:last-child:nth-child(odd),
+.training-spec-grid > .training-spec:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
 }
 .muted { color: var(--soma-text-muted); font-style: italic; }
 /* ---- Config collapsible ---- */
@@ -1118,13 +1605,24 @@ body {
 }
 .cfg-details[open] summary::before { transform: rotate(90deg); }
 .cfg-details[open] summary { margin-bottom: 16px; border-bottom: 1px solid var(--soma-border); padding-bottom: 10px; }
-.cfg-table { border-collapse: collapse; width: 100%; max-width: 680px; margin-top: 4px; }
+.cfg-table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: none;
+  margin-top: 4px;
+  table-layout: fixed;
+}
 .cfg-table tr:nth-child(even) td { background: var(--soma-bg-subtle); }
 .cfg-key {
   padding: 6px 12px 6px 0; font-weight: 600; color: var(--soma-text-muted);
-  white-space: nowrap; width: 200px; vertical-align: top; font-size: 12px;
+  white-space: nowrap; width: 32%; vertical-align: top; font-size: 12px;
 }
 .cfg-val { padding: 6px 0; color: var(--soma-text); word-break: break-all; font-size: 12px; }
+.section-note {
+  margin: -6px 0 14px;
+  color: var(--soma-text-muted);
+  font-size: 12px;
+}
 /* ---- Results table ---- */
 .results-table { border-collapse: collapse; width: 100%; font-size: 13px; }
 .results-table th {
@@ -1136,6 +1634,69 @@ body {
 .results-table td { padding: 7px 14px; text-align: right; border-bottom: 1px solid var(--soma-bg-subtle); }
 .results-table td.metric-name { text-align: left; font-weight: 500; }
 .results-table tr:hover td { background: var(--soma-bg-subtle); }
+.ranking-table .rank-cell { width: 44px; }
+.ranking-table .rank-name { text-align: left; font-weight: 700; }
+.ranking-table .rank-metric { font-variant-numeric: tabular-nums; }
+.rank-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--soma-text);
+  text-decoration: none;
+}
+.rank-link-label {
+  transition: transform 0.16s ease;
+}
+.rank-link-arrow {
+  color: var(--soma-accent);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 1;
+  transform: translate(0, 0);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.rank-link:hover .rank-link-label,
+.rank-link:focus-visible .rank-link-label {
+  transform: translateX(1px);
+}
+.rank-link:hover .rank-link-arrow,
+.rank-link:focus-visible .rank-link-arrow {
+  transform: translate(1px, -1px);
+}
+.rank-link:focus-visible {
+  outline: 2px solid rgba(226, 85, 138, 0.35);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+.ranking-table .rank-row:hover td {
+  background: rgba(226, 85, 138, 0.07);
+}
+.rank-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.podium-gold { background: linear-gradient(180deg, #F6E08A, #D6A81F); color: #3B2E06; }
+.podium-silver { background: linear-gradient(180deg, #E5E7EB, #A8B0BD); color: #1F2937; }
+.podium-bronze { background: linear-gradient(180deg, #F1C08B, #B86A24); color: #40220B; }
+.soma-brand-rank { background: linear-gradient(180deg, #F7BDD1, var(--soma-accent)); }
+.section-overview .results-table tr.rank-row td {
+  background: transparent;
+}
+.section-overview .results-table tr.rank-row.podium-gold td,
+.section-overview .results-table tr.rank-row.podium-silver td,
+.section-overview .results-table tr.rank-row.podium-bronze td,
+.section-overview .results-table tr.rank-row.soma-brand-rank td {
+  background: rgba(226, 85, 138, 0.05);
+}
 /* ---- Chart grid ---- */
 .chart-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
 .chart-full { flex: 1 1 100%; min-width: 0; }
@@ -1149,8 +1710,8 @@ body {
 }
 .chart-half svg { width: 100%; height: 100%; display: block; }
 /* ---- Comparison ---- */
-.best-val { background: #D1FAE5; }
-.sig-worse { background: #FEE2E2; }
+.best-val { background: rgba(16, 185, 129, 0.14); }
+.sig-worse { background: rgba(239, 68, 68, 0.12); }
 /* ---- Subgroup analysis ---- */
 .subgroup-sig { background: #FEE2E2; font-weight: 600; }
 .subgroup-flag { background: #FEF3C7; font-weight: 600; }
@@ -1168,7 +1729,7 @@ body {
 .comp-hero-card {
   background: var(--soma-bg-subtle);
   border: 1px solid var(--soma-border);
-  border-radius: 8px;
+  border-radius: 16px;
   padding: 14px 20px;
   min-width: 180px;
 }
@@ -1191,35 +1752,93 @@ body {
   line-height: 1.1;
 }
 /* ---- Tabs ---- */
-.tab-group { margin-top: 4px; }
+.tab-group {
+  margin: 18px 28px 0;
+  border: 1px solid rgba(226, 85, 138, 0.18);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,247,250,0.88));
+  backdrop-filter: blur(10px);
+  box-shadow:
+    0 12px 30px rgba(15, 23, 42, 0.04),
+    0 1px 0 rgba(255,255,255,0.8) inset;
+  overflow: hidden;
+}
+.tab-panels {
+  padding: 16px;
+}
+.tab-panel {
+  width: 100%;
+}
 .tab-bar {
   display: flex;
-  gap: 4px;
-  border-bottom: 2px solid var(--soma-border);
-  margin-bottom: 16px;
+  gap: 8px;
+  border-bottom: 1px solid rgba(226, 85, 138, 0.12);
+  margin-bottom: 0;
+  padding: 10px 12px 0;
+  overflow-x: auto;
+  background: linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,247,250,0.28));
 }
 .tab-btn {
-  padding: 7px 16px;
-  border: none;
-  background: none;
+  padding: 10px 16px 11px;
+  border: 1px solid transparent;
+  background: rgba(255,255,255,0.45);
   cursor: pointer;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 700;
   color: var(--soma-text-muted);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -2px;
-  border-radius: 4px 4px 0 0;
-  transition: color 0.1s;
+  border-bottom: 0;
+  margin-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+  white-space: nowrap;
 }
-.tab-btn:hover { color: var(--soma-text); background: var(--soma-bg-subtle); }
-.tab-btn.active { color: var(--soma-accent); border-bottom-color: var(--soma-accent); font-weight: 600; }
+.tab-btn:hover {
+  color: var(--soma-text);
+  background: rgba(255,255,255,0.92);
+  transform: translateY(-1px);
+}
+.tab-btn.active {
+  color: var(--soma-accent-deep);
+  background: linear-gradient(180deg, #ffffff, #fff5f9);
+  border-color: rgba(226, 85, 138, 0.22);
+  box-shadow:
+    0 -1px 0 rgba(255,255,255,0.85) inset,
+    0 8px 22px rgba(226, 85, 138, 0.08);
+  transform: translateY(-1px);
+}
+.tab-panels .section { margin: 0 0 16px; }
+.tab-panels .section:last-child { margin-bottom: 0; }
+.tab-panels .overview-layout { padding: 0; }
+.tab-panels .overview-panel { margin: 0; }
+.tab-panels .overview-grid { margin-top: 0; }
+.tab-panels .section-compact {
+  padding: 0;
+}
 .chart-square { max-width: 560px; }
 .chart-square svg { width: 100%; height: auto; display: block; }
+.chart-panel {
+  border: 1px solid rgba(226, 85, 138, 0.14);
+  border-radius: 20px;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,247,250,0.8));
+}
 code { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 12px; }
 @media (max-width: 768px) {
-  .section { margin: 12px; padding: 16px; }
+  .section { margin: 12px; padding: 16px; border-radius: 16px; }
   .chart-half { flex: 1 1 100%; max-width: 100%; aspect-ratio: unset; }
   .site-header { padding: 0 16px; }
-  .hero-strip, .run-context { padding: 12px 16px; }
+  .tab-bar { padding: 8px 8px 0; }
+  .tab-group { margin: 12px; border-radius: 18px; }
+  .tab-panels { padding: 12px; }
+  .overview-grid,
+  .overview-spec-grid,
+  .training-spec-grid { grid-template-columns: 1fr; }
+  .overview-banner { align-items: start; flex-direction: column; }
 }
 """
