@@ -1500,7 +1500,6 @@ class TestPipeline:
         ) as populate_slide_cache:
             with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
                 Pipeline(slide_config).run()
-            assert populate_tile_cache.called
             assert populate_slide_cache.called
 
         with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(

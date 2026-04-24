@@ -156,6 +156,7 @@ def build_execution_options(
         precision=precision,
         prefetch_factor=prefetch_factor,
         save_tile_embeddings=save_tile_embeddings,
+        save_slide_embeddings=False,
         save_latents=False,
     )
 
