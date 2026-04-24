@@ -32,12 +32,15 @@ Available commands
 ``soma list tasks``
    List all registered task-head presets.
 
-Full config reference
----------------------
+What the CLI expects
+--------------------
 
 The config file follows the canonical nested schema below. Every key is
 optional except those marked *required*. Omit a section entirely to
 accept all its defaults.
+
+Full config reference
+---------------------
 
 .. code-block:: yaml
 
@@ -79,15 +82,6 @@ accept all its defaults.
        downsample: 32
        tissue_contour_color: [37, 94, 59]
        mask_overlay_alpha: 0.5
-
-   # ── Execution ────────────────────────────────────────────────────
-   execution:
-     num_gpus: null              # null → use all visible GPUs
-     num_workers: null           # DataLoader workers
-     num_preprocessing_workers: null
-     prefetch_factor: null
-     persistent_workers: null
-     precision: null             # null | fp16 | bf16
 
    # ── Cache ────────────────────────────────────────────────────────
    cache:

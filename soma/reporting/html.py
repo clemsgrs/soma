@@ -221,15 +221,16 @@ def _overview_config_items(run_data: RunData) -> list[tuple[str, str]]:
         return str(obj)
 
     items: list[tuple[str, str]] = []
-    dataset_csv = _basename(cfg.get("dataset_csv"))
+    dataset_csv = _basename(_nested_value("data", "dataset_csv"))
     if dataset_csv != "—":
         items.append(("Dataset CSV", dataset_csv))
 
-    splits_csv = _basename(cfg.get("splits_csv"))
+    splits_csv = _basename(_nested_value("data", "splits_csv"))
     if splits_csv != "—":
         items.append(("Splits CSV", splits_csv))
 
-    items.append(("Spacing", _spacing(cfg.get("preprocessing", {}).get("requested_spacing_um"))))
+    spacing_value = cfg.get("preprocessing", {}).get("requested_spacing_um")
+    items.append(("Spacing", _spacing(spacing_value)))
 
     encoder = _nested_value("encoder", "name")
     if encoder != "—":

@@ -136,56 +136,132 @@ def build_cli_rst() -> str:
         Available commands
         ------------------
 
-        ``soma CONFIG`` runs a pipeline from the given YAML config file.
-        ``soma list {encoders,aggregators,tasks}`` inspects the registered
-        presets, and ``--level`` narrows the encoder list to one of
-        ``tile``, ``slide``, or ``patient``.
+        ``soma CONFIG``
+           Run a full pipeline from the given YAML config file.
+
+        ``soma list encoders [--level {tile,slide,patient}]``
+           List all registered encoder presets. ``--level`` narrows results to
+           ``tile``, ``slide``, or ``patient`` encoders.
+
+        ``soma list aggregators``
+           List all registered MIL aggregator presets.
+
+        ``soma list tasks``
+           List all registered task-head presets.
 
         What the CLI expects
         --------------------
 
-        The config file must use the canonical nested schema documented in
-        ``pipeline``.
+        The config file follows the canonical nested schema below. Every key is
+        optional except those marked *required*. Omit a section entirely to
+        accept all its defaults.
 
-        Minimal examples
-        ----------------
+        Full config reference
+        ---------------------
 
         .. code-block:: yaml
 
+           # ── Run ──────────────────────────────────────────────────────────
            run:
-             output_root: runs/example
+             output_root: runs          # required – directory for run artifacts
              seed: 0
-             tags: []
+             tags:
+               - baseline               # free-form labels stored in metadata
 
+           # ── Data ─────────────────────────────────────────────────────────
            data:
-             dataset_csv: data/dataset.csv
-             splits_csv: data/splits.csv
-             dataset_type: slide
+             dataset_csv: data/dataset.csv   # required – slide list and labels
+             splits_csv: data/splits.csv     # required – train/tune/test folds
+             dataset_type: slide             # required – slide | tile | patient
 
-           preprocessing: {}
+           # ── Preprocessing ────────────────────────────────────────────────
+           preprocessing:
+             backend: auto                   # auto | hs2p | sam2
+             requested_spacing_um: null      # primary scale knob (µm/px)
+             requested_tile_size_px: null    # tile edge length at the target spacing
+             requested_region_size_px: null  # HIPT region size (hierarchical only)
+             region_tile_multiple: null      # tiles-per-region (hierarchical only)
+             read_tile_size_px: null         # override read resolution
+             read_region_size_px: null
+             tissue_method: hsv              # tissue segmentation method
+             tissue_threshold: 0.1
+             overlap: 0.0
+             seg_downsample: 64
+             sam2_device: cpu
+             sam2_num_workers: null
+             tolerance: 0.05
+             ref_tile_size_px: null
+             a_t: 4
+             tissue_mask_tissue_value: 1
+             preview:
+               save_mask_preview: true
+               save_tiling_preview: true
+               downsample: 32
+               tissue_contour_color: [37, 94, 59]
+               mask_overlay_alpha: 0.5
 
+           # ── Cache ────────────────────────────────────────────────────────
+           cache:
+             enabled: true
+             root_dir: null              # null → inside output_root
+             reuse_policy: strict        # strict | relaxed
+             save_tile_features_for_slide: true
+
+           # ── Encoder ──────────────────────────────────────────────────────
            encoder:
-             name: uni2
+             name: uni2                  # required – see `soma list encoders`
+             precision: null
+             batch_size: 32
+             adaptive_batching: false
+             output_variant: null        # preset-specific feature variant
+             allow_non_recommended_settings: false
+             save_tile_features: false
 
+           # ── Aggregation (slide dataset_type only) ────────────────────────
            aggregation:
-             name: abmil
+             name: abmil                 # see `soma list aggregators`
+             params:
+               hidden_dim: 256
+               dropout: 0.25
 
+           # ── Task ─────────────────────────────────────────────────────────
            task:
-             name: binary_classification
+             name: binary_classification  # required – see `soma list tasks`
+             params: {}
 
+           # ── Evaluation ───────────────────────────────────────────────────
            evaluation:
-             metrics: [auroc, balanced_accuracy]
+             metrics:
+               - auroc
+               - balanced_accuracy
+             subgroups:
+               columns: []              # dataset.csv columns for metric breakdowns
 
+           # ── Training ─────────────────────────────────────────────────────
            training:
              epochs: 50
              learning_rate: 1.0e-4
+             weight_decay: 1.0e-5
+             optimizer: adam            # adam | sgd | adamw
+             scheduler: cosine          # cosine | step | none
+             patience: 10               # early-stopping patience (epochs)
+             batch_size: 1
+             gradient_accumulation: 1
+             allow_missing_tune: false
+
+           # ── Reports ──────────────────────────────────────────────────────
+           reports:
+             heatmaps:
+               enabled: false
+               cmap: coolwarm
+               alpha: 0.5
+               blur_sigma: 0.0
 
         See also
         --------
 
-        * ``getting-started``
-        * ``pipeline``
-        * ``api``
+        * :doc:`pipeline` – Python API equivalent of each config section
+        * :doc:`getting-started` – end-to-end walkthrough
 
         """
     )

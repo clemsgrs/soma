@@ -156,11 +156,14 @@ def test_encoder_config_public_fields_are_geometry_free():
 
 def test_execution_config_defaults():
     cfg = ExecutionConfig()
+    field_names = {field.name for field in fields(ExecutionConfig)}
     assert cfg.num_gpus is None
     assert cfg.num_workers_per_gpu is None
     assert cfg.num_preprocessing_workers is None
     assert cfg.prefetch_factor is None
     assert cfg.precision is None
+    assert "num_workers" not in field_names
+    assert "persistent_workers" not in field_names
 
 
 def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
