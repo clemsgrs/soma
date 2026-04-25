@@ -12,7 +12,7 @@ And cross-run comparison utilities:
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -183,6 +183,8 @@ def load_run_data(run_dir: str | Path) -> RunData:
 
     with open(run_dir / "config.yaml") as f:
         config = yaml.safe_load(f)
+    if not isinstance(config, dict):
+        raise TypeError("config.yaml must contain a mapping")
 
     run_metadata_path = run_dir / "run.yaml"
     run_metadata = yaml.safe_load(run_metadata_path.read_text()) if run_metadata_path.exists() else {}
@@ -190,11 +192,12 @@ def load_run_data(run_dir: str | Path) -> RunData:
     summary_path = run_dir / "summary.json"
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
 
-    task_family = config["task"]["name"]
-    metrics = resolve_metrics(task_family, config.get("evaluation", {}).get("metrics") or [])
-    subgroup_columns = list(config.get("evaluation", {}).get("subgroups", {}).get("columns") or [])
+    task_family = config.get("task", {}).get("name", "binary_classification")
+    evaluation = config.get("evaluation", {}) or {}
+    metrics = resolve_metrics(task_family, evaluation.get("metrics") or [])
+    subgroup_columns = list((evaluation.get("subgroups", {}) or {}).get("columns", []) or [])
 
-    # Detect layout: flat (single fold, artifacts in run_dir) vs nested (fold_N/ subdirs)
+    # Detect layout: single-fold artifacts in run_dir vs nested fold_N/ subdirs
     flat_layout = (run_dir / "metrics.json").exists()
     if flat_layout:
         fold_dirs_indexed = [(run_dir, 0)]
@@ -317,25 +320,9 @@ def run_data_from_result(
 
 def _config_to_dict(config: PipelineConfig) -> dict:
     """Serialize PipelineConfig to a plain dict (Paths converted to strings)."""
-    data = asdict(config)
-    _stringify_paths(data)
-    return data
+    from soma.config import _config_to_layout_dict
 
-
-def _stringify_paths(obj: object) -> None:
-    """Recursively convert Path objects to strings in-place."""
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if isinstance(value, Path):
-                obj[key] = str(value)
-            else:
-                _stringify_paths(value)
-    elif isinstance(obj, list):
-        for i, value in enumerate(obj):
-            if isinstance(value, Path):
-                obj[i] = str(value)
-            else:
-                _stringify_paths(value)
+    return _config_to_layout_dict(config)
 
 
 def _enrich_predictions_df(

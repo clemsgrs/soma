@@ -842,9 +842,7 @@ def _build_run_summary_panel(
 
     # Spacing — only meaningful for slide/WSI pipelines
     if dataset_type != "tile":
-        spacing: float | None = encoder.spacing_um if encoder is not None else None
-        if spacing is None:
-            spacing = preprocessing.requested_spacing_um
+        spacing = preprocessing.requested_spacing_um
         grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
 
     # Aggregator

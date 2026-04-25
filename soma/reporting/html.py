@@ -107,7 +107,7 @@ def _section_header(run_data: RunData) -> str:
     status = meta.get("status", "—")
     status_class = {"completed": "status-ok", "failed": "status-err"}.get(status, "status-run")
     git_sha = meta.get("git_sha") or "—"
-    seed = run_data.config.get("training", {}).get("seed", "—")
+    seed = run_data.config.get("run", {}).get("seed", run_data.config.get("training", {}).get("seed", "—"))
     num_folds = len(run_data.folds)
 
     return f"""
@@ -221,15 +221,16 @@ def _overview_config_items(run_data: RunData) -> list[tuple[str, str]]:
         return str(obj)
 
     items: list[tuple[str, str]] = []
-    dataset_csv = _basename(cfg.get("dataset_csv"))
+    dataset_csv = _basename(_nested_value("data", "dataset_csv"))
     if dataset_csv != "—":
         items.append(("Dataset CSV", dataset_csv))
 
-    splits_csv = _basename(cfg.get("splits_csv"))
+    splits_csv = _basename(_nested_value("data", "splits_csv"))
     if splits_csv != "—":
         items.append(("Splits CSV", splits_csv))
 
-    items.append(("Spacing", _spacing(cfg.get("preprocessing", {}).get("requested_spacing_um"))))
+    spacing_value = cfg.get("preprocessing", {}).get("requested_spacing_um")
+    items.append(("Spacing", _spacing(spacing_value)))
 
     encoder = _nested_value("encoder", "name")
     if encoder != "—":

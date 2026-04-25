@@ -1,4 +1,4 @@
-"""Generate the compact Sphinx reference page from public soma metadata."""
+"""Generate the CLI guide page from public soma metadata."""
 
 from __future__ import annotations
 
@@ -36,10 +36,11 @@ from soma.tasks import task_registry
 from soma.tile_extraction import TileFeatureExtractor
 
 
-def _field_names(cls: type) -> str:
+def _field_names(cls: type, *, exclude: set[str] | None = None) -> str:
     if not is_dataclass(cls):
         raise TypeError(f"{cls!r} is not a dataclass")
-    return ", ".join(f"``{field.name}``" for field in fields(cls))
+    excluded = exclude or set()
+    return ", ".join(f"``{field.name}``" for field in fields(cls) if field.name not in excluded)
 
 
 def _constructor_knobs(cls: type) -> str:
@@ -111,114 +112,172 @@ def _config_table(rows: list[tuple[str, str, str]]) -> str:
     return "\n".join(lines)
 
 
-def build_reference_rst() -> str:
-    """Return the full compact reference page as reStructuredText."""
-
-    config_rows = [
-        ("PreprocessingConfig", _field_names(PreprocessingConfig), "Whole-slide segmentation and tiling geometry"),
-        ("ExecutionConfig", _field_names(ExecutionConfig), "Runtime execution settings"),
-        ("PreviewConfig", _field_names(PreviewConfig), "Preview rendering settings"),
-        ("EncoderConfig", _field_names(EncoderConfig), "Foundation-model encoder selection and runtime behavior"),
-        ("CacheConfig", _field_names(CacheConfig), "Shared cache policy"),
-        ("AggregatorConfig", _field_names(AggregatorConfig), "MIL bag aggregation"),
-        ("TaskConfig", _field_names(TaskConfig), "Task head selection"),
-        ("EvalConfig", _field_names(EvalConfig), "Metric and subgroup reporting"),
-        ("TrainingConfig", _field_names(TrainingConfig), "Training hyperparameters"),
-        ("HeatmapConfig", _field_names(HeatmapConfig), "Attention heatmap rendering"),
-        ("PipelineConfig", _field_names(PipelineConfig), "Complete experiment specification"),
-    ]
-
-    aggregator_notes = {
-        "mean_pool": "Baseline pooling; ``input_dim`` is injected from the feature store",
-        "max_pool": "Baseline pooling; ``input_dim`` is injected from the feature store",
-        "abmil": "Attention MIL; ``input_dim`` is injected from the feature store",
-        "clam_sb": "General-purpose CLAM; ``input_dim`` is injected from the feature store",
-        "clam_mb": "Multi-branch classification only; ``input_dim`` is injected from the feature store",
-        "dsmil": "Dual-stream MIL; ``input_dim`` is injected from the feature store",
-        "dtfdmil": "Two-stage distillation MIL; ``input_dim`` is injected from the feature store",
-        "hipt": "Hierarchical aggregation; ``input_dim`` is injected from the feature store",
-        "transmil": "Transformer MIL; ``input_dim`` is injected from the feature store",
-    }
-
-    task_notes = {
-        "binary_classification": "Requires exactly two classes",
-        "multiclass_classification": "Two or more classes; use binary_classification when the problem is strictly binary",
-        "branch_aware_classification": "CLAM-MB compatible branch head",
-        "ordinal_classification": "Ordered integer labels",
-        "regression": "Continuous targets",
-    }
-
-    aggregator_rows = []
-    for name in aggregator_registry.list():
-        cls = aggregator_registry.get(name)
-        aggregator_rows.append(
-            (
-                name,
-                cls.__name__,
-                _constructor_knobs(cls),
-                aggregator_notes.get(name, cls.__doc__.splitlines()[0] if cls.__doc__ else ""),
-            )
-        )
-
-    task_rows = []
-    for name in task_registry.list():
-        cls = task_registry.get(name)
-        task_rows.append(
-            (
-                name,
-                cls.__name__,
-                _constructor_knobs(cls),
-                task_notes.get(name, cls.__doc__.splitlines()[0] if cls.__doc__ else ""),
-            )
-        )
-
-    api_rows = [
-        ("Pipeline", "Orchestrates the full pipeline: extract → train all folds → summarize"),
-        ("train", "Train and evaluate all folds, then summarize"),
-        ("list_models", "List available encoder presets, optionally filtered by level"),
-        ("list_aggregators", "List registered aggregator presets"),
-        ("list_task_heads", "List registered task-head presets"),
-        ("Dataset", "Load and validate dataset.csv"),
-        ("Splits", "Load and validate splits.csv"),
-        ("FeatureExtractor", "Delegates tile/slide feature extraction to slide2vec"),
-        ("FeatureStore", "Index and load precomputed tile embeddings from disk"),
-        ("TileFeatureExtractor", "Encode individual tile images into 1D feature vectors"),
-    ]
-
+def build_cli_rst() -> str:
     body = dedent(
         """\
-        Compact Parameter Reference
-        ===========================
+        CLI Guide
+        =========
 
-        This page is generated from the public config dataclasses and component
-        registries. It provides a compact index of the main public surfaces.
+        ``soma`` exposes a compact command-line interface for running
+        experiments from YAML config files and for listing the available model
+        presets.
 
-        Public API
-        ----------
+        Basic usage
+        -----------
+
+        The main entrypoint takes a config path directly::
+
+            soma /path/to/config.yaml
+
+        You can also invoke it through Python if you prefer::
+
+            python -m soma /path/to/config.yaml
+
+        Available commands
+        ------------------
+
+        ``soma CONFIG``
+           Run a full pipeline from the given YAML config file.
+
+        ``soma list encoders [--level {tile,slide,patient}]``
+           List all registered encoder presets. ``--level`` narrows results to
+           ``tile``, ``slide``, or ``patient`` encoders.
+
+        ``soma list aggregators``
+           List all registered MIL aggregator presets.
+
+        ``soma list tasks``
+           List all registered task-head presets.
+
+        What the CLI expects
+        --------------------
+
+        The config file follows the canonical nested schema below. Every key is
+        optional except those marked *required*. Omit a section entirely to
+        accept all its defaults.
+
+        Full config reference
+        ---------------------
+
+        .. code-block:: yaml
+
+           # ── Run ──────────────────────────────────────────────────────────
+           run:
+             output_root: runs          # required – directory for run artifacts
+             seed: 0
+             tags:
+               - baseline               # free-form labels stored in metadata
+
+           # ── Data ─────────────────────────────────────────────────────────
+           data:
+             dataset_csv: data/dataset.csv   # required – slide list and labels
+             splits_csv: data/splits.csv     # required – train/tune/test folds
+             dataset_type: slide             # required – slide | tile | patient
+
+           # ── Preprocessing ────────────────────────────────────────────────
+           preprocessing:
+             backend: auto                   # auto | hs2p | sam2
+             requested_spacing_um: null      # primary scale knob (µm/px)
+             requested_tile_size_px: null    # tile edge length at the target spacing
+             requested_region_size_px: null  # HIPT region size (hierarchical only)
+             region_tile_multiple: null      # tiles-per-region (hierarchical only)
+             read_tile_size_px: null         # override read resolution
+             read_region_size_px: null
+             tissue_method: hsv              # tissue segmentation method
+             tissue_threshold: 0.1
+             overlap: 0.0
+             seg_downsample: 64
+             sam2_device: cpu
+             sam2_num_workers: null
+             tolerance: 0.05
+             ref_tile_size_px: null
+             a_t: 4
+             tissue_mask_tissue_value: 1
+             preview:
+               save_mask_preview: true
+               save_tiling_preview: true
+               downsample: 32
+               tissue_contour_color: [37, 94, 59]
+               mask_overlay_alpha: 0.5
+
+           # ── Cache ────────────────────────────────────────────────────────
+           cache:
+             enabled: true
+             root_dir: null              # null → inside output_root
+             reuse_policy: strict        # strict | relaxed
+             save_tile_features_for_slide: true
+
+           # ── Encoder ──────────────────────────────────────────────────────
+           encoder:
+             name: uni2                  # required – see `soma list encoders`
+             precision: null
+             batch_size: 32
+             adaptive_batching: false
+             output_variant: null        # preset-specific feature variant
+             allow_non_recommended_settings: false
+             save_tile_features: false
+
+           # ── Aggregation (slide dataset_type only) ────────────────────────
+           aggregation:
+             name: abmil                 # see `soma list aggregators`
+             params:
+               hidden_dim: 256
+               dropout: 0.25
+
+           # ── Task ─────────────────────────────────────────────────────────
+           task:
+             name: binary_classification  # required – see `soma list tasks`
+             params: {}
+
+           # ── Evaluation ───────────────────────────────────────────────────
+           evaluation:
+             metrics:
+               - auroc
+               - balanced_accuracy
+             subgroups:
+               columns: []              # dataset.csv columns for metric breakdowns
+
+           # ── Training ─────────────────────────────────────────────────────
+           training:
+             epochs: 50
+             learning_rate: 1.0e-4
+             weight_decay: 1.0e-5
+             optimizer: adam            # adam | sgd | adamw
+             scheduler: cosine          # cosine | step | none
+             patience: 10               # early-stopping patience (epochs)
+             batch_size: 1
+             gradient_accumulation: 1
+             allow_missing_tune: false
+
+           # ── Reports ──────────────────────────────────────────────────────
+           reports:
+             heatmaps:
+               enabled: false
+               cmap: coolwarm
+               alpha: 0.5
+               blur_sigma: 0.0
+
+        See also
+        --------
+
+        * :doc:`pipeline` – Python API equivalent of each config section
+        * :doc:`getting-started` – end-to-end walkthrough
 
         """
     )
-    body += _api_table(api_rows)
-    body += "\n\nConfiguration dataclasses\n-------------------------\n\n"
-    body += _config_table(config_rows)
-    body += "\n\nAggregator registry\n-------------------\n\n"
-    body += _list_table(aggregator_rows)
-    body += "\n\nTask registry\n-------------\n\n"
-    body += _list_table(task_rows)
-    body += "\n\nUse this page as a concise index. Use the guide pages for workflow and the\ndocstrings for the exact API contract.\n"
     return body
 
 
-def write_reference_rst(path: str | Path | None = None) -> Path:
-    """Write the generated reference page to disk."""
+def write_cli_rst(path: str | Path | None = None) -> Path:
+    """Write the generated CLI guide page to disk."""
 
-    target = Path(path) if path is not None else Path(__file__).with_name("reference.rst")
-    target.write_text(build_reference_rst(), encoding="utf-8")
+    target = Path(path) if path is not None else Path(__file__).with_name("cli.rst")
+    target.write_text(build_cli_rst(), encoding="utf-8")
     return target
 
 
 def main() -> None:
-    write_reference_rst()
+    write_cli_rst()
 
 
 if __name__ == "__main__":

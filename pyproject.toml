@@ -61,6 +61,7 @@ docs = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["soma"]
+include = ["soma/configs/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

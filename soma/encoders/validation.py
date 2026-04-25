@@ -63,21 +63,16 @@ def resolve_preprocessing_config(
 
     requested_spacing_um = preprocessing_config.requested_spacing_um
     if requested_spacing_um is None:
-        spacing_override = encoder_config.spacing_um
-        if spacing_override is not None:
-            requested_spacing_um = float(spacing_override)
+        rec_spacing = requirements["spacing_um"]
+        if isinstance(rec_spacing, list):
+            if len(rec_spacing) != 1:
+                raise ValueError(
+                    f"Encoder '{encoder_config.name}' supports multiple spacings "
+                    f"{rec_spacing}; please specify PreprocessingConfig.requested_spacing_um."
+                )
+            requested_spacing_um = float(rec_spacing[0])
         else:
-            rec_spacing = requirements["spacing_um"]
-            if isinstance(rec_spacing, list):
-                if len(rec_spacing) != 1:
-                    raise ValueError(
-                        f"Encoder '{encoder_config.name}' supports multiple spacings "
-                        f"{rec_spacing}; please specify EncoderConfig.spacing_um or "
-                        "PreprocessingConfig.requested_spacing_um."
-                    )
-                requested_spacing_um = float(rec_spacing[0])
-            else:
-                requested_spacing_um = float(rec_spacing)
+            requested_spacing_um = float(rec_spacing)
 
     ref_tile_size_px = preprocessing_config.ref_tile_size_px
     if ref_tile_size_px is None:
@@ -167,27 +162,21 @@ def validate_encoder_config(
 
     rec_requirements = resolve_preprocessing_requirements(config.name, metadata=model_metadata)
     rec_spacing = rec_requirements["spacing_um"]
-    if config.spacing_um is None:
+    requested_spacing_um = (
+        preprocessing_config.requested_spacing_um if preprocessing_config is not None else None
+    )
+    if requested_spacing_um is None:
         if isinstance(rec_spacing, list) and len(rec_spacing) > 1:
             raise ValueError(
                 f"Model supports multiple spacings {rec_spacing} but "
-                f"config.spacing_um is None. Please specify one."
+                "PreprocessingConfig.requested_spacing_um is None. Please specify one."
             )
     else:
         valid_spacings = rec_spacing if isinstance(rec_spacing, list) else [rec_spacing]
-        if config.spacing_um not in valid_spacings:
+        if requested_spacing_um not in valid_spacings:
             warnings.append(
-                f"Spacing mismatch: config uses {config.spacing_um} µm/px, "
+                f"Spacing mismatch: preprocessing uses {requested_spacing_um} µm/px, "
                 f"model recommends {rec_spacing}."
-            )
-
-    rec_input_size = model_metadata.get("input_size")
-    if config.input_size is not None and rec_input_size is not None:
-        if config.input_size != rec_input_size:
-            warnings.append(
-                f"input_size mismatch: config uses {config.input_size}px, "
-                f"model recommends {rec_input_size}px. The model's transform "
-                f"will resize/crop to {rec_input_size}px unless overridden."
             )
 
     rec_tile_size = rec_requirements["tile_size_px"]
@@ -200,7 +189,7 @@ def validate_encoder_config(
                 f"{preprocessing_tile_size}px, model recommends "
                 f"{rec_tile_size}px."
             )
-        requested_spacing = config.spacing_um or preprocessing_config.requested_spacing_um
+        requested_spacing = preprocessing_config.requested_spacing_um
 
         valid_spacings = rec_spacing if isinstance(rec_spacing, list) else [rec_spacing]
         if requested_spacing not in valid_spacings:
@@ -210,9 +199,7 @@ def validate_encoder_config(
             )
 
     if tiling_result is not None:
-        recommended_spacing_um = config.spacing_um or (
-            rec_spacing if isinstance(rec_spacing, (int, float)) else None
-        )
+        recommended_spacing_um = rec_spacing if isinstance(rec_spacing, (int, float)) else None
         if recommended_spacing_um is not None:
             requested_spacing = tiling_result.requested_spacing_um
             if abs(requested_spacing - recommended_spacing_um) / recommended_spacing_um > 0.05:

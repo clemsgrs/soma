@@ -17,6 +17,7 @@ from typing import Any, Iterable, Sequence
 import torch
 from hs2p.wsi.reader import resolve_backend
 from slide2vec.artifacts import TileEmbeddingArtifact
+from slide2vec.encoders.registry import encoder_registry
 import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df
 
@@ -254,14 +255,33 @@ def execution_signature(
     encoder_config: EncoderConfig,
     *,
     encoder_name: str | None = None,
+    preprocessing: PreprocessingConfig | None = None,
     output_variant: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    signature: dict[str, Any] = {
         "precision": _resolve_encoder_precision(encoder_config, encoder_name=encoder_name),
-        "input_size": encoder_config.input_size,
-        "spacing_um": encoder_config.spacing_um,
         "output_variant": output_variant if output_variant is not None else encoder_config.output_variant,
     }
+    effective_encoder_name = encoder_name or encoder_config.name
+    try:
+        metadata = encoder_registry.info(effective_encoder_name)
+    except Exception:
+        metadata = None
+
+    if metadata is not None:
+        recommended_input_size = metadata.get("input_size")
+        if recommended_input_size is not None:
+            signature["input_size"] = int(recommended_input_size)
+
+    spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    if spacing_um is None and metadata is not None:
+        recommended_spacing = metadata.get("supported_spacing_um")
+        if isinstance(recommended_spacing, (int, float)):
+            spacing_um = float(recommended_spacing)
+    if spacing_um is not None:
+        signature["spacing_um"] = float(spacing_um)
+
+    return signature
 
 
 def build_tile_cache_key(
@@ -282,6 +302,7 @@ def build_tile_cache_key(
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
+            preprocessing=preprocessing,
             output_variant=output_variant,
         ),
     }
@@ -305,6 +326,7 @@ def build_slide_cache_key(
         "execution": execution_signature(
             execution,
             encoder_name=slide_encoder_name,
+            preprocessing=None,
             output_variant=output_variant,
         ),
     }
@@ -326,6 +348,7 @@ def build_patient_cache_key(
         "execution": execution_signature(
             execution,
             encoder_name=patient_encoder_name,
+            preprocessing=None,
             output_variant=output_variant,
         ),
     }
@@ -347,6 +370,7 @@ def build_hierarchical_cache_key(
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
+            preprocessing=preprocessing,
             output_variant=output_variant,
         ),
     }
@@ -964,6 +988,7 @@ def _build_tile_cache_metadata(
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
+            preprocessing=preprocessing,
             output_variant=output_variant,
         ),
         "feature_type": str(feature_type),
@@ -1003,6 +1028,7 @@ def _build_slide_cache_metadata(
         "execution": execution_signature(
             execution,
             encoder_name=slide_encoder_name,
+            preprocessing=None,
             output_variant=output_variant,
         ),
         "feature_type": "slide",
@@ -1040,6 +1066,7 @@ def _build_patient_cache_metadata(
         "execution": execution_signature(
             execution,
             encoder_name=patient_encoder_name,
+            preprocessing=None,
             output_variant=output_variant,
         ),
         "feature_type": "patient",
@@ -1075,6 +1102,7 @@ def _build_hierarchical_cache_metadata(
         "execution": execution_signature(
             execution,
             encoder_name=tile_encoder_name,
+            preprocessing=preprocessing,
             output_variant=output_variant,
         ),
         "feature_type": "hierarchical",
@@ -1520,6 +1548,7 @@ def resolve_slide_cache(
         "tile_execution": execution_signature(
             tile_execution,
             encoder_name=tile_encoder_name,
+            preprocessing=tile_preprocessing,
             output_variant=tile_output_variant,
         ),
     }
@@ -1570,6 +1599,7 @@ def resolve_patient_cache(
         "tile_execution": execution_signature(
             tile_execution,
             encoder_name=tile_encoder_name,
+            preprocessing=tile_preprocessing,
             output_variant=tile_output_variant,
         ),
     }

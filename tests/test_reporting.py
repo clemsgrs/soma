@@ -72,13 +72,23 @@ def _make_run_dir(
     run_dir.mkdir()
 
     config = {
-        "dataset_csv": "/data/dataset.csv",
-        "splits_csv": "/data/splits.csv",
-        "output_root": "/output",
+        "run": {
+            "output_root": "/output",
+            "seed": 42,
+            "tags": [],
+        },
+        "data": {
+            "dataset_csv": "/data/dataset.csv",
+            "splits_csv": "/data/splits.csv",
+            "dataset_type": "slide",
+        },
+        "preprocessing": {},
+        "execution": {},
+        "cache": {},
+        "encoder": {"name": "uni2"},
+        "aggregation": {"name": "abmil", "params": {}},
         "task": {"name": task_name, "params": {}},
         "evaluation": {"metrics": metrics or [], "subgroups": {"columns": []}},
-        "encoder": None,
-        "aggregator": {"name": "abmil", "params": {}},
         "training": {
             "seed": 42,
             "epochs": 5,
@@ -88,7 +98,7 @@ def _make_run_dir(
             "patience": 10,
             "batch_size": 1,
         },
-        "tags": [],
+        "reports": {"heatmaps": {"enabled": False, "cmap": "coolwarm", "alpha": 0.5, "blur_sigma": 0.0}},
     }
     (run_dir / "config.yaml").write_text(_to_yaml(config))
 

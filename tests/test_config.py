@@ -1,6 +1,6 @@
 """Tests for soma.config — frozen dataclass configurations."""
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 
 import pytest
@@ -55,6 +55,7 @@ def test_preprocessing_config_defaults():
     assert cfg.tissue_threshold == 0.1
     assert cfg.overlap == 0.0
     assert cfg.seg_downsample == 64
+    assert cfg.sam2_device == "cpu"
     assert cfg.sam2_num_workers is None
     assert cfg.tolerance == 0.05
     assert cfg.ref_tile_size_px is None
@@ -147,13 +148,22 @@ def test_encoder_config_defaults():
     assert cfg.save_tile_features is False
 
 
+def test_encoder_config_public_fields_are_geometry_free():
+    field_names = {field.name for field in fields(EncoderConfig)}
+    assert "input_size" not in field_names
+    assert "spacing_um" not in field_names
+
+
 def test_execution_config_defaults():
     cfg = ExecutionConfig()
+    field_names = {field.name for field in fields(ExecutionConfig)}
     assert cfg.num_gpus is None
     assert cfg.num_workers_per_gpu is None
     assert cfg.num_preprocessing_workers is None
     assert cfg.prefetch_factor is None
     assert cfg.precision is None
+    assert "num_workers" not in field_names
+    assert "persistent_workers" not in field_names
 
 
 def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
@@ -244,7 +254,7 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.encoder.name == original.encoder.name
     assert loaded.execution == original.execution
     assert loaded.aggregator.name == original.aggregator.name
-    assert loaded.aggregator.params == original.aggregator.params
+    assert loaded.aggregator.params == {"hidden_dim": 128, "dropout": 0.25}
     assert loaded.task.name == original.task.name
     assert loaded.task.params == original.task.params
     assert loaded.evaluation.metrics == original.evaluation.metrics
@@ -253,22 +263,52 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.tags == original.tags
 
 
+def test_load_config_merges_bundled_defaults_for_new_layout(tmp_path: Path):
+    raw = {
+        "data": {
+            "dataset_csv": "dataset.csv",
+            "splits_csv": "splits.csv",
+            "dataset_type": "slide",
+        }
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+
+    loaded = load_config(yaml_path)
+
+    assert loaded.dataset_csv == "dataset.csv"
+    assert loaded.splits_csv == "splits.csv"
+    assert loaded.output_root == "runs"
+    assert loaded.dataset_type == "slide"
+    assert loaded.preprocessing.sam2_device == "cpu"
+    assert loaded.encoder.name == "uni2"
+    assert loaded.aggregator.name == "abmil"
+    assert loaded.task.name == "binary_classification"
+    assert loaded.evaluation.metrics == ["auroc", "balanced_accuracy"]
+    assert loaded.training.epochs == 50
+
+
 def test_load_config_with_target_fields(tmp_path: Path):
     raw = {
-        "dataset_csv": "dataset.csv",
-        "splits_csv": "splits.csv",
-        "output_root": "out",
-        "dataset_type": "slide",
+        "data": {
+            "dataset_csv": "dataset.csv",
+            "splits_csv": "splits.csv",
+            "dataset_type": "slide",
+        },
         "preprocessing": {
             "backend": "cucim",
             "requested_tile_size_px": 256,
             "requested_spacing_um": 0.5,
         },
         "cache": {},
-        "aggregator": None,
+        "aggregation": None,
         "task": {"name": "binary_classification"},
         "training": {},
-        "tags": [],
+        "run": {
+            "output_root": "out",
+            "tags": [],
+        },
     }
     yaml_path = tmp_path / "config.yaml"
     with yaml_path.open("w") as handle:
@@ -279,6 +319,7 @@ def test_load_config_with_target_fields(tmp_path: Path):
     assert loaded.preprocessing.backend == "cucim"
     assert loaded.preprocessing.requested_tile_size_px == 256
     assert loaded.preprocessing.requested_spacing_um == 0.5
+    assert loaded.output_root == "out"
 
 
 def test_save_config_produces_valid_yaml(tmp_path: Path):
@@ -287,10 +328,16 @@ def test_save_config_produces_valid_yaml(tmp_path: Path):
     save_config(cfg, yaml_path)
 
     raw = yaml.safe_load(yaml_path.read_text())
+    assert raw["data"]["dataset_csv"] == "data/dataset.csv"
+    assert raw["run"]["output_root"] == "runs"
+    assert raw["preprocessing"]["sam2_device"] == "cpu"
     assert raw["encoder"]["name"] == "uni2"
+    assert "spacing_um" not in raw["encoder"]
+    assert "input_size" not in raw["encoder"]
     assert raw["cache"]["enabled"] is True
     assert raw["training"]["learning_rate"] == 2e-4
-    assert raw["aggregator"]["params"]["hidden_dim"] == 128
+    assert raw["aggregation"]["params"]["hidden_dim"] == 128
+    assert "dataset_csv" not in raw
 
 
 def test_preview_color_roundtrip_preserves_tuple(tmp_path: Path):
@@ -305,13 +352,14 @@ def test_preview_color_roundtrip_preserves_tuple(tmp_path: Path):
 
 def test_preprocessing_sam2_worker_limit_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
-        preprocessing=PreprocessingConfig(sam2_num_workers=3)
+        preprocessing=PreprocessingConfig(sam2_device="cuda", sam2_num_workers=3)
     )
     yaml_path = tmp_path / "config.yaml"
 
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
 
+    assert loaded.preprocessing.sam2_device == "cuda"
     assert loaded.preprocessing.sam2_num_workers == 3
 
 
@@ -370,7 +418,7 @@ def test_aggregator_none_yaml_output(tmp_path: Path):
     save_config(cfg, yaml_path)
 
     raw = yaml.safe_load(yaml_path.read_text())
-    assert raw["aggregator"] is None
+    assert raw["aggregation"] is None
 
 
 def test_pipeline_config_requires_task():
@@ -383,34 +431,40 @@ def test_pipeline_config_requires_task():
         )
 
 
-def test_load_config_raises_without_task_name(tmp_path: Path):
+def test_load_config_blank_sections_inherit_defaults(tmp_path: Path):
     raw = {
-        "dataset_csv": "dataset.csv",
-        "splits_csv": "splits.csv",
-        "output_root": "out",
-        "dataset_type": "slide",
+        "data": {
+            "dataset_csv": "dataset.csv",
+            "splits_csv": "splits.csv",
+            "dataset_type": "slide",
+        },
         "task": {},
+        "encoder": {},
     }
     yaml_path = tmp_path / "config.yaml"
     with yaml_path.open("w") as f:
         yaml.safe_dump(raw, f)
-    with pytest.raises(ValueError, match="task"):
-        load_config(yaml_path)
+
+    loaded = load_config(yaml_path)
+
+    assert loaded.task.name == "binary_classification"
+    assert loaded.encoder.name == "uni2"
+    assert loaded.output_root == "runs"
 
 
-def test_load_config_raises_when_encoder_section_has_no_name(tmp_path: Path):
+def test_load_config_rejects_legacy_flat_layout(tmp_path: Path):
     raw = {
         "dataset_csv": "dataset.csv",
         "splits_csv": "splits.csv",
         "output_root": "out",
         "dataset_type": "slide",
-        "encoder": {},
         "task": {"name": "binary_classification"},
     }
     yaml_path = tmp_path / "config.yaml"
     with yaml_path.open("w") as f:
         yaml.safe_dump(raw, f)
-    with pytest.raises(TypeError):
+
+    with pytest.raises(ValueError, match="unsupported top-level keys"):
         load_config(yaml_path)
 
 
