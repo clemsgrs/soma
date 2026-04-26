@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import json
 import csv
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -72,7 +72,7 @@ from soma.training.slide_dataset import SlideDataset, slide_collate_fn
 from soma.training.slide_model import SlideModel
 from soma.training.tile_dataset import TileDataset, tile_collate_fn
 from soma.training.tile_model import TileClassifier
-from soma.training.trainer import Trainer, TrainResult, _epoch_log_to_dict
+from soma.training.trainer import Trainer, TrainResult, epoch_log_to_dict
 from soma.reporting import generate_report_from_result
 
 
@@ -444,9 +444,11 @@ def train_one_fold(
     # Derive label encoding from the task head class
     label_dtype = task_cls.label_dtype
     if label_dtype == torch.float:
-        label_fn = lambda record: float(record.label)  # noqa: E731
+        def label_fn(record):
+            return float(record.label)
     else:
-        label_fn = lambda record: label_map[record.label]  # noqa: E731
+        def label_fn(record):
+            return label_map[record.label]
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
     deterministic_baseline = _build_deterministic_baseline(
@@ -462,9 +464,11 @@ def train_one_fold(
             raise ValueError("aggregator must be None for dataset_type='patient'")
         patient_label_map = dataset.patient_label_map
         if label_dtype == torch.float:
-            patient_label_fn = lambda pid, raw: float(raw)  # noqa: E731
+            def patient_label_fn(pid, raw):
+                return float(raw)
         else:
-            patient_label_fn = lambda pid, raw: label_map[raw]  # noqa: E731
+            def patient_label_fn(pid, raw):
+                return label_map[raw]
         _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
 
         train_loader = DataLoader(
@@ -1243,12 +1247,12 @@ def _evaluate(
         all_sample_ids.extend(batch.sample_ids)
 
         if attention_dir is not None and out.tile_attention is not None:
-            from soma.heatmaps import _normalize_attention
+            from soma.heatmaps import normalize_attention
             for i, sid in enumerate(batch.sample_ids):
                 attn_i = out.tile_attention[i : i + 1]
                 if hasattr(batch, "mask"):
                     attn_i = attn_i[..., batch.mask[i]]
-                normalized = _normalize_attention(attn_i, aggregator_name or "")
+                normalized = normalize_attention(attn_i, aggregator_name or "")
                 np.savez_compressed(attention_dir / f"{sid}.npz", attention=normalized)
 
     logits = torch.cat(all_logits, dim=0)
@@ -1479,7 +1483,7 @@ def _save_metrics(
 
 
 def _save_training_history(history: list, path: Path) -> None:
-    data = [_epoch_log_to_dict(log) for log in history]
+    data = [epoch_log_to_dict(log) for log in history]
     path.write_text(json.dumps(data, indent=2))
 
 

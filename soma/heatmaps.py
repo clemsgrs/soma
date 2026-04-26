@@ -143,7 +143,7 @@ def save_attention(
                     )
                     continue
 
-                attention = _normalize_attention(out.tile_attention, agg_name)  # (N,) or (n_classes, N)
+                attention = normalize_attention(out.tile_attention, agg_name)  # (N,) or (n_classes, N)
                 np.savez_compressed(attention_dir / f"{sample_id}.npz", attention=attention)
                 logger.debug("Saved attention for %s → %s", sample_id, attention_dir / f"{sample_id}.npz")
 
@@ -381,7 +381,7 @@ def render_attention_heatmap(
 # ---------------------------------------------------------------------------
 
 
-def _normalize_attention(tile_attention: torch.Tensor, agg_name: str) -> np.ndarray:
+def normalize_attention(tile_attention: torch.Tensor, agg_name: str) -> np.ndarray:
     """Convert raw model attention output to a normalized numpy array.
 
     Applies softmax for aggregators that return raw logits (ABMIL, CLAM).

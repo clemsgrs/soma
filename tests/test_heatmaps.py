@@ -15,7 +15,7 @@ import torch
 from soma.config import HeatmapConfig
 from soma.heatmaps import (
     _build_coordinate_map,
-    _normalize_attention,
+    normalize_attention,
     _read_sample_ids_from_predictions,
     render_attention_heatmap,
     render_heatmaps,
@@ -87,35 +87,35 @@ def _write_coords(npz_path: Path, meta_path: Path, n: int = 4, tile_size: int = 
 
 
 # ---------------------------------------------------------------------------
-# _normalize_attention
+# normalize_attention
 # ---------------------------------------------------------------------------
 
 
-def test_normalize_attention_applies_softmax_for_abmil():
+def testnormalize_attention_applies_softmax_for_abmil():
     attn = torch.tensor([[1.0, 2.0, 3.0]])  # (1, N)
-    result = _normalize_attention(attn, "abmil")
+    result = normalize_attention(attn, "abmil")
     assert result.shape == (3,)
     assert abs(result.sum() - 1.0) < 1e-5
 
 
-def test_normalize_attention_applies_softmax_for_clam_sb():
+def testnormalize_attention_applies_softmax_for_clam_sb():
     attn = torch.tensor([[0.5, -0.5, 1.0]])  # (1, N)
-    result = _normalize_attention(attn, "clam_sb")
+    result = normalize_attention(attn, "clam_sb")
     assert result.shape == (3,)
     assert abs(result.sum() - 1.0) < 1e-5
 
 
-def test_normalize_attention_no_softmax_for_dsmil():
+def testnormalize_attention_no_softmax_for_dsmil():
     raw = torch.tensor([[0.2, 0.3, 0.5]])  # already sums to 1
-    result = _normalize_attention(raw, "dsmil")
+    result = normalize_attention(raw, "dsmil")
     assert result.shape == (3,)
     np.testing.assert_allclose(result, np.array([0.2, 0.3, 0.5]), atol=1e-6)
 
 
-def test_normalize_attention_clam_mb_shape():
+def testnormalize_attention_clam_mb_shape():
     # (1, n_classes, N) input
     attn = torch.randn(1, 3, 10)
-    result = _normalize_attention(attn, "clam_mb")
+    result = normalize_attention(attn, "clam_mb")
     assert result.shape == (3, 10)
     # Each branch should sum to ~1 after softmax
     for k in range(3):

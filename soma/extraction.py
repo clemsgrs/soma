@@ -741,11 +741,9 @@ class FeatureExtractor:
         feature_dir: str | Path,
         *,
         tiling_dir: str | Path | None = None,
-        skip_existing: bool = True,
         num_gpus: int | None = None,
     ) -> FeatureStore:
         """Extract features using slide2vec and adapt outputs for soma."""
-        del skip_existing
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
         if tiling_dir is None:
@@ -1962,6 +1960,5 @@ class FeatureExtractor:
         return self.extract(
             feature_dir=feature_dir,
             tiling_dir=tiling_dir,
-            skip_existing=skip_existing,
             num_gpus=num_gpus,
         )
