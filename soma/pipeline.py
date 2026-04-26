@@ -948,6 +948,73 @@ def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Aggrega
     return params
 
 
+class _RunRecorder:
+    """Context manager that tracks run metadata lifecycle (running → completed/failed).
+
+    On enter: writes initial "running" metadata and updates the run and experiment indexes.
+    On success: call ``complete(summary_metrics)`` then exit normally.
+    On exception: writes "failed" metadata and (if no prior successful run exists)
+    advances the latest pointer before re-raising.
+    """
+
+    def __init__(self, layout, config: "PipelineConfig") -> None:
+        self._layout = layout
+        self._config = config
+        self._metadata = None
+        self._summary_metrics: dict[str, float] | None = None
+
+    def __enter__(self) -> "_RunRecorder":
+        layout = self._layout
+        self._metadata = create_run_metadata(
+            config=self._config,
+            experiment=layout.experiment,
+            run_dir=layout.run_dir,
+            run_id=layout.run_id,
+            status="running",
+            started_at=datetime.now().astimezone().isoformat(),
+        )
+        write_run_metadata(layout.run_dir, self._metadata)
+        self._write_indexes(self._metadata)
+        return self
+
+    def complete(self, summary_metrics: dict[str, float]) -> None:
+        self._summary_metrics = summary_metrics
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        layout = self._layout
+        if exc_type is not None:
+            metadata = self._metadata.with_updates(
+                status="failed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                error=str(exc_val),
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+            if not has_successful_run(layout.experiment_dir):
+                update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        else:
+            metadata = self._metadata.with_updates(
+                status="completed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                summary_metrics=self._summary_metrics or {},
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+            update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        return False
+
+    def _write_indexes(self, metadata) -> None:
+        layout = self._layout
+        update_run_index(layout.index_dir / "runs.csv", metadata)
+        update_experiment_index(
+            layout.index_dir / "experiments.csv",
+            layout.experiment,
+            num_runs=count_run_directories(layout.experiment_dir),
+            latest_run_id=metadata.run_id,
+            latest_status=metadata.status,
+        )
+
+
 class Pipeline:
     """Orchestrates the full pipeline: extract → train all folds → summarize.
 
@@ -988,33 +1055,10 @@ class Pipeline:
         layout.run_dir.mkdir(parents=True, exist_ok=True)
         layout.index_dir.mkdir(parents=True, exist_ok=True)
         write_experiment_metadata(layout.experiment_dir, layout.experiment)
-
-        # Save config snapshot
         save_config(self._config, layout.run_dir / "config.yaml")
-        started_at = datetime.now().astimezone().isoformat()
-        run_metadata = create_run_metadata(
-            config=self._config,
-            experiment=layout.experiment,
-            run_dir=layout.run_dir,
-            run_id=layout.run_id,
-            status="running",
-            started_at=started_at,
-        )
-        write_run_metadata(layout.run_dir, run_metadata)
-        update_run_index(layout.index_dir / "runs.csv", run_metadata)
-        update_experiment_index(
-            layout.index_dir / "experiments.csv",
-            layout.experiment,
-            num_runs=count_run_directories(layout.experiment_dir),
-            latest_run_id=run_metadata.run_id,
-            latest_status=run_metadata.status,
-        )
 
-        try:
-            # Load feature store
+        with _RunRecorder(layout, self._config) as recorder:
             store = self._get_feature_store(run_dir=layout.run_dir)
-
-            # Print a compact summary of the run configuration before training
             preprocessing = self._resolve_preprocessing()
             Console().print(
                 _build_run_summary_panel(
@@ -1058,41 +1102,8 @@ class Pipeline:
             except Exception:
                 logger.warning("Report generation failed", exc_info=True)
 
-        except Exception as exc:
-            failed_metadata = run_metadata.with_updates(
-                status="failed",
-                finished_at=datetime.now().astimezone().isoformat(),
-                error=str(exc),
-            )
-            write_run_metadata(layout.run_dir, failed_metadata)
-            update_run_index(layout.index_dir / "runs.csv", failed_metadata)
-            update_experiment_index(
-                layout.index_dir / "experiments.csv",
-                layout.experiment,
-                num_runs=count_run_directories(layout.experiment_dir),
-                latest_run_id=failed_metadata.run_id,
-                latest_status=failed_metadata.status,
-            )
-            if not has_successful_run(layout.experiment_dir):
-                update_latest_pointer(layout.experiment_dir, layout.run_dir)
-            raise
-
-        completed_metadata = run_metadata.with_updates(
-            status="completed",
-            finished_at=datetime.now().astimezone().isoformat(),
-            summary_metrics=result.summary,
-        )
-        Console().print(_build_completed_run_panel(summary_metrics=result.summary))
-        write_run_metadata(layout.run_dir, completed_metadata)
-        update_run_index(layout.index_dir / "runs.csv", completed_metadata)
-        update_experiment_index(
-            layout.index_dir / "experiments.csv",
-            layout.experiment,
-            num_runs=count_run_directories(layout.experiment_dir),
-            latest_run_id=completed_metadata.run_id,
-            latest_status=completed_metadata.status,
-        )
-        update_latest_pointer(layout.experiment_dir, layout.run_dir)
+            Console().print(_build_completed_run_panel(summary_metrics=result.summary))
+            recorder.complete(result.summary)
 
         return result
 
