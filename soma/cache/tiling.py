@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import csv
+import logging
 import shutil
 from pathlib import Path
 from typing import Any, Sequence
+
+logger = logging.getLogger(__name__)
 
 from slide2vec.utils.tiling_io import load_tiling_process_df
 
@@ -143,6 +146,7 @@ def _validate_tiling_cache_contents(
     try:
         process_df = load_tiling_process_df(process_list_path)
     except Exception:
+        logger.debug("Could not load process_list.csv at %s", process_list_path, exc_info=True)
         return CacheValidationResult(complete=False, reason="process_list.csv could not be loaded")
     rows = process_df.to_dict("records")
     rows_by_stem: dict[str, dict[str, Any]] = {}

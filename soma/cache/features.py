@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 from typing import Any, Sequence
+
+logger = logging.getLogger(__name__)
 
 from soma.cache._types import (
     CACHE_METADATA_NAME,
@@ -212,6 +215,7 @@ def _manifest_matches_dataset(manifest_path: Path, dataset: Dataset) -> bool:
             reader = csv.DictReader(handle)
             rows = list(reader)
     except Exception:
+        logger.debug("Could not read cache manifest at %s", manifest_path, exc_info=True)
         return False
     return _normalized_manifest_rows(rows) == _normalized_manifest_rows(dataset_manifest_rows(dataset))
 

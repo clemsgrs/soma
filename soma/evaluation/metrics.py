@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -332,6 +335,7 @@ def compare_run_predictions(
             y_true, y_pred, y_prob = _extract_arrays(df, task_family)
             return float(funs[metric](y_true, y_pred, y_prob))
         except Exception:
+            logger.debug("Metric %s could not be computed for a run", metric, exc_info=True)
             return None
 
     scores = [_score(df) for df in runs_predictions]
@@ -473,6 +477,7 @@ def compute_subgroup_metrics(
             try:
                 group_metrics = compute_metrics(task_family, metrics, y_true, y_pred, y_prob)
             except Exception:
+                logger.debug("Subgroup metrics failed for %s=%s", col, group_val, exc_info=True)
                 continue
             group_metrics["n"] = int(len(group_df))
             groups[str(group_val)] = group_metrics
@@ -534,6 +539,7 @@ def compute_subgroup_stats(
                     val_rest = compute_metrics(task_family, [metric], y_true_r, y_pred_r, y_prob_r)[metric]
                     observed_delta = abs(val_group - val_rest)
                 except Exception:
+                    logger.debug("Permutation test: could not compute %s for group %s", metric, group_val, exc_info=True)
                     continue
 
                 # Permutation test: shuffle group membership, recompute delta

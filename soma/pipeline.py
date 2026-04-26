@@ -110,6 +110,20 @@ class _DeterministicBaseline:
     raw_score: float | None = None
 
 
+def _make_label_fn(label_dtype: torch.dtype, label_map: dict):
+    """Return a label encoder for the given dtype and class map."""
+    if label_dtype == torch.float:
+        return lambda record: float(record.label)
+    return lambda record: label_map[record.label]
+
+
+def _make_patient_label_fn(label_dtype: torch.dtype, label_map: dict):
+    """Return a patient-level label encoder for the given dtype and class map."""
+    if label_dtype == torch.float:
+        return lambda pid, raw: float(raw)
+    return lambda pid, raw: label_map[raw]
+
+
 def _format_fold_summary(
     fold: int,
     train_count: int,
@@ -480,12 +494,7 @@ def train_one_fold(
 
     # Derive label encoding from the task head class
     label_dtype = task_cls.label_dtype
-    if label_dtype == torch.float:
-        def label_fn(record):
-            return float(record.label)
-    else:
-        def label_fn(record):
-            return label_map[record.label]
+    label_fn = _make_label_fn(label_dtype, label_map)
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
     deterministic_baseline = _build_deterministic_baseline(
@@ -500,12 +509,7 @@ def train_one_fold(
         if aggregator is not None:
             raise ValueError("aggregator must be None for dataset_type='patient'")
         patient_label_map = dataset.patient_label_map
-        if label_dtype == torch.float:
-            def patient_label_fn(pid, raw):
-                return float(raw)
-        else:
-            def patient_label_fn(pid, raw):
-                return label_map[raw]
+        patient_label_fn = _make_patient_label_fn(label_dtype, label_map)
         _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
 
         train_loader = DataLoader(

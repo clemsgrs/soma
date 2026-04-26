@@ -422,6 +422,8 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
         "cache": _normalize_yaml_value(asdict(config.cache)),
         "task": _normalize_yaml_value(asdict(config.task)),
         "evaluation": _normalize_yaml_value(asdict(config.evaluation)),
+        # seed lives under run.seed in YAML; training.seed is excluded here to avoid
+        # duplication — _layout_to_pipeline_config copies run.seed into TrainingConfig on load.
         "training": _normalize_yaml_value(
             {
                 key: value

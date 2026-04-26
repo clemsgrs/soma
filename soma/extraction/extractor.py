@@ -1322,8 +1322,10 @@ class FeatureExtractor:
                     os.link(source, destination)
                 except OSError:
                     shutil.copyfile(source, destination)
-            tensor = torch.load(destination, weights_only=True, map_location="cpu")
-            feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
+            if feature_dim is None:
+                dim = getattr(artifact, "feature_dim", None)
+                if dim is not None:
+                    feature_dim = int(dim)
             written_ids.add(cache_id)
         if written_ids:
             record_sample_identity_signatures(cache_resolution, sorted(written_ids))
