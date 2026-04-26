@@ -15,8 +15,8 @@ from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
 
 import soma.cache as cache_mod
-from soma.cache import CacheConfig, record_feature_dim, record_sample_identity_signatures
-from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig as _PreprocessingConfig
+from soma.cache import record_feature_dim, record_sample_identity_signatures
+from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig as _PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
 from slide2vec.encoders.registry import encoder_registry
@@ -258,7 +258,7 @@ def test_build_execution_options_forwards_worker_pipeline_tuning(tmp_path: Path)
 
 
 def test_load_model_forwards_allow_non_recommended_settings():
-    with patch("soma.extraction.Model.from_preset") as from_preset:
+    with patch("soma.extraction.orchestration.Model.from_preset") as from_preset:
         _load_model(
             _TEST_TILE,
             output_variant="default",
@@ -286,7 +286,7 @@ def test_validate_runtime_uses_resolved_tile_size_for_hierarchical_runs():
         requested_spacing_um=0.5,
     )
 
-    with patch("soma.extraction.validate_slide2vec_encoder_config", side_effect=_fake_validate):
+    with patch("soma.extraction.extractor.validate_slide2vec_encoder_config", side_effect=_fake_validate):
         _validate_runtime(
             encoder_name=_TEST_TILE,
             output_variant="default",
@@ -313,7 +313,7 @@ def test_validate_runtime_forwards_allow_non_recommended_settings():
     )
     tiling_result = SimpleNamespace(requested_tile_size_px=224, requested_spacing_um=1.0)
 
-    with patch("soma.extraction.validate_slide2vec_encoder_config", side_effect=_fake_validate):
+    with patch("soma.extraction.extractor.validate_slide2vec_encoder_config", side_effect=_fake_validate):
         _validate_runtime(
             encoder_name=_TEST_TILE,
             output_variant="default",
@@ -333,10 +333,10 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         execution=ExecutionConfig(num_preprocessing_workers=0),
     )
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
+    with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.extractor.resolve_tiling_cache",
         return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    ), patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
         mock_instance = MockPipeline.return_value
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
     MockPipeline.assert_called_once()
@@ -353,7 +353,7 @@ def test_preprocess_validates_encoder_settings_before_tiling(tmp_path: Path):
         execution=ExecutionConfig(num_preprocessing_workers=0),
     )
 
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    with patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
         with pytest.raises(ValueError, match="allow_non_recommended_settings"):
             extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
@@ -369,13 +369,13 @@ def test_preprocess_forwards_mask_path_to_slide2vec_pipeline(tmp_path: Path):
         execution=ExecutionConfig(num_preprocessing_workers=0),
     )
 
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
+    with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.extractor.resolve_tiling_cache",
         return_value=SimpleNamespace(
             complete=False,
             metadata={"backend_by_sample_id": {"s0": "openslide"}, "requested_backend": "auto"},
         ),
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    ), patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
         mock_instance = MockPipeline.return_value
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
@@ -394,13 +394,13 @@ def test_preprocess_uses_precomputed_mask_method_when_every_slide_has_mask(tmp_p
         execution=ExecutionConfig(num_preprocessing_workers=0),
     )
 
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
+    with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.extractor.resolve_tiling_cache",
         return_value=SimpleNamespace(
             complete=False,
             metadata={"backend_by_sample_id": {"s0": "openslide"}, "requested_backend": "auto"},
         ),
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    ), patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
     preprocessing = MockPipeline.call_args.args[1]
@@ -435,10 +435,10 @@ def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Pat
         metadata={"cache_key": "abc123"},
     )
 
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
+    with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.extractor.resolve_tiling_cache",
         return_value=fake_resolution,
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    ), patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
     assert not MockPipeline.called
@@ -479,10 +479,10 @@ def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: P
         metadata={"cache_key": "abc123"},
     )
 
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
+    with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.extractor.resolve_tiling_cache",
         return_value=fake_resolution,
-    ), patch("soma.extraction.Pipeline", autospec=True) as MockPipeline:
+    ), patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
         extractor.preprocess(tiling_dir=tiling_dir, skip_existing=True)
 
     assert not MockPipeline.called
@@ -500,10 +500,10 @@ def test_preprocess_uses_output_root_for_tiling_cache_when_cache_root_omitted(tm
         output_root=tmp_path / "outputs",
     )
 
-    with patch("soma.extraction.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
-        "soma.extraction.resolve_tiling_cache",
+    with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
+        "soma.extraction.extractor.resolve_tiling_cache",
         return_value=SimpleNamespace(complete=False, metadata={"backend_by_sample_id": {"s0": "openslide"}}),
-    ) as resolve_tiling_cache, patch("soma.extraction.Pipeline", autospec=True):
+    ) as resolve_tiling_cache, patch("soma.extraction.extractor.Pipeline", autospec=True):
         extractor.preprocess(tiling_dir=tmp_path / "run" / "tiling")
 
     assert resolve_tiling_cache.call_args.kwargs["cache_root"] == tmp_path / "outputs" / "tiling_cache"
@@ -541,8 +541,8 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
         encoding="utf-8",
     )
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch.object(
         FeatureExtractor,
         "_extract_tile_cached",
@@ -659,10 +659,10 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
         for slide in slides:
             _artifact(sample_id=slide.sample_id, output_dir=Path(execution.output_dir), kind="tile_embeddings", tensor=torch.ones(2, 8))
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ) as embed_tiles:
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -1084,9 +1084,9 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
             )
 
     with patch.object(FeatureExtractor, "preprocess", autospec=True) as preprocess, patch(
-        "soma.extraction.load_tilings", return_value=loaded
-    ), patch("soma.extraction._validate_runtime"), patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor.load_tilings", return_value=loaded
+    ), patch("soma.extraction.extractor._validate_runtime"), patch(
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ):
         extractor.extract(feature_dir=tmp_path / "features")
@@ -1131,9 +1131,9 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
             )
 
     with patch.object(FeatureExtractor, "preprocess", autospec=True) as preprocess, patch(
-        "soma.extraction.load_tilings", return_value=loaded
-    ), patch("soma.extraction._validate_runtime"), patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor.load_tilings", return_value=loaded
+    ), patch("soma.extraction.extractor._validate_runtime"), patch(
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ):
         extractor.run(feature_dir=tmp_path / "features")
@@ -1177,10 +1177,10 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
         output_dir.mkdir(parents=True, exist_ok=True)
         _artifact(sample_id="s0", output_dir=Path(execution.output_dir), kind="tile_embeddings", tensor=torch.ones(2, 8))
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ):
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -1355,13 +1355,13 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
         )
         return SimpleNamespace(tile_artifacts=[tile_artifact], slide_artifacts=[])
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch("soma.extraction.torch.cuda.is_available", return_value=True), patch(
         "soma.extraction.torch.cuda.device_count",
         return_value=2,
     ), patch(
-        "soma.extraction._run_with_coordinates",
+        "soma.extraction.extractor._run_with_coordinates",
         side_effect=_fake_run_with_coordinates,
     ) as run_with_coords:
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -1394,8 +1394,8 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
         "s0,tissue,success,success,/tmp/features/s0.pt\n"
     )
 
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
-        "soma.extraction.Model.from_preset",
+    with patch("soma.extraction.orchestration.Pipeline", autospec=True) as MockPipeline, patch(
+        "soma.extraction.orchestration.Model.from_preset",
         return_value=object(),
     ):
         instance = MockPipeline.return_value
@@ -1436,8 +1436,8 @@ def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec
         output_format="pt",
     )
 
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
-        "soma.extraction.Model.from_preset",
+    with patch("soma.extraction.orchestration.Pipeline", autospec=True) as MockPipeline, patch(
+        "soma.extraction.orchestration.Model.from_preset",
         return_value=object(),
     ):
         instance = MockPipeline.return_value
@@ -1480,8 +1480,8 @@ def _run_with_coordinates_cuda_state_helper(tmp_path, num_gpus):
         num_gpus=num_gpus,
         output_format="pt",
     )
-    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
-        "soma.extraction.Model.from_preset",
+    with patch("soma.extraction.orchestration.Pipeline", autospec=True) as MockPipeline, patch(
+        "soma.extraction.orchestration.Model.from_preset",
         return_value=object(),
     ), patch(
         "soma.extraction.gc.collect"
@@ -1574,13 +1574,13 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
         for artifact in tile_artifacts:
             _artifact(sample_id=artifact.sample_id, output_dir=Path(execution.output_dir), kind="slide_embeddings", tensor=torch.ones(8))
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ), patch(
-        "soma.extraction._aggregate_tiles",
+        "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -1644,13 +1644,13 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
             )
         return slide_artifacts
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ) as validate_runtime, patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ), patch(
-        "soma.extraction._aggregate_tiles",
+        "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
         extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -1704,13 +1704,13 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
         on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
         return [embedded_slide]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._load_model",
+        "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction._compute_embedded_slides",
+        "soma.extraction.extractor._compute_embedded_slides",
         side_effect=_fake_compute_embedded_slides,
     ):
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -1768,13 +1768,13 @@ def test_slide_cache_population_uses_torch_default_loader_workers(tmp_path: Path
         on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
         return [embedded_slide]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._load_model",
+        "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction._compute_embedded_slides",
+        "soma.extraction.extractor._compute_embedded_slides",
         side_effect=_fake_compute_embedded_slides,
     ):
         extractor.extract(
@@ -1840,7 +1840,7 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
             )
         ]
 
-    with patch("soma.extraction._embed_tiles", side_effect=_fake_embed_tiles):
+    with patch("soma.extraction.extractor._embed_tiles", side_effect=_fake_embed_tiles):
         extractor._populate_tile_cache(
             cache_resolution=cache_resolution,
             loaded_tilings=loaded,
@@ -1938,7 +1938,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         torch.save(torch.ones(8), path)
         return [SimpleNamespace(patient_id="p0", path=path)]
 
-    with patch("soma.extraction._aggregate_patients", side_effect=_fake_aggregate_patients):
+    with patch("soma.extraction.extractor._aggregate_patients", side_effect=_fake_aggregate_patients):
         extractor._populate_patient_cache(
             patient_cache=patient_cache,
             tile_cache=tile_cache,
@@ -2017,7 +2017,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
             ]
         )
 
-    with patch("soma.extraction._embed_tiles", side_effect=_fake_embed_tiles):
+    with patch("soma.extraction.extractor._embed_tiles", side_effect=_fake_embed_tiles):
         extractor._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
             loaded_tilings=loaded,
@@ -2061,10 +2061,10 @@ def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
             )
         ]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._embed_tiles",
+        "soma.extraction.extractor._embed_tiles",
         side_effect=_fake_embed_tiles,
     ):
         extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
@@ -2109,10 +2109,10 @@ def test_multi_gpu_uncached_extraction_uses_slide2vec_pipeline(tmp_path: Path):
         )
         return SimpleNamespace(tile_artifacts=[tile_artifact], slide_artifacts=[])
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._run_with_coordinates",
+        "soma.extraction.extractor._run_with_coordinates",
         side_effect=_fake_run_with_coordinates,
     ) as run_with_coords:
         store = extractor.extract(
@@ -2173,13 +2173,13 @@ def test_multi_gpu_slide_cache_population_uses_slide2vec_pipeline(tmp_path: Path
         on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
         return [embedded_slide]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._load_model",
+        "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction._compute_embedded_slides",
+        "soma.extraction.extractor._compute_embedded_slides",
         side_effect=_fake_compute_embedded_slides,
     ) as compute_embedded_slides:
         store = extractor.extract(
@@ -2244,13 +2244,13 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
         return [embedded_slide]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._load_model",
+        "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction._compute_embedded_slides",
+        "soma.extraction.extractor._compute_embedded_slides",
         side_effect=_fake_compute_embedded_slides,
     ):
         store = extractor.extract(
@@ -2313,16 +2313,16 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
         on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
         return [embedded_slide]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._load_model",
+        "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction._compute_embedded_slides",
+        "soma.extraction.extractor._compute_embedded_slides",
         side_effect=_fake_compute_embedded_slides,
     ), patch.object(FeatureExtractor, "preprocess", autospec=True, return_value=None), patch(
-        "soma.extraction.resolve_slide_cache",
+        "soma.extraction.extractor.resolve_slide_cache",
         wraps=cache_mod.resolve_slide_cache,
     ) as resolve_slide_cache:
         store = extractor.extract(
@@ -2385,8 +2385,8 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
             tensor=torch.ones(1, 4, 8),
         )
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch.object(
         FeatureExtractor,
         "_extract_uncached",
@@ -2453,10 +2453,10 @@ def test_hierarchical_multi_gpu_uses_slide2vec_pipeline(tmp_path: Path):
         )
         return SimpleNamespace(hierarchical_artifacts=[artifact])
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._run_with_coordinates",
+        "soma.extraction.extractor._run_with_coordinates",
         side_effect=_fake_run_with_coordinates,
     ) as run_with_coords:
         store = extractor.extract(
@@ -2536,8 +2536,8 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
             ]
         ).to_csv(feature_dir / "process_list.csv", index=False)
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch.object(
         FeatureExtractor,
         "_populate_hierarchical_cache",
@@ -2578,8 +2578,8 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
         encoding="utf-8",
     )
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch.object(
         FeatureExtractor,
         "_extract_hierarchical_cached",
@@ -2648,13 +2648,13 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
         on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
         return [embedded_slide]
 
-    with patch("soma.extraction.load_tilings", return_value=loaded), patch(
-        "soma.extraction._validate_runtime"
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction._load_model",
+        "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction._compute_embedded_slides",
+        "soma.extraction.extractor._compute_embedded_slides",
         side_effect=_fake_compute_embedded_slides,
     ):
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
