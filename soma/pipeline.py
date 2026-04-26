@@ -174,6 +174,47 @@ def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, Sampl
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_loaders(
+    dataset_cls,
+    collate_fn,
+    train_items,
+    tune_items,
+    test_items_by_split: dict,
+    batch_size: int,
+    feature_store: FeatureStore,
+    label_map: dict,
+    label_fn,
+) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
+    """Create train, tune, and per-split test DataLoaders with a common pattern."""
+    train_loader = DataLoader(
+        dataset_cls(train_items, feature_store, label_map, label_fn=label_fn),
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+    )
+    tune_loader = DataLoader(
+        dataset_cls(tune_items, feature_store, label_map, label_fn=label_fn),
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+    )
+    test_loaders = {
+        split_name: DataLoader(
+            dataset_cls(items, feature_store, label_map, label_fn=label_fn),
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+        )
+        for split_name, items in test_items_by_split.items()
+    }
+    return train_loader, tune_loader, test_loaders
+
+
+# ---------------------------------------------------------------------------
 # Layer 1 — Standalone step functions
 # ---------------------------------------------------------------------------
 
@@ -493,59 +534,16 @@ def train_one_fold(
         }
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = EmbeddingModel(task_head=head)
-    elif dataset_type == "tile":
-        # Tile-dataset path: each sample is a single encoded tile → task head directly
+    elif dataset_type == "tile" or feature_store.is_slide_level:
+        # Single-embedding path: one pre-computed vector per sample, no aggregation
+        if feature_store.is_slide_level and aggregator is not None:
+            raise ValueError("aggregator must be None for slide-level features")
         _sample_collate = functools.partial(sample_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            SampleDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_sample_collate,
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            SampleDataset, _sample_collate,
+            train_records, tune_records, test_records_by_split,
+            training.batch_size, feature_store, label_map, label_fn,
         )
-        tune_loader = DataLoader(
-            SampleDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_sample_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                SampleDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_sample_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
-        head = task_cls(input_dim=feature_dim, **task_params)
-        model = EmbeddingModel(task_head=head)
-    elif feature_store.is_slide_level:
-        # Slide-level path: skip aggregator, pass (B, D) directly to task head
-        if aggregator is not None:
-            msg = "aggregator must be None for slide-level features"
-            raise ValueError(msg)
-        _sample_collate = functools.partial(sample_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            SampleDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_sample_collate,
-        )
-        tune_loader = DataLoader(
-            SampleDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_sample_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                SampleDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_sample_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif feature_store.is_hierarchical:
@@ -557,58 +555,25 @@ def train_one_fold(
             raise ValueError("hierarchical features require resolved preprocessing")
         hipt_params = _resolve_hipt_params(preprocessing, aggregator)
         _hier_collate = functools.partial(hierarchical_bag_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            HierarchicalBagDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_hier_collate,
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            HierarchicalBagDataset, _hier_collate,
+            train_records, tune_records, test_records_by_split,
+            training.batch_size, feature_store, label_map, label_fn,
         )
-        tune_loader = DataLoader(
-            HierarchicalBagDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_hier_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                HierarchicalBagDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_hier_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
         head = task_cls(input_dim=agg.output_dim, **task_params)
         model = MILModel(aggregator=agg, task_head=head)
     else:
         # Tile-level MIL path
-        _bag_collate = functools.partial(bag_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            BagDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_bag_collate,
-        )
-        tune_loader = DataLoader(
-            BagDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_bag_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                BagDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_bag_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
         if aggregator is None:
-            msg = "aggregator must be provided for tile-level features"
-            raise ValueError(msg)
+            raise ValueError("aggregator must be provided for tile-level features")
+        _bag_collate = functools.partial(bag_collate_fn, label_dtype=label_dtype)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            BagDataset, _bag_collate,
+            train_records, tune_records, test_records_by_split,
+            training.batch_size, feature_store, label_map, label_fn,
+        )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
         if aggregator.name == "clam_mb" and task.name == "binary_classification":
