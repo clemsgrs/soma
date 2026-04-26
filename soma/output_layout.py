@@ -66,7 +66,6 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "cache": {
             "enabled": config.cache.enabled,
             "reuse_policy": config.cache.reuse_policy,
-            "save_tile_features_for_slide": config.cache.save_tile_features_for_slide,
         },
         "encoder": asdict(config.encoder) if config.encoder is not None else None,
         "aggregator": asdict(config.aggregator) if config.aggregator is not None else None,

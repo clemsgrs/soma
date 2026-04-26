@@ -44,7 +44,6 @@ cache:
   enabled: true
   root_dir: null
   reuse_policy: strict
-  save_tile_features_for_slide: true
 
 encoder:
   name: uni2

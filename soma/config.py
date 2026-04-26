@@ -244,7 +244,6 @@ class CacheConfig:
     enabled: bool = True
     root_dir: str | Path | None = None
     reuse_policy: str = "strict"
-    save_tile_features_for_slide: bool = True
 
 
 @dataclass(frozen=True)
