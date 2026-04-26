@@ -624,7 +624,7 @@ class TestTrainOneFold:
 
 
     def test_slide_level_features_no_aggregator(self, tmp_path: Path):
-        """train_one_fold with 1-D features and aggregator=None uses SlideModel."""
+        """train_one_fold with 1-D features and aggregator=None uses EmbeddingModel."""
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         dataset = Dataset(dataset_csv)
         splits = Splits(splits_csv, dataset)

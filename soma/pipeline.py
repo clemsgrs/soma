@@ -64,14 +64,10 @@ from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
-from soma.training.model import MILModel
+from soma.training.model import EmbeddingModel, MILModel
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
-from soma.training.patient_model import PatientModel
+from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
 from soma.training.seed import seed_everything
-from soma.training.slide_dataset import SlideDataset, slide_collate_fn
-from soma.training.slide_model import SlideModel
-from soma.training.tile_dataset import TileDataset, tile_collate_fn
-from soma.training.tile_model import TileClassifier
 from soma.training.trainer import Trainer, TrainResult, epoch_log_to_dict
 from soma.reporting import generate_report_from_result
 
@@ -496,62 +492,62 @@ def train_one_fold(
             for split_name, records in test_records_by_split.items()
         }
         head = task_cls(input_dim=feature_dim, **task_params)
-        model: torch.nn.Module = PatientModel(task_head=head)
+        model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif dataset_type == "tile":
         # Tile-dataset path: each sample is a single encoded tile → task head directly
-        _tile_collate = functools.partial(tile_collate_fn, label_dtype=label_dtype)
+        _sample_collate = functools.partial(sample_collate_fn, label_dtype=label_dtype)
         train_loader = DataLoader(
-            TileDataset(train_records, feature_store, label_map, label_fn=label_fn),
+            SampleDataset(train_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=True,
-            collate_fn=_tile_collate,
+            collate_fn=_sample_collate,
         )
         tune_loader = DataLoader(
-            TileDataset(tune_records, feature_store, label_map, label_fn=label_fn),
+            SampleDataset(tune_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=_tile_collate,
+            collate_fn=_sample_collate,
         )
         test_loaders = {
             split_name: DataLoader(
-                TileDataset(records, feature_store, label_map, label_fn=label_fn),
+                SampleDataset(records, feature_store, label_map, label_fn=label_fn),
                 batch_size=training.batch_size,
                 shuffle=False,
-                collate_fn=_tile_collate,
+                collate_fn=_sample_collate,
             )
             for split_name, records in test_records_by_split.items()
         }
         head = task_cls(input_dim=feature_dim, **task_params)
-        model = TileClassifier(task_head=head)
+        model = EmbeddingModel(task_head=head)
     elif feature_store.is_slide_level:
         # Slide-level path: skip aggregator, pass (B, D) directly to task head
         if aggregator is not None:
             msg = "aggregator must be None for slide-level features"
             raise ValueError(msg)
-        _slide_collate = functools.partial(slide_collate_fn, label_dtype=label_dtype)
+        _sample_collate = functools.partial(sample_collate_fn, label_dtype=label_dtype)
         train_loader = DataLoader(
-            SlideDataset(train_records, feature_store, label_map, label_fn=label_fn),
+            SampleDataset(train_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=True,
-            collate_fn=_slide_collate,
+            collate_fn=_sample_collate,
         )
         tune_loader = DataLoader(
-            SlideDataset(tune_records, feature_store, label_map, label_fn=label_fn),
+            SampleDataset(tune_records, feature_store, label_map, label_fn=label_fn),
             batch_size=training.batch_size,
             shuffle=False,
-            collate_fn=_slide_collate,
+            collate_fn=_sample_collate,
         )
         test_loaders = {
             split_name: DataLoader(
-                SlideDataset(records, feature_store, label_map, label_fn=label_fn),
+                SampleDataset(records, feature_store, label_map, label_fn=label_fn),
                 batch_size=training.batch_size,
                 shuffle=False,
-                collate_fn=_slide_collate,
+                collate_fn=_sample_collate,
             )
             for split_name, records in test_records_by_split.items()
         }
         head = task_cls(input_dim=feature_dim, **task_params)
-        model: torch.nn.Module = SlideModel(task_head=head)
+        model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif feature_store.is_hierarchical:
         if aggregator is None:
             raise ValueError("aggregator must be provided for hierarchical features")

@@ -26,10 +26,8 @@ from soma.preprocessing import (
     write_coordinate_preview,
 )
 from soma.tile_extraction import TileFeatureExtractor
-from soma.training.slide_dataset import SlideBatch, SlideDataset, slide_collate_fn
-from soma.training.slide_model import SlideModel, SlideModelOutput
-from soma.training.tile_dataset import TileBatch, TileDataset, tile_collate_fn
-from soma.training.tile_model import TileClassifier, TileClassifierOutput
+from soma.training.model import EmbeddingModel, EmbeddingModelOutput
+from soma.training.sample_dataset import SampleBatch, SampleDataset, sample_collate_fn
 from soma.tasks import list_task_heads
 
 __all__ = [
@@ -65,14 +63,9 @@ __all__ = [
     "overlay_mask_on_slide",
     "save_overlay_preview",
     "write_coordinate_preview",
-    "SlideBatch",
-    "SlideDataset",
-    "SlideModel",
-    "SlideModelOutput",
-    "slide_collate_fn",
-    "TileBatch",
-    "TileClassifier",
-    "TileClassifierOutput",
-    "TileDataset",
-    "tile_collate_fn",
+    "EmbeddingModel",
+    "EmbeddingModelOutput",
+    "SampleBatch",
+    "SampleDataset",
+    "sample_collate_fn",
 ]
