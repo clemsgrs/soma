@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import gc
 import json
 import logging
 import os
@@ -340,7 +341,17 @@ def _normalize_process_list_for_embedding(process_list_path: Path) -> None:
     if not fieldnames or not rows:
         return
 
+    # Recover from a previous crash that left sentinel values in the file.
     changed = False
+    if "feature_path" in fieldnames:
+        for row in rows:
+            if row.get("feature_path") == _PENDING_FEATURE_PATH_SENTINEL:
+                row["feature_path"] = ""
+                changed = True
+    if changed:
+        _rewrite_process_list_rows(process_list_path, fieldnames=fieldnames, rows=rows)
+        changed = False
+
     for column in ("feature_status", "aggregation_status"):
         if column not in fieldnames:
             continue
@@ -426,6 +437,7 @@ def _run_with_coordinates(
             staged_process_list.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source_process_list, staged_process_list)
     try:
+        _release_parent_cuda_state()
         return Pipeline(
             _load_model(
                 model_name,
@@ -445,6 +457,15 @@ def _run_with_coordinates(
             staged_resolved = staged_process_list.resolve()
             if source_resolved != staged_resolved:
                 shutil.copyfile(source_process_list, staged_process_list)
+
+
+def _release_parent_cuda_state() -> None:
+    """Flush stale CUDA allocations in the parent before spawning distributed workers."""
+    gc.collect()
+    if not torch.cuda.is_available():
+        return
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
 
 
 def _aggregate_tiles(

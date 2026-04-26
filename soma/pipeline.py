@@ -45,7 +45,7 @@ from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats, resolve_metrics
 from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
-from soma.extraction import FeatureExtractor
+from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.output_layout import (
@@ -1155,7 +1155,10 @@ class Pipeline:
                 execution=self._config.execution,
                 cache=cache_config,
             )
-            return extractor.run(feature_dir=run_dir / "features")
+            try:
+                return extractor.run(feature_dir=run_dir / "features")
+            finally:
+                _release_parent_cuda_state()
 
         # Slide pipeline path
         if self._config.encoder is None:
@@ -1177,7 +1180,10 @@ class Pipeline:
             execution=self._config.execution,
             cache=cache_config,
         )
-        return extractor.run(feature_dir=run_dir / "features")
+        try:
+            return extractor.run(feature_dir=run_dir / "features")
+        finally:
+            _release_parent_cuda_state()
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""

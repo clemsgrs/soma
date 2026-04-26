@@ -220,7 +220,7 @@ def test_build_execution_options_uses_cpu_budget_for_tiling_workers(monkeypatch,
         save_tile_embeddings=False,
     )
 
-    assert execution.num_workers_per_gpu == 24
+    assert execution.num_workers_per_gpu == 16  # capped at 16
     assert execution.num_preprocessing_workers == 24
     assert execution.prefetch_factor == 4
 
@@ -818,17 +818,17 @@ def test_tile_feature_extractor_uses_cpu_worker_budget_when_num_workers_per_gpu_
         ).run(feature_dir=tmp_path / "features")
 
     assert store.available_samples == ["s0"]
-    assert seen_num_workers == [24]
+    assert seen_num_workers == [16]
     assert seen_loader_kwargs == [
         {
             "batch_size": 32,
             "shuffle": False,
-            "num_workers": 24,
+            "num_workers": 16,
             "pin_memory": False,
             "prefetch_factor": 4,
         }
     ]
-    assert seen_logs == ["Tile DataLoader workers: 24 (slide2vec cpu_worker_limit())"]
+    assert seen_logs == ["Tile DataLoader workers: 16 (slide2vec cpu_worker_limit())"]
 
 
 def test_build_execution_options_splits_auto_workers_across_gpus(monkeypatch, tmp_path: Path):
@@ -847,7 +847,7 @@ def test_build_execution_options_splits_auto_workers_across_gpus(monkeypatch, tm
         save_tile_embeddings=False,
     )
 
-    assert execution.num_workers_per_gpu == 16
+    assert execution.num_workers_per_gpu == 16  # capped at 16
 
 
 def test_tile_feature_extractor_uses_torch_default_loader_workers(tmp_path: Path):
@@ -1466,6 +1466,68 @@ def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec
     assert recorded.loc["s0", "feature_status"] == "success"
     assert recorded.loc["s0", "feature_path"] == "/tmp/features/s0.pt"
     instance.run_with_coordinates.assert_called_once_with(tiling_dir, slides=[])
+
+
+def _run_with_coordinates_cuda_state_helper(tmp_path, num_gpus):
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text(
+        "sample_id,annotation,tiling_status\ns0,tissue,success\n",
+        encoding="utf-8",
+    )
+    execution = ExecutionOptions(
+        output_dir=tmp_path / "features",
+        num_gpus=num_gpus,
+        output_format="pt",
+    )
+    with patch("soma.extraction.Pipeline", autospec=True) as MockPipeline, patch(
+        "soma.extraction.Model.from_preset",
+        return_value=object(),
+    ), patch(
+        "soma.extraction.gc.collect"
+    ) as collect, patch(
+        "soma.extraction.torch.cuda.is_available",
+        return_value=True,
+    ), patch(
+        "soma.extraction.torch.cuda.empty_cache"
+    ) as empty_cache, patch(
+        "soma.extraction.torch.cuda.ipc_collect"
+    ) as ipc_collect:
+        instance = MockPipeline.return_value
+        instance.run_with_coordinates.return_value = SimpleNamespace(tile_artifacts=[], slide_artifacts=[])
+        _run_with_coordinates(
+            model_name=_TEST_TILE,
+            output_variant="default",
+            preprocessing=SimpleNamespace(),
+            execution=execution,
+            tiling_dir=tiling_dir,
+            slides=[],
+        )
+    return collect, empty_cache, ipc_collect, instance
+
+
+def test_run_with_coordinates_releases_parent_cuda_state_multigpu(tmp_path: Path):
+    collect, empty_cache, ipc_collect, instance = _run_with_coordinates_cuda_state_helper(tmp_path, num_gpus=2)
+    collect.assert_called_once_with()
+    empty_cache.assert_called_once_with()
+    ipc_collect.assert_called_once_with()
+    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
+
+
+def test_run_with_coordinates_releases_parent_cuda_state_single_gpu(tmp_path: Path):
+    collect, empty_cache, ipc_collect, instance = _run_with_coordinates_cuda_state_helper(tmp_path, num_gpus=1)
+    collect.assert_called_once_with()
+    empty_cache.assert_called_once_with()
+    ipc_collect.assert_called_once_with()
+    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
+
+
+def test_run_with_coordinates_releases_parent_cuda_state_no_gpu_count(tmp_path: Path):
+    collect, empty_cache, ipc_collect, instance = _run_with_coordinates_cuda_state_helper(tmp_path, num_gpus=None)
+    collect.assert_called_once_with()
+    empty_cache.assert_called_once_with()
+    ipc_collect.assert_called_once_with()
+    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
 
 
 def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
