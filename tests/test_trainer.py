@@ -168,21 +168,21 @@ class TestTrainer:
         assert "model_state_dict" in checkpoint
 
 
-class TestTrainerWithSlideModel:
-    def test_fit_with_slide_model(self, tmp_path: Path):
-        """Trainer should work with SlideModel and SlideBatch (no mask)."""
+class TestTrainerWithEmbeddingModel:
+    def test_fit_with_embedding_model(self, tmp_path: Path):
+        """Trainer should work with EmbeddingModel and SampleBatch (no mask)."""
         from torch.utils.data import DataLoader
-        from soma.training.slide_dataset import slide_collate_fn
-        from soma.training.slide_model import SlideModel
+        from soma.training.sample_dataset import sample_collate_fn
+        from soma.training.model import EmbeddingModel
 
         seed_everything(42)
         D = 16
-        model = SlideModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
+        model = EmbeddingModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
 
-        # Build slide-level batches: (D,) tensors
+        # Build single-embedding batches: (D,) tensors
         slides = [(torch.randn(D), i % 2, f"s{i}") for i in range(8)]
-        train_loader = DataLoader(slides[:6], batch_size=2, collate_fn=slide_collate_fn)
-        tune_loader = DataLoader(slides[6:], batch_size=2, collate_fn=slide_collate_fn)
+        train_loader = DataLoader(slides[:6], batch_size=2, collate_fn=sample_collate_fn)
+        tune_loader = DataLoader(slides[6:], batch_size=2, collate_fn=sample_collate_fn)
 
         config = TrainingConfig(epochs=3, learning_rate=1e-3, patience=10)
         trainer = Trainer(
@@ -199,16 +199,16 @@ class TestTrainerWithSlideModel:
         assert len(result.history) == 3
         assert result.checkpoint_path.exists()
 
-    def test_fit_with_half_precision_slide_features(self, tmp_path: Path):
-        """Trainer should accept cached slide features stored in fp16."""
+    def test_fit_with_half_precision_features(self, tmp_path: Path):
+        """Trainer should accept cached features stored in fp16."""
         from torch.utils.data import DataLoader
         from soma.features import FeatureStore
-        from soma.training.slide_dataset import slide_collate_fn
-        from soma.training.slide_model import SlideModel
+        from soma.training.sample_dataset import sample_collate_fn
+        from soma.training.model import EmbeddingModel
 
         seed_everything(42)
         D = 16
-        model = SlideModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
+        model = EmbeddingModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
 
         feature_dir = tmp_path / "features"
         feature_dir.mkdir()
@@ -218,12 +218,12 @@ class TestTrainerWithSlideModel:
         train_loader = DataLoader(
             [(store.load(f"s{i}"), i % 2, f"s{i}") for i in range(6)],
             batch_size=2,
-            collate_fn=slide_collate_fn,
+            collate_fn=sample_collate_fn,
         )
         tune_loader = DataLoader(
             [(store.load(f"s{i}"), i % 2, f"s{i}") for i in range(6, 8)],
             batch_size=2,
-            collate_fn=slide_collate_fn,
+            collate_fn=sample_collate_fn,
         )
 
         config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=1)

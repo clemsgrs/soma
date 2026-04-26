@@ -1,4 +1,8 @@
-"""SlideDataset — dataset and collation for slide-level (pre-aggregated) features."""
+"""SampleDataset — dataset and collation for single-embedding samples.
+
+Used by slide-level, patient (slide-encoder output), and tile-level pipelines
+where each sample is already represented by a single 1-D feature vector.
+"""
 
 from __future__ import annotations
 
@@ -13,8 +17,8 @@ from soma.dataset import SampleRecord
 from soma.features import FeatureStore
 
 
-class SlideDataset(Dataset):
-    """Dataset for slide-level features (one embedding per sample).
+class SampleDataset(Dataset):
+    """Dataset for samples represented by a single feature vector (one embedding per sample).
 
     Unlike BagDataset, each item is a 1-D tensor of shape (feature_dim,)
     rather than a variable-length bag of tile features.
@@ -51,21 +55,21 @@ class SlideDataset(Dataset):
 
 
 @dataclass
-class SlideBatch:
-    """A batch of slide-level features."""
+class SampleBatch:
+    """A batch of single-embedding samples."""
 
     features: Tensor  # (B, D)
     labels: Tensor  # (B,)
     sample_ids: tuple[str, ...]
 
 
-def slide_collate_fn(
+def sample_collate_fn(
     batch: list[tuple[Tensor, int | float, str]],
     label_dtype: torch.dtype = torch.long,
-) -> SlideBatch:
-    """Collate a list of slide-level items into a SlideBatch."""
+) -> SampleBatch:
+    """Collate a list of single-embedding items into a SampleBatch."""
     features, labels, sample_ids = zip(*batch)
-    return SlideBatch(
+    return SampleBatch(
         features=torch.stack(features),
         labels=torch.tensor(labels, dtype=label_dtype),
         sample_ids=tuple(sample_ids),

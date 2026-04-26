@@ -9,8 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from soma.cache import CacheConfig
-from soma.config import EncoderConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.extraction import FeatureExtractor
 from hs2p import load_tiling_result

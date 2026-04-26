@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import json
 import csv
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -45,7 +45,7 @@ from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
 from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats, resolve_metrics
 from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
-from soma.extraction import FeatureExtractor
+from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.output_layout import (
@@ -64,15 +64,11 @@ from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
-from soma.training.model import MILModel
+from soma.training.model import EmbeddingModel, MILModel
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
-from soma.training.patient_model import PatientModel
+from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
 from soma.training.seed import seed_everything
-from soma.training.slide_dataset import SlideDataset, slide_collate_fn
-from soma.training.slide_model import SlideModel
-from soma.training.tile_dataset import TileDataset, tile_collate_fn
-from soma.training.tile_model import TileClassifier
-from soma.training.trainer import Trainer, TrainResult, _epoch_log_to_dict
+from soma.training.trainer import Trainer, TrainResult, epoch_log_to_dict
 from soma.reporting import generate_report_from_result
 
 
@@ -112,6 +108,20 @@ class _DeterministicBaseline:
     predicted_label: int | None = None
     predicted_value: float | None = None
     raw_score: float | None = None
+
+
+def _make_label_fn(label_dtype: torch.dtype, label_map: dict):
+    """Return a label encoder for the given dtype and class map."""
+    if label_dtype == torch.float:
+        return lambda record: float(record.label)
+    return lambda record: label_map[record.label]
+
+
+def _make_patient_label_fn(label_dtype: torch.dtype, label_map: dict):
+    """Return a patient-level label encoder for the given dtype and class map."""
+    if label_dtype == torch.float:
+        return lambda pid, raw: float(raw)
+    return lambda pid, raw: label_map[raw]
 
 
 def _format_fold_summary(
@@ -175,6 +185,47 @@ def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, Sampl
             continue
         placeholder_records[record.patient_id] = record
     return placeholder_records
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_loaders(
+    dataset_cls,
+    collate_fn,
+    train_items,
+    tune_items,
+    test_items_by_split: dict,
+    batch_size: int,
+    feature_store: FeatureStore,
+    label_map: dict,
+    label_fn,
+) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
+    """Create train, tune, and per-split test DataLoaders with a common pattern."""
+    train_loader = DataLoader(
+        dataset_cls(train_items, feature_store, label_map, label_fn=label_fn),
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=collate_fn,
+    )
+    tune_loader = DataLoader(
+        dataset_cls(tune_items, feature_store, label_map, label_fn=label_fn),
+        batch_size=batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+    )
+    test_loaders = {
+        split_name: DataLoader(
+            dataset_cls(items, feature_store, label_map, label_fn=label_fn),
+            batch_size=batch_size,
+            shuffle=False,
+            collate_fn=collate_fn,
+        )
+        for split_name, items in test_items_by_split.items()
+    }
+    return train_loader, tune_loader, test_loaders
 
 
 # ---------------------------------------------------------------------------
@@ -443,10 +494,7 @@ def train_one_fold(
 
     # Derive label encoding from the task head class
     label_dtype = task_cls.label_dtype
-    if label_dtype == torch.float:
-        label_fn = lambda record: float(record.label)  # noqa: E731
-    else:
-        label_fn = lambda record: label_map[record.label]  # noqa: E731
+    label_fn = _make_label_fn(label_dtype, label_map)
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
     deterministic_baseline = _build_deterministic_baseline(
@@ -461,10 +509,7 @@ def train_one_fold(
         if aggregator is not None:
             raise ValueError("aggregator must be None for dataset_type='patient'")
         patient_label_map = dataset.patient_label_map
-        if label_dtype == torch.float:
-            patient_label_fn = lambda pid, raw: float(raw)  # noqa: E731
-        else:
-            patient_label_fn = lambda pid, raw: label_map[raw]  # noqa: E731
+        patient_label_fn = _make_patient_label_fn(label_dtype, label_map)
         _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
 
         train_loader = DataLoader(
@@ -492,62 +537,19 @@ def train_one_fold(
             for split_name, records in test_records_by_split.items()
         }
         head = task_cls(input_dim=feature_dim, **task_params)
-        model: torch.nn.Module = PatientModel(task_head=head)
-    elif dataset_type == "tile":
-        # Tile-dataset path: each sample is a single encoded tile → task head directly
-        _tile_collate = functools.partial(tile_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            TileDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_tile_collate,
+        model: torch.nn.Module = EmbeddingModel(task_head=head)
+    elif dataset_type == "tile" or feature_store.is_slide_level:
+        # Single-embedding path: one pre-computed vector per sample, no aggregation
+        if feature_store.is_slide_level and aggregator is not None:
+            raise ValueError("aggregator must be None for slide-level features")
+        _sample_collate = functools.partial(sample_collate_fn, label_dtype=label_dtype)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            SampleDataset, _sample_collate,
+            train_records, tune_records, test_records_by_split,
+            training.batch_size, feature_store, label_map, label_fn,
         )
-        tune_loader = DataLoader(
-            TileDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_tile_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                TileDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_tile_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
         head = task_cls(input_dim=feature_dim, **task_params)
-        model = TileClassifier(task_head=head)
-    elif feature_store.is_slide_level:
-        # Slide-level path: skip aggregator, pass (B, D) directly to task head
-        if aggregator is not None:
-            msg = "aggregator must be None for slide-level features"
-            raise ValueError(msg)
-        _slide_collate = functools.partial(slide_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            SlideDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_slide_collate,
-        )
-        tune_loader = DataLoader(
-            SlideDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_slide_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                SlideDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_slide_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
-        head = task_cls(input_dim=feature_dim, **task_params)
-        model: torch.nn.Module = SlideModel(task_head=head)
+        model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif feature_store.is_hierarchical:
         if aggregator is None:
             raise ValueError("aggregator must be provided for hierarchical features")
@@ -557,58 +559,25 @@ def train_one_fold(
             raise ValueError("hierarchical features require resolved preprocessing")
         hipt_params = _resolve_hipt_params(preprocessing, aggregator)
         _hier_collate = functools.partial(hierarchical_bag_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            HierarchicalBagDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_hier_collate,
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            HierarchicalBagDataset, _hier_collate,
+            train_records, tune_records, test_records_by_split,
+            training.batch_size, feature_store, label_map, label_fn,
         )
-        tune_loader = DataLoader(
-            HierarchicalBagDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_hier_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                HierarchicalBagDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_hier_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
         head = task_cls(input_dim=agg.output_dim, **task_params)
         model = MILModel(aggregator=agg, task_head=head)
     else:
         # Tile-level MIL path
-        _bag_collate = functools.partial(bag_collate_fn, label_dtype=label_dtype)
-        train_loader = DataLoader(
-            BagDataset(train_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=True,
-            collate_fn=_bag_collate,
-        )
-        tune_loader = DataLoader(
-            BagDataset(tune_records, feature_store, label_map, label_fn=label_fn),
-            batch_size=training.batch_size,
-            shuffle=False,
-            collate_fn=_bag_collate,
-        )
-        test_loaders = {
-            split_name: DataLoader(
-                BagDataset(records, feature_store, label_map, label_fn=label_fn),
-                batch_size=training.batch_size,
-                shuffle=False,
-                collate_fn=_bag_collate,
-            )
-            for split_name, records in test_records_by_split.items()
-        }
         if aggregator is None:
-            msg = "aggregator must be provided for tile-level features"
-            raise ValueError(msg)
+            raise ValueError("aggregator must be provided for tile-level features")
+        _bag_collate = functools.partial(bag_collate_fn, label_dtype=label_dtype)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            BagDataset, _bag_collate,
+            train_records, tune_records, test_records_by_split,
+            training.batch_size, feature_store, label_map, label_fn,
+        )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
         if aggregator.name == "clam_mb" and task.name == "binary_classification":
@@ -983,6 +952,73 @@ def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Aggrega
     return params
 
 
+class _RunRecorder:
+    """Context manager that tracks run metadata lifecycle (running → completed/failed).
+
+    On enter: writes initial "running" metadata and updates the run and experiment indexes.
+    On success: call ``complete(summary_metrics)`` then exit normally.
+    On exception: writes "failed" metadata and (if no prior successful run exists)
+    advances the latest pointer before re-raising.
+    """
+
+    def __init__(self, layout, config: "PipelineConfig") -> None:
+        self._layout = layout
+        self._config = config
+        self._metadata = None
+        self._summary_metrics: dict[str, float] | None = None
+
+    def __enter__(self) -> "_RunRecorder":
+        layout = self._layout
+        self._metadata = create_run_metadata(
+            config=self._config,
+            experiment=layout.experiment,
+            run_dir=layout.run_dir,
+            run_id=layout.run_id,
+            status="running",
+            started_at=datetime.now().astimezone().isoformat(),
+        )
+        write_run_metadata(layout.run_dir, self._metadata)
+        self._write_indexes(self._metadata)
+        return self
+
+    def complete(self, summary_metrics: dict[str, float]) -> None:
+        self._summary_metrics = summary_metrics
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        layout = self._layout
+        if exc_type is not None:
+            metadata = self._metadata.with_updates(
+                status="failed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                error=str(exc_val),
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+            if not has_successful_run(layout.experiment_dir):
+                update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        else:
+            metadata = self._metadata.with_updates(
+                status="completed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                summary_metrics=self._summary_metrics or {},
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+            update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        return False
+
+    def _write_indexes(self, metadata) -> None:
+        layout = self._layout
+        update_run_index(layout.index_dir / "runs.csv", metadata)
+        update_experiment_index(
+            layout.index_dir / "experiments.csv",
+            layout.experiment,
+            num_runs=count_run_directories(layout.experiment_dir),
+            latest_run_id=metadata.run_id,
+            latest_status=metadata.status,
+        )
+
+
 class Pipeline:
     """Orchestrates the full pipeline: extract → train all folds → summarize.
 
@@ -1023,33 +1059,10 @@ class Pipeline:
         layout.run_dir.mkdir(parents=True, exist_ok=True)
         layout.index_dir.mkdir(parents=True, exist_ok=True)
         write_experiment_metadata(layout.experiment_dir, layout.experiment)
-
-        # Save config snapshot
         save_config(self._config, layout.run_dir / "config.yaml")
-        started_at = datetime.now().astimezone().isoformat()
-        run_metadata = create_run_metadata(
-            config=self._config,
-            experiment=layout.experiment,
-            run_dir=layout.run_dir,
-            run_id=layout.run_id,
-            status="running",
-            started_at=started_at,
-        )
-        write_run_metadata(layout.run_dir, run_metadata)
-        update_run_index(layout.index_dir / "runs.csv", run_metadata)
-        update_experiment_index(
-            layout.index_dir / "experiments.csv",
-            layout.experiment,
-            num_runs=count_run_directories(layout.experiment_dir),
-            latest_run_id=run_metadata.run_id,
-            latest_status=run_metadata.status,
-        )
 
-        try:
-            # Load feature store
+        with _RunRecorder(layout, self._config) as recorder:
             store = self._get_feature_store(run_dir=layout.run_dir)
-
-            # Print a compact summary of the run configuration before training
             preprocessing = self._resolve_preprocessing()
             Console().print(
                 _build_run_summary_panel(
@@ -1093,41 +1106,8 @@ class Pipeline:
             except Exception:
                 logger.warning("Report generation failed", exc_info=True)
 
-        except Exception as exc:
-            failed_metadata = run_metadata.with_updates(
-                status="failed",
-                finished_at=datetime.now().astimezone().isoformat(),
-                error=str(exc),
-            )
-            write_run_metadata(layout.run_dir, failed_metadata)
-            update_run_index(layout.index_dir / "runs.csv", failed_metadata)
-            update_experiment_index(
-                layout.index_dir / "experiments.csv",
-                layout.experiment,
-                num_runs=count_run_directories(layout.experiment_dir),
-                latest_run_id=failed_metadata.run_id,
-                latest_status=failed_metadata.status,
-            )
-            if not has_successful_run(layout.experiment_dir):
-                update_latest_pointer(layout.experiment_dir, layout.run_dir)
-            raise
-
-        completed_metadata = run_metadata.with_updates(
-            status="completed",
-            finished_at=datetime.now().astimezone().isoformat(),
-            summary_metrics=result.summary,
-        )
-        Console().print(_build_completed_run_panel(summary_metrics=result.summary))
-        write_run_metadata(layout.run_dir, completed_metadata)
-        update_run_index(layout.index_dir / "runs.csv", completed_metadata)
-        update_experiment_index(
-            layout.index_dir / "experiments.csv",
-            layout.experiment,
-            num_runs=count_run_directories(layout.experiment_dir),
-            latest_run_id=completed_metadata.run_id,
-            latest_status=completed_metadata.status,
-        )
-        update_latest_pointer(layout.experiment_dir, layout.run_dir)
+            Console().print(_build_completed_run_panel(summary_metrics=result.summary))
+            recorder.complete(result.summary)
 
         return result
 
@@ -1155,7 +1135,10 @@ class Pipeline:
                 execution=self._config.execution,
                 cache=cache_config,
             )
-            return extractor.run(feature_dir=run_dir / "features")
+            try:
+                return extractor.run(feature_dir=run_dir / "features")
+            finally:
+                _release_parent_cuda_state()
 
         # Slide pipeline path
         if self._config.encoder is None:
@@ -1177,7 +1160,10 @@ class Pipeline:
             execution=self._config.execution,
             cache=cache_config,
         )
-        return extractor.run(feature_dir=run_dir / "features")
+        try:
+            return extractor.run(feature_dir=run_dir / "features")
+        finally:
+            _release_parent_cuda_state()
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
@@ -1237,12 +1223,12 @@ def _evaluate(
         all_sample_ids.extend(batch.sample_ids)
 
         if attention_dir is not None and out.tile_attention is not None:
-            from soma.heatmaps import _normalize_attention
+            from soma.heatmaps import normalize_attention
             for i, sid in enumerate(batch.sample_ids):
                 attn_i = out.tile_attention[i : i + 1]
                 if hasattr(batch, "mask"):
                     attn_i = attn_i[..., batch.mask[i]]
-                normalized = _normalize_attention(attn_i, aggregator_name or "")
+                normalized = normalize_attention(attn_i, aggregator_name or "")
                 np.savez_compressed(attention_dir / f"{sid}.npz", attention=normalized)
 
     logits = torch.cat(all_logits, dim=0)
@@ -1473,7 +1459,7 @@ def _save_metrics(
 
 
 def _save_training_history(history: list, path: Path) -> None:
-    data = [_epoch_log_to_dict(log) for log in history]
+    data = [epoch_log_to_dict(log) for log in history]
     path.write_text(json.dumps(data, indent=2))
 
 

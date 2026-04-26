@@ -215,7 +215,6 @@ def test_cache_config_defaults():
     assert cfg.enabled is True
     assert cfg.root_dir is None
     assert cfg.reuse_policy == "strict"
-    assert cfg.save_tile_features_for_slide is True
 
 
 def test_aggregator_config_with_params():

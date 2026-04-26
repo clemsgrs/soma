@@ -624,7 +624,7 @@ class TestTrainOneFold:
 
 
     def test_slide_level_features_no_aggregator(self, tmp_path: Path):
-        """train_one_fold with 1-D features and aggregator=None uses SlideModel."""
+        """train_one_fold with 1-D features and aggregator=None uses EmbeddingModel."""
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         dataset = Dataset(dataset_csv)
         splits = Splits(splits_csv, dataset)
@@ -1486,8 +1486,8 @@ class TestPipeline:
             autospec=True,
             side_effect=_fake_preprocess,
         ), patch(
-            "soma.extraction.load_tilings", return_value=loaded_tilings
-        ), patch("soma.extraction._validate_runtime"), patch.object(
+            "soma.extraction.extractor.load_tilings", return_value=loaded_tilings
+        ), patch("soma.extraction.extractor._validate_runtime"), patch.object(
             FeatureExtractor,
             "_populate_tile_cache",
             autospec=True,
@@ -1510,8 +1510,8 @@ class TestPipeline:
             autospec=True,
             side_effect=_fake_preprocess,
         ), patch(
-            "soma.extraction.load_tilings", return_value=loaded_tilings
-        ), patch("soma.extraction._validate_runtime"), patch.object(
+            "soma.extraction.extractor.load_tilings", return_value=loaded_tilings
+        ), patch("soma.extraction.extractor._validate_runtime"), patch.object(
             FeatureExtractor,
             "_populate_tile_cache",
             side_effect=AssertionError("tile extraction should be reused"),

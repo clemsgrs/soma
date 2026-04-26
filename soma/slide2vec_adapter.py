@@ -145,7 +145,7 @@ def build_execution_options(
         precision = resolve_encoder_precision(encoder, encoder_name=encoder_name)
     prefetch_factor = 4 if execution.prefetch_factor is None else int(execution.prefetch_factor)
     if execution.num_workers_per_gpu is None:
-        num_workers_per_gpu = max(1, slide2vec_api.cpu_worker_limit() // max(1, resolved_num_gpus))
+        num_workers_per_gpu = min(16, max(1, slide2vec_api.cpu_worker_limit() // max(1, resolved_num_gpus)))
     else:
         num_workers_per_gpu = int(execution.num_workers_per_gpu)
     return ExecutionOptions(

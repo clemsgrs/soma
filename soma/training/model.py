@@ -1,4 +1,4 @@
-"""MILModel — composes an aggregator with a task head."""
+"""Training models: EmbeddingModel (direct task head) and MILModel (aggregator + task head)."""
 
 from __future__ import annotations
 
@@ -8,6 +8,28 @@ from torch import Tensor, nn
 
 from soma.aggregators.base import Aggregator
 from soma.tasks.base import TaskHead
+
+
+@dataclass
+class EmbeddingModelOutput:
+    """Output of EmbeddingModel.forward."""
+
+    logits: Tensor  # (B, num_classes)
+
+
+class EmbeddingModel(nn.Module):
+    """Task head applied directly to a pre-computed feature embedding (B, D).
+
+    Used for slide-level, patient-level, and tile-level pipelines where each
+    sample is already represented by a single feature vector — no aggregation.
+    """
+
+    def __init__(self, task_head: TaskHead) -> None:
+        super().__init__()
+        self.task_head = task_head
+
+    def forward(self, X: Tensor) -> EmbeddingModelOutput:
+        return EmbeddingModelOutput(logits=self.task_head(X))
 
 
 @dataclass

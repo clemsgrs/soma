@@ -391,7 +391,7 @@ def _save_checkpoint(
     )
 
 
-def _epoch_log_to_dict(log: EpochLog) -> dict[str, object]:
+def epoch_log_to_dict(log: EpochLog) -> dict[str, object]:
     data = {
         "epoch": log.epoch,
         "train_loss": log.train_loss,

@@ -170,7 +170,7 @@ def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path
 
 def test_probe_resolved_backends_uses_explicit_backend_without_probe(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
-    with patch("soma.cache.resolve_backend") as resolve_backend:
+    with patch("soma.cache.keys.resolve_backend") as resolve_backend:
         mapping = probe_resolved_backends(
             dataset=dataset,
             requested_backend="openslide",
@@ -186,7 +186,7 @@ def test_probe_resolved_backends_uses_runtime_backend_probe_for_auto(tmp_path: P
         del requested_backend, mask_path
         return SimpleNamespace(backend="cucim" if Path(wsi_path).name == "s1.svs" else "openslide")
 
-    with patch("soma.cache.resolve_backend", side_effect=_fake_resolve_backend) as resolve_backend:
+    with patch("soma.cache.keys.resolve_backend", side_effect=_fake_resolve_backend) as resolve_backend:
         mapping = probe_resolved_backends(
             dataset=dataset,
             requested_backend="auto",
@@ -352,7 +352,7 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
 
     with (
         patch(
-            "soma.cache.load_tiling_process_df",
+            "soma.cache.tiling.load_tiling_process_df",
             return_value=pd.DataFrame(
                 [
                     {
@@ -550,7 +550,7 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
     torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
     record_sample_identity_signatures(resolution, ["s1"])
 
-    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tile_cache(
             cache_root=cache_root,
             dataset=dataset,
@@ -605,7 +605,7 @@ def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp
 def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"
-    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tile_cache(
             cache_root=cache_root,
             dataset=dataset,
@@ -620,7 +620,7 @@ def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
 def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "tiling_cache"
-    with patch("soma.cache.slide2vec_progress.emit_progress_log") as emit_progress_log:
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tiling_cache(
             cache_root=cache_root,
             dataset=dataset,
@@ -859,7 +859,7 @@ def test_write_cache_payload_reuses_pt_artifacts_without_reserializing(tmp_path:
     artifact = SimpleNamespace(sample_id="s1", path=artifact_path)
 
     with patch(
-        "soma.cache.torch.save",
+        "soma.cache.io.torch.save",
         side_effect=AssertionError("torch.save should not be used"),
     ):
         feature_dim = write_cache_payload([artifact], feature_dir=cache_dir)
@@ -879,8 +879,8 @@ def test_write_cache_payload_falls_back_to_content_copy_across_devices(tmp_path:
 
     artifact = SimpleNamespace(sample_id="s1", path=artifact_path)
 
-    with patch("soma.cache.os.link", side_effect=OSError(errno.EXDEV, "Invalid cross-device link")), patch(
-        "soma.cache.shutil.copyfile",
+    with patch("soma.cache.io.os.link", side_effect=OSError(errno.EXDEV, "Invalid cross-device link")), patch(
+        "soma.cache.io.shutil.copyfile",
         wraps=__import__("shutil").copyfile,
     ) as copyfile:
         feature_dim = write_cache_payload([artifact], feature_dir=cache_dir)

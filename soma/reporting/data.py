@@ -20,7 +20,7 @@ import pandas as pd
 import yaml
 
 from soma.evaluation.metrics import compute_subgroup_metrics, resolve_metrics
-from soma.training.trainer import _epoch_log_to_dict
+from soma.training.trainer import epoch_log_to_dict
 
 if TYPE_CHECKING:
     from soma.config import PipelineConfig
@@ -277,7 +277,7 @@ def run_data_from_result(
 
     folds = []
     for fold_result in result.fold_results:
-        training_history = [_epoch_log_to_dict(log) for log in fold_result.train_result.history]
+        training_history = [epoch_log_to_dict(log) for log in fold_result.train_result.history]
 
         predictions: dict[str, pd.DataFrame] = {
             split_name: _predictions_to_dataframe(report.predictions)
