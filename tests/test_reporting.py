@@ -10,11 +10,13 @@ import pandas as pd
 import pytest
 import yaml
 
-from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, TaskConfig, TrainingConfig
+from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, SubgroupConfig, TaskConfig, TrainingConfig
+from soma.dataset import Dataset
 from soma.evaluation.metrics import DEFAULT_METRICS, resolve_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
 from soma.reporting.data import FoldData, RunData, run_data_from_result
+from soma.reporting.subgroups import subgroup_data_for_predictions
 from soma.reporting.html import render_report
 from soma.training.trainer import EpochLog, TrainResult
 from dataclasses import replace
@@ -392,6 +394,54 @@ def test_run_data_from_result_preserves_coverage_counts(tmp_path: Path) -> None:
     run_data = run_data_from_result(result, config)
     assert run_data.folds[0].tune_metrics["coverage"] == 0.75
     assert run_data.folds[0].test_metrics["test"]["num_placeholder_samples"] == 1
+
+
+def test_run_data_from_result_computes_subgroup_metrics_with_dataset(tmp_path: Path) -> None:
+    result, config = _make_mock_pipeline_result(tmp_path)
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "s0", "image_path": str(tmp_path / "s0.svs"), "label": 0, "cohort": "A"},
+            {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": 1, "cohort": "B"},
+        ]
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+    config = replace(
+        config,
+        evaluation=replace(
+            config.evaluation,
+            subgroups=SubgroupConfig(columns=["cohort"]),
+        ),
+    )
+
+    run_data = run_data_from_result(result, config, dataset=dataset)
+
+    subgroup_metrics = run_data.folds[0].subgroup_metrics
+    assert subgroup_metrics is not None
+    assert set(subgroup_metrics["test"]["metrics"]) == {"cohort"}
+    assert set(subgroup_metrics["test"]["stats"]) == {"cohort"}
+
+
+def test_subgroup_data_for_predictions_resolves_patient_ids(tmp_path: Path) -> None:
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "s0", "patient_id": "p0", "image_path": str(tmp_path / "s0.svs"), "label": 0, "site": "left"},
+            {"sample_id": "s1", "patient_id": "p0", "image_path": str(tmp_path / "s1.svs"), "label": 0, "site": "left"},
+        ]
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+    report = EvaluationReport(
+        split="test",
+        metrics={},
+        predictions=[
+            SamplePrediction(sample_id="p0", true_label=0, predicted_label=0, probabilities=[0.9, 0.1])
+        ],
+    )
+
+    subgroup_data = subgroup_data_for_predictions(dataset, report.predictions, ["site"])
+
+    assert subgroup_data == {"p0": {"site": "left"}}
 
 
 # ---------------------------------------------------------------------------

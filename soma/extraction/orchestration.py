@@ -176,7 +176,12 @@ def _aggregate_patients(
     # Step 2: Group slide embeddings by patient_id.
     patient_slide_embs: dict[str, list[torch.Tensor]] = {}
     for art in slide_artifacts:
-        pid = patient_id_map.get(art.sample_id, art.sample_id)
+        try:
+            pid = patient_id_map[art.sample_id]
+        except KeyError as exc:
+            raise ValueError(
+                f"Missing patient_id for sample '{art.sample_id}' during patient-level aggregation."
+            ) from exc
         emb = load_array(art.path)
         if not torch.is_tensor(emb):
             emb = torch.as_tensor(emb)

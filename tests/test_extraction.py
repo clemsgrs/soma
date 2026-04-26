@@ -15,7 +15,7 @@ from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
 
 import soma.cache as cache_mod
-from soma.cache import record_feature_dim, record_sample_identity_signatures
+from soma.cache import record_empty_sample_ids, record_feature_dim, record_sample_identity_signatures
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig as _PreprocessingConfig
 from soma.dataset import Dataset
 from soma.features import FeatureStore
@@ -136,6 +136,27 @@ def _make_patient_dataset(tmp_path: Path) -> Dataset:
                 "image_path": str(tmp_path / "s0.svs"),
                 "label": "tumor",
             }
+        ]
+    ).to_csv(csv_path, index=False)
+    return Dataset(csv_path)
+
+
+def _make_two_slide_patient_dataset(tmp_path: Path) -> Dataset:
+    csv_path = tmp_path / "two-slide-patient-dataset.csv"
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "s0",
+                "patient_id": "p0",
+                "image_path": str(tmp_path / "s0.svs"),
+                "label": "tumor",
+            },
+            {
+                "sample_id": "s1",
+                "patient_id": "p0",
+                "image_path": str(tmp_path / "s1.svs"),
+                "label": "tumor",
+            },
         ]
     ).to_csv(csv_path, index=False)
     return Dataset(csv_path)
@@ -1917,6 +1938,24 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
     tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
     torch.save(torch.ones(2, 8), tile_cache.feature_path_for_id("s0"))
     record_sample_identity_signatures(tile_cache, ["s0"])
+    tile_cache = cache_mod.resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=resolved_preprocessing,
+        execution=extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_TILE,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide"},
+        },
+        complete_state="populated",
+    )
     seen_output_dirs: list[Path] = []
 
     def _fake_aggregate_patients(
@@ -1952,6 +1991,223 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
     assert seen_output_dirs == [patient_cache.cache_dir, patient_cache.cache_dir]
     assert (patient_cache.cache_dir / "patient_embeddings" / "p0.pt").is_file()
     assert patient_cache.feature_path_for_id("p0").is_file()
+
+
+def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path):
+    dataset = _make_two_slide_patient_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_PATIENT),
+        resolved_preprocessing,
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling("s0"),
+        ),
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s1", image_path=Path("/tmp/s1.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling("s1"),
+        ),
+    ]
+    tile_execution = extractor._resolved_execution_for_cache(
+        encoder_name=_TEST_TILE,
+        resolved_preprocessing=resolved_preprocessing,
+        output_variant="default",
+    )
+    tile_cache = cache_mod.resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=resolved_preprocessing,
+        execution=tile_execution,
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide", "s1": "openslide"},
+        },
+    )
+    patient_cache = cache_mod.resolve_patient_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        patient_encoder_name=_TEST_PATIENT,
+        tile_encoder_name=_TEST_TILE,
+        tile_preprocessing=resolved_preprocessing,
+        tile_execution=tile_execution,
+        tile_output_variant="default",
+        execution=extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_PATIENT,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide", "s1": "openslide"},
+        },
+    )
+    tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(torch.ones(2, 8), tile_cache.feature_path_for_id("s0"))
+    record_sample_identity_signatures(tile_cache, ["s0"])
+    record_empty_sample_ids(tile_cache, ["s1"])
+    tile_cache = cache_mod.resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=resolved_preprocessing,
+        execution=tile_execution,
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide", "s1": "openslide"},
+        },
+        complete_state="populated",
+    )
+
+    def _fake_aggregate_patients(
+        *,
+        model_name,
+        output_variant,
+        allow_non_recommended_settings,
+        tile_artifacts,
+        patient_id_map,
+        preprocessing,
+        slide_execution,
+        patient_execution,
+    ):
+        del model_name, output_variant, allow_non_recommended_settings, patient_id_map, preprocessing
+        del slide_execution
+        assert [artifact.sample_id for artifact in tile_artifacts] == ["s0"]
+        artifact_dir = Path(patient_execution.output_dir) / "patient_embeddings"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        path = artifact_dir / "p0.pt"
+        torch.save(torch.ones(8), path)
+        return [SimpleNamespace(patient_id="p0", path=path)]
+
+    with patch("soma.extraction.extractor._aggregate_patients", side_effect=_fake_aggregate_patients):
+        extractor._populate_patient_cache(
+            patient_cache=patient_cache,
+            tile_cache=tile_cache,
+            loaded_tilings=loaded,
+            patient_id_map={"s0": "p0", "s1": "p0"},
+            model_name=_TEST_PATIENT,
+            output_variant="default",
+            num_gpus=None,
+        )
+
+    assert patient_cache.feature_path_for_id("p0").is_file()
+
+
+def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
+    dataset = _make_patient_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_PATIENT),
+        resolved_preprocessing,
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling("s0"),
+        )
+    ]
+    tile_execution = extractor._resolved_execution_for_cache(
+        encoder_name=_TEST_TILE,
+        resolved_preprocessing=resolved_preprocessing,
+        output_variant="default",
+    )
+    tile_cache = cache_mod.resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=resolved_preprocessing,
+        execution=tile_execution,
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide"},
+        },
+    )
+    patient_cache = cache_mod.resolve_patient_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        patient_encoder_name=_TEST_PATIENT,
+        tile_encoder_name=_TEST_TILE,
+        tile_preprocessing=resolved_preprocessing,
+        tile_execution=tile_execution,
+        tile_output_variant="default",
+        execution=extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_PATIENT,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide"},
+        },
+    )
+    record_empty_sample_ids(tile_cache, ["s0"])
+    tile_cache = cache_mod.resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=resolved_preprocessing,
+        execution=tile_execution,
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide"},
+        },
+        complete_state="populated",
+    )
+
+    with patch("soma.extraction.extractor._aggregate_patients") as aggregate_patients:
+        extractor._populate_patient_cache(
+            patient_cache=patient_cache,
+            tile_cache=tile_cache,
+            loaded_tilings=loaded,
+            patient_id_map={"s0": "p0"},
+            model_name=_TEST_PATIENT,
+            output_variant="default",
+            num_gpus=None,
+        )
+
+    aggregate_patients.assert_not_called()
+    metadata = json.loads(patient_cache.metadata_path.read_text())
+    assert metadata["empty_sample_ids"] == ["p0"]
+
+
+def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path):
+    csv_path = tmp_path / "partial-patient-dataset.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "s0", "patient_id": "p0", "image_path": str(tmp_path / "s0.svs"), "label": "tumor"},
+            {"sample_id": "s1", "patient_id": None, "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
+        ]
+    ).to_csv(csv_path, index=False)
+    dataset = Dataset(csv_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_PATIENT),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+    )
+
+    with pytest.raises(ValueError, match="every dataset row must have a patient_id"):
+        extractor._patient_id_map_for_patient_encoder()
 
 
 def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Path):

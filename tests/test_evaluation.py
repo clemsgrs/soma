@@ -104,6 +104,13 @@ class TestBinaryClassificationMetrics:
         m = compute_metrics("binary_classification", ["auprc"], y_true, y_pred, y_prob)
         assert 0.0 <= m["auprc"] <= 1.0
 
+    def test_single_class_auprc_is_reported_as_undefined(self):
+        y_true = np.array([1, 1, 1])
+        y_prob = self._probs([0.8, 0.9, 0.7])
+        y_pred = np.array([1, 1, 1])
+        m = compute_metrics("binary_classification", ["auprc"], y_true, y_pred, y_prob)
+        assert np.isnan(m["auprc"])
+
     def test_mcc(self):
         y_true = np.array([0, 0, 1, 1])
         y_prob = self._probs([0.1, 0.2, 0.8, 0.9])

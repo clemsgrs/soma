@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import yaml
 
-from soma.evaluation.metrics import compute_subgroup_metrics, resolve_metrics
+from soma.evaluation.metrics import resolve_metrics
+from soma.reporting.subgroups import enrich_predictions_with_subgroups, subgroup_report_for_predictions
 from soma.training.trainer import epoch_log_to_dict
 
 if TYPE_CHECKING:
@@ -284,17 +285,18 @@ def run_data_from_result(
             for split_name, report in fold_result.test_reports.items()
         }
 
-        # Compute subgroup metrics for the in-memory path by joining predictions
-        # with dataset metadata on sample_id.
         fold_subgroup_metrics: dict[str, dict] | None = None
         if subgroup_columns and dataset is not None:
             sg_data = {}
             for split_name, preds_df in predictions.items():
                 if not preds_df.empty:
-                    enriched = _enrich_predictions_df(preds_df, dataset, subgroup_columns)
-                    sg_data[split_name] = {"metrics": compute_subgroup_metrics(
-                        task_family, metrics, enriched, subgroup_columns
-                    )}
+                    enriched = enrich_predictions_with_subgroups(preds_df, dataset, subgroup_columns)
+                    sg_data[split_name] = subgroup_report_for_predictions(
+                        task_family=task_family,
+                        metrics=metrics,
+                        predictions_df=enriched,
+                        subgroup_columns=subgroup_columns,
+                    )
             if sg_data:
                 fold_subgroup_metrics = sg_data
 
@@ -323,21 +325,6 @@ def _config_to_dict(config: PipelineConfig) -> dict:
     from soma.config import _config_to_layout_dict
 
     return _config_to_layout_dict(config)
-
-
-def _enrich_predictions_df(
-    predictions_df: pd.DataFrame,
-    dataset: object,
-    subgroup_columns: list[str],
-) -> pd.DataFrame:
-    """Add subgroup columns to predictions DataFrame by joining on sample_id."""
-    df = predictions_df.copy()
-    samples = dataset.samples  # type: ignore[attr-defined]
-    for col in subgroup_columns:
-        df[col] = df["sample_id"].map(
-            lambda sid, c=col: samples[sid].metadata.get(c) if sid in samples else None
-        )
-    return df
 
 
 def _predictions_to_dataframe(predictions: list) -> pd.DataFrame:

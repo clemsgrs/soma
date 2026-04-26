@@ -108,10 +108,13 @@ def _auroc_macro(y_true, y_pred, y_prob) -> float:
 
 
 def _auprc(y_true, y_pred, y_prob) -> float:
-    try:
-        return float(average_precision_score(y_true, y_prob[:, 1]))
-    except ValueError:
+    if len(np.unique(y_true)) < 2:
         return float("nan")
+    try:
+        value = float(average_precision_score(y_true, y_prob[:, 1]))
+    except ValueError:
+        value = float("nan")
+    return value if np.isfinite(value) else float("nan")
 
 
 def _f1_binary(y_true, y_pred, y_prob) -> float:

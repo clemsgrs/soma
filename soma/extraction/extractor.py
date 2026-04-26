@@ -1165,16 +1165,7 @@ class FeatureExtractor:
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
             return FeatureStore(feature_dir)
 
-        patient_id_map = {
-            sample_id: record.patient_id
-            for sample_id, record in self._dataset.samples.items()
-            if record.patient_id is not None
-        }
-        if not patient_id_map:
-            raise ValueError(
-                f"Encoder '{self._encoder.name}' is a patient-level encoder but the dataset "
-                "has no patient_id column. Add a patient_id column to the dataset CSV."
-            )
+        patient_id_map = self._patient_id_map_for_patient_encoder()
 
         self._populate_tile_cache(
             cache_resolution=tile_cache,
@@ -1251,10 +1242,26 @@ class FeatureExtractor:
         (via encode_patient, grouped by patient_id).
         """
         missing_sample_ids = set(tile_cache.missing_sample_ids())
+        empty_sample_ids = set(tile_cache.empty_sample_ids)
+        unavailable_sample_ids = missing_sample_ids | empty_sample_ids
         selected_loaded = [
             loaded for loaded in loaded_tilings
-            if loaded.slide.sample_id not in missing_sample_ids
+            if loaded.slide.sample_id not in unavailable_sample_ids
         ]
+        patient_to_loaded_ids: dict[str, set[str]] = {}
+        for loaded in loaded_tilings:
+            sample_id = loaded.slide.sample_id
+            if sample_id in patient_id_map:
+                patient_to_loaded_ids.setdefault(patient_id_map[sample_id], set()).add(sample_id)
+        empty_patient_ids = sorted(
+            patient_id
+            for patient_id, sample_ids in patient_to_loaded_ids.items()
+            if sample_ids and sample_ids.issubset(empty_sample_ids)
+        )
+        if empty_patient_ids:
+            record_empty_sample_ids(patient_cache, empty_patient_ids)
+        if not selected_loaded:
+            return
         tile_artifacts = build_tile_artifacts_from_cache_payload(
             features_dir=tile_cache.features_dir,
             loaded_tilings=selected_loaded,
@@ -1297,6 +1304,20 @@ class FeatureExtractor:
         )
         if feature_dim is not None:
             record_feature_dim(patient_cache, feature_dim)
+
+    def _patient_id_map_for_patient_encoder(self) -> dict[str, str]:
+        try:
+            patient_groups = self._dataset.patient_groups
+        except ValueError as exc:
+            raise ValueError(
+                f"Encoder '{self._encoder.name}' is a patient-level encoder, so every "
+                "dataset row must have a patient_id."
+            ) from exc
+        return {
+            record.sample_id: patient_id
+            for patient_id, records in patient_groups.items()
+            for record in records
+        }
 
     def _write_artifacts_to_cache_resolution(
         self,

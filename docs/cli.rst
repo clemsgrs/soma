@@ -88,7 +88,6 @@ Full config reference
      enabled: true
      root_dir: null              # null → inside output_root
      reuse_policy: strict        # strict | relaxed
-     save_tile_features_for_slide: true
 
    # ── Encoder ──────────────────────────────────────────────────────
    encoder:
