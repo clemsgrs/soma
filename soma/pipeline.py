@@ -42,7 +42,7 @@ from soma.config import (
     save_config,
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
-from soma.evaluation.metrics import compute_subgroup_metrics, compute_subgroup_stats, resolve_metrics
+from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
@@ -70,6 +70,7 @@ from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_coll
 from soma.training.seed import seed_everything
 from soma.training.trainer import Trainer, TrainResult, epoch_log_to_dict
 from soma.reporting import generate_report_from_result
+from soma.reporting.subgroups import subgroup_data_for_predictions, subgroup_report_for_predictions
 
 
 logger = logging.getLogger(__name__)
@@ -696,15 +697,22 @@ def train_one_fold(
     resolved_metrics = resolve_metrics(task_family, evaluation.metrics)
     for split_name, test_report in test_reports.items():
         predictions_path = fold_dir / f"predictions_{split_name}.csv"
-        subgroup_data = _build_subgroup_data(dataset, test_report, evaluation.subgroups.columns)
+        subgroup_data = subgroup_data_for_predictions(
+            dataset,
+            test_report.predictions,
+            evaluation.subgroups.columns,
+        )
         _save_predictions(test_report, predictions_path, subgroup_data=subgroup_data)
 
         # Save subgroup metrics when subgroup columns are configured
         if evaluation.subgroups.columns:
             predictions_df = _build_predictions_df(test_report, subgroup_data)
-            sg_metrics = compute_subgroup_metrics(task_family, resolved_metrics, predictions_df, evaluation.subgroups.columns)
-            sg_stats = compute_subgroup_stats(task_family, resolved_metrics, predictions_df, evaluation.subgroups.columns)
-            sg_out: dict = {"metrics": sg_metrics, "stats": sg_stats}
+            sg_out = subgroup_report_for_predictions(
+                task_family=task_family,
+                metrics=resolved_metrics,
+                predictions_df=predictions_df,
+                subgroup_columns=evaluation.subgroups.columns,
+            )
             (fold_dir / f"subgroup_metrics_{split_name}.json").write_text(json.dumps(sg_out, indent=2))
 
     return FoldResult(
@@ -1101,7 +1109,7 @@ class Pipeline:
                 )
 
             try:
-                report_path = generate_report_from_result(result, self._config)
+                report_path = generate_report_from_result(result, self._config, dataset=self._dataset)
                 logger.info("Report saved to %s", report_path)
             except Exception:
                 logger.warning("Report generation failed", exc_info=True)
@@ -1468,35 +1476,8 @@ def _build_subgroup_data(
     report: EvaluationReport,
     subgroup_columns: list[str],
 ) -> dict[str, dict[str, object]]:
-    """Build a mapping of sample_id → subgroup column values for enriching predictions."""
-    if not subgroup_columns:
-        return {}
-    subgroup_data: dict[str, dict[str, object]] = {}
-    patient_groups = dataset.patient_groups if dataset.has_patient_ids else {}
-    for pred in report.predictions:
-        if pred.sample_id in dataset.samples:
-            subgroup_data[pred.sample_id] = {
-                col: dataset.samples[pred.sample_id].metadata.get(col)
-                for col in subgroup_columns
-            }
-            continue
-
-        patient_records = patient_groups.get(pred.sample_id)
-        if not patient_records:
-            subgroup_data[pred.sample_id] = {}
-            continue
-
-        values: dict[str, object] = {}
-        for col in subgroup_columns:
-            observed_values = {record.metadata.get(col) for record in patient_records}
-            if len(observed_values) > 1:
-                raise ValueError(
-                    f"Patient '{pred.sample_id}' has inconsistent subgroup metadata for column '{col}'."
-                )
-            values[col] = patient_records[0].metadata.get(col)
-        subgroup_data[pred.sample_id] = values
-
-    return subgroup_data
+    """Build a mapping of sample/patient ID to subgroup values for predictions."""
+    return subgroup_data_for_predictions(dataset, report.predictions, subgroup_columns)
 
 
 def _build_predictions_df(

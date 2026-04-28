@@ -131,6 +131,7 @@ def generate_report_from_result(
     result: PipelineResult,
     config: PipelineConfig,
     *,
+    dataset: object = None,
     output_path: str | Path | None = None,
 ) -> Path:
     """Generate an HTML report from an in-memory PipelineResult.
@@ -141,6 +142,7 @@ def generate_report_from_result(
     Args:
         result: PipelineResult returned by Pipeline.run() or train().
         config: The PipelineConfig used for the run.
+        dataset: Optional Dataset used to enrich configured subgroup reports.
         output_path: Destination for the HTML file.
             Defaults to result.run_dir/report.html.
 
@@ -149,7 +151,7 @@ def generate_report_from_result(
     """
     output_path = Path(output_path) if output_path else result.run_dir / "report.html"
 
-    run_data = run_data_from_result(result, config)
+    run_data = run_data_from_result(result, config, dataset=dataset)
     html = render_report(run_data)
     output_path.write_text(html, encoding="utf-8")
     return output_path

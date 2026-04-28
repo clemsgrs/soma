@@ -15,8 +15,8 @@ preprocessing:
   requested_spacing_um: null
   requested_region_size_px: null
   region_tile_multiple: null
-  read_tile_size_px: null
-  read_region_size_px: null
+  # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
+  # Leave empty/unused when pre-computed tissue masks are provided.
   tissue_method: hsv
   tissue_threshold: 0.1
   overlap: 0.0
@@ -32,7 +32,6 @@ preprocessing:
     save_tiling_preview: true
     downsample: 32
     tissue_contour_color: [37, 94, 59]
-    mask_overlay_alpha: 0.5
 
 execution:
   num_gpus: null
@@ -47,7 +46,6 @@ cache:
 
 encoder:
   name: uni2
-  precision: null
   batch_size: 32
   adaptive_batching: false
   output_variant: null

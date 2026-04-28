@@ -32,8 +32,8 @@ Key knobs
      - Tile count per hierarchical region
      - Alternative to ``requested_region_size_px``
    * - ``tissue_method``
-     - Tissue segmentation method
-     - Keep default unless segmentation is noisy
+     - Tissue segmentation method: ``sam2``, ``hsv``, ``otsu``, or ``threshold``
+     - Leave empty/unused when dataset rows provide pre-computed tissue masks
    * - ``sam2_device``
      - Device used for SAM2 tissue segmentation
      - Set explicitly when running SAM2 on GPU
@@ -61,4 +61,6 @@ Preview rendering is inherited from :mod:`hs2p`:
 - :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
 - :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
 
-The rendering behavior itself lives upstream.
+Read-size fields such as ``read_tile_size_px`` are resolved internally from the
+requested tile/region size and spacing, so they are not shown in the
+user-facing reference config.
