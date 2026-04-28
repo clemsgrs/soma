@@ -64,9 +64,9 @@ Full config reference
      requested_tile_size_px: null    # tile edge length at the target spacing
      requested_region_size_px: null  # HIPT region size (hierarchical only)
      region_tile_multiple: null      # tiles-per-region (hierarchical only)
-     read_tile_size_px: null         # override read resolution
-     read_region_size_px: null
-     tissue_method: hsv              # tissue segmentation method
+     # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
+     # Leave empty/unused when pre-computed tissue masks are provided.
+     tissue_method: hsv
      tissue_threshold: 0.1
      overlap: 0.0
      seg_downsample: 64
@@ -81,7 +81,7 @@ Full config reference
        save_tiling_preview: true
        downsample: 32
        tissue_contour_color: [37, 94, 59]
-       mask_overlay_alpha: 0.5
+       mask_overlay_alpha: 0.5       # tissue-mask preview overlay opacity
 
    # ── Cache ────────────────────────────────────────────────────────
    cache:
@@ -92,7 +92,6 @@ Full config reference
    # ── Encoder ──────────────────────────────────────────────────────
    encoder:
      name: uni2                  # required – see `soma list encoders`
-     precision: null
      batch_size: 32
      adaptive_batching: false
      output_variant: null        # preset-specific feature variant
