@@ -217,9 +217,7 @@ tasks/
 
 # local debug / scratch scripts
 debug-*.py
-panda.py
 align-tiling-cache.py
-unicorn-task*.py
 cufile.log
 cufile-checkpoint.log
 .pi/

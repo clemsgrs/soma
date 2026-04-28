@@ -190,6 +190,36 @@ def test_feature_manifest_tracks_success_and_empty_samples(tmp_path: Path):
     assert store.empty_feature_samples == ["s2"]
 
 
+def test_feature_manifest_can_point_to_cached_payloads_without_local_copies(tmp_path: Path):
+    cache_dir = tmp_path / "feature_cache" / "tile" / "abc123" / "tile_embeddings"
+    cache_dir.mkdir(parents=True)
+    cached_path = cache_dir / "s1.pt"
+    torch.save(torch.randn(10, 32), cached_path)
+
+    run_dir = tmp_path / "run" / "features"
+    run_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "s1",
+                "feature_status": "success",
+                "feature_path": str(cached_path.resolve()),
+                "num_tiles": 10,
+                "feature_rank": 2,
+                "feature_dim": 32,
+            }
+        ]
+    ).to_csv(run_dir / "process_list.csv", index=False)
+    (run_dir / "README.txt").write_text("cache-backed pointer dir", encoding="utf-8")
+
+    store = FeatureStore(run_dir)
+
+    assert store.available_samples == ["s1"]
+    assert store.feature_manifest_path == run_dir / "process_list.csv"
+    assert store.feature_dim == 32
+    assert torch.equal(store.load("s1"), torch.load(cached_path, weights_only=True, map_location="cpu"))
+
+
 def test_slide2vec_artifact_root_prefers_slide_embeddings(tmp_path: Path):
     artifact_root = tmp_path / "artifacts"
     tile_dir = artifact_root / "tile_embeddings"

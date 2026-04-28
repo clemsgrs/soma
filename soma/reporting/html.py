@@ -822,8 +822,8 @@ def _comparison_overview_tab(cd: ComparisonData) -> str:
         return "—"
 
     dataset_items = [
-        ("Dataset CSV", _display_path("dataset_csv")),
-        ("Splits CSV", _display_path("splits_csv")),
+        ("Dataset CSV", _display_path("data.dataset_csv")),
+        ("Splits CSV", _display_path("data.splits_csv")),
     ]
 
     dataset_context = _overview_config_panel(dataset_items)
@@ -1207,7 +1207,10 @@ def _comparison_section_run_context(cd: ComparisonData) -> str:
     items: list[str] = []
 
     # Shared dataset / splits → single chip
-    for key, label in [("dataset_csv", "Dataset"), ("splits_csv", "Splits")]:
+    for key, label in [
+        ("data.dataset_csv", "Dataset"),
+        ("data.splits_csv", "Splits"),
+    ]:
         val = shared.get(key)
         if val:
             name = _basename(str(val))

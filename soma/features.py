@@ -64,6 +64,16 @@ class FeatureStore:
                             f"Missing feature_status for sample_id={sample_id} in {path}"
                         )
                     self._sample_statuses[sample_id] = status
+                    if sample_id in self._index:
+                        continue
+                    feature_path_text = str(row.get("feature_path", "")).strip()
+                    if not feature_path_text:
+                        continue
+                    feature_path = Path(feature_path_text)
+                    if not feature_path.is_absolute():
+                        feature_path = (path.parent / feature_path).resolve()
+                    if feature_path.is_file():
+                        self._index[sample_id] = feature_path
             return
 
     @property

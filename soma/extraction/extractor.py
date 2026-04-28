@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import itertools
 import json
 import os
 import shutil
@@ -67,6 +68,7 @@ from soma.extraction.reporters import (
     _make_extraction_reporter_ctx,
     _suppress_logger_noise_ctx,
 )
+from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import (
     LoadedTiling,
@@ -705,46 +707,26 @@ class FeatureExtractor:
         *,
         cache_resolution: FeatureCacheResolution,
     ) -> None:
-        """Materialize run-local sample_id.pt files as independent cache payload copies."""
+        """Keep the run-local feature dir as a lightweight pointer to the shared cache."""
         feature_dir.mkdir(parents=True, exist_ok=True)
-        cache_ids = self._cache_ids_for_resolution(cache_resolution)
-        expected_names = {f"{sample_id}.pt" for sample_id in cache_ids}
-        for existing in feature_dir.glob("*.pt"):
-            if existing.name not in expected_names:
-                existing.unlink()
-        for sample_id in cache_ids:
-            target = feature_dir / f"{sample_id}.pt"
-            source = self._feature_path_for_cache_id(cache_resolution, sample_id)
-            if sample_id in cache_resolution.empty_sample_ids:
-                if target.exists():
-                    target.unlink()
-                continue
-            if not source.is_file():
-                legacy_source = cache_resolution.features_dir / f"{sample_id}.pt"
-                if legacy_source.is_file():
-                    source = legacy_source
-            if source.resolve() == target.resolve():
-                continue
-            if target.exists():
-                target.unlink()
-            self._copy_feature_payload_atomic(source, target)
+        for existing in itertools.chain(
+            feature_dir.glob("*.pt"),
+            feature_dir.glob("*.meta.json"),
+            feature_dir.glob("*.npz"),
+        ):
+            existing.unlink()
 
     @staticmethod
-    def _copy_feature_payload_atomic(source: Path, target: Path) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{target.stem}.",
-            suffix=target.suffix,
-            dir=target.parent,
-            delete=False,
-        ) as tmp_file:
-            tmp_path = Path(tmp_file.name)
-        try:
-            shutil.copyfile(source, tmp_path)
-            os.replace(tmp_path, target)
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                tmp_path.unlink()
+    def _filter_tilings_for_ids(
+        loaded_tilings: list[LoadedTiling],
+        wanted_ids: set[str],
+        empty_ids: set[str],
+    ) -> list[LoadedTiling]:
+        return [
+            loaded
+            for loaded in loaded_tilings
+            if loaded.slide.sample_id in wanted_ids and loaded.slide.sample_id not in empty_ids
+        ]
 
     @staticmethod
     def _cache_ids_for_resolution(cache_resolution: FeatureCacheResolution) -> list[str]:
@@ -1490,18 +1472,111 @@ class FeatureExtractor:
     ) -> None:
         tile_missing = set(tile_cache.missing_sample_ids())
         slide_missing = set(slide_cache.missing_sample_ids())
-        run_ids = tile_missing | slide_missing
-        if not run_ids:
+        if not tile_missing and not slide_missing:
             return
         empty_sample_ids = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
-        selected_loaded = [
-            loaded
-            for loaded in loaded_tilings
-            if loaded.slide.sample_id in run_ids and loaded.slide.sample_id not in empty_sample_ids
-        ]
-        if not selected_loaded and empty_sample_ids:
-            record_empty_sample_ids(tile_cache, sorted(empty_sample_ids))
-            record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
+        if not tile_missing and slide_missing:
+            selected_loaded = self._filter_tilings_for_ids(loaded_tilings, slide_missing, empty_sample_ids)
+            if selected_loaded:
+                slide_execution = build_execution_options(
+                    self._encoder,
+                    execution=self._execution,
+                    encoder_name=model_name,
+                    output_dir=slide_cache.cache_dir,
+                    num_gpus=num_gpus,
+                    save_tile_embeddings=False,
+                )
+                slide_feature_dim: int | None = None
+                if int(slide_execution.num_gpus) > 1 and len(selected_loaded) > 1:
+                    num_workers = min(int(slide_execution.num_gpus), len(selected_loaded))
+                    shard_payloads: list[list[dict[str, str]]] = [[] for _ in range(num_workers)]
+                    for idx, loaded in enumerate(selected_loaded):
+                        shard_payloads[idx % num_workers].append(
+                            {
+                                "sample_id": str(loaded.slide.sample_id),
+                                "feature_path": str(tile_cache.feature_path_for_id(loaded.slide.sample_id)),
+                                "image_path": str(loaded.slide.image_path),
+                                "mask_path": (
+                                    str(loaded.slide.mask_path) if loaded.slide.mask_path is not None else ""
+                                ),
+                                "coordinates_npz_path": str(
+                                    getattr(loaded.tiling_result, "coordinates_npz_path")
+                                ),
+                                "coordinates_meta_path": str(
+                                    getattr(loaded.tiling_result, "coordinates_meta_path")
+                                ),
+                            }
+                        )
+                    total_slides = len(selected_loaded)
+                    slide2vec_progress.emit_progress(
+                        "embedding.started",
+                        slide_count=total_slides,
+                    )
+
+                    def _on_aggregation_progress(processed: int, total: int) -> None:
+                        slide2vec_progress.emit_progress(
+                            "embedding.progress",
+                            slide_count=total,
+                            slides_completed=processed,
+                        )
+
+                    written_ids, slide_feature_dim = spawn_slide_aggregation_workers(
+                        num_workers=num_workers,
+                        model_name=model_name,
+                        output_variant=output_variant,
+                        allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                        execution_precision=slide_execution.precision,
+                        execution_batch_size=slide_execution.batch_size,
+                        execution_num_workers_per_gpu=slide_execution.resolved_num_workers_per_gpu(),
+                        execution_prefetch_factor=slide_execution.prefetch_factor,
+                        output_dir=slide_cache.cache_dir,
+                        shard_payloads_by_rank=shard_payloads,
+                        on_progress=_on_aggregation_progress,
+                    )
+                    slide2vec_progress.emit_progress(
+                        "embedding.finished",
+                        slide_count=total_slides,
+                        slides_completed=len(written_ids),
+                        tile_artifacts=0,
+                        slide_artifacts=len(written_ids),
+                    )
+                    if written_ids:
+                        record_sample_identity_signatures(slide_cache, sorted(written_ids))
+                else:
+                    tile_artifacts = build_tile_artifacts_from_cache_payload(
+                        features_dir=tile_cache.features_dir,
+                        loaded_tilings=selected_loaded,
+                        work_dir=slide_cache.cache_dir / "tile_metadata",
+                        feature_path_by_sample_id={
+                            loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                            for loaded in selected_loaded
+                        },
+                    )
+                    slide_artifacts = _aggregate_tiles(
+                        model_name=model_name,
+                        output_variant=output_variant,
+                        allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                        tile_artifacts=tile_artifacts,
+                        preprocessing=None,
+                        execution=slide_execution,
+                    )
+                    slide_feature_dim = self._write_artifacts_to_cache_resolution(
+                        artifacts=slide_artifacts,
+                        cache_resolution=slide_cache,
+                    )
+                if slide_feature_dim is not None:
+                    record_feature_dim(slide_cache, slide_feature_dim)
+            if empty_sample_ids:
+                record_empty_sample_ids(tile_cache, sorted(empty_sample_ids))
+                record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
+            return
+
+        run_ids = tile_missing | slide_missing
+        selected_loaded = self._filter_tilings_for_ids(loaded_tilings, run_ids, empty_sample_ids)
+        if not selected_loaded:
+            if empty_sample_ids:
+                record_empty_sample_ids(tile_cache, sorted(empty_sample_ids))
+                record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
             return
 
         loaded_model = _load_model(
