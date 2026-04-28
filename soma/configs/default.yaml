@@ -32,8 +32,6 @@ preprocessing:
     save_tiling_preview: true
     downsample: 32
     tissue_contour_color: [37, 94, 59]
-    # Opacity for the tissue-mask overlay in saved mask preview images.
-    mask_overlay_alpha: 0.5
 
 execution:
   num_gpus: null

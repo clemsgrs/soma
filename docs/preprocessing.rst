@@ -61,7 +61,6 @@ Preview rendering is inherited from :mod:`hs2p`:
 - :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
 - :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
 
-``mask_overlay_alpha`` controls the opacity of the tissue-mask overlay in saved
-mask preview images. Read-size fields such as ``read_tile_size_px`` are resolved
-internally from the requested tile/region size and spacing, so they are not
-shown in the user-facing reference config.
+Read-size fields such as ``read_tile_size_px`` are resolved internally from the
+requested tile/region size and spacing, so they are not shown in the
+user-facing reference config.

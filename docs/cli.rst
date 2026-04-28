@@ -81,7 +81,6 @@ Full config reference
        save_tiling_preview: true
        downsample: 32
        tissue_contour_color: [37, 94, 59]
-       mask_overlay_alpha: 0.5       # tissue-mask preview overlay opacity
 
    # ── Cache ────────────────────────────────────────────────────────
    cache:
