@@ -544,6 +544,11 @@ class FeatureExtractor:
         encoder_name: str,
         output_variant: str,
     ) -> None:
+        if store.feature_manifest_path is not None and store.feature_manifest_path.is_file():
+            # The extractor already wrote a manifest for this store. Cache-backed runs
+            # rely on that manifest preserving shared-cache payload paths, so we leave
+            # it in place instead of rewriting run-local feature paths here.
+            return
         manifest_roots = {feature_dir.resolve()}
         feature_root = store.feature_dir.resolve()
         if feature_root != feature_dir.resolve():

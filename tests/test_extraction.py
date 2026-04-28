@@ -1346,6 +1346,57 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
     assert recorded.loc["s0", "feature_kind"] == "bag"
 
 
+def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(enabled=True),
+    )
+    cache_payload_dir = tmp_path / "shared-cache" / "slide" / "abc123" / "slide_embeddings"
+    cache_payload_dir.mkdir(parents=True)
+    cached_feature_path = cache_payload_dir / "s0.pt"
+    torch.save(torch.ones(8), cached_feature_path)
+
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "s0",
+                "feature_status": "success",
+                "feature_path": str(cached_feature_path.resolve()),
+                "num_tiles": 2,
+                "feature_rank": 1,
+                "feature_dim": 8,
+                "encoder_name": _TEST_SLIDE,
+                "output_variant": "default",
+                "feature_kind": "slide",
+            }
+        ]
+    ).to_csv(feature_dir / "process_list.csv", index=False)
+
+    store = FeatureStore(feature_dir)
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling("s0"),
+        )
+    ]
+
+    extractor._write_feature_manifest(
+        feature_dir=feature_dir,
+        store=store,
+        loaded_tilings=loaded,
+        encoder_name=_TEST_SLIDE,
+        output_variant="default",
+    )
+
+    recorded = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
+    assert recorded.loc["s0", "feature_path"] == str(cached_feature_path.resolve())
+
+
 def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
