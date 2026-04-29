@@ -21,6 +21,7 @@ from soma.cache._types import (
     TilingCacheResolution,
 )
 from soma.cache.io import (
+    _emit_cache_validation_log,
     _emit_cache_resolve_log,
     _emit_cache_state_log,
     _format_cache_metadata_mismatch,
@@ -141,6 +142,10 @@ def _validate_tiling_cache_contents(
     preprocessing: PreprocessingConfig,
     expected_backend_provenance: dict[str, Any] | None,
 ) -> CacheValidationResult:
+    total = len(cache_ids)
+    _emit_cache_validation_log(cache_label="tiling", checked=0, total=total, stage="start")
+    progress_interval = 100
+    checked = 0
     if not process_list_path.is_file():
         return CacheValidationResult(complete=False, reason="missing process_list.csv")
     try:
@@ -159,6 +164,9 @@ def _validate_tiling_cache_contents(
         rows_by_stem[str(stem)] = row
 
     for sample_id in cache_ids:
+        checked += 1
+        if checked % progress_interval == 0 or checked == total:
+            _emit_cache_validation_log(cache_label="tiling", checked=checked, total=total)
         sample_id = str(sample_id)
         sample = dataset.samples[sample_id]
         row = rows_by_stem.get(str(cache_stem_by_id[sample_id]))
@@ -215,6 +223,7 @@ def _validate_tiling_cache_contents(
         actual_backend = row.get("backend")
         if expected_backend is not None and str(expected_backend) != str(actual_backend):
             return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
+    _emit_cache_validation_log(cache_label="tiling", checked=checked, total=total, stage="done")
     return CacheValidationResult(complete=True)
 
 

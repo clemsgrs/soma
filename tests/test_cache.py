@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import errno
+import csv
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -633,6 +634,95 @@ def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
         )
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
     assert any("resolving tiling cache" in message for message in messages)
+
+
+def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path: Path):
+    rows = [
+        {"sample_id": f"s{i}", "image_path": f"/slides/s{i}.svs", "label": "tumor"}
+        for i in range(1100)
+    ]
+    dataset = _make_dataset(tmp_path, rows=rows)
+    cache_root = tmp_path / "feature_cache"
+    resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    assert any("validating feature cache entries: 0/1100" in message for message in messages)
+    assert any("validating feature cache entries: 1000/1100" in message for message in messages)
+    assert any("validated feature cache entries: 1100/1100" in message for message in messages)
+
+
+def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_path: Path):
+    rows = [
+        {"sample_id": f"s{i}", "image_path": f"/slides/s{i}.svs", "label": "tumor"}
+        for i in range(1100)
+    ]
+    dataset = _make_dataset(tmp_path, rows=rows)
+    cache_root = tmp_path / "tiling_cache"
+    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    backend_provenance = {
+        "requested_backend": "openslide",
+        "backend": "openslide",
+        "backend_by_sample_id": {f"s{i}": "openslide" for i in range(1100)},
+    }
+    resolution = resolve_tiling_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        preprocessing=preprocessing,
+        backend_provenance=backend_provenance,
+    )
+    rows = []
+    for sample_id in sorted(dataset.sample_ids):
+        stem = resolution.cache_stem_by_id[sample_id]
+        npz_path = resolution.artifacts_dir / f"{stem}.coordinates.npz"
+        meta_path = resolution.artifacts_dir / f"{stem}.coordinates.meta.json"
+        npz_path.write_bytes(b"npz")
+        meta_path.write_text("{}", encoding="utf-8")
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "sample_cache_stem": stem,
+                "tiling_status": "success",
+                "backend": "openslide",
+                "requested_backend": "openslide",
+                "requested_tile_size_px": "224",
+                "requested_spacing_um": "0.5",
+                "image_path": f"/slides/{sample_id}.svs",
+                "mask_path": "",
+                "coordinates_npz_path": str(npz_path.resolve()),
+                "coordinates_meta_path": str(meta_path.resolve()),
+                "tiles_tar_path": "",
+                "mask_preview_path": "",
+                "tiling_preview_path": "",
+            }
+        )
+    with resolution.process_list_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tiling_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            preprocessing=preprocessing,
+            backend_provenance=backend_provenance,
+        )
+    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
+    validation_messages = [m for m in messages if "validating tiling cache entries:" in m]
+    assert any("validating tiling cache entries: 0/1100" in message for message in validation_messages)
 
 
 def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):

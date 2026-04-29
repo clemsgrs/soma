@@ -1300,6 +1300,80 @@ def test_materialize_feature_dir_from_cache_leaves_pointer_only_run_dir(tmp_path
     assert not any(feature_dir.glob("*.pt"))
 
 
+def test_tile_cache_hit_returns_store_on_shared_payload_dir(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+    feature_dir = tmp_path / "features"
+    cache_dir = cache_root / "tile" / "abc123"
+    payload_dir = cache_dir / "tile_embeddings"
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    torch.save(torch.ones(2, 8), payload_dir / "s0.pt")
+    fake_resolution = SimpleNamespace(
+        complete=True,
+        cache_dir=cache_dir,
+        features_dir=payload_dir,
+        cache_kind="tile",
+        metadata={
+            "sample_ids": ["s0"],
+            "feature_type": "bag",
+            "feature_dim": 8,
+            "encoder_name": _TEST_TILE,
+            "execution": {"output_variant": "default"},
+            "cache_key": "abc123",
+        },
+        cache_ids=("s0",),
+        cache_stem_by_id={"s0": "s0"},
+        empty_sample_ids=set(),
+        feature_path_for_id=lambda sample_id: payload_dir / f"{sample_id}.pt",
+    )
+
+    with patch("soma.extraction.extractor.resolve_tile_cache", return_value=fake_resolution), patch.object(
+        FeatureExtractor,
+        "_write_cache_marker",
+        autospec=True,
+    ), patch.object(
+        FeatureExtractor,
+        "_write_cached_process_list",
+        autospec=True,
+    ), patch.object(
+        FeatureExtractor,
+        "_materialize_feature_dir_from_cache",
+        autospec=True,
+    ):
+        store = extractor._extract_tile_cached(
+            feature_dir=feature_dir,
+            cache_root=cache_root,
+            loaded_tilings=loaded,
+            prepared_tilings=[loaded[0].tiling_result],
+            tiling_dir=tmp_path / "tiling",
+            preprocessing=build_preprocessing_config(PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)),
+            resolved_preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            backend_provenance={
+                "requested_backend": "openslide",
+                "backend": "openslide",
+                "backend_by_sample_id": {"s0": "openslide"},
+            },
+            resolved_output_variant="default",
+            num_gpus=None,
+        )
+
+    assert store.feature_dir == payload_dir
+    assert store.feature_dim == 8
+    assert store.load("s0").shape == (2, 8)
+
+
 def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(

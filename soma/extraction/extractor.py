@@ -902,7 +902,7 @@ class FeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(feature_dir)
+            return FeatureStore(cache_resolution.cache_dir)
 
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
@@ -930,7 +930,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_hierarchical_cached(
         self,
@@ -963,7 +963,7 @@ class FeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(feature_dir)
+            return FeatureStore(cache_resolution.cache_dir)
 
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
@@ -991,7 +991,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_slide_cached(
         self,
@@ -1052,7 +1052,7 @@ class FeatureExtractor:
         if tile_cache.complete and slide_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
-            return FeatureStore(feature_dir)
+            return FeatureStore(slide_cache.cache_dir)
 
         self._populate_slide_cache(
             tile_cache=tile_cache,
@@ -1100,7 +1100,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_patient_cached(
         self,
@@ -1161,7 +1161,7 @@ class FeatureExtractor:
         if tile_cache.complete and patient_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
-            return FeatureStore(feature_dir)
+            return FeatureStore(patient_cache.cache_dir)
 
         patient_id_map = self._patient_id_map_for_patient_encoder()
 
@@ -1221,7 +1221,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _populate_patient_cache(
         self,

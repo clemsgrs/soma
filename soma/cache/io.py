@@ -310,3 +310,21 @@ def _emit_cache_resolve_log(
     slide2vec_progress.emit_progress_log(
         f"… resolving {cache_label} cache ({scope_name}={int(scope_count)}, key={str(key)[:16]}): {cache_dir.resolve()}"
     )
+
+
+def _emit_cache_validation_log(
+    *,
+    cache_label: str,
+    checked: int,
+    total: int,
+    stage: str = "progress",
+) -> None:
+    if total <= 0:
+        return
+    if stage == "start":
+        message = f"… validating {cache_label} cache entries: 0/{total}"
+    elif stage == "done":
+        message = f"✓ validated {cache_label} cache entries: {checked}/{total}"
+    else:
+        message = f"… validating {cache_label} cache entries: {checked}/{total}"
+    slide2vec_progress.emit_progress_log(message)
