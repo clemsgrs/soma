@@ -1394,6 +1394,7 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
                 "num_tiles": 10,
                 "feature_rank": 2,
                 "feature_dim": 32,
+                "feature_kind": "bag",
             }
         ]
     ).to_csv(feature_dir / "process_list.csv", index=False)
@@ -1469,7 +1470,6 @@ def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
 
     recorded = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
     assert recorded.loc["s0", "feature_path"] == str(cached_feature_path.resolve())
-
 
 def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
