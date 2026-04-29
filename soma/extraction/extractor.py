@@ -545,10 +545,21 @@ class FeatureExtractor:
         output_variant: str,
     ) -> None:
         if store.feature_manifest_path is not None and store.feature_manifest_path.is_file():
-            # The extractor already wrote a manifest for this store. Cache-backed runs
-            # rely on that manifest preserving shared-cache payload paths, so we leave
-            # it in place instead of rewriting run-local feature paths here.
-            return
+            manifest_feature_dir = feature_dir.resolve()
+            with store.feature_manifest_path.open(newline="", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                for row in reader:
+                    feature_path_text = str(row.get("feature_path", "")).strip()
+                    if not feature_path_text:
+                        continue
+                    feature_path = Path(feature_path_text)
+                    if not feature_path.is_absolute():
+                        feature_path = (store.feature_manifest_path.parent / feature_path).resolve()
+                    if feature_path.is_file() and not feature_path.is_relative_to(manifest_feature_dir):
+                        # Cache-backed runs rely on the manifest preserving shared-cache
+                        # payload paths, so we leave that manifest in place instead of
+                        # rewriting run-local feature paths here.
+                        return
         manifest_roots = {feature_dir.resolve()}
         feature_root = store.feature_dir.resolve()
         if feature_root != feature_dir.resolve():
