@@ -179,33 +179,90 @@ def load_tilings(
         str(row["sample_id"]): row
         for row in process_df.to_dict("records")
     }
+    records = list(dataset.samples.values())
+    progress = _CachedTilingLoadProgress(total=len(records))
+    progress.start()
     loaded: list[LoadedTiling] = []
-    for record in dataset.samples.values():
-        row = rows_by_sample_id.get(record.sample_id)
-        if row is None:
-            raise ValueError(f"No tiling result found for sample_id={record.sample_id}")
-        if row["tiling_status"] != "success":
-            raise RuntimeError(
-                f"Tiling failed for {record.sample_id}: {row.get('error', '')}"
+    try:
+        for index, record in enumerate(records, start=1):
+            row = rows_by_sample_id.get(record.sample_id)
+            if row is None:
+                raise ValueError(f"No tiling result found for sample_id={record.sample_id}")
+            if row["tiling_status"] != "success":
+                raise RuntimeError(
+                    f"Tiling failed for {record.sample_id}: {row.get('error', '')}"
+                )
+            tiling_result = load_tiling_result_from_row(row)
+            requested_backend = str(getattr(tiling_result, "requested_backend", "auto"))
+            actual_backend = str(getattr(tiling_result, "backend", requested_backend))
+            validate_tiling_result_provenance(
+                tiling_result,
+                sample_id=record.sample_id,
+                image_path=record.image_path,
+                mask_path=record.mask_path,
+                tissue_mask_tissue_value=(
+                    int(tissue_mask_tissue_value) if record.mask_path is not None else None
+                ),
             )
-        tiling_result = load_tiling_result_from_row(row)
-        requested_backend = str(getattr(tiling_result, "requested_backend", "auto"))
-        actual_backend = str(getattr(tiling_result, "backend", requested_backend))
-        validate_tiling_result_provenance(
-            tiling_result,
-            sample_id=record.sample_id,
-            image_path=record.image_path,
-            mask_path=record.mask_path,
-            tissue_mask_tissue_value=(
-                int(tissue_mask_tissue_value) if record.mask_path is not None else None
-            ),
-        )
-        loaded.append(
-            LoadedTiling(
-                slide=to_slide_spec(record),
-                tiling_result=tiling_result,
-                requested_backend=requested_backend,
-                backend=actual_backend,
+            loaded.append(
+                LoadedTiling(
+                    slide=to_slide_spec(record),
+                    tiling_result=tiling_result,
+                    requested_backend=requested_backend,
+                    backend=actual_backend,
+                )
             )
+            progress.update(index)
+        return loaded
+    finally:
+        progress.finish(len(loaded))
+
+
+class _CachedTilingLoadProgress:
+    """Single progress indicator for loading cached tilings."""
+
+    def __init__(self, *, total: int) -> None:
+        self._total = max(0, int(total))
+        self._reporter = slide2vec_progress.get_progress_reporter()
+        self._progress = getattr(self._reporter, "progress", None)
+        self._task_id: int | None = None
+        self._rich = hasattr(self._reporter, "console") and hasattr(self._progress, "add_task")
+
+    def start(self) -> None:
+        if self._total <= 0:
+            return
+        if self._rich:
+            ensure_started = getattr(self._reporter, "_ensure_progress_started", None)
+            if callable(ensure_started):
+                ensure_started()
+            else:
+                self._progress.start()
+            self._task_id = self._progress.add_task("Loading cached tilings", total=self._total)
+            return
+        slide2vec_progress.emit_progress_log(f"… loading cached tilings: 0/{self._total}")
+
+    def update(self, completed: int) -> None:
+        if self._total <= 0:
+            return
+        completed = max(0, min(int(completed), self._total))
+        if self._rich:
+            if self._task_id is not None:
+                self._progress.update(self._task_id, completed=completed)
+            return
+        if completed % 100 == 0 or completed == self._total:
+            slide2vec_progress.emit_progress_log(
+                f"… loading cached tilings: {completed}/{self._total}"
+            )
+
+    def finish(self, completed: int) -> None:
+        if self._total <= 0:
+            return
+        completed = max(0, min(int(completed), self._total))
+        if self._rich:
+            if self._task_id is not None:
+                self._progress.remove_task(self._task_id)
+                self._task_id = None
+            return
+        slide2vec_progress.emit_progress_log(
+            f"✓ loaded cached tilings: {completed}/{self._total}"
         )
-    return loaded

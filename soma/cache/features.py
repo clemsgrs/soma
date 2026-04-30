@@ -19,7 +19,7 @@ from soma.cache._types import (
     FeatureCacheResolution,
 )
 from soma.cache.io import (
-    _emit_cache_validation_log,
+    _CacheValidationProgress,
     _emit_cache_resolve_log,
     _emit_cache_state_log,
     _format_cache_metadata_mismatch,
@@ -274,42 +274,43 @@ def _validate_feature_cache_contents(
     present = 0
     reason: str | None = None
     total = len(cache_ids)
-    _emit_cache_validation_log(cache_label="feature", checked=0, total=total, stage="start")
-    progress_interval = 100
     checked = 0
-    for cache_id in cache_ids:
-        cache_id = str(cache_id)
-        checked += 1
-        if checked % progress_interval == 0 or checked == total:
-            _emit_cache_validation_log(cache_label="feature", checked=checked, total=total)
-        path = features_dir / f"{cache_id}.pt"
-        if cache_id in empty_sample_ids:
-            if path.is_file():
-                return (
-                    CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
-                    present,
-                    expected,
-                )
-            continue
-        expected += 1
-        expected_signature = str(cache_stem_by_id[cache_id])
-        cached_signature = cached_signature_by_id.get(cache_id)
-        if cached_signature is None:
-            if reason is None:
-                reason = f"missing cache identity for {cache_id}"
-            continue
-        if cached_signature != expected_signature:
-            if reason is None:
-                reason = f"cache identity mismatch for {cache_id}"
-            continue
-        if not path.is_file():
-            if reason is None:
-                reason = f"missing feature for {cache_id}"
-            continue
-        present += 1
-    complete = reason is None
-    _emit_cache_validation_log(cache_label="feature", checked=checked, total=total, stage="done")
-    return CacheValidationResult(complete=complete, reason=reason), present, expected
+    progress = _CacheValidationProgress(cache_label="feature", total=total)
+    progress.start()
+    try:
+        for cache_id in cache_ids:
+            cache_id = str(cache_id)
+            checked += 1
+            progress.update(checked)
+            path = features_dir / f"{cache_id}.pt"
+            if cache_id in empty_sample_ids:
+                if path.is_file():
+                    return (
+                        CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
+                        present,
+                        expected,
+                    )
+                continue
+            expected += 1
+            expected_signature = str(cache_stem_by_id[cache_id])
+            cached_signature = cached_signature_by_id.get(cache_id)
+            if cached_signature is None:
+                if reason is None:
+                    reason = f"missing cache identity for {cache_id}"
+                continue
+            if cached_signature != expected_signature:
+                if reason is None:
+                    reason = f"cache identity mismatch for {cache_id}"
+                continue
+            if not path.is_file():
+                if reason is None:
+                    reason = f"missing feature for {cache_id}"
+                continue
+            present += 1
+        complete = reason is None
+        return CacheValidationResult(complete=complete, reason=reason), present, expected
+    finally:
+        progress.finish(checked)
 
 
 def _resolve_cache(

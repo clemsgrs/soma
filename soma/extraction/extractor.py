@@ -643,8 +643,11 @@ class FeatureExtractor:
         *,
         cache_resolution: FeatureCacheResolution,
     ) -> None:
-        """Write a run-local manifest that points back to the shared cache payloads."""
-        process_list_path = feature_dir / "process_list.csv"
+        """Write canonical cache and run-local manifests for cached feature payloads."""
+        manifest_roots = {
+            feature_dir.resolve(),
+            cache_resolution.cache_dir.resolve(),
+        }
         metadata = cache_resolution.metadata
         sample_ids = self._cache_ids_for_resolution(cache_resolution)
         empty_sample_ids = cache_resolution.empty_sample_ids
@@ -660,48 +663,50 @@ class FeatureExtractor:
         feature_dim = metadata.get("feature_dim")
         output_variant = metadata.get("execution", {}).get("output_variant")
         feature_kind = feature_type
-        with process_list_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=[
-                    "sample_id",
-                    "annotation",
-                    "feature_status",
-                    "feature_path",
-                    "artifact_kind",
-                    "cache_kind",
-                    "cache_key",
-                    "cache_dir",
-                    "encoder_name",
-                    "output_variant",
-                    "feature_kind",
-                    "feature_rank",
-                    "feature_dim",
-                ],
+        fieldnames = [
+            "sample_id",
+            "annotation",
+            "feature_status",
+            "feature_path",
+            "artifact_kind",
+            "cache_kind",
+            "cache_key",
+            "cache_dir",
+            "encoder_name",
+            "output_variant",
+            "feature_kind",
+            "feature_rank",
+            "feature_dim",
+        ]
+        rows = []
+        for sample_id in sample_ids:
+            feature_status = "empty" if sample_id in empty_sample_ids else "success"
+            feature_path = ""
+            if feature_status == "success":
+                feature_path = str(self._feature_path_for_cache_id(cache_resolution, sample_id).resolve())
+            rows.append(
+                {
+                    "sample_id": sample_id,
+                    "annotation": "tissue",
+                    "feature_status": feature_status,
+                    "feature_path": feature_path,
+                    "artifact_kind": artifact_kind,
+                    "cache_kind": cache_resolution.cache_kind,
+                    "cache_key": metadata["cache_key"],
+                    "cache_dir": str(cache_dir),
+                    "encoder_name": metadata["encoder_name"],
+                    "output_variant": output_variant,
+                    "feature_kind": feature_kind,
+                    "feature_rank": feature_rank,
+                    "feature_dim": feature_dim,
+                }
             )
-            writer.writeheader()
-            for sample_id in sample_ids:
-                feature_status = "empty" if sample_id in empty_sample_ids else "success"
-                feature_path = ""
-                if feature_status == "success":
-                    feature_path = str(self._feature_path_for_cache_id(cache_resolution, sample_id).resolve())
-                writer.writerow(
-                    {
-                        "sample_id": sample_id,
-                        "annotation": "tissue",
-                        "feature_status": feature_status,
-                        "feature_path": feature_path,
-                        "artifact_kind": artifact_kind,
-                        "cache_kind": cache_resolution.cache_kind,
-                        "cache_key": metadata["cache_key"],
-                        "cache_dir": str(cache_dir),
-                        "encoder_name": metadata["encoder_name"],
-                        "output_variant": output_variant,
-                        "feature_kind": feature_kind,
-                        "feature_rank": feature_rank,
-                        "feature_dim": feature_dim,
-                    }
-                )
+        for root in manifest_roots:
+            root.mkdir(parents=True, exist_ok=True)
+            with (root / "process_list.csv").open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
 
     def _materialize_feature_dir_from_cache(
         self,

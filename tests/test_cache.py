@@ -34,6 +34,8 @@ from soma.cache import (
     write_tiling_cache_stub,
     write_cache_payload,
 )
+from soma.cache.features import _validate_feature_cache_contents
+from soma.cache.tiling import _validate_tiling_cache_contents
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 
@@ -48,6 +50,36 @@ def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -
         ]
     ).to_csv(csv_path, index=False)
     return Dataset(csv_path)
+
+
+class _FakeRichProgress:
+    def __init__(self) -> None:
+        self.started = False
+        self.added_tasks: list[tuple[str, int]] = []
+        self.updates: list[dict[str, object]] = []
+        self.removed_tasks: list[int] = []
+
+    def start(self) -> None:
+        self.started = True
+
+    def add_task(self, description: str, total: int) -> int:
+        self.added_tasks.append((description, total))
+        return 1
+
+    def update(self, task_id: int, **kwargs) -> None:
+        self.updates.append({"task_id": task_id, **kwargs})
+
+    def remove_task(self, task_id: int) -> None:
+        self.removed_tasks.append(task_id)
+
+
+class _FakeRichReporter:
+    def __init__(self) -> None:
+        self.console = object()
+        self.progress = _FakeRichProgress()
+
+    def _ensure_progress_started(self) -> None:
+        self.progress.start()
 
 
 def test_manifest_digest_stable_under_row_order(tmp_path: Path):
@@ -650,7 +682,8 @@ def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path:
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
-    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
+    reporter = _FakeRichReporter()
+    with patch("soma.cache.io.slide2vec_progress.get_progress_reporter", return_value=reporter):
         resolve_tile_cache(
             cache_root=cache_root,
             dataset=dataset,
@@ -658,10 +691,48 @@ def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path:
             preprocessing=PreprocessingConfig(),
             execution=EncoderConfig(name="virchow", precision="fp16"),
         )
-    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
-    assert any("validating feature cache entries: 0/1100" in message for message in messages)
-    assert any("validating feature cache entries: 1000/1100" in message for message in messages)
-    assert any("validated feature cache entries: 1100/1100" in message for message in messages)
+    assert reporter.progress.started is True
+    assert reporter.progress.added_tasks == [("Validating feature cache entries", 1100)]
+    assert reporter.progress.updates[0]["completed"] == 1
+    assert reporter.progress.updates[999]["completed"] == 1000
+    assert reporter.progress.updates[-1]["completed"] == 1100
+    assert reporter.progress.removed_tasks == [1]
+
+
+def test_feature_cache_validation_uses_rich_progress_bar_when_available(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    cache_ids = ["s1", "s2", "s3"]
+    for cache_id in cache_ids:
+        torch.save(torch.randn(4), feature_dir / f"{cache_id}.pt")
+
+    metadata = {
+        "feature_type": "bag",
+        "empty_sample_ids": [],
+        "sample_identity_signature_by_id": {cache_id: cache_id for cache_id in cache_ids},
+    }
+    cache_stem_by_id = {cache_id: cache_id for cache_id in cache_ids}
+
+    reporter = _FakeRichReporter()
+
+    with patch("soma.cache.io.slide2vec_progress.get_progress_reporter", return_value=reporter), patch(
+        "soma.cache.io.slide2vec_progress.emit_progress_log"
+    ) as emit_progress_log:
+        result, present, expected = _validate_feature_cache_contents(
+            features_dir=feature_dir,
+            metadata=metadata,
+            cache_ids=cache_ids,
+            cache_stem_by_id=cache_stem_by_id,
+        )
+
+    assert result.complete is True
+    assert present == 3
+    assert expected == 3
+    assert reporter.progress.started is True
+    assert reporter.progress.added_tasks == [("Validating feature cache entries", 3)]
+    assert [update["completed"] for update in reporter.progress.updates] == [1, 2, 3]
+    assert reporter.progress.removed_tasks == [1]
+    assert emit_progress_log.call_count == 0
 
 
 def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_path: Path):
@@ -670,24 +741,26 @@ def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_pat
         for i in range(1100)
     ]
     dataset = _make_dataset(tmp_path, rows=rows)
-    cache_root = tmp_path / "tiling_cache"
     preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
     backend_provenance = {
         "requested_backend": "openslide",
         "backend": "openslide",
         "backend_by_sample_id": {f"s{i}": "openslide" for i in range(1100)},
     }
-    resolution = resolve_tiling_cache(
-        cache_root=cache_root,
-        dataset=dataset,
-        preprocessing=preprocessing,
-        backend_provenance=backend_provenance,
-    )
+    cache_dir = tmp_path / "tiling_cache" / "cache-key"
+    artifacts_dir = cache_dir / "artifacts"
+    previews_dir = cache_dir / "previews"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    previews_dir.mkdir(parents=True, exist_ok=True)
+    process_list_path = cache_dir / "process_list.csv"
+    process_list_path.write_text("stub", encoding="utf-8")
     rows = []
+    cache_stem_by_id: dict[str, str] = {}
     for sample_id in sorted(dataset.sample_ids):
-        stem = resolution.cache_stem_by_id[sample_id]
-        npz_path = resolution.artifacts_dir / f"{stem}.coordinates.npz"
-        meta_path = resolution.artifacts_dir / f"{stem}.coordinates.meta.json"
+        stem = f"stem_{sample_id}"
+        cache_stem_by_id[sample_id] = stem
+        npz_path = artifacts_dir / f"{stem}.coordinates.npz"
+        meta_path = artifacts_dir / f"{stem}.coordinates.meta.json"
         npz_path.write_bytes(b"npz")
         meta_path.write_text("{}", encoding="utf-8")
         rows.append(
@@ -708,21 +781,28 @@ def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_pat
                 "tiling_preview_path": "",
             }
         )
-    with resolution.process_list_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
-        resolve_tiling_cache(
-            cache_root=cache_root,
+    reporter = _FakeRichReporter()
+    with patch("soma.cache.io.slide2vec_progress.get_progress_reporter", return_value=reporter), patch(
+        "soma.cache.tiling.load_tiling_process_df",
+        return_value=pd.DataFrame(rows),
+    ):
+        validation = _validate_tiling_cache_contents(
             dataset=dataset,
+            process_list_path=process_list_path,
+            artifacts_dir=artifacts_dir,
+            previews_dir=previews_dir,
+            cache_ids=tuple(sorted(dataset.sample_ids)),
+            cache_stem_by_id=cache_stem_by_id,
             preprocessing=preprocessing,
-            backend_provenance=backend_provenance,
+            expected_backend_provenance=backend_provenance,
         )
-    messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
-    validation_messages = [m for m in messages if "validating tiling cache entries:" in m]
-    assert any("validating tiling cache entries: 0/1100" in message for message in validation_messages)
+    assert validation.complete is True
+    assert reporter.progress.started is True
+    assert reporter.progress.added_tasks == [("Validating tiling cache entries", 1100)]
+    assert reporter.progress.updates[0]["completed"] == 1
+    assert reporter.progress.updates[999]["completed"] == 1000
+    assert reporter.progress.updates[-1]["completed"] == 1100
+    assert reporter.progress.removed_tasks == [1]
 
 
 def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):

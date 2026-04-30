@@ -1300,7 +1300,7 @@ def test_materialize_feature_dir_from_cache_leaves_pointer_only_run_dir(tmp_path
     assert not any(feature_dir.glob("*.pt"))
 
 
-def test_tile_cache_hit_returns_store_on_shared_payload_dir(tmp_path: Path):
+def test_tile_cache_hit_aligns_cache_and_run_feature_manifests(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
     extractor = FeatureExtractor(
@@ -1316,40 +1316,40 @@ def test_tile_cache_hit_returns_store_on_shared_payload_dir(tmp_path: Path):
         )
     ]
     feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
     cache_dir = cache_root / "tile" / "abc123"
     payload_dir = cache_dir / "tile_embeddings"
     payload_dir.mkdir(parents=True, exist_ok=True)
     torch.save(torch.ones(2, 8), payload_dir / "s0.pt")
+    pd.DataFrame(
+        [
+            {"sample_id": "s0", "feature_status": "success", "feature_path": str(payload_dir / "s0.pt")},
+            {"sample_id": "s1", "feature_status": "tbp", "feature_path": ""},
+        ]
+    ).to_csv(cache_dir / "process_list.csv", index=False)
     fake_resolution = SimpleNamespace(
         complete=True,
         cache_dir=cache_dir,
         features_dir=payload_dir,
         cache_kind="tile",
         metadata={
-            "sample_ids": ["s0"],
+            "sample_ids": ["s0", "s1"],
+            "empty_sample_ids": ["s1"],
             "feature_type": "bag",
             "feature_dim": 8,
             "encoder_name": _TEST_TILE,
             "execution": {"output_variant": "default"},
             "cache_key": "abc123",
         },
-        cache_ids=("s0",),
-        cache_stem_by_id={"s0": "s0"},
-        empty_sample_ids=set(),
+        cache_ids=("s0", "s1"),
+        cache_stem_by_id={"s0": "s0", "s1": "s1"},
+        empty_sample_ids={"s1"},
         feature_path_for_id=lambda sample_id: payload_dir / f"{sample_id}.pt",
     )
 
     with patch("soma.extraction.extractor.resolve_tile_cache", return_value=fake_resolution), patch.object(
         FeatureExtractor,
         "_write_cache_marker",
-        autospec=True,
-    ), patch.object(
-        FeatureExtractor,
-        "_write_cached_process_list",
-        autospec=True,
-    ), patch.object(
-        FeatureExtractor,
-        "_materialize_feature_dir_from_cache",
         autospec=True,
     ):
         store = extractor._extract_tile_cached(
@@ -1369,7 +1369,16 @@ def test_tile_cache_hit_returns_store_on_shared_payload_dir(tmp_path: Path):
             num_gpus=None,
         )
 
+    cache_manifest = pd.read_csv(cache_dir / "process_list.csv").set_index("sample_id")
+    run_manifest = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
+    assert cache_manifest.loc["s1", "feature_status"] == "empty"
+    assert run_manifest.loc["s1", "feature_status"] == "empty"
+    assert cache_manifest.loc["s0", "feature_path"] == run_manifest.loc["s0", "feature_path"]
+
     assert store.feature_dir == payload_dir
+    assert store.feature_manifest_path == cache_dir / "process_list.csv"
+    assert store.feature_statuses["s1"] == "empty"
+    assert store.empty_feature_samples == ["s1"]
     assert store.feature_dim == 8
     assert store.load("s0").shape == (2, 8)
 

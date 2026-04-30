@@ -60,7 +60,8 @@ Live training summary
 
 During training, the live summary panel reports the current epoch, loss,
 learning rate, tune metrics, patience, status, trainable parameter count, and
-epoch timing. The estimated time remaining is shown only in the live display.
+epoch timing. For cross-validation runs, it also shows the active fold as
+``Fold: x/N``. The estimated time remaining is shown only in the live display.
 
 Saved timing artifacts
 ----------------------
