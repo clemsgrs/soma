@@ -9,6 +9,7 @@ from pathlib import Path
 import torch
 from hs2p import SlideSpec
 from hs2p.preprocessing import validate_tiling_result_provenance
+import slide2vec.progress as slide2vec_progress
 
 from slide2vec import (
     ExecutionOptions,
