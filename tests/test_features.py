@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -190,6 +191,36 @@ def test_feature_manifest_tracks_success_and_empty_samples(tmp_path: Path):
     assert store.empty_feature_samples == ["s2"]
 
 
+def test_feature_manifest_can_point_to_cached_payloads_without_local_copies(tmp_path: Path):
+    cache_dir = tmp_path / "feature_cache" / "tile" / "abc123" / "tile_embeddings"
+    cache_dir.mkdir(parents=True)
+    cached_path = cache_dir / "s1.pt"
+    torch.save(torch.randn(10, 32), cached_path)
+
+    run_dir = tmp_path / "run" / "features"
+    run_dir.mkdir(parents=True)
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "s1",
+                "feature_status": "success",
+                "feature_path": str(cached_path.resolve()),
+                "num_tiles": 10,
+                "feature_rank": 2,
+                "feature_dim": 32,
+            }
+        ]
+    ).to_csv(run_dir / "process_list.csv", index=False)
+    (run_dir / "README.txt").write_text("cache-backed pointer dir", encoding="utf-8")
+
+    store = FeatureStore(run_dir)
+
+    assert store.available_samples == ["s1"]
+    assert store.feature_manifest_path == run_dir / "process_list.csv"
+    assert store.feature_dim == 32
+    assert torch.equal(store.load("s1"), torch.load(cached_path, weights_only=True, map_location="cpu"))
+
+
 def test_slide2vec_artifact_root_prefers_slide_embeddings(tmp_path: Path):
     artifact_root = tmp_path / "artifacts"
     tile_dir = artifact_root / "tile_embeddings"
@@ -282,7 +313,11 @@ def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeyp
         loader_calls.append(Path(path))
         return pd.DataFrame([row])
 
-    tiling_result = SimpleNamespace(sample_id="s1")
+    tiling_result = SimpleNamespace(
+        sample_id="s1",
+        requested_seg_downsample=64,
+        seg_downsample=32,
+    )
 
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", _fake_process_loader)
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: tiling_result)
@@ -294,6 +329,7 @@ def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeyp
     loaded = load_tilings(
         dataset=dataset,
         tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
         tissue_mask_tissue_value=1,
     )
 
@@ -301,6 +337,84 @@ def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeyp
     assert len(loaded) == 1
     assert loaded[0].slide.sample_id == "s1"
     assert loaded[0].tiling_result is tiling_result
+
+
+def test_load_tilings_uses_rich_progress_bar_for_cached_tiling_loads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2"],
+            "image_path": [str(tmp_path / "slides" / "s1.svs"), str(tmp_path / "slides" / "s2.svs")],
+            "label": ["tumor", "normal"],
+            "mask_path": [str(tmp_path / "masks" / "s1.tif"), str(tmp_path / "masks" / "s2.tif")],
+        }
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text("sample_id\n", encoding="utf-8")
+
+    rows = [
+        {"sample_id": "s1", "tiling_status": "success", "error": None},
+        {"sample_id": "s2", "tiling_status": "success", "error": None},
+    ]
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame(rows))
+    monkeypatch.setattr(
+        "soma.slide2vec_adapter.load_tiling_result_from_row",
+        lambda loaded_row: SimpleNamespace(
+            requested_backend="auto",
+            backend="openslide",
+            requested_seg_downsample=64,
+            seg_downsample=32,
+        ),
+    )
+    monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *args, **kwargs: None)
+
+    class _FakeProgress:
+        def __init__(self) -> None:
+            self.started = False
+            self.added_tasks: list[tuple[str, int]] = []
+            self.updates: list[dict[str, object]] = []
+            self.removed_tasks: list[int] = []
+
+        def start(self) -> None:
+            self.started = True
+
+        def add_task(self, description: str, total: int) -> int:
+            self.added_tasks.append((description, total))
+            return 1
+
+        def update(self, task_id: int, **kwargs) -> None:
+            self.updates.append({"task_id": task_id, **kwargs})
+
+        def remove_task(self, task_id: int) -> None:
+            self.removed_tasks.append(task_id)
+
+    class _FakeRichReporter:
+        def __init__(self) -> None:
+            self.console = object()
+            self.progress = _FakeProgress()
+
+        def _ensure_progress_started(self) -> None:
+            self.progress.start()
+
+    reporter = _FakeRichReporter()
+    with patch("soma.slide2vec_adapter.slide2vec_progress.get_progress_reporter", return_value=reporter):
+        loaded = load_tilings(
+            dataset=dataset,
+            tiling_dir=tiling_dir,
+            requested_seg_downsample=64,
+            tissue_mask_tissue_value=1,
+        )
+
+    assert len(loaded) == 2
+    assert reporter.progress.started is True
+    assert reporter.progress.added_tasks == [("Loading cached tilings", 2)]
+    assert [update["completed"] for update in reporter.progress.updates] == [1, 2]
+    assert reporter.progress.removed_tasks == [1]
 
 
 def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -326,7 +440,10 @@ def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeyp
         "error": None,
     }
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame([row]))
-    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: SimpleNamespace())
+    monkeypatch.setattr(
+        "soma.slide2vec_adapter.load_tiling_result_from_row",
+        lambda loaded_row: SimpleNamespace(requested_seg_downsample=64, seg_downsample=32),
+    )
 
     captured: dict[str, object] = {}
 
@@ -343,6 +460,7 @@ def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeyp
     load_tilings(
         dataset=dataset,
         tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
         tissue_mask_tissue_value=1,
     )
 
@@ -350,3 +468,49 @@ def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeyp
     assert captured["image_path"] == dataset.samples["s1"].image_path
     assert captured["mask_path"] == mask_path
     assert captured["tissue_mask_tissue_value"] == 1
+
+
+def test_load_tilings_validates_requested_not_effective_seg_downsample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "image_path": [str(tmp_path / "slides" / "s1.svs")],
+            "label": ["tumor"],
+        }
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text("sample_id\n", encoding="utf-8")
+    row = {"sample_id": "s1", "tiling_status": "success", "error": None}
+    tiling_result = SimpleNamespace(
+        requested_backend="auto",
+        backend="openslide",
+        requested_seg_downsample=64,
+        seg_downsample=32,
+    )
+
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame([row]))
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: tiling_result)
+    monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *args, **kwargs: None)
+
+    loaded = load_tilings(
+        dataset=dataset,
+        tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
+        tissue_mask_tissue_value=1,
+    )
+
+    assert loaded[0].tiling_result is tiling_result
+
+    with pytest.raises(ValueError, match="requested_seg_downsample mismatch"):
+        load_tilings(
+            dataset=dataset,
+            tiling_dir=tiling_dir,
+            requested_seg_downsample=16,
+            tissue_mask_tissue_value=1,
+        )

@@ -21,6 +21,7 @@ from soma.cache._types import (
     TilingCacheResolution,
 )
 from soma.cache.io import (
+    _CacheValidationProgress,
     _emit_cache_resolve_log,
     _emit_cache_state_log,
     _format_cache_metadata_mismatch,
@@ -141,6 +142,8 @@ def _validate_tiling_cache_contents(
     preprocessing: PreprocessingConfig,
     expected_backend_provenance: dict[str, Any] | None,
 ) -> CacheValidationResult:
+    total = len(cache_ids)
+    checked = 0
     if not process_list_path.is_file():
         return CacheValidationResult(complete=False, reason="missing process_list.csv")
     try:
@@ -158,64 +161,71 @@ def _validate_tiling_cache_contents(
             continue
         rows_by_stem[str(stem)] = row
 
-    for sample_id in cache_ids:
-        sample_id = str(sample_id)
-        sample = dataset.samples[sample_id]
-        row = rows_by_stem.get(str(cache_stem_by_id[sample_id]))
-        if row is None:
-            row = rows_by_stem.get(sample_id)
-        if row is None or row.get("tiling_status") != "success":
-            return CacheValidationResult(complete=False, reason=f"invalid tiling row for {sample_id}")
-        for column_name in (
-            "coordinates_npz_path",
-            "coordinates_meta_path",
-            "tiles_tar_path",
-            "mask_preview_path",
-            "tiling_preview_path",
-        ):
-            candidate = _optional_path(row.get(column_name))
-            if candidate is None:
-                continue
-            if not candidate.is_file():
-                return CacheValidationResult(complete=False, reason=f"missing artifact for {sample_id}")
-            resolved_candidate = candidate.resolve()
-            expected_root = previews_dir if column_name in {"mask_preview_path", "tiling_preview_path"} else artifacts_dir
-            if not _is_relative_to(resolved_candidate, expected_root.resolve()):
-                return CacheValidationResult(
-                    complete=False,
-                    reason=f"artifact path escapes cache entry for {sample_id}",
-                )
-        row_image_path = row.get("image_path")
-        if row_image_path is not None and str(row_image_path) != str(sample.image_path):
-            return CacheValidationResult(complete=False, reason=f"image path mismatch for {sample_id}")
-        row_mask_path = row.get("mask_path")
-        expected_mask_path = "" if sample.mask_path is None else str(sample.mask_path)
-        if row_mask_path is not None:
-            row_mask_str = str(row_mask_path)
-            if row_mask_str.lower() == "nan":
-                row_mask_str = ""
-            if row_mask_str != expected_mask_path:
-                return CacheValidationResult(complete=False, reason=f"mask path mismatch for {sample_id}")
-        expected_requested_tile_size_px = (
-            preprocessing.requested_region_size_px
-            if preprocessing.requested_region_size_px is not None
-            else preprocessing.requested_tile_size_px
-        )
-        row_tile_size = row.get("requested_tile_size_px")
-        if row_tile_size is not None and str(row_tile_size).strip() not in {"", "nan", "NaN"}:
-            if int(float(row_tile_size)) != int(expected_requested_tile_size_px):
-                return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
-        row_spacing = row.get("requested_spacing_um")
-        if row_spacing is not None and str(row_spacing).strip() not in {"", "nan", "NaN"}:
-            if float(row_spacing) != float(preprocessing.requested_spacing_um):
-                return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
-        expected_backend = None
-        if expected_backend_provenance is not None:
-            expected_backend = expected_backend_provenance.get("backend_by_sample_id", {}).get(str(sample_id))
-        actual_backend = row.get("backend")
-        if expected_backend is not None and str(expected_backend) != str(actual_backend):
-            return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
-    return CacheValidationResult(complete=True)
+    progress = _CacheValidationProgress(cache_label="tiling", total=total)
+    progress.start()
+    try:
+        for sample_id in cache_ids:
+            checked += 1
+            progress.update(checked)
+            sample_id = str(sample_id)
+            sample = dataset.samples[sample_id]
+            row = rows_by_stem.get(str(cache_stem_by_id[sample_id]))
+            if row is None:
+                row = rows_by_stem.get(sample_id)
+            if row is None or row.get("tiling_status") != "success":
+                return CacheValidationResult(complete=False, reason=f"invalid tiling row for {sample_id}")
+            for column_name in (
+                "coordinates_npz_path",
+                "coordinates_meta_path",
+                "tiles_tar_path",
+                "mask_preview_path",
+                "tiling_preview_path",
+            ):
+                candidate = _optional_path(row.get(column_name))
+                if candidate is None:
+                    continue
+                if not candidate.is_file():
+                    return CacheValidationResult(complete=False, reason=f"missing artifact for {sample_id}")
+                resolved_candidate = candidate.resolve()
+                expected_root = previews_dir if column_name in {"mask_preview_path", "tiling_preview_path"} else artifacts_dir
+                if not _is_relative_to(resolved_candidate, expected_root.resolve()):
+                    return CacheValidationResult(
+                        complete=False,
+                        reason=f"artifact path escapes cache entry for {sample_id}",
+                    )
+            row_image_path = row.get("image_path")
+            if row_image_path is not None and str(row_image_path) != str(sample.image_path):
+                return CacheValidationResult(complete=False, reason=f"image path mismatch for {sample_id}")
+            row_mask_path = row.get("mask_path")
+            expected_mask_path = "" if sample.mask_path is None else str(sample.mask_path)
+            if row_mask_path is not None:
+                row_mask_str = str(row_mask_path)
+                if row_mask_str.lower() == "nan":
+                    row_mask_str = ""
+                if row_mask_str != expected_mask_path:
+                    return CacheValidationResult(complete=False, reason=f"mask path mismatch for {sample_id}")
+            expected_requested_tile_size_px = (
+                preprocessing.requested_region_size_px
+                if preprocessing.requested_region_size_px is not None
+                else preprocessing.requested_tile_size_px
+            )
+            row_tile_size = row.get("requested_tile_size_px")
+            if row_tile_size is not None and str(row_tile_size).strip() not in {"", "nan", "NaN"}:
+                if int(float(row_tile_size)) != int(expected_requested_tile_size_px):
+                    return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
+            row_spacing = row.get("requested_spacing_um")
+            if row_spacing is not None and str(row_spacing).strip() not in {"", "nan", "NaN"}:
+                if float(row_spacing) != float(preprocessing.requested_spacing_um):
+                    return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
+            expected_backend = None
+            if expected_backend_provenance is not None:
+                expected_backend = expected_backend_provenance.get("backend_by_sample_id", {}).get(str(sample_id))
+            actual_backend = row.get("backend")
+            if expected_backend is not None and str(expected_backend) != str(actual_backend):
+                return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
+        return CacheValidationResult(complete=True)
+    finally:
+        progress.finish(checked)
 
 
 def resolve_tiling_cache(

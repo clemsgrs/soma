@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import itertools
 import json
 import os
 import shutil
@@ -27,7 +28,7 @@ from slide2vec.encoders.registry import (
 from slide2vec.encoders.validation import (
     validate_encoder_config as validate_slide2vec_encoder_config,
 )
-from slide2vec.inference import _compute_embedded_slides
+from slide2vec.runtime.embedding_pipeline import compute_embedded_slides as _compute_embedded_slides
 import slide2vec.progress as slide2vec_progress
 import slide2vec.runtime.embedding as runtime_embedding
 import slide2vec.runtime.tiling as runtime_tiling
@@ -67,6 +68,7 @@ from soma.extraction.reporters import (
     _make_extraction_reporter_ctx,
     _suppress_logger_noise_ctx,
 )
+from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import (
     LoadedTiling,
@@ -394,6 +396,7 @@ class FeatureExtractor:
         loaded_tilings = load_tilings(
             dataset=self._dataset,
             tiling_dir=tiling_dir,
+            requested_seg_downsample=int(resolved_preprocessing.seg_downsample),
             tissue_mask_tissue_value=int(resolved_preprocessing.tissue_mask_tissue_value),
         )
 
@@ -542,6 +545,8 @@ class FeatureExtractor:
         encoder_name: str,
         output_variant: str,
     ) -> None:
+        if store.feature_manifest_path is not None and store.feature_manifest_path.is_file():
+            return
         manifest_roots = {feature_dir.resolve()}
         feature_root = store.feature_dir.resolve()
         if feature_root != feature_dir.resolve():
@@ -639,8 +644,11 @@ class FeatureExtractor:
         *,
         cache_resolution: FeatureCacheResolution,
     ) -> None:
-        """Write a run-local manifest that points back to the shared cache payloads."""
-        process_list_path = feature_dir / "process_list.csv"
+        """Write canonical cache and run-local manifests for cached feature payloads."""
+        manifest_roots = {
+            feature_dir.resolve(),
+            cache_resolution.cache_dir.resolve(),
+        }
         metadata = cache_resolution.metadata
         sample_ids = self._cache_ids_for_resolution(cache_resolution)
         empty_sample_ids = cache_resolution.empty_sample_ids
@@ -656,48 +664,50 @@ class FeatureExtractor:
         feature_dim = metadata.get("feature_dim")
         output_variant = metadata.get("execution", {}).get("output_variant")
         feature_kind = feature_type
-        with process_list_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=[
-                    "sample_id",
-                    "annotation",
-                    "feature_status",
-                    "feature_path",
-                    "artifact_kind",
-                    "cache_kind",
-                    "cache_key",
-                    "cache_dir",
-                    "encoder_name",
-                    "output_variant",
-                    "feature_kind",
-                    "feature_rank",
-                    "feature_dim",
-                ],
+        fieldnames = [
+            "sample_id",
+            "annotation",
+            "feature_status",
+            "feature_path",
+            "artifact_kind",
+            "cache_kind",
+            "cache_key",
+            "cache_dir",
+            "encoder_name",
+            "output_variant",
+            "feature_kind",
+            "feature_rank",
+            "feature_dim",
+        ]
+        rows = []
+        for sample_id in sample_ids:
+            feature_status = "empty" if sample_id in empty_sample_ids else "success"
+            feature_path = ""
+            if feature_status == "success":
+                feature_path = str(self._feature_path_for_cache_id(cache_resolution, sample_id).resolve())
+            rows.append(
+                {
+                    "sample_id": sample_id,
+                    "annotation": "tissue",
+                    "feature_status": feature_status,
+                    "feature_path": feature_path,
+                    "artifact_kind": artifact_kind,
+                    "cache_kind": cache_resolution.cache_kind,
+                    "cache_key": metadata["cache_key"],
+                    "cache_dir": str(cache_dir),
+                    "encoder_name": metadata["encoder_name"],
+                    "output_variant": output_variant,
+                    "feature_kind": feature_kind,
+                    "feature_rank": feature_rank,
+                    "feature_dim": feature_dim,
+                }
             )
-            writer.writeheader()
-            for sample_id in sample_ids:
-                feature_status = "empty" if sample_id in empty_sample_ids else "success"
-                feature_path = ""
-                if feature_status == "success":
-                    feature_path = str(self._feature_path_for_cache_id(cache_resolution, sample_id).resolve())
-                writer.writerow(
-                    {
-                        "sample_id": sample_id,
-                        "annotation": "tissue",
-                        "feature_status": feature_status,
-                        "feature_path": feature_path,
-                        "artifact_kind": artifact_kind,
-                        "cache_kind": cache_resolution.cache_kind,
-                        "cache_key": metadata["cache_key"],
-                        "cache_dir": str(cache_dir),
-                        "encoder_name": metadata["encoder_name"],
-                        "output_variant": output_variant,
-                        "feature_kind": feature_kind,
-                        "feature_rank": feature_rank,
-                        "feature_dim": feature_dim,
-                    }
-                )
+        for root in manifest_roots:
+            root.mkdir(parents=True, exist_ok=True)
+            with (root / "process_list.csv").open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
 
     def _materialize_feature_dir_from_cache(
         self,
@@ -705,46 +715,26 @@ class FeatureExtractor:
         *,
         cache_resolution: FeatureCacheResolution,
     ) -> None:
-        """Materialize run-local sample_id.pt files as independent cache payload copies."""
+        """Keep the run-local feature dir as a lightweight pointer to the shared cache."""
         feature_dir.mkdir(parents=True, exist_ok=True)
-        cache_ids = self._cache_ids_for_resolution(cache_resolution)
-        expected_names = {f"{sample_id}.pt" for sample_id in cache_ids}
-        for existing in feature_dir.glob("*.pt"):
-            if existing.name not in expected_names:
-                existing.unlink()
-        for sample_id in cache_ids:
-            target = feature_dir / f"{sample_id}.pt"
-            source = self._feature_path_for_cache_id(cache_resolution, sample_id)
-            if sample_id in cache_resolution.empty_sample_ids:
-                if target.exists():
-                    target.unlink()
-                continue
-            if not source.is_file():
-                legacy_source = cache_resolution.features_dir / f"{sample_id}.pt"
-                if legacy_source.is_file():
-                    source = legacy_source
-            if source.resolve() == target.resolve():
-                continue
-            if target.exists():
-                target.unlink()
-            self._copy_feature_payload_atomic(source, target)
+        for existing in itertools.chain(
+            feature_dir.glob("*.pt"),
+            feature_dir.glob("*.meta.json"),
+            feature_dir.glob("*.npz"),
+        ):
+            existing.unlink()
 
     @staticmethod
-    def _copy_feature_payload_atomic(source: Path, target: Path) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            prefix=f".{target.stem}.",
-            suffix=target.suffix,
-            dir=target.parent,
-            delete=False,
-        ) as tmp_file:
-            tmp_path = Path(tmp_file.name)
-        try:
-            shutil.copyfile(source, tmp_path)
-            os.replace(tmp_path, target)
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                tmp_path.unlink()
+    def _filter_tilings_for_ids(
+        loaded_tilings: list[LoadedTiling],
+        wanted_ids: set[str],
+        empty_ids: set[str],
+    ) -> list[LoadedTiling]:
+        return [
+            loaded
+            for loaded in loaded_tilings
+            if loaded.slide.sample_id in wanted_ids and loaded.slide.sample_id not in empty_ids
+        ]
 
     @staticmethod
     def _cache_ids_for_resolution(cache_resolution: FeatureCacheResolution) -> list[str]:
@@ -904,7 +894,7 @@ class FeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(feature_dir)
+            return FeatureStore(cache_resolution.cache_dir)
 
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
@@ -932,7 +922,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_hierarchical_cached(
         self,
@@ -965,7 +955,7 @@ class FeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(feature_dir)
+            return FeatureStore(cache_resolution.cache_dir)
 
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
@@ -993,7 +983,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_slide_cached(
         self,
@@ -1054,7 +1044,7 @@ class FeatureExtractor:
         if tile_cache.complete and slide_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
-            return FeatureStore(feature_dir)
+            return FeatureStore(slide_cache.cache_dir)
 
         self._populate_slide_cache(
             tile_cache=tile_cache,
@@ -1102,7 +1092,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _extract_patient_cached(
         self,
@@ -1163,7 +1153,7 @@ class FeatureExtractor:
         if tile_cache.complete and patient_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
-            return FeatureStore(feature_dir)
+            return FeatureStore(patient_cache.cache_dir)
 
         patient_id_map = self._patient_id_map_for_patient_encoder()
 
@@ -1223,7 +1213,7 @@ class FeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return FeatureStore(refreshed.cache_dir)
 
     def _populate_patient_cache(
         self,
@@ -1490,18 +1480,111 @@ class FeatureExtractor:
     ) -> None:
         tile_missing = set(tile_cache.missing_sample_ids())
         slide_missing = set(slide_cache.missing_sample_ids())
-        run_ids = tile_missing | slide_missing
-        if not run_ids:
+        if not tile_missing and not slide_missing:
             return
         empty_sample_ids = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
-        selected_loaded = [
-            loaded
-            for loaded in loaded_tilings
-            if loaded.slide.sample_id in run_ids and loaded.slide.sample_id not in empty_sample_ids
-        ]
-        if not selected_loaded and empty_sample_ids:
-            record_empty_sample_ids(tile_cache, sorted(empty_sample_ids))
-            record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
+        if not tile_missing and slide_missing:
+            selected_loaded = self._filter_tilings_for_ids(loaded_tilings, slide_missing, empty_sample_ids)
+            if selected_loaded:
+                slide_execution = build_execution_options(
+                    self._encoder,
+                    execution=self._execution,
+                    encoder_name=model_name,
+                    output_dir=slide_cache.cache_dir,
+                    num_gpus=num_gpus,
+                    save_tile_embeddings=False,
+                )
+                slide_feature_dim: int | None = None
+                if int(slide_execution.num_gpus) > 1 and len(selected_loaded) > 1:
+                    num_workers = min(int(slide_execution.num_gpus), len(selected_loaded))
+                    shard_payloads: list[list[dict[str, str]]] = [[] for _ in range(num_workers)]
+                    for idx, loaded in enumerate(selected_loaded):
+                        shard_payloads[idx % num_workers].append(
+                            {
+                                "sample_id": str(loaded.slide.sample_id),
+                                "feature_path": str(tile_cache.feature_path_for_id(loaded.slide.sample_id)),
+                                "image_path": str(loaded.slide.image_path),
+                                "mask_path": (
+                                    str(loaded.slide.mask_path) if loaded.slide.mask_path is not None else ""
+                                ),
+                                "coordinates_npz_path": str(
+                                    getattr(loaded.tiling_result, "coordinates_npz_path")
+                                ),
+                                "coordinates_meta_path": str(
+                                    getattr(loaded.tiling_result, "coordinates_meta_path")
+                                ),
+                            }
+                        )
+                    total_slides = len(selected_loaded)
+                    slide2vec_progress.emit_progress(
+                        "embedding.started",
+                        slide_count=total_slides,
+                    )
+
+                    def _on_aggregation_progress(processed: int, total: int) -> None:
+                        slide2vec_progress.emit_progress(
+                            "embedding.progress",
+                            slide_count=total,
+                            slides_completed=processed,
+                        )
+
+                    written_ids, slide_feature_dim = spawn_slide_aggregation_workers(
+                        num_workers=num_workers,
+                        model_name=model_name,
+                        output_variant=output_variant,
+                        allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                        execution_precision=slide_execution.precision,
+                        execution_batch_size=slide_execution.batch_size,
+                        execution_num_workers_per_gpu=slide_execution.resolved_num_workers_per_gpu(),
+                        execution_prefetch_factor=slide_execution.prefetch_factor,
+                        output_dir=slide_cache.cache_dir,
+                        shard_payloads_by_rank=shard_payloads,
+                        on_progress=_on_aggregation_progress,
+                    )
+                    slide2vec_progress.emit_progress(
+                        "embedding.finished",
+                        slide_count=total_slides,
+                        slides_completed=len(written_ids),
+                        tile_artifacts=0,
+                        slide_artifacts=len(written_ids),
+                    )
+                    if written_ids:
+                        record_sample_identity_signatures(slide_cache, sorted(written_ids))
+                else:
+                    tile_artifacts = build_tile_artifacts_from_cache_payload(
+                        features_dir=tile_cache.features_dir,
+                        loaded_tilings=selected_loaded,
+                        work_dir=slide_cache.cache_dir / "tile_metadata",
+                        feature_path_by_sample_id={
+                            loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                            for loaded in selected_loaded
+                        },
+                    )
+                    slide_artifacts = _aggregate_tiles(
+                        model_name=model_name,
+                        output_variant=output_variant,
+                        allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                        tile_artifacts=tile_artifacts,
+                        preprocessing=None,
+                        execution=slide_execution,
+                    )
+                    slide_feature_dim = self._write_artifacts_to_cache_resolution(
+                        artifacts=slide_artifacts,
+                        cache_resolution=slide_cache,
+                    )
+                if slide_feature_dim is not None:
+                    record_feature_dim(slide_cache, slide_feature_dim)
+            if empty_sample_ids:
+                record_empty_sample_ids(tile_cache, sorted(empty_sample_ids))
+                record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
+            return
+
+        run_ids = tile_missing | slide_missing
+        selected_loaded = self._filter_tilings_for_ids(loaded_tilings, run_ids, empty_sample_ids)
+        if not selected_loaded:
+            if empty_sample_ids:
+                record_empty_sample_ids(tile_cache, sorted(empty_sample_ids))
+                record_empty_sample_ids(slide_cache, sorted(empty_sample_ids))
             return
 
         loaded_model = _load_model(

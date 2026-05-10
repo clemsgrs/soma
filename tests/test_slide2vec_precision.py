@@ -6,14 +6,15 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 
-import slide2vec.inference as inference
+import slide2vec.runtime.slide_encode as slide_encode
+from slide2vec.runtime.embedding_pipeline import aggregate_tile_embeddings_for_slide
 
 
 def test_slide_aggregation_uses_autocast_for_fp16_precision():
     autocast_active = False
-    original_autocast = inference.torch.autocast
-    original_autocast_dtype = inference._autocast_dtype
-    original_uses_cuda_runtime = inference._uses_cuda_runtime
+    original_autocast = slide_encode.torch.autocast
+    original_autocast_dtype = slide_encode.autocast_dtype
+    original_uses_cuda_runtime = slide_encode.uses_cuda_runtime
 
     @contextmanager
     def fake_autocast(*, device_type: str, dtype):
@@ -33,9 +34,9 @@ def test_slide_aggregation_uses_autocast_for_fp16_precision():
         assert tile_size_lv0 == 224
         return torch.ones(4, dtype=torch.float32)
 
-    inference.torch.autocast = fake_autocast
-    inference._autocast_dtype = lambda torch_module, precision: torch_module.float16
-    inference._uses_cuda_runtime = lambda device: True
+    slide_encode.torch.autocast = fake_autocast
+    slide_encode.autocast_dtype = lambda torch_module, precision: torch_module.float16
+    slide_encode.uses_cuda_runtime = lambda device: True
 
     try:
         loaded = SimpleNamespace(device=torch.device("cpu"), model=SimpleNamespace(encode_slide=encode_slide))
@@ -49,7 +50,7 @@ def test_slide_aggregation_uses_autocast_for_fp16_precision():
         tile_embeddings = torch.ones((1, 4), dtype=torch.float32)
         execution = SimpleNamespace(precision="fp16")
 
-        slide_embedding, latents = inference._aggregate_tile_embeddings_for_slide(
+        slide_embedding, latents = aggregate_tile_embeddings_for_slide(
             loaded,
             model,
             slide,
@@ -63,6 +64,6 @@ def test_slide_aggregation_uses_autocast_for_fp16_precision():
         assert latents is None
         assert autocast_active is False
     finally:
-        inference.torch.autocast = original_autocast
-        inference._autocast_dtype = original_autocast_dtype
-        inference._uses_cuda_runtime = original_uses_cuda_runtime
+        slide_encode.torch.autocast = original_autocast
+        slide_encode.autocast_dtype = original_autocast_dtype
+        slide_encode.uses_cuda_runtime = original_uses_cuda_runtime

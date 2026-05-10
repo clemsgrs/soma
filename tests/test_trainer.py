@@ -7,6 +7,7 @@ from pathlib import Path
 import functools
 
 import torch
+from rich.console import Console
 
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
@@ -14,7 +15,7 @@ from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer, TrainResult, _format_batch_progress
+from soma.training.trainer import Trainer, TrainResult, _build_training_panel, _format_batch_progress
 from soma.training.seed import seed_everything
 
 
@@ -292,6 +293,33 @@ class TestTrainingProgressFormatting:
     def test_format_batch_progress_uses_item_counts(self):
         text = _format_batch_progress(87, 10000, phase="train")
         assert "train 87/10000" in text
+
+    def test_training_panel_shows_fold_position_for_multifold_runs(self):
+        panel = _build_training_panel(
+            title="Training progress",
+            subtitle="epoch 1/10 | train",
+            log=None,
+            total_epochs=10,
+            best_epoch=0,
+            best_tune_loss=float("inf"),
+            best_tune_metrics={},
+            patience_counter=0,
+            patience_limit=10,
+            status="waiting for epoch 1",
+            trainable_param_count=1234,
+            fold=1,
+            num_folds=3,
+            elapsed_seconds=0.0,
+            avg_epoch_seconds=None,
+            eta_seconds=None,
+            batch_progress=None,
+        )
+        console = Console(record=True, width=100)
+        console.print(panel)
+        rendered = console.export_text()
+
+        assert "fold" in rendered.lower()
+        assert "2/3" in rendered
 
     def test_train_epoch_progress_reports_processed_items(self, tmp_path: Path):
         seed_everything(42)

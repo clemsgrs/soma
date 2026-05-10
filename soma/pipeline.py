@@ -601,6 +601,8 @@ def train_one_fold(
         config=training,
         fold_dir=fold_dir,
         device=device,
+        fold=fold,
+        num_folds=num_folds,
     )
     train_result = trainer.fit()
 

@@ -71,6 +71,8 @@ class Trainer:
         fold_dir: Path,
         device: torch.device,
         console: Console | None = None,
+        fold: int | None = None,
+        num_folds: int = 1,
     ) -> None:
         self._model = model.to(device)
         self._train_loader = train_loader
@@ -79,6 +81,8 @@ class Trainer:
         self._fold_dir = Path(fold_dir)
         self._device = device
         self._console = console
+        self._fold = fold
+        self._num_folds = num_folds
         self._trainable_param_count = _count_trainable_parameters(self._model)
 
         self._optimizer = _build_optimizer(model, config)
@@ -124,6 +128,8 @@ class Trainer:
                     patience_limit=self._config.patience,
                     status=current_status,
                     trainable_param_count=self._trainable_param_count,
+                    fold=self._fold,
+                    num_folds=self._num_folds,
                     elapsed_seconds=elapsed_seconds,
                     avg_epoch_seconds=current_avg_epoch_seconds,
                     eta_seconds=current_eta_seconds,
@@ -145,6 +151,8 @@ class Trainer:
                 patience_limit=self._config.patience,
                 status="waiting for epoch 1",
                 trainable_param_count=self._trainable_param_count,
+                fold=self._fold,
+                num_folds=self._num_folds,
                 elapsed_seconds=0.0,
                 avg_epoch_seconds=None,
                 eta_seconds=None,
@@ -239,6 +247,8 @@ class Trainer:
                     patience_limit=self._config.patience,
                     status=current_status,
                     trainable_param_count=self._trainable_param_count,
+                    fold=self._fold,
+                    num_folds=self._num_folds,
                     elapsed_seconds=elapsed_seconds,
                     avg_epoch_seconds=current_avg_epoch_seconds,
                     eta_seconds=current_eta_seconds,
@@ -417,6 +427,8 @@ def _build_training_panel(
     patience_limit: int,
     status: str,
     trainable_param_count: int | None = None,
+    fold: int | None = None,
+    num_folds: int = 1,
     elapsed_seconds: float | None = None,
     avg_epoch_seconds: float | None = None,
     eta_seconds: float | None = None,
@@ -441,6 +453,9 @@ def _build_training_panel(
 
     if trainable_param_count is not None:
         table.add_row("# params", Text(f"{trainable_param_count:,}", style="white"))
+
+    if fold is not None and num_folds > 1:
+        table.add_row("fold", Text(f"{fold + 1}/{num_folds}", style="white"))
 
     if batch_progress is not None:
         table.add_row("batch", Text(batch_progress, style="white"))

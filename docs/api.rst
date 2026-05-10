@@ -156,6 +156,19 @@ Use ``compare_runs`` to generate a cross-run comparison report:
 The report is written to ``<shared output_root>/comparisons/<comparison-id>/index.html``
 unless you pass ``output_dir`` explicitly.
 
+Discover available presets programmatically
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use the public discovery helpers to list currently registered presets:
+
+.. code-block:: python
+
+   from soma import list_aggregators, list_models, list_task_heads
+
+   tile_encoders = list_models(level="tile")
+   aggregators = list_aggregators()
+   task_heads = list_task_heads()
+
 For more detail on what the generated HTML report contains, how subgroup
 analysis is summarized, and how comparison statistics are computed, see the
 :doc:`reporting guide <reporting>`.
