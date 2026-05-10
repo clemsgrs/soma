@@ -15,6 +15,7 @@ from slide2vec import (
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
 import slide2vec.api as slide2vec_api
+import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, PreviewConfig
@@ -52,6 +53,31 @@ def tiling_num_tiles(tiling_result: object) -> int:
     if coordinates is not None:
         return int(len(coordinates))
     return 0
+
+
+def validate_tiling_result_segmentation(
+    tiling_result: object,
+    *,
+    requested_seg_downsample: int,
+    sample_id: str,
+) -> None:
+    """Validate the caller-requested segmentation downsample.
+
+    hs2p records both requested and effective segmentation downsamples. Cache
+    compatibility is keyed to the requested value; the effective value may
+    differ for SAM2 or when a requested downsample resolves to a pyramid level.
+    """
+    actual = getattr(tiling_result, "requested_seg_downsample", None)
+    if actual is None:
+        raise ValueError(
+            f"Tiling result for sample_id={sample_id} is missing requested_seg_downsample"
+        )
+    if int(actual) != int(requested_seg_downsample):
+        raise ValueError(
+            "Precomputed tiles requested_seg_downsample mismatch: "
+            f"expected {int(requested_seg_downsample)!r}, found {int(actual)!r} "
+            f"for sample_id={sample_id}"
+        )
 
 
 def ensure_supported_mask_value(
@@ -167,6 +193,7 @@ def load_tilings(
     *,
     dataset: Dataset,
     tiling_dir: Path,
+    requested_seg_downsample: int,
     tissue_mask_tissue_value: int,
 ) -> list[LoadedTiling]:
     process_list_path = tiling_dir / "process_list.csv"
@@ -203,6 +230,11 @@ def load_tilings(
                 tissue_mask_tissue_value=(
                     int(tissue_mask_tissue_value) if record.mask_path is not None else None
                 ),
+            )
+            validate_tiling_result_segmentation(
+                tiling_result,
+                requested_seg_downsample=requested_seg_downsample,
+                sample_id=record.sample_id,
             )
             loaded.append(
                 LoadedTiling(

@@ -13,6 +13,7 @@ import slide2vec.progress as slide2vec_progress
 import torch
 from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
+from slide2vec import PreprocessingConfig as Slide2VecPreprocessingConfig
 
 import soma.cache as cache_mod
 from soma.cache import record_empty_sample_ids, record_feature_dim, record_sample_identity_signatures
@@ -612,6 +613,55 @@ def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
     assert config.preview["mask_overlay_alpha"] == pytest.approx(0.5)
 
 
+def test_build_preprocessing_config_accounts_for_slide2vec_surface():
+    slide2vec_fields = set(Slide2VecPreprocessingConfig.__dataclass_fields__)
+    translated_fields = {
+        "backend",
+        "requested_spacing_um",
+        "requested_tile_size_px",
+        "requested_region_size_px",
+        "region_tile_multiple",
+        "tolerance",
+        "overlap",
+        "tissue_threshold",
+        "on_the_fly",
+        "adaptive_batching",
+        "use_supertiles",
+        "segmentation",
+        "filtering",
+        "preview",
+    }
+    intentionally_slide2vec_owned_fields = {
+        "gpu_decode",
+        "jpeg_backend",
+        "num_cucim_workers",
+        "read_coordinates_from",
+        "read_tiles_from",
+        "resume",
+    }
+
+    assert slide2vec_fields == translated_fields | intentionally_slide2vec_owned_fields
+
+    config = build_preprocessing_config(
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            requested_region_size_px=1344,
+            region_tile_multiple=6,
+            tissue_method="hsv",
+        )
+    )
+
+    assert config.requested_region_size_px == 1344
+    assert config.region_tile_multiple == 6
+    assert config.on_the_fly is True
+    assert config.adaptive_batching is False
+    assert config.use_supertiles is True
+    assert config.gpu_decode is False
+    assert config.read_coordinates_from is None
+    assert config.read_tiles_from is None
+
+
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     dataset = _make_dataset(tmp_path, with_mask=True)
     tiling_dir = tmp_path / "tiling"
@@ -636,13 +686,19 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: process_df)
     monkeypatch.setattr(
         "soma.slide2vec_adapter.load_tiling_result_from_row",
-        lambda row: SimpleNamespace(requested_backend="auto", backend="openslide"),
+        lambda row: SimpleNamespace(
+            requested_backend="auto",
+            backend="openslide",
+            requested_seg_downsample=64,
+            seg_downsample=32,
+        ),
     )
     monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *args, **kwargs: None)
 
     loaded = load_tilings(
         dataset=dataset,
         tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
         tissue_mask_tissue_value=1,
     )
 

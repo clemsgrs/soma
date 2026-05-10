@@ -157,8 +157,7 @@ def _aggregate_patients(
     Returns:
         List of PatientEmbeddingArtifact objects, one per unique patient.
     """
-    from slide2vec.artifacts import write_patient_embeddings
-    from slide2vec.utils.io import load_array
+    from slide2vec.artifacts import load_array, write_patient_embeddings
 
     model = _load_model(
         model_name,

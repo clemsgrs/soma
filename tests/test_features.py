@@ -313,7 +313,11 @@ def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeyp
         loader_calls.append(Path(path))
         return pd.DataFrame([row])
 
-    tiling_result = SimpleNamespace(sample_id="s1")
+    tiling_result = SimpleNamespace(
+        sample_id="s1",
+        requested_seg_downsample=64,
+        seg_downsample=32,
+    )
 
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", _fake_process_loader)
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: tiling_result)
@@ -325,6 +329,7 @@ def test_load_tilings_uses_slide2vec_process_list_loader(tmp_path: Path, monkeyp
     loaded = load_tilings(
         dataset=dataset,
         tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
         tissue_mask_tissue_value=1,
     )
 
@@ -359,7 +364,12 @@ def test_load_tilings_uses_rich_progress_bar_for_cached_tiling_loads(
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame(rows))
     monkeypatch.setattr(
         "soma.slide2vec_adapter.load_tiling_result_from_row",
-        lambda loaded_row: SimpleNamespace(requested_backend="auto", backend="openslide"),
+        lambda loaded_row: SimpleNamespace(
+            requested_backend="auto",
+            backend="openslide",
+            requested_seg_downsample=64,
+            seg_downsample=32,
+        ),
     )
     monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *args, **kwargs: None)
 
@@ -396,6 +406,7 @@ def test_load_tilings_uses_rich_progress_bar_for_cached_tiling_loads(
         loaded = load_tilings(
             dataset=dataset,
             tiling_dir=tiling_dir,
+            requested_seg_downsample=64,
             tissue_mask_tissue_value=1,
         )
 
@@ -429,7 +440,10 @@ def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeyp
         "error": None,
     }
     monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame([row]))
-    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: SimpleNamespace())
+    monkeypatch.setattr(
+        "soma.slide2vec_adapter.load_tiling_result_from_row",
+        lambda loaded_row: SimpleNamespace(requested_seg_downsample=64, seg_downsample=32),
+    )
 
     captured: dict[str, object] = {}
 
@@ -446,6 +460,7 @@ def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeyp
     load_tilings(
         dataset=dataset,
         tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
         tissue_mask_tissue_value=1,
     )
 
@@ -453,3 +468,49 @@ def test_load_tilings_passes_mask_path_to_hs2p_validator(tmp_path: Path, monkeyp
     assert captured["image_path"] == dataset.samples["s1"].image_path
     assert captured["mask_path"] == mask_path
     assert captured["tissue_mask_tissue_value"] == 1
+
+
+def test_load_tilings_validates_requested_not_effective_seg_downsample(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "image_path": [str(tmp_path / "slides" / "s1.svs")],
+            "label": ["tumor"],
+        }
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text("sample_id\n", encoding="utf-8")
+    row = {"sample_id": "s1", "tiling_status": "success", "error": None}
+    tiling_result = SimpleNamespace(
+        requested_backend="auto",
+        backend="openslide",
+        requested_seg_downsample=64,
+        seg_downsample=32,
+    )
+
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: pd.DataFrame([row]))
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_result_from_row", lambda loaded_row: tiling_result)
+    monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *args, **kwargs: None)
+
+    loaded = load_tilings(
+        dataset=dataset,
+        tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
+        tissue_mask_tissue_value=1,
+    )
+
+    assert loaded[0].tiling_result is tiling_result
+
+    with pytest.raises(ValueError, match="requested_seg_downsample mismatch"):
+        load_tilings(
+            dataset=dataset,
+            tiling_dir=tiling_dir,
+            requested_seg_downsample=16,
+            tissue_mask_tissue_value=1,
+        )

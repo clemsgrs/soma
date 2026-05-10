@@ -28,7 +28,7 @@ from slide2vec.encoders.registry import (
 from slide2vec.encoders.validation import (
     validate_encoder_config as validate_slide2vec_encoder_config,
 )
-from slide2vec.inference import _compute_embedded_slides
+from slide2vec.runtime.embedding_pipeline import compute_embedded_slides as _compute_embedded_slides
 import slide2vec.progress as slide2vec_progress
 import slide2vec.runtime.embedding as runtime_embedding
 import slide2vec.runtime.tiling as runtime_tiling
@@ -396,6 +396,7 @@ class FeatureExtractor:
         loaded_tilings = load_tilings(
             dataset=self._dataset,
             tiling_dir=tiling_dir,
+            requested_seg_downsample=int(resolved_preprocessing.seg_downsample),
             tissue_mask_tissue_value=int(resolved_preprocessing.tissue_mask_tissue_value),
         )
 

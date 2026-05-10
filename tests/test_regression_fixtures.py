@@ -12,7 +12,7 @@ import pytest
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.extraction import FeatureExtractor
-from hs2p import load_tiling_result
+from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 
 TESTS_DIR = Path(__file__).parent
@@ -79,7 +79,6 @@ def _allow_prism_regression() -> bool:
     ) == "1"
 
 
-@pytest.mark.skip(reason="Needs updating: slide2vec pipeline no longer outputs .coordinates.npz at fixed paths; use process_list.csv instead")
 def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
     _require_openslide()
 
@@ -94,21 +93,25 @@ def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
 
     extractor.preprocess(output_dir)
 
-    tiling = load_tiling_result(
-        output_dir / "test-wsi.coordinates.npz",
-        output_dir / "test-wsi.coordinates.meta.json",
-    )
-    soma_meta = json.loads((output_dir / "test-wsi.coordinates.meta.json").read_text())
+    process_df = load_tiling_process_df(output_dir / "process_list.csv")
+    rows = process_df.loc[process_df["sample_id"].astype(str) == "test-wsi"].to_dict("records")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["tiling_status"] == "success"
+    assert Path(row["coordinates_npz_path"]).is_file()
+    assert Path(row["coordinates_meta_path"]).is_file()
+
+    tiling = load_tiling_result_from_row(row)
     gt_meta, gt_tile_index, gt_coordinates, gt_tissue_fractions = _load_legacy_coordinate_gt()
 
-    assert soma_meta["sample_id"] == gt_meta["sample_id"]
-    assert soma_meta["requested_spacing_um"] == pytest.approx(gt_meta["requested_spacing_um"])
-    assert soma_meta["requested_tile_size_px"] == gt_meta["requested_tile_size_px"]
-    assert soma_meta["read_level"] == gt_meta["read_level"]
-    assert soma_meta["read_tile_size_px"] == gt_meta["read_tile_size_px"]
-    assert soma_meta["tile_size_lv0"] == gt_meta["tile_size_lv0"]
-    assert soma_meta["step_px_lv0"] == gt_meta["step_px_lv0"]
-    assert soma_meta["overlap"] == gt_meta["overlap"]
+    assert tiling.sample_id == gt_meta["sample_id"]
+    assert tiling.requested_spacing_um == pytest.approx(gt_meta["requested_spacing_um"])
+    assert tiling.requested_tile_size_px == gt_meta["requested_tile_size_px"]
+    assert tiling.read_level == gt_meta["read_level"]
+    assert tiling.read_tile_size_px == gt_meta["read_tile_size_px"]
+    assert tiling.tile_size_lv0 == gt_meta["tile_size_lv0"]
+    assert tiling.step_px_lv0 == gt_meta["step_px_lv0"]
+    assert tiling.overlap == gt_meta["overlap"]
 
     if gt_meta.get("backend") != "openslide":
         pytest.xfail(
@@ -120,7 +123,7 @@ def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
     np.testing.assert_array_equal(tiling.tile_index, gt_tile_index)
     np.testing.assert_array_equal(tiling.coordinates, gt_coordinates)
     np.testing.assert_allclose(tiling.tissue_fractions, gt_tissue_fractions, atol=1e-6, rtol=0.0)
-    assert soma_meta["n_tiles"] == gt_meta["num_tiles"]
+    assert tiling.num_tiles == gt_meta["num_tiles"]
 
 
 def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
