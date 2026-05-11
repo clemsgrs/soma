@@ -28,7 +28,13 @@ from soma.reporting.charts import (
     subgroup_metric_chart,
     subgroup_stats_heatmap,
 )
-from soma.evaluation.metrics import bh_correct, compare_run_predictions, compute_subgroup_metrics, compute_subgroup_stats
+from soma.evaluation.metrics import (
+    bh_correct,
+    compare_run_predictions,
+    compute_subgroup_metrics,
+    compute_subgroup_stats,
+    metric_higher_is_better,
+)
 from soma.output_layout import _slugify
 from soma.reporting.data import ComparisonData, FoldSlice, RunData, aggregate_fold_predictions, fold_slices_for_split
 
@@ -788,7 +794,13 @@ def _sorted_metric_names(cd: ComparisonData) -> list[str]:
                 val = run.folds[0].test_metrics.get(split, {}).get(metric)
             if val is not None:
                 values.append(float(val))
-        metric_scores.append((max(values) if values else float("-inf"), idx, metric))
+        if not values:
+            score = float("-inf")
+        elif metric_higher_is_better(metric):
+            score = max(values)
+        else:
+            score = -min(values)
+        metric_scores.append((score, idx, metric))
     metric_scores.sort(key=lambda item: (item[0], -item[1]), reverse=True)
     return [metric for _, _, metric in metric_scores]
 
@@ -804,7 +816,11 @@ def _comparison_overview_tab(cd: ComparisonData) -> str:
             value = run.summary.get(f"{split_name}/{primary_metric}_mean")
             if value is None and run.folds:
                 value = run.folds[0].test_metrics.get(split_name, {}).get(primary_metric)
-            ranked.append((float("-inf") if value is None else float(value), idx))
+            if value is None:
+                score = float("-inf")
+            else:
+                score = float(value) if metric_higher_is_better(primary_metric) else -float(value)
+            ranked.append((score, idx))
         ranked.sort(reverse=True)
         if ranked:
             top_run = cd.labels[ranked[0][1]]
@@ -914,7 +930,15 @@ def _comparison_ranking_table(cd: ComparisonData) -> str:
 
     def _sort_key(item: tuple[int, int, list[float | None]]) -> list:
         idx, _, values = item
-        return [float("-inf") if v is None else float(v) for v in values] + [-idx]
+        scores = []
+        for metric, value in zip(metric_names, values):
+            if value is None:
+                scores.append(float("-inf"))
+            elif metric_higher_is_better(metric):
+                scores.append(float(value))
+            else:
+                scores.append(-float(value))
+        return scores + [-idx]
 
     ranked_rows = sorted(ranked_rows, key=_sort_key, reverse=True)
 
@@ -981,7 +1005,12 @@ def _comparison_metric_matrix(cd: ComparisonData) -> str:
                 val = run.folds[0].test_metrics.get(split_name, {}).get(metric)
             vals.append(val)
         valid = [v for v in vals if v is not None]
-        best_val = max(valid) if valid else None
+        if not valid:
+            best_val = None
+        elif metric_higher_is_better(metric):
+            best_val = max(valid)
+        else:
+            best_val = min(valid)
         for i, val in enumerate(vals):
             if val is None:
                 cells.append("<td>—</td>")
@@ -1048,7 +1077,12 @@ def _comparison_section_metrics(cd: ComparisonData) -> str:
     for m_idx, metric in enumerate(cd.metric_names):
         means, _ = per_metric_data[m_idx]
         valid_means = [v for v in means if v is not None]
-        best_val = max(valid_means) if valid_means else None
+        if not valid_means:
+            best_val = None
+        elif metric_higher_is_better(metric):
+            best_val = max(valid_means)
+        else:
+            best_val = min(valid_means)
 
         cells = ""
         for i, val in enumerate(means):

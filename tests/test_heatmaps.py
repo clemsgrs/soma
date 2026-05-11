@@ -15,6 +15,7 @@ import torch
 from soma.config import HeatmapConfig
 from soma.heatmaps import (
     _build_coordinate_map,
+    _prediction_files_for_fold,
     normalize_attention,
     _read_sample_ids_from_predictions,
     render_attention_heatmap,
@@ -132,6 +133,18 @@ def test_read_sample_ids_from_predictions(tmp_path):
     _write_predictions(path, ["s1", "s2", "s3"])
     ids = _read_sample_ids_from_predictions(path)
     assert ids == ["s1", "s2", "s3"]
+
+
+def test_prediction_files_for_fold_prefers_current_split_files(tmp_path):
+    _write_predictions(tmp_path / "predictions_test.csv", ["s1"])
+    _write_predictions(tmp_path / "predictions_test_external.csv", ["s2"])
+
+    files = _prediction_files_for_fold(tmp_path)
+
+    assert files == [
+        ("test", tmp_path / "predictions_test.csv"),
+        ("test_external", tmp_path / "predictions_test_external.csv"),
+    ]
 
 
 # ---------------------------------------------------------------------------

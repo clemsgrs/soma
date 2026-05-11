@@ -73,6 +73,8 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "regression": ["mae", "r2"],
 }
 
+LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae"}
+
 # ---------------------------------------------------------------------------
 # Per-metric functions — signature: (y_true, y_pred, y_prob) -> float
 # y_prob is None for ordinal/regression metrics
@@ -182,6 +184,8 @@ def _r2(y_true, y_pred, y_prob) -> float:
 
 
 def _pearson(y_true, y_pred, y_prob) -> float:
+    if len(y_true) < 2:
+        return 0.0
     result = pearsonr(y_true, y_pred)
     return _finite_correlation(result.statistic)
 
@@ -276,6 +280,25 @@ def compute_metrics(
     return {name: funs[name](y_true, y_pred, y_prob) for name in metrics}
 
 
+def metric_higher_is_better(metric: str) -> bool:
+    """Return whether larger values mean better performance for a metric."""
+    return metric not in LOWER_IS_BETTER_METRICS
+
+
+def probability_columns(columns) -> list[str]:
+    """Return ``prob_*`` columns sorted by numeric class index."""
+    prob_cols = [c for c in columns if str(c).startswith("prob_")]
+
+    def _key(name: str) -> tuple[int, int | str]:
+        suffix = str(name).removeprefix("prob_")
+        try:
+            return (0, int(suffix))
+        except ValueError:
+            return (1, suffix)
+
+    return sorted(prob_cols, key=_key)
+
+
 def bh_correct(p_values: list[float]) -> list[float]:
     """Benjamini-Hochberg FDR correction via scipy.stats.false_discovery_control.
 
@@ -346,7 +369,10 @@ def compare_run_predictions(
     if not valid:
         return [None] * n_runs
 
-    best_idx, best_score = max(valid, key=lambda x: x[1])
+    if metric_higher_is_better(metric):
+        best_idx, best_score = max(valid, key=lambda x: x[1])
+    else:
+        best_idx, best_score = min(valid, key=lambda x: x[1])
     rng = np.random.default_rng(seed)
 
     def _prediction_cols(df: pd.DataFrame) -> list[str]:
@@ -433,7 +459,7 @@ def _extract_arrays(
     """
     y_true = df["true_label"].to_numpy()
 
-    prob_cols = sorted(c for c in df.columns if c.startswith("prob_"))
+    prob_cols = probability_columns(df.columns)
     if prob_cols:
         y_pred = df["predicted_label"].to_numpy()
         y_prob = df[prob_cols].to_numpy()

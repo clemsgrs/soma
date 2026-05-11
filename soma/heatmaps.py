@@ -52,7 +52,8 @@ def save_attention(
 
     For each fold directory in *run_dir*, loads ``best_model.pt`` and the
     run's ``config.yaml``, then writes one ``.npz`` file per test sample to
-    ``fold_N/attention/<sample_id>.npz``.
+    ``fold_N/attention/<split>/<sample_id>.npz``. Legacy ``predictions.csv``
+    files still write directly under ``attention/``.
 
     The stored array has key ``"attention"`` with shape:
 
@@ -99,12 +100,12 @@ def save_attention(
 
     for fold_dir in fold_dirs:
         checkpoint_path = fold_dir / "best_model.pt"
-        predictions_path = fold_dir / "predictions.csv"
+        prediction_files = _prediction_files_for_fold(fold_dir)
         if not checkpoint_path.is_file():
             logger.warning("save_attention: no checkpoint found at %s, skipping fold", checkpoint_path)
             continue
-        if not predictions_path.is_file():
-            logger.warning("save_attention: no predictions.csv found at %s, skipping fold", predictions_path)
+        if not prediction_files:
+            logger.warning("save_attention: no predictions files found in %s, skipping fold", fold_dir)
             continue
 
         # Reconstruct model
@@ -121,33 +122,50 @@ def save_attention(
         model.to(device)
         model.eval()
 
-        # Read test sample IDs from predictions.csv
-        test_sample_ids = _read_sample_ids_from_predictions(predictions_path)
-
-        attention_dir = fold_dir / "attention"
-        attention_dir.mkdir(exist_ok=True)
-
         with torch.inference_mode():
-            for sample_id in test_sample_ids:
-                if sample_id not in feature_store.available_samples:
-                    logger.warning("save_attention: features not found for %s, skipping", sample_id)
-                    continue
+            for split_name, predictions_path in prediction_files:
+                test_sample_ids = _read_sample_ids_from_predictions(predictions_path)
+                attention_dir = fold_dir / "attention"
+                if split_name is not None:
+                    attention_dir = attention_dir / split_name
+                attention_dir.mkdir(parents=True, exist_ok=True)
 
-                features = feature_store.load(sample_id).unsqueeze(0).to(device)  # (1, N, D)
-                out = model(features)
+                for sample_id in test_sample_ids:
+                    if sample_id not in feature_store.available_samples:
+                        logger.warning("save_attention: features not found for %s, skipping", sample_id)
+                        continue
 
-                if out.tile_attention is None:
-                    logger.info(
-                        "save_attention: %s returned no tile_attention for sample %s — skipping",
-                        agg_name, sample_id,
-                    )
-                    continue
+                    features = feature_store.load(sample_id).unsqueeze(0).to(device)  # (1, N, D)
+                    out = model(features)
 
-                attention = normalize_attention(out.tile_attention, agg_name)  # (N,) or (n_classes, N)
-                np.savez_compressed(attention_dir / f"{sample_id}.npz", attention=attention)
-                logger.debug("Saved attention for %s → %s", sample_id, attention_dir / f"{sample_id}.npz")
+                    if out.tile_attention is None:
+                        logger.info(
+                            "save_attention: %s returned no tile_attention for sample %s — skipping",
+                            agg_name, sample_id,
+                        )
+                        continue
 
-        logger.info("Saved attention scores for %s to %s", fold_dir.name, attention_dir)
+                    attention = normalize_attention(out.tile_attention, agg_name)  # (N,) or (n_classes, N)
+                    np.savez_compressed(attention_dir / f"{sample_id}.npz", attention=attention)
+                    logger.debug("Saved attention for %s → %s", sample_id, attention_dir / f"{sample_id}.npz")
+
+        logger.info("Saved attention scores for %s/%s to %s", fold_dir.name, split_name or "legacy", attention_dir)
+
+
+def _prediction_files_for_fold(fold_dir: Path) -> list[tuple[str | None, Path]]:
+    """Return current and legacy prediction files for a fold.
+
+    Current pipeline runs write ``predictions_<split>.csv``. Older runs may
+    contain a single ``predictions.csv`` file.
+    """
+    split_files = [
+        (path.stem.removeprefix("predictions_"), path)
+        for path in sorted(fold_dir.glob("predictions_*.csv"))
+    ]
+    legacy_path = fold_dir / "predictions.csv"
+    if legacy_path.is_file():
+        return [(None, legacy_path), *split_files]
+    return split_files
 
 
 # ---------------------------------------------------------------------------

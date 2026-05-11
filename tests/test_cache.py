@@ -29,6 +29,7 @@ from soma.cache import (
     resolve_hierarchical_cache,
     resolve_slide_cache,
     resolve_tile_cache,
+    sample_identity_signature,
     write_feature_payload,
     write_tiling_cache_payload,
     write_tiling_cache_stub,
@@ -163,6 +164,40 @@ def test_tile_cache_key_changes_with_backend(tmp_path: Path):
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     assert key_a != key_b
+
+
+def test_sample_identity_file_fingerprinting_is_opt_in(tmp_path: Path):
+    image_path = tmp_path / "slide.svs"
+    image_path.write_bytes(b"original")
+
+    default_a = sample_identity_signature(
+        sample_id="s1",
+        image_path=image_path,
+        mask_path=None,
+    )
+    fingerprinted_a = sample_identity_signature(
+        sample_id="s1",
+        image_path=image_path,
+        mask_path=None,
+        fingerprint_files=True,
+    )
+
+    image_path.write_bytes(b"changed")
+
+    default_b = sample_identity_signature(
+        sample_id="s1",
+        image_path=image_path,
+        mask_path=None,
+    )
+    fingerprinted_b = sample_identity_signature(
+        sample_id="s1",
+        image_path=image_path,
+        mask_path=None,
+        fingerprint_files=True,
+    )
+
+    assert default_a == default_b
+    assert fingerprinted_a != fingerprinted_b
 
 
 def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
@@ -733,6 +768,41 @@ def test_feature_cache_validation_uses_rich_progress_bar_when_available(tmp_path
     assert [update["completed"] for update in reporter.progress.updates] == [1, 2, 3]
     assert reporter.progress.removed_tasks == [1]
     assert emit_progress_log.call_count == 0
+
+
+def test_feature_cache_payload_validation_is_opt_in(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.save(torch.randn(4), feature_dir / "s1.pt")
+    metadata = {
+        "feature_type": "bag",
+        "feature_dim": 4,
+        "empty_sample_ids": [],
+        "sample_identity_signature_by_id": {"s1": "sig"},
+    }
+    cache_stem_by_id = {"s1": "sig"}
+
+    result, present, expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=["s1"],
+        cache_stem_by_id=cache_stem_by_id,
+    )
+    assert result.complete is True
+    assert present == 1
+    assert expected == 1
+
+    result, present, expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=["s1"],
+        cache_stem_by_id=cache_stem_by_id,
+        validate_payloads=True,
+    )
+    assert result.complete is False
+    assert "rank mismatch" in result.reason
+    assert present == 0
+    assert expected == 1
 
 
 def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_path: Path):

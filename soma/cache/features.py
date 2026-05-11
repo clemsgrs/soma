@@ -7,6 +7,9 @@ import logging
 from pathlib import Path
 from typing import Any, Sequence
 
+import torch
+from slide2vec.artifacts import load_array
+
 logger = logging.getLogger(__name__)
 
 from soma.cache._types import (
@@ -258,6 +261,7 @@ def _validate_feature_cache_contents(
     metadata: dict[str, Any],
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
+    validate_payloads: bool = False,
 ) -> tuple[CacheValidationResult, int, int]:
     feature_type = str(metadata.get("feature_type", ""))
     if feature_type not in _FEATURE_TYPE_TO_RANK:
@@ -270,6 +274,8 @@ def _validate_feature_cache_contents(
         str(cache_id): str(signature)
         for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
     }
+    expected_rank = _FEATURE_TYPE_TO_RANK[feature_type]
+    expected_feature_dim = metadata.get("feature_dim")
     expected = 0
     present = 0
     reason: str | None = None
@@ -306,6 +312,30 @@ def _validate_feature_cache_contents(
                 if reason is None:
                     reason = f"missing feature for {cache_id}"
                 continue
+            if validate_payloads:
+                try:
+                    payload = load_array(path)
+                    tensor = payload if torch.is_tensor(payload) else torch.as_tensor(payload)
+                except Exception:
+                    logger.debug("Could not load cached feature payload at %s", path, exc_info=True)
+                    if reason is None:
+                        reason = f"invalid feature payload for {cache_id}"
+                    continue
+                if tensor.ndim != expected_rank:
+                    if reason is None:
+                        reason = (
+                            f"feature rank mismatch for {cache_id}: "
+                            f"expected {expected_rank}, found {tensor.ndim}"
+                        )
+                    continue
+                feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
+                if expected_feature_dim is not None and int(expected_feature_dim) != feature_dim:
+                    if reason is None:
+                        reason = (
+                            f"feature dim mismatch for {cache_id}: "
+                            f"expected {int(expected_feature_dim)}, found {feature_dim}"
+                        )
+                    continue
             present += 1
         complete = reason is None
         return CacheValidationResult(complete=complete, reason=reason), present, expected
@@ -325,6 +355,7 @@ def _resolve_cache(
     manifest_rows: list[dict[str, object]] | None = None,
     initial_reason: str | None = None,
     complete_state: str = "hit",
+    validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
     features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
@@ -362,6 +393,7 @@ def _resolve_cache(
             metadata=existing,
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
+            validate_payloads=validate_payloads,
         )
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
@@ -430,6 +462,8 @@ def resolve_tile_cache(
     feature_type: str = "bag",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -443,6 +477,7 @@ def resolve_tile_cache(
         dataset=dataset,
         cache_kind="tile",
         static_identity_payload={"cache_key": metadata["cache_key"]},
+        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -455,6 +490,7 @@ def resolve_tile_cache(
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
+        validate_payloads=validate_payloads,
     )
 
 
@@ -471,6 +507,8 @@ def resolve_slide_cache(
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -494,6 +532,7 @@ def resolve_slide_cache(
         dataset=dataset,
         cache_kind="slide",
         static_identity_payload={"cache_key": metadata["cache_key"]},
+        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -506,6 +545,7 @@ def resolve_slide_cache(
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
+        validate_payloads=validate_payloads,
     )
 
 
@@ -522,6 +562,8 @@ def resolve_patient_cache(
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -545,6 +587,7 @@ def resolve_patient_cache(
         dataset=dataset,
         cache_kind="patient",
         static_identity_payload={"cache_key": metadata["cache_key"]},
+        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -557,6 +600,7 @@ def resolve_patient_cache(
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
+        validate_payloads=validate_payloads,
     )
 
 
@@ -570,6 +614,8 @@ def resolve_hierarchical_cache(
     output_variant: str | None = None,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -582,6 +628,7 @@ def resolve_hierarchical_cache(
         dataset=dataset,
         cache_kind="hierarchical",
         static_identity_payload={"cache_key": metadata["cache_key"]},
+        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -594,6 +641,7 @@ def resolve_hierarchical_cache(
         manifest_rows=dataset_manifest_rows(dataset),
         initial_reason="initializing",
         complete_state=complete_state,
+        validate_payloads=validate_payloads,
     )
 
 

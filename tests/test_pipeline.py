@@ -103,6 +103,32 @@ def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     return dataset_csv, splits_csv, feature_dir
 
 
+def _setup_patient_leakage_data(tmp_path: Path) -> tuple[Dataset, Splits, FeatureStore]:
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2", "s3", "s4"],
+            "image_path": ["/slides/s1.svs", "/slides/s2.svs", "/slides/s3.svs", "/slides/s4.svs"],
+            "label": [0, 0, 1, 1],
+            "patient_id": ["p1", "p1", "p2", "p2"],
+        }
+    ).to_csv(dataset_csv, index=False)
+    splits_csv = tmp_path / "splits.csv"
+    pd.DataFrame(
+        {
+            "fold": [0, 0, 0, 0],
+            "sample_id": ["s1", "s2", "s3", "s4"],
+            "split": ["train", "test", "train", "tune"],
+        }
+    ).to_csv(splits_csv, index=False)
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    for sample_id in ["s1", "s2", "s3", "s4"]:
+        torch.save(torch.randn(2, D), feature_dir / f"{sample_id}.pt")
+    dataset = Dataset(dataset_csv)
+    return dataset, Splits(splits_csv, dataset), FeatureStore(feature_dir)
+
+
 def _setup_train_test_only_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     """Create dataset.csv, splits.csv, and feature files with no tune split."""
     dataset_csv = tmp_path / "dataset.csv"
@@ -758,6 +784,20 @@ class TestTrainOneFold:
 
 
 class TestTrain:
+    def test_slide_level_train_rejects_patient_leakage_when_patient_ids_present(self, tmp_path: Path):
+        dataset, splits, store = _setup_patient_leakage_data(tmp_path)
+
+        with pytest.raises(ValueError, match="Patient leakage"):
+            train(
+                feature_store=store,
+                dataset=dataset,
+                splits=splits,
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="binary_classification"),
+                training=TrainingConfig(epochs=1, patience=1, batch_size=2),
+                run_dir=tmp_path / "output",
+            )
+
     def test_single_fold_returns_pipeline_result(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         dataset = Dataset(dataset_csv)

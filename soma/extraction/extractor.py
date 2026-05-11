@@ -325,6 +325,7 @@ class FeatureExtractor:
             backend_provenance=backend_provenance,
             encoder_name=self._encoder.name,
             requested_preprocessing=asdict(self._preprocessing),
+            fingerprint_files=self._cache.fingerprint_files,
         )
         if cache_resolution.complete:
             write_tiling_cache_stub(tiling_dir, cache_resolution=cache_resolution)
@@ -367,6 +368,7 @@ class FeatureExtractor:
                 encoder_name=self._encoder.name,
                 requested_preprocessing=asdict(self._preprocessing),
                 complete_state="populated",
+                fingerprint_files=self._cache.fingerprint_files,
             )
             if refreshed.complete:
                 write_tiling_cache_stub(tiling_dir, cache_resolution=refreshed)
@@ -889,6 +891,8 @@ class FeatureExtractor:
             ),
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
@@ -919,6 +923,8 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -950,6 +956,8 @@ class FeatureExtractor:
             ),
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
@@ -980,6 +988,8 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1019,6 +1029,8 @@ class FeatureExtractor:
             ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         slide_cache = resolve_slide_cache(
             cache_root=cache_root,
@@ -1039,6 +1051,8 @@ class FeatureExtractor:
             ),
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cache_marker(feature_dir, cache_resolution=slide_cache)
         if tile_cache.complete and slide_cache.complete:
@@ -1068,6 +1082,8 @@ class FeatureExtractor:
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         refreshed = resolve_slide_cache(
             cache_root=cache_root,
@@ -1089,6 +1105,8 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1128,6 +1146,8 @@ class FeatureExtractor:
             ),
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         patient_cache = resolve_patient_cache(
             cache_root=cache_root,
@@ -1148,6 +1168,8 @@ class FeatureExtractor:
             ),
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
         if tile_cache.complete and patient_cache.complete:
@@ -1180,6 +1202,8 @@ class FeatureExtractor:
             output_variant=str(tile_dependency_output["output_variant"]),
             backend_provenance=backend_provenance,
             complete_state="populated",
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._populate_patient_cache(
             patient_cache=patient_cache,
@@ -1210,6 +1234,8 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             backend_provenance=backend_provenance,
             complete_state="populated",
+            fingerprint_files=self._cache.fingerprint_files,
+            validate_payloads=self._cache.validate_payloads,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)

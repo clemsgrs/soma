@@ -197,10 +197,14 @@ class Splits:
             raise ValueError(msg)
 
         # Check split names
-        invalid = {name for name in df["split"] if not _is_valid_split_name(name)}
+        invalid = {
+            name
+            for name in df["split"]
+            if not isinstance(name, str) or not _is_valid_split_name(name)
+        }
         if invalid:
             msg = (
-                f"Invalid split name(s): {sorted(invalid)}. "
+                f"Invalid split name(s): {sorted(str(name) for name in invalid)}. "
                 "Must be 'train', 'tune', or start with 'test'."
             )
             raise ValueError(msg)

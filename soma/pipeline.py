@@ -761,7 +761,7 @@ def train(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    if dataset_type == "patient":
+    if dataset_type == "patient" or dataset.has_patient_ids:
         splits.validate_no_patient_leakage(dataset)
 
     single_fold = splits.num_folds == 1

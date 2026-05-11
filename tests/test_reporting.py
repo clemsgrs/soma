@@ -15,7 +15,7 @@ from soma.dataset import Dataset
 from soma.evaluation.metrics import DEFAULT_METRICS, resolve_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
-from soma.reporting.data import FoldData, RunData, run_data_from_result
+from soma.reporting.data import FoldData, FoldSlice, RunData, aggregate_slice_predictions, run_data_from_result
 from soma.reporting.subgroups import subgroup_data_for_predictions
 from soma.reporting.html import render_report
 from soma.training.trainer import EpochLog, TrainResult
@@ -366,6 +366,39 @@ def test_run_data_from_result(tmp_path: Path) -> None:
     assert fd.test_metrics == {"test": {"auroc": 0.60}}
     assert "prob_1" in fd.predictions["test"].columns
     assert len(fd.predictions["test"]) == 2
+
+
+def test_aggregate_predictions_sorts_probability_columns_numerically() -> None:
+    df1 = pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "true_label": [10],
+            "predicted_label": [1],
+            "prob_0": [0.0],
+            "prob_1": [0.1],
+            "prob_2": [0.2],
+            "prob_10": [0.9],
+        }
+    )
+    df2 = pd.DataFrame(
+        {
+            "sample_id": ["s1"],
+            "true_label": [10],
+            "predicted_label": [2],
+            "prob_0": [0.0],
+            "prob_1": [0.1],
+            "prob_2": [0.2],
+            "prob_10": [0.9],
+        }
+    )
+    slices = [
+        FoldSlice(0, [], {}, {}, df1),
+        FoldSlice(1, [], {}, {}, df2),
+    ]
+
+    aggregated = aggregate_slice_predictions(slices)
+
+    assert aggregated.loc[0, "predicted_label"] == 10
 
 
 def test_run_data_from_result_preserves_coverage_counts(tmp_path: Path) -> None:
