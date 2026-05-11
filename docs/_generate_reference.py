@@ -204,6 +204,8 @@ def build_cli_rst() -> str:
              enabled: true
              root_dir: null              # null → inside output_root
              reuse_policy: strict        # strict | relaxed
+             fingerprint_files: false    # hash slide/mask contents for cache identity
+             validate_payloads: false    # load cached tensors to verify shape/dim
 
            # ── Encoder ──────────────────────────────────────────────────────
            encoder:

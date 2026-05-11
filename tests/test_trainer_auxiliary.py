@@ -20,6 +20,7 @@ from soma.config import TrainingConfig
 from soma.tasks.classification import (
     BinaryClassificationHead,
     BranchAwareClassificationHead,
+    MulticlassClassificationHead,
 )
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
@@ -90,7 +91,13 @@ def _train_one_epoch(aggregator: Aggregator, feat_dim: int = 16) -> float:
     return trainer._train_epoch()
 
 
-def _train_one_epoch_with_head(aggregator: Aggregator, head, feat_dim: int = 16, n_classes: int = 2) -> float:
+def _train_one_epoch_with_head(
+    aggregator: Aggregator,
+    head,
+    feat_dim: int = 16,
+    n_classes: int = 2,
+    label_dtype: torch.dtype | None = None,
+) -> float:
     """Build a MILModel with the given aggregator/head and train one epoch."""
     torch.manual_seed(0)
     model = MILModel(aggregator=aggregator, task_head=head)
@@ -98,7 +105,7 @@ def _train_one_epoch_with_head(aggregator: Aggregator, head, feat_dim: int = 16,
         n_samples=4,
         feat_dim=feat_dim,
         n_classes=n_classes,
-        label_dtype=head.label_dtype,
+        label_dtype=label_dtype or head.label_dtype,
     )
     loader = _FakeBagLoader(batches)
     config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
@@ -224,6 +231,30 @@ class TestAuxiliaryLossWiring:
     def test_dtfdmil_trainer_epoch_runs(self):
         """Trainer epoch with DTFD-MIL completes without error (aux loss wired)."""
         loss = _train_one_epoch(DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4))
+        assert loss > 0
+
+    def test_dtfdmil_multiclass_trainer_epoch_runs(self):
+        loss = _train_one_epoch_with_head(
+            DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
+            MulticlassClassificationHead(input_dim=16, num_classes=3),
+            n_classes=3,
+        )
+        assert loss > 0
+
+    def test_dtfdmil_ordinal_trainer_epoch_runs(self):
+        loss = _train_one_epoch_with_head(
+            DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
+            OrdinalClassificationHead(input_dim=16, num_classes=3),
+            n_classes=3,
+        )
+        assert loss > 0
+
+    def test_dtfdmil_regression_trainer_epoch_runs(self):
+        loss = _train_one_epoch_with_head(
+            DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
+            RegressionHead(input_dim=16),
+            label_dtype=torch.float,
+        )
         assert loss > 0
 
     def test_abmil_trainer_epoch_runs(self):

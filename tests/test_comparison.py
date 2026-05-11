@@ -42,6 +42,14 @@ def _make_binary_predictions(n: int = 8) -> pd.DataFrame:
     })
 
 
+def _make_regression_predictions(n: int = 8, offset: float = 0.0) -> pd.DataFrame:
+    return pd.DataFrame({
+        "sample_id": [f"s{i}" for i in range(n)],
+        "true_label": [float(i) for i in range(n)],
+        "predicted_value": [float(i) + offset for i in range(n)],
+    })
+
+
 def _make_run_dir(
     tmp_path: Path,
     *,
@@ -92,6 +100,25 @@ def _make_run_dir(
         (fold_dir / "metrics.json").write_text(json.dumps(metrics_data))
         _make_binary_predictions().to_csv(fold_dir / "predictions_test.csv", index=False)
 
+    return run_dir
+
+
+def _make_regression_run_dir(
+    tmp_path: Path,
+    *,
+    run_id: str,
+    mae: float,
+    offset: float,
+) -> Path:
+    run_dir = _make_run_dir(tmp_path, run_id=run_id)
+    config = yaml.safe_load((run_dir / "config.yaml").read_text())
+    config["task"] = {"name": "regression", "params": {}}
+    config["evaluation"]["metrics"] = ["mae"]
+    (run_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    (run_dir / "summary.json").write_text(json.dumps({"test/mae_mean": mae, "test/mae_std": 0.01}))
+    fold_dir = run_dir / "fold_0"
+    (fold_dir / "metrics.json").write_text(json.dumps({"tune": {"mae": mae}, "test": {"mae": mae}}))
+    _make_regression_predictions(offset=offset).to_csv(fold_dir / "predictions_test.csv", index=False)
     return run_dir
 
 
@@ -296,3 +323,21 @@ def test_compare_runs_overview_ranks_runs_and_metrics(tmp_path: Path) -> None:
     config_html = html[config_start:]
     assert "Varying fields" in config_html
     assert "Shared fields" in config_html
+
+
+def test_compare_runs_treats_error_metrics_as_lower_is_better(tmp_path: Path) -> None:
+    good = _make_regression_run_dir(tmp_path / "good", run_id="good", mae=0.1, offset=0.1)
+    bad = _make_regression_run_dir(tmp_path / "bad", run_id="bad", mae=0.8, offset=0.8)
+
+    report_path = compare_runs(
+        [bad, good],
+        output_dir=tmp_path / "comparison-regression",
+        labels=["bad", "good"],
+    )
+    html = report_path.read_text()
+    overview_html = html[html.index('id="overview-tab"'):html.index('id="train-plots-tab"')]
+    test_results_html = html[html.index('id="test-results-tab"'):html.index('id="statistical-analysis-tab"')]
+
+    assert overview_html.index("good") < overview_html.index("bad")
+    assert "<td class=''><strong>0.800</strong>" in test_results_html
+    assert "<td class='best-val'><strong>0.100</strong>" in test_results_html

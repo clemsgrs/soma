@@ -59,6 +59,8 @@ cache:
   enabled: true
   root_dir: null
   reuse_policy: strict
+  fingerprint_files: false
+  validate_payloads: false
 
 encoder:
   # Foundation-model encoder.

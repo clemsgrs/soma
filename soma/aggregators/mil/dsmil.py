@@ -15,6 +15,7 @@ from torch import Tensor, nn
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.mil.attention_pool import masked_softmax
 from soma.aggregators.registry import aggregator_registry
+from soma.tasks.base import TaskHead
 
 
 class DSMIL(Aggregator):
@@ -102,6 +103,14 @@ class DSMIL(Aggregator):
     @property
     def output_dim(self) -> int:
         return self._input_dim
+
+    def configure_for_task(self, task_head: TaskHead) -> None:
+        """Validate DSMIL's binary instance-stream assumption."""
+        if task_head.task_family != "binary_classification":
+            raise ValueError(
+                "dsmil only supports binary_classification. Its instance stream "
+                "uses a single binary critical-instance score."
+            )
 
     def compute_auxiliary_loss(
         self,

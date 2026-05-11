@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import numpy as np
 import torch
+import torch.nn.functional as F
 import pytest
 
 from soma.aggregators.base import AggregatorOutput
 from soma.aggregators.registry import aggregator_registry
+from soma.tasks.classification import MulticlassClassificationHead
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
+from soma.tasks.regression import RegressionHead
+from soma.training.model import MILModel
 
 
 class TestDTFDMIL:
@@ -57,6 +63,34 @@ class TestDTFDMIL:
         mask = torch.tensor([[True] * 6 + [False] * 3])
         out = model(X, mask=mask)
         assert out.bag_representation.shape == (1, 8)
+
+    def test_masked_forward_ignores_padded_tiles(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        model = DTFDMIL(input_dim=4, hidden_dim=3, n_groups=4, dropout=0.0)
+        valid = torch.randn(1, 3, 4)
+        padded = torch.full((1, 5, 4), 1_000_000.0)
+        X = torch.cat([valid, padded], dim=1)
+        mask = torch.tensor([[True, True, True, False, False, False, False, False]])
+
+        np.random.seed(123)
+        masked_out = model(X, mask=mask)
+        np.random.seed(123)
+        valid_out = model(valid)
+
+        assert torch.isfinite(masked_out.bag_representation).all()
+        assert torch.isfinite(masked_out.tile_attention).all()
+        assert torch.allclose(masked_out.bag_representation, valid_out.bag_representation)
+        assert torch.allclose(
+            masked_out.auxiliary["pseudo_predictions"],
+            valid_out.auxiliary["pseudo_predictions"],
+        )
+        assert torch.allclose(masked_out.tile_attention[:, :3], valid_out.tile_attention)
+        assert torch.equal(
+            masked_out.tile_attention[:, 3:],
+            torch.zeros_like(masked_out.tile_attention[:, 3:]),
+        )
 
     def test_n_groups_clipping(self):
         """n_groups should be clipped to bag_size when bag is small."""
@@ -120,3 +154,64 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         assert cls is DTFDMIL
+
+    def test_multiclass_auxiliary_loss_uses_cross_entropy(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        head = MulticlassClassificationHead(input_dim=8, num_classes=3)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 6, 8)
+        labels = torch.tensor([0, 2])
+
+        out = model(X)
+        pseudo_pred = out.auxiliary["pseudo_predictions"]
+        assert pseudo_pred.shape == (2, 2, 3)
+
+        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        targets = labels.unsqueeze(1).expand(-1, 2).reshape(-1)
+        expected = F.cross_entropy(pseudo_pred.reshape(-1, 3), targets)
+        assert torch.isclose(loss, expected)
+
+    def test_ordinal_auxiliary_loss_uses_scalar_mse(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        head = OrdinalClassificationHead(input_dim=8, num_classes=5)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 6, 8)
+        labels = torch.tensor([1, 4])
+
+        out = model(X)
+        pseudo_pred = out.auxiliary["pseudo_predictions"]
+        assert pseudo_pred.shape == (2, 2)
+
+        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        expected = F.mse_loss(
+            pseudo_pred,
+            labels.float().unsqueeze(1).expand_as(pseudo_pred),
+        )
+        assert torch.isclose(loss, expected)
+
+    def test_regression_auxiliary_loss_uses_scalar_mse(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        head = RegressionHead(input_dim=8)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 6, 8)
+        labels = torch.tensor([0.5, -1.0])
+
+        out = model(X)
+        pseudo_pred = out.auxiliary["pseudo_predictions"]
+        assert pseudo_pred.shape == (2, 2)
+
+        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        expected = F.mse_loss(
+            pseudo_pred,
+            labels.float().unsqueeze(1).expand_as(pseudo_pred),
+        )
+        assert torch.isclose(loss, expected)

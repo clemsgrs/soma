@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import yaml
 
-from soma.evaluation.metrics import resolve_metrics
+from soma.evaluation.metrics import probability_columns, resolve_metrics
 from soma.reporting.subgroups import enrich_predictions_with_subgroups, subgroup_report_for_predictions
 from soma.training.trainer import epoch_log_to_dict
 
@@ -144,9 +144,13 @@ def _aggregate_dataframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
     agg.update({c: "mean" for c in mean_cols})
     result = df.groupby("sample_id", sort=False).agg(agg).reset_index()
 
-    prob_cols_sorted = sorted(prob_cols)
+    prob_cols_sorted = probability_columns(prob_cols)
     if prob_cols_sorted:
-        result["predicted_label"] = result[prob_cols_sorted].to_numpy().argmax(axis=1)
+        class_indices = [int(col.removeprefix("prob_")) for col in prob_cols_sorted]
+        result["predicted_label"] = [
+            class_indices[idx]
+            for idx in result[prob_cols_sorted].to_numpy().argmax(axis=1)
+        ]
     elif "raw_score" in result.columns:
         result["predicted_label"] = result["raw_score"].round().astype(int)
 

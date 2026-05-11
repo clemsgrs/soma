@@ -244,6 +244,8 @@ class CacheConfig:
     enabled: bool = True
     root_dir: str | Path | None = None
     reuse_policy: str = "strict"
+    fingerprint_files: bool = False
+    validate_payloads: bool = False
 
 
 @dataclass(frozen=True)
@@ -310,6 +312,16 @@ class TrainingConfig:
     batch_size: int = 1
     gradient_accumulation: int = 1
     allow_missing_tune: bool = False
+
+    def __post_init__(self) -> None:
+        if self.epochs < 1:
+            raise ValueError("TrainingConfig.epochs must be >= 1")
+        if self.batch_size < 1:
+            raise ValueError("TrainingConfig.batch_size must be >= 1")
+        if self.gradient_accumulation < 1:
+            raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
+        if self.patience < 1:
+            raise ValueError("TrainingConfig.patience must be >= 1")
 
 
 @dataclass(frozen=True)

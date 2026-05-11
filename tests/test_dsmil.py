@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from soma.aggregators.base import AggregatorOutput
 from soma.aggregators.registry import aggregator_registry
+from soma.tasks.classification import MulticlassClassificationHead
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
+from soma.tasks.regression import RegressionHead
+from soma.training.model import MILModel
 
 
 class TestDSMIL:
@@ -92,3 +97,17 @@ class TestDSMIL:
         from soma.aggregators.mil.dsmil import DSMIL
 
         assert cls is DSMIL
+
+    @pytest.mark.parametrize(
+        "head",
+        [
+            MulticlassClassificationHead(input_dim=16, num_classes=3),
+            OrdinalClassificationHead(input_dim=16, num_classes=3),
+            RegressionHead(input_dim=16),
+        ],
+    )
+    def test_rejects_non_binary_task_heads(self, head):
+        from soma.aggregators.mil.dsmil import DSMIL
+
+        with pytest.raises(ValueError, match="dsmil.*binary_classification"):
+            MILModel(aggregator=DSMIL(input_dim=16, att_dim=8), task_head=head)

@@ -39,6 +39,16 @@ extraction.
 - Feature reuse keys include sample identity
   ``(sample_id, image_path, mask_path)`` plus encoder/preprocessing/execution
   settings.
+- By default, sample identity uses paths only. Set
+  ``cache.fingerprint_files: true`` to include SHA-256 hashes of slide and
+  mask file contents in per-sample cache identity. This is safer when files
+  may be replaced in place, but it requires reading each input file during
+  cache resolution and can be expensive for large WSI cohorts.
+- By default, feature cache validation checks metadata identity and payload
+  existence only. Set ``cache.validate_payloads: true`` to load cached tensors
+  and verify rank and feature dimension before accepting a cache hit. This
+  catches corrupt or wrong-shaped payloads, but it adds I/O proportional to the
+  number of cached feature files.
 - Cache metadata stores a normalized ``feature_type``:
 
   - ``tile``: 1-D embeddings for ``dataset_type="tile"``

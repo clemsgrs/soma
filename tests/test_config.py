@@ -78,6 +78,21 @@ def test_training_config_defaults():
     assert cfg.scheduler == "cosine"
     assert cfg.patience == 10
     assert cfg.batch_size == 1
+    assert cfg.gradient_accumulation == 1
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"epochs": 0}, "epochs"),
+        ({"batch_size": 0}, "batch_size"),
+        ({"gradient_accumulation": 0}, "gradient_accumulation"),
+        ({"patience": 0}, "patience"),
+    ],
+)
+def test_training_config_rejects_non_positive_counts(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        TrainingConfig(**kwargs)
 
 
 def test_aggregator_config_explicit_name():
@@ -215,6 +230,8 @@ def test_cache_config_defaults():
     assert cfg.enabled is True
     assert cfg.root_dir is None
     assert cfg.reuse_policy == "strict"
+    assert cfg.fingerprint_files is False
+    assert cfg.validate_payloads is False
 
 
 def test_aggregator_config_with_params():

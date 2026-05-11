@@ -11,6 +11,7 @@ from soma.evaluation.metrics import (
     DEFAULT_METRICS,
     VALID_METRICS,
     compute_metrics,
+    probability_columns,
     resolve_metrics,
 )
 from soma.evaluation.report import EvaluationReport, SamplePrediction
@@ -287,6 +288,17 @@ class TestRegressionMetrics:
         m = compute_metrics("regression", ["pearson", "spearman"], y_true, y_pred)
         assert m["pearson"] == pytest.approx(0.0)
         assert m["spearman"] == pytest.approx(0.0)
+
+    def test_pearson_one_sample_uses_finite_fallback(self):
+        y_true = np.array([1.0])
+        y_pred = np.array([1.2])
+        m = compute_metrics("regression", ["pearson"], y_true, y_pred)
+        assert m["pearson"] == pytest.approx(0.0)
+
+
+def test_probability_columns_sort_by_numeric_suffix():
+    columns = ["prob_0", "prob_1", "prob_10", "prob_2", "sample_id"]
+    assert probability_columns(columns) == ["prob_0", "prob_1", "prob_2", "prob_10"]
 
 
 # ---------------------------------------------------------------------------

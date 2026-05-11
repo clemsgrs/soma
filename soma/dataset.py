@@ -197,10 +197,14 @@ class Splits:
             raise ValueError(msg)
 
         # Check split names
-        invalid = {name for name in df["split"] if not _is_valid_split_name(name)}
+        invalid = {
+            name
+            for name in df["split"]
+            if not isinstance(name, str) or not _is_valid_split_name(name)
+        }
         if invalid:
             msg = (
-                f"Invalid split name(s): {sorted(invalid)}. "
+                f"Invalid split name(s): {sorted(str(name) for name in invalid)}. "
                 "Must be 'train', 'tune', or start with 'test'."
             )
             raise ValueError(msg)
@@ -210,6 +214,13 @@ class Splits:
             dupes = group["sample_id"][group["sample_id"].duplicated()]
             if not dupes.empty:
                 msg = f"Duplicate sample_id(s) in fold {fold_idx}: {dupes.tolist()}"
+                raise ValueError(msg)
+            has_test_split = group["split"].map(lambda name: name.startswith("test")).any()
+            if not has_test_split:
+                msg = (
+                    f"Fold {fold_idx} must contain at least one test split "
+                    "(a split name starting with 'test')."
+                )
                 raise ValueError(msg)
 
     def _build_folds(self, df: pd.DataFrame) -> list[FoldSplit]:

@@ -114,6 +114,37 @@ def test_invalid_split_name_raises(tmp_path: Path, dataset: Dataset):
         Splits(path, dataset)
 
 
+def test_missing_split_value_raises_clear_validation_error(tmp_path: Path, dataset: Dataset):
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0],
+            "sample_id": ["s1", "s2"],
+            "split": ["train", None],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="Invalid split name"):
+        Splits(path, dataset)
+
+
+def test_fold_without_test_split_raises_clear_validation_error(
+    tmp_path: Path, dataset: Dataset
+):
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0, 0],
+            "sample_id": ["s1", "s2", "s3"],
+            "split": ["train", "train", "tune"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+
+    with pytest.raises(ValueError, match="Fold 0 must contain at least one test split"):
+        Splits(path, dataset)
+
+
 def test_duplicate_sample_in_fold_raises(tmp_path: Path, dataset: Dataset):
     df = pd.DataFrame(
         {

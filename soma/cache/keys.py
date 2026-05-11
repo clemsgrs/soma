@@ -28,6 +28,14 @@ def _canonical_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def _file_digest(path: Path | str) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def dataset_manifest_rows(dataset: Dataset) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for sample_id in sorted(dataset.sample_ids):
@@ -64,12 +72,16 @@ def sample_identity_signature(
     sample_id: str,
     image_path: Path | str,
     mask_path: Path | str | None,
+    fingerprint_files: bool = False,
 ) -> str:
     payload = {
         "sample_id": str(sample_id),
         "image_path": str(image_path),
         "mask_path": str(mask_path) if mask_path is not None else None,
     }
+    if fingerprint_files:
+        payload["image_sha256"] = _file_digest(image_path)
+        payload["mask_sha256"] = _file_digest(mask_path) if mask_path is not None else None
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -288,12 +300,17 @@ def build_tiling_cache_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
-def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
+def _sample_identity_payload(
+    dataset: Dataset,
+    *,
+    fingerprint_files: bool = False,
+) -> dict[str, str]:
     return {
         sample_id: sample_identity_signature(
             sample_id=sample.sample_id,
             image_path=sample.image_path,
             mask_path=sample.mask_path,
+            fingerprint_files=fingerprint_files,
         )
         for sample_id, sample in dataset.samples.items()
     }
@@ -304,8 +321,12 @@ def _sample_stems_for_kind(
     dataset: Dataset,
     cache_kind: str,
     static_identity_payload: dict[str, Any],
+    fingerprint_files: bool = False,
 ) -> dict[str, str]:
-    signature_by_sample_id = _sample_identity_payload(dataset)
+    signature_by_sample_id = _sample_identity_payload(
+        dataset,
+        fingerprint_files=fingerprint_files,
+    )
     return {
         sample_id: _sample_cache_stem(
             sample_signature=signature_by_sample_id[sample_id],
@@ -324,8 +345,12 @@ def _patient_stems_for_kind(
     dataset: Dataset,
     cache_kind: str,
     static_identity_payload: dict[str, Any],
+    fingerprint_files: bool = False,
 ) -> dict[str, str]:
-    signature_by_sample_id = _sample_identity_payload(dataset)
+    signature_by_sample_id = _sample_identity_payload(
+        dataset,
+        fingerprint_files=fingerprint_files,
+    )
     sample_ids_by_patient: dict[str, list[str]] = {}
     for sample_id in sorted(dataset.sample_ids):
         record = dataset.samples[sample_id]
@@ -353,8 +378,12 @@ def _sample_stems_for_tiling(
     *,
     dataset: Dataset,
     cache_key: str,
+    fingerprint_files: bool = False,
 ) -> dict[str, str]:
-    signature_by_sample_id = _sample_identity_payload(dataset)
+    signature_by_sample_id = _sample_identity_payload(
+        dataset,
+        fingerprint_files=fingerprint_files,
+    )
     return {
         sample_id: _sample_cache_stem(
             sample_signature=signature_by_sample_id[sample_id],
