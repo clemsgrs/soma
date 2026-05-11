@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import torch
+import torch.nn.functional as F
 import pytest
 
 from soma.aggregators.base import AggregatorOutput
 from soma.aggregators.registry import aggregator_registry
+from soma.tasks.classification import MulticlassClassificationHead
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
+from soma.tasks.regression import RegressionHead
+from soma.training.model import MILModel
 
 
 class TestDTFDMIL:
@@ -120,3 +125,64 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         assert cls is DTFDMIL
+
+    def test_multiclass_auxiliary_loss_uses_cross_entropy(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        head = MulticlassClassificationHead(input_dim=8, num_classes=3)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 6, 8)
+        labels = torch.tensor([0, 2])
+
+        out = model(X)
+        pseudo_pred = out.auxiliary["pseudo_predictions"]
+        assert pseudo_pred.shape == (2, 2, 3)
+
+        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        targets = labels.unsqueeze(1).expand(-1, 2).reshape(-1)
+        expected = F.cross_entropy(pseudo_pred.reshape(-1, 3), targets)
+        assert torch.isclose(loss, expected)
+
+    def test_ordinal_auxiliary_loss_uses_scalar_mse(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        head = OrdinalClassificationHead(input_dim=8, num_classes=5)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 6, 8)
+        labels = torch.tensor([1, 4])
+
+        out = model(X)
+        pseudo_pred = out.auxiliary["pseudo_predictions"]
+        assert pseudo_pred.shape == (2, 2)
+
+        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        expected = F.mse_loss(
+            pseudo_pred,
+            labels.float().unsqueeze(1).expand_as(pseudo_pred),
+        )
+        assert torch.isclose(loss, expected)
+
+    def test_regression_auxiliary_loss_uses_scalar_mse(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        head = RegressionHead(input_dim=8)
+        model = MILModel(aggregator=agg, task_head=head)
+        X = torch.randn(2, 6, 8)
+        labels = torch.tensor([0.5, -1.0])
+
+        out = model(X)
+        pseudo_pred = out.auxiliary["pseudo_predictions"]
+        assert pseudo_pred.shape == (2, 2)
+
+        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        expected = F.mse_loss(
+            pseudo_pred,
+            labels.float().unsqueeze(1).expand_as(pseudo_pred),
+        )
+        assert torch.isclose(loss, expected)

@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.mil.attention_pool import AttentionPool
 from soma.aggregators.registry import aggregator_registry
+from soma.tasks.base import TaskHead
 
 
 class DTFDMIL(Aggregator):
@@ -46,6 +48,8 @@ class DTFDMIL(Aggregator):
         self._input_dim = input_dim
         self.n_groups = n_groups
         self.distill_mode = distill_mode
+        self._auxiliary_mode = "binary"
+        self._t1_output_dim = 1
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
 
@@ -55,6 +59,40 @@ class DTFDMIL(Aggregator):
 
         # Tier 2: distilled feature aggregation
         self.t2_pool = AttentionPool(input_dim=input_dim, hidden_dim=hidden_dim)
+
+    def _set_t1_output_dim(self, output_dim: int) -> None:
+        if output_dim == self._t1_output_dim:
+            return
+        old_classifier = self.t1_classifier
+        new_classifier = nn.Linear(self._input_dim, output_dim)
+        new_classifier.to(
+            device=old_classifier.weight.device,
+            dtype=old_classifier.weight.dtype,
+        )
+        self.t1_classifier = new_classifier
+        self._t1_output_dim = output_dim
+
+    def configure_for_task(self, task_head: TaskHead) -> None:
+        """Resolve tier-1 auxiliary loss shape from the task head."""
+        task_family = task_head.task_family
+        if task_family == "binary_classification":
+            self._auxiliary_mode = "binary"
+            self._set_t1_output_dim(1)
+            return
+        if task_family == "multiclass_classification":
+            num_classes = getattr(task_head, "num_classes", None)
+            if not isinstance(num_classes, int) or num_classes < 2:
+                raise ValueError(
+                    "dtfdmil multiclass auxiliary loss requires task_head.num_classes >= 2"
+                )
+            self._auxiliary_mode = "multiclass"
+            self._set_t1_output_dim(num_classes)
+            return
+        if task_family in {"ordinal_classification", "regression"}:
+            self._auxiliary_mode = "scalar_mse"
+            self._set_t1_output_dim(1)
+            return
+        raise ValueError(f"dtfdmil does not support task family '{task_family}'")
 
     def _cam_1d(self, features: Tensor) -> Tensor:
         """Compute 1D Grad-CAM using tier-1 classifier weights.
@@ -66,9 +104,11 @@ class DTFDMIL(Aggregator):
             CAM scores, shape (B, chunk_size).
         """
         # Weight of last linear layer: (1, D) → use as importance projection
-        weight = self.t1_classifier.weight  # (1, D)
+        weight = self.t1_classifier.weight  # (C, D)
         cam = torch.einsum("bnd,cd->bcn", features, weight)  # (B, 1, chunk_size)
-        return cam.squeeze(1)  # (B, chunk_size)
+        if cam.size(1) == 1:
+            return cam.squeeze(1)  # (B, chunk_size)
+        return cam.max(dim=1).values  # (B, chunk_size)
 
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
         B, bag_size, feat_dim = X.shape
@@ -125,7 +165,9 @@ class DTFDMIL(Aggregator):
             pseudo_feat_list.append(pseudo_feat)
 
         # Combine pseudo-bag predictions
-        pseudo_pred = torch.cat(pseudo_pred_list, dim=1)  # (B, n_groups)
+        pseudo_pred = torch.stack(pseudo_pred_list, dim=1)  # (B, n_groups, O)
+        if pseudo_pred.size(-1) == 1:
+            pseudo_pred = pseudo_pred.squeeze(-1)  # (B, n_groups)
 
         # Combine distilled features and apply tier-2 aggregation
         pseudo_feat = torch.cat(pseudo_feat_list, dim=1)  # (B, total_distilled, D)
@@ -154,10 +196,17 @@ class DTFDMIL(Aggregator):
         mask: Tensor | None = None,
     ) -> Tensor:
         """Pseudo-bag prediction loss (DTFD-MIL tier-1 auxiliary objective)."""
-        pseudo_pred = auxiliary["pseudo_predictions"]  # (B, n_groups)
+        pseudo_pred = auxiliary["pseudo_predictions"]
         n_groups = pseudo_pred.size(1)
-        targets = labels.float().unsqueeze(1).expand(-1, n_groups)
-        return nn.functional.binary_cross_entropy_with_logits(pseudo_pred, targets)
+        if self._auxiliary_mode == "binary":
+            targets = labels.float().unsqueeze(1).expand(-1, n_groups)
+            return F.binary_cross_entropy_with_logits(pseudo_pred, targets)
+        if self._auxiliary_mode == "multiclass":
+            targets = labels.long().unsqueeze(1).expand(-1, n_groups).reshape(-1)
+            logits = pseudo_pred.reshape(-1, pseudo_pred.size(-1))
+            return F.cross_entropy(logits, targets)
+        targets = labels.float().unsqueeze(1).expand_as(pseudo_pred)
+        return F.mse_loss(pseudo_pred, targets)
 
 
 aggregator_registry.register("dtfdmil", DTFDMIL)
