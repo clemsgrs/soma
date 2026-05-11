@@ -25,6 +25,7 @@ Splits format
   | Required columns: ``sample_id``, ``split``.
   | Optional column: ``fold`` (integer). Omit it for a single train/tune/test split; include it with distinct values (0, 1, 2, …) for cross-validation.
   | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
+  | Every fold must contain at least one test split.
 
 Practical notes
 ---------------
@@ -32,6 +33,8 @@ Practical notes
 - Keep ``sample_id`` stable across both files.
 - Use ``patient_id`` when you want patient-level evaluation or aggregation.
 - Prefer explicit test split names when you have more than one held-out cohort.
+- Keep at least one held-out test split in every fold so comparisons are
+  reproducible.
 
 For a quick example of how these manifests fit into a full run, see
 :doc:`getting-started`.

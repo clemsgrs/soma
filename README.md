@@ -27,7 +27,7 @@ The package root exports the main entry points:
 
 `dataset.csv` should contain one row per slide with at least `sample_id`, `image_path`, and `label`. `sample_id` must be unique, `image_path` should point to the slide file, and `label` can be either a string class name or an integer target.
 
-`splits.csv` should assign each `sample_id` to `train`, `tune`, or `test` for every fold. This is what keeps evaluation reproducible and prevents leakage.
+`splits.csv` should assign each `sample_id` to `train`, `tune`, or a `test*` split for every fold. Each fold must contain at least one test split. This is what keeps evaluation reproducible and prevents leakage.
 
 ```python
 from soma import Dataset, Splits

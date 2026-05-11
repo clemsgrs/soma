@@ -215,6 +215,13 @@ class Splits:
             if not dupes.empty:
                 msg = f"Duplicate sample_id(s) in fold {fold_idx}: {dupes.tolist()}"
                 raise ValueError(msg)
+            has_test_split = group["split"].map(lambda name: name.startswith("test")).any()
+            if not has_test_split:
+                msg = (
+                    f"Fold {fold_idx} must contain at least one test split "
+                    "(a split name starting with 'test')."
+                )
+                raise ValueError(msg)
 
     def _build_folds(self, df: pd.DataFrame) -> list[FoldSplit]:
         folds = []
