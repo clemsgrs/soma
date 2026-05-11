@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 import pytest
@@ -62,6 +63,34 @@ class TestDTFDMIL:
         mask = torch.tensor([[True] * 6 + [False] * 3])
         out = model(X, mask=mask)
         assert out.bag_representation.shape == (1, 8)
+
+    def test_masked_forward_ignores_padded_tiles(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        model = DTFDMIL(input_dim=4, hidden_dim=3, n_groups=4, dropout=0.0)
+        valid = torch.randn(1, 3, 4)
+        padded = torch.full((1, 5, 4), 1_000_000.0)
+        X = torch.cat([valid, padded], dim=1)
+        mask = torch.tensor([[True, True, True, False, False, False, False, False]])
+
+        np.random.seed(123)
+        masked_out = model(X, mask=mask)
+        np.random.seed(123)
+        valid_out = model(valid)
+
+        assert torch.isfinite(masked_out.bag_representation).all()
+        assert torch.isfinite(masked_out.tile_attention).all()
+        assert torch.allclose(masked_out.bag_representation, valid_out.bag_representation)
+        assert torch.allclose(
+            masked_out.auxiliary["pseudo_predictions"],
+            valid_out.auxiliary["pseudo_predictions"],
+        )
+        assert torch.allclose(masked_out.tile_attention[:, :3], valid_out.tile_attention)
+        assert torch.equal(
+            masked_out.tile_attention[:, 3:],
+            torch.zeros_like(masked_out.tile_attention[:, 3:]),
+        )
 
     def test_n_groups_clipping(self):
         """n_groups should be clipped to bag_size when bag is small."""
