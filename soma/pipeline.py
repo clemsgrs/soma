@@ -111,18 +111,34 @@ class _DeterministicBaseline:
     raw_score: float | None = None
 
 
+def _float_record_label(record) -> float:
+    return float(record.label)
+
+
+def _mapped_record_label(record, label_map: dict):
+    return label_map[record.label]
+
+
+def _float_patient_label(pid, raw) -> float:
+    return float(raw)
+
+
+def _mapped_patient_label(pid, raw, label_map: dict):
+    return label_map[raw]
+
+
 def _make_label_fn(label_dtype: torch.dtype, label_map: dict):
-    """Return a label encoder for the given dtype and class map."""
+    """Return a (picklable) label encoder for the given dtype and class map."""
     if label_dtype == torch.float:
-        return lambda record: float(record.label)
-    return lambda record: label_map[record.label]
+        return _float_record_label
+    return functools.partial(_mapped_record_label, label_map=label_map)
 
 
 def _make_patient_label_fn(label_dtype: torch.dtype, label_map: dict):
-    """Return a patient-level label encoder for the given dtype and class map."""
+    """Return a (picklable) patient-level label encoder."""
     if label_dtype == torch.float:
-        return lambda pid, raw: float(raw)
-    return lambda pid, raw: label_map[raw]
+        return _float_patient_label
+    return functools.partial(_mapped_patient_label, label_map=label_map)
 
 
 def _format_fold_summary(
@@ -193,36 +209,51 @@ def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, Sampl
 # ---------------------------------------------------------------------------
 
 
+def _loader_kwargs(training: TrainingConfig) -> dict[str, object]:
+    """Build DataLoader kwargs from TrainingConfig.
+
+    ``persistent_workers`` requires ``num_workers > 0`` in PyTorch, so it is
+    auto-downgraded to False when workers are disabled.
+    """
+    return {
+        "batch_size": training.batch_size,
+        "num_workers": training.num_workers,
+        "pin_memory": training.pin_memory,
+        "persistent_workers": training.persistent_workers and training.num_workers > 0,
+    }
+
+
 def _make_loaders(
     dataset_cls,
     collate_fn,
     train_items,
     tune_items,
     test_items_by_split: dict,
-    batch_size: int,
+    training: TrainingConfig,
     feature_store: FeatureStore,
     label_map: dict,
     label_fn,
 ) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
     """Create train, tune, and per-split test DataLoaders with a common pattern."""
+    loader_kwargs = _loader_kwargs(training)
     train_loader = DataLoader(
         dataset_cls(train_items, feature_store, label_map, label_fn=label_fn),
-        batch_size=batch_size,
         shuffle=True,
         collate_fn=collate_fn,
+        **loader_kwargs,
     )
     tune_loader = DataLoader(
         dataset_cls(tune_items, feature_store, label_map, label_fn=label_fn),
-        batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_fn,
+        **loader_kwargs,
     )
     test_loaders = {
         split_name: DataLoader(
             dataset_cls(items, feature_store, label_map, label_fn=label_fn),
-            batch_size=batch_size,
             shuffle=False,
             collate_fn=collate_fn,
+            **loader_kwargs,
         )
         for split_name, items in test_items_by_split.items()
     }
@@ -275,7 +306,7 @@ def train_one_fold(
     fold_dir = Path(fold_dir)
     fold_dir.mkdir(parents=True, exist_ok=True)
 
-    seed_everything(training.seed)
+    seed_everything(training.seed, fold=fold)
 
     label_map = dataset.label_map
     feature_dim = feature_store.feature_dim
@@ -513,17 +544,18 @@ def train_one_fold(
         patient_label_fn = _make_patient_label_fn(label_dtype, label_map)
         _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
 
+        _patient_loader_kwargs = _loader_kwargs(training)
         train_loader = DataLoader(
             PatientDataset(train_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
-            batch_size=training.batch_size,
             shuffle=True,
             collate_fn=_patient_collate,
+            **_patient_loader_kwargs,
         )
         tune_loader = DataLoader(
             PatientDataset(tune_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
-            batch_size=training.batch_size,
             shuffle=False,
             collate_fn=_patient_collate,
+            **_patient_loader_kwargs,
         )
         test_loaders: dict[str, DataLoader] = {
             split_name: DataLoader(
@@ -531,9 +563,9 @@ def train_one_fold(
                     test_patient_ids_by_split[split_name],
                     patient_label_map, feature_store, label_map, label_fn=patient_label_fn,
                 ),
-                batch_size=training.batch_size,
                 shuffle=False,
                 collate_fn=_patient_collate,
+                **_patient_loader_kwargs,
             )
             for split_name, records in test_records_by_split.items()
         }
@@ -547,7 +579,7 @@ def train_one_fold(
         train_loader, tune_loader, test_loaders = _make_loaders(
             SampleDataset, _sample_collate,
             train_records, tune_records, test_records_by_split,
-            training.batch_size, feature_store, label_map, label_fn,
+            training, feature_store, label_map, label_fn,
         )
         head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = EmbeddingModel(task_head=head)
@@ -563,7 +595,7 @@ def train_one_fold(
         train_loader, tune_loader, test_loaders = _make_loaders(
             HierarchicalBagDataset, _hier_collate,
             train_records, tune_records, test_records_by_split,
-            training.batch_size, feature_store, label_map, label_fn,
+            training, feature_store, label_map, label_fn,
         )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
@@ -577,7 +609,7 @@ def train_one_fold(
         train_loader, tune_loader, test_loaders = _make_loaders(
             BagDataset, _bag_collate,
             train_records, tune_records, test_records_by_split,
-            training.batch_size, feature_store, label_map, label_fn,
+            training, feature_store, label_map, label_fn,
         )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)

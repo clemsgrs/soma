@@ -287,10 +287,10 @@ class TestCLAMMB:
         )
         model.configure_for_task(BranchAwareClassificationHead(input_dim=4, num_classes=3))
         calls: list[tuple[str, int]] = []
-        model._classification_inst_eval = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
+        model._classification_inst_eval = lambda att, emb, classifier, branch_idx, mask, **kw: (  # type: ignore[method-assign]
             calls.append(("in", branch_idx)) or emb.new_zeros(())
         )
-        model._classification_inst_eval_out = lambda att, emb, classifier, branch_idx, mask: (  # type: ignore[method-assign]
+        model._classification_inst_eval_out = lambda att, emb, classifier, branch_idx, mask, **kw: (  # type: ignore[method-assign]
             calls.append(("out", branch_idx)) or emb.new_zeros(())
         )
         out = model(torch.randn(1, 5, 8))

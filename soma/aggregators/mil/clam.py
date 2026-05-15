@@ -261,21 +261,25 @@ class _CLAMBase(Aggregator):
     ) -> Tensor:
         total_loss = embeddings.new_zeros(())
         batch_size = attention.shape[0]
+        # One sync up-front so the per-sample/per-class loop is GPU-resident.
+        labels_cpu: list[int] = labels.detach().tolist()
+        bag_sizes_cpu: list[int] | None = mask.sum(-1).tolist() if mask is not None else None
 
         for i in range(batch_size):
             att_i = attention[i]
             emb_i = embeddings[i]
             mask_i = mask[i] if mask is not None else None
-            inst_labels = F.one_hot(labels[i], num_classes=self.n_classes).reshape(-1)
+            bag_size_i = bag_sizes_cpu[i] if bag_sizes_cpu is not None else att_i.shape[-1]
+            label_i = labels_cpu[i]
             bag_loss = embeddings.new_zeros(())
             for class_idx, classifier in enumerate(self.class_instance_classifiers):
-                if inst_labels[class_idx].item() == 1:
+                if class_idx == label_i:
                     inst_loss = self._classification_inst_eval(
-                        att_i, emb_i, classifier, class_idx, mask_i
+                        att_i, emb_i, classifier, class_idx, mask_i, bag_size=bag_size_i
                     )
                 elif self.use_negative_class_instance_loss:
                     inst_loss = self._classification_inst_eval_out(
-                        att_i, emb_i, classifier, class_idx, mask_i
+                        att_i, emb_i, classifier, class_idx, mask_i, bag_size=bag_size_i
                     )
                 else:
                     continue
@@ -294,13 +298,15 @@ class _CLAMBase(Aggregator):
     ) -> Tensor:
         total_loss = embeddings.new_zeros(())
         batch_size = attention.shape[0]
+        bag_sizes_cpu: list[int] | None = mask.sum(-1).tolist() if mask is not None else None
 
         for i in range(batch_size):
             att_i = attention[i]
             emb_i = embeddings[i]
             mask_i = mask[i] if mask is not None else None
+            bag_size_i = bag_sizes_cpu[i] if bag_sizes_cpu is not None else att_i.shape[-1]
             top_instances, bottom_instances = self._select_top_and_bottom_instances(
-                att_i, emb_i, 0, mask_i
+                att_i, emb_i, 0, mask_i, bag_size=bag_size_i
             )
 
             target = labels[i].float()
@@ -330,8 +336,12 @@ class _CLAMBase(Aggregator):
         classifier: nn.Module,
         branch_idx: int,
         mask: Tensor | None,
+        *,
+        bag_size: int | None = None,
     ) -> Tensor:
-        top_p, top_n = self._select_top_and_bottom_instances(att, emb, branch_idx, mask)
+        top_p, top_n = self._select_top_and_bottom_instances(
+            att, emb, branch_idx, mask, bag_size=bag_size
+        )
         k = top_p.shape[0]
         p_targets = torch.ones(k, device=emb.device, dtype=torch.long)
         n_targets = torch.zeros(k, device=emb.device, dtype=torch.long)
@@ -347,8 +357,12 @@ class _CLAMBase(Aggregator):
         classifier: nn.Module,
         branch_idx: int,
         mask: Tensor | None,
+        *,
+        bag_size: int | None = None,
     ) -> Tensor:
-        top_p, _ = self._select_top_and_bottom_instances(att, emb, branch_idx, mask)
+        top_p, _ = self._select_top_and_bottom_instances(
+            att, emb, branch_idx, mask, bag_size=bag_size
+        )
         targets = torch.zeros(top_p.shape[0], device=emb.device, dtype=torch.long)
         logits = classifier(top_p)
         return self.classification_instance_loss_fn(logits.float(), targets)
@@ -359,9 +373,12 @@ class _CLAMBase(Aggregator):
         emb: Tensor,
         branch_idx: int,
         mask: Tensor | None,
+        *,
+        bag_size: int | None = None,
     ) -> tuple[Tensor, Tensor]:
         att_branch = self._attention_branch(att, branch_idx)
-        bag_size = int(mask.sum().item()) if mask is not None else att_branch.shape[-1]
+        if bag_size is None:
+            bag_size = int(mask.sum().item()) if mask is not None else att_branch.shape[-1]
         k = min(self.k_sample, bag_size)
         if mask is not None:
             att_branch = att_branch.masked_fill(~mask, float("-inf"))

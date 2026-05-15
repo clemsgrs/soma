@@ -79,6 +79,11 @@ def test_training_config_defaults():
     assert cfg.patience == 10
     assert cfg.batch_size == 1
     assert cfg.gradient_accumulation == 1
+    # DataLoader knobs (Phase 2.2). num_workers defaults to 0 so the suite stays
+    # fast on test fixtures; users should raise it for real WSI runs.
+    assert cfg.num_workers == 0
+    assert cfg.pin_memory is True
+    assert cfg.persistent_workers is True
 
 
 @pytest.mark.parametrize(
@@ -88,6 +93,7 @@ def test_training_config_defaults():
         ({"batch_size": 0}, "batch_size"),
         ({"gradient_accumulation": 0}, "gradient_accumulation"),
         ({"patience": 0}, "patience"),
+        ({"num_workers": -1}, "num_workers"),
     ],
 )
 def test_training_config_rejects_non_positive_counts(kwargs, message):
@@ -120,6 +126,36 @@ def test_evaluation_config_defaults():
     cfg = EvalConfig()
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
+
+
+def test_pipeline_config_rejects_unknown_encoder():
+    """Phase 3.2: unknown encoder name must fail at config construction.
+
+    Catching this at __post_init__ saves hours of preprocessing before the
+    pipeline would otherwise crash at encoder build time.
+    """
+    with pytest.raises(ValueError, match="encoder"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="slide",
+            encoder=EncoderConfig(name="not_a_real_encoder"),
+            task=TaskConfig(name="binary_classification"),
+        )
+
+
+def test_pipeline_config_rejects_unknown_aggregator():
+    """Phase 3.2: unknown aggregator name must fail at config construction."""
+    with pytest.raises(ValueError, match="aggregator"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="slide",
+            aggregator=AggregatorConfig(name="not_a_real_aggregator"),
+            task=TaskConfig(name="binary_classification"),
+        )
 
 
 def test_pipeline_config_defaults_to_no_aggregator():

@@ -238,6 +238,78 @@ def _setup_hierarchical_data(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 # ---------------------------------------------------------------------------
+# _make_loaders DataLoader wiring (Phase 2.2)
+# ---------------------------------------------------------------------------
+
+
+class TestMakeLoaders:
+    """``_make_loaders`` must forward TrainingConfig DataLoader knobs."""
+
+    def _build_inputs(self, tmp_path: Path):
+        from soma.pipeline import _make_loaders
+        from soma.training.bag_dataset import BagDataset
+        from soma.training.collate import bag_collate_fn
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        store = FeatureStore(feature_dir)
+        train_records = [dataset.samples[sid] for sid in ["s0", "s1"]]
+        tune_records = [dataset.samples[sid] for sid in ["s2"]]
+        test_records = {"test": [dataset.samples[sid] for sid in ["s3"]]}
+        label_fn = lambda rec, label_map: label_map[rec.label]  # noqa: E731
+        return _make_loaders, BagDataset, bag_collate_fn, train_records, tune_records, test_records, store, dataset.label_map, label_fn
+
+    def test_forwards_num_workers_and_pin_memory(self, tmp_path: Path):
+        (
+            _make_loaders,
+            BagDataset,
+            bag_collate_fn,
+            train_records,
+            tune_records,
+            test_records,
+            store,
+            label_map,
+            label_fn,
+        ) = self._build_inputs(tmp_path)
+
+        training = TrainingConfig(num_workers=2, pin_memory=False, persistent_workers=False, batch_size=1)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            BagDataset, bag_collate_fn,
+            train_records, tune_records, test_records,
+            training, store, label_map, label_fn,
+        )
+
+        for loader in (train_loader, tune_loader, *test_loaders.values()):
+            assert loader.num_workers == 2
+            assert loader.pin_memory is False
+            assert loader.persistent_workers is False
+
+    def test_persistent_workers_auto_disabled_when_zero_workers(self, tmp_path: Path):
+        (
+            _make_loaders,
+            BagDataset,
+            bag_collate_fn,
+            train_records,
+            tune_records,
+            test_records,
+            store,
+            label_map,
+            label_fn,
+        ) = self._build_inputs(tmp_path)
+
+        training = TrainingConfig(num_workers=0, persistent_workers=True, batch_size=1)
+        train_loader, _, _ = _make_loaders(
+            BagDataset, bag_collate_fn,
+            train_records, tune_records, test_records,
+            training, store, label_map, label_fn,
+        )
+
+        # persistent_workers=True is invalid with num_workers=0; the helper
+        # must auto-downgrade to False.
+        assert train_loader.persistent_workers is False
+
+
+# ---------------------------------------------------------------------------
 # train_one_fold (Layer 1 — standalone)
 # ---------------------------------------------------------------------------
 

@@ -312,6 +312,9 @@ class TrainingConfig:
     batch_size: int = 1
     gradient_accumulation: int = 1
     allow_missing_tune: bool = False
+    num_workers: int = 0
+    pin_memory: bool = True
+    persistent_workers: bool = True
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
@@ -322,6 +325,8 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
         if self.patience < 1:
             raise ValueError("TrainingConfig.patience must be >= 1")
+        if self.num_workers < 0:
+            raise ValueError("TrainingConfig.num_workers must be >= 0")
 
 
 @dataclass(frozen=True)
@@ -398,6 +403,29 @@ class PipelineConfig:
             )
         # Validate that requested metrics are valid for the task family.
         resolve_metrics(self.task.name, self.evaluation.metrics)
+        # Fail fast on unknown encoder / aggregator names — catching these at
+        # config construction avoids burning hours of preprocessing before the
+        # pipeline would otherwise crash at component-build time.
+        if self.encoder is not None:
+            from slide2vec.encoders.registry import encoder_registry
+
+            try:
+                encoder_registry.info(self.encoder.name)
+            except KeyError as exc:
+                available = ", ".join(sorted(encoder_registry.names())) or "(none)"
+                raise ValueError(
+                    f"Unknown encoder name '{self.encoder.name}'. "
+                    f"Available encoders: {available}"
+                ) from exc
+        if self.aggregator is not None:
+            from soma.aggregators.registry import aggregator_registry
+
+            if self.aggregator.name not in aggregator_registry:
+                available = ", ".join(sorted(aggregator_registry.list())) or "(none)"
+                raise ValueError(
+                    f"Unknown aggregator name '{self.aggregator.name}'. "
+                    f"Available aggregators: {available}"
+                )
 
 
 # --- YAML serialization ---
