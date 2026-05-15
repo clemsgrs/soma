@@ -99,6 +99,13 @@ training:
   batch_size: 1
   gradient_accumulation: 1
   allow_missing_tune: false
+  # DataLoader parallelism. Defaults are conservative so the test suite stays
+  # fast. For real WSI runs (1000+ slides, big bags), set num_workers to the
+  # number of CPU cores available; pinning + persistent workers cut epoch time
+  # significantly when the GPU is fed from disk-backed features.
+  num_workers: 0
+  pin_memory: true
+  persistent_workers: true
 
 reports:
   heatmaps:

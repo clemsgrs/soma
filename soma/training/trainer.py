@@ -340,8 +340,8 @@ class Trainer:
             loss = self._model.task_head.compute_loss(out.logits, labels)
             total_loss += loss.item()
             num_batches += 1
-            all_logits.append(out.logits)
-            all_labels.append(labels)
+            all_logits.append(out.logits.detach().cpu())
+            all_labels.append(labels.detach().cpu())
 
         avg_loss = total_loss / max(num_batches, 1)
         if all_logits:

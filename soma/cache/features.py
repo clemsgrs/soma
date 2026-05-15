@@ -316,8 +316,18 @@ def _validate_feature_cache_contents(
                 try:
                     payload = load_array(path)
                     tensor = payload if torch.is_tensor(payload) else torch.as_tensor(payload)
-                except Exception:
-                    logger.debug("Could not load cached feature payload at %s", path, exc_info=True)
+                except Exception as exc:
+                    # A corrupt cached payload must not pass silently — surface
+                    # it as a WARNING with the path so the user can fix or
+                    # delete it. Returning ``complete=False`` lets the caller
+                    # re-extract that sample.
+                    logger.warning(
+                        "Cached feature payload at %s is unreadable (%s: %s); "
+                        "treating as missing.",
+                        path,
+                        type(exc).__name__,
+                        exc,
+                    )
                     if reason is None:
                         reason = f"invalid feature payload for {cache_id}"
                     continue
@@ -464,6 +474,7 @@ def resolve_tile_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -473,7 +484,7 @@ def resolve_tile_cache(
         feature_type=feature_type,
         backend_provenance=backend_provenance,
     )
-    cache_stem_by_id = _sample_stems_for_kind(
+    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
         cache_kind="tile",
         static_identity_payload={"cache_key": metadata["cache_key"]},
@@ -509,6 +520,7 @@ def resolve_slide_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -528,7 +540,7 @@ def resolve_slide_cache(
         output_variant=output_variant,
         backend_provenance=backend_provenance,
     )
-    cache_stem_by_id = _sample_stems_for_kind(
+    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
         cache_kind="slide",
         static_identity_payload={"cache_key": metadata["cache_key"]},
@@ -564,6 +576,7 @@ def resolve_patient_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -583,7 +596,7 @@ def resolve_patient_cache(
         output_variant=output_variant,
         backend_provenance=backend_provenance,
     )
-    cache_stem_by_id = _patient_stems_for_kind(
+    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _patient_stems_for_kind(
         dataset=dataset,
         cache_kind="patient",
         static_identity_payload={"cache_key": metadata["cache_key"]},
@@ -616,6 +629,7 @@ def resolve_hierarchical_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -624,7 +638,7 @@ def resolve_hierarchical_cache(
         output_variant=output_variant,
         backend_provenance=backend_provenance,
     )
-    cache_stem_by_id = _sample_stems_for_kind(
+    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
         cache_kind="hierarchical",
         static_identity_payload={"cache_key": metadata["cache_key"]},

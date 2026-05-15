@@ -925,6 +925,7 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            _precomputed_stems=cache_resolution.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -990,6 +991,7 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            _precomputed_stems=cache_resolution.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1084,6 +1086,7 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            _precomputed_stems=tile_cache.cache_stem_by_id,
         )
         refreshed = resolve_slide_cache(
             cache_root=cache_root,
@@ -1107,6 +1110,7 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            _precomputed_stems=slide_cache.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1204,6 +1208,7 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            _precomputed_stems=tile_cache.cache_stem_by_id,
         )
         self._populate_patient_cache(
             patient_cache=patient_cache,
@@ -1236,6 +1241,7 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            _precomputed_stems=patient_cache.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
