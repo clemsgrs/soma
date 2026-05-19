@@ -29,6 +29,9 @@ from slide2vec.encoders.validation import (
     validate_encoder_config as validate_slide2vec_encoder_config,
 )
 from slide2vec.runtime.embedding_pipeline import compute_embedded_slides as _compute_embedded_slides
+from slide2vec.runtime.distributed_stage import (
+    embed_multi_slides_distributed as _embed_multi_slides_distributed,
+)
 import slide2vec.progress as slide2vec_progress
 import slide2vec.runtime.embedding as runtime_embedding
 import slide2vec.runtime.tiling as runtime_tiling
@@ -1527,7 +1530,7 @@ class FeatureExtractor:
                     save_tile_embeddings=False,
                 )
                 slide_feature_dim: int | None = None
-                if int(slide_execution.num_gpus) > 1 and len(selected_loaded) > 1:
+                if slide_execution.num_gpus > 1 and len(selected_loaded) > 1:
                     num_workers = min(int(slide_execution.num_gpus), len(selected_loaded))
                     shard_payloads: list[list[dict[str, str]]] = [[] for _ in range(num_workers)]
                     for idx, loaded in enumerate(selected_loaded):
@@ -1695,14 +1698,29 @@ class FeatureExtractor:
                 slide_feature_dim = slide_artifact.feature_dim
                 slide_written_ids.append(sample_id)
 
-        _compute_embedded_slides(
-            loaded_model,
-            [loaded.slide for loaded in selected_loaded],
-            [loaded.tiling_result for loaded in selected_loaded],
-            preprocessing=preprocessing,
-            execution=slide_execution,
-            on_embedded_slide=_persist_completed_slide,
-        )
+        selected_slides = [loaded.slide for loaded in selected_loaded]
+        selected_tiling_results = [loaded.tiling_result for loaded in selected_loaded]
+        if slide_execution.num_gpus > 1 and len(selected_loaded) > 1:
+            slide_cache.cache_dir.mkdir(parents=True, exist_ok=True)
+            embedded_slides = _embed_multi_slides_distributed(
+                loaded_model,
+                slide_records=selected_slides,
+                tiling_results=selected_tiling_results,
+                preprocessing=preprocessing,
+                execution=slide_execution,
+                work_dir=slide_cache.cache_dir,
+            )
+            for loaded, embedded_slide in zip(selected_loaded, embedded_slides):
+                _persist_completed_slide(loaded.slide, loaded.tiling_result, embedded_slide)
+        else:
+            _compute_embedded_slides(
+                loaded_model,
+                selected_slides,
+                selected_tiling_results,
+                preprocessing=preprocessing,
+                execution=slide_execution,
+                on_embedded_slide=_persist_completed_slide,
+            )
         if tile_written_ids:
             record_sample_identity_signatures(tile_cache, tile_written_ids)
         if slide_written_ids:

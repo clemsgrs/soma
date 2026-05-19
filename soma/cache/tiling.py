@@ -225,7 +225,7 @@ def _validate_tiling_cache_contents(
                 return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
         return CacheValidationResult(complete=True)
     finally:
-        progress.finish(checked)
+        progress.finish()
 
 
 def resolve_tiling_cache(

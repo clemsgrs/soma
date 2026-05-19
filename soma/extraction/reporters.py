@@ -59,17 +59,16 @@ class _SomaExtractionReporter:
         self._inner = inner
         self._seen_logs: set[str] = set()
 
-    def emit(self, event) -> None:
-        self._inner.emit(event)
+    def __getattr__(self, name: str):
+        # Forward attribute access (e.g. `progress`, `console`, `_ensure_progress_started`)
+        # to the wrapped reporter so Rich-aware helpers like _CacheValidationProgress work.
+        return getattr(self._inner, name)
 
     def write_log(self, message: str, *, stream=None) -> None:
         if message in self._seen_logs:
             return
         self._seen_logs.add(message)
         self._inner.write_log(message, stream=stream)
-
-    def close(self) -> None:
-        self._inner.close()
 
 
 class _TilingProgressBridgeReporter:
