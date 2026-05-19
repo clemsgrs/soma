@@ -350,7 +350,7 @@ def _validate_feature_cache_contents(
         complete = reason is None
         return CacheValidationResult(complete=complete, reason=reason), present, expected
     finally:
-        progress.finish(checked)
+        progress.finish()
 
 
 def _resolve_cache(
@@ -415,6 +415,15 @@ def _resolve_cache(
                 f"{present}/{expected} {feature_word} already materialized on disk; "
                 f"embedding the {missing} missing {missing_word}"
             )
+            if validation.reason is not None:
+                reason = f"{reason}; first issue: {validation.reason}"
+        elif not validation.complete and expected > 0:
+            missing = expected - present
+            if missing > 0:
+                feature_word = "feature file" if missing == 1 else "feature files"
+                reason = f"{missing}/{expected} {feature_word} missing"
+                if validation.reason is not None:
+                    reason = f"{reason}; first issue: {validation.reason}"
         _emit_cache_state_log(
             cache_label="feature",
             cache_dir=cache_dir,

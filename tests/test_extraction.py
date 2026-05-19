@@ -927,6 +927,190 @@ def test_build_execution_options_splits_auto_workers_across_gpus(monkeypatch, tm
     assert execution.num_workers_per_gpu == 16  # capped at 16
 
 
+def test_tile_feature_extractor_shards_tile_encoding_across_gpus(tmp_path: Path):
+    image_paths = []
+    from PIL import Image
+
+    for sample_id in ("s0", "s1", "s2", "s3", "s4"):
+        image_path = tmp_path / f"{sample_id}.png"
+        Image.new("RGB", (8, 8), color="white").save(image_path)
+        image_paths.append(str(image_path))
+
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s0", "s1", "s2", "s3", "s4"],
+            "image_path": image_paths,
+            "label": ["tumor", "tumor", "tumor", "tumor", "tumor"],
+        }
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    seen_calls: list[dict[str, object]] = []
+    progress_counts: list[int] = []
+
+    class _FakeReporter:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, dict[str, object]]] = []
+            self.logs: list[str] = []
+
+        def emit(self, event) -> None:
+            self.events.append((event.kind, dict(event.payload)))
+
+        def write_log(self, message: str, *, stream=None) -> None:
+            self.logs.append(message)
+
+        def close(self) -> None:
+            return None
+
+    fake_reporter = _FakeReporter()
+
+    def _fake_spawn_tile_feature_workers(
+        *,
+        num_workers,
+        encoder,
+        output_dir,
+        records_by_rank,
+        batch_size,
+        num_workers_per_gpu,
+        prefetch_factor,
+        precision,
+        on_model_ready=None,
+        on_progress=None,
+    ):
+        seen_calls.append(
+            {
+                "num_workers": num_workers,
+                "encoder": encoder,
+                "records_by_rank": records_by_rank,
+                "batch_size": batch_size,
+                "num_workers_per_gpu": num_workers_per_gpu,
+                "prefetch_factor": prefetch_factor,
+                "precision": precision,
+            }
+        )
+        written_ids = []
+        if on_model_ready is not None:
+            for rank in range(num_workers):
+                on_model_ready(rank, f"cuda:{rank}")
+        for rank, shard in enumerate(records_by_rank):
+            for record in shard:
+                sample_id = record.sample_id
+                torch.save(
+                    torch.full((4,), float(int(sample_id[1:]) + 1)),
+                    output_dir / f"{sample_id}.pt",
+                )
+                written_ids.append(sample_id)
+                if on_progress is not None:
+                    progress_counts.append(1)
+                    on_progress(rank, 1)
+        return written_ids, 4
+
+    with patch(
+        "soma.tile_extraction.load_model",
+        side_effect=AssertionError("parent process should not load the tile encoder"),
+    ), patch(
+        "soma.tile_extraction.spawn_tile_feature_workers",
+        side_effect=_fake_spawn_tile_feature_workers,
+    ), patch(
+        "soma.tile_extraction.slide2vec_progress.create_api_progress_reporter",
+        return_value=fake_reporter,
+    ):
+        store = TileFeatureExtractor(
+            dataset,
+            EncoderConfig(name=_TEST_TILE, batch_size=2),
+            execution=ExecutionConfig(num_gpus=4, num_workers_per_gpu=0, prefetch_factor=2),
+            cache=CacheConfig(enabled=False),
+        ).run(feature_dir=tmp_path / "features")
+
+    assert store.available_samples == ["s0", "s1", "s2", "s3", "s4"]
+    assert torch.equal(store.load("s0"), torch.ones(4))
+    assert torch.equal(store.load("s4"), torch.full((4,), 5.0))
+    assert progress_counts == [1, 1, 1, 1, 1]
+    assert len(seen_calls) == 1
+    call = seen_calls[0]
+    assert call["num_workers"] == 4
+    assert call["encoder"] == EncoderConfig(name=_TEST_TILE, batch_size=2)
+    assert call["batch_size"] == 2
+    assert call["num_workers_per_gpu"] == 0
+    assert call["prefetch_factor"] == 2
+    assert call["precision"] == "fp16"
+    assert [[r.sample_id for r in shard] for shard in call["records_by_rank"]] == [
+        ["s0", "s4"],
+        ["s1"],
+        ["s2"],
+        ["s3"],
+    ]
+    assert [
+        payload
+        for kind, payload in fake_reporter.events
+        if kind == "model.loading"
+    ] == [{"model_name": _TEST_TILE}] * 4
+    assert [
+        payload
+        for kind, payload in fake_reporter.events
+        if kind == "model.ready"
+    ] == [
+        {"model_name": _TEST_TILE, "device": "GPU 0"},
+        {"model_name": _TEST_TILE, "device": "GPU 1"},
+        {"model_name": _TEST_TILE, "device": "GPU 2"},
+        {"model_name": _TEST_TILE, "device": "GPU 3"},
+    ]
+    started = [
+        payload
+        for kind, payload in fake_reporter.events
+        if kind == "embedding.slide.started"
+    ]
+    assert started == [
+        {"sample_id": "Embedding tiles", "progress_label": "GPU 0", "total_tiles": 2},
+        {"sample_id": "Embedding tiles", "progress_label": "GPU 1", "total_tiles": 1},
+        {"sample_id": "Embedding tiles", "progress_label": "GPU 2", "total_tiles": 1},
+        {"sample_id": "Embedding tiles", "progress_label": "GPU 3", "total_tiles": 1},
+    ]
+    progress = [
+        payload
+        for kind, payload in fake_reporter.events
+        if kind == "embedding.tile.progress"
+    ]
+    assert progress == [
+        {
+            "sample_id": "Embedding tiles",
+            "progress_label": "GPU 0",
+            "processed": 1,
+            "total": 2,
+            "unit": "tile",
+        },
+        {
+            "sample_id": "Embedding tiles",
+            "progress_label": "GPU 0",
+            "processed": 2,
+            "total": 2,
+            "unit": "tile",
+        },
+        {
+            "sample_id": "Embedding tiles",
+            "progress_label": "GPU 1",
+            "processed": 1,
+            "total": 1,
+            "unit": "tile",
+        },
+        {
+            "sample_id": "Embedding tiles",
+            "progress_label": "GPU 2",
+            "processed": 1,
+            "total": 1,
+            "unit": "tile",
+        },
+        {
+            "sample_id": "Embedding tiles",
+            "progress_label": "GPU 3",
+            "processed": 1,
+            "total": 1,
+            "unit": "tile",
+        },
+    ]
+
+
 def test_tile_feature_extractor_uses_torch_default_loader_workers(tmp_path: Path):
     image_path = tmp_path / "tile.png"
     from PIL import Image
@@ -974,6 +1158,7 @@ def test_tile_feature_extractor_uses_torch_default_loader_workers(tmp_path: Path
                 name=_TEST_TILE,
             ),
             execution=ExecutionConfig(
+                num_gpus=1,
                 num_workers_per_gpu=12,
                 prefetch_factor=6,
             ),
@@ -1040,7 +1225,7 @@ def test_tile_feature_extractor_renders_rich_progress_for_model_loading_and_batc
         store = TileFeatureExtractor(
             dataset,
             EncoderConfig(name=_TEST_TILE, batch_size=2),
-            execution=ExecutionConfig(num_workers_per_gpu=0),
+            execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
             cache=CacheConfig(enabled=False),
         ).run(feature_dir=tmp_path / "features")
 
@@ -2888,6 +3073,100 @@ def test_multi_gpu_slide_cache_population_uses_slide2vec_pipeline(tmp_path: Path
     assert store.load("s0").shape == (8,)
     assert any((cache_root / "tile").glob("*/tile_embeddings/*.pt"))
     assert any((cache_root / "slide").glob("*/slide_embeddings/*.pt"))
+
+
+def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tmp_path: Path):
+    csv_path = tmp_path / "dataset-two.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "s0", "image_path": str(tmp_path / "s0.svs"), "label": "tumor"},
+            {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
+        ]
+    ).to_csv(csv_path, index=False)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        Dataset(csv_path),
+        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        ),
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s1", image_path=Path("/tmp/s1.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(sample_id="s1"),
+        ),
+    ]
+
+    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
+        return SimpleNamespace(
+            name=model_name,
+            level="slide",
+            allow_non_recommended_settings=allow_non_recommended_settings,
+        )
+
+    distributed_calls = []
+
+    def _fake_embed_multi_slides_distributed(
+        model,
+        *,
+        slide_records,
+        tiling_results,
+        preprocessing,
+        execution,
+        work_dir,
+    ):
+        distributed_calls.append(
+            {
+                "model": model,
+                "slide_records": slide_records,
+                "tiling_results": tiling_results,
+                "execution": execution,
+                "work_dir": Path(work_dir),
+            }
+        )
+        return [
+            SimpleNamespace(
+                sample_id=slide.sample_id,
+                tile_embeddings=torch.ones(2, 8),
+                slide_embedding=torch.ones(8),
+                latents=None,
+                image_path=slide.image_path,
+                mask_path=slide.mask_path,
+                tile_size_lv0=224,
+            )
+            for slide in slide_records
+        ]
+
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
+    ), patch(
+        "soma.extraction.extractor._load_model",
+        side_effect=_fake_load_model,
+    ), patch(
+        "soma.extraction.extractor._embed_multi_slides_distributed",
+        side_effect=_fake_embed_multi_slides_distributed,
+    ), patch(
+        "soma.extraction.extractor._compute_embedded_slides",
+        side_effect=AssertionError("multi-gpu combined cache population should use distributed embedding"),
+    ):
+        store = extractor.extract(
+            feature_dir=tmp_path / "features",
+            tiling_dir=tmp_path / "tiling",
+            num_gpus=2,
+        )
+
+    assert len(distributed_calls) == 1
+    assert distributed_calls[0]["execution"].num_gpus == 2
+    assert distributed_calls[0]["work_dir"].parent == cache_root / "slide"
+    assert store.is_slide_level is True
+    for sample_id in ("s0", "s1"):
+        assert any((cache_root / "tile").glob(f"*/tile_embeddings/{sample_id}.pt"))
+        assert any((cache_root / "slide").glob(f"*/slide_embeddings/{sample_id}.pt"))
+        assert store.load(sample_id).shape == (8,)
 
 
 def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):

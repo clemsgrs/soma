@@ -12,6 +12,9 @@ Usage — from an in-memory PipelineResult:
 from __future__ import annotations
 
 import hashlib
+import json
+from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -101,7 +104,44 @@ def compare_runs(
     html = render_comparison_report(comparison_data)
     report_path = output_dir / "index.html"
     report_path.write_text(html, encoding="utf-8")
+    _write_comparison_manifest(output_dir, comparison_data, run_dirs)
     return report_path
+
+
+def _write_comparison_manifest(
+    output_dir: Path,
+    comparison_data: ComparisonData,
+    run_dirs: list[Path],
+) -> Path:
+    """Write manifest.json describing the runs included in the comparison."""
+    try:
+        soma_version = version("soma")
+    except PackageNotFoundError:
+        soma_version = None
+
+    runs_payload = []
+    for run, run_dir, label in zip(
+        comparison_data.runs, run_dirs, comparison_data.labels, strict=True
+    ):
+        config_digest = hashlib.sha256(
+            _stable_json(run.config).encode("utf-8")
+        ).hexdigest()
+        runs_payload.append({
+            "label": label,
+            "run_id": run.run_metadata.get("run_id"),
+            "run_dir": str(Path(run_dir).expanduser().resolve()),
+            "config_digest": config_digest,
+        })
+
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "soma_version": soma_version,
+        "labels": list(comparison_data.labels),
+        "runs": runs_payload,
+    }
+    manifest_path = output_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
 
 
 def _default_comparison_output_dir(comparison_data: ComparisonData, run_dirs: list[Path]) -> Path:

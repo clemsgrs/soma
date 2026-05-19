@@ -241,6 +241,30 @@ def test_compare_runs_creates_html(tmp_path: Path) -> None:
     assert "Run Comparison" in html
 
 
+def test_compare_runs_writes_manifest(tmp_path: Path) -> None:
+    """compare_runs writes a manifest.json describing the compared runs."""
+    run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")
+    run2 = _make_run_dir(tmp_path / "r2", aggregator="clam_sb", run_id="run2")
+
+    report_dir = tmp_path / "comparison_reports"
+    compare_runs([run1, run2], output_dir=report_dir, labels=["A", "B"])
+
+    manifest_path = report_dir / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text())
+
+    assert manifest["labels"] == ["A", "B"]
+    assert len(manifest["runs"]) == 2
+    assert manifest["runs"][0]["label"] == "A"
+    assert manifest["runs"][0]["run_id"] == "run1"
+    assert manifest["runs"][0]["run_dir"] == str(run1.resolve())
+    assert manifest["runs"][1]["run_id"] == "run2"
+    assert manifest["runs"][1]["run_dir"] == str(run2.resolve())
+    # config_digest should differ across runs that differ in config
+    assert manifest["runs"][0]["config_digest"] != manifest["runs"][1]["config_digest"]
+    assert "generated_at" in manifest
+
+
 def test_compare_runs_default_output_dir(tmp_path: Path) -> None:
     """Default output_dir is a comparison bundle under the shared output root."""
     run1 = _make_run_dir(tmp_path / "r1", aggregator="abmil", run_id="run1")

@@ -312,26 +312,8 @@ def _emit_cache_resolve_log(
     )
 
 
-def _emit_cache_validation_log(
-    *,
-    cache_label: str,
-    checked: int,
-    total: int,
-    stage: str = "progress",
-) -> None:
-    if total <= 0:
-        return
-    if stage == "start":
-        message = f"… validating {cache_label} cache entries: 0/{total}"
-    elif stage == "done":
-        message = f"✓ validated {cache_label} cache entries: {checked}/{total}"
-    else:
-        message = f"… validating {cache_label} cache entries: {checked}/{total}"
-    slide2vec_progress.emit_progress_log(message)
-
-
 class _CacheValidationProgress:
-    """Single-line progress helper for cache validation when Rich is available."""
+    """Rich progress helper for cache validation. No-op when no Rich reporter is active."""
 
     def __init__(self, *, cache_label: str, total: int) -> None:
         self._cache_label = cache_label
@@ -339,42 +321,26 @@ class _CacheValidationProgress:
         self._reporter = slide2vec_progress.get_progress_reporter()
         self._progress = getattr(self._reporter, "progress", None)
         self._task_id: int | None = None
-        self._rich = hasattr(self._reporter, "console") and hasattr(self._progress, "add_task")
 
     def start(self) -> None:
-        if self._total <= 0:
+        if self._total <= 0 or self._progress is None:
             return
-        if self._rich:
-            ensure_started = getattr(self._reporter, "_ensure_progress_started", None)
-            if callable(ensure_started):
-                ensure_started()
-            else:
-                self._progress.start()
-            self._task_id = self._progress.add_task(
-                f"Validating {self._cache_label} cache entries",
-                total=self._total,
-            )
-            return
-        _emit_cache_validation_log(cache_label=self._cache_label, checked=0, total=self._total, stage="start")
+        ensure_started = getattr(self._reporter, "_ensure_progress_started", None)
+        if callable(ensure_started):
+            ensure_started()
+        self._task_id = self._progress.add_task(
+            f"Validating {self._cache_label} cache entries",
+            total=self._total,
+        )
 
     def update(self, checked: int) -> None:
-        if self._total <= 0:
+        if self._task_id is None:
             return
         checked = max(0, min(int(checked), self._total))
-        if self._rich:
-            if self._task_id is not None:
-                self._progress.update(self._task_id, completed=checked)
-            return
-        if checked % 100 == 0 or checked == self._total:
-            _emit_cache_validation_log(cache_label=self._cache_label, checked=checked, total=self._total)
+        self._progress.update(self._task_id, completed=checked)
 
-    def finish(self, checked: int) -> None:
-        if self._total <= 0:
+    def finish(self) -> None:
+        if self._task_id is None:
             return
-        checked = max(0, min(int(checked), self._total))
-        if self._rich:
-            if self._task_id is not None:
-                self._progress.remove_task(self._task_id)
-                self._task_id = None
-            return
-        _emit_cache_validation_log(cache_label=self._cache_label, checked=checked, total=self._total, stage="done")
+        self._progress.remove_task(self._task_id)
+        self._task_id = None
