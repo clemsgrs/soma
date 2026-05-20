@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "soma"
+name = "soma-pathology"
 version = "1.0.0"
 description = "Modular experimentation framework for computational pathology"
 readme = "README.md"
@@ -35,7 +35,7 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "slide2vec[fm]>=4.5.0",
+    "slide2vec[fm]>=4.5.1",
     "matplotlib>=3.7",
 ]
 
@@ -59,9 +59,22 @@ docs = [
     "sphinx-autodoc-typehints",
 ]
 
+[tool.hatch.build]
+exclude = [
+    "/soma/**/.ipynb_checkpoints",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["soma"]
 include = ["soma/configs/*.yaml"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "LICENSE",
+    "README.md",
+    "pyproject.toml",
+    "soma",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -9,8 +9,10 @@ You can use it either as a full end-to-end pipeline or as a set of composable bu
 ## Install
 
 ```bash
-pip install soma
+pip install soma-pathology
 ```
+
+The PyPI distribution is `soma-pathology`; the import package and CLI remain `soma`.
 
 ## API Overview
 
