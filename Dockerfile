@@ -84,7 +84,6 @@ RUN python -m pip install \
     --no-cache-dir \
     --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
     -c /opt/app/constraints-cu128.txt \
-    --no-build-isolation \
     "/opt/app[dev]" \
     && python -m pip install \
         --no-cache-dir \
