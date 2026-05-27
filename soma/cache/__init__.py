@@ -61,6 +61,7 @@ from soma.cache.tiling import (
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
+from soma.cache.compute_key import compute_cache_key
 from soma.cache.features import (
     _backfill_feature_cache_identity_metadata,
     _build_hierarchical_cache_metadata,
@@ -96,6 +97,7 @@ __all__ = [
     "build_tile_cache_key",
     "build_tiling_cache_key",
     "build_tile_artifacts_from_cache_payload",
+    "compute_cache_key",
     "dataset_manifest_rows",
     "execution_signature",
     "manifest_digest",
