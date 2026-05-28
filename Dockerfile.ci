@@ -3,6 +3,7 @@ FROM ubuntu:22.04
 
 ARG USER_UID=1001
 ARG USER_GID=1001
+ARG PYTHON_VERSION=3.11
 
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive
@@ -23,6 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     libnuma1 \
     libspatialindex-dev \
+    ca-certificates \
     curl \
     cmake \
     vim screen \
@@ -31,20 +33,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     openssh-server \
     build-essential \
     ninja-build \
-    gnupg \
+    gnupg2 \
     gpg-agent \
-    software-properties-common \
+    && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes.gpg \
+    && . /etc/os-release \
+    && printf 'deb [signed-by=/usr/share/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu %s main\n' "$VERSION_CODENAME" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        python${PYTHON_VERSION} \
+        python${PYTHON_VERSION}-dev \
+        python${PYTHON_VERSION}-venv \
+        python${PYTHON_VERSION}-distutils \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
+    && curl -fsSL https://bootstrap.pypa.io/get-pip.py | python${PYTHON_VERSION} \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-dev \
-        python3.11-venv \
-        python3.11-distutils \
-    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 # libjpeg-turbo 3.x (required by PyTurboJPEG>=2)
@@ -63,14 +69,15 @@ RUN set -eux; \
     apt-get update; \
     curl -L "${ASAP_URL}" -o /tmp/ASAP.deb; \
     apt-get install -y --no-install-recommends /tmp/ASAP.deb; \
-    SITE_PACKAGES=$(python3.11 -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"); \
+    (apt-get purge -y 'python3.10*' 'libpython3.10*' || true); \
+    ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3; \
+    SITE_PACKAGES=$(python${PYTHON_VERSION} -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"); \
     printf "/opt/ASAP/bin/\n" > "${SITE_PACKAGES}/asap.pth"; \
     rm -f /tmp/ASAP.deb; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
-RUN python -m ensurepip --upgrade \
-    && python -m pip install --upgrade pip setuptools 'packaging>=24.2' wheel hatchling psutil \
+RUN python -m pip install --upgrade pip setuptools 'packaging>=24.2' wheel hatchling psutil \
     && rm -rf /root/.cache/pip
 
 RUN printf '%s\n' \
