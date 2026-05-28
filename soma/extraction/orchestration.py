@@ -8,12 +8,16 @@ from pathlib import Path
 from typing import Sequence
 
 import torch
+import slide2vec.progress as slide2vec_progress
+from hs2p.utils.stderr import run_with_filtered_stderr
 from slide2vec import (
     ExecutionOptions,
     Model,
     Pipeline,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
+from slide2vec.runtime.embedding_persist import persist_embedded_slide as _persist_embedded_slide
+from slide2vec.runtime.embedding_pipeline import compute_embedded_slides as _compute_embedded_slides
 
 from soma.extraction.process_list import (
     _normalize_process_list_for_embedding,
@@ -53,17 +57,48 @@ def _embed_tiles(
     preprocessing: Slide2VecPreprocessingConfig,
     execution: ExecutionOptions,
 ) -> list:
-    model = _load_model(
-        model_name,
-        output_variant=output_variant,
-        allow_non_recommended_settings=allow_non_recommended_settings,
-    )
-    return model.embed_tiles(
-        list(slides),
-        list(tiling_results),
-        preprocessing=preprocessing,
-        execution=execution,
-    )
+    slide_records = list(slides)
+    resolved_tilings = list(tiling_results)
+    artifacts: list[object] = []
+
+    def _run_embedding() -> None:
+        model = _load_model(
+            model_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=allow_non_recommended_settings,
+        )
+
+        def _on_embedded_slide(slide, tiling_result, embedded_slide) -> None:
+            tile_or_hier_artifact, _slide_artifact = _persist_embedded_slide(
+                model,
+                embedded_slide,
+                tiling_result,
+                preprocessing=preprocessing,
+                execution=execution,
+            )
+            if tile_or_hier_artifact is not None:
+                artifacts.append(tile_or_hier_artifact)
+
+        slide2vec_progress.emit_progress("embedding.started", slide_count=len(slide_records))
+        _compute_embedded_slides(
+            model,
+            slide_records,
+            resolved_tilings,
+            preprocessing=preprocessing,
+            execution=execution,
+            on_embedded_slide=_on_embedded_slide,
+            collect_results=False,
+        )
+        slide2vec_progress.emit_progress(
+            "embedding.finished",
+            slide_count=len(slide_records),
+            slides_completed=len(slide_records),
+            tile_artifacts=len(artifacts),
+            slide_artifacts=0,
+        )
+
+    run_with_filtered_stderr(_run_embedding)
+    return artifacts
 
 
 def _run_with_coordinates(
@@ -84,19 +119,22 @@ def _run_with_coordinates(
             staged_process_list.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(source_process_list, staged_process_list)
     try:
-        _release_parent_cuda_state()
-        return Pipeline(
-            _load_model(
-                model_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=allow_non_recommended_settings,
-            ),
-            preprocessing,
-            execution=execution,
-        ).run_with_coordinates(
-            tiling_dir,
-            slides=list(slides),
-        )
+        def _run_pipeline():
+            _release_parent_cuda_state()
+            return Pipeline(
+                _load_model(
+                    model_name,
+                    output_variant=output_variant,
+                    allow_non_recommended_settings=allow_non_recommended_settings,
+                ),
+                preprocessing,
+                execution=execution,
+            ).run_with_coordinates(
+                tiling_dir,
+                slides=list(slides),
+            )
+
+        return run_with_filtered_stderr(_run_pipeline)
     finally:
         if source_process_list.is_file():
             _restore_process_list_after_embedding(source_process_list)
@@ -104,6 +142,57 @@ def _run_with_coordinates(
             staged_resolved = staged_process_list.resolve()
             if source_resolved != staged_resolved:
                 shutil.copyfile(source_process_list, staged_process_list)
+
+
+def _require_artifact_list(result, attr_name: str, *, artifact_label: str) -> list:
+    artifacts = getattr(result, attr_name, None)
+    if artifacts is None:
+        raise ValueError(f"slide2vec did not return {attr_name} for {artifact_label} extraction")
+    return list(artifacts)
+
+
+def _embed_tile_artifacts_with_coordinates(
+    *,
+    model_name: str,
+    output_variant: str,
+    allow_non_recommended_settings: bool = False,
+    preprocessing: Slide2VecPreprocessingConfig,
+    execution: ExecutionOptions,
+    tiling_dir: Path,
+    slides: Sequence[object],
+) -> list:
+    result = _run_with_coordinates(
+        model_name=model_name,
+        output_variant=output_variant,
+        allow_non_recommended_settings=allow_non_recommended_settings,
+        preprocessing=preprocessing,
+        execution=execution,
+        tiling_dir=tiling_dir,
+        slides=slides,
+    )
+    return _require_artifact_list(result, "tile_artifacts", artifact_label="tile")
+
+
+def _embed_hierarchical_artifacts_with_coordinates(
+    *,
+    model_name: str,
+    output_variant: str,
+    allow_non_recommended_settings: bool = False,
+    preprocessing: Slide2VecPreprocessingConfig,
+    execution: ExecutionOptions,
+    tiling_dir: Path,
+    slides: Sequence[object],
+) -> list:
+    result = _run_with_coordinates(
+        model_name=model_name,
+        output_variant=output_variant,
+        allow_non_recommended_settings=allow_non_recommended_settings,
+        preprocessing=preprocessing,
+        execution=execution,
+        tiling_dir=tiling_dir,
+        slides=slides,
+    )
+    return _require_artifact_list(result, "hierarchical_artifacts", artifact_label="hierarchical")
 
 
 def _aggregate_tiles(
