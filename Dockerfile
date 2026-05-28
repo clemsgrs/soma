@@ -33,6 +33,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     libnuma1 \
     libspatialindex-dev \
+    ca-certificates \
     curl \
     vim screen \
     zip unzip \
@@ -137,6 +138,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zlib1g-dev \
     libnuma1 \
     libspatialindex-dev \
+    ca-certificates \
     curl \
     vim screen \
     zip unzip \
