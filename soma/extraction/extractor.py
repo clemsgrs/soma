@@ -61,6 +61,8 @@ from soma.encoders.validation import resolve_encoder_precision, resolve_preproce
 from soma.extraction.orchestration import (
     _aggregate_patients,
     _aggregate_tiles,
+    _embed_hierarchical_artifacts_with_coordinates,
+    _embed_tile_artifacts_with_coordinates,
     _embed_tiles,
     _load_model,
     _release_parent_cuda_state,
@@ -200,6 +202,10 @@ def _empty_sample_ids_from_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]
         for loaded in loaded_tilings
         if tiling_num_tiles(loaded.tiling_result) == 0
     ]
+
+
+def _non_empty_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[LoadedTiling]:
+    return [loaded for loaded in loaded_tilings if tiling_num_tiles(loaded.tiling_result) > 0]
 
 
 class FeatureExtractor:
@@ -431,16 +437,11 @@ class FeatureExtractor:
             tiling_results=prepared_tilings,
         )
 
-        n_slides = len(loaded_tilings)
         effective_num_gpus = _resolve_num_gpus(
             num_gpus if num_gpus is not None else self._execution.num_gpus
         )
-        should_delegate_embedding_progress = effective_num_gpus > 1
         with _suppress_logger_noise_ctx("cucim"):
             with _make_extraction_reporter_ctx(feature_dir):
-                if not should_delegate_embedding_progress:
-                    slide2vec_progress.emit_progress("embedding.started", slide_count=n_slides)
-
                 if not self._cache.enabled:
                     self._extract_uncached(
                         feature_dir=feature_dir,
@@ -529,15 +530,6 @@ class FeatureExtractor:
                         output_variant=resolved_output_variant,
                     )
                 store = FeatureStore(store.feature_dir)
-
-                if not should_delegate_embedding_progress:
-                    slide2vec_progress.emit_progress(
-                        "embedding.finished",
-                        slide_count=n_slides,
-                        slides_completed=n_slides,
-                        tile_artifacts=n_slides,
-                        slide_artifacts=0,
-                    )
 
         return store
 
@@ -779,29 +771,32 @@ class FeatureExtractor:
             num_gpus=num_gpus,
             save_tile_embeddings=(level == "tile" or self._encoder.save_tile_features or hierarchical),
         )
-        slides = [loaded.slide for loaded in loaded_tilings]
+        embeddable_tilings = _non_empty_loaded_tilings(loaded_tilings)
+        slides = [loaded.slide for loaded in embeddable_tilings]
+        embedding_tiling_results = [loaded.tiling_result for loaded in embeddable_tilings]
         model_name = self._encoder.name
 
         if hierarchical:
-            if num_gpus is not None and num_gpus > 1:
-                _run_with_coordinates(
-                    model_name=model_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=allow_non_recommended_settings,
-                    preprocessing=preprocessing,
-                    execution=execution,
-                    tiling_dir=tiling_dir,
-                    slides=slides,
-                )
-                return
-            _embed_tiles(
+            _embed_hierarchical_artifacts_with_coordinates(
                 model_name=model_name,
                 output_variant=output_variant,
                 allow_non_recommended_settings=allow_non_recommended_settings,
-                slides=slides,
-                tiling_results=prepared_tilings,
                 preprocessing=preprocessing,
                 execution=execution,
+                tiling_dir=tiling_dir,
+                slides=slides,
+            )
+            return
+
+        if level == "tile":
+            _embed_tile_artifacts_with_coordinates(
+                model_name=model_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
+                preprocessing=preprocessing,
+                execution=execution,
+                tiling_dir=tiling_dir,
+                slides=slides,
             )
             return
 
@@ -817,25 +812,13 @@ class FeatureExtractor:
             )
             return
 
-        if level == "tile":
-            _embed_tiles(
-                model_name=model_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=allow_non_recommended_settings,
-                slides=slides,
-                tiling_results=prepared_tilings,
-                preprocessing=preprocessing,
-                execution=execution,
-            )
-            return
-
         if self._encoder.save_tile_features:
             tile_artifacts = _embed_tiles(
                 model_name=model_name,
                 output_variant=output_variant,
                 allow_non_recommended_settings=allow_non_recommended_settings,
                 slides=slides,
-                tiling_results=prepared_tilings,
+                tiling_results=embedding_tiling_results,
                 preprocessing=preprocessing,
                 execution=execution,
             )
@@ -854,7 +837,7 @@ class FeatureExtractor:
                     output_variant=output_variant,
                     allow_non_recommended_settings=allow_non_recommended_settings,
                     slides=slides,
-                    tiling_results=prepared_tilings,
+                    tiling_results=embedding_tiling_results,
                     preprocessing=preprocessing,
                     execution=temp_execution,
                 )
@@ -1394,12 +1377,11 @@ class FeatureExtractor:
             return
         empty_sample_ids = _empty_sample_ids_from_loaded_tilings(loaded_tilings)
         wanted = set(missing)
-        selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in wanted]
-        selected_tilings = [
-            tiling
-            for loaded, tiling in zip(loaded_tilings, prepared_tilings)
-            if loaded.slide.sample_id in wanted
-        ]
+        selected_loaded = self._filter_tilings_for_ids(
+            list(loaded_tilings),
+            wanted_ids=wanted,
+            empty_ids=set(empty_sample_ids),
+        )
         execution = build_execution_options(
             self._encoder,
             execution=self._execution,
@@ -1408,26 +1390,15 @@ class FeatureExtractor:
             num_gpus=num_gpus,
             save_tile_embeddings=True,
         )
-        if num_gpus is not None and num_gpus > 1:
-            artifacts = _run_with_coordinates(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                preprocessing=preprocessing,
-                execution=execution,
-                tiling_dir=tiling_dir,
-                slides=[loaded.slide for loaded in selected_loaded],
-            ).tile_artifacts
-        else:
-            artifacts = _embed_tiles(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                slides=[loaded.slide for loaded in selected_loaded],
-                tiling_results=selected_tilings,
-                preprocessing=preprocessing,
-                execution=execution,
-            )
+        artifacts = _embed_tile_artifacts_with_coordinates(
+            model_name=encoder_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            preprocessing=preprocessing,
+            execution=execution,
+            tiling_dir=tiling_dir,
+            slides=[loaded.slide for loaded in selected_loaded],
+        )
         feature_dim = self._write_artifacts_to_cache_resolution(
             artifacts=artifacts,
             cache_resolution=cache_resolution,
@@ -1454,12 +1425,11 @@ class FeatureExtractor:
             return
         empty_sample_ids = _empty_sample_ids_from_loaded_tilings(loaded_tilings)
         wanted = set(missing)
-        selected_loaded = [loaded for loaded in loaded_tilings if loaded.slide.sample_id in wanted]
-        selected_tilings = [
-            tiling
-            for loaded, tiling in zip(loaded_tilings, prepared_tilings)
-            if loaded.slide.sample_id in wanted
-        ]
+        selected_loaded = self._filter_tilings_for_ids(
+            list(loaded_tilings),
+            wanted_ids=wanted,
+            empty_ids=set(empty_sample_ids),
+        )
         execution = build_execution_options(
             self._encoder,
             execution=self._execution,
@@ -1468,31 +1438,15 @@ class FeatureExtractor:
             num_gpus=num_gpus,
             save_tile_embeddings=True,
         )
-        if num_gpus is not None and num_gpus > 1:
-            result = _run_with_coordinates(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                preprocessing=preprocessing,
-                execution=execution,
-                tiling_dir=tiling_dir,
-                slides=[loaded.slide for loaded in selected_loaded],
-            )
-        else:
-            result = _embed_tiles(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                slides=[loaded.slide for loaded in selected_loaded],
-                tiling_results=selected_tilings,
-                preprocessing=preprocessing,
-                execution=execution,
-            )
-        artifacts = getattr(result, "hierarchical_artifacts", None)
-        if artifacts is None:
-            raise ValueError(
-                "slide2vec did not return hierarchical_artifacts for hierarchical cache population"
-            )
+        artifacts = _embed_hierarchical_artifacts_with_coordinates(
+            model_name=encoder_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            preprocessing=preprocessing,
+            execution=execution,
+            tiling_dir=tiling_dir,
+            slides=[loaded.slide for loaded in selected_loaded],
+        )
         feature_dim = self._write_artifacts_to_cache_resolution(
             artifacts=artifacts,
             cache_resolution=cache_resolution,
