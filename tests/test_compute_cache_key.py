@@ -72,34 +72,31 @@ def test_compute_cache_key_slide_prism_matches_soma_resolver():
     from soma.encoders import encoder_registry
     from slide2vec.encoders.registry import resolve_encoder_output
 
-    tile_preprocessing = PreprocessingConfig(
+    preprocessing = PreprocessingConfig(
         backend="asap",
         requested_spacing_um=0.5,
         requested_tile_size_px=224,
         tissue_method="hsv",
     )
-    tile_execution = EncoderConfig(name="virchow")
-    execution = EncoderConfig(name="prism")
 
     helper_key = compute_cache_key(
         kind="slide",
         encoder_name="prism",
-        preprocessing=None,
-        execution=execution,
-        tile_preprocessing=tile_preprocessing,
-        tile_execution=tile_execution,
+        preprocessing=preprocessing,
     )
 
     tile_info = encoder_registry.info("virchow")
+    tile_exec = EncoderConfig(name="virchow")
     tile_ov = resolve_encoder_output("virchow", metadata=tile_info)["output_variant"]
-    resolved_tile_prep = resolve_preprocessing_config(tile_execution, tile_preprocessing, model_metadata=tile_info)
+    resolved_tile_prep = resolve_preprocessing_config(tile_exec, preprocessing, model_metadata=tile_info)
     slide_info = encoder_registry.info("prism")
+    slide_exec = EncoderConfig(name="prism")
     slide_ov = resolve_encoder_output("prism", metadata=slide_info)["output_variant"]
     tile_dep = {
         "tile_encoder_name": "virchow",
         "tile_preprocessing": preprocessing_signature(resolved_tile_prep),
         "tile_execution": execution_signature(
-            replace(tile_execution, output_variant=tile_ov),
+            replace(tile_exec, output_variant=tile_ov),
             encoder_name="virchow",
             preprocessing=resolved_tile_prep,
             output_variant=tile_ov,
@@ -108,10 +105,32 @@ def test_compute_cache_key_slide_prism_matches_soma_resolver():
     reference_key = build_slide_cache_key(
         slide_encoder_name="prism",
         tile_dependency_signature=tile_dep,
-        execution=replace(execution, output_variant=slide_ov),
+        execution=replace(slide_exec, output_variant=slide_ov),
         output_variant=slide_ov,
     )
     assert helper_key == reference_key
+
+
+def test_compute_cache_key_tile_virchow_has_precomputed_masks():
+    """tile + virchow @ 1.0 µm / 224 px with has_precomputed_masks=True →
+    34330d967f1bb435. The operator typed tissue_method='hsv' but the dataset
+    has masks for every sample, so soma promotes to 'precomputed_mask'
+    during extraction; has_precomputed_masks=True mirrors that promotion."""
+    preprocessing = PreprocessingConfig(
+        backend="asap",
+        requested_spacing_um=1.0,
+        requested_tile_size_px=224,
+        tissue_method="hsv",
+    )
+    execution = EncoderConfig(name="virchow")
+    key = compute_cache_key(
+        kind="tile",
+        encoder_name="virchow",
+        preprocessing=preprocessing,
+        execution=execution,
+        has_precomputed_masks=True,
+    )
+    assert key == "34330d967f1bb435"
 
 
 def test_compute_cache_key_rejects_unknown_kind():

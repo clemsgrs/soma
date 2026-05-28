@@ -1,5 +1,6 @@
 ARG UBUNTU_VERSION=22.04
 ARG CUDA_MAJOR_VERSION=12.8.1
+ARG PYTHON_VERSION=3.11
 
 ########################
 # Stage 1: build stage #
@@ -8,6 +9,7 @@ FROM nvidia/cuda:${CUDA_MAJOR_VERSION}-cudnn-devel-ubuntu${UBUNTU_VERSION} AS bu
 
 ARG USER_UID=1001
 ARG USER_GID=1001
+ARG PYTHON_VERSION
 
 # ensures that Python output to stdout/stderr is not buffered: prevents missing information when terminating
 ENV PYTHONUNBUFFERED=1
@@ -15,12 +17,11 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=Europe/Amsterdam
 
 USER root
 
+# create user and I/O dirs
 RUN groupadd --gid ${USER_GID} user \
-    && useradd -m --no-log-init --uid ${USER_UID} --gid ${USER_GID} user
-
-# create input/output directory
-RUN mkdir /input /output && \
-    chown user:user /input /output
+    && useradd -m --no-log-init --uid ${USER_UID} --gid ${USER_GID} user \
+    && mkdir /input /output \
+    && chown user:user /input /output
 
 # set /home/user as working directory
 WORKDIR /home/user
@@ -37,19 +38,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip unzip \
     git \
     openssh-server \
-    software-properties-common \
+    gnupg2 \
+    gpg-agent \
+    && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes.gpg \
+    && . /etc/os-release \
+    && printf 'deb [signed-by=/usr/share/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu %s main\n' "$VERSION_CODENAME" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python${PYTHON_VERSION} \
+    python${PYTHON_VERSION}-dev \
+    python${PYTHON_VERSION}-venv \
+    python${PYTHON_VERSION}-distutils \
     && mkdir /var/run/sshd \
+    && curl -fsSL https://bootstrap.pypa.io/get-pip.py | python${PYTHON_VERSION} \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-dev \
-        python3.11-venv \
-        python3.11-distutils \
-    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 # libjpeg-turbo 3.x (required by PyTurboJPEG>=2)
@@ -65,9 +72,9 @@ RUN curl -fsSL https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/
 WORKDIR /opt/app/
 
 ARG PYTORCH_CUDA_INDEX_URL=https://download.pytorch.org/whl/cu128
+ARG GIT_MODEL_DEPENDENCIES="git+https://github.com/lilab-stanford/MUSK.git git+https://github.com/Mahmoodlab/CONCH.git git+https://github.com/prov-gigapath/prov-gigapath.git git+https://github.com/facebookresearch/sam2.git"
 
-RUN python -m ensurepip --upgrade \
-    && python -m pip install --upgrade pip setuptools pip-tools \
+RUN python -m pip install --upgrade pip setuptools pip-tools \
     && python -m pip install hatchling psutil \
     && rm -rf /home/user/.cache/pip
 
@@ -84,13 +91,20 @@ RUN python -m pip install \
     --no-cache-dir \
     --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
     -c /opt/app/constraints-cu128.txt \
-    "/opt/app[dev]" \
-    && python -m pip install \
-        --no-cache-dir \
-        --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
-        -c /opt/app/constraints-cu128.txt \
-        'flash-attn>=2.7.1,<=2.8.0' \
-        --no-build-isolation
+    "/opt/app[dev]"
+
+RUN python -m pip install --no-cache-dir --no-color \
+    -c /opt/app/constraints-cu128.txt \
+    --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
+    ${GIT_MODEL_DEPENDENCIES}
+
+RUN python -m pip install \
+    --no-cache-dir \
+    --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
+    -c /opt/app/constraints-cu128.txt \
+    'flash-attn>=2.7.1,<=2.8.0' \
+    --no-build-isolation \
+    && rm -rf /home/user/.cache/pip
 
 
 ##########################
@@ -100,6 +114,7 @@ FROM nvidia/cuda:${CUDA_MAJOR_VERSION}-cudnn-runtime-ubuntu${UBUNTU_VERSION}
 
 ARG USER_UID=1001
 ARG USER_GID=1001
+ARG PYTHON_VERSION
 
 ENV PYTHONUNBUFFERED=1
 ENV DEBIAN_FRONTEND=noninteractive TZ=Europe/Amsterdam
@@ -127,19 +142,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     zip unzip \
     git \
     openssh-server \
-    software-properties-common \
+    gnupg2 \
+    gpg-agent \
+    && curl -fsSL "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF23C5A6CF475977595C89F51BA6932366A755776" \
+        | gpg --dearmor -o /usr/share/keyrings/deadsnakes.gpg \
+    && . /etc/os-release \
+    && printf 'deb [signed-by=/usr/share/keyrings/deadsnakes.gpg] https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu %s main\n' "$VERSION_CODENAME" \
+        > /etc/apt/sources.list.d/deadsnakes.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    python${PYTHON_VERSION} \
+    python${PYTHON_VERSION}-venv \
+    python${PYTHON_VERSION}-distutils \
     && mkdir /var/run/sshd \
+    && curl -fsSL https://bootstrap.pypa.io/get-pip.py | python${PYTHON_VERSION} \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/local/bin/python \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 \
+    && ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN add-apt-repository -y ppa:deadsnakes/ppa \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        python3.11 \
-        python3.11-dev \
-        python3.11-venv \
-        python3.11-distutils \
-    && ln -sf /usr/bin/python3.11 /usr/local/bin/python \
     && rm -rf /var/lib/apt/lists/*
 
 # libjpeg-turbo 3.x (copied from build stage)
@@ -147,16 +167,19 @@ COPY --from=build /usr/local/lib/libjpeg* /usr/local/lib/
 COPY --from=build /usr/local/lib/libturbojpeg* /usr/local/lib/
 RUN ldconfig
 
-RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs
-
 # install ASAP
 ARG ASAP_URL=https://github.com/computationalpathologygroup/ASAP/releases/download/ASAP-2.2-(Nightly)/ASAP-2.2-Ubuntu2204.deb
 RUN apt-get update && curl -L ${ASAP_URL} -o /tmp/ASAP.deb && apt-get install --assume-yes /tmp/ASAP.deb && \
-    SITE_PACKAGES=`python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"` && \
+    (apt-get purge -y 'python3.10*' 'libpython3.10*' || true) && \
+    ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 && \
+    SITE_PACKAGES=`python${PYTHON_VERSION} -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"` && \
     printf "/opt/ASAP/bin/\n" > "${SITE_PACKAGES}/asap.pth" && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# install nodejs
+RUN curl -fsSL https://deb.nodesource.com/setup_lts.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs
 
 # install codex
 RUN npm i -g @openai/codex
@@ -165,11 +188,11 @@ RUN npm i -g @openai/codex
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # copy Python libs & entrypoints from build stage (includes flash-attn, your deps, ASAP .pth)
-COPY --from=build /usr/local/lib/python3.11/dist-packages /usr/local/lib/python3.11/dist-packages
+COPY --from=build /usr/local/lib/python${PYTHON_VERSION}/dist-packages /usr/local/lib/python${PYTHON_VERSION}/dist-packages
 COPY --from=build /usr/local/bin /usr/local/bin
 
 # register libnvimgcodec so cucim can use GPU-accelerated JPEG decoding
-RUN echo "/usr/local/lib/python3.11/dist-packages/nvidia/nvimgcodec" > /etc/ld.so.conf.d/nvimgcodec.conf && \
+RUN echo "/usr/local/lib/python${PYTHON_VERSION}/dist-packages/nvidia/nvimgcodec" > /etc/ld.so.conf.d/nvimgcodec.conf && \
     ldconfig
 
 # copy app code

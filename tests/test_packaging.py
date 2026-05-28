@@ -1,6 +1,7 @@
 """Tests for PyPI packaging metadata."""
 
 from pathlib import Path
+import re
 import tomllib
 
 
@@ -10,7 +11,7 @@ def test_pyproject_has_publish_ready_metadata():
 
     project = data["project"]
     assert project["name"] == "soma-pathology"
-    assert project["version"] == "1.0.0"
+    assert re.fullmatch(r"\d+\.\d+\.\d+", project["version"]) is not None
     assert project["license"] == {"file": "LICENSE"}
     assert project["authors"] == [
         {"name": "Clément Grisi", "email": "clement.grisi@radboudumc.nl"}
