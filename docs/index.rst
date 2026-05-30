@@ -58,6 +58,7 @@ for custom experiment orchestration.
    :caption: Data
 
    dataset
+   curation
    preprocessing
 
 .. toctree::
