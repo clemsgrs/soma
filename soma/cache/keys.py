@@ -108,9 +108,6 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "tolerance": config.tolerance,
         "ref_tile_size_px": config.ref_tile_size_px,
         "a_t": config.a_t,
-        "hierarchical": config.hierarchical,
-        "npatch": config.npatch,
-        "hierarchical_patch_size_px": config.hierarchical_patch_size_px,
     }
 
 

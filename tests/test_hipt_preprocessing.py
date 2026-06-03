@@ -11,7 +11,6 @@ def test_hipt_derives_hierarchical_preprocessing_from_tile_multiple():
         AggregatorConfig(name="hipt", params={"tile_multiple": 6}),
     )
 
-    assert preprocessing.hierarchical is True
     assert preprocessing.region_tile_multiple == 6
     assert preprocessing.requested_region_size_px is None
 

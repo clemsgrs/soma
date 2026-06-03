@@ -28,8 +28,7 @@ def derive_preprocessing_for_aggregator(
                     raise ValueError("region_tile_multiple must be >= 2")
             return replace(
                 preprocessing,
-                hierarchical=True,
-                npatch=resolved_region_tile_multiple,
+                region_tile_multiple=resolved_region_tile_multiple,
             )
         raise ValueError(
             "HIPT aggregator requires 'tile_multiple' or legacy 'region_size' and "
@@ -38,14 +37,11 @@ def derive_preprocessing_for_aggregator(
 
     resolved_region_tile_multiple: int | None = None
     resolved_requested_region_size_px: int | None = preprocessing.requested_region_size_px
-    resolved_hierarchical_patch_size_px: int | None = preprocessing.hierarchical_patch_size_px
 
     if tile_multiple is not None:
         resolved_region_tile_multiple = int(tile_multiple)
         if resolved_region_tile_multiple < 2:
             raise ValueError("HIPT aggregator requires tile_multiple >= 2")
-        if patch_size is not None:
-            resolved_hierarchical_patch_size_px = int(patch_size)
         if region_size is not None:
             resolved_requested_region_size_px = int(region_size)
     elif region_size is not None or patch_size is not None:
@@ -55,19 +51,19 @@ def derive_preprocessing_for_aggregator(
                 "'tile_multiple' is not provided"
             )
         resolved_requested_region_size_px = int(region_size)
-        resolved_hierarchical_patch_size_px = int(patch_size)
-        if resolved_requested_region_size_px % resolved_hierarchical_patch_size_px != 0:
+        resolved_patch_size = int(patch_size)
+        if resolved_requested_region_size_px % resolved_patch_size != 0:
             raise ValueError(
                 f"region_size ({resolved_requested_region_size_px}) must be divisible "
-                f"by patch_size ({resolved_hierarchical_patch_size_px})"
+                f"by patch_size ({resolved_patch_size})"
             )
-        if resolved_requested_region_size_px < 2 * resolved_hierarchical_patch_size_px:
+        if resolved_requested_region_size_px < 2 * resolved_patch_size:
             raise ValueError(
                 f"region_size ({resolved_requested_region_size_px}) must be >= 2 * "
-                f"patch_size ({resolved_hierarchical_patch_size_px})"
+                f"patch_size ({resolved_patch_size})"
             )
         resolved_region_tile_multiple = (
-            resolved_requested_region_size_px // resolved_hierarchical_patch_size_px
+            resolved_requested_region_size_px // resolved_patch_size
         )
     if preprocessing.requested_region_size_px is not None and resolved_requested_region_size_px is not None:
         if int(preprocessing.requested_region_size_px) != int(resolved_requested_region_size_px):
@@ -81,7 +77,4 @@ def derive_preprocessing_for_aggregator(
         preprocessing,
         requested_region_size_px=resolved_requested_region_size_px,
         region_tile_multiple=resolved_region_tile_multiple,
-        hierarchical=True,
-        npatch=resolved_region_tile_multiple,
-        hierarchical_patch_size_px=resolved_hierarchical_patch_size_px,
     )
