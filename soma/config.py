@@ -158,10 +158,10 @@ class PreprocessingConfig:
 
     The preprocessing backend controls tissue segmentation and tile
     extraction. ``requested_spacing_um`` and ``requested_tile_size_px`` are
-    the primary scale-selection knobs. The hierarchical fields are used only
-    when the aggregator requests HIPT-style region geometry. ``sam2_device``
-    and ``sam2_num_workers`` tune SAM2 tissue-segmentation execution when the
-    backend supports that path.
+    the primary scale-selection knobs. ``requested_region_size_px`` and
+    ``region_tile_multiple`` describe HIPT-style hierarchical region geometry.
+    ``sam2_device`` and ``sam2_num_workers`` tune SAM2 tissue-segmentation
+    execution when the backend supports that path.
     """
 
     backend: str = "auto"
@@ -182,11 +182,6 @@ class PreprocessingConfig:
     a_t: int = 4
     tissue_mask_tissue_value: int = 1
     preview: PreviewConfig = field(default_factory=_default_preview_config)
-
-    # Hierarchical (HIPT-style) fields — auto-derived from aggregator config
-    hierarchical: bool = False
-    npatch: int | None = None
-    hierarchical_patch_size_px: int | None = None
 
     @property
     def requested_backend(self) -> str:

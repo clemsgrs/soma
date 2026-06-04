@@ -15,7 +15,7 @@ from soma.config import EncoderConfig, PreprocessingConfig
 
 
 def test_compute_cache_key_tile_virchow():
-    """tile + virchow @ 0.5 µm / 224 px → 28bc8da87c5844f3."""
+    """tile + virchow @ 0.5 µm / 224 px → 78e59617ea69b8a7."""
     preprocessing = PreprocessingConfig(
         backend="asap",
         requested_spacing_um=0.5,
@@ -29,12 +29,12 @@ def test_compute_cache_key_tile_virchow():
         preprocessing=preprocessing,
         execution=execution,
     )
-    assert key == "28bc8da87c5844f3"
+    assert key == "78e59617ea69b8a7"
 
 
 def test_compute_cache_key_hierarchical_conch():
     """hierarchical + conch @ 0.5 µm / 448 px / region 3584 / multiple 8 →
-    f233c3633cd8d8f0. Uses precomputed masks (the PANDA-debug dataset ships
+    60b8831b83961731. Uses precomputed masks (the PANDA-debug dataset ships
     them for all samples, so soma promotes tissue_method automatically)."""
     preprocessing = PreprocessingConfig(
         backend="asap",
@@ -42,8 +42,6 @@ def test_compute_cache_key_hierarchical_conch():
         requested_tile_size_px=448,
         requested_region_size_px=3584,
         region_tile_multiple=8,
-        hierarchical=True,
-        npatch=8,
         tissue_method="precomputed_mask",
     )
     execution = EncoderConfig(name="conch")
@@ -53,7 +51,7 @@ def test_compute_cache_key_hierarchical_conch():
         preprocessing=preprocessing,
         execution=execution,
     )
-    assert key == "f233c3633cd8d8f0"
+    assert key == "60b8831b83961731"
 
 
 def test_compute_cache_key_slide_prism_matches_soma_resolver():
@@ -113,7 +111,7 @@ def test_compute_cache_key_slide_prism_matches_soma_resolver():
 
 def test_compute_cache_key_tile_virchow_has_precomputed_masks():
     """tile + virchow @ 1.0 µm / 224 px with has_precomputed_masks=True →
-    34330d967f1bb435. The operator typed tissue_method='hsv' but the dataset
+    b72479366ea5197b. The operator typed tissue_method='hsv' but the dataset
     has masks for every sample, so soma promotes to 'precomputed_mask'
     during extraction; has_precomputed_masks=True mirrors that promotion."""
     preprocessing = PreprocessingConfig(
@@ -130,7 +128,7 @@ def test_compute_cache_key_tile_virchow_has_precomputed_masks():
         execution=execution,
         has_precomputed_masks=True,
     )
-    assert key == "34330d967f1bb435"
+    assert key == "b72479366ea5197b"
 
 
 def test_compute_cache_key_rejects_unknown_kind():

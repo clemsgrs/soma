@@ -586,7 +586,6 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
         requested_spacing_um=0.5,
         requested_region_size_px=1792,
         region_tile_multiple=8,
-        hierarchical=True,
         read_tile_size_px=224,
         read_region_size_px=1792,
     )
