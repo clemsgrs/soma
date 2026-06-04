@@ -244,8 +244,11 @@ def build_cli_rst() -> str:
              optimizer: adam            # adam | sgd | adamw
              scheduler: cosine          # cosine | step | none
              patience: 10               # early-stopping patience (epochs)
+             monitor: tune_loss         # tune_loss or a tune metric name
+             monitor_mode: min          # min | max
              batch_size: 1
              gradient_accumulation: 1
+             tune_is_test: false
              allow_missing_tune: false
 
            # ── Reports ──────────────────────────────────────────────────────

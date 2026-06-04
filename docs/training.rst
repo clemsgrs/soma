@@ -3,9 +3,10 @@ Training
 
 Training takes the selected feature representation and fits the task head.
 The main knobs are learning rate, epochs, patience, optimizer, scheduler, and
-batch behavior. If a dataset only provides train/test splits, you can set
-``allow_missing_tune=True`` to reuse the train split for tuning as an explicit
-fallback.
+batch behavior. If a benchmark only exposes train/test splits, set
+``tune_is_test=True`` to use the single test split for checkpoint selection and
+final reporting. If a dataset has no tune split and you want a train-as-tune
+fallback instead, set ``allow_missing_tune=True``.
 
 The main configuration object is :class:`soma.config.TrainingConfig`.
 
@@ -48,6 +49,9 @@ Practical defaults
    * - ``gradient_accumulation``
      - ``1``
      - Effective batch size multiplier
+   * - ``tune_is_test``
+     - ``False``
+     - Use the only test split as tune; intended for reproducing benchmark protocols without an internal validation set
    * - ``allow_missing_tune``
      - ``False``
      - Reuse train as tune when a fold has no tune split; emits a warning

@@ -99,6 +99,7 @@ class Trainer:
 
         history: list[EpochLog] = []
         best_tune_loss = float("inf")
+        best_monitor_value = _initial_monitor_value(self._config.monitor_mode)
         best_epoch = 0
         best_tune_metrics: dict[str, float] = {}
         patience_counter = 0
@@ -210,10 +211,20 @@ class Trainer:
                 )
                 history.append(log)
 
-                improved = tune_loss < best_tune_loss
+                monitor_value = _resolve_monitor_value(
+                    self._config,
+                    tune_loss=tune_loss,
+                    tune_metrics=tune_metrics,
+                )
+                improved = _is_monitor_improvement(
+                    monitor_value,
+                    best_monitor_value,
+                    self._config.monitor_mode,
+                )
                 status: str
                 if improved:
                     best_tune_loss = tune_loss
+                    best_monitor_value = monitor_value
                     best_epoch = epoch
                     best_tune_metrics = tune_metrics
                     patience_counter = 0
@@ -381,6 +392,41 @@ def _build_scheduler(
     else:
         msg = f"Unknown scheduler: {config.scheduler}. Use 'cosine' or 'none'."
         raise ValueError(msg)
+
+
+def _initial_monitor_value(monitor_mode: str) -> float:
+    if monitor_mode == "min":
+        return float("inf")
+    if monitor_mode == "max":
+        return float("-inf")
+    msg = f"Unknown monitor_mode: {monitor_mode}. Use 'min' or 'max'."
+    raise ValueError(msg)
+
+
+def _resolve_monitor_value(
+    config: TrainingConfig,
+    *,
+    tune_loss: float,
+    tune_metrics: dict[str, float],
+) -> float:
+    if config.monitor == "tune_loss":
+        return tune_loss
+    if config.monitor in tune_metrics:
+        return tune_metrics[config.monitor]
+    available = ", ".join(sorted(tune_metrics)) or "(none)"
+    raise ValueError(
+        f"Training monitor '{config.monitor}' was not found in tune metrics. "
+        f"Available tune metrics: {available}; use 'tune_loss' to monitor loss."
+    )
+
+
+def _is_monitor_improvement(current: float, best: float, monitor_mode: str) -> bool:
+    if monitor_mode == "min":
+        return current < best
+    if monitor_mode == "max":
+        return current > best
+    msg = f"Unknown monitor_mode: {monitor_mode}. Use 'min' or 'max'."
+    raise ValueError(msg)
 
 
 def _save_checkpoint(

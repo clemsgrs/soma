@@ -1,0 +1,45 @@
+run:
+  output_root: runs/eva_patch_camelyon_uni
+  seed: 0
+  tags:
+    - eva
+    - patch_camelyon
+    - uni
+
+data:
+  dataset_csv: data/eva/patch_camelyon/dataset.csv
+  splits_csv: data/eva/patch_camelyon/splits.csv
+  dataset_type: tile
+
+preprocessing: {}
+
+cache:
+  enabled: true
+
+encoder:
+  name: uni
+  batch_size: 32
+
+aggregation: null
+
+task:
+  name: binary_classification
+
+evaluation:
+  metrics:
+    - balanced_accuracy
+
+training:
+  epochs: 1000
+  learning_rate: 3.0e-4
+  weight_decay: 0.0
+  optimizer: adamw
+  scheduler: none
+  patience: 100
+  monitor: balanced_accuracy
+  monitor_mode: max
+  batch_size: 256
+  tune_is_test: false
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false

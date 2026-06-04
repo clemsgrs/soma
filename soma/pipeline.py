@@ -180,6 +180,16 @@ def _format_fold_summary(
     return f"{base} | {' | '.join(extras)}"
 
 
+def _resolve_tune_is_test_split(fold_split: FoldSplit, fold_label: str) -> str:
+    test_split_names = fold_split.test_split_names
+    if len(test_split_names) != 1:
+        raise ValueError(
+            f"{fold_label} has {len(test_split_names)} test splits; "
+            "training.tune_is_test=True requires exactly one test split"
+        )
+    return test_split_names[0]
+
+
 def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
     seen: set[str] = set()
     patient_ids: list[str] = []
@@ -311,6 +321,8 @@ def train_one_fold(
     label_map = dataset.label_map
     feature_dim = feature_store.feature_dim
     all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
+    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+    tune_from_test_split_name: str | None = None
     if dataset_type == "patient":
         # Patient-level: features are indexed by patient_id; splits are slide-based.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
@@ -443,7 +455,24 @@ def train_one_fold(
         }
         empty_sample_ids_by_split = None
 
-    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+    if training.tune_is_test:
+        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
+        logger.warning(
+            "%s uses test split '%s' as tune because tune_is_test=True; "
+            "checkpoint selection and test reporting use the same samples",
+            _fp,
+            tune_from_test_split_name,
+        )
+        if dataset_type == "patient":
+            tune_patient_ids = list(test_patient_ids_by_split[tune_from_test_split_name])
+            raw_tune_patient_ids = list(raw_test_patient_ids_by_split[tune_from_test_split_name])
+            tune_records = list(test_records_by_split[tune_from_test_split_name])
+        else:
+            tune_records = list(test_records_by_split[tune_from_test_split_name])
+        if empty_sample_ids_by_split is not None:
+            empty_sample_ids_by_split["tune"] = list(
+                empty_sample_ids_by_split.get(tune_from_test_split_name, [])
+            )
 
     if dataset_type == "patient":
         if not train_patient_ids:
@@ -656,25 +685,25 @@ def train_one_fold(
 
     empty_eval_sample_ids = empty_sample_ids_by_split or {}
     if dataset_type == "patient":
-        tune_output_sample_ids = (
-            tuple(raw_train_patient_ids) if fallback_to_train else tuple(raw_tune_patient_ids)
-        )
-        tune_placeholder_records = (
-            raw_train_placeholder_records if fallback_to_train else _patient_placeholder_records(tune_records)
-        )
-        tune_empty_sample_ids = (
-            empty_eval_sample_ids.get("train", [])
-            if fallback_to_train
-            else empty_eval_sample_ids.get("tune", [])
-        )
+        if fallback_to_train:
+            tune_output_sample_ids = tuple(raw_train_patient_ids)
+            tune_placeholder_records = raw_train_placeholder_records
+            tune_empty_sample_ids = empty_eval_sample_ids.get("train", [])
+        else:
+            tune_output_sample_ids = tuple(raw_tune_patient_ids)
+            tune_placeholder_records = _patient_placeholder_records(tune_records)
+            tune_empty_sample_ids = empty_eval_sample_ids.get("tune", [])
     else:
-        tune_output_sample_ids = fold_split.train if fallback_to_train else fold_split.tune
+        if fallback_to_train:
+            tune_output_sample_ids = fold_split.train
+            tune_empty_sample_ids = empty_eval_sample_ids.get("train", [])
+        elif tune_from_test_split_name is not None:
+            tune_output_sample_ids = fold_split.tests[tune_from_test_split_name]
+            tune_empty_sample_ids = empty_eval_sample_ids.get("tune", [])
+        else:
+            tune_output_sample_ids = fold_split.tune
+            tune_empty_sample_ids = empty_eval_sample_ids.get("tune", [])
         tune_placeholder_records = None
-        tune_empty_sample_ids = (
-            empty_eval_sample_ids.get("train", [])
-            if fallback_to_train
-            else empty_eval_sample_ids.get("tune", [])
-        )
     tune_report = _evaluate_split_with_placeholders(
         model,
         tune_loader,
