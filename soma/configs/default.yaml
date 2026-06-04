@@ -78,8 +78,11 @@ training:
   optimizer: adam
   scheduler: cosine
   patience: 10
+  monitor: tune_loss
+  monitor_mode: min
   batch_size: 1
   gradient_accumulation: 1
+  tune_is_test: false
   allow_missing_tune: false
   num_workers: 0
   pin_memory: true

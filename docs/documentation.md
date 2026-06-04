@@ -1,5 +1,9 @@
 # Project Documentation Notes
 
+- 2026-05-31: Added `TrainingConfig.tune_is_test` for benchmark protocols that
+  use the single test split as the checkpoint-selection split. This keeps
+  train/test-only split files explicit while warning that tune and test share
+  samples.
 - 2026-04-22: Added `TrainingConfig.allow_missing_tune` as an explicit escape hatch for datasets that only provide train/test splits. The pipeline still fails by default when no tune samples are available, but now emits a warning and reuses the train split for tuning when the flag is enabled.
 - 2026-04-22: Patched slide-level `encode_slide(...)` calls in `slide2vec` to use CUDA autocast when the requested execution precision is `fp16` or `bf16`, which prevents Titan from entering FlashAttention in `fp32`.
 - 2026-04-22: Hardened cross-run comparison so `compare_run_predictions(...)` only uses shared prediction columns. Reports now handle runs that omit `prob_*` columns for label-based metrics instead of crashing with a `KeyError`.

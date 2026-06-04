@@ -293,8 +293,12 @@ class TrainingConfig:
 
     ``batch_size`` and ``gradient_accumulation`` control the effective batch
     size, while ``epochs``, ``learning_rate``, ``optimizer``, ``scheduler``,
-    and ``patience`` define the optimization schedule. ``allow_missing_tune``
-    enables a deliberate train-as-tune fallback when a fold has no tune split.
+    and ``patience`` define the optimization schedule. ``monitor`` and
+    ``monitor_mode`` choose the tune loss or metric used for best-checkpoint
+    selection and early stopping. ``tune_is_test`` uses the only test split for
+    checkpoint selection and test reporting, matching benchmark protocols that
+    do not expose an internal validation set. ``allow_missing_tune`` enables a
+    deliberate train-as-tune fallback when a fold has no tune split.
     """
 
     seed: int = 0
@@ -304,8 +308,11 @@ class TrainingConfig:
     optimizer: str = "adam"
     scheduler: str = "cosine"
     patience: int = 10
+    monitor: str = "tune_loss"
+    monitor_mode: str = "min"
     batch_size: int = 1
     gradient_accumulation: int = 1
+    tune_is_test: bool = False
     allow_missing_tune: bool = False
     num_workers: int = 0
     pin_memory: bool = True
@@ -320,6 +327,10 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
         if self.patience < 1:
             raise ValueError("TrainingConfig.patience must be >= 1")
+        if not self.monitor:
+            raise ValueError("TrainingConfig.monitor must be non-empty")
+        if self.monitor_mode not in {"min", "max"}:
+            raise ValueError("TrainingConfig.monitor_mode must be 'min' or 'max'")
         if self.num_workers < 0:
             raise ValueError("TrainingConfig.num_workers must be >= 0")
 

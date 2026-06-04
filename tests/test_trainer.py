@@ -15,7 +15,14 @@ from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer, TrainResult, _build_training_panel, _format_batch_progress
+from soma.training.trainer import (
+    Trainer,
+    TrainResult,
+    _build_training_panel,
+    _format_batch_progress,
+    _is_monitor_improvement,
+    _resolve_monitor_value,
+)
 from soma.training.seed import seed_everything
 
 
@@ -80,6 +87,37 @@ def _make_synthetic_loader(num_slides: int, seed: int = 0):
 
 
 class TestTrainer:
+    def test_default_monitor_resolves_tune_loss(self):
+        config = TrainingConfig()
+
+        value = _resolve_monitor_value(config, tune_loss=0.25, tune_metrics={"balanced_accuracy": 0.8})
+
+        assert value == 0.25
+
+    def test_metric_monitor_resolves_tune_metric(self):
+        config = TrainingConfig(monitor="balanced_accuracy", monitor_mode="max")
+
+        value = _resolve_monitor_value(config, tune_loss=0.25, tune_metrics={"balanced_accuracy": 0.8})
+
+        assert value == 0.8
+
+    def test_metric_monitor_rejects_missing_metric(self):
+        config = TrainingConfig(monitor="balanced_accuracy", monitor_mode="max")
+
+        try:
+            _resolve_monitor_value(config, tune_loss=0.25, tune_metrics={"auroc": 0.7})
+        except ValueError as exc:
+            assert "balanced_accuracy" in str(exc)
+            assert "auroc" in str(exc)
+        else:
+            raise AssertionError("Expected missing monitor metric to be rejected")
+
+    def test_monitor_improvement_supports_min_and_max(self):
+        assert _is_monitor_improvement(0.2, 0.3, "min")
+        assert not _is_monitor_improvement(0.4, 0.3, "min")
+        assert _is_monitor_improvement(0.8, 0.7, "max")
+        assert not _is_monitor_improvement(0.6, 0.7, "max")
+
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
         model = _make_model()

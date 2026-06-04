@@ -464,6 +464,68 @@ class TestTrainOneFold:
             for record in caplog.records
         )
 
+    def test_tune_is_test_uses_single_test_split_as_tune(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        caplog.set_level(logging.WARNING, logger="soma.pipeline")
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(
+                epochs=2,
+                patience=10,
+                batch_size=2,
+                tune_is_test=True,
+            ),
+            fold_dir=tmp_path / "fold_tune_is_test",
+        )
+
+        assert [pred.sample_id for pred in result.tune_report.predictions] == ["s6", "s7"]
+        assert [pred.sample_id for pred in result.test_reports["test"].predictions] == ["s6", "s7"]
+        assert result.tune_report.split == "tune"
+        assert result.tune_report.metrics["num_samples"] == 2
+        assert any(
+            record.levelno == logging.WARNING
+            and record.getMessage()
+            == "Run uses test split 'test' as tune because tune_is_test=True; "
+            "checkpoint selection and test reporting use the same samples"
+            for record in caplog.records
+        )
+
+    def test_tune_is_test_requires_single_test_split(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
+        splits_df = pd.read_csv(splits_csv)
+        splits_df.loc[splits_df["sample_id"] == "s7", "split"] = "test_external"
+        splits_df.to_csv(splits_csv, index=False)
+
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+
+        with pytest.raises(ValueError, match="requires exactly one test split"):
+            train_one_fold(
+                feature_store=store,
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="binary_classification"),
+                training=TrainingConfig(
+                    epochs=2,
+                    patience=10,
+                    batch_size=2,
+                    tune_is_test=True,
+                ),
+                fold_dir=tmp_path / "fold_tune_is_test_multiple_tests",
+            )
+
     def test_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         dataset = Dataset(dataset_csv)

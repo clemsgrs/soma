@@ -81,8 +81,11 @@ def test_training_config_defaults():
     assert cfg.optimizer == "adam"
     assert cfg.scheduler == "cosine"
     assert cfg.patience == 10
+    assert cfg.monitor == "tune_loss"
+    assert cfg.monitor_mode == "min"
     assert cfg.batch_size == 1
     assert cfg.gradient_accumulation == 1
+    assert cfg.tune_is_test is False
     # DataLoader knobs (Phase 2.2). num_workers defaults to 0 so the suite stays
     # fast on test fixtures; users should raise it for real WSI runs.
     assert cfg.num_workers == 0
@@ -97,6 +100,8 @@ def test_training_config_defaults():
         ({"batch_size": 0}, "batch_size"),
         ({"gradient_accumulation": 0}, "gradient_accumulation"),
         ({"patience": 0}, "patience"),
+        ({"monitor": ""}, "monitor"),
+        ({"monitor_mode": "largest"}, "monitor_mode"),
         ({"num_workers": -1}, "num_workers"),
     ],
 )
