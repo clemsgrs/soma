@@ -246,7 +246,10 @@ class TestMakeLoaders:
     """``_make_loaders`` must forward TrainingConfig DataLoader knobs."""
 
     def _build_inputs(self, tmp_path: Path):
+        import functools
+
         from soma.pipeline import _make_loaders
+        from soma.tasks.classification import categorical_label_map
         from soma.training.bag_dataset import BagDataset
         from soma.training.collate import bag_collate_fn
 
@@ -256,27 +259,28 @@ class TestMakeLoaders:
         train_records = [dataset.samples[sid] for sid in ["s0", "s1"]]
         tune_records = [dataset.samples[sid] for sid in ["s2"]]
         test_records = {"test": [dataset.samples[sid] for sid in ["s3"]]}
-        label_fn = lambda rec, label_map: label_map[rec.label]  # noqa: E731
-        return _make_loaders, BagDataset, bag_collate_fn, train_records, tune_records, test_records, store, dataset.label_map, label_fn
+        label_map = categorical_label_map(dataset)
+        target_fn = lambda rec: {"label": label_map[rec.label]}  # noqa: E731
+        collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
+        return _make_loaders, BagDataset, collate, train_records, tune_records, test_records, store, target_fn
 
     def test_forwards_num_workers_and_pin_memory(self, tmp_path: Path):
         (
             _make_loaders,
             BagDataset,
-            bag_collate_fn,
+            collate,
             train_records,
             tune_records,
             test_records,
             store,
-            label_map,
-            label_fn,
+            target_fn,
         ) = self._build_inputs(tmp_path)
 
         training = TrainingConfig(num_workers=2, pin_memory=False, persistent_workers=False, batch_size=1)
         train_loader, tune_loader, test_loaders = _make_loaders(
-            BagDataset, bag_collate_fn,
+            BagDataset, collate,
             train_records, tune_records, test_records,
-            training, store, label_map, label_fn,
+            training, store, target_fn,
         )
 
         for loader in (train_loader, tune_loader, *test_loaders.values()):
@@ -288,20 +292,19 @@ class TestMakeLoaders:
         (
             _make_loaders,
             BagDataset,
-            bag_collate_fn,
+            collate,
             train_records,
             tune_records,
             test_records,
             store,
-            label_map,
-            label_fn,
+            target_fn,
         ) = self._build_inputs(tmp_path)
 
         training = TrainingConfig(num_workers=0, persistent_workers=True, batch_size=1)
         train_loader, _, _ = _make_loaders(
-            BagDataset, bag_collate_fn,
+            BagDataset, collate,
             train_records, tune_records, test_records,
-            training, store, label_map, label_fn,
+            training, store, target_fn,
         )
 
         # persistent_workers=True is invalid with num_workers=0; the helper
@@ -696,12 +699,12 @@ class TestTrainOneFold:
         batch = BagBatch(
             features=torch.zeros(2, 4, D),
             mask=torch.tensor([[True, True, True, False], [True, True, True, True]]),
-            labels=torch.tensor([0, 1], dtype=torch.long),
+            targets={"label": torch.tensor([0, 1], dtype=torch.long)},
             sample_ids=("s0", "s1"),
         )
 
         class _DummyTaskHead:
-            def compute_metrics(self, logits, labels):
+            def compute_metrics(self, logits, targets):
                 return {"accuracy": 1.0}
 
             def postprocess(self, logits):
@@ -728,7 +731,6 @@ class TestTrainOneFold:
             _DummyModel(),
             [batch],
             "test",
-            {"normal": 0, "tumor": 1},
             torch.device("cpu"),
             attention_dir=attention_dir,
             aggregator_name="abmil",
@@ -1704,7 +1706,9 @@ class TestPipeline:
         )
         pipeline = Pipeline(config, feature_dir=feature_dir)
 
-        assert pipeline.dataset.num_classes == 2
+        from soma.tasks.classification import categorical_label_map
+
+        assert len(categorical_label_map(pipeline.dataset)) == 2
         assert pipeline.splits.num_folds == 1
 
     def test_pipeline_writes_experiment_metadata_and_indexes(self, tmp_path: Path):

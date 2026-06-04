@@ -44,13 +44,17 @@ def test_sample_ids(dataset_csv: Path):
     assert sorted(ds.sample_ids) == ["s1", "s2", "s3", "s4"]
 
 
-def test_label_map_string_labels(dataset_csv: Path):
+def test_categorical_label_map_string_labels(dataset_csv: Path):
+    from soma.tasks.classification import categorical_label_map
+
     ds = Dataset(dataset_csv)
     # Sorted unique: "normal" < "tumor"
-    assert ds.label_map == {"normal": 0, "tumor": 1}
+    assert categorical_label_map(ds) == {"normal": 0, "tumor": 1}
 
 
-def test_label_map_integer_labels(tmp_path: Path):
+def test_categorical_label_map_integer_labels(tmp_path: Path):
+    from soma.tasks.classification import categorical_label_map
+
     df = pd.DataFrame(
         {
             "sample_id": ["s1", "s2", "s3"],
@@ -61,12 +65,14 @@ def test_label_map_integer_labels(tmp_path: Path):
     path = tmp_path / "dataset.csv"
     df.to_csv(path, index=False)
     ds = Dataset(path)
-    assert ds.label_map == {0: 0, 1: 1, 2: 2}
+    assert categorical_label_map(ds) == {0: 0, 1: 1, 2: 2}
 
 
-def test_num_classes(dataset_csv: Path):
+def test_categorical_label_map_count(dataset_csv: Path):
+    from soma.tasks.classification import categorical_label_map
+
     ds = Dataset(dataset_csv)
-    assert ds.num_classes == 2
+    assert len(categorical_label_map(ds)) == 2
 
 
 def test_optional_mask_path(tmp_path: Path):
@@ -239,3 +245,27 @@ def test_patient_label_map_inconsistent_raises(tmp_path: Path):
     ds = Dataset(path)
     with pytest.raises(ValueError, match="inconsistent"):
         _ = ds.patient_label_map
+
+
+def test_patient_record_map_returns_representative_records(patient_dataset_csv: Path):
+    ds = Dataset(patient_dataset_csv)
+    record_map = ds.patient_record_map
+    assert set(record_map) == {"p1", "p2"}
+    assert record_map["p1"].label == "tumor"
+    assert record_map["p2"].label == "normal"
+
+
+def test_patient_record_map_inconsistent_raises(tmp_path: Path):
+    df = pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2"],
+            "image_path": ["/a.svs", "/b.svs"],
+            "label": ["tumor", "normal"],
+            "patient_id": ["p1", "p1"],
+        }
+    )
+    path = tmp_path / "bad.csv"
+    df.to_csv(path, index=False)
+    ds = Dataset(path)
+    with pytest.raises(ValueError, match="inconsistent"):
+        _ = ds.patient_record_map

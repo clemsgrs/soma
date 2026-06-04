@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 import pytest
 
+from soma.dataset import SampleRecord
 from soma.features import FeatureStore
 from soma.training.patient_dataset import PatientBatch, PatientDataset, patient_collate_fn
 
@@ -23,7 +24,16 @@ def _create_patient_store(tmp_path: Path, patient_ids: list[str], feature_dim: i
 
 
 LABEL_MAP = {"normal": 0, "tumor": 1}
-PATIENT_LABEL_MAP = {"p1": "tumor", "p2": "normal", "p3": "tumor"}
+TARGET_DTYPES = {"label": torch.long}
+PATIENT_RAW_LABEL = {"p1": "tumor", "p2": "normal", "p3": "tumor"}
+PATIENT_RECORD_MAP = {
+    pid: SampleRecord(sample_id=pid, image_path=Path(f"/{pid}.svs"), label=raw, patient_id=pid)
+    for pid, raw in PATIENT_RAW_LABEL.items()
+}
+
+
+def _target_fn(record: SampleRecord) -> dict[str, int]:
+    return {"label": LABEL_MAP[record.label]}
 
 
 # ---------------------------------------------------------------------------
@@ -34,38 +44,37 @@ PATIENT_LABEL_MAP = {"p1": "tumor", "p2": "normal", "p3": "tumor"}
 class TestPatientDataset:
     def test_len(self, tmp_path: Path):
         store = _create_patient_store(tmp_path, ["p1", "p2", "p3"], feature_dim=64)
-        ds = PatientDataset(["p1", "p2", "p3"], PATIENT_LABEL_MAP, store, LABEL_MAP)
+        ds = PatientDataset(["p1", "p2", "p3"], PATIENT_RECORD_MAP, store, _target_fn)
         assert len(ds) == 3
 
     def test_getitem_shape(self, tmp_path: Path):
         store = _create_patient_store(tmp_path, ["p1", "p2"], feature_dim=768)
-        ds = PatientDataset(["p1", "p2"], PATIENT_LABEL_MAP, store, LABEL_MAP)
-        features, label, patient_id = ds[0]
+        ds = PatientDataset(["p1", "p2"], PATIENT_RECORD_MAP, store, _target_fn)
+        features, targets, patient_id = ds[0]
         assert features.shape == (768,)
 
     def test_getitem_label_mapped(self, tmp_path: Path):
         store = _create_patient_store(tmp_path, ["p1", "p2"], feature_dim=32)
-        ds = PatientDataset(["p1", "p2"], PATIENT_LABEL_MAP, store, LABEL_MAP)
-        _, label_p1, pid = ds[0]
+        ds = PatientDataset(["p1", "p2"], PATIENT_RECORD_MAP, store, _target_fn)
+        _, targets, pid = ds[0]
         assert pid == "p1"
-        assert label_p1 == LABEL_MAP["tumor"]  # 1
+        assert targets == {"label": LABEL_MAP["tumor"]}  # 1
 
     def test_getitem_returns_patient_id(self, tmp_path: Path):
         store = _create_patient_store(tmp_path, ["p1", "p2"], feature_dim=16)
-        ds = PatientDataset(["p1", "p2"], PATIENT_LABEL_MAP, store, LABEL_MAP)
+        ds = PatientDataset(["p1", "p2"], PATIENT_RECORD_MAP, store, _target_fn)
         _, _, patient_id = ds[0]
         assert patient_id == "p1"
 
-    def test_custom_label_fn(self, tmp_path: Path):
+    def test_custom_target_fn(self, tmp_path: Path):
         store = _create_patient_store(tmp_path, ["p1"], feature_dim=8)
-        label_fn = lambda pid, raw: 99.0
-        ds = PatientDataset(["p1"], PATIENT_LABEL_MAP, store, LABEL_MAP, label_fn=label_fn)
-        _, label, _ = ds[0]
-        assert label == 99.0
+        ds = PatientDataset(["p1"], PATIENT_RECORD_MAP, store, lambda record: {"value": 99.0})
+        _, targets, _ = ds[0]
+        assert targets == {"value": 99.0}
 
     def test_preserves_order(self, tmp_path: Path):
         store = _create_patient_store(tmp_path, ["p1", "p2", "p3"], feature_dim=8)
-        ds = PatientDataset(["p3", "p1", "p2"], PATIENT_LABEL_MAP, store, LABEL_MAP)
+        ds = PatientDataset(["p3", "p1", "p2"], PATIENT_RECORD_MAP, store, _target_fn)
         _, _, pid0 = ds[0]
         _, _, pid1 = ds[1]
         _, _, pid2 = ds[2]
@@ -83,34 +92,34 @@ class TestPatientCollateFn:
     def test_stacks_features(self):
         D = 128
         batch = [
-            (torch.randn(D), 0, "p1"),
-            (torch.randn(D), 1, "p2"),
+            (torch.randn(D), {"label": 0}, "p1"),
+            (torch.randn(D), {"label": 1}, "p2"),
         ]
-        result = patient_collate_fn(batch)
+        result = patient_collate_fn(batch, TARGET_DTYPES)
         assert isinstance(result, PatientBatch)
         assert result.features.shape == (2, D)
 
-    def test_labels_tensor(self):
+    def test_targets_tensor(self):
         D = 8
         batch = [
-            (torch.randn(D), 0, "p1"),
-            (torch.randn(D), 1, "p2"),
-            (torch.randn(D), 0, "p3"),
+            (torch.randn(D), {"label": 0}, "p1"),
+            (torch.randn(D), {"label": 1}, "p2"),
+            (torch.randn(D), {"label": 0}, "p3"),
         ]
-        result = patient_collate_fn(batch)
-        assert torch.equal(result.labels, torch.tensor([0, 1, 0]))
+        result = patient_collate_fn(batch, TARGET_DTYPES)
+        assert torch.equal(result.targets["label"], torch.tensor([0, 1, 0]))
 
-    def test_label_dtype_float(self):
+    def test_target_dtype_float(self):
         D = 8
-        batch = [(torch.randn(D), 2.5, "p1")]
-        result = patient_collate_fn(batch, label_dtype=torch.float)
-        assert result.labels.dtype == torch.float
+        batch = [(torch.randn(D), {"value": 2.5}, "p1")]
+        result = patient_collate_fn(batch, {"value": torch.float})
+        assert result.targets["value"].dtype == torch.float
 
     def test_sample_ids_tuple(self):
         D = 8
         batch = [
-            (torch.randn(D), 0, "p1"),
-            (torch.randn(D), 1, "p2"),
+            (torch.randn(D), {"label": 0}, "p1"),
+            (torch.randn(D), {"label": 1}, "p2"),
         ]
-        result = patient_collate_fn(batch)
+        result = patient_collate_fn(batch, TARGET_DTYPES)
         assert result.sample_ids == ("p1", "p2")

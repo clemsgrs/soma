@@ -296,20 +296,20 @@ class Trainer:
             if on_batch_progress is not None:
                 on_batch_progress("train", processed_items, total_items)
             features = batch.features.to(self._device)
-            labels = batch.labels.to(self._device)
+            targets = {key: value.to(self._device) for key, value in batch.targets.items()}
 
             if hasattr(batch, "mask"):
                 out = self._model(features, mask=batch.mask.to(self._device))
             else:
                 out = self._model(features)
-            loss = self._model.task_head.compute_loss(out.logits, labels)
+            loss = self._model.task_head.compute_loss(out.logits, targets)
 
             if hasattr(self._model, "aggregator"):
                 mask_tensor = batch.mask.to(self._device) if hasattr(batch, "mask") else None
                 loss = self._model.aggregator.combine_losses(
                     loss,
                     out.auxiliary,
-                    labels,
+                    _auxiliary_target(targets),
                     mask=mask_tensor,
                 )
 
@@ -332,7 +332,7 @@ class Trainer:
         total_loss = 0.0
         num_batches = 0
         all_logits: list[torch.Tensor] = []
-        all_labels: list[torch.Tensor] = []
+        all_targets: dict[str, list[torch.Tensor]] = {}
         total_batches = len(self._tune_loader)
         total_items = _resolve_total_items(self._tune_loader, fallback=total_batches)
         processed_items = 0
@@ -342,22 +342,23 @@ class Trainer:
             if on_batch_progress is not None:
                 on_batch_progress("tune", processed_items, total_items)
             features = batch.features.to(self._device)
-            labels = batch.labels.to(self._device)
+            targets = {key: value.to(self._device) for key, value in batch.targets.items()}
 
             if hasattr(batch, "mask"):
                 out = self._model(features, mask=batch.mask.to(self._device))
             else:
                 out = self._model(features)
-            loss = self._model.task_head.compute_loss(out.logits, labels)
+            loss = self._model.task_head.compute_loss(out.logits, targets)
             total_loss += loss.item()
             num_batches += 1
             all_logits.append(out.logits.detach().cpu())
-            all_labels.append(labels.detach().cpu())
+            for key, value in batch.targets.items():
+                all_targets.setdefault(key, []).append(value.detach().cpu())
 
         avg_loss = total_loss / max(num_batches, 1)
         if all_logits:
             logits = torch.cat(all_logits, dim=0)
-            targets = torch.cat(all_labels, dim=0)
+            targets = {key: torch.cat(values, dim=0) for key, values in all_targets.items()}
             metrics = self._model.task_head.compute_metrics(logits, targets)
         else:
             metrics = {}
@@ -579,10 +580,29 @@ def _resolve_total_items(loader: object, *, fallback: int) -> int:
     return max(0, int(fallback))
 
 
+def _auxiliary_target(targets: dict[str, torch.Tensor]) -> torch.Tensor | None:
+    """Pick the supervised target an aggregator's auxiliary loss should use.
+
+    Aggregators with label-aware auxiliary losses (CLAM, DTFD) expect a single
+    target tensor. Single-target heads (classification, regression, ordinal)
+    expose exactly one key, so this returns the ``"label"`` target when present
+    and otherwise the sole target — reproducing the pre-refactor behavior of
+    passing the one label tensor. Aggregators without an auxiliary loss ignore
+    the value entirely.
+    """
+    if "label" in targets:
+        return targets["label"]
+    if len(targets) == 1:
+        return next(iter(targets.values()))
+    return None
+
+
 def _infer_batch_item_count(batch: object) -> int:
-    labels = getattr(batch, "labels", None)
-    if labels is not None and hasattr(labels, "shape") and len(labels.shape) > 0:
-        return max(1, int(labels.shape[0]))
+    targets = getattr(batch, "targets", None)
+    if targets:
+        for value in targets.values():
+            if hasattr(value, "shape") and len(value.shape) > 0:
+                return max(1, int(value.shape[0]))
     sample_ids = getattr(batch, "sample_ids", None)
     if sample_ids is not None:
         return max(1, int(len(sample_ids)))

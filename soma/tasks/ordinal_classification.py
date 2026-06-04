@@ -11,10 +11,11 @@ from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
 from soma.tasks.base import TaskHead
+from soma.tasks.classification import _categorical_auto_params, _extract_categorical_target
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset
+    from soma.dataset import Dataset, SampleRecord
 
 
 class OrdinalClassificationHead(TaskHead):
@@ -32,7 +33,7 @@ class OrdinalClassificationHead(TaskHead):
             ordinal_classification: qwk, balanced_accuracy.
     """
 
-    label_dtype = torch.long
+    target_dtypes = {"label": torch.long}
     task_family = "ordinal_classification"
 
     def __init__(
@@ -40,21 +41,26 @@ class OrdinalClassificationHead(TaskHead):
         input_dim: int,
         num_classes: int,
         metrics: list[str] | None = None,
+        label_map: dict[str | int, int] | None = None,
     ) -> None:
         super().__init__()
         self.fc = nn.Linear(input_dim, 1)
         self.num_classes = num_classes
+        self._label_map = label_map
         self.metrics = resolve_metrics("ordinal_classification", metrics or [])
 
     @classmethod
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return {"num_classes": dataset.num_classes}
+        return _categorical_auto_params(dataset)
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        return _extract_categorical_target(self._label_map, record)
 
     def forward(self, X: Tensor) -> Tensor:
         return self.fc(X)
 
-    def compute_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        return F.mse_loss(predictions.squeeze(-1), targets.float())
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
+        return F.mse_loss(predictions.squeeze(-1), targets["label"].float())
 
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         raw_scores = raw_output.squeeze(-1).detach().cpu().numpy()
@@ -63,9 +69,9 @@ class OrdinalClassificationHead(TaskHead):
         ).astype(int)
         return {"predicted_labels": predicted_labels, "raw_scores": raw_scores}
 
-    def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
         processed = self.postprocess(raw_output)
-        y_true = targets.detach().cpu().numpy()
+        y_true = targets["label"].detach().cpu().numpy()
         return compute_metrics(
             "ordinal_classification", self.metrics, y_true, processed["predicted_labels"]
         )

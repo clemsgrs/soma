@@ -9,7 +9,7 @@ import torch
 from torch import Tensor, nn
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset
+    from soma.dataset import Dataset, SampleRecord
 
 
 class TaskHead(ABC, nn.Module):
@@ -17,11 +17,17 @@ class TaskHead(ABC, nn.Module):
 
     Maps an aggregated slide representation to task-specific predictions.
 
-    Subclasses must implement forward, compute_loss, postprocess, and
-    compute_metrics, and should set label_dtype and auto_params appropriately.
+    Subclasses must implement forward, compute_loss, postprocess,
+    compute_metrics, and extract_targets, and should set target_dtypes and
+    auto_params appropriately.
+
+    The head owns its target contract: ``target_dtypes`` declares the keys it
+    consumes (and their tensor dtypes), ``extract_targets`` maps a
+    ``SampleRecord`` to a dict of raw target values, and ``compute_loss`` /
+    ``compute_metrics`` receive a ``dict[str, Tensor]`` keyed by those names.
     """
 
-    label_dtype: torch.dtype = torch.long
+    target_dtypes: dict[str, torch.dtype] = {"label": torch.long}
     supports_branch_representation: bool = False
     task_family: str = "generic"
 
@@ -38,12 +44,25 @@ class TaskHead(ABC, nn.Module):
         ...
 
     @abstractmethod
-    def compute_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        """Map a sample record to this head's raw target values.
+
+        Args:
+            record: The SampleRecord for one sample (for patient-level
+                pipelines, a representative record for the patient).
+
+        Returns:
+            Dict mapping each key in ``target_dtypes`` to a raw scalar value.
+        """
+        ...
+
+    @abstractmethod
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
         """Compute task-specific loss.
 
         Args:
             predictions: Model predictions.
-            targets: Ground truth labels.
+            targets: Ground truth targets keyed by ``target_dtypes``.
 
         Returns:
             Scalar loss tensor.
@@ -65,12 +84,12 @@ class TaskHead(ABC, nn.Module):
         ...
 
     @abstractmethod
-    def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
         """Compute task-specific evaluation metrics.
 
         Args:
             raw_output: Raw output tensor from forward(), shape (B, ...).
-            targets: Ground truth labels tensor, shape (B,).
+            targets: Ground truth targets keyed by ``target_dtypes``.
 
         Returns:
             Dict mapping metric name to scalar value.

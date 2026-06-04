@@ -13,7 +13,30 @@ from soma.tasks.base import TaskHead
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset
+    from soma.dataset import Dataset, SampleRecord
+
+
+def categorical_label_map(dataset: Dataset) -> dict[str | int, int]:
+    """Build the sorted raw-label -> integer-index map for categorical tasks.
+
+    Mirrors the historical ``Dataset._build_label_map`` ordering exactly so
+    class indices (and thus the positive class for binary metrics) are stable.
+    """
+    classes = sorted({r.label for r in dataset.samples.values()})
+    return {label: idx for idx, label in enumerate(classes)}
+
+
+def _categorical_auto_params(dataset: Dataset) -> dict[str, Any]:
+    label_map = categorical_label_map(dataset)
+    return {"num_classes": len(label_map), "label_map": label_map}
+
+
+def _extract_categorical_target(
+    label_map: dict[str | int, int] | None, record: "SampleRecord"
+) -> dict[str, int | float]:
+    raw = record.label
+    encoded = int(label_map[raw]) if label_map is not None else int(raw)
+    return {"label": encoded}
 
 
 class BinaryClassificationHead(TaskHead):
@@ -26,7 +49,7 @@ class BinaryClassificationHead(TaskHead):
             binary_classification: auroc, balanced_accuracy, auprc, f1.
     """
 
-    label_dtype = torch.long
+    target_dtypes = {"label": torch.long}
     task_family = "binary_classification"
 
     def __init__(
@@ -34,6 +57,7 @@ class BinaryClassificationHead(TaskHead):
         input_dim: int,
         num_classes: int,
         metrics: list[str] | None = None,
+        label_map: dict[str | int, int] | None = None,
     ) -> None:
         super().__init__()
         if num_classes != 2:
@@ -43,11 +67,15 @@ class BinaryClassificationHead(TaskHead):
             )
         self.fc = nn.Linear(input_dim, num_classes)
         self.num_classes = num_classes
+        self._label_map = label_map
         self.metrics = resolve_metrics("binary_classification", metrics or [])
 
     @classmethod
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return {"num_classes": dataset.num_classes}
+        return _categorical_auto_params(dataset)
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        return _extract_categorical_target(self._label_map, record)
 
     def forward(self, X: Tensor) -> Tensor:
         if X.ndim != 2:
@@ -55,18 +83,18 @@ class BinaryClassificationHead(TaskHead):
             raise ValueError(msg)
         return self.fc(X)
 
-    def compute_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        return F.cross_entropy(predictions, targets)
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
+        return F.cross_entropy(predictions, targets["label"])
 
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         probs = torch.softmax(raw_output, dim=1).detach().cpu().numpy()
         preds = probs.argmax(axis=1)
         return {"probabilities": probs, "predicted_labels": preds}
 
-    def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
         probs = torch.softmax(raw_output, dim=1).detach().cpu().numpy()
         preds = probs.argmax(axis=1)
-        y_true = targets.detach().cpu().numpy()
+        y_true = targets["label"].detach().cpu().numpy()
         return compute_metrics("binary_classification", self.metrics, y_true, preds, y_prob=probs)
 
 
@@ -83,7 +111,7 @@ class MulticlassClassificationHead(TaskHead):
             multiclass_classification: auroc_macro, balanced_accuracy, f1_macro.
     """
 
-    label_dtype = torch.long
+    target_dtypes = {"label": torch.long}
     task_family = "multiclass_classification"
 
     def __init__(
@@ -91,6 +119,7 @@ class MulticlassClassificationHead(TaskHead):
         input_dim: int,
         num_classes: int,
         metrics: list[str] | None = None,
+        label_map: dict[str | int, int] | None = None,
     ) -> None:
         super().__init__()
         if num_classes < 2:
@@ -99,11 +128,15 @@ class MulticlassClassificationHead(TaskHead):
             )
         self.fc = nn.Linear(input_dim, num_classes)
         self.num_classes = num_classes
+        self._label_map = label_map
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
     @classmethod
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return {"num_classes": dataset.num_classes}
+        return _categorical_auto_params(dataset)
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        return _extract_categorical_target(self._label_map, record)
 
     def forward(self, X: Tensor) -> Tensor:
         if X.ndim != 2:
@@ -111,18 +144,18 @@ class MulticlassClassificationHead(TaskHead):
             raise ValueError(msg)
         return self.fc(X)
 
-    def compute_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        return F.cross_entropy(predictions, targets)
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
+        return F.cross_entropy(predictions, targets["label"])
 
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         probs = torch.softmax(raw_output, dim=1).detach().cpu().numpy()
         preds = probs.argmax(axis=1)
         return {"probabilities": probs, "predicted_labels": preds}
 
-    def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
         probs = torch.softmax(raw_output, dim=1).detach().cpu().numpy()
         preds = probs.argmax(axis=1)
-        y_true = targets.detach().cpu().numpy()
+        y_true = targets["label"].detach().cpu().numpy()
         return compute_metrics(
             "multiclass_classification", self.metrics, y_true, preds, y_prob=probs
         )
@@ -144,7 +177,7 @@ class BranchAwareClassificationHead(TaskHead):
             multiclass_classification: auroc_macro, balanced_accuracy, f1_macro.
     """
 
-    label_dtype = torch.long
+    target_dtypes = {"label": torch.long}
     supports_branch_representation = True
     task_family = "multiclass_classification"
 
@@ -153,15 +186,20 @@ class BranchAwareClassificationHead(TaskHead):
         input_dim: int,
         num_classes: int,
         metrics: list[str] | None = None,
+        label_map: dict[str | int, int] | None = None,
     ) -> None:
         super().__init__()
         self.branch_fcs = nn.ModuleList(nn.Linear(input_dim, 1) for _ in range(num_classes))
         self.num_classes = num_classes
+        self._label_map = label_map
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
     @classmethod
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return {"num_classes": dataset.num_classes}
+        return _categorical_auto_params(dataset)
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        return _extract_categorical_target(self._label_map, record)
 
     def forward(self, X: Tensor) -> Tensor:
         if X.ndim != 3:
@@ -178,18 +216,18 @@ class BranchAwareClassificationHead(TaskHead):
             logits[:, idx] = fc(X[:, idx, :]).squeeze(-1)
         return logits
 
-    def compute_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
-        return F.cross_entropy(predictions, targets)
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
+        return F.cross_entropy(predictions, targets["label"])
 
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         probs = torch.softmax(raw_output, dim=1).detach().cpu().numpy()
         preds = probs.argmax(axis=1)
         return {"probabilities": probs, "predicted_labels": preds}
 
-    def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
         probs = torch.softmax(raw_output, dim=1).detach().cpu().numpy()
         preds = probs.argmax(axis=1)
-        y_true = targets.detach().cpu().numpy()
+        y_true = targets["label"].detach().cpu().numpy()
         return compute_metrics(
             "multiclass_classification", self.metrics, y_true, preds, y_prob=probs
         )

@@ -13,7 +13,7 @@ from soma.tasks.base import TaskHead
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset
+    from soma.dataset import Dataset, SampleRecord
 
 
 class RegressionHead(TaskHead):
@@ -26,7 +26,7 @@ class RegressionHead(TaskHead):
             regression: mae, r2.
     """
 
-    label_dtype = torch.float
+    target_dtypes = {"value": torch.float}
     task_family = "regression"
 
     def __init__(
@@ -44,22 +44,25 @@ class RegressionHead(TaskHead):
     def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
         return {}
 
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        return {"value": float(record.label)}
+
     def forward(self, X: Tensor) -> Tensor:
         return self.fc(X)
 
-    def compute_loss(self, predictions: Tensor, targets: Tensor) -> Tensor:
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
         if self.num_targets == 1:
             predictions = predictions.squeeze(-1)
-        return F.mse_loss(predictions, targets)
+        return F.mse_loss(predictions, targets["value"])
 
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         preds = raw_output.squeeze(-1) if self.num_targets == 1 else raw_output
         return {"predictions": preds.detach().cpu().numpy()}
 
-    def compute_metrics(self, raw_output: Tensor, targets: Tensor) -> dict[str, float]:
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
         preds = raw_output.squeeze(-1) if self.num_targets == 1 else raw_output
         y_pred = preds.detach().cpu().numpy()
-        y_true = targets.detach().cpu().numpy()
+        y_true = targets["value"].detach().cpu().numpy()
         return compute_metrics("regression", self.metrics, y_true, y_pred)
 
 
