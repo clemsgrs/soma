@@ -29,6 +29,7 @@ dependencies = [
     "pandas",
     "torch",
     "scikit-learn",
+    "scikit-survival",
     "scipy>=1.11",
     "pyyaml",
     "timm",

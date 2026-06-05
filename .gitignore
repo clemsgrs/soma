@@ -213,7 +213,7 @@ CLAUDE.md
 .claude/
 data/
 shared/
-tasks/
+/tasks/
 
 # local debug / scratch scripts
 debug-*.py

@@ -11,6 +11,7 @@ from soma.tasks.classification import (
 )
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
+from soma.tasks.survival import SurvivalHead
 
 
 def list_task_heads() -> list[str]:
@@ -26,4 +27,5 @@ __all__ = [
     "BranchAwareClassificationHead",
     "OrdinalClassificationHead",
     "RegressionHead",
+    "SurvivalHead",
 ]

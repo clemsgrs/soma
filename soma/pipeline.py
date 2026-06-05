@@ -109,6 +109,7 @@ class _DeterministicBaseline:
     predicted_label: int | None = None
     predicted_value: float | None = None
     raw_score: float | None = None
+    risk_score: float | None = None
 
 
 def _format_fold_summary(
@@ -519,6 +520,12 @@ def train_one_fold(
             )
 
     task_cls = task_registry.get(task.name)
+    # Validate survival columns before auto_params reads them, so a missing/
+    # malformed column raises a clear message instead of a cryptic KeyError.
+    if task.name == "survival":
+        from soma.tasks.survival import validate_survival_dataset
+
+        validate_survival_dataset(dataset, dataset_type)
     task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
 
     task_family = task_cls.task_family
@@ -1277,12 +1284,25 @@ def _evaluate(
     task_head = model.task_head
     metrics = task_head.compute_metrics(logits, targets)
     processed = task_head.postprocess(logits)
-    y_true = (targets["label"] if "label" in targets else targets["value"]).numpy()
 
     predictions = []
-    for i, sid in enumerate(all_sample_ids):
-        if "probabilities" in processed:
-            # Classification
+    if "risk_scores" in processed:
+        # Survival: true_label holds time, plus event and predicted risk.
+        time = targets["time"].numpy()
+        event = targets["event"].numpy()
+        for i, sid in enumerate(all_sample_ids):
+            predictions.append(
+                SamplePrediction(
+                    sample_id=sid,
+                    true_label=float(time[i]),
+                    event=float(event[i]),
+                    risk_score=float(processed["risk_scores"][i]),
+                )
+            )
+    elif "probabilities" in processed:
+        # Classification
+        y_true = targets["label"].numpy()
+        for i, sid in enumerate(all_sample_ids):
             predictions.append(
                 SamplePrediction(
                     sample_id=sid,
@@ -1291,8 +1311,10 @@ def _evaluate(
                     probabilities=processed["probabilities"][i].tolist(),
                 )
             )
-        elif "raw_scores" in processed:
-            # Ordinal classification: integer prediction + raw continuous score
+    elif "raw_scores" in processed:
+        # Ordinal classification: integer prediction + raw continuous score
+        y_true = targets["label"].numpy()
+        for i, sid in enumerate(all_sample_ids):
             predictions.append(
                 SamplePrediction(
                     sample_id=sid,
@@ -1301,8 +1323,10 @@ def _evaluate(
                     raw_score=float(processed["raw_scores"][i]),
                 )
             )
-        else:
-            # Regression
+    else:
+        # Regression
+        y_true = targets["value"].numpy()
+        for i, sid in enumerate(all_sample_ids):
             predictions.append(
                 SamplePrediction(
                     sample_id=sid,
@@ -1361,6 +1385,11 @@ def _build_deterministic_baseline(
             raw_score=raw_score,
         )
 
+    if task_family == "survival":
+        # Empty-bag placeholders share a constant risk; they tie among themselves
+        # and contribute ~0.5 concordance against real samples.
+        return _DeterministicBaseline(task_family=task_family, risk_score=0.0)
+
     predicted_value = float(
         np.mean([float(target_fn(record)["value"]) for record in train_records])
     )
@@ -1378,6 +1407,16 @@ def _make_placeholder_prediction(
     sample_id: str | None = None,
 ) -> SamplePrediction:
     targets = target_fn(record)
+    if baseline.task_family == "survival":
+        return SamplePrediction(
+            sample_id=sample_id or record.sample_id,
+            true_label=float(targets["time"]),
+            event=float(targets["event"]),
+            risk_score=baseline.risk_score,
+            is_placeholder=True,
+            missing_reason="no_tiles",
+        )
+
     true_value: int | float
     if baseline.task_family == "regression":
         true_value = float(targets["value"])
@@ -1410,7 +1449,14 @@ def _compute_metrics_from_predictions(
             "num_placeholder_samples": 0,
         }
 
-    if task_family in {"binary_classification", "multiclass_classification"}:
+    if task_family == "survival":
+        from soma.evaluation.metrics import compute_survival_metrics
+
+        event = np.asarray([float(pred.event) for pred in predictions], dtype=float)
+        time = np.asarray([float(pred.true_label) for pred in predictions], dtype=float)
+        risk = np.asarray([float(pred.risk_score) for pred in predictions], dtype=float)
+        metrics = compute_survival_metrics(metric_names, event, time, risk)
+    elif task_family in {"binary_classification", "multiclass_classification"}:
         y_true = np.asarray([int(pred.true_label) for pred in predictions], dtype=int)
         y_pred = np.asarray([int(pred.predicted_label) for pred in predictions], dtype=int)
         y_prob = np.asarray([pred.probabilities for pred in predictions], dtype=float)
@@ -1568,7 +1614,20 @@ def _save_predictions(
                 row.update(subgroup_data[pred.sample_id])
             writer.writerow(row)
 
-        if first.probabilities is not None:
+        if first.risk_score is not None:
+            # Survival: time (true_label), event indicator, predicted risk
+            fieldnames = ["sample_id", "true_label", "event", "risk_score"] + placeholder_cols + extra_cols
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for pred in report.predictions:
+                row = {
+                    "sample_id": pred.sample_id,
+                    "true_label": pred.true_label,
+                    "event": pred.event,
+                    "risk_score": f"{pred.risk_score:.6f}",
+                }
+                _write_row(writer, row, pred)
+        elif first.probabilities is not None:
             # Classification: include class probabilities
             num_classes = len(first.probabilities)
             fieldnames = ["sample_id", "true_label", "predicted_label"] + [

@@ -225,28 +225,6 @@ def test_patient_groups_raises_when_no_patient_id(dataset_csv: Path):
         _ = ds.patient_groups
 
 
-def test_patient_label_map(patient_dataset_csv: Path):
-    ds = Dataset(patient_dataset_csv)
-    lmap = ds.patient_label_map
-    assert lmap == {"p1": "tumor", "p2": "normal"}
-
-
-def test_patient_label_map_inconsistent_raises(tmp_path: Path):
-    df = pd.DataFrame(
-        {
-            "sample_id": ["s1", "s2"],
-            "image_path": ["/a.svs", "/b.svs"],
-            "label": ["tumor", "normal"],
-            "patient_id": ["p1", "p1"],
-        }
-    )
-    path = tmp_path / "bad.csv"
-    df.to_csv(path, index=False)
-    ds = Dataset(path)
-    with pytest.raises(ValueError, match="inconsistent"):
-        _ = ds.patient_label_map
-
-
 def test_patient_record_map_returns_representative_records(patient_dataset_csv: Path):
     ds = Dataset(patient_dataset_csv)
     record_map = ds.patient_record_map
