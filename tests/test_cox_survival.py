@@ -381,7 +381,7 @@ class TestCoxEndToEnd:
     def test_slide_level_cox_run(self, tmp_path: Path):
         n = 8
         # Slide-LEVEL features (one 1-D vector per slide) -> SampleDataset path,
-        # no aggregator (Cox rejects MIL in phase 1).
+        # no aggregator needed.
         events = [1, 1, 0, 1, 0, 1, 1, 0]
         times = [float(i + 1) for i in range(n)]
         dataset_csv = tmp_path / "dataset.csv"

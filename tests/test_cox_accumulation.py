@@ -15,7 +15,13 @@ import pytest
 import torch
 
 from soma.aggregators.registry import aggregator_registry
-from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
+from soma.config import (
+    AggregatorConfig,
+    PipelineConfig,
+    PreprocessingConfig,
+    TaskConfig,
+    TrainingConfig,
+)
 from soma.tasks.survival import CoxSurvivalHead, cox_breslow_loss
 from soma.pipeline import Pipeline, PipelineResult
 from soma.training.collate import CoxWindowBatch, bag_collate_fn, cox_window_collate
@@ -353,6 +359,36 @@ class TestMILCoxEndToEnd:
             aggregator=AggregatorConfig(name="abmil"),
             task=TaskConfig(name="survival", params={"loss": "cox"}),  # padded mode
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=feature_dir).run()
+        assert isinstance(result, PipelineResult)
+        assert "c_index" in result.fold_results[0].test_reports["test"].metrics
+
+    def test_hierarchical_accumulation_mode_run(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
+        for i in range(8):
+            torch.save(torch.randn(2 + (i % 2), 4, D), feature_dir / f"s{i}.pt")
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "out",
+            dataset_type="slide",
+            preprocessing=PreprocessingConfig(
+                requested_tile_size_px=4,
+                requested_region_size_px=8,
+            ),
+            aggregator=AggregatorConfig(
+                name="hipt",
+                params={
+                    "embed_dim_region": 12,
+                    "embed_dim_slide": 12,
+                    "num_heads": 2,
+                    "dropout": 0.0,
+                },
+            ),
+            task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 2}),
+            training=TrainingConfig(epochs=1, patience=10, batch_size=1),
         )
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, feature_dir=feature_dir).run()

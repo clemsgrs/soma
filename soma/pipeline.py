@@ -662,6 +662,29 @@ def train_one_fold(
             train_records, tune_records, test_records_by_split,
             training, feature_store, target_fn,
         )
+        if getattr(head, "needs_event_balanced_batches", False):
+            train_events = [int(r.metadata["event"]) for r in train_records]
+            if getattr(head, "accumulates_predictions", False):
+                _cox_collate = functools.partial(
+                    cox_window_collate,
+                    target_dtypes=head.target_dtypes,
+                )
+                train_loader = _event_balanced_train_loader(
+                    HierarchicalBagDataset(train_records, feature_store, target_fn),
+                    _cox_collate,
+                    events=train_events,
+                    training=training,
+                    min_events_per_window=head.min_events_per_window,
+                    window_size=head.accumulation_window,
+                )
+            else:
+                train_loader = _event_balanced_train_loader(
+                    HierarchicalBagDataset(train_records, feature_store, target_fn),
+                    _hier_collate,
+                    events=train_events,
+                    training=training,
+                    min_events_per_window=head.min_events_per_window,
+                )
         model = MILModel(aggregator=agg, task_head=head)
     else:
         # Tile-level MIL path

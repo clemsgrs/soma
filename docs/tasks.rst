@@ -114,9 +114,9 @@ time-to-last-follow-up** and add two columns:
 Supported ``dataset_type`` values are ``slide`` and ``patient`` (``tile`` is
 rejected). For ``patient`` pipelines, all slides of a patient must agree on the
 survival target. The CLAM and DTFD-MIL aggregators are rejected for survival
-because their label-aware auxiliary losses assume classification; the discrete
-NLL path uses ``abmil``, ``transmil``, or ``mean_pool``, while the Cox path uses
-no aggregator at all (single-embedding slide/patient features).
+because their label-aware auxiliary losses assume classification. Survival MIL
+uses aggregators without label-aware auxiliary classification losses, such as
+``abmil``, ``transmil``, ``mean_pool``, or hierarchical ``hipt`` features.
 
 Metric compatibility
 --------------------
