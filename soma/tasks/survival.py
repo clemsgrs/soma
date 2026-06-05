@@ -76,6 +76,63 @@ def survival_nll_loss(
     return loss.mean()
 
 
+def cox_breslow_loss(
+    risk: Tensor,
+    time: Tensor,
+    events: Tensor,
+    *,
+    eps: float = _EPS,
+) -> Tensor:
+    """Cox proportional-hazards negative partial log-likelihood (Breslow ties).
+
+    Computed over the samples in ``risk`` as the risk set — for batched Cox this
+    is the batch; for full-cohort evaluation it is every patient at once. The
+    loss couples samples through the risk set (each event's denominator sums over
+    everyone still at risk), so it is *not* per-sample separable: the batch must
+    contain at least one event, and the mean of per-batch losses is not the
+    full-cohort loss (hence ``full_cohort_eval_loss`` on the head).
+
+    No-ties Breslow: sort by descending time, ``logcumsumexp`` over the sorted
+    risks gives each event's log risk-set denominator (the log-sum-exp over all
+    samples with time >= its time), and the loss is the mean over events of
+    ``-(risk_i - logcumsumexp_i)``. Tied times share an arbitrary order, so their
+    denominators differ slightly — the standard Breslow approximation, accepted
+    here. Computed in float32 for numerical stability of the log-cumsum term.
+
+    Args:
+        risk: Per-sample risk score (higher = higher hazard = shorter survival),
+            shape (B,). Must stay graph-connected for training.
+        time: Event or last-follow-up time, shape (B,).
+        events: Event indicator, 1 = event observed, 0 = censored, shape (B,).
+            Note: soma stores ``event`` directly (1 = event), so — unlike the
+            HIPT reference, which carries ``censored`` — no ``1 - censored`` flip
+            is applied here.
+
+    Returns:
+        Scalar mean loss. Returns a graph-connected zero when the batch has no
+        events (degenerate risk set, no gradient signal).
+    """
+    risk = risk.float().view(-1)
+    time = time.view(-1)
+    events = events.view(-1).float()
+
+    order = torch.argsort(time, descending=True)
+    risk = risk[order]
+    events = events[order]
+
+    # Sorted descending by time, the cumulative log-sum-exp at position i covers
+    # every sample with time >= time_i — exactly the Breslow risk set denominator.
+    log_risk_set = torch.logcumsumexp(risk, dim=0)
+    per_event = (risk - log_risk_set) * events
+
+    n_events = events.sum()
+    if n_events < 1:
+        # No event in this risk set: nothing to rank. Return a graph-connected
+        # zero so training does not crash on an (avoidable) event-free batch.
+        return (risk * 0.0).sum()
+    return -per_event.sum() / n_events.clamp(min=eps)
+
+
 def _risk_from_logits(logits: Tensor) -> Tensor:
     """Risk score = -(restricted mean survival time) = -sum_j S_j.
 
@@ -148,22 +205,122 @@ class SurvivalHead(TaskHead):
         return compute_survival_metrics(self.metrics, event, time, risk)
 
 
-def validate_survival_dataset(dataset: Dataset, dataset_type: str) -> None:
+class CoxSurvivalHead(TaskHead):
+    """Continuous-time CoxPH survival head (phase 1: slide/patient, batched).
+
+    Emits a single risk scalar per sample; the risk set is the batch, so the
+    Cox partial likelihood is computed over the batch (or the full cohort at
+    eval). Unlike :class:`SurvivalHead`, there is no binning and risk is the
+    **raw** model output — higher means higher hazard / shorter survival, which
+    is what ``concordance_index_censored`` expects. (Reusing the NLL head's
+    ``-sum(surv)`` derivation here would double-invert the C-index sign.)
+
+    Selected via ``task.params.loss: cox``. Requires ``batch_size >= 2``,
+    ``gradient_accumulation == 1``, and no MIL aggregator — enforced at config
+    validation. The pipeline builds the training loader with an event-balanced
+    sampler (``needs_event_balanced_batches``) and computes the tune loss over
+    the whole cohort (``full_cohort_eval_loss``).
+
+    Args:
+        input_dim: Dimension of the input representation.
+        ties: Tie-handling method. Only ``"breslow"`` is implemented in phase 1.
+        min_events_per_window: Minimum events the event-balanced training sampler
+            guarantees per batch (>= 1).
+        metrics: Metrics to compute. Empty list uses the survival default
+            (c_index).
+    """
+
+    target_dtypes = {"event": torch.float, "time": torch.float}
+    task_family = "survival"
+    full_cohort_eval_loss = True
+    needs_event_balanced_batches = True
+
+    def __init__(
+        self,
+        input_dim: int,
+        ties: str = "breslow",
+        min_events_per_window: int = 1,
+        metrics: list[str] | None = None,
+    ) -> None:
+        super().__init__()
+        if ties != "breslow":
+            raise ValueError(
+                f"CoxSurvivalHead supports ties='breslow' only (got {ties!r}); "
+                "Efron ties are not implemented in phase 1."
+            )
+        if min_events_per_window < 1:
+            raise ValueError(
+                f"min_events_per_window must be >= 1, got {min_events_per_window}."
+            )
+        self.fc = nn.Linear(input_dim, 1)
+        self.ties = ties
+        self.min_events_per_window = min_events_per_window
+        self.metrics = resolve_metrics("survival", metrics or [])
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
+        return {
+            "event": float(record.metadata["event"]),
+            "time": float(record.label),
+        }
+
+    def forward(self, X: Tensor) -> Tensor:
+        if X.ndim != 2:
+            msg = f"CoxSurvivalHead expects input of shape (B, D), got {tuple(X.shape)}"
+            raise ValueError(msg)
+        return self.fc(X)  # (B, 1)
+
+    def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
+        return cox_breslow_loss(
+            predictions.squeeze(-1), targets["time"], targets["event"]
+        )
+
+    def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
+        risk = raw_output.squeeze(-1).detach().cpu().numpy()
+        return {"risk_scores": risk}
+
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
+        risk = raw_output.squeeze(-1).detach().cpu().numpy()
+        event = targets["event"].detach().cpu().numpy()
+        time = targets["time"].detach().cpu().numpy()
+        return compute_survival_metrics(self.metrics, event, time, risk)
+
+
+def resolve_survival_head(loss: str = "nll") -> type[TaskHead]:
+    """Map the ``task.params.loss`` selector to the survival head class.
+
+    ``"nll"`` (default) → discrete-time :class:`SurvivalHead`; ``"cox"`` →
+    continuous-time :class:`CoxSurvivalHead`. Keeps the registry keyed on the
+    single task name ``"survival"`` while routing to the right head.
+    """
+    if loss == "nll":
+        return SurvivalHead
+    if loss == "cox":
+        return CoxSurvivalHead
+    raise ValueError(f"Unknown survival loss {loss!r}; use 'nll' or 'cox'.")
+
+
+def validate_survival_dataset(
+    dataset: Dataset, dataset_type: str, loss: str = "nll"
+) -> None:
     """Fail fast on malformed survival columns before training begins.
 
     Survival datasets reuse ``label`` for the continuous time-to-event and add
-    ``event`` (0/1) and ``bin`` (the discrete bin containing ``label``, for
-    every sample including censored ones). Validates presence, ranges, bin
-    contiguity from 0, and — for patient pipelines — per-patient agreement on
-    ``(label, event, bin)`` (since the patient path extracts targets from one
-    representative record).
+    ``event`` (0/1). The discrete-time NLL path (``loss='nll'``) additionally
+    requires ``bin`` (the discrete bin containing ``label``, for every sample
+    including censored ones); the continuous Cox path (``loss='cox'``) ignores
+    ``bin`` and so does not require it. Validates presence, ranges, bin
+    contiguity from 0 (NLL only), and — for patient pipelines — per-patient
+    agreement on the survival targets (since the patient path extracts targets
+    from one representative record).
     """
+    needs_bin = loss != "cox"
     records = list(dataset.samples.values())
     if not records:
         raise ValueError("Survival dataset has no samples.")
 
     sample_meta = records[0].metadata
-    for col in ("event", "bin"):
+    required_cols = ("event", "bin") if needs_bin else ("event",)
+    for col in required_cols:
         if col not in sample_meta:
             raise ValueError(
                 f"Survival task requires a '{col}' column in the dataset CSV "
@@ -173,40 +330,45 @@ def validate_survival_dataset(dataset: Dataset, dataset_type: str) -> None:
     for record in records:
         sid = record.sample_id
         event = record.metadata["event"]
-        bin_value = record.metadata["bin"]
         time = record.label
         if int(event) not in (0, 1):
             raise ValueError(
                 f"Survival 'event' must be 0 or 1; sample '{sid}' has {event!r}."
             )
-        if int(bin_value) != bin_value or int(bin_value) < 0:
-            raise ValueError(
-                f"Survival 'bin' must be a non-negative integer; sample '{sid}' "
-                f"has {bin_value!r}."
-            )
+        if needs_bin:
+            bin_value = record.metadata["bin"]
+            if int(bin_value) != bin_value or int(bin_value) < 0:
+                raise ValueError(
+                    f"Survival 'bin' must be a non-negative integer; sample '{sid}' "
+                    f"has {bin_value!r}."
+                )
         if float(time) < 0:
             raise ValueError(
                 f"Survival 'label' (time) must be >= 0; sample '{sid}' has {time!r}."
             )
 
-    bins = sorted({int(record.metadata["bin"]) for record in records})
-    if bins[0] != 0 or bins != list(range(bins[-1] + 1)):
-        raise ValueError(
-            f"Survival 'bin' values must be contiguous integers starting at 0; "
-            f"got {bins}."
-        )
+    if needs_bin:
+        bins = sorted({int(record.metadata["bin"]) for record in records})
+        if bins[0] != 0 or bins != list(range(bins[-1] + 1)):
+            raise ValueError(
+                f"Survival 'bin' values must be contiguous integers starting at 0; "
+                f"got {bins}."
+            )
 
     if dataset_type == "patient":
         for patient_id, group in dataset.patient_groups.items():
-            triples = {
-                (r.label, int(r.metadata["event"]), int(r.metadata["bin"]))
-                for r in group
-            }
-            if len(triples) > 1:
+            if needs_bin:
+                targets = {
+                    (r.label, int(r.metadata["event"]), int(r.metadata["bin"]))
+                    for r in group
+                }
+            else:
+                targets = {(r.label, int(r.metadata["event"])) for r in group}
+            if len(targets) > 1:
                 raise ValueError(
                     f"Patient '{patient_id}' has inconsistent survival targets "
                     "across slides. All slides for a patient must share the same "
-                    "(label, event, bin)."
+                    "survival target."
                 )
 
 

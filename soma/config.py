@@ -424,6 +424,38 @@ class PipelineConfig:
                     "tasks — its label-aware auxiliary loss assumes classification. "
                     "Use a survival-compatible aggregator (e.g. abmil, transmil, mean_pool)."
                 )
+            survival_loss = self.task.params.get("loss", "nll")
+            if survival_loss not in {"nll", "cox"}:
+                raise ValueError(
+                    f"Unknown survival loss {survival_loss!r}; use 'nll' (discrete-time) "
+                    "or 'cox' (continuous-time CoxPH)."
+                )
+            if survival_loss == "cox":
+                # Phase 1 Cox is slide/patient single-embedding only: a MIL
+                # aggregator runs at batch_size=1, giving a 1-sample risk set that
+                # trains garbage silently. The prediction-accumulation window that
+                # lifts this is planned for phase 2.
+                if self.aggregator is not None:
+                    raise ValueError(
+                        "Cox survival loss (task.params.loss='cox') does not support MIL "
+                        "aggregation in phase 1. Use slide-level or patient single-embedding "
+                        "features with aggregation: null."
+                    )
+                # Accumulation gives M independent risk sets of size N, never one of
+                # size M*N — it does not enlarge the risk set, so reject it outright.
+                if self.training.gradient_accumulation > 1:
+                    raise ValueError(
+                        "Cox survival loss requires training.gradient_accumulation = 1. "
+                        "Gradient accumulation yields several independent risk sets rather "
+                        "than one larger one; increase training.batch_size to enlarge the "
+                        "risk set instead."
+                    )
+                # The risk set is the batch, so a single-sample batch is degenerate.
+                if self.training.batch_size < 2:
+                    raise ValueError(
+                        "Cox survival loss requires training.batch_size >= 2 — the partial "
+                        "likelihood's risk set is the batch."
+                    )
         # Validate that requested metrics are valid for the task family.
         resolve_metrics(self.task.name, self.evaluation.metrics)
         # Fail fast on unknown encoder / aggregator names — catching these at
