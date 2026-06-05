@@ -63,7 +63,7 @@ from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
-from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
+from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
 from soma.training.model import EmbeddingModel, MILModel
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
 from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
@@ -247,19 +247,25 @@ def _event_balanced_train_loader(
     events: list[int],
     training: TrainingConfig,
     min_events_per_window: int,
+    window_size: int | None = None,
 ) -> DataLoader:
     """Training loader whose batches each hold >= one event (for batched Cox).
 
     Replaces the ordinary shuffled train loader: the Cox partial likelihood is
-    undefined on an event-free batch, so the risk set (= the batch) must contain
-    events. ``batch_sampler`` cannot coexist with ``batch_size``/``shuffle``, so
-    those are dropped here; the sampler owns batching and per-epoch reshuffling.
+    undefined on an event-free batch, so the risk set must contain events.
+    ``batch_sampler`` cannot coexist with ``batch_size``/``shuffle``, so those are
+    dropped here; the sampler owns batching and per-epoch reshuffling.
+
+    ``window_size`` sets the risk-set size: it is ``training.batch_size`` in
+    padded mode (each window is one padded batch) and ``cox_window`` in
+    accumulation mode (each window is N un-padded bags, with ``batch_size`` pinned
+    to 1). The matching ``collate_fn`` decides padded vs un-padded.
     """
     from soma.training.survival_sampler import EventBalancedBatchSampler
 
     sampler = EventBalancedBatchSampler(
         events,
-        batch_size=training.batch_size,
+        batch_size=window_size if window_size is not None else training.batch_size,
         min_events_per_window=min_events_per_window,
         seed=training.seed,
     )
@@ -679,6 +685,30 @@ def train_one_fold(
             train_records, tune_records, test_records_by_split,
             training, feature_store, target_fn,
         )
+        # Cox MIL: replace the train loader with an event-balanced one. Tune/test
+        # keep the ordinary bag loaders — eval is full-cohort and order-agnostic.
+        if getattr(head, "needs_event_balanced_batches", False):
+            train_events = [int(r.metadata["event"]) for r in train_records]
+            if getattr(head, "accumulates_predictions", False):
+                # Accumulation mode: windows of cox_window un-padded bags.
+                _cox_collate = functools.partial(cox_window_collate, target_dtypes=head.target_dtypes)
+                train_loader = _event_balanced_train_loader(
+                    BagDataset(train_records, feature_store, target_fn),
+                    _cox_collate,
+                    events=train_events,
+                    training=training,
+                    min_events_per_window=head.min_events_per_window,
+                    window_size=head.accumulation_window,
+                )
+            else:
+                # Padded mode: batch_size bags padded to the window max, masked.
+                train_loader = _event_balanced_train_loader(
+                    BagDataset(train_records, feature_store, target_fn),
+                    _bag_collate,
+                    events=train_events,
+                    training=training,
+                    min_events_per_window=head.min_events_per_window,
+                )
         model = MILModel(aggregator=agg, task_head=head)
 
     deterministic_baseline = _build_deterministic_baseline(

@@ -38,6 +38,11 @@ class TaskHead(ABC, nn.Module):
     # When True, the pipeline builds the training loader with an event-balanced
     # BatchSampler so every batch contains at least one event (needed for Cox).
     needs_event_balanced_batches: bool = False
+    # When True, the trainer uses a windowed training loop: it forwards each bag
+    # in a window un-padded, keeps the per-bag outputs graph-connected, and
+    # computes one loss over the window (Cox prediction accumulation for large
+    # variable-size MIL bags). Instances set this; the class default is False.
+    accumulates_predictions: bool = False
 
     @abstractmethod
     def forward(self, X: Tensor) -> Tensor:

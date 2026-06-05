@@ -431,31 +431,50 @@ class PipelineConfig:
                     "or 'cox' (continuous-time CoxPH)."
                 )
             if survival_loss == "cox":
-                # Phase 1 Cox is slide/patient single-embedding only: a MIL
-                # aggregator runs at batch_size=1, giving a 1-sample risk set that
-                # trains garbage silently. The prediction-accumulation window that
-                # lifts this is planned for phase 2.
-                if self.aggregator is not None:
+                # ``cox_window`` is the mode switch: unset/1 = padded mode (the risk
+                # set is the batch; single-embedding slide/patient, or padded MIL via
+                # masking); >= 2 = prediction-accumulation mode for large variable-size
+                # MIL bags (N un-padded forwards per Cox loss, batch_size pinned to 1).
+                cox_window = self.task.params.get("cox_window", 1)
+                if not isinstance(cox_window, int) or isinstance(cox_window, bool) or cox_window < 1:
                     raise ValueError(
-                        "Cox survival loss (task.params.loss='cox') does not support MIL "
-                        "aggregation in phase 1. Use slide-level or patient single-embedding "
-                        "features with aggregation: null."
+                        f"Cox 'cox_window' must be an integer >= 1, got {cox_window!r}."
                     )
-                # Accumulation gives M independent risk sets of size N, never one of
-                # size M*N — it does not enlarge the risk set, so reject it outright.
+                # Accumulating gradients across windows gives M independent risk sets of
+                # size N, never one of size M*N — it does not enlarge the risk set. Reject
+                # it in both modes so it is not mistaken for a way to grow the risk set;
+                # raise cox_window / batch_size instead.
                 if self.training.gradient_accumulation > 1:
                     raise ValueError(
                         "Cox survival loss requires training.gradient_accumulation = 1. "
                         "Gradient accumulation yields several independent risk sets rather "
-                        "than one larger one; increase training.batch_size to enlarge the "
-                        "risk set instead."
+                        "than one larger one; raise cox_window (accumulation mode) or "
+                        "training.batch_size (padded mode) to enlarge the risk set instead."
                     )
-                # The risk set is the batch, so a single-sample batch is degenerate.
-                if self.training.batch_size < 2:
-                    raise ValueError(
-                        "Cox survival loss requires training.batch_size >= 2 — the partial "
-                        "likelihood's risk set is the batch."
-                    )
+                if cox_window >= 2:
+                    # Accumulation mode: one bag at a time, no padding, so the loader
+                    # batch_size must be 1; the risk set is the cox_window, not the batch.
+                    if self.training.batch_size != 1:
+                        raise ValueError(
+                            "Cox accumulation mode (cox_window >= 2) requires "
+                            "training.batch_size = 1 — bags are forwarded un-padded one at a "
+                            "time, with cox_window as the risk-set size."
+                        )
+                    if self.aggregator is None:
+                        raise ValueError(
+                            "Cox accumulation mode (cox_window >= 2) is for variable-size MIL "
+                            "bags and requires an aggregator (e.g. abmil, transmil, mean_pool). "
+                            "For single-embedding slide/patient features, omit cox_window and "
+                            "use padded mode with batch_size >= 2."
+                        )
+                else:
+                    # Padded / single-embedding mode: the risk set is the batch.
+                    if self.training.batch_size < 2:
+                        raise ValueError(
+                            "Cox survival loss requires training.batch_size >= 2 — the partial "
+                            "likelihood's risk set is the batch. (For large MIL bags, use "
+                            "accumulation mode by setting task.params.cox_window >= 2.)"
+                        )
         # Validate that requested metrics are valid for the task family.
         resolve_metrics(self.task.name, self.evaluation.metrics)
         # Fail fast on unknown encoder / aggregator names — catching these at

@@ -303,16 +303,18 @@ class TestCoxConfigGuards:
             **kw,
         )
 
-    def test_rejects_any_aggregator(self, tmp_path: Path):
+    def test_padded_mil_aggregator_allowed(self, tmp_path: Path):
+        # Phase 2 lifted the phase-1 "Cox rejects any aggregator" rule: padded MIL
+        # Cox (masking, batch_size >= 2) is now valid. Accumulation-mode guards are
+        # exercised in test_cox_accumulation.py.
         for name in ("abmil", "transmil", "mean_pool"):
-            with pytest.raises(ValueError, match="does not support MIL"):
-                PipelineConfig(
-                    **self._base(
-                        tmp_path,
-                        aggregator=AggregatorConfig(name=name),
-                        training=TrainingConfig(batch_size=4),
-                    )
+            PipelineConfig(
+                **self._base(
+                    tmp_path,
+                    aggregator=AggregatorConfig(name=name),
+                    training=TrainingConfig(batch_size=4),
                 )
+            )
 
     def test_rejects_gradient_accumulation(self, tmp_path: Path):
         with pytest.raises(ValueError, match="gradient_accumulation = 1"):

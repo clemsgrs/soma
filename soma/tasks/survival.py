@@ -206,26 +206,39 @@ class SurvivalHead(TaskHead):
 
 
 class CoxSurvivalHead(TaskHead):
-    """Continuous-time CoxPH survival head (phase 1: slide/patient, batched).
+    """Continuous-time CoxPH survival head (Breslow partial likelihood).
 
-    Emits a single risk scalar per sample; the risk set is the batch, so the
-    Cox partial likelihood is computed over the batch (or the full cohort at
-    eval). Unlike :class:`SurvivalHead`, there is no binning and risk is the
-    **raw** model output — higher means higher hazard / shorter survival, which
-    is what ``concordance_index_censored`` expects. (Reusing the NLL head's
-    ``-sum(surv)`` derivation here would double-invert the C-index sign.)
+    Emits a single risk scalar per sample; the Cox partial likelihood is computed
+    over a risk set of multiple samples. Unlike :class:`SurvivalHead`, there is no
+    binning and risk is the **raw** model output — higher means higher hazard /
+    shorter survival, which is what ``concordance_index_censored`` expects.
+    (Reusing the NLL head's ``-sum(surv)`` derivation here would double-invert the
+    C-index sign.)
 
-    Selected via ``task.params.loss: cox``. Requires ``batch_size >= 2``,
-    ``gradient_accumulation == 1``, and no MIL aggregator — enforced at config
-    validation. The pipeline builds the training loader with an event-balanced
-    sampler (``needs_event_balanced_batches``) and computes the tune loss over
-    the whole cohort (``full_cohort_eval_loss``).
+    Selected via ``task.params.loss: cox``. Two training modes, switched by
+    ``task.params.cox_window`` (carried here as ``accumulation_window``):
+
+    * **Padded mode** (``cox_window`` unset / 1): the risk set is the batch.
+      Single-embedding slide/patient features (no aggregator, ``batch_size >= 2``)
+      or padded MIL bags (``batch_size >= 2``, masking handles padding).
+    * **Accumulation mode** (``cox_window >= 2``): for large variable-size MIL
+      bags. ``batch_size`` is pinned to 1; the trainer forwards ``cox_window``
+      bags un-padded, keeps their risk scalars graph-connected, and computes one
+      Cox loss over the window. ``accumulates_predictions`` signals this to the
+      trainer.
+
+    In both modes the pipeline builds the training loader with an event-balanced
+    sampler (``needs_event_balanced_batches``) and the tune loss is computed over
+    the whole cohort (``full_cohort_eval_loss``). Config validation enforces the
+    mode constraints.
 
     Args:
         input_dim: Dimension of the input representation.
-        ties: Tie-handling method. Only ``"breslow"`` is implemented in phase 1.
-        min_events_per_window: Minimum events the event-balanced training sampler
-            guarantees per batch (>= 1).
+        ties: Tie-handling method. Only ``"breslow"`` is implemented.
+        min_events_per_window: Minimum events the event-balanced sampler
+            guarantees per batch / window (>= 1).
+        cox_window: Prediction-accumulation window size. ``1`` (default) selects
+            padded mode; ``>= 2`` selects accumulation mode with this risk-set size.
         metrics: Metrics to compute. Empty list uses the survival default
             (c_index).
     """
@@ -240,21 +253,28 @@ class CoxSurvivalHead(TaskHead):
         input_dim: int,
         ties: str = "breslow",
         min_events_per_window: int = 1,
+        cox_window: int = 1,
         metrics: list[str] | None = None,
     ) -> None:
         super().__init__()
         if ties != "breslow":
             raise ValueError(
                 f"CoxSurvivalHead supports ties='breslow' only (got {ties!r}); "
-                "Efron ties are not implemented in phase 1."
+                "Efron ties are not implemented."
             )
         if min_events_per_window < 1:
             raise ValueError(
                 f"min_events_per_window must be >= 1, got {min_events_per_window}."
             )
+        if cox_window < 1:
+            raise ValueError(f"cox_window must be >= 1, got {cox_window}.")
         self.fc = nn.Linear(input_dim, 1)
         self.ties = ties
         self.min_events_per_window = min_events_per_window
+        self.accumulation_window = cox_window
+        # Accumulation mode forwards cox_window un-padded bags per Cox loss; the
+        # trainer keys its windowed training loop on this flag.
+        self.accumulates_predictions = cox_window >= 2
         self.metrics = resolve_metrics("survival", metrics or [])
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
