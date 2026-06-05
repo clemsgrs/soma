@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import torch
 import pytest
@@ -19,8 +21,20 @@ from soma.tasks.registry import task_registry
 
 
 class _FakeDataset:
+    """Minimal dataset stub exposing ``samples`` with ``.label`` records."""
+
     def __init__(self, num_classes):
-        self.num_classes = num_classes
+        self.samples = {
+            str(i): SimpleNamespace(label=i) for i in range(num_classes)
+        }
+
+
+def _labels(values) -> dict[str, torch.Tensor]:
+    return {"label": torch.tensor(values)}
+
+
+def _values(tensor) -> dict[str, torch.Tensor]:
+    return {"value": tensor}
 
 
 # ---------------------------------------------------------------------------
@@ -41,23 +55,22 @@ class TestBinaryClassificationHead:
     def test_loss_is_scalar(self):
         head = BinaryClassificationHead(input_dim=8, num_classes=2)
         logits = torch.randn(4, 2)
-        targets = torch.tensor([0, 1, 0, 1])
-        loss = head.compute_loss(logits, targets)
+        loss = head.compute_loss(logits, _labels([0, 1, 0, 1]))
         assert loss.shape == ()
         assert loss.item() > 0
 
     def test_gradient_flows(self):
         head = BinaryClassificationHead(input_dim=8, num_classes=2)
         X = torch.randn(2, 8, requires_grad=True)
-        loss = head.compute_loss(head(X), torch.tensor([0, 1]))
+        loss = head.compute_loss(head(X), _labels([0, 1]))
         loss.backward()
         assert X.grad is not None and X.grad.abs().sum() > 0
 
     def test_registered(self):
         assert task_registry.get("binary_classification") is BinaryClassificationHead
 
-    def test_label_dtype(self):
-        assert BinaryClassificationHead.label_dtype == torch.long
+    def test_target_dtypes(self):
+        assert BinaryClassificationHead.target_dtypes == {"label": torch.long}
 
     def test_postprocess(self):
         head = BinaryClassificationHead(input_dim=8, num_classes=2)
@@ -81,20 +94,25 @@ class TestBinaryClassificationHead:
     def test_compute_metrics_returns_requested_keys(self):
         head = BinaryClassificationHead(input_dim=8, num_classes=2, metrics=["auroc", "f1"])
         logits = torch.randn(6, 2)
-        targets = torch.tensor([0, 1, 0, 1, 0, 1])
-        m = head.compute_metrics(logits, targets)
+        m = head.compute_metrics(logits, _labels([0, 1, 0, 1, 0, 1]))
         assert set(m.keys()) == {"auroc", "f1"}
         assert all(isinstance(v, float) for v in m.values())
 
     def test_compute_metrics_default_keys(self):
         head = BinaryClassificationHead(input_dim=8, num_classes=2)
         logits = torch.randn(6, 2)
-        targets = torch.tensor([0, 1, 0, 1, 0, 1])
-        m = head.compute_metrics(logits, targets)
+        m = head.compute_metrics(logits, _labels([0, 1, 0, 1, 0, 1]))
         assert set(m.keys()) == set(DEFAULT_METRICS["binary_classification"])
 
     def test_auto_params(self):
-        assert BinaryClassificationHead.auto_params(_FakeDataset(2)) == {"num_classes": 2}
+        params = BinaryClassificationHead.auto_params(_FakeDataset(2))
+        assert params["num_classes"] == 2
+        assert params["label_map"] == {0: 0, 1: 1}
+
+    def test_extract_targets_uses_label_map(self):
+        head = BinaryClassificationHead(input_dim=8, num_classes=2, label_map={"neg": 0, "pos": 1})
+        record = SimpleNamespace(label="pos")
+        assert head.extract_targets(record) == {"label": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -113,20 +131,20 @@ class TestMulticlassClassificationHead:
 
     def test_loss_is_scalar(self):
         head = MulticlassClassificationHead(input_dim=8, num_classes=3)
-        loss = head.compute_loss(torch.randn(4, 3), torch.tensor([0, 1, 2, 1]))
+        loss = head.compute_loss(torch.randn(4, 3), _labels([0, 1, 2, 1]))
         assert loss.shape == () and loss.item() > 0
 
     def test_gradient_flows(self):
         head = MulticlassClassificationHead(input_dim=8, num_classes=3)
         X = torch.randn(2, 8, requires_grad=True)
-        head.compute_loss(head(X), torch.tensor([0, 2])).backward()
+        head.compute_loss(head(X), _labels([0, 2])).backward()
         assert X.grad is not None and X.grad.abs().sum() > 0
 
     def test_registered(self):
         assert task_registry.get("multiclass_classification") is MulticlassClassificationHead
 
-    def test_label_dtype(self):
-        assert MulticlassClassificationHead.label_dtype == torch.long
+    def test_target_dtypes(self):
+        assert MulticlassClassificationHead.target_dtypes == {"label": torch.long}
 
     def test_postprocess(self):
         head = MulticlassClassificationHead(input_dim=8, num_classes=3)
@@ -155,11 +173,13 @@ class TestMulticlassClassificationHead:
 
     def test_compute_metrics_returns_requested_keys(self):
         head = MulticlassClassificationHead(input_dim=8, num_classes=3, metrics=["accuracy", "f1_macro"])
-        m = head.compute_metrics(torch.randn(6, 3), torch.tensor([0, 1, 2, 0, 1, 2]))
+        m = head.compute_metrics(torch.randn(6, 3), _labels([0, 1, 2, 0, 1, 2]))
         assert set(m.keys()) == {"accuracy", "f1_macro"}
 
     def test_auto_params(self):
-        assert MulticlassClassificationHead.auto_params(_FakeDataset(5)) == {"num_classes": 5}
+        params = MulticlassClassificationHead.auto_params(_FakeDataset(5))
+        assert params["num_classes"] == 5
+        assert params["label_map"] == {i: i for i in range(5)}
 
 
 # ---------------------------------------------------------------------------
@@ -203,20 +223,20 @@ class TestRegressionHead:
 
     def test_loss_is_scalar(self):
         head = RegressionHead(input_dim=8)
-        loss = head.compute_loss(torch.randn(4, 1), torch.randn(4))
+        loss = head.compute_loss(torch.randn(4, 1), _values(torch.randn(4)))
         assert loss.shape == () and loss.item() >= 0
 
     def test_gradient_flows(self):
         head = RegressionHead(input_dim=8)
         X = torch.randn(2, 8, requires_grad=True)
-        head.compute_loss(head(X), torch.randn(2)).backward()
+        head.compute_loss(head(X), _values(torch.randn(2))).backward()
         assert X.grad is not None and X.grad.abs().sum() > 0
 
     def test_registered(self):
         assert task_registry.get("regression") is RegressionHead
 
-    def test_label_dtype(self):
-        assert RegressionHead.label_dtype == torch.float
+    def test_target_dtypes(self):
+        assert RegressionHead.target_dtypes == {"value": torch.float}
 
     def test_postprocess_returns_predictions(self):
         head = RegressionHead(input_dim=8)
@@ -237,17 +257,21 @@ class TestRegressionHead:
 
     def test_compute_metrics_returns_requested_keys(self):
         head = RegressionHead(input_dim=8, metrics=["mse", "mae"])
-        m = head.compute_metrics(torch.randn(6, 1), torch.randn(6))
+        m = head.compute_metrics(torch.randn(6, 1), _values(torch.randn(6)))
         assert set(m.keys()) == {"mse", "mae"}
         assert all(isinstance(v, float) for v in m.values())
 
     def test_compute_metrics_default_keys(self):
         head = RegressionHead(input_dim=8)
-        m = head.compute_metrics(torch.randn(6, 1), torch.randn(6))
+        m = head.compute_metrics(torch.randn(6, 1), _values(torch.randn(6)))
         assert set(m.keys()) == set(DEFAULT_METRICS["regression"])
 
     def test_auto_params_is_empty(self):
         assert RegressionHead.auto_params(_FakeDataset(5)) == {}
+
+    def test_extract_targets_casts_label_to_float(self):
+        head = RegressionHead(input_dim=8)
+        assert head.extract_targets(SimpleNamespace(label="2.5")) == {"value": 2.5}
 
 
 # ---------------------------------------------------------------------------
@@ -262,23 +286,25 @@ class TestOrdinalClassificationHead:
 
     def test_loss_is_scalar(self):
         head = OrdinalClassificationHead(input_dim=8, num_classes=6)
-        loss = head.compute_loss(torch.randn(4, 1), torch.tensor([0, 2, 4, 5]))
+        loss = head.compute_loss(torch.randn(4, 1), _labels([0, 2, 4, 5]))
         assert loss.shape == () and loss.item() >= 0
 
     def test_gradient_flows(self):
         head = OrdinalClassificationHead(input_dim=8, num_classes=6)
         X = torch.randn(3, 8, requires_grad=True)
-        head.compute_loss(head(X), torch.tensor([0, 3, 5])).backward()
+        head.compute_loss(head(X), _labels([0, 3, 5])).backward()
         assert X.grad is not None and X.grad.abs().sum() > 0
 
     def test_registered(self):
         assert task_registry.get("ordinal_classification") is OrdinalClassificationHead
 
-    def test_label_dtype(self):
-        assert OrdinalClassificationHead.label_dtype == torch.long
+    def test_target_dtypes(self):
+        assert OrdinalClassificationHead.target_dtypes == {"label": torch.long}
 
     def test_auto_params(self):
-        assert OrdinalClassificationHead.auto_params(_FakeDataset(6)) == {"num_classes": 6}
+        params = OrdinalClassificationHead.auto_params(_FakeDataset(6))
+        assert params["num_classes"] == 6
+        assert params["label_map"] == {i: i for i in range(6)}
 
     def test_postprocess_returns_integer_labels_and_raw_scores(self):
         head = OrdinalClassificationHead(input_dim=8, num_classes=6)
@@ -307,11 +333,11 @@ class TestOrdinalClassificationHead:
 
     def test_compute_metrics_returns_requested_keys(self):
         head = OrdinalClassificationHead(input_dim=8, num_classes=6, metrics=["qwk", "accuracy"])
-        m = head.compute_metrics(torch.randn(8, 1), torch.tensor([0, 1, 2, 3, 4, 5, 0, 3]))
+        m = head.compute_metrics(torch.randn(8, 1), _labels([0, 1, 2, 3, 4, 5, 0, 3]))
         assert set(m.keys()) == {"qwk", "accuracy"}
         assert all(isinstance(v, float) for v in m.values())
 
     def test_compute_metrics_default_keys(self):
         head = OrdinalClassificationHead(input_dim=8, num_classes=6)
-        m = head.compute_metrics(torch.randn(8, 1), torch.tensor([0, 1, 2, 3, 4, 5, 0, 3]))
+        m = head.compute_metrics(torch.randn(8, 1), _labels([0, 1, 2, 3, 4, 5, 0, 3]))
         assert set(m.keys()) == set(DEFAULT_METRICS["ordinal_classification"])

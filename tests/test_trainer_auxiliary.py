@@ -34,19 +34,22 @@ def _make_bag_batches(
     bag_size: int = 10,
     feat_dim: int = 16,
     n_classes: int = 2,
-    label_dtype: torch.dtype = torch.long,
+    target_dtypes: dict[str, torch.dtype] | None = None,
 ) -> list[BagBatch]:
     """Create deterministic BagBatch objects for testing."""
+    target_dtypes = target_dtypes or {"label": torch.long}
     torch.manual_seed(42)
     batches = []
     for idx in range(n_samples):
         features = torch.randn(1, bag_size, feat_dim)
         mask = torch.ones(1, bag_size, dtype=torch.bool)
-        if label_dtype == torch.float:
-            labels = torch.tensor([float(idx) * 0.5], dtype=torch.float)
-        else:
-            labels = torch.randint(0, n_classes, (1,), dtype=label_dtype)
-        batches.append(BagBatch(features=features, mask=mask, labels=labels, sample_ids=("s",)))
+        targets: dict[str, torch.Tensor] = {}
+        for key, dtype in target_dtypes.items():
+            if dtype == torch.float:
+                targets[key] = torch.tensor([float(idx) * 0.5], dtype=torch.float)
+            else:
+                targets[key] = torch.randint(0, n_classes, (1,), dtype=dtype)
+        batches.append(BagBatch(features=features, mask=mask, targets=targets, sample_ids=("s",)))
     return batches
 
 
@@ -74,7 +77,7 @@ def _train_one_epoch(aggregator: Aggregator, feat_dim: int = 16) -> float:
         aggregator=aggregator,
         task_head=head,
     )
-    batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim, label_dtype=head.label_dtype)
+    batches = _make_bag_batches(n_samples=4, feat_dim=feat_dim, target_dtypes=head.target_dtypes)
     loader = _FakeBagLoader(batches)
     config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
     fold_dir = Path("/tmp/test_trainer_aux")
@@ -96,7 +99,7 @@ def _train_one_epoch_with_head(
     head,
     feat_dim: int = 16,
     n_classes: int = 2,
-    label_dtype: torch.dtype | None = None,
+    target_dtypes: dict[str, torch.dtype] | None = None,
 ) -> float:
     """Build a MILModel with the given aggregator/head and train one epoch."""
     torch.manual_seed(0)
@@ -105,7 +108,7 @@ def _train_one_epoch_with_head(
         n_samples=4,
         feat_dim=feat_dim,
         n_classes=n_classes,
-        label_dtype=label_dtype or head.label_dtype,
+        target_dtypes=target_dtypes or head.target_dtypes,
     )
     loader = _FakeBagLoader(batches)
     config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=999)
@@ -253,7 +256,6 @@ class TestAuxiliaryLossWiring:
         loss = _train_one_epoch_with_head(
             DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
             RegressionHead(input_dim=16),
-            label_dtype=torch.float,
         )
         assert loss > 0
 
@@ -274,7 +276,7 @@ class TestAuxiliaryLossWiring:
         mask = torch.ones(2, 10, dtype=torch.bool)
 
         out = model(X, mask=mask)
-        task_loss = head.compute_loss(out.logits, labels)
+        task_loss = head.compute_loss(out.logits, {"label": labels})
         aux_loss = agg.compute_auxiliary_loss(out.auxiliary, labels, mask=mask)
 
         assert aux_loss is not None

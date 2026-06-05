@@ -67,6 +67,9 @@ def _make_epoch_log(
     )
 
 
+_CLS_COLLATE = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
+
+
 def _make_synthetic_loader(num_slides: int, seed: int = 0):
     """Create a DataLoader from synthetic bags."""
     torch.manual_seed(seed)
@@ -75,10 +78,10 @@ def _make_synthetic_loader(num_slides: int, seed: int = 0):
         n_tiles = 5 + i * 2
         features = torch.randn(n_tiles, D)
         label = i % NUM_CLASSES
-        bags.append((features, label, f"slide_{i}"))
+        bags.append((features, {"label": label}, f"slide_{i}"))
     from torch.utils.data import DataLoader
 
-    return DataLoader(bags, batch_size=2, collate_fn=bag_collate_fn)
+    return DataLoader(bags, batch_size=2, collate_fn=_CLS_COLLATE)
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +220,12 @@ class TestTrainerWithEmbeddingModel:
         seed_everything(42)
         D = 16
         model = EmbeddingModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
+        _collate = functools.partial(sample_collate_fn, target_dtypes={"label": torch.long})
 
         # Build single-embedding batches: (D,) tensors
-        slides = [(torch.randn(D), i % 2, f"s{i}") for i in range(8)]
-        train_loader = DataLoader(slides[:6], batch_size=2, collate_fn=sample_collate_fn)
-        tune_loader = DataLoader(slides[6:], batch_size=2, collate_fn=sample_collate_fn)
+        slides = [(torch.randn(D), {"label": i % 2}, f"s{i}") for i in range(8)]
+        train_loader = DataLoader(slides[:6], batch_size=2, collate_fn=_collate)
+        tune_loader = DataLoader(slides[6:], batch_size=2, collate_fn=_collate)
 
         config = TrainingConfig(epochs=3, learning_rate=1e-3, patience=10)
         trainer = Trainer(
@@ -248,6 +252,7 @@ class TestTrainerWithEmbeddingModel:
         seed_everything(42)
         D = 16
         model = EmbeddingModel(task_head=BinaryClassificationHead(input_dim=D, num_classes=2))
+        _collate = functools.partial(sample_collate_fn, target_dtypes={"label": torch.long})
 
         feature_dir = tmp_path / "features"
         feature_dir.mkdir()
@@ -255,14 +260,14 @@ class TestTrainerWithEmbeddingModel:
             torch.save(torch.randn(D, dtype=torch.float16), feature_dir / f"s{i}.pt")
         store = FeatureStore(feature_dir)
         train_loader = DataLoader(
-            [(store.load(f"s{i}"), i % 2, f"s{i}") for i in range(6)],
+            [(store.load(f"s{i}"), {"label": i % 2}, f"s{i}") for i in range(6)],
             batch_size=2,
-            collate_fn=sample_collate_fn,
+            collate_fn=_collate,
         )
         tune_loader = DataLoader(
-            [(store.load(f"s{i}"), i % 2, f"s{i}") for i in range(6, 8)],
+            [(store.load(f"s{i}"), {"label": i % 2}, f"s{i}") for i in range(6, 8)],
             batch_size=2,
-            collate_fn=sample_collate_fn,
+            collate_fn=_collate,
         )
 
         config = TrainingConfig(epochs=1, learning_rate=1e-3, patience=1)
@@ -294,8 +299,8 @@ class TestTrainerWithRegressionHead:
 
         # Build bags with continuous float labels
         torch.manual_seed(0)
-        bags = [(torch.randn(5, D), float(i) * 0.5, f"slide_{i}") for i in range(8)]
-        _reg_collate = functools.partial(bag_collate_fn, label_dtype=torch.float)
+        bags = [(torch.randn(5, D), {"value": float(i) * 0.5}, f"slide_{i}") for i in range(8)]
+        _reg_collate = functools.partial(bag_collate_fn, target_dtypes={"value": torch.float})
         train_loader = DataLoader(bags[:6], batch_size=2, collate_fn=_reg_collate)
         tune_loader = DataLoader(bags[6:], batch_size=2, collate_fn=_reg_collate)
 
@@ -315,6 +320,59 @@ class TestTrainerWithRegressionHead:
         assert result.checkpoint_path.exists()
         for key in ["mae", "r2"]:
             assert key in result.best_tune_metrics
+
+
+class _TwoKeyHead(BinaryClassificationHead):
+    """A head with two target keys to exercise the multi-key target contract.
+
+    PR-1 ships only single-key heads, so this fake head is the only coverage of
+    ``stack_targets`` / per-key concatenation / the multi-key ``_auxiliary_target``
+    branch that survival (PR-2) will rely on.
+    """
+
+    target_dtypes = {"label": torch.long, "weight": torch.float}
+
+    def extract_targets(self, record):  # pragma: no cover - not used in this test
+        return {"label": int(record.label), "weight": 1.0}
+
+    def compute_loss(self, predictions, targets):
+        # Touch both keys so a missing/mis-typed key would raise.
+        base = super().compute_loss(predictions, {"label": targets["label"]})
+        return base * targets["weight"].mean()
+
+    def compute_metrics(self, raw_output, targets):
+        assert set(targets) == {"label", "weight"}
+        return super().compute_metrics(raw_output, {"label": targets["label"]})
+
+
+class TestMultiKeyTargets:
+    def test_two_key_targets_train_and_tune(self, tmp_path: Path):
+        """Multi-key targets flow through collate, _train_epoch, and per-key cat in _tune."""
+        seed_everything(0)
+        model = MILModel(aggregator=MeanPool(input_dim=D), task_head=_TwoKeyHead(input_dim=D, num_classes=2))
+        collate = functools.partial(
+            bag_collate_fn, target_dtypes={"label": torch.long, "weight": torch.float}
+        )
+        from torch.utils.data import DataLoader
+
+        bags = [
+            (torch.randn(5 + i, D), {"label": i % 2, "weight": 0.5 + i}, f"s{i}")
+            for i in range(6)
+        ]
+        loader = DataLoader(bags, batch_size=2, collate_fn=collate)
+
+        trainer = Trainer(
+            model=model,
+            train_loader=loader,
+            tune_loader=loader,
+            config=TrainingConfig(epochs=1, patience=10),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        result = trainer.fit()
+
+        assert isinstance(result, TrainResult)
+        assert len(result.history) == 1
 
 
 class TestSeedEverything:

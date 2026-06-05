@@ -138,10 +138,13 @@ def _make_tune_trainer(tmp_path) -> "tuple[object, int]":
         task_head=BinaryClassificationHead(input_dim=D, num_classes=2),
     )
 
+    import functools
+
     torch.manual_seed(0)
-    bags = [(torch.randn(5 + i, D), i % 2, f"s{i}") for i in range(6)]
-    tune_loader = DataLoader(bags, batch_size=2, collate_fn=bag_collate_fn)
-    train_loader = DataLoader(bags, batch_size=2, collate_fn=bag_collate_fn)
+    bags = [(torch.randn(5 + i, D), {"label": i % 2}, f"s{i}") for i in range(6)]
+    _collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
+    tune_loader = DataLoader(bags, batch_size=2, collate_fn=_collate)
+    train_loader = DataLoader(bags, batch_size=2, collate_fn=_collate)
 
     trainer = Trainer(
         model=model,

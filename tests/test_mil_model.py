@@ -100,7 +100,7 @@ class TestMILModel:
         )
         X = torch.randn(2, 5, 8, requires_grad=True)
         out = model(X)
-        targets = torch.tensor([0, 1])
+        targets = {"label": torch.tensor([0, 1])}
         loss = model.task_head.compute_loss(out.logits, targets)
         loss.backward()
         assert X.grad is not None

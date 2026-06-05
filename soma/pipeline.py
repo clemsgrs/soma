@@ -111,36 +111,6 @@ class _DeterministicBaseline:
     raw_score: float | None = None
 
 
-def _float_record_label(record) -> float:
-    return float(record.label)
-
-
-def _mapped_record_label(record, label_map: dict):
-    return label_map[record.label]
-
-
-def _float_patient_label(pid, raw) -> float:
-    return float(raw)
-
-
-def _mapped_patient_label(pid, raw, label_map: dict):
-    return label_map[raw]
-
-
-def _make_label_fn(label_dtype: torch.dtype, label_map: dict):
-    """Return a (picklable) label encoder for the given dtype and class map."""
-    if label_dtype == torch.float:
-        return _float_record_label
-    return functools.partial(_mapped_record_label, label_map=label_map)
-
-
-def _make_patient_label_fn(label_dtype: torch.dtype, label_map: dict):
-    """Return a (picklable) patient-level label encoder."""
-    if label_dtype == torch.float:
-        return _float_patient_label
-    return functools.partial(_mapped_patient_label, label_map=label_map)
-
-
 def _format_fold_summary(
     fold: int,
     train_count: int,
@@ -241,26 +211,25 @@ def _make_loaders(
     test_items_by_split: dict,
     training: TrainingConfig,
     feature_store: FeatureStore,
-    label_map: dict,
-    label_fn,
+    target_fn,
 ) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
     """Create train, tune, and per-split test DataLoaders with a common pattern."""
     loader_kwargs = _loader_kwargs(training)
     train_loader = DataLoader(
-        dataset_cls(train_items, feature_store, label_map, label_fn=label_fn),
+        dataset_cls(train_items, feature_store, target_fn),
         shuffle=True,
         collate_fn=collate_fn,
         **loader_kwargs,
     )
     tune_loader = DataLoader(
-        dataset_cls(tune_items, feature_store, label_map, label_fn=label_fn),
+        dataset_cls(tune_items, feature_store, target_fn),
         shuffle=False,
         collate_fn=collate_fn,
         **loader_kwargs,
     )
     test_loaders = {
         split_name: DataLoader(
-            dataset_cls(items, feature_store, label_map, label_fn=label_fn),
+            dataset_cls(items, feature_store, target_fn),
             shuffle=False,
             collate_fn=collate_fn,
             **loader_kwargs,
@@ -318,7 +287,6 @@ def train_one_fold(
 
     seed_everything(training.seed, fold=fold)
 
-    label_map = dataset.label_map
     feature_dim = feature_store.feature_dim
     all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
     _fp = f"Fold {fold}" if num_folds > 1 else "Run"
@@ -553,35 +521,29 @@ def train_one_fold(
     task_cls = task_registry.get(task.name)
     task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
 
-    # Derive label encoding from the task head class
-    label_dtype = task_cls.label_dtype
-    label_fn = _make_label_fn(label_dtype, label_map)
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
-    deterministic_baseline = _build_deterministic_baseline(
-        train_records,
-        label_fn=label_fn,
-        task_family=task_family,
-        num_classes=len(label_map),
-    )
 
+    # The task head owns its target contract. Build the head first, then derive
+    # the per-sample target_fn and per-key collation from it.
     if dataset_type == "patient":
         # Patient-level path: pretrained patient encoder produced (D,) per patient
         if aggregator is not None:
             raise ValueError("aggregator must be None for dataset_type='patient'")
-        patient_label_map = dataset.patient_label_map
-        patient_label_fn = _make_patient_label_fn(label_dtype, label_map)
-        _patient_collate = functools.partial(patient_collate_fn, label_dtype=label_dtype)
+        head = task_cls(input_dim=feature_dim, **task_params)
+        target_fn = head.extract_targets
+        patient_record_map = dataset.patient_record_map
+        _patient_collate = functools.partial(patient_collate_fn, target_dtypes=head.target_dtypes)
 
         _patient_loader_kwargs = _loader_kwargs(training)
         train_loader = DataLoader(
-            PatientDataset(train_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
+            PatientDataset(train_patient_ids, patient_record_map, feature_store, target_fn),
             shuffle=True,
             collate_fn=_patient_collate,
             **_patient_loader_kwargs,
         )
         tune_loader = DataLoader(
-            PatientDataset(tune_patient_ids, patient_label_map, feature_store, label_map, label_fn=patient_label_fn),
+            PatientDataset(tune_patient_ids, patient_record_map, feature_store, target_fn),
             shuffle=False,
             collate_fn=_patient_collate,
             **_patient_loader_kwargs,
@@ -590,7 +552,7 @@ def train_one_fold(
             split_name: DataLoader(
                 PatientDataset(
                     test_patient_ids_by_split[split_name],
-                    patient_label_map, feature_store, label_map, label_fn=patient_label_fn,
+                    patient_record_map, feature_store, target_fn,
                 ),
                 shuffle=False,
                 collate_fn=_patient_collate,
@@ -598,19 +560,19 @@ def train_one_fold(
             )
             for split_name, records in test_records_by_split.items()
         }
-        head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif dataset_type == "tile" or feature_store.is_slide_level:
         # Single-embedding path: one pre-computed vector per sample, no aggregation
         if feature_store.is_slide_level and aggregator is not None:
             raise ValueError("aggregator must be None for slide-level features")
-        _sample_collate = functools.partial(sample_collate_fn, label_dtype=label_dtype)
+        head = task_cls(input_dim=feature_dim, **task_params)
+        target_fn = head.extract_targets
+        _sample_collate = functools.partial(sample_collate_fn, target_dtypes=head.target_dtypes)
         train_loader, tune_loader, test_loaders = _make_loaders(
             SampleDataset, _sample_collate,
             train_records, tune_records, test_records_by_split,
-            training, feature_store, label_map, label_fn,
+            training, feature_store, target_fn,
         )
-        head = task_cls(input_dim=feature_dim, **task_params)
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif feature_store.is_hierarchical:
         if aggregator is None:
@@ -620,26 +582,21 @@ def train_one_fold(
         if preprocessing is None:
             raise ValueError("hierarchical features require resolved preprocessing")
         hipt_params = _resolve_hipt_params(preprocessing, aggregator)
-        _hier_collate = functools.partial(hierarchical_bag_collate_fn, label_dtype=label_dtype)
-        train_loader, tune_loader, test_loaders = _make_loaders(
-            HierarchicalBagDataset, _hier_collate,
-            train_records, tune_records, test_records_by_split,
-            training, feature_store, label_map, label_fn,
-        )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **hipt_params)
         head = task_cls(input_dim=agg.output_dim, **task_params)
+        target_fn = head.extract_targets
+        _hier_collate = functools.partial(hierarchical_bag_collate_fn, target_dtypes=head.target_dtypes)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            HierarchicalBagDataset, _hier_collate,
+            train_records, tune_records, test_records_by_split,
+            training, feature_store, target_fn,
+        )
         model = MILModel(aggregator=agg, task_head=head)
     else:
         # Tile-level MIL path
         if aggregator is None:
             raise ValueError("aggregator must be provided for tile-level features")
-        _bag_collate = functools.partial(bag_collate_fn, label_dtype=label_dtype)
-        train_loader, tune_loader, test_loaders = _make_loaders(
-            BagDataset, _bag_collate,
-            train_records, tune_records, test_records_by_split,
-            training, feature_store, label_map, label_fn,
-        )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
         if aggregator.name == "clam_mb" and task.name == "binary_classification":
@@ -651,7 +608,21 @@ def train_one_fold(
             head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
         else:
             head = task_cls(input_dim=agg.output_dim, **task_params)
+        target_fn = head.extract_targets
+        _bag_collate = functools.partial(bag_collate_fn, target_dtypes=head.target_dtypes)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            BagDataset, _bag_collate,
+            train_records, tune_records, test_records_by_split,
+            training, feature_store, target_fn,
+        )
         model = MILModel(aggregator=agg, task_head=head)
+
+    deterministic_baseline = _build_deterministic_baseline(
+        train_records,
+        target_fn=target_fn,
+        task_family=task_family,
+        num_classes=int(getattr(head, "num_classes", 0)),
+    )
 
     # Train
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -708,12 +679,11 @@ def train_one_fold(
         model,
         tune_loader,
         "tune",
-        label_map,
         device,
         output_sample_ids=tune_output_sample_ids,
         empty_sample_ids=tune_empty_sample_ids,
         dataset=dataset,
-        label_fn=label_fn,
+        target_fn=target_fn,
         baseline=deterministic_baseline,
         metric_names=resolved_metric_names,
         task_family=task_family,
@@ -730,7 +700,6 @@ def train_one_fold(
             model,
             test_loader,
             split_name,
-            label_map,
             device,
             output_sample_ids=(
                 tuple(raw_test_patient_ids_by_split[split_name])
@@ -739,7 +708,7 @@ def train_one_fold(
             ),
             empty_sample_ids=empty_eval_sample_ids.get(split_name, []),
             dataset=dataset,
-            label_fn=label_fn,
+            target_fn=target_fn,
             baseline=deterministic_baseline,
             metric_names=resolved_metric_names,
             task_family=task_family,
@@ -1263,7 +1232,6 @@ def _evaluate(
     model: torch.nn.Module,
     loader: DataLoader,
     split_name: str,
-    label_map: dict[str | int, int],
     device: torch.device,
     *,
     attention_dir: Path | None = None,
@@ -1280,7 +1248,7 @@ def _evaluate(
             Required when ``attention_dir`` is set.
     """
     all_logits = []
-    all_labels = []
+    all_targets: dict[str, list[torch.Tensor]] = {}
     all_sample_ids: list[str] = []
 
     for batch in loader:
@@ -1290,7 +1258,8 @@ def _evaluate(
         else:
             out = model(features)
         all_logits.append(out.logits.cpu())
-        all_labels.append(batch.labels)
+        for key, value in batch.targets.items():
+            all_targets.setdefault(key, []).append(value.cpu())
         all_sample_ids.extend(batch.sample_ids)
 
         if attention_dir is not None and out.tile_attention is not None:
@@ -1303,12 +1272,12 @@ def _evaluate(
                 np.savez_compressed(attention_dir / f"{sid}.npz", attention=normalized)
 
     logits = torch.cat(all_logits, dim=0)
-    labels = torch.cat(all_labels, dim=0)
+    targets = {key: torch.cat(values, dim=0) for key, values in all_targets.items()}
 
     task_head = model.task_head
-    metrics = task_head.compute_metrics(logits, labels)
+    metrics = task_head.compute_metrics(logits, targets)
     processed = task_head.postprocess(logits)
-    y_true = labels.numpy()
+    y_true = (targets["label"] if "label" in targets else targets["value"]).numpy()
 
     predictions = []
     for i, sid in enumerate(all_sample_ids):
@@ -1364,7 +1333,7 @@ def _records_for_sample_ids(
 def _build_deterministic_baseline(
     train_records: list[SampleRecord],
     *,
-    label_fn,
+    target_fn,
     task_family: str,
     num_classes: int,
 ) -> _DeterministicBaseline:
@@ -1372,7 +1341,9 @@ def _build_deterministic_baseline(
         raise ValueError("Cannot build a deterministic baseline without training records")
 
     if task_family in {"binary_classification", "multiclass_classification"}:
-        labels = np.asarray([int(label_fn(record)) for record in train_records], dtype=int)
+        labels = np.asarray(
+            [int(target_fn(record)["label"]) for record in train_records], dtype=int
+        )
         counts = np.bincount(labels, minlength=num_classes).astype(float)
         probabilities = (counts / counts.sum()).tolist()
         return _DeterministicBaseline(
@@ -1382,7 +1353,7 @@ def _build_deterministic_baseline(
         )
 
     if task_family == "ordinal_classification":
-        raw_score = float(np.mean([int(label_fn(record)) for record in train_records]))
+        raw_score = float(np.mean([int(target_fn(record)["label"]) for record in train_records]))
         predicted_label = int(np.clip(np.rint(raw_score), 0, max(num_classes - 1, 0)))
         return _DeterministicBaseline(
             task_family=task_family,
@@ -1390,7 +1361,9 @@ def _build_deterministic_baseline(
             raw_score=raw_score,
         )
 
-    predicted_value = float(np.mean([float(label_fn(record)) for record in train_records]))
+    predicted_value = float(
+        np.mean([float(target_fn(record)["value"]) for record in train_records])
+    )
     return _DeterministicBaseline(
         task_family=task_family,
         predicted_value=predicted_value,
@@ -1400,16 +1373,16 @@ def _build_deterministic_baseline(
 def _make_placeholder_prediction(
     record: SampleRecord,
     *,
-    label_fn,
+    target_fn,
     baseline: _DeterministicBaseline,
     sample_id: str | None = None,
 ) -> SamplePrediction:
-    true_label = label_fn(record)
+    targets = target_fn(record)
     true_value: int | float
     if baseline.task_family == "regression":
-        true_value = float(true_label)
+        true_value = float(targets["value"])
     else:
-        true_value = int(true_label)
+        true_value = int(targets["label"])
 
     return SamplePrediction(
         sample_id=sample_id or record.sample_id,
@@ -1465,13 +1438,12 @@ def _evaluate_split_with_placeholders(
     model: torch.nn.Module,
     loader: DataLoader,
     split_name: str,
-    label_map: dict[str | int, int],
     device: torch.device,
     *,
     output_sample_ids: tuple[str, ...],
     empty_sample_ids: list[str],
     dataset: Dataset,
-    label_fn,
+    target_fn,
     baseline: _DeterministicBaseline,
     metric_names: list[str],
     task_family: str,
@@ -1484,7 +1456,6 @@ def _evaluate_split_with_placeholders(
             model,
             loader,
             split_name,
-            label_map,
             device,
             attention_dir=attention_dir,
             aggregator_name=aggregator_name,
@@ -1499,7 +1470,7 @@ def _evaluate_split_with_placeholders(
                 if placeholder_records_by_id is not None
                 else dataset.samples[sample_id]
             ),
-            label_fn=label_fn,
+            target_fn=target_fn,
             baseline=baseline,
             sample_id=sample_id,
         )

@@ -8,6 +8,22 @@ import torch
 from torch import Tensor
 
 
+def stack_targets(
+    target_dicts: tuple[dict[str, int | float], ...],
+    target_dtypes: dict[str, torch.dtype],
+) -> dict[str, Tensor]:
+    """Stack per-sample target dicts into a dict of (B,) tensors.
+
+    Each key in ``target_dtypes`` becomes one tensor with the declared dtype,
+    collected across the batch in order. The head owns the keys; collation is
+    task-agnostic.
+    """
+    return {
+        key: torch.tensor([t[key] for t in target_dicts], dtype=dtype)
+        for key, dtype in target_dtypes.items()
+    }
+
+
 @dataclass
 class BagBatch:
     """A collated batch of bags with padding and masks.
@@ -15,31 +31,31 @@ class BagBatch:
     Attributes:
         features: Padded tile features, shape (B, N_max, D).
         mask: Boolean mask, shape (B, N_max). True = valid tile.
-        labels: Labels, shape (B,).
+        targets: Ground-truth targets keyed by the head's target_dtypes,
+            each shape (B,).
         sample_ids: Tuple of sample IDs.
     """
 
     features: Tensor
     mask: Tensor
-    labels: Tensor
+    targets: dict[str, Tensor]
     sample_ids: tuple[str, ...]
 
 
 def bag_collate_fn(
-    batch: list[tuple[Tensor, int | float, str]],
-    label_dtype: torch.dtype = torch.long,
+    batch: list[tuple[Tensor, dict[str, int | float], str]],
+    target_dtypes: dict[str, torch.dtype],
 ) -> BagBatch:
     """Collate variable-length bags by padding to max length.
 
     Args:
-        batch: List of (features, label, sample_id) tuples from BagDataset.
-        label_dtype: dtype for the labels tensor. Use torch.long for
-            classification and torch.float for regression.
+        batch: List of (features, targets, sample_id) tuples from BagDataset.
+        target_dtypes: Mapping of target key to tensor dtype (from the head).
 
     Returns:
         BagBatch with padded features and boolean mask.
     """
-    features_list, labels, sample_ids = zip(*batch)
+    features_list, target_dicts, sample_ids = zip(*batch)
 
     max_len = max(f.shape[0] for f in features_list)
     feat_dim = features_list[0].shape[1]
@@ -55,7 +71,7 @@ def bag_collate_fn(
     return BagBatch(
         features=padded,
         mask=mask,
-        labels=torch.tensor(labels, dtype=label_dtype),
+        targets=stack_targets(target_dicts, target_dtypes),
         sample_ids=tuple(sample_ids),
     )
 
@@ -67,13 +83,14 @@ class HierarchicalBagBatch:
     Attributes:
         features: Padded hierarchical features, shape (B, M_max, P, D).
         mask: Boolean region mask, shape (B, M_max). True = valid region.
-        labels: Labels, shape (B,).
+        targets: Ground-truth targets keyed by the head's target_dtypes,
+            each shape (B,).
         sample_ids: Tuple of sample IDs.
     """
 
     features: Tensor
     mask: Tensor
-    labels: Tensor
+    targets: dict[str, Tensor]
     sample_ids: tuple[str, ...]
 
     @property
@@ -82,11 +99,11 @@ class HierarchicalBagBatch:
 
 
 def hierarchical_bag_collate_fn(
-    batch: list[tuple[Tensor, int | float, str]],
-    label_dtype: torch.dtype = torch.long,
+    batch: list[tuple[Tensor, dict[str, int | float], str]],
+    target_dtypes: dict[str, torch.dtype],
 ) -> HierarchicalBagBatch:
     """Collate variable-length hierarchical bags by padding the region axis."""
-    features_list, labels, sample_ids = zip(*batch)
+    features_list, target_dicts, sample_ids = zip(*batch)
 
     max_regions = max(f.shape[0] for f in features_list)
     tiles_per_region = features_list[0].shape[1]
@@ -109,9 +126,11 @@ def hierarchical_bag_collate_fn(
         padded[i, :n] = f
         mask[i, :n] = True
 
+    targets = stack_targets(target_dicts, target_dtypes)
+    targets = {key: value.to(features_list[0].device) for key, value in targets.items()}
     return HierarchicalBagBatch(
         features=padded,
         mask=mask,
-        labels=torch.tensor(labels, dtype=label_dtype, device=features_list[0].device),
+        targets=targets,
         sample_ids=tuple(sample_ids),
     )

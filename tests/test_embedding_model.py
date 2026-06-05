@@ -27,7 +27,7 @@ class TestEmbeddingModel:
         model = EmbeddingModel(task_head=BinaryClassificationHead(input_dim=8, num_classes=2))
         X = torch.randn(2, 8, requires_grad=True)
         out = model(X)
-        loss = model.task_head.compute_loss(out.logits, torch.tensor([0, 1]))
+        loss = model.task_head.compute_loss(out.logits, {"label": torch.tensor([0, 1])})
         loss.backward()
         assert X.grad is not None
         assert X.grad.abs().sum() > 0

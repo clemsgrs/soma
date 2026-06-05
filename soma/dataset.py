@@ -42,7 +42,6 @@ class Dataset:
         df = pd.read_csv(self._path)
         self._validate_columns(df)
         self._samples = self._build_samples(df)
-        self._label_map = self._build_label_map()
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
         if "tissue_mask_path" in df.columns:
@@ -82,10 +81,6 @@ class Dataset:
             )
         return samples
 
-    def _build_label_map(self) -> dict[str | int, int]:
-        unique_labels = sorted(set(r.label for r in self._samples.values()))
-        return {label: idx for idx, label in enumerate(unique_labels)}
-
     @property
     def samples(self) -> dict[str, SampleRecord]:
         return self._samples
@@ -93,15 +88,6 @@ class Dataset:
     @property
     def sample_ids(self) -> list[str]:
         return list(self._samples.keys())
-
-    @property
-    def label_map(self) -> dict[str | int, int]:
-        """Sorted unique labels → integer encoding."""
-        return self._label_map
-
-    @property
-    def num_classes(self) -> int:
-        return len(self._label_map)
 
     @property
     def has_patient_ids(self) -> bool:
@@ -140,6 +126,29 @@ class Dataset:
                 )
             patient_label[patient_id] = records[0].label
         return patient_label
+
+    @property
+    def patient_record_map(self) -> dict[str, "SampleRecord"]:
+        """Map patient_id to a representative SampleRecord for that patient.
+
+        Validates that all slides for a patient share the same label, then
+        returns the first record per patient. The representative record carries
+        the patient's label and metadata, so a task head's ``extract_targets``
+        works identically for slide- and patient-level pipelines.
+
+        Raises ValueError if patient_ids are missing or labels are inconsistent.
+        """
+        record_map: dict[str, SampleRecord] = {}
+        for patient_id, records in self.patient_groups.items():
+            labels = {r.label for r in records}
+            if len(labels) > 1:
+                raise ValueError(
+                    f"Patient '{patient_id}' has inconsistent labels across slides: "
+                    f"{sorted(str(l) for l in labels)}. "
+                    "All slides for a patient must share the same label."
+                )
+            record_map[patient_id] = records[0]
+        return record_map
 
 
 @dataclass(frozen=True)
