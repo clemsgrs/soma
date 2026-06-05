@@ -240,6 +240,39 @@ def _make_loaders(
     return train_loader, tune_loader, test_loaders
 
 
+def _event_balanced_train_loader(
+    dataset,
+    collate_fn,
+    *,
+    events: list[int],
+    training: TrainingConfig,
+    min_events_per_window: int,
+) -> DataLoader:
+    """Training loader whose batches each hold >= one event (for batched Cox).
+
+    Replaces the ordinary shuffled train loader: the Cox partial likelihood is
+    undefined on an event-free batch, so the risk set (= the batch) must contain
+    events. ``batch_sampler`` cannot coexist with ``batch_size``/``shuffle``, so
+    those are dropped here; the sampler owns batching and per-epoch reshuffling.
+    """
+    from soma.training.survival_sampler import EventBalancedBatchSampler
+
+    sampler = EventBalancedBatchSampler(
+        events,
+        batch_size=training.batch_size,
+        min_events_per_window=min_events_per_window,
+        seed=training.seed,
+    )
+    return DataLoader(
+        dataset,
+        batch_sampler=sampler,
+        collate_fn=collate_fn,
+        num_workers=training.num_workers,
+        pin_memory=training.pin_memory,
+        persistent_workers=training.persistent_workers and training.num_workers > 0,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Layer 1 — Standalone step functions
 # ---------------------------------------------------------------------------
@@ -522,11 +555,17 @@ def train_one_fold(
     task_cls = task_registry.get(task.name)
     # Validate survival columns before auto_params reads them, so a missing/
     # malformed column raises a clear message instead of a cryptic KeyError.
+    # ``task.params.loss`` (nll | cox) selects the discrete-NLL or continuous-Cox
+    # head; it is a routing key, not a head constructor argument, so it is
+    # validated here and stripped from the params before instantiation.
     if task.name == "survival":
-        from soma.tasks.survival import validate_survival_dataset
+        from soma.tasks.survival import resolve_survival_head, validate_survival_dataset
 
-        validate_survival_dataset(dataset, dataset_type)
+        survival_loss = task.params.get("loss", "nll")
+        validate_survival_dataset(dataset, dataset_type, loss=survival_loss)
+        task_cls = resolve_survival_head(survival_loss)
     task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
+    task_params.pop("loss", None)
 
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
@@ -567,6 +606,16 @@ def train_one_fold(
             )
             for split_name, records in test_records_by_split.items()
         }
+        if getattr(head, "needs_event_balanced_batches", False):
+            train_loader = _event_balanced_train_loader(
+                PatientDataset(train_patient_ids, patient_record_map, feature_store, target_fn),
+                _patient_collate,
+                events=[
+                    int(patient_record_map[pid].metadata["event"]) for pid in train_patient_ids
+                ],
+                training=training,
+                min_events_per_window=head.min_events_per_window,
+            )
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif dataset_type == "tile" or feature_store.is_slide_level:
         # Single-embedding path: one pre-computed vector per sample, no aggregation
@@ -580,6 +629,14 @@ def train_one_fold(
             train_records, tune_records, test_records_by_split,
             training, feature_store, target_fn,
         )
+        if getattr(head, "needs_event_balanced_batches", False):
+            train_loader = _event_balanced_train_loader(
+                SampleDataset(train_records, feature_store, target_fn),
+                _sample_collate,
+                events=[int(r.metadata["event"]) for r in train_records],
+                training=training,
+                min_events_per_window=head.min_events_per_window,
+            )
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif feature_store.is_hierarchical:
         if aggregator is None:

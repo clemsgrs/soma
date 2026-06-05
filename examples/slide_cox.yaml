@@ -1,0 +1,50 @@
+run:
+  output_root: runs/cox
+  seed: 0
+  tags: []
+
+data:
+  # dataset.csv reuses `label` for time-to-event and adds `event` (0/1). Unlike
+  # the discrete-time NLL path, Cox needs no `bin` column.
+  dataset_csv: data/dataset.csv
+  splits_csv: data/splits.csv
+  dataset_type: slide
+
+preprocessing:
+  tissue_threshold: 0.1
+
+cache:
+  enabled: true
+
+encoder:
+  name: uni2
+
+# Phase-1 Cox is slide/patient single-embedding only: no MIL aggregation (the
+# risk set is the batch, so variable-size bags at batch_size=1 are not supported
+# yet). Extract slide-level features (one vector per slide) and leave this null.
+aggregation: null
+
+task:
+  name: survival
+  params:
+    loss: cox                 # selects the CoxPH path; default is nll (discrete-time)
+    ties: breslow             # only Breslow ties are implemented in phase 1
+    min_events_per_window: 1  # event floor the training batch sampler guarantees
+
+evaluation:
+  metrics:
+    - c_index
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  patience: 10
+  # The risk set IS the batch — raise batch_size to enlarge it (less biased Cox
+  # gradient). gradient_accumulation must stay 1 (it makes several small risk
+  # sets, not one large one), and batch_size must be >= 2.
+  batch_size: 32
+  gradient_accumulation: 1
+  # Early-stop on the full-cohort tune partial likelihood by default; to early-stop
+  # on C-index instead:
+  # monitor: c_index
+  # monitor_mode: max

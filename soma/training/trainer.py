@@ -337,6 +337,12 @@ class Trainer:
         total_items = _resolve_total_items(self._tune_loader, fallback=total_batches)
         processed_items = 0
 
+        # Losses that couple samples within a batch (e.g. Cox partial likelihood)
+        # must be evaluated once over the whole cohort — the mean of per-batch
+        # losses is not the full-cohort loss and would make early stopping depend
+        # on how the tune loader happened to partition patients.
+        full_cohort_loss = getattr(self._model.task_head, "full_cohort_eval_loss", False)
+
         for batch in self._tune_loader:
             processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
             if on_batch_progress is not None:
@@ -348,19 +354,24 @@ class Trainer:
                 out = self._model(features, mask=batch.mask.to(self._device))
             else:
                 out = self._model(features)
-            loss = self._model.task_head.compute_loss(out.logits, targets)
-            total_loss += loss.item()
+            if not full_cohort_loss:
+                loss = self._model.task_head.compute_loss(out.logits, targets)
+                total_loss += loss.item()
             num_batches += 1
             all_logits.append(out.logits.detach().cpu())
             for key, value in batch.targets.items():
                 all_targets.setdefault(key, []).append(value.detach().cpu())
 
-        avg_loss = total_loss / max(num_batches, 1)
         if all_logits:
             logits = torch.cat(all_logits, dim=0)
             targets = {key: torch.cat(values, dim=0) for key, values in all_targets.items()}
+            if full_cohort_loss:
+                avg_loss = float(self._model.task_head.compute_loss(logits, targets).item())
+            else:
+                avg_loss = total_loss / max(num_batches, 1)
             metrics = self._model.task_head.compute_metrics(logits, targets)
         else:
+            avg_loss = total_loss / max(num_batches, 1)
             metrics = {}
         return avg_loss, metrics
 

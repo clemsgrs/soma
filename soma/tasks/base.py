@@ -30,6 +30,14 @@ class TaskHead(ABC, nn.Module):
     target_dtypes: dict[str, torch.dtype] = {"label": torch.long}
     supports_branch_representation: bool = False
     task_family: str = "generic"
+    # When True, the trainer computes the tune loss once over the whole tune
+    # cohort (concatenated logits/targets) instead of averaging per-batch losses.
+    # Required for losses that couple samples within a batch (e.g. CoxPH partial
+    # likelihood), where the mean of per-batch losses is not the full-cohort loss.
+    full_cohort_eval_loss: bool = False
+    # When True, the pipeline builds the training loader with an event-balanced
+    # BatchSampler so every batch contains at least one event (needed for Cox).
+    needs_event_balanced_batches: bool = False
 
     @abstractmethod
     def forward(self, X: Tensor) -> Tensor:
