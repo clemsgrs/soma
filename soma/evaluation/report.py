@@ -8,7 +8,12 @@ from typing import Any
 
 @dataclass(frozen=True)
 class SamplePrediction:
-    """Per-sample prediction record for audit trail."""
+    """Per-sample prediction record for audit trail.
+
+    For survival predictions, ``true_label`` holds the time-to-event, ``event``
+    the 0/1 indicator, and ``risk_score`` the predicted risk (higher = earlier
+    predicted event).
+    """
 
     sample_id: str
     true_label: int | float
@@ -16,6 +21,8 @@ class SamplePrediction:
     probabilities: list[float] | None = None
     predicted_value: float | None = None
     raw_score: float | None = None
+    risk_score: float | None = None
+    event: float | None = None
     is_placeholder: bool = False
     missing_reason: str | None = None
 

@@ -1,0 +1,42 @@
+run:
+  output_root: runs/survival
+  seed: 0
+  tags: []
+
+data:
+  # dataset.csv reuses `label` for time-to-event and adds `event` (0/1) and
+  # `bin` (the discrete bin containing `label`, for every sample including
+  # censored ones — compute these yourself, e.g. via qcut on uncensored times).
+  dataset_csv: data/dataset.csv
+  splits_csv: data/splits.csv
+  dataset_type: slide
+
+preprocessing:
+  tissue_threshold: 0.1
+
+cache:
+  enabled: true
+
+encoder:
+  name: uni2
+
+# CLAM / DTFD-MIL are not supported for survival; use abmil, transmil, mean_pool.
+aggregation:
+  name: abmil
+
+task:
+  name: survival
+  params:
+    alpha: 0.15  # up-weighting of the uncensored NLL term (HIPT default)
+
+evaluation:
+  metrics:
+    - c_index
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  patience: 10
+  # Early-stop on tune NLL by default; to early-stop on C-index instead:
+  # monitor: c_index
+  # monitor_mode: max

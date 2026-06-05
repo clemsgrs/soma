@@ -111,23 +111,6 @@ class Dataset:
         return groups
 
     @property
-    def patient_label_map(self) -> dict[str, str | int]:
-        """Map patient_id to label. Validates all slides per patient share the same label.
-
-        Raises ValueError if patient_ids are missing or labels are inconsistent.
-        """
-        patient_label: dict[str, str | int] = {}
-        for patient_id, records in self.patient_groups.items():
-            labels = {r.label for r in records}
-            if len(labels) > 1:
-                raise ValueError(
-                    f"Patient '{patient_id}' has inconsistent labels across slides: {sorted(str(l) for l in labels)}. "
-                    "All slides for a patient must share the same label."
-                )
-            patient_label[patient_id] = records[0].label
-        return patient_label
-
-    @property
     def patient_record_map(self) -> dict[str, "SampleRecord"]:
         """Map patient_id to a representative SampleRecord for that patient.
 

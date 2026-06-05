@@ -407,6 +407,23 @@ class PipelineConfig:
                 "aggregator must be None for dataset_type='patient' — "
                 "patient-level pipelines use a pretrained patient encoder, not a trainable aggregator."
             )
+        if self.task.name == "survival":
+            if self.dataset_type == "tile":
+                raise ValueError(
+                    "dataset_type='tile' is not supported for survival tasks — "
+                    "a survival label belongs to a slide or patient, not a single tile. "
+                    "Use dataset_type='slide' or 'patient'."
+                )
+            _survival_incompatible_aggregators = {"clam_sb", "clam_mb", "dtfdmil"}
+            if (
+                self.aggregator is not None
+                and self.aggregator.name in _survival_incompatible_aggregators
+            ):
+                raise ValueError(
+                    f"Aggregator '{self.aggregator.name}' is not supported for survival "
+                    "tasks — its label-aware auxiliary loss assumes classification. "
+                    "Use a survival-compatible aggregator (e.g. abmil, transmil, mean_pool)."
+                )
         # Validate that requested metrics are valid for the task family.
         resolve_metrics(self.task.name, self.evaluation.metrics)
         # Fail fast on unknown encoder / aggregator names — catching these at

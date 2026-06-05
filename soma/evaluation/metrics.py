@@ -64,6 +64,9 @@ VALID_METRICS: dict[str, set[str]] = {
         "pearson",
         "spearman",
     },
+    "survival": {
+        "c_index",
+    },
 }
 
 DEFAULT_METRICS: dict[str, list[str]] = {
@@ -71,6 +74,7 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "multiclass_classification": ["auroc_macro", "balanced_accuracy", "f1_macro"],
     "ordinal_classification": ["qwk", "balanced_accuracy"],
     "regression": ["mae", "r2"],
+    "survival": ["c_index"],
 }
 
 LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae"}
@@ -278,6 +282,59 @@ def compute_metrics(
     """
     funs = _METRIC_FUNS[task_family]
     return {name: funs[name](y_true, y_pred, y_prob) for name in metrics}
+
+
+def _concordance_index(event: np.ndarray, time: np.ndarray, risk: np.ndarray) -> float:
+    """Harrell's C-index via scikit-survival, guarded against degenerate splits.
+
+    ``concordance_index_censored`` *raises* when a split has no events or no
+    comparable pairs (e.g. an all-censored or single-sample tune split). Since
+    this runs every tune epoch, we mirror the ``_auroc`` pattern and fall back
+    to 0.5 rather than nan — nan breaks ``monitor="c_index"`` max-mode, where
+    nan comparisons are always False and the checkpoint would never improve.
+    """
+    from sksurv.metrics import concordance_index_censored
+
+    try:
+        value = float(
+            concordance_index_censored(event.astype(bool), time, risk)[0]
+        )
+    except (ValueError, ZeroDivisionError):
+        value = float("nan")
+    return value if np.isfinite(value) else 0.5
+
+
+def compute_survival_metrics(
+    metrics: list[str],
+    event: np.ndarray,
+    time: np.ndarray,
+    risk: np.ndarray,
+) -> dict[str, float]:
+    """Compute survival metrics from event indicator, event time, and risk score.
+
+    The survival family uses an ``(event, time, risk)`` signature rather than the
+    generic ``(y_true, y_pred, y_prob)`` triple, since concordance needs
+    censoring information. Higher ``risk`` must mean earlier predicted event.
+
+    Args:
+        metrics: Metric names to compute (must be valid for the survival family).
+        event: Event indicator, 1 = event observed, 0 = censored, shape (N,).
+        time: Event or last-follow-up time, shape (N,).
+        risk: Predicted risk score, shape (N,).
+
+    Returns:
+        Dict mapping each metric name to its scalar value.
+    """
+    event = np.asarray(event)
+    time = np.asarray(time)
+    risk = np.asarray(risk)
+    results: dict[str, float] = {}
+    for name in metrics:
+        if name == "c_index":
+            results[name] = _concordance_index(event, time, risk)
+        else:
+            raise ValueError(f"Unknown survival metric: {name!r}")
+    return results
 
 
 def metric_higher_is_better(metric: str) -> bool:
