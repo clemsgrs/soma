@@ -352,7 +352,12 @@ class Trainer:
             risks = []
             for bag in window.bags:
                 bag = bag.to(self._device).unsqueeze(0)  # (1, n_i, D), un-padded
-                out = self._model(bag)  # aggregator builds an all-true mask
+                mask = torch.ones(
+                    bag.shape[:2],
+                    dtype=torch.bool,
+                    device=self._device,
+                )
+                out = self._model(bag, mask=mask)
                 risks.append(out.logits.view(1))  # graph-connected risk scalar
 
             risk = torch.cat(risks)  # (N,)

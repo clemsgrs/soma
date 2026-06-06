@@ -203,6 +203,24 @@ class TestEventBalancedSampler:
             flat = sorted(i for batch in sampler for i in batch)
             assert flat == list(range(len(events)))
 
+    def test_never_exceeds_batch_size(self):
+        events = [1, 1, 0, 0, 0, 0, 0]
+        sampler = EventBalancedBatchSampler(events, batch_size=4, min_events_per_window=1, seed=0)
+        batches = [list(batch) for batch in sampler]
+        assert [len(batch) for batch in batches] == [4, 3]
+        assert sorted(i for batch in batches for i in batch) == list(range(len(events)))
+
+    def test_avoids_singleton_risk_sets(self):
+        events = [1, 1, 0, 0, 0]
+        sampler = EventBalancedBatchSampler(events, batch_size=4, min_events_per_window=1, seed=0)
+        batches = [list(batch) for batch in sampler]
+        assert [len(batch) for batch in batches] == [3, 2]
+        assert sorted(i for batch in batches for i in batch) == list(range(len(events)))
+
+    def test_rejects_when_capped_windows_would_force_singleton(self):
+        with pytest.raises(ValueError, match="singleton"):
+            EventBalancedBatchSampler([1, 1, 0], batch_size=2, min_events_per_window=1, seed=0)
+
     def test_reshuffles_across_epochs(self):
         events = [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]
         sampler = EventBalancedBatchSampler(events, batch_size=4, min_events_per_window=1, seed=0)

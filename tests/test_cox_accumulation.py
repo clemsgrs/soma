@@ -38,6 +38,19 @@ def _mil_cox_model(cox_window: int = 1) -> MILModel:
     return MILModel(aggregator=agg, task_head=head)
 
 
+def _transmil_cox_model(cox_window: int = 1) -> MILModel:
+    agg = aggregator_registry.get("transmil")(
+        input_dim=D,
+        att_dim=16,
+        n_layers=2,
+        n_heads=2,
+        n_landmarks=8,
+        dropout=0.0,
+    )
+    head = CoxSurvivalHead(input_dim=agg.output_dim, cox_window=cox_window)
+    return MILModel(aggregator=agg, task_head=head)
+
+
 def _bags(sizes, seed=0):
     """Return a list of (n_i, D) feature tensors."""
     g = torch.Generator().manual_seed(seed)
@@ -104,6 +117,33 @@ class TestWindowedLoop:
         assert isinstance(loss, float)
         agg_grads = [p.grad for p in model.aggregator.parameters() if p.grad is not None]
         assert agg_grads and any(g.abs().sum() > 0 for g in agg_grads)
+
+    def test_windowed_epoch_passes_all_true_masks(self, tmp_path: Path):
+        model = _transmil_cox_model(cox_window=3)
+        seen_masks = []
+        original_forward = model.forward
+
+        def capture_forward(X, mask=None):
+            seen_masks.append(None if mask is None else mask.detach().cpu().clone())
+            return original_forward(X, mask=mask)
+
+        model.forward = capture_forward
+        window = _window_batch(_bags([5, 8, 3]), [3.0, 2.0, 1.0], [1.0, 0.0, 1.0])
+        trainer = Trainer(
+            model=model,
+            train_loader=[window],
+            tune_loader=[window],
+            config=TrainingConfig(epochs=1, batch_size=1),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        trainer._train_epoch()
+
+        assert [mask.tolist() if mask is not None else None for mask in seen_masks] == [
+            [[True] * 5],
+            [[True] * 8],
+            [[True] * 3],
+        ]
 
 
 # ---------------------------------------------------------------------------

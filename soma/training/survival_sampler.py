@@ -5,12 +5,14 @@ one event. With random batching over a heavily-censored cohort (common in
 pathology) some batches would contain zero events — a degenerate risk set that
 contributes no gradient. This sampler instead constructs every batch to hold at
 least ``min_events_per_window`` events, drawing fresh each epoch so risk sets
-vary across epochs (lower-variance, less-biased Cox gradient).
+vary across epochs (lower-variance, less-biased Cox gradient). Emitted batches
+never exceed ``batch_size``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
+from math import ceil
 
 import numpy as np
 from torch.utils.data import Sampler
@@ -23,7 +25,8 @@ class EventBalancedBatchSampler(Sampler[list[int]]):
     event indicator (1 = event, 0 = censored) of dataset item ``i``. Each epoch
     (each ``__iter__``) reshuffles both events and censored samples, guarantees
     the per-batch event floor, then fills the remaining slots from the pooled
-    leftovers. Every sample is emitted once per epoch.
+    leftovers. Every sample is emitted once per epoch, and no emitted batch
+    exceeds ``batch_size``.
 
     Args:
         events: Per-index event indicator (1 = event, 0 = censored), aligned
@@ -53,6 +56,8 @@ class EventBalancedBatchSampler(Sampler[list[int]]):
         self._batch_size = int(batch_size)
         self._min_events = int(min_events_per_window)
 
+        if self._n < 2:
+            raise ValueError("EventBalancedBatchSampler requires at least 2 samples.")
         if self._batch_size < 2:
             raise ValueError(
                 f"EventBalancedBatchSampler requires batch_size >= 2, got {self._batch_size}."
@@ -67,7 +72,18 @@ class EventBalancedBatchSampler(Sampler[list[int]]):
                 f"batch_size ({self._batch_size})."
             )
 
-        self._n_batches = max(1, self._n // self._batch_size)
+        self._n_batches = max(1, ceil(self._n / self._batch_size))
+        self._target_sizes = _balanced_batch_sizes(self._n, self._n_batches)
+        if min(self._target_sizes) < 2:
+            raise ValueError(
+                "Event-balanced sampling cannot cover every sample with capped "
+                f"batch_size={self._batch_size} without creating a singleton Cox risk set."
+            )
+        if min(self._target_sizes) < self._min_events:
+            raise ValueError(
+                "Event-balanced sampling cannot satisfy min_events_per_window="
+                f"{self._min_events} with capped batch sizes {self._target_sizes}."
+            )
         n_events = len(self._event_idx)
         required = self._n_batches * self._min_events
         if n_events < required:
@@ -100,17 +116,14 @@ class EventBalancedBatchSampler(Sampler[list[int]]):
         #    censored), shuffled together.
         pool = self._rng.permutation(events[cursor:] + censored).tolist()
         pi = 0
-        for batch in batches:
-            while len(batch) < self._batch_size and pi < len(pool):
+        for batch, target_size in zip(batches, self._target_sizes):
+            while len(batch) < target_size and pi < len(pool):
                 batch.append(int(pool[pi]))
                 pi += 1
 
-        # 3) Distribute any leftover pool items round-robin so every sample is
-        #    seen once per epoch (these batches end up one larger than target).
-        b = 0
-        while pi < len(pool):
-            batches[b % self._n_batches].append(int(pool[pi]))
-            pi += 1
-            b += 1
-
         yield from batches
+
+
+def _balanced_batch_sizes(n_items: int, n_batches: int) -> list[int]:
+    base_size, extra = divmod(n_items, n_batches)
+    return [base_size + (1 if i < extra else 0) for i in range(n_batches)]
