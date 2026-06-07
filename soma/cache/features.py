@@ -289,15 +289,6 @@ def _validate_feature_cache_contents(
             checked += 1
             progress.update(checked)
             path = features_dir / f"{cache_id}.pt"
-            if cache_id in empty_sample_ids:
-                if path.is_file():
-                    return (
-                        CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
-                        present,
-                        expected,
-                    )
-                continue
-            expected += 1
             expected_signature = str(cache_stem_by_id[cache_id])
             cached_signature = cached_signature_by_id.get(cache_id)
             if cached_signature is None:
@@ -308,6 +299,15 @@ def _validate_feature_cache_contents(
                 if reason is None:
                     reason = f"cache identity mismatch for {cache_id}"
                 continue
+            if cache_id in empty_sample_ids:
+                if path.is_file():
+                    return (
+                        CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
+                        present,
+                        expected,
+                    )
+                continue
+            expected += 1
             if not path.is_file():
                 if reason is None:
                     reason = f"missing feature for {cache_id}"
@@ -685,11 +685,17 @@ def record_empty_sample_ids(resolution: FeatureCacheResolution, empty_sample_ids
         else dict(resolution.metadata)
     )
     empty_ids: set[str] = {str(s) for s in metadata.get("empty_sample_ids", [])}
+    signature_map = {
+        str(cache_id): str(signature)
+        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
+    }
     for sample_id in empty_sample_ids:
         sample_id = str(sample_id)
         if sample_id in resolution.cache_stem_by_id:
             empty_ids.add(sample_id)
+            signature_map[sample_id] = str(resolution.cache_stem_by_id[sample_id])
     metadata["empty_sample_ids"] = sorted(empty_ids)
+    metadata["sample_identity_signature_by_id"] = signature_map
     _write_metadata(resolution.metadata_path, metadata)
 
 

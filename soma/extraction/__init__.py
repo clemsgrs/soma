@@ -11,7 +11,6 @@ from soma.extraction.extractor import (
     os,
     Pipeline,
     validate_slide2vec_encoder_config,
-    _compute_embedded_slides,
     probe_resolved_backends,
     resolve_tiling_cache,
     resolve_slide_cache,
