@@ -72,12 +72,22 @@ The ``survival`` task offers two losses, selected via ``task.params.loss``:
   and trains with the sigmoid-hazard negative log-likelihood (the Gensheimer /
   HIPT ``NLLSurvLoss`` formulation).
 * ``cox`` — **continuous-time CoxPH**. The head emits a single risk scalar and
-  trains with the Breslow partial-likelihood loss. The risk set is the training
-  batch, so it requires single-embedding features (slide- or patient-level, no
-  MIL aggregation), ``batch_size >= 2``, and ``gradient_accumulation == 1``; the
-  loader uses an event-balanced sampler so every batch contains at least one
-  event. (Cox on variable-size MIL bags via prediction accumulation is planned
-  for a later phase.)
+  trains with the Breslow partial-likelihood loss. The risk set must contain
+  several samples, and the loader uses an event-balanced sampler so every
+  batch/window contains at least one event (``gradient_accumulation`` must be
+  ``1``). Two modes, switched by ``task.params.cox_window``:
+
+  * **Padded mode** (``cox_window`` unset / ``1``): the risk set is the batch
+    (``batch_size >= 2``). Works on single-embedding slide/patient features (no
+    aggregator) *or* on MIL bags (any of ``abmil``/``transmil``/``mean_pool``),
+    where variable-length bags are padded and masking keeps the result exact.
+  * **Accumulation mode** (``cox_window >= 2``): for large variable-size MIL
+    bags. ``batch_size`` is pinned to ``1`` and an aggregator is required; the
+    trainer forwards ``cox_window`` bags un-padded, keeps their risk scalars
+    graph-connected, and computes one Cox loss over the window (one optimiser
+    step per window). This avoids the padding-memory cost of padded mode. Note
+    it does ~``cox_window``× fewer optimiser steps per epoch, so budget a higher
+    learning rate and/or more epochs.
 
 Both losses rank with Harrell's C-index via scikit-survival.
 
@@ -104,9 +114,9 @@ time-to-last-follow-up** and add two columns:
 Supported ``dataset_type`` values are ``slide`` and ``patient`` (``tile`` is
 rejected). For ``patient`` pipelines, all slides of a patient must agree on the
 survival target. The CLAM and DTFD-MIL aggregators are rejected for survival
-because their label-aware auxiliary losses assume classification; the discrete
-NLL path uses ``abmil``, ``transmil``, or ``mean_pool``, while the Cox path uses
-no aggregator at all (single-embedding slide/patient features).
+because their label-aware auxiliary losses assume classification. Survival MIL
+uses aggregators without label-aware auxiliary classification losses, such as
+``abmil``, ``transmil``, ``mean_pool``, or hierarchical ``hipt`` features.
 
 Metric compatibility
 --------------------

@@ -281,6 +281,9 @@ class Trainer:
         on_batch_progress: Callable[[str, int, int], None] | None = None,
     ) -> float:
         """Run one training epoch. Returns average loss."""
+        if getattr(self._model.task_head, "accumulates_predictions", False):
+            return self._train_epoch_windowed(on_batch_progress=on_batch_progress)
+
         self._model.train()
         total_loss = 0.0
         total_batches = len(self._train_loader)
@@ -321,6 +324,55 @@ class Trainer:
                 self._optimizer.zero_grad()
 
         return total_loss / max(step, 1)
+
+    def _train_epoch_windowed(
+        self,
+        on_batch_progress: Callable[[str, int, int], None] | None = None,
+    ) -> float:
+        """Cox prediction-accumulation training epoch. Returns average loss.
+
+        Each window holds N un-padded bags (a :class:`CoxWindowBatch`). The bags
+        are forwarded one at a time and their risk scalars are kept
+        graph-connected — no ``detach``/``item``/``no_grad`` until the loss — so a
+        single Cox loss couples all N bags through one risk set, with one
+        ``optimizer.step`` per window (Lever-1 accumulation only).
+        """
+        self._model.train()
+        total_loss = 0.0
+        total_windows = len(self._train_loader)
+        total_items = _resolve_total_items(self._train_loader, fallback=total_windows)
+        processed_items = 0
+        head = self._model.task_head
+
+        windows = 0
+        for window in self._train_loader:
+            windows += 1
+            targets = {key: value.to(self._device) for key, value in window.targets.items()}
+
+            risks = []
+            for bag in window.bags:
+                bag = bag.to(self._device).unsqueeze(0)  # (1, n_i, D), un-padded
+                mask = torch.ones(
+                    bag.shape[:2],
+                    dtype=torch.bool,
+                    device=self._device,
+                )
+                out = self._model(bag, mask=mask)
+                risks.append(out.logits.view(1))  # graph-connected risk scalar
+
+            risk = torch.cat(risks)  # (N,)
+            loss = head.compute_loss(risk.unsqueeze(-1), targets)
+
+            self._optimizer.zero_grad()
+            loss.backward()
+            self._optimizer.step()
+            total_loss += loss.item()
+
+            processed_items = min(total_items, processed_items + len(window.bags))
+            if on_batch_progress is not None:
+                on_batch_progress("train", processed_items, total_items)
+
+        return total_loss / max(windows, 1)
 
     @torch.inference_mode()
     def _tune(

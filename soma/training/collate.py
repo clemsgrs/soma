@@ -77,6 +77,50 @@ def bag_collate_fn(
 
 
 @dataclass
+class CoxWindowBatch:
+    """A Cox prediction-accumulation window: N un-padded bags + their targets.
+
+    Unlike :class:`BagBatch`, the bags are *not* padded into a single tensor —
+    each is kept at its own length so large variable-size bags do not waste
+    memory on padding. The trainer forwards each bag individually (batch_size=1),
+    keeps the per-bag risk scalars graph-connected, and computes one Cox loss
+    over the window.
+
+    Attributes:
+        bags: List of N tile-feature tensors, each shape (n_i, D).
+        targets: Ground-truth targets keyed by the head's target_dtypes, each
+            shape (N,).
+        sample_ids: Tuple of the N sample IDs.
+    """
+
+    bags: list[Tensor]
+    targets: dict[str, Tensor]
+    sample_ids: tuple[str, ...]
+
+
+def cox_window_collate(
+    batch: list[tuple[Tensor, dict[str, int | float], str]],
+    target_dtypes: dict[str, torch.dtype],
+) -> CoxWindowBatch:
+    """Collate a window of bags without padding (Cox accumulation mode).
+
+    Args:
+        batch: List of (features, targets, sample_id) tuples from BagDataset —
+            one per bag in the window.
+        target_dtypes: Mapping of target key to tensor dtype (from the head).
+
+    Returns:
+        CoxWindowBatch holding the bags as a list and the stacked targets.
+    """
+    features_list, target_dicts, sample_ids = zip(*batch)
+    return CoxWindowBatch(
+        bags=list(features_list),
+        targets=stack_targets(target_dicts, target_dtypes),
+        sample_ids=tuple(sample_ids),
+    )
+
+
+@dataclass
 class HierarchicalBagBatch:
     """A collated batch of hierarchical bags with region padding and masks.
 

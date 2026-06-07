@@ -19,17 +19,20 @@ cache:
 encoder:
   name: uni2
 
-# Phase-1 Cox is slide/patient single-embedding only: no MIL aggregation (the
-# risk set is the batch, so variable-size bags at batch_size=1 are not supported
-# yet). Extract slide-level features (one vector per slide) and leave this null.
+# Padded mode (shown here): the risk set is the batch. Use single-embedding
+# slide-level features with no aggregator, OR a MIL aggregator (abmil / transmil
+# / mean_pool) on tile-bag features — masking keeps padded bags exact. For large
+# variable-size bags, prefer accumulation mode (see the commented block below) to
+# avoid padding memory.
 aggregation: null
 
 task:
   name: survival
   params:
     loss: cox                 # selects the CoxPH path; default is nll (discrete-time)
-    ties: breslow             # only Breslow ties are implemented in phase 1
-    min_events_per_window: 1  # event floor the training batch sampler guarantees
+    ties: breslow             # only Breslow ties are implemented
+    min_events_per_window: 1  # event floor the sampler guarantees per batch/window
+    # cox_window: 48          # >= 2 switches to accumulation mode (see below)
 
 evaluation:
   metrics:
@@ -39,12 +42,27 @@ training:
   epochs: 50
   learning_rate: 1.0e-4
   patience: 10
-  # The risk set IS the batch — raise batch_size to enlarge it (less biased Cox
-  # gradient). gradient_accumulation must stay 1 (it makes several small risk
-  # sets, not one large one), and batch_size must be >= 2.
+  # Padded mode: the risk set IS the batch — raise batch_size to enlarge it (less
+  # biased Cox gradient). gradient_accumulation must stay 1 (it makes several small
+  # risk sets, not one large one), and batch_size must be >= 2.
   batch_size: 32
   gradient_accumulation: 1
   # Early-stop on the full-cohort tune partial likelihood by default; to early-stop
   # on C-index instead:
   # monitor: c_index
   # monitor_mode: max
+
+# --- Accumulation mode (large variable-size MIL bags) ---
+# Set an MIL aggregator and task.params.cox_window >= 2, with batch_size = 1:
+#
+# aggregation:
+#   name: abmil
+# task:
+#   name: survival
+#   params:
+#     loss: cox
+#     cox_window: 48          # risk-set size = bags forwarded per Cox loss
+# training:
+#   batch_size: 1             # required: bags are forwarded un-padded, one at a time
+#   learning_rate: 5.0e-4     # ~cox_window x fewer steps/epoch -> budget a higher LR
+#   epochs: 100               #   and/or more epochs, or training appears to stall

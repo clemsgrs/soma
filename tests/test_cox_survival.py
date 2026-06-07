@@ -203,6 +203,24 @@ class TestEventBalancedSampler:
             flat = sorted(i for batch in sampler for i in batch)
             assert flat == list(range(len(events)))
 
+    def test_never_exceeds_batch_size(self):
+        events = [1, 1, 0, 0, 0, 0, 0]
+        sampler = EventBalancedBatchSampler(events, batch_size=4, min_events_per_window=1, seed=0)
+        batches = [list(batch) for batch in sampler]
+        assert [len(batch) for batch in batches] == [4, 3]
+        assert sorted(i for batch in batches for i in batch) == list(range(len(events)))
+
+    def test_avoids_singleton_risk_sets(self):
+        events = [1, 1, 0, 0, 0]
+        sampler = EventBalancedBatchSampler(events, batch_size=4, min_events_per_window=1, seed=0)
+        batches = [list(batch) for batch in sampler]
+        assert [len(batch) for batch in batches] == [3, 2]
+        assert sorted(i for batch in batches for i in batch) == list(range(len(events)))
+
+    def test_rejects_when_capped_windows_would_force_singleton(self):
+        with pytest.raises(ValueError, match="singleton"):
+            EventBalancedBatchSampler([1, 1, 0], batch_size=2, min_events_per_window=1, seed=0)
+
     def test_reshuffles_across_epochs(self):
         events = [1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1]
         sampler = EventBalancedBatchSampler(events, batch_size=4, min_events_per_window=1, seed=0)
@@ -303,16 +321,18 @@ class TestCoxConfigGuards:
             **kw,
         )
 
-    def test_rejects_any_aggregator(self, tmp_path: Path):
+    def test_padded_mil_aggregator_allowed(self, tmp_path: Path):
+        # Phase 2 lifted the phase-1 "Cox rejects any aggregator" rule: padded MIL
+        # Cox (masking, batch_size >= 2) is now valid. Accumulation-mode guards are
+        # exercised in test_cox_accumulation.py.
         for name in ("abmil", "transmil", "mean_pool"):
-            with pytest.raises(ValueError, match="does not support MIL"):
-                PipelineConfig(
-                    **self._base(
-                        tmp_path,
-                        aggregator=AggregatorConfig(name=name),
-                        training=TrainingConfig(batch_size=4),
-                    )
+            PipelineConfig(
+                **self._base(
+                    tmp_path,
+                    aggregator=AggregatorConfig(name=name),
+                    training=TrainingConfig(batch_size=4),
                 )
+            )
 
     def test_rejects_gradient_accumulation(self, tmp_path: Path):
         with pytest.raises(ValueError, match="gradient_accumulation = 1"):
@@ -379,7 +399,7 @@ class TestCoxEndToEnd:
     def test_slide_level_cox_run(self, tmp_path: Path):
         n = 8
         # Slide-LEVEL features (one 1-D vector per slide) -> SampleDataset path,
-        # no aggregator (Cox rejects MIL in phase 1).
+        # no aggregator needed.
         events = [1, 1, 0, 1, 0, 1, 1, 0]
         times = [float(i + 1) for i in range(n)]
         dataset_csv = tmp_path / "dataset.csv"
