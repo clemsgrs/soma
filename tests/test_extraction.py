@@ -3352,7 +3352,7 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
 
     distributed_calls = []
 
-    def _fake_embed_multi_slides_distributed(
+    def _fake_embed_multi_slides_distributed_streaming(
         model,
         *,
         slide_records,
@@ -3360,6 +3360,7 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
         preprocessing,
         execution,
         work_dir,
+        on_embedded_slide,
     ):
         distributed_calls.append(
             {
@@ -3370,18 +3371,20 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
                 "work_dir": Path(work_dir),
             }
         )
-        return [
-            SimpleNamespace(
-                sample_id=slide.sample_id,
-                tile_embeddings=torch.ones(2, 8),
-                slide_embedding=torch.ones(8),
-                latents=None,
-                image_path=slide.image_path,
-                mask_path=slide.mask_path,
-                tile_size_lv0=224,
+        for slide, tiling_result in zip(slide_records, tiling_results):
+            on_embedded_slide(
+                slide,
+                tiling_result,
+                SimpleNamespace(
+                    sample_id=slide.sample_id,
+                    tile_embeddings=torch.ones(2, 8),
+                    slide_embedding=torch.ones(8),
+                    latents=None,
+                    image_path=slide.image_path,
+                    mask_path=slide.mask_path,
+                    tile_size_lv0=224,
+                ),
             )
-            for slide in slide_records
-        ]
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
@@ -3389,8 +3392,8 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
         "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction.extractor._embed_multi_slides_distributed",
-        side_effect=_fake_embed_multi_slides_distributed,
+        "soma.extraction.extractor._embed_multi_slides_distributed_streaming",
+        side_effect=_fake_embed_multi_slides_distributed_streaming,
     ), patch(
         "soma.extraction.extractor._compute_embedded_slides",
         side_effect=AssertionError("multi-gpu combined cache population should use distributed embedding"),
@@ -3409,6 +3412,60 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
         assert any((cache_root / "tile").glob(f"*/tile_embeddings/{sample_id}.pt"))
         assert any((cache_root / "slide").glob(f"*/slide_embeddings/{sample_id}.pt"))
         assert store.load(sample_id).shape == (8,)
+
+
+def test_embed_multi_slides_distributed_streaming_persists_per_slide(tmp_path: Path):
+    """The streaming helper must read payloads back one slide at a time and fire
+    the persist callback per slide (in order), rather than accumulating the whole
+    batch in memory like slide2vec's embed_multi_slides_distributed."""
+    from soma.extraction.extractor import _embed_multi_slides_distributed_streaming
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    slides = [
+        SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+        SlideSpec(sample_id="s1", image_path=Path("/tmp/s1.svs"), mask_path=None, spacing_at_level_0=None),
+    ]
+    tilings = [_tiling("s0"), _tiling("s1")]
+
+    def _fake_run_stage(model, *, coordination_dir, **kwargs):
+        # Mimic the distributed workers writing one payload per slide to disk.
+        for slide in slides:
+            torch.save(
+                {
+                    "tile_embeddings": torch.ones(2, 8),
+                    "slide_embedding": torch.ones(8),
+                },
+                Path(coordination_dir) / f"{slide.sample_id}.embedded.pt",
+            )
+
+    persisted: list[str] = []
+
+    def _on_embedded_slide(slide, tiling_result, embedded_slide):
+        persisted.append(slide.sample_id)
+        assert embedded_slide.tile_embeddings.shape == (2, 8)
+        assert embedded_slide.slide_embedding.shape == (8,)
+
+    with patch(
+        "soma.extraction.extractor._assign_slides_to_ranks",
+        return_value={0: ["s0", "s1"]},
+    ), patch(
+        "soma.extraction.extractor._run_distributed_direct_embedding_stage",
+        side_effect=_fake_run_stage,
+    ):
+        _embed_multi_slides_distributed_streaming(
+            SimpleNamespace(name=_TEST_SLIDE, level="slide"),
+            slide_records=slides,
+            tiling_results=tilings,
+            preprocessing=SimpleNamespace(),
+            execution=SimpleNamespace(num_gpus=2),
+            work_dir=work_dir,
+            on_embedded_slide=_on_embedded_slide,
+        )
+
+    assert persisted == ["s0", "s1"]
+    # Coordination dir is a transient mkdtemp under work_dir; it must be cleaned up.
+    assert not list(work_dir.glob("slide2vec-dist-*"))
 
 
 def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):

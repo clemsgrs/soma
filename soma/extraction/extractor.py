@@ -30,8 +30,14 @@ from slide2vec.encoders.validation import (
 )
 from slide2vec.runtime.embedding_pipeline import compute_embedded_slides as _compute_embedded_slides
 from slide2vec.runtime.distributed_stage import (
-    embed_multi_slides_distributed as _embed_multi_slides_distributed,
+    run_distributed_direct_embedding_stage as _run_distributed_direct_embedding_stage,
 )
+from slide2vec.runtime.distributed import (
+    assign_slides_to_ranks as _assign_slides_to_ranks,
+    distributed_coordination_dir as _distributed_coordination_dir,
+    load_embedded_slide_payload as _load_embedded_slide_payload,
+)
+from slide2vec.runtime.embedding_persist import make_embedded_slide as _make_embedded_slide
 import slide2vec.progress as slide2vec_progress
 import slide2vec.runtime.embedding as runtime_embedding
 import slide2vec.runtime.tiling as runtime_tiling
@@ -187,6 +193,55 @@ def _backend_provenance_from_mapping(
         "backend": unique_backends[0] if len(unique_backends) == 1 else None,
         "backend_by_sample_id": dict(backend_by_sample_id),
     }
+
+
+def _embed_multi_slides_distributed_streaming(
+    model,
+    *,
+    slide_records: Sequence[SlideSpec],
+    tiling_results,
+    preprocessing: Slide2VecPreprocessingConfig,
+    execution,
+    work_dir: Path,
+    on_embedded_slide,
+) -> None:
+    """Distributed multi-slide direct embedding with per-slide persistence.
+
+    slide2vec's ``embed_multi_slides_distributed`` collects every slide's
+    ``EmbeddedSlide`` (including its full tile-embedding tensor) into a single
+    in-memory list before returning, which exhausts host RAM on large batches
+    (each slide's tile tensor can be gigabytes). This mirrors that flow but
+    streams each result to ``on_embedded_slide`` and frees it immediately, so
+    peak host memory stays bounded to one slide. The distributed workers still
+    write all per-slide payloads to the coordination dir on disk first; only the
+    soma-side read-back/persist is streamed.
+    """
+    assignments = _assign_slides_to_ranks(
+        slide_records,
+        tiling_results,
+        num_gpus=execution.num_gpus,
+    )
+    with _distributed_coordination_dir(work_dir) as coordination_dir:
+        _run_distributed_direct_embedding_stage(
+            model,
+            preprocessing=preprocessing,
+            execution=execution,
+            output_dir=work_dir,
+            coordination_dir=coordination_dir,
+            strategy="slide_shard",
+            assignments=assignments,
+        )
+        for slide, tiling_result in zip(slide_records, tiling_results):
+            payload = _load_embedded_slide_payload(coordination_dir, slide.sample_id)
+            embedded_slide = _make_embedded_slide(
+                slide=slide,
+                tiling_result=tiling_result,
+                tile_embeddings=payload["tile_embeddings"],
+                slide_embedding=payload["slide_embedding"] if "slide_embedding" in payload else None,
+                latents=payload["latents"] if "latents" in payload else None,
+            )
+            on_embedded_slide(slide, tiling_result, embedded_slide)
+            del payload, embedded_slide
 
 
 def _path_str_or_blank(value: object) -> str:
@@ -1719,16 +1774,17 @@ class FeatureExtractor:
                 selected_loaded=selected_loaded,
                 preprocessing=preprocessing,
             )
-            embedded_slides = _embed_multi_slides_distributed(
+            # Stream per-slide persistence instead of accumulating every
+            # EmbeddedSlide (and its full tile-embedding tensor) in memory.
+            _embed_multi_slides_distributed_streaming(
                 loaded_model,
                 slide_records=selected_slides,
                 tiling_results=selected_tiling_results,
                 preprocessing=preprocessing,
                 execution=slide_execution,
                 work_dir=slide_cache.cache_dir,
+                on_embedded_slide=_persist_completed_slide,
             )
-            for loaded, embedded_slide in zip(selected_loaded, embedded_slides):
-                _persist_completed_slide(loaded.slide, loaded.tiling_result, embedded_slide)
         else:
             _compute_embedded_slides(
                 loaded_model,
