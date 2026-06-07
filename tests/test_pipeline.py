@@ -503,6 +503,49 @@ class TestTrainOneFold:
             for record in caplog.records
         )
 
+    def test_tune_is_test_synthesizes_test_from_tune_when_no_test_split(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ):
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        # Rewrite splits as train/tune only (no test split).
+        splits_df = pd.read_csv(splits_csv)
+        splits_df["split"] = ["train"] * 6 + ["tune", "tune"]
+        splits_df.to_csv(splits_csv, index=False)
+
+        dataset = Dataset(dataset_csv)
+        caplog.set_level(logging.WARNING, logger="soma.dataset")
+        splits = Splits(splits_csv, dataset, tune_is_test=True)
+        store = FeatureStore(feature_dir)
+
+        fold_split = splits.folds[0]
+        assert fold_split.test_from_tune is True
+        assert any(
+            record.levelno == logging.WARNING
+            and "reusing the tune split for test reporting" in record.getMessage()
+            for record in caplog.records
+        )
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=fold_split,
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(
+                epochs=2,
+                patience=10,
+                batch_size=2,
+                tune_is_test=True,
+            ),
+            fold_dir=tmp_path / "fold_tune_is_test_no_test_split",
+        )
+
+        # The synthesized "test" report covers the same samples as tune.
+        tune_ids = [pred.sample_id for pred in result.tune_report.predictions]
+        test_ids = [pred.sample_id for pred in result.test_reports["test"].predictions]
+        assert tune_ids == ["s6", "s7"]
+        assert test_ids == ["s6", "s7"]
+
     def test_tune_is_test_requires_single_test_split(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
         splits_df = pd.read_csv(splits_csv)
@@ -1845,6 +1888,42 @@ class TestPatientPipeline:
         assert result.tune_report.split == "tune"
         assert result.test_reports["test"].split == "test"
         assert (fold_dir / "best_model.pt").exists()
+
+    def test_tune_is_test_reports_tune_as_test_patient_level(self, tmp_path: Path):
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        # Rewrite the test split as tune: train/tune only, no held-out test.
+        splits_df = pd.read_csv(splits_csv)
+        splits_df.loc[splits_df["split"] == "test", "split"] = "tune"
+        splits_df.to_csv(splits_csv, index=False)
+
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset, tune_is_test=True)
+        store = FeatureStore(feature_dir)
+
+        fold_split = splits.folds[0]
+        assert fold_split.test_from_tune is True
+        # No leakage flagged even though test patients == tune patients.
+        splits.validate_no_patient_leakage(dataset)
+
+        result = train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=fold_split,
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(
+                epochs=2,
+                patience=10,
+                batch_size=2,
+                tune_is_test=True,
+            ),
+            fold_dir=tmp_path / "fold_tune_is_test_patient",
+        )
+
+        tune_ids = {pred.sample_id for pred in result.tune_report.predictions}
+        test_ids = {pred.sample_id for pred in result.test_reports["test"].predictions}
+        assert tune_ids == {"p2", "p3"}
+        assert test_ids == {"p2", "p3"}
 
     def test_train_one_fold_predictions_keyed_by_patient_id(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)

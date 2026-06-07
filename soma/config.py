@@ -295,10 +295,11 @@ class TrainingConfig:
     size, while ``epochs``, ``learning_rate``, ``optimizer``, ``scheduler``,
     and ``patience`` define the optimization schedule. ``monitor`` and
     ``monitor_mode`` choose the tune loss or metric used for best-checkpoint
-    selection and early stopping. ``tune_is_test`` uses the only test split for
-    checkpoint selection and test reporting, matching benchmark protocols that
-    do not expose an internal validation set. ``allow_missing_tune`` enables a
-    deliberate train-as-tune fallback when a fold has no tune split.
+    selection and early stopping. ``tune_is_test`` ties the tune and test
+    splits to the same samples for protocols with a single held-out set: a fold
+    may provide either a tune split or a test split (not both), and that split
+    is used for both checkpoint selection and test reporting. ``allow_missing_tune``
+    enables a deliberate train-as-tune fallback when a fold has no tune split.
     """
 
     seed: int = 0
