@@ -35,6 +35,7 @@ from slide2vec.runtime.distributed_stage import (
 import slide2vec.progress as slide2vec_progress
 import slide2vec.runtime.embedding as runtime_embedding
 import slide2vec.runtime.tiling as runtime_tiling
+import slide2vec.utils.tiling_io as tiling_io
 from hs2p import SlideSpec
 
 from soma.cache import (
@@ -186,6 +187,12 @@ def _backend_provenance_from_mapping(
         "backend": unique_backends[0] if len(unique_backends) == 1 else None,
         "backend_by_sample_id": dict(backend_by_sample_id),
     }
+
+
+def _path_str_or_blank(value: object) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _resolve_num_gpus(num_gpus: int | None) -> int:
@@ -705,6 +712,52 @@ class FeatureExtractor:
                 writer = csv.DictWriter(handle, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(rows)
+
+    def _stage_distributed_tiling_manifest(
+        self,
+        *,
+        work_dir: Path,
+        selected_loaded: Sequence[LoadedTiling],
+        preprocessing: Slide2VecPreprocessingConfig,
+    ) -> None:
+        """Write a tiling process_list.csv that distributed embed workers reload.
+
+        slide2vec's direct-embedding workers re-read the tiling manifest from
+        ``work_dir/process_list.csv`` (see
+        ``slide2vec.runtime.manifest.load_successful_tiled_slides``). Build it from
+        the already-loaded tilings so the worker can pair each sample_id with its
+        coordinate files.
+        """
+        work_dir.mkdir(parents=True, exist_ok=True)
+        fieldnames = list(tiling_io.BASE_TILING_ORDERED_COLUMNS)
+        rows = []
+        for loaded in selected_loaded:
+            tiling_result = loaded.tiling_result
+            mask_path = loaded.slide.mask_path
+            rows.append(
+                {
+                    "sample_id": str(loaded.slide.sample_id),
+                    "annotation": str(getattr(tiling_result, "annotation", "tissue") or "tissue"),
+                    "image_path": str(loaded.slide.image_path),
+                    "mask_path": str(mask_path) if mask_path is not None else "",
+                    "requested_backend": str(preprocessing.backend),
+                    "backend": str(runtime_tiling.resolve_slide_backend(preprocessing, tiling_result)),
+                    "spacing_at_level_0": getattr(tiling_result, "spacing_at_level_0", None),
+                    "tiling_status": "success",
+                    "num_tiles": tiling_num_tiles(tiling_result),
+                    "coordinates_npz_path": str(getattr(tiling_result, "coordinates_npz_path", "") or ""),
+                    "coordinates_meta_path": str(getattr(tiling_result, "coordinates_meta_path", "") or ""),
+                    "tiles_tar_path": _path_str_or_blank(getattr(tiling_result, "tiles_tar_path", None)),
+                    "mask_preview_path": _path_str_or_blank(getattr(tiling_result, "mask_preview_path", None)),
+                    "tiling_preview_path": _path_str_or_blank(getattr(tiling_result, "tiling_preview_path", None)),
+                    "error": "",
+                    "traceback": "",
+                }
+            )
+        with (work_dir / "process_list.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     def _materialize_feature_dir_from_cache(
         self,
@@ -1656,6 +1709,16 @@ class FeatureExtractor:
         selected_tiling_results = [loaded.tiling_result for loaded in selected_loaded]
         if slide_execution.num_gpus > 1 and len(selected_loaded) > 1:
             slide_cache.cache_dir.mkdir(parents=True, exist_ok=True)
+            # The distributed direct-embedding workers reload the tiling manifest
+            # from the work dir (slide2vec.load_successful_tiled_slides reads
+            # work_dir/process_list.csv). The single-GPU path receives tiling
+            # results in-memory and never needs this file, so it must be staged
+            # explicitly before spawning the workers.
+            self._stage_distributed_tiling_manifest(
+                work_dir=slide_cache.cache_dir,
+                selected_loaded=selected_loaded,
+                preprocessing=preprocessing,
+            )
             embedded_slides = _embed_multi_slides_distributed(
                 loaded_model,
                 slide_records=selected_slides,

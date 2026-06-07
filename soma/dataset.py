@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
@@ -141,11 +144,17 @@ class FoldSplit:
     ``tests`` maps each test split name (e.g. ``"test"``, ``"test_external"``)
     to the corresponding tuple of sample IDs.  Every fold must contain at
     least one test split (any name that starts with ``"test"``).
+
+    ``test_from_tune`` is ``True`` when the fold had no user-provided test
+    split and the ``"test"`` entry was synthesized from the tune split (see
+    ``TrainingConfig.tune_is_test``). In that case the test entry mirrors
+    ``tune`` exactly, so leakage checks skip it to avoid false positives.
     """
 
     train: tuple[str, ...]
     tune: tuple[str, ...]
     tests: dict[str, tuple[str, ...]]
+    test_from_tune: bool = False
 
     @property
     def test_split_names(self) -> list[str]:
@@ -162,10 +171,22 @@ class Splits:
     ``"test_external"``, ``"test_prospective"``). Validates that all sample_ids
     exist in the dataset, split names are valid, and no sample appears twice
     within the same fold.
+
+    Each fold must contain at least one test split. When ``tune_is_test`` is
+    set, a fold may instead provide only a tune split, in which case the tune
+    split is reused for test reporting (a ``"test"`` entry is synthesized from
+    it); the fold must still provide either a tune or a test split.
     """
 
-    def __init__(self, splits_csv: str | Path, dataset: Dataset) -> None:
+    def __init__(
+        self,
+        splits_csv: str | Path,
+        dataset: Dataset,
+        *,
+        tune_is_test: bool = False,
+    ) -> None:
         self._path = Path(splits_csv)
+        self._tune_is_test = tune_is_test
         df = pd.read_csv(self._path)
         self._validate_columns(df)
         if "fold" not in df.columns:
@@ -208,16 +229,33 @@ class Splits:
                 msg = f"Duplicate sample_id(s) in fold {fold_idx}: {dupes.tolist()}"
                 raise ValueError(msg)
             has_test_split = group["split"].map(lambda name: name.startswith("test")).any()
-            if not has_test_split:
+            has_tune_split = (group["split"] == "tune").any()
+            if not has_test_split and not self._tune_is_test:
                 msg = (
                     f"Fold {fold_idx} must contain at least one test split "
-                    "(a split name starting with 'test')."
+                    "(a split name starting with 'test'). Set "
+                    "training.tune_is_test=True to reuse the tune split "
+                    "for test reporting."
+                )
+                raise ValueError(msg)
+            if self._tune_is_test and has_tune_split and has_test_split:
+                msg = (
+                    f"Fold {fold_idx} provides both a tune and a test split, "
+                    "but tune_is_test=True ties them to a single held-out split. "
+                    "Provide only one of them, or set tune_is_test=False."
+                )
+                raise ValueError(msg)
+            if not has_test_split and self._tune_is_test and not has_tune_split:
+                msg = (
+                    f"Fold {fold_idx} has no test split and no tune split; "
+                    "tune_is_test=True requires either a tune or a test "
+                    "split to reuse for both roles."
                 )
                 raise ValueError(msg)
 
     def _build_folds(self, df: pd.DataFrame) -> list[FoldSplit]:
         folds = []
-        for _, group in sorted(df.groupby("fold")):
+        for fold_idx, group in sorted(df.groupby("fold")):
             train_ids = tuple(
                 str(s) for s in group.loc[group["split"] == "train", "sample_id"]
             )
@@ -231,7 +269,24 @@ class Splits:
                 for split_name in sorted(group["split"].unique())
                 if split_name.startswith("test")
             }
-            folds.append(FoldSplit(train=train_ids, tune=tune_ids, tests=tests))
+            test_from_tune = False
+            if not tests and self._tune_is_test:
+                logger.warning(
+                    "Fold %s has no test split; reusing the tune split for test "
+                    "reporting because tune_is_test=True. Reported 'test' "
+                    "metrics are measured on the tune samples.",
+                    fold_idx,
+                )
+                tests = {"test": tune_ids}
+                test_from_tune = True
+            folds.append(
+                FoldSplit(
+                    train=train_ids,
+                    tune=tune_ids,
+                    tests=tests,
+                    test_from_tune=test_from_tune,
+                )
+            )
         return folds
 
     @property
@@ -261,10 +316,15 @@ class Splits:
             )
         for fold_idx, fold_split in enumerate(self._folds):
             patient_splits: dict[str, set[str]] = {}
+            # Skip the synthesized test entry: it mirrors tune by construction,
+            # so counting it would flag every tune patient as leaked.
+            test_items = (
+                [] if fold_split.test_from_tune else list(fold_split.tests.items())
+            )
             all_splits = [
                 ("train", fold_split.train),
                 ("tune", fold_split.tune),
-                *fold_split.tests.items(),
+                *test_items,
             ]
             for split_name, sample_ids in all_splits:
                 for sid in sample_ids:

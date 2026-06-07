@@ -189,6 +189,94 @@ def test_accepts_string_path(splits_csv: Path, dataset: Dataset):
 
 
 # ---------------------------------------------------------------------------
+# tune_is_test (tune-as-test fallback when no test split is provided)
+# ---------------------------------------------------------------------------
+
+
+def test_tune_is_test_synthesizes_test_from_tune(tmp_path: Path, dataset: Dataset):
+    """A train/tune-only fold reuses the tune split for test reporting."""
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0, 0, 0],
+            "sample_id": ["s1", "s2", "s3", "s4"],
+            "split": ["train", "train", "tune", "tune"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+
+    splits = Splits(path, dataset, tune_is_test=True)
+    fold = splits.folds[0]
+    assert set(fold.train) == {"s1", "s2"}
+    assert set(fold.tune) == {"s3", "s4"}
+    assert fold.tests == {"test": ("s3", "s4")}
+    assert fold.test_from_tune is True
+    assert fold.test_split_names == ["test"]
+
+
+def test_tune_is_test_with_test_only_split_no_synthesis(tmp_path: Path, dataset: Dataset):
+    """A train/test-only fold (no tune) is used as-is; no test is synthesized."""
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0, 0],
+            "sample_id": ["s1", "s2", "s3"],
+            "split": ["train", "train", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+
+    splits = Splits(path, dataset, tune_is_test=True)
+    fold = splits.folds[0]
+    assert fold.tests == {"test": ("s3",)}
+    assert fold.test_from_tune is False
+
+
+def test_missing_test_without_flag_hints_at_flag(tmp_path: Path, dataset: Dataset):
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0, 0],
+            "sample_id": ["s1", "s2", "s3"],
+            "split": ["train", "train", "tune"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="tune_is_test"):
+        Splits(path, dataset)
+
+
+def test_tune_is_test_rejects_both_tune_and_test_split(tmp_path: Path, dataset: Dataset):
+    """Providing both splits contradicts tune_is_test (a single held-out set)."""
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0, 0],
+            "sample_id": ["s1", "s2", "s3"],
+            "split": ["train", "tune", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="both a tune and a test split"):
+        Splits(path, dataset, tune_is_test=True)
+
+
+def test_tune_is_test_requires_tune_or_test_split(tmp_path: Path, dataset: Dataset):
+    """A fold with neither test nor tune errors even with the flag set."""
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0],
+            "sample_id": ["s1", "s2"],
+            "split": ["train", "train"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="no test split and no tune split"):
+        Splits(path, dataset, tune_is_test=True)
+
+
+# ---------------------------------------------------------------------------
 # validate_no_patient_leakage
 # ---------------------------------------------------------------------------
 
@@ -237,6 +325,24 @@ def test_validate_no_patient_leakage_detects_leakage(tmp_path: Path, patient_dat
     splits = Splits(path, patient_dataset)
     with pytest.raises(ValueError, match="p1"):
         splits.validate_no_patient_leakage(patient_dataset)
+
+
+def test_validate_no_patient_leakage_ignores_synthesized_test(
+    tmp_path: Path, patient_dataset: Dataset
+):
+    """A tune-as-test fold must not be flagged as leakage (test mirrors tune)."""
+    df = pd.DataFrame(
+        {
+            "fold": [0] * 6,
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "train", "tune", "tune", "tune", "tune"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    splits = Splits(path, patient_dataset, tune_is_test=True)
+    assert splits.folds[0].test_from_tune is True
+    splits.validate_no_patient_leakage(patient_dataset)  # should not raise
 
 
 def test_validate_no_patient_leakage_multi_fold(tmp_path: Path, patient_dataset: Dataset):

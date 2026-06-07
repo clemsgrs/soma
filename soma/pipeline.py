@@ -1192,7 +1192,11 @@ class Pipeline:
     ) -> None:
         self._config = config
         self._dataset = Dataset(config.dataset_csv)
-        self._splits = Splits(config.splits_csv, self._dataset)
+        self._splits = Splits(
+            config.splits_csv,
+            self._dataset,
+            tune_is_test=config.training.tune_is_test,
+        )
         self._feature_dir = Path(feature_dir) if feature_dir else None
 
     @property
