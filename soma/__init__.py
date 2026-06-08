@@ -17,6 +17,7 @@ from soma.config import (
 from soma.encoders import list_models
 from soma.aggregators import list_aggregators
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
+from soma.decoders import list_decoders
 from soma.dense import DenseFeatureStore
 from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.extraction import FeatureExtractor
@@ -48,6 +49,7 @@ __all__ = [
     "HeatmapConfig",
     "list_models",
     "list_aggregators",
+    "list_decoders",
     "list_task_heads",
     # Data
     "Dataset",
