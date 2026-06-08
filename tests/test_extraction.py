@@ -183,6 +183,18 @@ def _tiling(sample_id: str = "s0") -> object:
     )
 
 
+def _empty_tiling(sample_id: str = "s0") -> object:
+    return SimpleNamespace(
+        **{
+            **_tiling(sample_id).__dict__,
+            "num_tiles": 0,
+            "x": torch.tensor([], dtype=torch.int64).numpy(),
+            "y": torch.tensor([], dtype=torch.int64).numpy(),
+            "tissue_fractions": torch.tensor([], dtype=torch.float32).numpy(),
+        }
+    )
+
+
 def _artifact(
     *,
     sample_id: str,
@@ -2215,27 +2227,26 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
             _load_backend=lambda: SimpleNamespace(device="cpu", model=None),
         )
 
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        assert on_embedded_slide is not None
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ]
+
+    def _fake_aggregate_tiles(*, execution, **kwargs):
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="slide_embeddings",
+                tensor=torch.ones(8),
+            )
+        ]
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
@@ -2243,11 +2254,16 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
         "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
+    ), patch(
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
     ):
         store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
 
+    # Tiles land in the tile cache, slides in the slide cache, and crucially the
+    # tile embeddings are NOT duplicated under the slide cache dir.
     assert any((cache_root / "tile").glob("*/tile_embeddings/s0.pt"))
     assert any((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
     assert not any((cache_root / "slide").glob("*/tile_embeddings/s0.pt"))
@@ -2255,7 +2271,7 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
     assert store.load("s0").shape == (8,)
 
 
-def test_slide_cache_population_uses_torch_default_loader_workers(tmp_path: Path):
+def test_slide_cache_population_records_all_empty_without_embedding(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
     extractor = FeatureExtractor(
@@ -2267,54 +2283,37 @@ def test_slide_cache_population_uses_torch_default_loader_workers(tmp_path: Path
     loaded = [
         LoadedTiling(
             slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
-            tiling_result=_tiling(),
+            tiling_result=_empty_tiling(),
         )
     ]
-
-    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
-        return SimpleNamespace(
-            name=model_name,
-            level="slide",
-            allow_non_recommended_settings=allow_non_recommended_settings,
-            _load_backend=lambda: SimpleNamespace(device="cpu", model=None),
-        )
-
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        assert on_embedded_slide is not None
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=AssertionError("all-empty slide extraction should not embed tiles"),
     ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=AssertionError("all-empty slide extraction should not aggregate slides"),
+    ), patch(
+        "soma.extraction.extractor.spawn_slide_aggregation_workers",
+        side_effect=AssertionError("all-empty slide extraction should not spawn aggregation workers"),
     ):
-        extractor.extract(
-            feature_dir=tmp_path / "features",
-            tiling_dir=tmp_path / "tiling",
-            num_gpus=2,
-        )
+        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+
+    tile_metadata_paths = list((cache_root / "tile").glob("*/cache_metadata.json"))
+    slide_metadata_paths = list((cache_root / "slide").glob("*/cache_metadata.json"))
+    assert len(tile_metadata_paths) == 1
+    assert len(slide_metadata_paths) == 1
+    tile_metadata = json.loads(tile_metadata_paths[0].read_text(encoding="utf-8"))
+    slide_metadata = json.loads(slide_metadata_paths[0].read_text(encoding="utf-8"))
+    assert tile_metadata["empty_sample_ids"] == ["s0"]
+    assert slide_metadata["empty_sample_ids"] == ["s0"]
+    assert not any((cache_root / "tile").glob("*/tile_embeddings/s0.pt"))
+    assert not any((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
+    process_df = pd.read_csv(slide_metadata_paths[0].parent / "process_list.csv")
+    assert process_df.loc[0, "feature_status"] == "empty"
+    assert process_df.loc[0, "feature_kind"] == "slide"
 
 
 def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Path):
@@ -2391,6 +2390,60 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
     assert seen_output_dirs == [cache_resolution.cache_dir]
     assert (cache_resolution.cache_dir / "tile_embeddings" / "s0.pt").is_file()
     assert cache_resolution.feature_path_for_id("s0").is_file()
+
+
+def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_empty_tiling(),
+        )
+    ]
+    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    cache_resolution = cache_mod.resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=resolved_preprocessing,
+        execution=extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_TILE,
+            resolved_preprocessing=resolved_preprocessing,
+            output_variant="default",
+        ),
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide"},
+        },
+    )
+
+    with patch(
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=AssertionError("empty tile cache population should not embed"),
+    ):
+        extractor._populate_tile_cache(
+            cache_resolution=cache_resolution,
+            loaded_tilings=loaded,
+            prepared_tilings=[loaded[0].tiling_result],
+            tiling_dir=tmp_path / "tiling",
+            preprocessing=build_preprocessing_config(resolved_preprocessing),
+            encoder_name=_TEST_TILE,
+            output_variant="default",
+            num_gpus=None,
+        )
+
+    metadata = json.loads(cache_resolution.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["empty_sample_ids"] == ["s0"]
+    assert not cache_resolution.feature_path_for_id("s0").exists()
 
 
 def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Path):
@@ -2909,6 +2962,65 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
     assert metadata["empty_sample_ids"] == ["s1"]
 
 
+def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "shared-cache"
+    preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        requested_region_size_px=448,
+        region_tile_multiple=2,
+    )
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        preprocessing,
+        cache=CacheConfig(root_dir=cache_root),
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_empty_tiling(),
+        )
+    ]
+    cache_resolution = cache_mod.resolve_hierarchical_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=_TEST_TILE,
+        preprocessing=preprocessing,
+        execution=extractor._resolved_execution_for_cache(
+            encoder_name=_TEST_TILE,
+            resolved_preprocessing=preprocessing,
+            output_variant="default",
+        ),
+        output_variant="default",
+        backend_provenance={
+            "requested_backend": "openslide",
+            "backend": "openslide",
+            "backend_by_sample_id": {"s0": "openslide"},
+        },
+    )
+
+    with patch(
+        "soma.extraction.extractor._embed_hierarchical_artifacts_with_coordinates",
+        side_effect=AssertionError("empty hierarchical cache population should not embed"),
+    ):
+        extractor._populate_hierarchical_cache(
+            cache_resolution=cache_resolution,
+            loaded_tilings=loaded,
+            prepared_tilings=[loaded[0].tiling_result],
+            tiling_dir=tmp_path / "tiling",
+            preprocessing=build_preprocessing_config(preprocessing),
+            encoder_name=_TEST_TILE,
+            output_variant="default",
+            num_gpus=None,
+        )
+
+    metadata = json.loads(cache_resolution.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["empty_sample_ids"] == ["s0"]
+    assert not cache_resolution.feature_path_for_id("s0").exists()
+
+
 def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
@@ -2975,41 +3087,18 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
             _load_backend=lambda: SimpleNamespace(device="cpu", model=None),
         )
 
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        assert on_embedded_slide is not None
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
-
-    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
-        "soma.extraction.extractor._validate_runtime"
-    ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
-    ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
-    ):
-        extractor.extract(feature_dir=tmp_path / "features-initial", tiling_dir=tmp_path / "tiling")
-
-    slide_payload = next((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
-    slide_payload.unlink()
+    # Phase 1: seed the tile-dependency cache (and slide cache) via the tile
+    # stage, then drop the slide embedding so only the tile cache survives.
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ]
 
     def _fake_aggregate_tiles(
         *,
@@ -3035,11 +3124,34 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
     ), patch(
+        "soma.extraction.extractor._load_model",
+        side_effect=_fake_load_model,
+    ), patch(
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
+    ), patch(
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
+    ):
+        extractor.extract(feature_dir=tmp_path / "features-initial", tiling_dir=tmp_path / "tiling")
+
+    slide_payload = next((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
+    slide_payload.unlink()
+
+    # Phase 2: re-run with the tile cache complete. The tile-embed stage must NOT
+    # be invoked (tiles are reused), and the slide vector must come from
+    # aggregation over the cached tile bag.
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
+    ), patch(
+        "soma.extraction.extractor._load_model",
+        side_effect=_fake_load_model,
+    ), patch(
         "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ) as aggregate_tiles, patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=AssertionError("tile re-embedding should not run when tile cache is complete"),
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=AssertionError("tile re-embedding must not run when the tile cache is complete"),
     ):
         store = extractor.extract(feature_dir=tmp_path / "features-rerun", tiling_dir=tmp_path / "tiling")
 
@@ -3089,28 +3201,30 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
             _load_backend=lambda: SimpleNamespace(device="cpu", model=None),
         )
 
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        assert on_embedded_slide is not None
-        for slide_record, tiling_result in zip(slide_records, tiling_results):
-            embedded_slide = SimpleNamespace(
-                sample_id=slide_record.sample_id,
-                tile_embeddings=torch.ones(2, 8),
-                slide_embedding=torch.ones(8),
-                latents=None,
-                image_path=slide_record.image_path,
-                mask_path=None,
-                tile_size_lv0=224,
+    # Phase 1: seed both tile and slide caches via the tile + aggregate stages,
+    # then drop the slide embeddings so only the tile cache survives.
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id=str(slide.sample_id),
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
             )
-            on_embedded_slide(slide_record, tiling_result, embedded_slide)
-        return []
+            for slide in kwargs["slides"]
+        ]
+
+    def _fake_aggregate_tiles(*, tile_artifacts, execution, **kwargs):
+        return [
+            _artifact(
+                sample_id=str(art.sample_id),
+                output_dir=Path(execution.output_dir),
+                kind="slide_embeddings",
+                tensor=torch.ones(8),
+            )
+            for art in tile_artifacts
+        ]
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
@@ -3118,8 +3232,11 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         "soma.extraction.extractor._load_model",
         side_effect=_fake_load_model,
     ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
+    ), patch(
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
     ):
         extractor.extract(feature_dir=tmp_path / "features-initial", tiling_dir=tmp_path / "tiling")
 
@@ -3177,7 +3294,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         "soma.extraction.extractor.spawn_slide_aggregation_workers",
         side_effect=_fake_spawn_slide_aggregation_workers,
     ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=AssertionError("tile re-embedding should not run when tile cache is complete"),
     ), patch(
         "soma.extraction.extractor._aggregate_tiles",
@@ -3247,77 +3364,8 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
     assert store.load("s0").shape == (2, 8)
 
 
-def test_multi_gpu_slide_cache_population_uses_slide2vec_pipeline(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
+def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(root_dir=cache_root),
-    )
-    loaded = [
-        LoadedTiling(
-            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
-            tiling_result=_tiling(),
-        )
-    ]
-
-    captured_output_variants: list[str | None] = []
-
-    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
-        captured_output_variants.append(output_variant)
-        return SimpleNamespace(
-            name=model_name,
-            level="slide",
-            allow_non_recommended_settings=allow_non_recommended_settings,
-        )
-
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        assert on_embedded_slide is not None
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
-
-    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
-        "soma.extraction.extractor._validate_runtime"
-    ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
-    ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
-    ) as compute_embedded_slides:
-        store = extractor.extract(
-            feature_dir=tmp_path / "features",
-            tiling_dir=tmp_path / "tiling",
-            num_gpus=2,
-        )
-    assert captured_output_variants == [None]
-    assert compute_embedded_slides.called
-    assert store.is_slide_level is True
-    assert store.load("s0").shape == (8,)
-    assert any((cache_root / "tile").glob("*/tile_embeddings/*.pt"))
-    assert any((cache_root / "slide").glob("*/slide_embeddings/*.pt"))
-
-
-def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tmp_path: Path):
     csv_path = tmp_path / "dataset-two.csv"
     pd.DataFrame(
         [
@@ -3325,7 +3373,6 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
             {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    cache_root = tmp_path / "shared-cache"
     extractor = FeatureExtractor(
         Dataset(csv_path),
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
@@ -3343,131 +3390,48 @@ def test_multi_gpu_combined_slide_cache_population_uses_distributed_embedding(tm
         ),
     ]
 
-    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
-        return SimpleNamespace(
-            name=model_name,
-            level="slide",
-            allow_non_recommended_settings=allow_non_recommended_settings,
-        )
-
-    distributed_calls = []
-
-    def _fake_embed_multi_slides_distributed(
-        model,
-        *,
-        slide_records,
-        tiling_results,
-        preprocessing,
-        execution,
-        work_dir,
-    ):
-        distributed_calls.append(
-            {
-                "model": model,
-                "slide_records": slide_records,
-                "tiling_results": tiling_results,
-                "execution": execution,
-                "work_dir": Path(work_dir),
-            }
-        )
-        return [
-            SimpleNamespace(
-                sample_id=slide.sample_id,
-                tile_embeddings=torch.ones(2, 8),
-                slide_embedding=torch.ones(8),
-                latents=None,
-                image_path=slide.image_path,
-                mask_path=slide.mask_path,
-                tile_size_lv0=224,
-            )
-            for slide in slide_records
-        ]
-
-    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
-        "soma.extraction.extractor._validate_runtime"
-    ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
-    ), patch(
-        "soma.extraction.extractor._embed_multi_slides_distributed",
-        side_effect=_fake_embed_multi_slides_distributed,
-    ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=AssertionError("multi-gpu combined cache population should use distributed embedding"),
-    ):
-        store = extractor.extract(
-            feature_dir=tmp_path / "features",
-            tiling_dir=tmp_path / "tiling",
-            num_gpus=2,
-        )
-
-    assert len(distributed_calls) == 1
-    assert distributed_calls[0]["execution"].num_gpus == 2
-    assert distributed_calls[0]["work_dir"].parent == cache_root / "slide"
-    assert store.is_slide_level is True
-    for sample_id in ("s0", "s1"):
-        assert any((cache_root / "tile").glob(f"*/tile_embeddings/{sample_id}.pt"))
-        assert any((cache_root / "slide").glob(f"*/slide_embeddings/{sample_id}.pt"))
-        assert store.load(sample_id).shape == (8,)
-
-
-def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-    cache_root = tmp_path / "shared-cache"
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(root_dir=cache_root),
-    )
-    loaded = [
-        LoadedTiling(
-            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
-            tiling_result=_tiling(),
-        )
-    ]
-
     captured_output_variants: list[str | None] = []
 
-    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
-        captured_output_variants.append(output_variant)
-        assert output_variant is None
-        return SimpleNamespace(
-            name=model_name,
-            level="slide",
-            allow_non_recommended_settings=allow_non_recommended_settings,
-        )
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id=str(slide.sample_id),
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+            for slide in kwargs["slides"]
+        ]
 
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
+    def _fake_spawn_slide_aggregation_workers(
+        *, output_variant, output_dir, shard_payloads_by_rank, on_progress=None, **kwargs
     ):
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        assert on_embedded_slide is not None
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
+        # Two slides + num_gpus=2 ⇒ multi-GPU sharded aggregation. The slide stage
+        # must receive the resolved runtime output variant (None), not an override.
+        captured_output_variants.append(output_variant)
+        slide_dir = Path(output_dir) / "slide_embeddings"
+        slide_dir.mkdir(parents=True, exist_ok=True)
+        written_ids = set()
+        for shard in shard_payloads_by_rank:
+            for payload in shard:
+                sample_id = str(payload["sample_id"])
+                torch.save(torch.ones(8), slide_dir / f"{sample_id}.pt")
+                (slide_dir / f"{sample_id}.meta.json").write_text(
+                    json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8}),
+                    encoding="utf-8",
+                )
+                written_ids.add(sample_id)
+        return written_ids, 8
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
     ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
+        "soma.extraction.extractor.spawn_slide_aggregation_workers",
+        side_effect=_fake_spawn_slide_aggregation_workers,
     ):
         store = extractor.extract(
             feature_dir=tmp_path / "features",
@@ -3478,6 +3442,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
 
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
+    assert store.load("s1").shape == (8,)
 
 
 def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_path: Path):
@@ -3498,45 +3463,38 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
 
     captured_output_variants: list[str | None] = []
 
-    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
-        captured_output_variants.append(output_variant)
-        assert output_variant is None
-        return SimpleNamespace(
-            name=model_name,
-            level="slide",
-            allow_non_recommended_settings=allow_non_recommended_settings,
-        )
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ]
 
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        assert on_embedded_slide is not None
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
+    def _fake_aggregate_tiles(*, output_variant, tile_artifacts, execution, **kwargs):
+        # Single slide ⇒ single-GPU aggregation branch.
+        captured_output_variants.append(output_variant)
+        return [
+            _artifact(
+                sample_id=str(art.sample_id),
+                output_dir=Path(execution.output_dir),
+                kind="slide_embeddings",
+                tensor=torch.ones(8),
+            )
+            for art in tile_artifacts
+        ]
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
         "soma.extraction.extractor._validate_runtime"
     ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
     ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
     ), patch.object(FeatureExtractor, "preprocess", autospec=True, return_value=None), patch(
         "soma.extraction.extractor.resolve_slide_cache",
         wraps=cache_mod.resolve_slide_cache,
@@ -3809,78 +3767,6 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
     assert store.feature_dir == feature_dir
     assert store.feature_rank == 3
     assert store.feature_dim == 8
-
-
-def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-    cache_root = tmp_path / "shared-cache"
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(root_dir=cache_root),
-    )
-    loaded = [
-        LoadedTiling(
-            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
-            tiling_result=_tiling(),
-        )
-    ]
-    resolved_preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-    )
-    backend_provenance = {
-        "requested_backend": "openslide",
-        "backend": "openslide",
-        "backend_by_sample_id": {"s0": "openslide"},
-    }
-    def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
-        return SimpleNamespace(
-            name=model_name,
-            level="slide",
-            _load_backend=lambda: SimpleNamespace(device="cpu", model=None),
-            allow_non_recommended_settings=allow_non_recommended_settings,
-        )
-
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide=None,
-    ):
-        assert on_embedded_slide is not None
-        embedded_slide = SimpleNamespace(
-            sample_id="s0",
-            tile_embeddings=torch.ones(2, 8),
-            slide_embedding=torch.ones(8),
-            latents=None,
-            image_path=Path("/tmp/s0.svs"),
-            mask_path=None,
-            tile_size_lv0=224,
-        )
-        on_embedded_slide(slide_records[0], tiling_results[0], embedded_slide)
-        return [embedded_slide]
-
-    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
-        "soma.extraction.extractor._validate_runtime"
-    ), patch(
-        "soma.extraction.extractor._load_model",
-        side_effect=_fake_load_model,
-    ), patch(
-        "soma.extraction.extractor._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
-    ):
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
-
-    assert any((cache_root / "tile").glob("*/tile_embeddings/s0.pt"))
-    assert any((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
-    assert not any((cache_root / "slide").glob("*/tile_embeddings/s0.pt"))
-    assert store.is_slide_level is True
-    assert store.load("s0").shape == (8,)
 
 
 def test_multispacing_encoder_requires_explicit_spacing(tmp_path: Path):

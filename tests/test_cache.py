@@ -21,6 +21,7 @@ from soma.cache import (
     build_tile_cache_key,
     manifest_digest,
     probe_resolved_backends,
+    record_empty_sample_ids,
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_feature_payload_dir,
@@ -688,6 +689,65 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
 
     assert reused.complete is True
     assert reused.reused is True
+
+
+def test_record_empty_sample_ids_records_sample_identity(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+
+    record_empty_sample_ids(resolution, ["s1"])
+
+    metadata = json.loads(resolution.metadata_path.read_text())
+    assert metadata["empty_sample_ids"] == ["s1"]
+    assert metadata["sample_identity_signature_by_id"]["s1"] == resolution.cache_stem_by_id["s1"]
+
+
+def test_feature_cache_validation_checks_empty_sample_identity(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    metadata = {
+        "feature_type": "bag",
+        "empty_sample_ids": ["s1"],
+        "sample_identity_signature_by_id": {},
+    }
+    cache_stem_by_id = {"s1": "expected-sig"}
+
+    result, _present, _expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=["s1"],
+        cache_stem_by_id=cache_stem_by_id,
+    )
+    assert result.complete is False
+    assert result.reason == "missing cache identity for s1"
+
+    metadata["sample_identity_signature_by_id"] = {"s1": "stale-sig"}
+    result, _present, _expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=["s1"],
+        cache_stem_by_id=cache_stem_by_id,
+    )
+    assert result.complete is False
+    assert result.reason == "cache identity mismatch for s1"
+
+    metadata["sample_identity_signature_by_id"] = {"s1": "expected-sig"}
+    result, present, expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=["s1"],
+        cache_stem_by_id=cache_stem_by_id,
+    )
+    assert result.complete is True
+    assert present == 0
+    assert expected == 0
 
 
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
