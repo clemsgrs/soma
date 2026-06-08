@@ -17,6 +17,8 @@ from soma.config import (
 from soma.encoders import list_models
 from soma.aggregators import list_aggregators
 from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
+from soma.dense import DenseFeatureStore
+from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
@@ -55,6 +57,8 @@ __all__ = [
     "FeatureExtractor",
     "FeatureStore",
     "TileFeatureExtractor",
+    "DenseFeatureStore",
+    "DenseTileFeatureExtractor",
     "FoldResult",
     "Pipeline",
     "PipelineResult",

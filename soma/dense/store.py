@@ -60,8 +60,8 @@ def dense_grid_metadata(
     *,
     feature_dim: int,
     pad_mode: str,
-    image_pad_value: float,
-    mask_pad_value: int,
+    image_pad_value: float | None = None,
+    mask_pad_value: int | None = None,
     dense_input_mode: str = "whole",
     channel_dim: int = 0,
 ) -> dict:
@@ -69,6 +69,12 @@ def dense_grid_metadata(
 
     Carries everything the decoder/head and evaluation need to map the grid back
     to the mask: the channel/grid layout plus the §5 padding+crop geometry.
+
+    ``image_pad_value`` is meaningful only for constant/zero padding (``None`` for
+    reflect). ``mask_pad_value`` (the mask's ``ignore_index``) is forward-looking:
+    the feature-grid extractor does not own mask semantics, so it is left ``None``
+    here and set by the segmentation dataset/collate slice, which pads masks with
+    ``ignore_index`` using this same geometry.
     """
     return {
         "artifact_type": DENSE_ARTIFACT_TYPE,
@@ -82,8 +88,8 @@ def dense_grid_metadata(
         "pad": [int(geometry.pad[0]), int(geometry.pad[1])],
         "pad_mode": str(pad_mode),
         "crop_box": [int(v) for v in geometry.crop_box],
-        "image_pad_value": float(image_pad_value),
-        "mask_pad_value": int(mask_pad_value),
+        "image_pad_value": None if image_pad_value is None else float(image_pad_value),
+        "mask_pad_value": None if mask_pad_value is None else int(mask_pad_value),
         "dense_input_mode": str(dense_input_mode),
     }
 

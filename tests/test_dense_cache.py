@@ -229,15 +229,13 @@ def test_store_load_detects_on_disk_shape_mismatch(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
-# Validator — dense_grid reads the channel axis, not the last axis.
+# Validator — dense_grid reads the channel axis, requires the sidecar.
 # --------------------------------------------------------------------------- #
 
 
-def test_dense_cache_validator_reads_channel_dim(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-    cache_root = tmp_path / "dense_cache"
-    res = resolve_dense_cache(
-        cache_root=cache_root,
+def _dense_kw(tmp_path: Path, dataset) -> dict:
+    return dict(
+        cache_root=tmp_path / "dense_cache",
         dataset=dataset,
         tile_encoder_name="uni",
         target_size=(512, 512),
@@ -245,79 +243,60 @@ def test_dense_cache_validator_reads_channel_dim(tmp_path: Path):
         pad_mode="reflect",
         execution=_enc(),
     )
-    # feature_dim = d = 1536 (channel axis), declared in metadata.
-    record_feature_dim(res, 1536)
+
+
+def _populate(res, dataset, *, d: int, gh: int, gw: int) -> None:
+    """Write proper grid + sidecar for every sample via the real writer."""
+    geom = compute_dense_geometry(target_size=(gh * 16, gw * 16), patch_size=16)
     for sid in dataset.sample_ids:
-        torch.save(torch.randn(1536, 32, 32), res.feature_path_for_id(sid))
+        meta = dense_grid_metadata(geom, feature_dim=d, pad_mode="reflect")
+        write_dense_grid(res.features_dir, sid, torch.randn(d, gh, gw), meta)
+    record_feature_dim(res, d)
     record_sample_identity_signatures(res, list(dataset.sample_ids))
 
-    resumed = resolve_dense_cache(
-        cache_root=cache_root,
-        dataset=dataset,
-        tile_encoder_name="uni",
-        target_size=(512, 512),
-        patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=_enc(),
-        validate_payloads=True,
-    )
-    assert resumed.complete is True
 
-
-def test_dense_cache_validator_flags_wrong_grid_shape(tmp_path: Path):
-    # Correct channel dim (1536) but wrong spatial grid (16x16 != recorded 32x32).
-    # Rank-3 alone can't catch this; the grid_shape check must. Only runs under
-    # validate_payloads (opt-in) — the default path never loads the tensor.
+def test_dense_cache_validator_accepts_real_payloads(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
-    cache_root = tmp_path / "dense_cache"
-    kw = dict(
-        cache_root=cache_root,
-        dataset=dataset,
-        tile_encoder_name="uni",
-        target_size=(512, 512),
-        patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=_enc(),
-    )
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    assert resolve_dense_cache(**kw, validate_payloads=True).complete is True
+
+
+def test_dense_cache_validator_requires_sidecar(tmp_path: Path):
+    # validator-complete must imply store-readable: a .pt with no sidecar (e.g. if
+    # population were ever routed through the hardlink helper) is NOT complete, even
+    # on the default path that loads no tensors.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
     res = resolve_dense_cache(**kw)
     record_feature_dim(res, 1536)
     for sid in dataset.sample_ids:
-        torch.save(torch.randn(1536, 16, 16), res.feature_path_for_id(sid))
+        torch.save(torch.randn(1536, 32, 32), res.feature_path_for_id(sid))  # NO sidecar
     record_sample_identity_signatures(res, list(dataset.sample_ids))
+    assert resolve_dense_cache(**kw).complete is False
 
-    # Default path (validate_payloads=False) does not open tensors → no grid check.
-    assert resolve_dense_cache(**kw).complete is True
-    # Opt-in validation catches the wrong grid.
+
+def test_dense_cache_validator_flags_wrong_grid_shape(tmp_path: Path):
+    # Correct sidecar + channel dim, but the .pt grid is 16x16 != recorded 32x32.
+    # Rank-3 alone can't catch this; the grid_shape check must. Only under
+    # validate_payloads — the default path never loads the tensor.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+    for sid in dataset.sample_ids:  # corrupt the .pt, keep the (correct) sidecar
+        torch.save(torch.randn(1536, 16, 16), res.feature_path_for_id(sid))
+    assert resolve_dense_cache(**kw).complete is True  # default: no tensor load
     assert resolve_dense_cache(**kw, validate_payloads=True).complete is False
 
 
 def test_dense_cache_validator_flags_wrong_channel_dim(tmp_path: Path):
+    # Correct sidecar (declares d=1536) but the .pt channel axis is 768. If the
+    # validator read shape[-1] (=32) it would never catch this.
     dataset = _make_dataset(tmp_path)
-    cache_root = tmp_path / "dense_cache"
-    res = resolve_dense_cache(
-        cache_root=cache_root,
-        dataset=dataset,
-        tile_encoder_name="uni",
-        target_size=(512, 512),
-        patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=_enc(),
-    )
-    record_feature_dim(res, 1536)
-    # Write grids whose CHANNEL axis (768) disagrees with the recorded d (1536).
-    # If the validator read shape[-1] (=32) it would never catch this.
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
     for sid in dataset.sample_ids:
         torch.save(torch.randn(768, 32, 32), res.feature_path_for_id(sid))
-    record_sample_identity_signatures(res, list(dataset.sample_ids))
-
-    resumed = resolve_dense_cache(
-        cache_root=cache_root,
-        dataset=dataset,
-        tile_encoder_name="uni",
-        target_size=(512, 512),
-        patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=_enc(),
-        validate_payloads=True,
-    )
-    assert resumed.complete is False
+    assert resolve_dense_cache(**kw, validate_payloads=True).complete is False

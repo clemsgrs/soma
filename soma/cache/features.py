@@ -336,6 +336,14 @@ def _validate_feature_cache_contents(
     }
     expected_rank = _FEATURE_TYPE_TO_RANK[feature_type]
     expected_feature_dim = metadata.get("feature_dim")
+    # Dense grids carry their shape in a per-sample sidecar, which DenseFeatureStore
+    # requires to read them. The .pt-existence check alone would call an entry
+    # "complete" that the store cannot actually load, so require the sidecar too.
+    dense_sidecar_suffix: str | None = None
+    if feature_type == "dense_grid":
+        from soma.dense.store import DENSE_SIDECAR_SUFFIX
+
+        dense_sidecar_suffix = DENSE_SIDECAR_SUFFIX
     expected = 0
     present = 0
     reason: str | None = None
@@ -371,6 +379,12 @@ def _validate_feature_cache_contents(
             if not path.is_file():
                 if reason is None:
                     reason = f"missing feature for {cache_id}"
+                continue
+            if dense_sidecar_suffix is not None and not (
+                features_dir / f"{cache_id}{dense_sidecar_suffix}"
+            ).is_file():
+                if reason is None:
+                    reason = f"missing dense sidecar for {cache_id}"
                 continue
             if validate_payloads:
                 try:
