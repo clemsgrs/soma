@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,34 @@ logger = logging.getLogger(__name__)
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {"mask_path", "patient_id"}
 REQUIRED_SPLITS_COLUMNS = {"sample_id", "split"}
+
+
+def is_filename_safe_id(value: object) -> bool:
+    """True if ``value`` is safe to use as a bare cache filename.
+
+    ``sample_id`` and ``patient_id`` are written directly as ``<id>.pt`` (and
+    sidecars) across every cache kind, so an id containing a path separator,
+    ``..``, or an absolute path would write *outside* the intended directory
+    (path traversal). Safe ids are non-empty bare names with no separators.
+    """
+    text = str(value)
+    if not text or text in {".", ".."} or os.path.isabs(text):
+        return False
+    if "/" in text or "\\" in text or os.sep in text:
+        return False
+    if os.altsep is not None and os.altsep in text:
+        return False
+    return Path(text).name == text
+
+
+def ensure_filename_safe_id(value: object, *, field: str = "sample_id") -> str:
+    """Return ``str(value)`` if it is a safe cache filename, else raise ValueError."""
+    if not is_filename_safe_id(value):
+        raise ValueError(
+            f"Unsafe {field} {value!r}: it is used as a cache filename, so it must be a "
+            "bare name with no path separators, '..', or absolute path."
+        )
+    return str(value)
 
 
 def _is_valid_split_name(name: str) -> bool:
@@ -57,6 +86,23 @@ class Dataset:
             dupes = df["sample_id"][df["sample_id"].duplicated()].tolist()
             msg = f"Duplicate sample_id values: {dupes}"
             raise ValueError(msg)
+        # sample_id / patient_id become cache filenames (<id>.pt); reject ids that
+        # would escape the cache dir via path separators or '..' (path traversal).
+        unsafe_ids = sorted({str(s) for s in df["sample_id"] if not is_filename_safe_id(s)})
+        if unsafe_ids:
+            raise ValueError(
+                "Unsafe sample_id value(s) (used as cache filenames; no path "
+                f"separators, '..', or absolute paths allowed): {unsafe_ids}"
+            )
+        if "patient_id" in df.columns:
+            unsafe_patients = sorted(
+                {str(p) for p in df["patient_id"].dropna() if not is_filename_safe_id(p)}
+            )
+            if unsafe_patients:
+                raise ValueError(
+                    "Unsafe patient_id value(s) (used as cache filenames; no path "
+                    f"separators, '..', or absolute paths allowed): {unsafe_patients}"
+                )
 
     def _build_samples(self, df: pd.DataFrame) -> dict[str, SampleRecord]:
         meta_columns = [c for c in df.columns if c not in KNOWN_DATASET_COLUMNS]

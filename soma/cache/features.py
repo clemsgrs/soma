@@ -34,6 +34,7 @@ from soma.cache.io import (
 from soma.cache.keys import (
     _patient_stems_for_kind,
     _sample_stems_for_kind,
+    build_dense_cache_key,
     build_hierarchical_cache_key,
     build_patient_cache_key,
     build_slide_cache_key,
@@ -203,6 +204,65 @@ def _build_hierarchical_cache_metadata(
     return metadata
 
 
+def _build_dense_cache_metadata(
+    *,
+    tile_encoder_name: str,
+    target_size: tuple[int, int],
+    patch_size: tuple[int, int],
+    pad_mode: str,
+    execution: EncoderConfig,
+    preprocessing: PreprocessingConfig | None = None,
+    dense_input_mode: str = "whole",
+    channel_dim: int = 0,
+    backend_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    # Imported lazily so the cache layer has no load-time dependency on soma.dense
+    # (soma.dense.store imports soma.cache; a top-level import here would cycle).
+    from soma.dense.geometry import compute_dense_geometry
+
+    key = build_dense_cache_key(
+        tile_encoder_name=tile_encoder_name,
+        target_size=target_size,
+        patch_size=patch_size,
+        pad_mode=pad_mode,
+        execution=execution,
+        preprocessing=preprocessing,
+        dense_input_mode=dense_input_mode,
+    )
+    geometry = compute_dense_geometry(target_size=target_size, patch_size=patch_size)
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "dense",
+        "cache_key": key,
+        "encoder_name": tile_encoder_name,
+        "encoder_level": "tile",
+        "execution": execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            preprocessing=preprocessing,
+            output_variant=None,
+        ),
+        "feature_type": "dense_grid",
+        "feature_dim": None,
+        "channel_dim": int(channel_dim),
+        "dense_input_mode": str(dense_input_mode),
+        "target_size": [int(geometry.target_size[0]), int(geometry.target_size[1])],
+        "patch_size": [int(geometry.patch_size[0]), int(geometry.patch_size[1])],
+        "encoded_size": [int(geometry.encoded_size[0]), int(geometry.encoded_size[1])],
+        "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
+        "pad_mode": str(pad_mode),
+        "sample_identity_signature_by_id": {},
+    }
+    # output_variant is intentionally not part of the dense key (pre-pooling grid),
+    # so drop it from the execution signature to keep metadata and key consistent.
+    metadata["execution"].pop("output_variant", None)
+    if preprocessing is not None:
+        metadata["preprocessing"] = preprocessing_signature(preprocessing)
+    if backend_provenance is not None:
+        metadata.update(backend_provenance)
+    return metadata
+
+
 def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     comparable = dict(metadata)
     comparable.pop("feature_dim", None)
@@ -338,7 +398,13 @@ def _validate_feature_cache_contents(
                             f"expected {expected_rank}, found {tensor.ndim}"
                         )
                     continue
-                feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
+                if feature_type == "dense_grid":
+                    # (channels, grid_h, grid_w): the feature dim is the channel
+                    # axis (0 by convention), NOT the last axis (which is grid_w).
+                    channel_dim = int(metadata.get("channel_dim", 0))
+                    feature_dim = int(tensor.shape[channel_dim])
+                else:
+                    feature_dim = int(tensor.shape[0] if tensor.ndim == 1 else tensor.shape[-1])
                 if expected_feature_dim is not None and int(expected_feature_dim) != feature_dim:
                     if reason is None:
                         reason = (
@@ -346,6 +412,24 @@ def _validate_feature_cache_contents(
                             f"expected {int(expected_feature_dim)}, found {feature_dim}"
                         )
                     continue
+                if feature_type == "dense_grid":
+                    # Rank 3 alone can't catch a wrong grid (it equals hierarchical),
+                    # so verify the spatial axes against the recorded grid_shape. Free:
+                    # the tensor is already loaded above (only under validate_payloads).
+                    expected_grid = metadata.get("grid_shape")
+                    if expected_grid is not None:
+                        grid_axes = [
+                            int(size)
+                            for axis, size in enumerate(tensor.shape)
+                            if axis != int(metadata.get("channel_dim", 0))
+                        ]
+                        if grid_axes != [int(v) for v in expected_grid]:
+                            if reason is None:
+                                reason = (
+                                    f"grid shape mismatch for {cache_id}: expected "
+                                    f"{[int(v) for v in expected_grid]}, found {grid_axes}"
+                                )
+                            continue
             present += 1
         complete = reason is None
         return CacheValidationResult(complete=complete, reason=reason), present, expected
@@ -656,6 +740,56 @@ def resolve_hierarchical_cache(
     return _resolve_cache(
         cache_root=cache_root,
         cache_kind="hierarchical",
+        key=metadata["cache_key"],
+        dataset=dataset,
+        metadata=metadata,
+        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_stem_by_id=cache_stem_by_id,
+        manifest_rows=dataset_manifest_rows(dataset),
+        initial_reason="initializing",
+        complete_state=complete_state,
+        validate_payloads=validate_payloads,
+    )
+
+
+def resolve_dense_cache(
+    *,
+    cache_root: Path,
+    dataset: Dataset,
+    tile_encoder_name: str,
+    target_size: tuple[int, int],
+    patch_size: tuple[int, int],
+    pad_mode: str,
+    execution: EncoderConfig,
+    preprocessing: PreprocessingConfig | None = None,
+    dense_input_mode: str = "whole",
+    channel_dim: int = 0,
+    backend_provenance: dict[str, Any] | None = None,
+    complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
+    _precomputed_stems: dict[str, str] | None = None,
+) -> FeatureCacheResolution:
+    metadata = _build_dense_cache_metadata(
+        tile_encoder_name=tile_encoder_name,
+        target_size=target_size,
+        patch_size=patch_size,
+        pad_mode=pad_mode,
+        execution=execution,
+        preprocessing=preprocessing,
+        dense_input_mode=dense_input_mode,
+        channel_dim=channel_dim,
+        backend_provenance=backend_provenance,
+    )
+    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
+        dataset=dataset,
+        cache_kind="dense",
+        static_identity_payload={"cache_key": metadata["cache_key"]},
+        fingerprint_files=fingerprint_files,
+    )
+    return _resolve_cache(
+        cache_root=cache_root,
+        cache_kind="dense",
         key=metadata["cache_key"],
         dataset=dataset,
         metadata=metadata,

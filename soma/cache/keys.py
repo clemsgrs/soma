@@ -285,6 +285,49 @@ def build_hierarchical_cache_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
+def build_dense_cache_key(
+    *,
+    tile_encoder_name: str,
+    target_size: tuple[int, int],
+    patch_size: tuple[int, int],
+    pad_mode: str,
+    execution: EncoderConfig,
+    preprocessing: PreprocessingConfig | None = None,
+    dense_input_mode: str = "whole",
+) -> str:
+    """Cache key for a dense ``(d, h, w)`` grid extraction.
+
+    Distinct from the pooled tile key by ``feature_type="dense_grid"`` and by the
+    dense geometry (``target_size``/``patch_size``/``pad_mode``) and
+    ``dense_input_mode`` — so a 512px run and a 224px run, or whole-tile vs
+    sliding-window, never collide. ``output_variant`` is intentionally omitted:
+    the dense grid is pre-pooling (``forward_features`` → reshape), so the variant
+    (which only changes pooling) does not affect it; keying on it would split
+    identical caches.
+    """
+    execution_payload = execution_signature(
+        execution,
+        encoder_name=tile_encoder_name,
+        preprocessing=preprocessing,
+        output_variant=None,
+    )
+    execution_payload.pop("output_variant", None)
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "artifact_kind": "dense",
+        "tile_encoder_name": tile_encoder_name,
+        "feature_type": "dense_grid",
+        "dense_input_mode": str(dense_input_mode),
+        "target_size": [int(target_size[0]), int(target_size[1])],
+        "patch_size": [int(patch_size[0]), int(patch_size[1])],
+        "pad_mode": str(pad_mode),
+        "execution": execution_payload,
+    }
+    if preprocessing is not None:
+        payload["preprocessing"] = preprocessing_signature(preprocessing)
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
 def build_tiling_cache_key(
     *,
     preprocessing: PreprocessingConfig,
