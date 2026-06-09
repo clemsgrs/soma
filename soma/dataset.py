@@ -57,7 +57,7 @@ class SampleRecord:
 
     sample_id: str
     image_path: Path
-    label: str | int
+    label: str | int | None  # None for segmentation (supervision is the mask)
     mask_path: Path | None = None
     patient_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -181,6 +181,95 @@ class Dataset:
                 )
             record_map[patient_id] = records[0]
         return record_map
+
+
+REQUIRED_SEGMENTATION_COLUMNS = {"sample_id", "image_path", "mask_path"}
+
+
+class SegmentationManifest:
+    """Loads a segmentation dataset CSV: sample_id, image_path, mask_path (required).
+
+    Unlike :class:`Dataset`, ``label`` is NOT required — the supervision signal is
+    the per-pixel ``mask_path`` raster, not a scalar label (a separate loader rather
+    than relaxing :class:`Dataset`, whose ``label`` requirement guards every other
+    task). ``label`` and ``patient_id`` are optional; extra columns become metadata.
+    ``mask_path`` must be present and non-null for every row. Exposes the same
+    ``samples``/``sample_ids`` surface as :class:`Dataset`, so :class:`Splits` works
+    against it unchanged.
+    """
+
+    def __init__(self, dataset_csv: str | Path) -> None:
+        self._path = Path(dataset_csv)
+        df = pd.read_csv(self._path)
+        self._validate_columns(df)
+        self._samples = self._build_samples(df)
+
+    def _validate_columns(self, df: pd.DataFrame) -> None:
+        if "tissue_mask_path" in df.columns:
+            raise ValueError("Use 'mask_path' instead of 'tissue_mask_path'.")
+        for col in REQUIRED_SEGMENTATION_COLUMNS:
+            if col not in df.columns:
+                raise ValueError(
+                    f"Required column '{col}' not found. Available: {list(df.columns)}"
+                )
+        if df["sample_id"].duplicated().any():
+            dupes = df["sample_id"][df["sample_id"].duplicated()].tolist()
+            raise ValueError(f"Duplicate sample_id values: {dupes}")
+        if df["mask_path"].isna().any():
+            missing = df.loc[df["mask_path"].isna(), "sample_id"].tolist()
+            raise ValueError(
+                f"mask_path is required for every segmentation sample; missing for: {missing}"
+            )
+        # sample_id / patient_id become cache filenames; reject path-traversal ids.
+        unsafe_ids = sorted({str(s) for s in df["sample_id"] if not is_filename_safe_id(s)})
+        if unsafe_ids:
+            raise ValueError(
+                "Unsafe sample_id value(s) (used as cache filenames; no path "
+                f"separators, '..', or absolute paths allowed): {unsafe_ids}"
+            )
+        if "patient_id" in df.columns:
+            unsafe_patients = sorted(
+                {str(p) for p in df["patient_id"].dropna() if not is_filename_safe_id(p)}
+            )
+            if unsafe_patients:
+                raise ValueError(
+                    "Unsafe patient_id value(s) (used as cache filenames; no path "
+                    f"separators, '..', or absolute paths allowed): {unsafe_patients}"
+                )
+
+    def _build_samples(self, df: pd.DataFrame) -> dict[str, SampleRecord]:
+        meta_columns = [c for c in df.columns if c not in KNOWN_DATASET_COLUMNS]
+        samples: dict[str, SampleRecord] = {}
+        for _, row in df.iterrows():
+            sid = str(row["sample_id"])
+            label = row["label"] if "label" in row.index and pd.notna(row.get("label")) else None
+            patient_id = (
+                str(row["patient_id"])
+                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
+                else None
+            )
+            metadata = {c: row[c] for c in meta_columns}
+            samples[sid] = SampleRecord(
+                sample_id=sid,
+                image_path=Path(str(row["image_path"])),
+                label=label,  # optional for segmentation; supervision is the mask
+                mask_path=Path(str(row["mask_path"])),
+                patient_id=patient_id,
+                metadata=metadata,
+            )
+        return samples
+
+    @property
+    def samples(self) -> dict[str, SampleRecord]:
+        return self._samples
+
+    @property
+    def sample_ids(self) -> list[str]:
+        return list(self._samples.keys())
+
+    @property
+    def has_patient_ids(self) -> bool:
+        return any(r.patient_id is not None for r in self._samples.values())
 
 
 @dataclass(frozen=True)

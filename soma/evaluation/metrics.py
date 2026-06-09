@@ -67,6 +67,11 @@ VALID_METRICS: dict[str, set[str]] = {
     "survival": {
         "c_index",
     },
+    "segmentation": {
+        "mean_dice",
+        "mean_iou",
+        "dice_per_class",
+    },
 }
 
 DEFAULT_METRICS: dict[str, list[str]] = {
@@ -75,6 +80,7 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "ordinal_classification": ["qwk", "balanced_accuracy"],
     "regression": ["mae", "r2"],
     "survival": ["c_index"],
+    "segmentation": ["mean_dice", "mean_iou"],
 }
 
 LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae"}

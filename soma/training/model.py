@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from torch import Tensor, nn
 
 from soma.aggregators.base import Aggregator
+from soma.decoders.base import Decoder
 from soma.tasks.base import TaskHead
 
 
@@ -83,3 +84,35 @@ class MILModel(nn.Module):
             tile_attention=agg_out.tile_attention,
             auxiliary=agg_out.auxiliary,
         )
+
+
+@dataclass
+class SegmentationModelOutput:
+    """Output of SegmentationModel.forward."""
+
+    logits: Tensor  # (B, C, H, W) at the mask target resolution
+
+
+class SegmentationModel(nn.Module):
+    """Composes a decoder and a segmentation head into a dense prediction model.
+
+    The decoder maps a dense feature grid ``(B, d, h, w)`` to logits at its own
+    (upsampled) grid, and the head resizes+crops those to the mask's target size
+    (``logits = task_head(decoder(X))`` — mirroring EmbeddingModel/MILModel, so
+    ``out.logits`` is exactly the target-res tensor the trainer feeds to
+    ``task_head.compute_loss``/``compute_metrics``). The encoder is frozen/absent at
+    train time, like the aggregator+head path.
+
+    Args:
+        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``.
+        task_head: SegmentationHead owning targets/loss/metric/postprocess and the
+            resize-to-encoded + crop-to-target geometry.
+    """
+
+    def __init__(self, decoder: Decoder, task_head: TaskHead) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.task_head = task_head
+
+    def forward(self, X: Tensor) -> SegmentationModelOutput:
+        return SegmentationModelOutput(logits=self.task_head(self.decoder(X)))

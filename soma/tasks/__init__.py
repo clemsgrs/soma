@@ -11,6 +11,7 @@ from soma.tasks.classification import (
 )
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
+from soma.tasks.segmentation import SegmentationHead, load_mask
 from soma.tasks.survival import CoxSurvivalHead, SurvivalHead, resolve_survival_head
 
 
@@ -30,4 +31,6 @@ __all__ = [
     "SurvivalHead",
     "CoxSurvivalHead",
     "resolve_survival_head",
+    "SegmentationHead",
+    "load_mask",
 ]
