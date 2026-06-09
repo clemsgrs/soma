@@ -93,6 +93,18 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     assert (tmp_path / "fold" / "metrics.json").is_file()
     assert (tmp_path / "fold" / "best_model.pt").is_file()
 
+    # 1g dense artifacts: per-tile rasters + predictions CSV land for each split.
+    fold = tmp_path / "fold"
+    assert (fold / "predictions_test.csv").is_file()
+    test_raster = fold / "preds" / "test" / "s3.png"
+    assert test_raster.is_file()
+    raster = np.asarray(Image.open(test_raster))
+    assert raster.shape == (TARGET, TARGET)  # head cropped logits to target_size
+    assert raster.dtype == np.uint8
+    assert raster.max() < NUM_CLASSES
+    # Overlays are fail-soft: the cached-feature fixture has no real source tiles.
+    assert not (fold / "overlays" / "test" / "s3.png").exists()
+
 
 def test_segmentation_fold_requires_num_classes(tmp_path: Path):
     manifest, splits, store = _build_dense_run(tmp_path, ["s0", "s1", "s2", "s3"])
@@ -141,3 +153,8 @@ def test_pipeline_run_end_to_end_segmentation(tmp_path: Path):
     result = pipeline.run()
     assert "test/mean_dice" in result.summary
     assert result.fold_results[0].test_reports["test"].metrics["mean_dice"] >= 0.0
+    # Dense artifacts land via the real entry point too (run -> train -> eval).
+    # run_dir is a structured layout path under output_root, so glob for them.
+    out = tmp_path / "out"
+    assert list(out.rglob("preds/test/s3.png")), "pred raster missing under run dir"
+    assert list(out.rglob("predictions_test.csv")), "predictions CSV missing under run dir"

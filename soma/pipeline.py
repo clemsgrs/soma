@@ -47,6 +47,7 @@ from soma.config import (
 from soma.dataset import Dataset, FoldSplit, SampleRecord, SegmentationManifest, Splits
 from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
+from soma.evaluation.dense_artifacts import DenseArtifactWriter
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
@@ -1028,9 +1029,13 @@ def train_one_segmentation_fold(
     model.to(device)
     model.eval()
 
-    tune_report = _evaluate_segmentation(model, tune_loader, "tune", device)
+    tune_report = _evaluate_segmentation(
+        model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir
+    )
     test_reports = {
-        split_name: _evaluate_segmentation(model, loader, split_name, device)
+        split_name: _evaluate_segmentation(
+            model, loader, split_name, device, dataset=dataset, output_dir=fold_dir
+        )
         for split_name, loader in test_loaders.items()
     }
 
@@ -1707,6 +1712,9 @@ def _evaluate_segmentation(
     loader: DataLoader,
     split_name: str,
     device: torch.device,
+    *,
+    dataset: SegmentationManifest | None = None,
+    output_dir: Path | None = None,
 ) -> EvaluationReport:
     """Streaming dense evaluation: accumulate compact per-image confusion counts.
 
@@ -1716,11 +1724,22 @@ def _evaluate_segmentation(
     ``finalize_eval_metrics`` (the same reduce+filter path as ``compute_metrics``), so
     the report metric matches the training monitor exactly.
 
-    Scope (1f-b): metrics-only. ``predictions`` is empty; raster outputs land in 1g.
+    When ``output_dir`` is given, a :class:`DenseArtifactWriter` streams per-tile
+    prediction rasters, color overlays (fail-soft via ``dataset``'s source images),
+    and a ``predictions_<split>.csv`` to disk — written per batch *before* the logits
+    are discarded, so memory stays bounded. The returned ``EvaluationReport`` still
+    carries ``predictions=[]``: the dense artifacts live on disk, not in the report.
     """
     head = model.task_head
-    stat_rows, _, _ = accumulate_dense_stats(model, loader, device)
+    writer = (
+        DenseArtifactWriter(head=head, split=split_name, output_dir=output_dir, dataset=dataset)
+        if output_dir is not None
+        else None
+    )
+    stat_rows, _, _ = accumulate_dense_stats(model, loader, device, on_batch_output=writer)
     metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
+    if writer is not None:
+        writer.finalize()
     return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
 
 

@@ -468,6 +468,7 @@ def accumulate_dense_stats(
     *,
     compute_loss: bool = False,
     on_batch_progress: Callable[[str, int, int], None] | None = None,
+    on_batch_output: Callable[[object, torch.Tensor, torch.Tensor], None] | None = None,
     progress_label: str = "tune",
 ) -> tuple[list[torch.Tensor], float, int]:
     """Stream a dense head's compact per-image confusion counts over ``loader``.
@@ -482,6 +483,10 @@ def accumulate_dense_stats(
 
     Returns ``(stat_rows, total_loss, num_batches)``; ``total_loss`` is summed only
     when ``compute_loss`` (each term a per-batch scalar, so a running mean is safe).
+
+    ``on_batch_output`` (eval-only; ``None`` in the per-epoch tune pass) receives
+    ``(batch, out.logits, stat_row)`` per batch *before* the logits are discarded —
+    used to stream prediction rasters/overlays to disk without holding all logits.
     """
     model.eval()
     head = model.task_head
@@ -502,7 +507,10 @@ def accumulate_dense_stats(
         if compute_loss:
             total_loss += head.compute_loss(out.logits, targets).item()
         num_batches += 1
-        stat_rows.append(head.dense_stats(out.logits, targets).detach().cpu())
+        stat_row = head.dense_stats(out.logits, targets).detach().cpu()
+        stat_rows.append(stat_row)
+        if on_batch_output is not None:
+            on_batch_output(batch, out.logits, stat_row)
 
     return stat_rows, total_loss, num_batches
 
