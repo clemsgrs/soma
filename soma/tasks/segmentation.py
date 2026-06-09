@@ -83,6 +83,10 @@ class SegmentationHead(TaskHead):
 
     target_dtypes = {"mask": torch.long}
     task_family = "segmentation"
+    # Eval streams compact per-image confusion counts instead of full logits — dense
+    # logits (N, C, H, W) would OOM if concatenated across a cohort. The trainer /
+    # evaluator accumulate `dense_stats` rows and call `finalize_eval_metrics`.
+    accumulates_eval_metrics = True
 
     def __init__(
         self,
@@ -155,8 +159,15 @@ class SegmentationHead(TaskHead):
             ignore_index=self.ignore_index,
         )
 
-    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
-        counts = self.dense_stats(raw_output, targets)
+    def finalize_eval_metrics(self, counts: Tensor) -> dict[str, float]:
+        """Reduce accumulated per-image confusion counts ``(N, C, 3)`` to metrics.
+
+        The single reduce+filter path shared by ``compute_metrics`` and the
+        streaming evaluator, so a batched (concatenated-logits) and a streamed
+        (concatenated-counts) evaluation cannot drift. ``counts`` must keep the
+        per-image axis — summing it to ``(C, 3)`` would silently switch the
+        per-image-macro monitor metric to dataset-global.
+        """
         full = reduce_dice_iou(counts, num_classes=self.num_classes)
         # Honor the configured metric selection (like the scalar heads). "dice_per_class"
         # expands to the per-class breakdown; otherwise only the requested scalars.
@@ -169,6 +180,9 @@ class SegmentationHead(TaskHead):
             for c in range(self.num_classes):
                 selected[f"dice_class_{c}"] = full[f"dice_class_{c}"]
         return selected
+
+    def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
+        return self.finalize_eval_metrics(self.dense_stats(raw_output, targets))
 
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         prediction = raw_output.argmax(dim=1).detach().cpu().numpy().astype(np.uint8)

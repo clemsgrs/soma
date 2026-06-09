@@ -22,7 +22,7 @@ import torch
 from slide2vec.artifacts import load_array
 
 from soma.dataset import ensure_filename_safe_id
-from soma.dense.geometry import DenseGridGeometry
+from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry
 
 __all__ = [
     "DENSE_SIDECAR_SUFFIX",
@@ -203,6 +203,20 @@ class DenseFeatureStore:
         self._ensure_shape()
         assert self._grid_shape is not None
         return self._grid_shape
+
+    def geometry(self, sample_id: str) -> DenseGridGeometry:
+        """Reconstruct the sample's :class:`DenseGridGeometry` from its sidecar.
+
+        Recomputed via :func:`compute_dense_geometry` from the persisted
+        ``target_size`` + ``patch_size`` — the exact function the extractor used, so
+        the head's crop geometry is byte-identical to what the grid was built with
+        (single source of truth, no field-copy drift).
+        """
+        meta = self.metadata(sample_id)
+        return compute_dense_geometry(
+            target_size=tuple(int(v) for v in meta["target_size"]),
+            patch_size=tuple(int(v) for v in meta["patch_size"]),
+        )
 
     @property
     def feature_dir(self) -> Path:

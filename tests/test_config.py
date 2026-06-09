@@ -9,6 +9,7 @@ import yaml
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
+    DecoderConfig,
     EncoderConfig,
     EvalConfig,
     ExecutionConfig,
@@ -181,6 +182,71 @@ def test_pipeline_config_defaults_to_no_aggregator():
 def test_evaluation_config_metrics_explicit():
     cfg = EvalConfig(metrics=["auroc", "f1"])
     assert cfg.metrics == ["auroc", "f1"]
+
+
+# --- Segmentation decoder config plumbing ---
+
+
+def _seg_config(**overrides):
+    kwargs = dict(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="segmentation",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation"),
+    )
+    kwargs.update(overrides)
+    return PipelineConfig(**kwargs)
+
+
+def test_segmentation_config_valid():
+    cfg = _seg_config()
+    assert cfg.dataset_type == "segmentation"
+    assert cfg.decoder.name == "lightweight_conv"
+    assert cfg.aggregator is None
+
+
+def test_segmentation_requires_decoder():
+    with pytest.raises(ValueError, match="decoder is required"):
+        _seg_config(decoder=None)
+
+
+def test_segmentation_rejects_aggregator():
+    with pytest.raises(ValueError, match="aggregator must be None"):
+        _seg_config(aggregator=AggregatorConfig(name="mean_pool"))
+
+
+def test_segmentation_requires_segmentation_task():
+    with pytest.raises(ValueError, match="task.name='segmentation'"):
+        _seg_config(task=TaskConfig(name="binary_classification"))
+
+
+def test_decoder_rejected_for_non_segmentation():
+    with pytest.raises(ValueError, match="decoder must be None"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="tile",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            task=TaskConfig(name="binary_classification"),
+        )
+
+
+def test_segmentation_rejects_unknown_decoder():
+    with pytest.raises(ValueError, match="Unknown decoder name"):
+        _seg_config(decoder=DecoderConfig(name="not_a_real_decoder"))
+
+
+def test_decoder_config_round_trips_through_yaml(tmp_path: Path):
+    cfg = _seg_config(decoder=DecoderConfig(name="lightweight_conv", params={"num_upsample_blocks": 2}))
+    path = tmp_path / "cfg.yaml"
+    save_config(cfg, path)
+    loaded = load_config(path)
+    assert loaded.dataset_type == "segmentation"
+    assert loaded.decoder.name == "lightweight_conv"
+    assert loaded.decoder.params == {"num_upsample_blocks": 2}
 
 
 def test_subgroup_config_defaults():

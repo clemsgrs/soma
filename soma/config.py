@@ -69,6 +69,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "preprocessing",
         "encoder",
         "aggregation",
+        "decoder",
         "task",
         "evaluation",
         "training",
@@ -98,6 +99,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "preprocessing",
         "encoder",
         "aggregation",
+        "decoder",
         "task",
         "evaluation",
         "training",
@@ -106,9 +108,9 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if section in data:
             value = data[section]
-            if section == "aggregation":
+            if section in ("aggregation", "decoder"):
                 if value is not None and not isinstance(value, dict):
-                    raise TypeError("Config section 'aggregation' must be a mapping or null")
+                    raise TypeError(f"Config section '{section}' must be a mapping or null")
             elif value is not None and not isinstance(value, dict):
                 raise TypeError(f"Config section '{section}' must be a mapping")
             layout[section] = copy.deepcopy(value)
@@ -144,6 +146,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         cache=CacheConfig(**data.get("cache", {})),
         encoder=EncoderConfig(**data["encoder"]) if data.get("encoder") is not None else None,
         aggregator=AggregatorConfig(**data["aggregation"]) if data.get("aggregation") else None,
+        decoder=DecoderConfig(**data["decoder"]) if data.get("decoder") else None,
         task=_load_task_config(data),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
@@ -250,6 +253,19 @@ class AggregatorConfig:
     ``name`` selects the registered aggregator class. ``params`` are passed
     through to the aggregator constructor after the pipeline injects the
     feature dimension.
+    """
+
+    name: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DecoderConfig:
+    """Dense decoder selection and constructor parameters (segmentation).
+
+    ``name`` selects the registered decoder class. ``params`` are passed through to
+    the decoder constructor after the pipeline injects the feature dimension and
+    ``num_classes``. The decoder is the segmentation counterpart of ``aggregator``.
     """
 
     name: str
@@ -383,6 +399,7 @@ class PipelineConfig:
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
     aggregator: AggregatorConfig | None = None
+    decoder: DecoderConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -392,7 +409,7 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.task is None:
             raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
-        _valid_dataset_types = {"slide", "tile", "patient"}
+        _valid_dataset_types = {"slide", "tile", "patient", "segmentation"}
         if self.dataset_type not in _valid_dataset_types:
             raise ValueError(
                 f"Invalid dataset_type {self.dataset_type!r}. "
@@ -407,6 +424,24 @@ class PipelineConfig:
             raise ValueError(
                 "aggregator must be None for dataset_type='patient' — "
                 "patient-level pipelines use a pretrained patient encoder, not a trainable aggregator."
+            )
+        if self.dataset_type == "segmentation":
+            if self.decoder is None:
+                raise ValueError("decoder is required for dataset_type='segmentation'.")
+            if self.aggregator is not None:
+                raise ValueError(
+                    "aggregator must be None for dataset_type='segmentation' — "
+                    "segmentation uses a decoder (dense per-pixel head), not MIL aggregation."
+                )
+            if self.task.name != "segmentation":
+                raise ValueError(
+                    "dataset_type='segmentation' requires task.name='segmentation', "
+                    f"got {self.task.name!r}."
+                )
+        elif self.decoder is not None:
+            raise ValueError(
+                f"decoder must be None for dataset_type={self.dataset_type!r} — "
+                "decoders are only used for dataset_type='segmentation'."
             )
         if self.task.name == "survival":
             if self.dataset_type == "tile":
@@ -501,6 +536,15 @@ class PipelineConfig:
                     f"Unknown aggregator name '{self.aggregator.name}'. "
                     f"Available aggregators: {available}"
                 )
+        if self.decoder is not None:
+            from soma.decoders.registry import decoder_registry
+
+            if self.decoder.name not in decoder_registry:
+                available = ", ".join(sorted(decoder_registry.list())) or "(none)"
+                raise ValueError(
+                    f"Unknown decoder name '{self.decoder.name}'. "
+                    f"Available decoders: {available}"
+                )
 
 
 # --- YAML serialization ---
@@ -559,6 +603,11 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     data["aggregation"] = (
         _normalize_yaml_value(asdict(config.aggregator))
         if config.aggregator is not None
+        else None
+    )
+    data["decoder"] = (
+        _normalize_yaml_value(asdict(config.decoder))
+        if config.decoder is not None
         else None
     )
     return data

@@ -3,6 +3,7 @@
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
+    DecoderConfig,
     EncoderConfig,
     EvalConfig,
     ExecutionConfig,
@@ -47,6 +48,7 @@ __all__ = [
     # Config
     "AggregatorConfig",
     "CacheConfig",
+    "DecoderConfig",
     "EncoderConfig",
     "EvalConfig",
     "ExecutionConfig",
