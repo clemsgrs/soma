@@ -223,3 +223,9 @@ cufile-checkpoint.log
 .pi/
 .codex
 .tasks/
+resources/
+runs/
+design/
+panda*.py
+unicorn*.py
+leopard*.py
