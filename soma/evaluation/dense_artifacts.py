@@ -9,13 +9,24 @@ metrics flow is unchanged: segmentation still returns a plain ``EvaluationReport
 "DenseEvaluationReport") refers to, not a new dataclass woven through ``FoldResult``.
 
 Artifacts written under ``fold_dir``:
-  - ``preds/<split>/<sample_id>.png``    argmax class-index raster (uint8, mode L)
-  - ``overlays/<split>/<sample_id>.png`` predicted foreground color-blended over the
-                                         source tile — **fail-soft**: skipped (logged)
+  - ``preds/<split>/<sample_id>.png``    argmax class-index raster (uint8, mode L) —
+                                         always written; the canonical, exact, viewable
+                                         prediction.
+  - ``probs/<split>/<sample_id>.npz``    float16 ``(C, H, W)`` softmax probabilities —
+                                         **opt-in** (``save_probabilities``); ~C×/precision×
+                                         larger than the argmax raster, for post-hoc
+                                         soft-Dice / calibration / entropy / ensembling.
+  - ``pred_overlays/<split>/<sample_id>.png`` predicted foreground color-blended over
+                                         the source tile — **fail-soft**: skipped (logged)
                                          when the source image is unreadable, the
                                          pred raster is still written.
-  - ``predictions_<split>.csv``          one row per tile: raster/overlay paths +
-                                         per-tile Dice/IoU (from the same per-image
+  - ``gt_overlays/<split>/<sample_id>.png`` ground-truth mask color-blended over the
+                                         same source tile with the same palette/alpha,
+                                         for side-by-side comparison with the prediction
+                                         overlay. Same fail-soft behavior; ``ignore_index``
+                                         pixels are treated as background (unblended).
+  - ``predictions_<split>.csv``          one row per tile: raster/overlay/gt-overlay paths
+                                         + per-tile Dice/IoU (from the same per-image
                                          confusion counts the metric monitor uses).
   - ``metrics_<split>.csv``              split-level per-class Dice + means, computed
                                          unconditionally (design §9 per-class breakdown
@@ -84,6 +95,9 @@ class DenseArtifactWriter:
         dataset: the ``SegmentationManifest`` (``samples[sample_id].image_path``) for
             overlays. ``None`` disables overlays entirely (rasters still written).
         overlay_alpha: blend weight of the predicted color over the source image.
+        save_probabilities: also write a per-tile float16 ``(C, H, W)`` softmax sidecar
+            under ``probs/``. Off by default — the always-written argmax raster covers
+            the common case; this is for post-hoc soft-output analysis.
     """
 
     def __init__(
@@ -94,8 +108,12 @@ class DenseArtifactWriter:
         output_dir: Path | str,
         dataset=None,
         overlay_alpha: float = 0.5,
+        save_probabilities: bool = False,
     ) -> None:
         self._num_classes = int(head.num_classes)
+        # GT masks may carry ignore_index (outside [0, num_classes)); treat those
+        # pixels as background in the GT overlay. Default mirrors SegmentationHead.
+        self._ignore_index = int(getattr(head, "ignore_index", 255))
         if self._num_classes > 256:
             # The argmax raster is uint8 (mode "L"); >256 classes would silently wrap
             # class indices. v1 segmentation assumes ≤256 classes — fail loud instead.
@@ -106,7 +124,10 @@ class DenseArtifactWriter:
         self._split = split
         self._output_dir = Path(output_dir)
         self._preds_dir = self._output_dir / "preds" / split
-        self._overlays_dir = self._output_dir / "overlays" / split
+        self._probs_dir = self._output_dir / "probs" / split
+        self._pred_overlays_dir = self._output_dir / "pred_overlays" / split
+        self._gt_overlays_dir = self._output_dir / "gt_overlays" / split
+        self._save_probabilities = bool(save_probabilities)
         self._dataset = dataset
         self._overlays_enabled = dataset is not None
         self._palette = class_palette(self._num_classes)
@@ -123,10 +144,23 @@ class DenseArtifactWriter:
         # logits are already target-res (the head cropped them); argmax per pixel.
         self._stat_rows.append(stat_row)
         preds = logits.argmax(dim=1).to(torch.uint8).cpu().numpy()  # (B, H, W)
+        masks = batch.targets["mask"].cpu().numpy()  # (B, H, W) GT class indices
+        # Softmax only when the sidecar is enabled (the eval loop discards `logits`
+        # after this call, so the conversion has to happen here, not in finalize).
+        probs = (
+            logits.softmax(dim=1).to(torch.float16).cpu().numpy()  # (B, C, H, W)
+            if self._save_probabilities
+            else None
+        )
         for i, sample_id in enumerate(batch.sample_ids):
             pred = preds[i]
             pred_path = self._write_pred_raster(sample_id, pred)
-            overlay_path = self._write_overlay(sample_id, pred)
+            probs_path = self._write_probs(sample_id, probs[i]) if probs is not None else None
+            # Load the source tile once and blend both overlays from it (the GT and
+            # prediction overlays share the same image/palette/alpha, so a viewer can
+            # compare them side by side). Returns (None, None) if overlays are disabled
+            # or the source image is unreadable (fail-soft).
+            overlay_path, gt_overlay_path = self._write_overlays(sample_id, pred, masks[i])
             # Per-tile Dice/IoU from this image's own confusion row (per_image_macro
             # over its defined classes) — the same reduction as the split metric.
             tile = reduce_dice_iou(stat_row[i : i + 1], num_classes=self._num_classes)
@@ -134,7 +168,9 @@ class DenseArtifactWriter:
                 {
                     "sample_id": sample_id,
                     "pred_path": self._rel(pred_path),
-                    "overlay_path": "" if overlay_path is None else self._rel(overlay_path),
+                    "probs_path": "" if probs_path is None else self._rel(probs_path),
+                    "pred_overlay_path": "" if overlay_path is None else self._rel(overlay_path),
+                    "gt_overlay_path": "" if gt_overlay_path is None else self._rel(gt_overlay_path),
                     "dice": tile["mean_dice"],
                     "iou": tile["mean_iou"],
                 }
@@ -150,32 +186,64 @@ class DenseArtifactWriter:
         Image.fromarray(pred, mode="L").save(path)
         return path
 
-    def _write_overlay(self, sample_id: str, pred: np.ndarray) -> Path | None:
+    def _write_probs(self, sample_id: str, probs: np.ndarray) -> Path:
+        # Compressed float16 (C, H, W) softmax sidecar. argmax(axis=0) recovers the
+        # raster; keyed "probs" so readers don't depend on np.load's default arr_0.
+        self._probs_dir.mkdir(parents=True, exist_ok=True)
+        path = self._probs_dir / f"{sample_id}.npz"
+        np.savez_compressed(path, probs=probs)
+        return path
+
+    def _write_overlays(
+        self, sample_id: str, pred: np.ndarray, mask: np.ndarray
+    ) -> tuple[Path | None, Path | None]:
+        """Write the prediction and GT overlays for one tile from a single source read.
+
+        Returns ``(pred_overlay_path, gt_overlay_path)``; both are ``None`` when
+        overlays are disabled (no dataset) or the source image is unreadable
+        (fail-soft — the pred raster is still written by the caller).
+        """
         if not self._overlays_enabled:
-            return None
+            return None, None
         record = self._dataset.samples.get(sample_id)
         if record is None:
-            return None
+            return None, None
         try:
             with Image.open(record.image_path) as img:
                 image = img.convert("RGB")
         except (FileNotFoundError, OSError, ValueError):
             # Fail-soft: cached-feature runs may not retain the source tile.
-            logger.debug("overlay skipped for '%s': source image unreadable", sample_id)
-            return None
+            logger.debug("overlays skipped for '%s': source image unreadable", sample_id)
+            return None, None
         height, width = pred.shape
         if image.size != (width, height):
             image = image.resize((width, height))  # PIL size is (W, H)
         image_arr = np.asarray(image, dtype=np.float32)
-        color = self._palette[pred].astype(np.float32)
-        foreground = (pred != 0)[..., None]  # leave background showing the raw tile
+        pred_path = self._blend_and_save(image_arr, pred, self._pred_overlays_dir, sample_id)
+        gt_path = self._blend_and_save(image_arr, mask, self._gt_overlays_dir, sample_id)
+        return pred_path, gt_path
+
+    def _blend_and_save(
+        self, image_arr: np.ndarray, raster: np.ndarray, out_dir: Path, sample_id: str
+    ) -> Path:
+        """Color-blend foreground classes of ``raster`` over ``image_arr`` and save.
+
+        Class 0 (background) and any out-of-range value (e.g. ``ignore_index`` in a GT
+        mask) show the raw tile; in-range foreground classes get palette color at
+        ``overlay_alpha``. Predictions never contain out-of-range values, so the same
+        path serves both the prediction and GT overlays.
+        """
+        in_range = (raster >= 0) & (raster < self._num_classes)
+        safe = np.where(in_range, raster, 0)  # clamp so palette indexing never wraps/errors
+        color = self._palette[safe].astype(np.float32)
+        foreground = (in_range & (raster != 0))[..., None]
         blended = np.where(
             foreground,
             (1.0 - self._overlay_alpha) * image_arr + self._overlay_alpha * color,
             image_arr,
         )
-        self._overlays_dir.mkdir(parents=True, exist_ok=True)
-        path = self._overlays_dir / f"{sample_id}.png"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{sample_id}.png"
         Image.fromarray(blended.astype(np.uint8), mode="RGB").save(path)
         return path
 
@@ -191,7 +259,16 @@ class DenseArtifactWriter:
         path = self._output_dir / f"predictions_{self._split}.csv"
         with open(path, "w", newline="") as f:
             writer = csv.DictWriter(
-                f, fieldnames=["sample_id", "pred_path", "overlay_path", "dice", "iou"]
+                f,
+                fieldnames=[
+                    "sample_id",
+                    "pred_path",
+                    "probs_path",
+                    "pred_overlay_path",
+                    "gt_overlay_path",
+                    "dice",
+                    "iou",
+                ],
             )
             writer.writeheader()
             writer.writerows(self._rows)

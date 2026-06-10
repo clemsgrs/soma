@@ -103,7 +103,7 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     assert raster.dtype == np.uint8
     assert raster.max() < NUM_CLASSES
     # Overlays are fail-soft: the cached-feature fixture has no real source tiles.
-    assert not (fold / "overlays" / "test" / "s3.png").exists()
+    assert not (fold / "pred_overlays" / "test" / "s3.png").exists()
 
 
 def test_segmentation_fold_requires_num_classes(tmp_path: Path):

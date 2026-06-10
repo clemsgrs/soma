@@ -86,16 +86,23 @@ def test_writer_emits_raster_overlay_and_csv(tmp_path):
         assert raster.dtype == np.uint8
         assert raster.max() < NUM_CLASSES
         np.testing.assert_array_equal(raster, pred[i].numpy().astype(np.uint8))
-        # A real source image -> an overlay file (RGB, target-res).
-        overlay_path = tmp_path / "overlays" / "test" / f"{sid}.png"
+        # A real source image -> prediction + GT overlay files (RGB, target-res).
+        overlay_path = tmp_path / "pred_overlays" / "test" / f"{sid}.png"
         assert overlay_path.is_file()
         assert np.asarray(Image.open(overlay_path)).shape == (H, W, 3)
+        gt_overlay_path = tmp_path / "gt_overlays" / "test" / f"{sid}.png"
+        assert gt_overlay_path.is_file()
+        assert np.asarray(Image.open(gt_overlay_path)).shape == (H, W, 3)
 
     rows = list(csv.DictReader(csv_path.open()))
     assert [r["sample_id"] for r in rows] == sample_ids
     assert rows[0]["pred_path"] == "preds/test/s0.png"
-    assert rows[0]["overlay_path"] == "overlays/test/s0.png"
+    assert rows[0]["pred_overlay_path"] == "pred_overlays/test/s0.png"
+    assert rows[0]["gt_overlay_path"] == "gt_overlays/test/s0.png"
     assert {"dice", "iou"} <= set(rows[0])
+    # Probabilities are opt-in: off by default -> empty column, no probs dir.
+    assert rows[0]["probs_path"] == ""
+    assert not (tmp_path / "probs").exists()
 
     # Split-level metrics.csv: per-class Dice + means, always (independent of monitor).
     metrics_rows = {r["metric"]: r for r in csv.DictReader((tmp_path / "metrics_test.csv").open())}
@@ -117,9 +124,58 @@ def test_overlay_fail_soft_on_missing_image(tmp_path):
     csv_path = writer.finalize()
 
     assert (tmp_path / "preds" / "test" / "s0.png").is_file()
-    assert not (tmp_path / "overlays" / "test" / "s0.png").exists()
+    assert not (tmp_path / "pred_overlays" / "test" / "s0.png").exists()
+    assert not (tmp_path / "gt_overlays" / "test" / "s0.png").exists()
     row = next(csv.DictReader(csv_path.open()))
-    assert row["overlay_path"] == ""  # skipped, recorded as empty
+    assert row["pred_overlay_path"] == ""  # skipped, recorded as empty
+    assert row["gt_overlay_path"] == ""
+
+
+def test_save_probabilities_writes_float16_sidecar(tmp_path):
+    """save_probabilities=True -> a float16 (C,H,W) softmax npz whose argmax matches the raster."""
+    sample_ids = ["s0", "s1"]
+    dataset = _dataset_with_images(tmp_path, sample_ids, make_image=True)
+    writer = DenseArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset, save_probabilities=True
+    )
+    pred = torch.tensor(
+        [[[0, 1, 1, 0], [0, 1, 1, 0], [2, 2, 0, 0], [2, 2, 0, 0]],
+         [[1, 1, 1, 1], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]]],
+        dtype=torch.long,
+    )
+    logits = _logits_from_pred(pred, NUM_CLASSES)
+    batch = SegmentationBatch(features=torch.zeros(2, 1, 2, 2), targets={"mask": pred}, sample_ids=tuple(sample_ids))
+    writer(batch, logits, _stat_row(2))
+    csv_path = writer.finalize()
+
+    rows = {r["sample_id"]: r for r in csv.DictReader(csv_path.open())}
+    for i, sid in enumerate(sample_ids):
+        probs_path = tmp_path / "probs" / "test" / f"{sid}.npz"
+        assert probs_path.is_file()
+        assert rows[sid]["probs_path"] == f"probs/test/{sid}.npz"
+        probs = np.load(probs_path)["probs"]
+        assert probs.shape == (NUM_CLASSES, H, W)
+        assert probs.dtype == np.float16
+        # argmax over channels recovers the canonical raster.
+        np.testing.assert_array_equal(probs.argmax(axis=0).astype(np.uint8), pred[i].numpy().astype(np.uint8))
+
+
+def test_gt_overlay_tolerates_ignore_index(tmp_path):
+    """ignore_index pixels in the GT mask are treated as background, not palette-indexed."""
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=True)
+    head = types.SimpleNamespace(num_classes=NUM_CLASSES, ignore_index=255)
+    writer = DenseArtifactWriter(head=head, split="test", output_dir=tmp_path, dataset=dataset)
+
+    pred = torch.zeros(1, H, W, dtype=torch.long)
+    mask = torch.full((1, H, W), 255, dtype=torch.long)  # all ignore_index
+    mask[0, 0, 0] = 1  # one in-range foreground pixel
+    batch = SegmentationBatch(features=torch.zeros(1, 1, 2, 2), targets={"mask": mask}, sample_ids=("s0",))
+    writer(batch, _logits_from_pred(pred, NUM_CLASSES), _stat_row(1))
+    writer.finalize()
+
+    gt_overlay = tmp_path / "gt_overlays" / "test" / "s0.png"
+    assert gt_overlay.is_file()
+    assert np.asarray(Image.open(gt_overlay)).shape == (H, W, 3)
 
 
 def test_writer_without_dataset_skips_overlays(tmp_path):
@@ -129,4 +185,5 @@ def test_writer_without_dataset_skips_overlays(tmp_path):
     writer(batch, _logits_from_pred(pred, NUM_CLASSES), _stat_row(1))
     writer.finalize()
     assert (tmp_path / "preds" / "tune" / "s0.png").is_file()
-    assert not (tmp_path / "overlays").exists()  # overlay dir never created
+    assert not (tmp_path / "pred_overlays").exists()  # overlay dir never created
+    assert not (tmp_path / "gt_overlays").exists()

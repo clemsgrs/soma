@@ -297,10 +297,15 @@ class EvalConfig:
 
     Metrics are validated against the selected task family, and subgroup
     columns are used to break down the reported metrics in the run outputs.
+    ``save_probabilities`` (segmentation only) additionally writes a per-tile
+    float16 ``(C, H, W)`` softmax sidecar under ``probs/`` — opt-in because it is
+    ~C×/precision× larger than the always-written argmax raster, and unlocks
+    post-hoc soft-Dice/calibration/entropy/ensembling without re-running inference.
     """
 
     metrics: list[str] = field(default_factory=list)
     subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
+    save_probabilities: bool = False
 
 
 @dataclass(frozen=True)
@@ -648,4 +653,5 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
     return EvalConfig(
         metrics=evaluation_data.get("metrics", []),
         subgroups=SubgroupConfig(columns=columns),
+        save_probabilities=bool(evaluation_data.get("save_probabilities", False)),
     )

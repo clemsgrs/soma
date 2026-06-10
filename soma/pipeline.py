@@ -1030,11 +1030,13 @@ def train_one_segmentation_fold(
     model.eval()
 
     tune_report = _evaluate_segmentation(
-        model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir
+        model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir,
+        save_probabilities=evaluation.save_probabilities,
     )
     test_reports = {
         split_name: _evaluate_segmentation(
-            model, loader, split_name, device, dataset=dataset, output_dir=fold_dir
+            model, loader, split_name, device, dataset=dataset, output_dir=fold_dir,
+            save_probabilities=evaluation.save_probabilities,
         )
         for split_name, loader in test_loaders.items()
     }
@@ -1715,6 +1717,7 @@ def _evaluate_segmentation(
     *,
     dataset: SegmentationManifest | None = None,
     output_dir: Path | None = None,
+    save_probabilities: bool = False,
 ) -> EvaluationReport:
     """Streaming dense evaluation: accumulate compact per-image confusion counts.
 
@@ -1732,7 +1735,13 @@ def _evaluate_segmentation(
     """
     head = model.task_head
     writer = (
-        DenseArtifactWriter(head=head, split=split_name, output_dir=output_dir, dataset=dataset)
+        DenseArtifactWriter(
+            head=head,
+            split=split_name,
+            output_dir=output_dir,
+            dataset=dataset,
+            save_probabilities=save_probabilities,
+        )
         if output_dir is not None
         else None
     )

@@ -136,6 +136,7 @@ def test_evaluation_config_defaults():
     cfg = EvalConfig()
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
+    assert cfg.save_probabilities is False
 
 
 def test_pipeline_config_rejects_unknown_encoder():
@@ -504,6 +505,14 @@ def test_evaluation_metrics_empty_roundtrip(tmp_path: Path):
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
     assert loaded.evaluation.metrics == []
+
+
+def test_evaluation_save_probabilities_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(evaluation=EvalConfig(save_probabilities=True))
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.evaluation.save_probabilities is True
 
 
 def test_evaluation_subgroups_roundtrip(tmp_path: Path):
