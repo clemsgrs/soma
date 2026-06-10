@@ -1280,15 +1280,6 @@ class FeatureExtractor:
             record_empty_sample_ids(patient_cache, empty_patient_ids)
         if not selected_loaded:
             return
-        tile_artifacts = build_tile_artifacts_from_cache_payload(
-            features_dir=tile_cache.features_dir,
-            loaded_tilings=selected_loaded,
-            work_dir=patient_cache.cache_dir / "tile_metadata",
-            feature_path_by_sample_id={
-                loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
-                for loaded in selected_loaded
-            },
-        )
         slide_exec = build_execution_options(
             self._encoder,
             execution=self._execution,
@@ -1305,16 +1296,28 @@ class FeatureExtractor:
             num_gpus=num_gpus,
             save_tile_embeddings=False,
         )
-        patient_artifacts = _aggregate_patients(
-            model_name=model_name,
-            output_variant=output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            tile_artifacts=tile_artifacts,
-            patient_id_map=patient_id_map,
-            preprocessing=None,
-            slide_execution=slide_exec,
-            patient_execution=patient_exec,
-        )
+        # The scratch ``.meta.json`` sidecars are consumed by _aggregate_patients,
+        # so the temp dir must outlive that call (not just the build step).
+        with tempfile.TemporaryDirectory(prefix="soma-patient-agg-") as tile_meta_tmp:
+            tile_artifacts = build_tile_artifacts_from_cache_payload(
+                features_dir=tile_cache.features_dir,
+                loaded_tilings=selected_loaded,
+                work_dir=Path(tile_meta_tmp),
+                feature_path_by_sample_id={
+                    loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                    for loaded in selected_loaded
+                },
+            )
+            patient_artifacts = _aggregate_patients(
+                model_name=model_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                tile_artifacts=tile_artifacts,
+                patient_id_map=patient_id_map,
+                preprocessing=None,
+                slide_execution=slide_exec,
+                patient_execution=patient_exec,
+            )
         feature_dim = self._write_artifacts_to_cache_resolution(
             artifacts=patient_artifacts,
             cache_resolution=patient_cache,
@@ -1546,6 +1549,14 @@ class FeatureExtractor:
                         slides_completed=processed,
                     )
 
+                # Commit each worker's slides as it finishes (per-shard), so a
+                # crash partway through preserves shards that already completed
+                # instead of forcing the whole aggregation step to rerun.
+                def _commit_shard(shard_ids: list[str], shard_dim: int | None) -> None:
+                    if shard_dim is not None:
+                        record_feature_dim(slide_cache, shard_dim)
+                    record_sample_identity_signatures(slide_cache, sorted(shard_ids))
+
                 written_ids, slide_feature_dim = spawn_slide_aggregation_workers(
                     num_workers=num_workers,
                     model_name=model_name,
@@ -1558,6 +1569,7 @@ class FeatureExtractor:
                     output_dir=slide_cache.cache_dir,
                     shard_payloads_by_rank=shard_payloads,
                     on_progress=_on_aggregation_progress,
+                    on_shard_complete=_commit_shard,
                 )
                 slide2vec_progress.emit_progress(
                     "embedding.finished",
@@ -1566,26 +1578,25 @@ class FeatureExtractor:
                     tile_artifacts=0,
                     slide_artifacts=len(written_ids),
                 )
-                if written_ids:
-                    record_sample_identity_signatures(slide_cache, sorted(written_ids))
             else:
-                tile_artifacts = build_tile_artifacts_from_cache_payload(
-                    features_dir=tile_cache.features_dir,
-                    loaded_tilings=selected_loaded,
-                    work_dir=slide_cache.cache_dir / "tile_metadata",
-                    feature_path_by_sample_id={
-                        loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
-                        for loaded in selected_loaded
-                    },
-                )
-                slide_artifacts = _aggregate_tiles(
-                    model_name=model_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                    tile_artifacts=tile_artifacts,
-                    preprocessing=None,
-                    execution=slide_execution,
-                )
+                with tempfile.TemporaryDirectory(prefix="soma-slide-agg-") as tile_meta_tmp:
+                    tile_artifacts = build_tile_artifacts_from_cache_payload(
+                        features_dir=tile_cache.features_dir,
+                        loaded_tilings=selected_loaded,
+                        work_dir=Path(tile_meta_tmp),
+                        feature_path_by_sample_id={
+                            loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
+                            for loaded in selected_loaded
+                        },
+                    )
+                    slide_artifacts = _aggregate_tiles(
+                        model_name=model_name,
+                        output_variant=output_variant,
+                        allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                        tile_artifacts=tile_artifacts,
+                        preprocessing=None,
+                        execution=slide_execution,
+                    )
                 slide_feature_dim = self._write_artifacts_to_cache_resolution(
                     artifacts=slide_artifacts,
                     cache_resolution=slide_cache,

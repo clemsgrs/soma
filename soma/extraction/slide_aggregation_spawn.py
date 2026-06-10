@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import queue as py_queue
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -27,66 +28,71 @@ def _aggregate_slide_shard_worker(
         torch.cuda.set_device(int(rank))
 
     output_dir = Path(str(shared["output_dir"]))
-    shard_dir = output_dir / f"tile_metadata_rank{int(rank)}"
-    shard_dir.mkdir(parents=True, exist_ok=True)
-    tile_artifacts = []
-    for payload in shard_payloads:
-        sample_id = str(payload["sample_id"])
-        feature_path = Path(payload["feature_path"])
-        tensor = torch.load(feature_path, weights_only=True, map_location="cpu")
-        feature_dim = int(tensor.shape[1])
-        num_tiles = int(tensor.shape[0])
-        metadata_path = shard_dir / f"{sample_id}.meta.json"
-        metadata_path.write_text(
-            json.dumps(
-                {
-                    "sample_id": sample_id,
-                    "artifact_type": "tile_embeddings",
-                    "format": "pt",
-                    "feature_dim": feature_dim,
-                    "num_tiles": num_tiles,
-                    "image_path": str(payload["image_path"]),
-                    "mask_path": str(payload["mask_path"]),
-                    "coordinates_npz_path": str(payload["coordinates_npz_path"]),
-                    "coordinates_meta_path": str(payload["coordinates_meta_path"]),
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
-        tile_artifacts.append(
-            TileEmbeddingArtifact(
-                sample_id=sample_id,
-                path=feature_path,
-                metadata_path=metadata_path,
-                format="pt",
-                feature_dim=feature_dim,
-                num_tiles=num_tiles,
+    # The per-sample ``.meta.json`` sidecars are scratch scaffolding consumed by
+    # ``_aggregate_tiles`` within this worker; they must never land in the
+    # persistent feature cache (``output_dir``). Keep them in an OS temp dir that
+    # is removed when the worker exits (success or crash). Slide ``.pt`` outputs
+    # still go to ``output_dir``.
+    with tempfile.TemporaryDirectory(prefix=f"soma-slide-agg-rank{int(rank)}-") as shard_tmp:
+        shard_dir = Path(shard_tmp)
+        tile_artifacts = []
+        for payload in shard_payloads:
+            sample_id = str(payload["sample_id"])
+            feature_path = Path(payload["feature_path"])
+            tensor = torch.load(feature_path, weights_only=True, map_location="cpu")
+            feature_dim = int(tensor.shape[1])
+            num_tiles = int(tensor.shape[0])
+            metadata_path = shard_dir / f"{sample_id}.meta.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "sample_id": sample_id,
+                        "artifact_type": "tile_embeddings",
+                        "format": "pt",
+                        "feature_dim": feature_dim,
+                        "num_tiles": num_tiles,
+                        "image_path": str(payload["image_path"]),
+                        "mask_path": str(payload["mask_path"]),
+                        "coordinates_npz_path": str(payload["coordinates_npz_path"]),
+                        "coordinates_meta_path": str(payload["coordinates_meta_path"]),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
             )
-        )
+            tile_artifacts.append(
+                TileEmbeddingArtifact(
+                    sample_id=sample_id,
+                    path=feature_path,
+                    metadata_path=metadata_path,
+                    format="pt",
+                    feature_dim=feature_dim,
+                    num_tiles=num_tiles,
+                )
+            )
 
-    slide_execution = ExecutionOptions(
-        output_dir=output_dir,
-        output_format="pt",
-        batch_size=int(shared["execution_batch_size"]),
-        num_workers_per_gpu=int(shared["execution_num_workers_per_gpu"]),
-        num_preprocessing_workers=None,
-        num_gpus=1,
-        precision=shared["execution_precision"],
-        prefetch_factor=int(shared["execution_prefetch_factor"]),
-        save_tile_embeddings=False,
-        save_slide_embeddings=False,
-        save_latents=False,
-    )
-    slide_artifacts = _aggregate_tiles(
-        model_name=str(shared["model_name"]),
-        output_variant=shared["output_variant"],
-        allow_non_recommended_settings=bool(shared["allow_non_recommended_settings"]),
-        tile_artifacts=tile_artifacts,
-        preprocessing=None,
-        execution=slide_execution,
-    )
+        slide_execution = ExecutionOptions(
+            output_dir=output_dir,
+            output_format="pt",
+            batch_size=int(shared["execution_batch_size"]),
+            num_workers_per_gpu=int(shared["execution_num_workers_per_gpu"]),
+            num_preprocessing_workers=None,
+            num_gpus=1,
+            precision=shared["execution_precision"],
+            prefetch_factor=int(shared["execution_prefetch_factor"]),
+            save_tile_embeddings=False,
+            save_slide_embeddings=False,
+            save_latents=False,
+        )
+        slide_artifacts = _aggregate_tiles(
+            model_name=str(shared["model_name"]),
+            output_variant=shared["output_variant"],
+            allow_non_recommended_settings=bool(shared["allow_non_recommended_settings"]),
+            tile_artifacts=tile_artifacts,
+            preprocessing=None,
+            execution=slide_execution,
+        )
     written_ids: list[str] = []
     feature_dim: int | None = None
     for artifact in slide_artifacts:
@@ -123,6 +129,7 @@ def spawn_slide_aggregation_workers(
     execution_prefetch_factor: int,
     output_dir: Path,
     shard_payloads_by_rank: list[list[dict[str, str]]],
+    on_shard_complete: Callable[[list[str], int | None], None],
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[set[str], int | None]:
     ctx = torch.multiprocessing.get_context("spawn")
@@ -167,11 +174,17 @@ def spawn_slide_aggregation_workers(
             continue
         if kind == "result":
             completed_workers += 1
-            shard_written_ids = message.get("written_ids", [])
+            shard_written_ids = [str(sample_id) for sample_id in message.get("written_ids", [])]
             shard_feature_dim = message.get("feature_dim")
-            written_ids.update(str(sample_id) for sample_id in shard_written_ids)
+            written_ids.update(shard_written_ids)
             if feature_dim is None and shard_feature_dim is not None:
                 feature_dim = int(shard_feature_dim)
+            # Commit this worker's slides as soon as it reports, so a crash in a
+            # later worker does not discard shards that already finished. The
+            # worker's slide ``.pt`` files are on disk before it sends "result".
+            if shard_written_ids:
+                shard_dim = int(shard_feature_dim) if shard_feature_dim is not None else None
+                on_shard_complete(shard_written_ids, shard_dim)
 
     process_ctx.join()
     return written_ids, feature_dim
