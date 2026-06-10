@@ -247,3 +247,50 @@ def test_patient_record_map_inconsistent_raises(tmp_path: Path):
     ds = Dataset(path)
     with pytest.raises(ValueError, match="inconsistent"):
         _ = ds.patient_record_map
+
+
+@pytest.mark.parametrize("bad_id", ["../escaped", "a/b", "/abs", "..", ".", r"a\b"])
+def test_unsafe_sample_id_rejected(tmp_path: Path, bad_id: str):
+    # sample_id becomes a cache filename (<id>.pt) across every cache kind, so a
+    # path-traversal id must be rejected at ingestion (the single chokepoint).
+    df = pd.DataFrame(
+        {
+            "sample_id": ["s1", bad_id],
+            "image_path": ["/a.svs", "/b.svs"],
+            "label": ["tumor", "normal"],
+        }
+    )
+    path = tmp_path / "bad.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="Unsafe sample_id"):
+        Dataset(path)
+
+
+def test_unsafe_patient_id_rejected(tmp_path: Path):
+    # patient_id is also written as <patient_id>.pt by the patient cache.
+    df = pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2"],
+            "image_path": ["/a.svs", "/b.svs"],
+            "label": ["tumor", "normal"],
+            "patient_id": ["p1", "../p2"],
+        }
+    )
+    path = tmp_path / "bad.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match="Unsafe patient_id"):
+        Dataset(path)
+
+
+def test_safe_sample_ids_with_dots_allowed(tmp_path: Path):
+    # Dots inside the name (not '.'/'..') are legitimate and must pass.
+    df = pd.DataFrame(
+        {
+            "sample_id": ["case.1.2", "TCGA-AB-1234"],
+            "image_path": ["/a.svs", "/b.svs"],
+            "label": ["tumor", "normal"],
+        }
+    )
+    path = tmp_path / "ok.csv"
+    df.to_csv(path, index=False)
+    assert sorted(Dataset(path).sample_ids) == ["TCGA-AB-1234", "case.1.2"]

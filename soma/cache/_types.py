@@ -19,6 +19,10 @@ _FEATURE_TYPE_TO_RANK = {
     "slide": 1,
     "patient": 1,
     "hierarchical": 3,
+    # dense_grid is (channels, grid_h, grid_w); same rank as hierarchical but the
+    # feature dim is the channel axis (0), not the last axis. The dense validator
+    # and DenseFeatureStore read the channel axis from metadata, never from rank.
+    "dense_grid": 3,
 }
 
 _CACHE_KIND_TO_FEATURES_SUBDIR = {
@@ -26,6 +30,7 @@ _CACHE_KIND_TO_FEATURES_SUBDIR = {
     "slide": "slide_embeddings",
     "patient": "patient_embeddings",
     "hierarchical": "hierarchical_embeddings",
+    "dense": "dense_embeddings",
 }
 
 

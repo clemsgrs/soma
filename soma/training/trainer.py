@@ -380,6 +380,9 @@ class Trainer:
         on_batch_progress: Callable[[str, int, int], None] | None = None,
     ) -> tuple[float, dict[str, float]]:
         """Run evaluation on tune set. Returns (average loss, metrics dict)."""
+        if getattr(self._model.task_head, "accumulates_eval_metrics", False):
+            return self._tune_streaming_metrics(on_batch_progress=on_batch_progress)
+
         self._model.eval()
         total_loss = 0.0
         num_batches = 0
@@ -427,10 +430,89 @@ class Trainer:
             metrics = {}
         return avg_loss, metrics
 
+    @torch.inference_mode()
+    def _tune_streaming_metrics(
+        self,
+        on_batch_progress: Callable[[str, int, int], None] | None = None,
+    ) -> tuple[float, dict[str, float]]:
+        """Tune eval for heads that accumulate compact per-image metric stats.
+
+        Loss is a per-batch scalar, so its running mean is safe. The actual
+        accumulation is the shared :func:`accumulate_dense_stats` (see its docstring
+        for why the per-image axis must survive); here we additionally average loss.
+        """
+        head = self._model.task_head
+        stat_rows, total_loss, num_batches = accumulate_dense_stats(
+            self._model,
+            self._tune_loader,
+            self._device,
+            compute_loss=True,
+            on_batch_progress=on_batch_progress,
+            progress_label="tune",
+        )
+        avg_loss = total_loss / max(num_batches, 1)
+        metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
+        return avg_loss, metrics
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+@torch.inference_mode()
+def accumulate_dense_stats(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    *,
+    compute_loss: bool = False,
+    on_batch_progress: Callable[[str, int, int], None] | None = None,
+    on_batch_output: Callable[[object, torch.Tensor, torch.Tensor], None] | None = None,
+    progress_label: str = "tune",
+) -> tuple[list[torch.Tensor], float, int]:
+    """Stream a dense head's compact per-image confusion counts over ``loader``.
+
+    Shared by the trainer's tune eval and the pipeline's split eval so the two
+    cannot drift. Dense segmentation logits ``(N, C, H, W)`` would OOM if
+    concatenated across a cohort; instead each batch contributes the head's compact
+    ``dense_stats`` rows ``(B, C, 3)``. The rows are returned un-concatenated, with
+    the **per-image axis preserved** — the caller concatenates along that axis into
+    ``(ΣB, C, 3)`` and reduces once via ``finalize_eval_metrics``. Summing the rows
+    to ``(C, 3)`` would silently switch the per-image-macro metric to dataset-global.
+
+    Returns ``(stat_rows, total_loss, num_batches)``; ``total_loss`` is summed only
+    when ``compute_loss`` (each term a per-batch scalar, so a running mean is safe).
+
+    ``on_batch_output`` (eval-only; ``None`` in the per-epoch tune pass) receives
+    ``(batch, out.logits, stat_row)`` per batch *before* the logits are discarded —
+    used to stream prediction rasters/overlays to disk without holding all logits.
+    """
+    model.eval()
+    head = model.task_head
+    total_loss = 0.0
+    num_batches = 0
+    stat_rows: list[torch.Tensor] = []
+    total_batches = len(loader)
+    total_items = _resolve_total_items(loader, fallback=total_batches)
+    processed_items = 0
+
+    for batch in loader:
+        processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
+        if on_batch_progress is not None:
+            on_batch_progress(progress_label, processed_items, total_items)
+        features = batch.features.to(device)
+        targets = {key: value.to(device) for key, value in batch.targets.items()}
+        out = model(features)
+        if compute_loss:
+            total_loss += head.compute_loss(out.logits, targets).item()
+        num_batches += 1
+        stat_row = head.dense_stats(out.logits, targets).detach().cpu()
+        stat_rows.append(stat_row)
+        if on_batch_output is not None:
+            on_batch_output(batch, out.logits, stat_row)
+
+    return stat_rows, total_loss, num_batches
 
 
 def _build_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim.Optimizer:

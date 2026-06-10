@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 import json
 import csv
+import functools
+import inspect
+import math
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
-
-import functools
 
 import pandas as pd
 
@@ -30,8 +31,10 @@ from rich.table import Table
 from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
+from soma.decoders.registry import decoder_registry
 from soma.config import (
     AggregatorConfig,
+    DecoderConfig,
     EncoderConfig,
     EvalConfig,
     HeatmapConfig,
@@ -41,9 +44,10 @@ from soma.config import (
     TrainingConfig,
     save_config,
 )
-from soma.dataset import Dataset, FoldSplit, SampleRecord, Splits
+from soma.dataset import Dataset, FoldSplit, SampleRecord, SegmentationManifest, Splits
 from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
+from soma.evaluation.dense_artifacts import DenseArtifactWriter
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
@@ -62,13 +66,15 @@ from soma.output_layout import (
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
+from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
-from soma.training.model import EmbeddingModel, MILModel
+from soma.training.model import EmbeddingModel, MILModel, SegmentationModel
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
 from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
+from soma.training.segmentation_dataset import SegmentationDataset, segmentation_collate_fn
 from soma.training.seed import seed_everything
-from soma.training.trainer import Trainer, TrainResult, epoch_log_to_dict
+from soma.training.trainer import Trainer, TrainResult, accumulate_dense_stats, epoch_log_to_dict
 from soma.reporting import generate_report_from_result
 from soma.reporting.subgroups import subgroup_data_for_predictions, subgroup_report_for_predictions
 
@@ -872,6 +878,180 @@ def train_one_fold(
     )
 
 
+def train_one_segmentation_fold(
+    feature_store: "DenseFeatureStore",
+    dataset: SegmentationManifest,
+    fold_split: FoldSplit,
+    task: TaskConfig,
+    training: TrainingConfig,
+    fold_dir: str | Path,
+    *,
+    decoder: DecoderConfig | None,
+    evaluation: EvalConfig | None = None,
+    fold: int = 0,
+    num_folds: int = 1,
+) -> FoldResult:
+    """Train and evaluate a single dense-segmentation fold.
+
+    Separate from :func:`train_one_fold` because the scalar path's manifest-status
+    filtering, deterministic baseline, placeholder predictions, ``SamplePrediction``
+    and CSV machinery are all scalar-shaped and do not apply to dense rasters, and
+    because the model is ``decoder + SegmentationHead`` (not aggregator/embedding +
+    head). The split→records selection and ``tune_is_test``/``allow_missing_tune``
+    semantics are reused.
+
+    Scope (1f-b): metrics-only. Predictions are an empty list; per-pixel raster
+    outputs and overlays land with the dense evaluation report (1g).
+    """
+    if decoder is None:
+        raise ValueError("dataset_type='segmentation' requires a decoder configuration")
+
+    evaluation = evaluation or EvalConfig()
+    fold_dir = Path(fold_dir)
+    fold_dir.mkdir(parents=True, exist_ok=True)
+    seed_everything(training.seed, fold=fold)
+    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+
+    # Split -> records (reuse the legacy, no-manifest selection; dense grids are
+    # required for every listed sample, validated below).
+    train_records = [dataset.samples[sid] for sid in fold_split.train]
+    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+    test_records_by_split = {
+        split_name: [dataset.samples[sid] for sid in ids]
+        for split_name, ids in fold_split.tests.items()
+    }
+    if training.tune_is_test:
+        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
+        tune_records = list(test_records_by_split[tune_from_test_split_name])
+
+    if not train_records:
+        raise ValueError(f"{_fp} has no training samples")
+    if not tune_records:
+        if not training.allow_missing_tune:
+            raise ValueError(f"{_fp} has no tuning samples")
+        logger.warning("%s has no tune samples; using train as tune (allow_missing_tune)", _fp)
+        tune_records = list(train_records)
+    for split_name, records in test_records_by_split.items():
+        if not records:
+            raise ValueError(f"{_fp} has no samples in split '{split_name}'")
+
+    all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
+    feature_store.validate_coverage([r.sample_id for r in all_records])
+
+    # num_classes is the single source — from task.params (no dataset auto-inject,
+    # since segmentation has no scalar labels). Fed to BOTH decoder and head.
+    seg_params = dict(task.params)
+    num_classes = seg_params.pop("num_classes", None)
+    if num_classes is None:
+        raise ValueError(
+            "dataset_type='segmentation' requires task.params.num_classes "
+            "(the number of segmentation classes)."
+        )
+    num_classes = int(num_classes)
+
+    # Geometry from the dense sidecar (single source). The head crop + decoder are
+    # built from one reference sample, which is only correct if the run is uniform
+    # (fixed tile/grid size — the v1 assumption); assert it loudly rather than
+    # silently misregister logits cropped with a different sample's geometry.
+    ref_id = train_records[0].sample_id
+    geometry = feature_store.geometry(ref_id)
+    ref_feature_dim = feature_store.feature_dim
+    for record in all_records:
+        sid = record.sample_id
+        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+            raise ValueError(
+                f"dense grid '{sid}' has geometry/feature_dim differing from reference "
+                f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
+                "size across the cohort."
+            )
+    head = SegmentationHead(
+        num_classes=num_classes,
+        geometry=geometry,
+        metrics=evaluation.metrics,
+        **seg_params,
+    )
+    target_fn = head.extract_targets
+
+    # Decoder: inject the auto-computed upsample depth only if the decoder accepts it
+    # (LinearDecoder does not) and the user did not pin it. num_upsample_blocks brings
+    # the token grid up to ~encoded resolution (the size the head interpolates to);
+    # encoded/grid == patch_size per axis.
+    decoder_cls = decoder_registry.get(decoder.name)
+    decoder_params = dict(decoder.params)
+    ctor_params = inspect.signature(decoder_cls.__init__).parameters
+    if "num_upsample_blocks" in ctor_params and "num_upsample_blocks" not in decoder_params:
+        ratio_h = geometry.encoded_size[0] / geometry.grid_shape[0]
+        ratio_w = geometry.encoded_size[1] / geometry.grid_shape[1]
+        decoder_params["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(ratio_h, ratio_w))))
+    decoder_obj = decoder_cls(
+        input_dim=feature_store.feature_dim,
+        num_classes=num_classes,
+        **decoder_params,
+    )
+    if decoder_obj.num_classes != head.num_classes:
+        raise ValueError(
+            f"decoder num_classes ({decoder_obj.num_classes}) != head num_classes "
+            f"({head.num_classes}) — a mismatch would misregister the logits."
+        )
+    model = SegmentationModel(decoder=decoder_obj, task_head=head)
+
+    seg_collate = functools.partial(segmentation_collate_fn, target_dtypes=head.target_dtypes)
+    train_loader, tune_loader, test_loaders = _make_loaders(
+        SegmentationDataset, seg_collate,
+        train_records, tune_records, test_records_by_split,
+        training, feature_store, target_fn,
+    )
+
+    summary = _format_fold_summary(
+        fold=fold,
+        train_count=len(train_records),
+        tune_count=len(tune_records),
+        tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
+        empty_sample_ids_by_split=None,
+    )
+    logger.info(summary)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    trainer = Trainer(
+        model=model,
+        train_loader=train_loader,
+        tune_loader=tune_loader,
+        config=training,
+        fold_dir=fold_dir,
+        device=device,
+        fold=fold,
+        num_folds=num_folds,
+    )
+    train_result = trainer.fit()
+
+    checkpoint = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+    model.eval()
+
+    tune_report = _evaluate_segmentation(
+        model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir,
+        save_probabilities=evaluation.save_probabilities,
+    )
+    test_reports = {
+        split_name: _evaluate_segmentation(
+            model, loader, split_name, device, dataset=dataset, output_dir=fold_dir,
+            save_probabilities=evaluation.save_probabilities,
+        )
+        for split_name, loader in test_loaders.items()
+    }
+
+    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+    _save_training_history(train_result.history, fold_dir / "training_history.json")
+
+    return FoldResult(
+        fold=fold,
+        train_result=train_result,
+        tune_report=tune_report,
+        test_reports=test_reports,
+    )
+
+
 def train(
     feature_store: FeatureStore,
     dataset: Dataset,
@@ -880,6 +1060,7 @@ def train(
     training: TrainingConfig,
     run_dir: str | Path,
     aggregator: AggregatorConfig | None = None,
+    decoder: DecoderConfig | None = None,
     evaluation: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
@@ -915,21 +1096,35 @@ def train(
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
         fold_dir = run_dir if single_fold else run_dir / f"fold_{fold_idx}"
-        result = train_one_fold(
-            feature_store=feature_store,
-            dataset=dataset,
-            fold_split=fold_split,
-            dataset_type=dataset_type,
-            aggregator=aggregator,
-            task=task,
-            evaluation=evaluation,
-            training=training,
-            fold_dir=fold_dir,
-            fold=fold_idx,
-            num_folds=splits.num_folds,
-            preprocessing=preprocessing,
-            heatmaps=heatmaps,
-        )
+        if dataset_type == "segmentation":
+            result = train_one_segmentation_fold(
+                feature_store=feature_store,
+                dataset=dataset,
+                fold_split=fold_split,
+                task=task,
+                decoder=decoder,
+                evaluation=evaluation,
+                training=training,
+                fold_dir=fold_dir,
+                fold=fold_idx,
+                num_folds=splits.num_folds,
+            )
+        else:
+            result = train_one_fold(
+                feature_store=feature_store,
+                dataset=dataset,
+                fold_split=fold_split,
+                dataset_type=dataset_type,
+                aggregator=aggregator,
+                task=task,
+                evaluation=evaluation,
+                training=training,
+                fold_dir=fold_dir,
+                fold=fold_idx,
+                num_folds=splits.num_folds,
+                preprocessing=preprocessing,
+                heatmaps=heatmaps,
+            )
         fold_results.append(result)
 
     summary = _aggregate_fold_metrics(fold_results)
@@ -955,6 +1150,7 @@ def _build_run_summary_panel(
     task: TaskConfig,
     feature_store: FeatureStore,
     dataset_type: str = "slide",
+    decoder: DecoderConfig | None = None,
 ) -> Panel:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold", justify="right", no_wrap=True)
@@ -971,8 +1167,10 @@ def _build_run_summary_panel(
         spacing = preprocessing.requested_spacing_um
         grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
 
-    # Aggregator
-    if aggregator is not None:
+    # Aggregator (MIL path) or decoder (segmentation path) — the trainable component.
+    if dataset_type == "segmentation":
+        grid.add_row("decoder", decoder.name if decoder is not None else "[dim]—[/dim]")
+    elif aggregator is not None:
         grid.add_row("aggregator", aggregator.name)
     else:
         grid.add_row("aggregator", "[dim]—[/dim]")
@@ -985,6 +1183,10 @@ def _build_run_summary_panel(
         level = "patient"
     elif dataset_type == "tile":
         level = "tile (encoded)"
+    elif dataset_type == "segmentation":
+        # DenseFeatureStore is not a FeatureStore (no is_slide_level/is_hierarchical);
+        # branch before those attrs are touched.
+        level = "dense (segmentation)"
     elif feature_store.is_slide_level:
         level = "slide"
     elif feature_store.is_hierarchical:
@@ -1191,7 +1393,12 @@ class Pipeline:
         feature_dir: str | Path | None = None,
     ) -> None:
         self._config = config
-        self._dataset = Dataset(config.dataset_csv)
+        # Segmentation uses a mask-based manifest (image_path/mask_path, label
+        # optional); it exposes the same samples/sample_ids surface Splits needs.
+        if config.dataset_type == "segmentation":
+            self._dataset = SegmentationManifest(config.dataset_csv)
+        else:
+            self._dataset = Dataset(config.dataset_csv)
         self._splits = Splits(
             config.splits_csv,
             self._dataset,
@@ -1233,6 +1440,7 @@ class Pipeline:
                     task=self._config.task,
                     feature_store=store,
                     dataset_type=self._config.dataset_type,
+                    decoder=self._config.decoder,
                 )
             )
 
@@ -1242,6 +1450,7 @@ class Pipeline:
                 splits=self._splits,
                 dataset_type=self._config.dataset_type,
                 aggregator=self._config.aggregator,
+                decoder=self._config.decoder,
                 task=self._config.task,
                 evaluation=self._config.evaluation,
                 training=self._config.training,
@@ -1272,7 +1481,9 @@ class Pipeline:
 
         return result
 
-    def _get_feature_store(self, *, run_dir: Path) -> FeatureStore:
+    def _get_feature_store(self, *, run_dir: Path):
+        if self._config.dataset_type == "segmentation":
+            return self._get_dense_feature_store(run_dir=run_dir)
         if self._feature_dir is not None:
             return FeatureStore(self._feature_dir)
 
@@ -1318,6 +1529,47 @@ class Pipeline:
             self._dataset,
             self._config.encoder,
             preprocessing,
+            execution=self._config.execution,
+            cache=cache_config,
+        )
+        try:
+            return extractor.run(feature_dir=run_dir / "features")
+        finally:
+            _release_parent_cuda_state()
+
+    def _get_dense_feature_store(self, *, run_dir: Path) -> "DenseFeatureStore":
+        from soma.dense import DenseFeatureStore
+
+        if self._feature_dir is not None:
+            return DenseFeatureStore(self._feature_dir)
+
+        if self._config.encoder is None:
+            raise ValueError(
+                "PipelineConfig.encoder is required for dataset_type='segmentation' "
+                "when feature_dir is not provided."
+            )
+        # The dense supervision size (tile/mask size) drives the pad-to-patch
+        # geometry. Reuse the existing tile-size knob — a segmentation tile is an
+        # image of this size — rather than duplicating it on the decoder config.
+        target_size = self._config.preprocessing.requested_tile_size_px
+        if target_size is None:
+            raise ValueError(
+                "dataset_type='segmentation' extraction requires "
+                "preprocessing.requested_tile_size_px (the mask/tile supervision size) "
+                "when feature_dir is not provided."
+            )
+        from soma.dense_extraction import DenseTileFeatureExtractor
+
+        cache_config = self._config.cache
+        if cache_config.root_dir is None:
+            cache_config = replace(
+                cache_config,
+                root_dir=Path(self._config.output_root) / "feature_cache",
+            )
+        extractor = DenseTileFeatureExtractor(
+            self._dataset,
+            self._config.encoder,
+            target_size=int(target_size),
             execution=self._config.execution,
             cache=cache_config,
         )
@@ -1454,6 +1706,50 @@ def _evaluate(
         metrics=metrics,
         predictions=predictions,
     )
+
+
+@torch.inference_mode()
+def _evaluate_segmentation(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    split_name: str,
+    device: torch.device,
+    *,
+    dataset: SegmentationManifest | None = None,
+    output_dir: Path | None = None,
+    save_probabilities: bool = False,
+) -> EvaluationReport:
+    """Streaming dense evaluation: accumulate compact per-image confusion counts.
+
+    Shares ``accumulate_dense_stats`` with ``Trainer._tune_streaming_metrics`` — never
+    concatenates the dense ``(N, C, H, W)`` logits (which would OOM). The per-image
+    ``dense_stats`` rows are concatenated along the image axis and reduced once via
+    ``finalize_eval_metrics`` (the same reduce+filter path as ``compute_metrics``), so
+    the report metric matches the training monitor exactly.
+
+    When ``output_dir`` is given, a :class:`DenseArtifactWriter` streams per-tile
+    prediction rasters, color overlays (fail-soft via ``dataset``'s source images),
+    and a ``predictions_<split>.csv`` to disk — written per batch *before* the logits
+    are discarded, so memory stays bounded. The returned ``EvaluationReport`` still
+    carries ``predictions=[]``: the dense artifacts live on disk, not in the report.
+    """
+    head = model.task_head
+    writer = (
+        DenseArtifactWriter(
+            head=head,
+            split=split_name,
+            output_dir=output_dir,
+            dataset=dataset,
+            save_probabilities=save_probabilities,
+        )
+        if output_dir is not None
+        else None
+    )
+    stat_rows, _, _ = accumulate_dense_stats(model, loader, device, on_batch_output=writer)
+    metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
+    if writer is not None:
+        writer.finalize()
+    return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
 
 
 def _records_for_sample_ids(

@@ -1,0 +1,182 @@
+"""Offline tests for the dense extraction loop (soma.dense_extraction).
+
+Uses a random-weights ``vit_tiny_patch16_224`` so the whole loop — dense transform
+→ pad → encode_tiles_dense → write_dense_grid → DenseFeatureStore round-trip — runs
+on CPU with no weight downloads. The GPU/weights-dependent ``DenseTileFeatureExtractor.run``
+construction step is intentionally not exercised here (the loop is injectable).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("timm")
+from PIL import Image  # noqa: E402
+
+from slide2vec.encoders.base import TimmTileEncoder  # noqa: E402
+
+from soma.config import EncoderConfig  # noqa: E402
+from soma.dataset import SampleRecord  # noqa: E402
+from soma.dense import DenseFeatureStore, compute_dense_geometry  # noqa: E402
+from soma.dense_extraction import _pad_image_to_encoded, extract_dense_grids  # noqa: E402
+
+
+def _encoder() -> TimmTileEncoder:
+    return TimmTileEncoder("vit_tiny_patch16_224", pretrained=False, dynamic_img_size=True)
+
+
+def _make_tiles(tmp_path: Path, n: int, size: int) -> list[SampleRecord]:
+    records = []
+    for i in range(n):
+        path = tmp_path / f"tile{i}.png"
+        Image.fromarray(
+            (torch.rand(size, size, 3) * 255).to(torch.uint8).numpy()
+        ).save(path)
+        records.append(SampleRecord(sample_id=f"s{i}", image_path=path, label="x"))
+    return records
+
+
+def test_pad_image_to_encoded_reflect_and_noop():
+    g_clean = compute_dense_geometry(target_size=32, patch_size=16)  # no pad
+    x = torch.randn(3, 32, 32)
+    assert _pad_image_to_encoded(x, g_clean, pad_mode="reflect", image_pad_value=None) is x
+
+    g_pad = compute_dense_geometry(target_size=40, patch_size=16)  # -> 48, pad (8, 8)
+    padded = _pad_image_to_encoded(x.new_zeros(3, 40, 40), g_pad, pad_mode="reflect", image_pad_value=None)
+    assert tuple(padded.shape) == (3, 48, 48)
+
+
+def test_extract_dense_grids_roundtrip(tmp_path: Path):
+    enc = _encoder()
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)  # 2x2 grid
+    records = _make_tiles(tmp_path, n=3, size=32)
+    out_dir = tmp_path / "dense_embeddings"
+
+    feature_dim = extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=records,
+        out_dir=out_dir,
+        batch_size=2,
+    )
+    assert feature_dim == enc.encode_dim  # 192 for vit_tiny
+
+    store = DenseFeatureStore(out_dir)
+    assert sorted(store.available_samples) == ["s0", "s1", "s2"]
+    assert store.feature_dim == enc.encode_dim
+    assert store.grid_shape == (2, 2)
+    assert tuple(store.load("s0").shape) == (enc.encode_dim, 2, 2)
+    # Sidecar records the geometry, and (this slice) leaves mask_pad_value unset.
+    meta = store.metadata("s0")
+    assert meta["target_size"] == [32, 32] and meta["grid_shape"] == [2, 2]
+    assert meta["mask_pad_value"] is None
+
+
+def test_extract_dense_grids_padded_patch_multiple(tmp_path: Path):
+    # target 40 is not a patch-16 multiple -> encoded 48 -> 3x3 grid (pad path).
+    enc = _encoder()
+    geometry = compute_dense_geometry(target_size=40, patch_size=16)
+    assert geometry.grid_shape == (3, 3) and geometry.pad == (8, 8)
+    records = _make_tiles(tmp_path, n=1, size=40)
+    out_dir = tmp_path / "dense_embeddings"
+
+    extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=records,
+        out_dir=out_dir,
+        batch_size=1,
+    )
+    assert tuple(DenseFeatureStore(out_dir).load("s0").shape) == (enc.encode_dim, 3, 3)
+
+
+def test_extract_dense_grids_rejects_wrong_tile_size(tmp_path: Path):
+    enc = _encoder()
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)
+    records = _make_tiles(tmp_path, n=1, size=48)  # 48 != target_size 32
+    with pytest.raises(ValueError, match="target_size"):
+        extract_dense_grids(
+            encoder=enc,
+            device="cpu",
+            dense_transform=enc.get_dense_transform(),
+            geometry=geometry,
+            records=records,
+            out_dir=tmp_path / "dense_embeddings",
+            batch_size=1,
+        )
+
+
+def test_extract_then_cache_resolve_complete_and_store_read(tmp_path: Path):
+    """The composition run() depends on: loop writes through write_dense_grid into
+    the dense cache's features_dir, record metadata, re-resolve reports complete,
+    and DenseFeatureStore reads it. Couples the injectable loop to the real cache
+    functions offline (no GPU), covering filename<->feature_path_for_id agreement
+    and validator/store co-satisfaction (complete ⇒ readable)."""
+    import pandas as pd
+
+    from soma.cache import (
+        record_feature_dim,
+        record_sample_identity_signatures,
+        resolve_dense_cache,
+    )
+    from soma.dataset import Dataset
+
+    enc = _encoder()
+    records = _make_tiles(tmp_path, n=3, size=32)
+    csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        [{"sample_id": r.sample_id, "image_path": str(r.image_path), "label": "x"} for r in records]
+    ).to_csv(csv, index=False)
+    dataset = Dataset(csv)
+
+    kw = dict(
+        cache_root=tmp_path / "cache",
+        dataset=dataset,
+        tile_encoder_name="uni",  # name only feeds the key here
+        target_size=(32, 32),
+        patch_size=(16, 16),
+        pad_mode="reflect",
+        execution=EncoderConfig(name="uni", precision="fp32"),
+    )
+    res = resolve_dense_cache(**kw)
+    assert res.complete is False
+
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)
+    feature_dim = extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=[dataset.samples[i] for i in dataset.sample_ids],
+        out_dir=res.features_dir,  # write into the cache payload dir
+        batch_size=2,
+    )
+    record_feature_dim(res, feature_dim)
+    record_sample_identity_signatures(res, list(dataset.sample_ids))
+
+    resumed = resolve_dense_cache(**kw, validate_payloads=True)
+    assert resumed.complete is True
+    store = DenseFeatureStore(resumed.cache_dir)  # cache dir, descends into dense_embeddings/
+    assert tuple(store.load(dataset.sample_ids[0]).shape) == (enc.encode_dim, 2, 2)
+
+
+def test_extract_dense_grids_sliding_window_not_implemented(tmp_path: Path):
+    enc = _encoder()
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)
+    with pytest.raises(NotImplementedError, match="sliding_window"):
+        extract_dense_grids(
+            encoder=enc,
+            device="cpu",
+            dense_transform=enc.get_dense_transform(),
+            geometry=geometry,
+            records=_make_tiles(tmp_path, n=1, size=32),
+            out_dir=tmp_path / "dense_embeddings",
+            dense_input_mode="sliding_window",
+        )
