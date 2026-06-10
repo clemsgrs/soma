@@ -3257,6 +3257,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         execution_prefetch_factor,
         output_dir,
         shard_payloads_by_rank,
+        on_shard_complete,
         on_progress=None,
     ):
         del model_name, output_variant, allow_non_recommended_settings, execution_batch_size
@@ -3275,6 +3276,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         total = sum(len(shard) for shard in shard_payloads_by_rank)
         processed = 0
         for shard in shard_payloads_by_rank:
+            shard_ids = []
             for payload in shard:
                 sample_id = str(payload["sample_id"])
                 torch.save(torch.ones(8), slide_dir / f"{sample_id}.pt")
@@ -3283,9 +3285,12 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
                     encoding="utf-8",
                 )
                 written_ids.add(sample_id)
+                shard_ids.append(sample_id)
                 processed += 1
                 if on_progress is not None:
                     on_progress(processed, total)
+            if shard_ids:
+                on_shard_complete(shard_ids, 8)
         return written_ids, 8
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
@@ -3405,7 +3410,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         ]
 
     def _fake_spawn_slide_aggregation_workers(
-        *, output_variant, output_dir, shard_payloads_by_rank, on_progress=None, **kwargs
+        *, output_variant, output_dir, shard_payloads_by_rank, on_shard_complete, on_progress=None, **kwargs
     ):
         # Two slides + num_gpus=2 ⇒ multi-GPU sharded aggregation. The slide stage
         # must receive the resolved runtime output variant (None), not an override.
@@ -3414,6 +3419,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         slide_dir.mkdir(parents=True, exist_ok=True)
         written_ids = set()
         for shard in shard_payloads_by_rank:
+            shard_ids = []
             for payload in shard:
                 sample_id = str(payload["sample_id"])
                 torch.save(torch.ones(8), slide_dir / f"{sample_id}.pt")
@@ -3422,6 +3428,9 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
                     encoding="utf-8",
                 )
                 written_ids.add(sample_id)
+                shard_ids.append(sample_id)
+            if shard_ids:
+                on_shard_complete(shard_ids, 8)
         return written_ids, 8
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
