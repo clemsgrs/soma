@@ -73,6 +73,38 @@ def test_preprocessing_config_defaults():
     assert cfg.preview.mask_overlay_alpha == pytest.approx(0.5)
 
 
+def test_preprocessing_dense_window_defaults_to_whole():
+    cfg = PreprocessingConfig()
+    assert cfg.dense_window_size is None
+    assert cfg.dense_window_overlap == 0.0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"dense_window_size": 0}, "dense_window_size"),
+        ({"dense_window_size": -64}, "dense_window_size"),
+        ({"dense_window_overlap": 1.0}, "dense_window_overlap"),
+        ({"dense_window_overlap": -0.1}, "dense_window_overlap"),
+        ({"dense_window_overlap": 0.5}, "dense_window_overlap requires dense_window_size"),
+    ],
+)
+def test_preprocessing_dense_window_rejects_invalid(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        PreprocessingConfig(**kwargs)
+
+
+def test_preprocessing_dense_window_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        preprocessing=PreprocessingConfig(dense_window_size=512, dense_window_overlap=0.5)
+    )
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.preprocessing.dense_window_size == 512
+    assert loaded.preprocessing.dense_window_overlap == 0.5
+
+
 def test_training_config_defaults():
     cfg = TrainingConfig()
     assert cfg.seed == 0
@@ -640,6 +672,100 @@ def test_invalid_dataset_type_raises():
             dataset_type="case",
             task=TaskConfig(name="binary_classification"),
         )
+
+
+# --- feature_mode / augmentation (live segmentation path) ---
+
+
+def _seg_kwargs(**overrides):
+    from soma.config import DecoderConfig
+
+    base = dict(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="segmentation",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    )
+    base.update(overrides)
+    return base
+
+
+def test_feature_mode_defaults_to_cached():
+    config = PipelineConfig(**_seg_kwargs())
+    assert config.feature_mode == "cached"
+    assert not config.augmentation.is_enabled()
+
+
+def test_invalid_feature_mode_raises():
+    with pytest.raises(ValueError, match="feature_mode"):
+        PipelineConfig(**_seg_kwargs(feature_mode="streaming"))
+
+
+def test_live_feature_mode_requires_segmentation():
+    with pytest.raises(ValueError, match="feature_mode='live'"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="tile",
+            feature_mode="live",
+            task=TaskConfig(name="binary_classification"),
+        )
+
+
+def test_augmentation_requires_live_feature_mode():
+    from soma.config import AugmentationConfig
+
+    with pytest.raises(ValueError, match="augmentation requires feature_mode='live'"):
+        PipelineConfig(**_seg_kwargs(augmentation=AugmentationConfig(horizontal_flip=0.5)))
+
+
+def test_live_segmentation_with_augmentation_is_valid():
+    from soma.config import AugmentationConfig
+
+    config = PipelineConfig(
+        **_seg_kwargs(
+            feature_mode="live",
+            augmentation=AugmentationConfig(horizontal_flip=0.5, rotation_degrees=10.0),
+        )
+    )
+    assert config.feature_mode == "live"
+    assert config.augmentation.is_enabled()
+
+
+def test_live_no_aug_is_valid():
+    config = PipelineConfig(**_seg_kwargs(feature_mode="live"))
+    assert config.feature_mode == "live" and not config.augmentation.is_enabled()
+
+
+def test_feature_mode_and_augmentation_roundtrip(tmp_path: Path):
+    from soma.config import AugmentationConfig
+
+    config = PipelineConfig(
+        **_seg_kwargs(
+            encoder=EncoderConfig(name="uni2"),
+            feature_mode="live",
+            augmentation=AugmentationConfig(horizontal_flip=0.5, brightness=0.2),
+        )
+    )
+    path = tmp_path / "config.yaml"
+    save_config(config, path)
+    loaded = load_config(path)
+    assert loaded.feature_mode == "live"
+    assert loaded.augmentation == config.augmentation
+
+
+def test_augmentation_rejects_out_of_range():
+    from soma.config import AugmentationConfig
+
+    with pytest.raises(ValueError, match="horizontal_flip"):
+        AugmentationConfig(horizontal_flip=1.5)
+    with pytest.raises(ValueError, match="scale"):
+        AugmentationConfig(scale=1.0)
+    with pytest.raises(ValueError, match="hue"):
+        AugmentationConfig(hue=0.9)
 
 
 # --- Helpers ---

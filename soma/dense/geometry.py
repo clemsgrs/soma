@@ -13,9 +13,11 @@ asymmetry (512 is clean for P=16 → 32×32, but P=14 needs 518 → 37×37; see
 segmentation-design §5c) silently misregisters the grid against the mask if it is
 off by a patch. Isolating it makes it unit-testable without an encoder.
 
-Scope: the ``whole``-tile + pad path (``dense_input_mode="whole"``). The
-``sliding_window`` mode stitches several native-size windows and has its own
-geometry; it is not handled here.
+Scope: the **output** geometry — ``target_size`` padded to the patch multiple and the
+resulting token grid. Sliding-window extraction (design §5, window-as-knob) reuses this
+exact geometry as its stitched output and *derives* its per-window tiling from it in
+:mod:`soma.dense.sliding` (``resolve_window_geometry``); it does not need a separate
+output layout here.
 """
 
 from __future__ import annotations

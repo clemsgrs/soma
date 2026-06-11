@@ -1,0 +1,166 @@
+"""Sliding-window dense encoding — ``window_size`` + ``overlap`` as a free knob.
+
+The ``whole`` path (§5) feeds the full padded tile through the encoder in one
+forward, interpolating the positional embeddings to the larger grid. That is one
+end of a single mechanism; the other end is running the encoder over smaller
+**windows** and stitching the per-window token grids. The reframing (design §5):
+three sizes that are usually conflated —
+
+* **native size** (e.g. 224) — sets the pos-embed table; not a hard input limit
+  (``dynamic_img_size`` lets a ViT process a larger field at the correct mpp);
+* **window size** ``W`` — how big a chunk goes through the ViT in one forward;
+* **input size** — the padded ``encoded_size`` we want dense features for.
+
+``whole`` is ``W >= input`` (one window, zero stitching); native sliding is
+``W = 224``; the useful middle is ``W = 512`` slid over a larger input. So this is
+**one** parametrized path, not a separate mode: :func:`encode_dense_sliding` takes
+``window_size`` (``None`` ⇒ ``whole``) and ``overlap``, and the ``whole`` case falls
+out as the degenerate single window — which we short-circuit to the exact same
+``encode_tiles_dense(batch)`` call, so it stays **byte-identical** to the legacy path
+(the parity anchor).
+
+Stitching happens in **token space** (the grid the decoder/head consume), so the
+output is always ``(B, d, grid_h, grid_w)`` for ``geometry.grid_shape`` regardless of
+``window_size`` — sliding is purely internal to extraction. Windows and strides are
+kept patch-aligned, so each window maps cleanly onto a block of tokens; overlapping
+windows are blended with a separable raised-cosine importance map (the standard
+frozen-backbone dense-inference recipe, cf. MONAI ``sliding_window_inference``) to
+remove the block-boundary seams naive non-overlapping tiling would introduce.
+"""
+
+from __future__ import annotations
+
+import math
+
+import torch
+
+from soma.dense.geometry import DenseGridGeometry
+
+__all__ = ["describe_dense_mode", "encode_dense_sliding", "resolve_window_geometry"]
+
+
+def describe_dense_mode(window_size: int | None, overlap: float) -> str:
+    """Human-readable resolved dense-input mode, for logging (never silent)."""
+    if window_size is None:
+        return "whole (single padded forward)"
+    return f"sliding_window (window={int(window_size)}, overlap={float(overlap)})"
+
+
+def _round_up(value: int, multiple: int) -> int:
+    return ((value + multiple - 1) // multiple) * multiple
+
+
+def _round_to(value: float, multiple: int) -> int:
+    return max(multiple, int(round(value / multiple)) * multiple)
+
+
+def _window_starts(extent: int, win: int, stride: int) -> list[int]:
+    """Patch-aligned window start offsets that fully cover ``[0, extent)``.
+
+    All of ``extent``/``win``/``stride`` are patch multiples, so every start is too
+    (the final edge-aligned ``extent - win`` is a difference of patch multiples).
+    """
+    if win >= extent:
+        return [0]
+    starts = list(range(0, extent - win + 1, stride))
+    if starts[-1] + win < extent:
+        starts.append(extent - win)  # shift the last window flush to the edge
+    return starts
+
+
+def resolve_window_geometry(
+    geometry: DenseGridGeometry, *, window_size: int | None, overlap: float
+) -> tuple[tuple[int, int], tuple[int, int], list[int], list[int]]:
+    """Resolve per-dim window size, stride, and start offsets (all patch-aligned).
+
+    ``window_size`` is rounded up to the patch multiple and clamped to the encoded
+    extent; because ``round_up`` is monotonic, ``window_size >= target_size`` always
+    clamps to the full extent ⇒ a single window ⇒ the ``whole`` path. ``stride`` is
+    ``window * (1 - overlap)`` rounded to the patch multiple and clamped to
+    ``[patch, window]``.
+    """
+    enc_h, enc_w = geometry.encoded_size
+    ph, pw = geometry.patch_size
+    if window_size is None:
+        return (enc_h, enc_w), (enc_h, enc_w), [0], [0]
+
+    win_h = min(_round_up(int(window_size), ph), enc_h)
+    win_w = min(_round_up(int(window_size), pw), enc_w)
+    keep = 1.0 - float(overlap)
+    stride_h = min(win_h, _round_to(win_h * keep, ph))
+    stride_w = min(win_w, _round_to(win_w * keep, pw))
+    starts_h = _window_starts(enc_h, win_h, stride_h)
+    starts_w = _window_starts(enc_w, win_w, stride_w)
+    return (win_h, win_w), (stride_h, stride_w), starts_h, starts_w
+
+
+def _hann_1d(n: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Strictly-positive raised-cosine weights of length ``n`` (uniform if ``n == 1``).
+
+    ``0.5 - 0.5*cos(2*pi*(i+1)/(n+1))`` is > 0 for every ``i in [0, n)`` (no zeros at
+    the edges), so the accumulated weight map never hits zero where a window covers.
+    """
+    if n <= 1:
+        return torch.ones(n, device=device, dtype=dtype)
+    i = torch.arange(1, n + 1, device=device, dtype=dtype)
+    return 0.5 - 0.5 * torch.cos(2.0 * math.pi * i / (n + 1))
+
+
+def encode_dense_sliding(
+    encoder,
+    batch: torch.Tensor,
+    *,
+    geometry: DenseGridGeometry,
+    window_size: int | None,
+    overlap: float = 0.0,
+) -> torch.Tensor:
+    """Encode a padded ``(B, C, enc_h, enc_w)`` batch into ``(B, d, grid_h, grid_w)``.
+
+    ``window_size is None`` (or any window that covers the whole encoded input) is the
+    degenerate single-window case: it short-circuits to ``encode_tiles_dense(batch)``,
+    byte-identical to the legacy ``whole`` path. Otherwise the encoder runs over
+    patch-aligned overlapping windows and the per-window token grids are blended with a
+    separable raised-cosine importance map. The stitch math runs in fp32 (sub-grids are
+    upcast before accumulation) so blended regions don't accumulate autocast-dtype error.
+    """
+    (win_h, win_w), _, starts_h, starts_w = resolve_window_geometry(
+        geometry, window_size=window_size, overlap=overlap
+    )
+    if len(starts_h) == 1 and len(starts_w) == 1:
+        # Single window == the whole encoded tile: identical forward to the legacy path.
+        return encoder.encode_tiles_dense(batch)
+
+    ph, pw = geometry.patch_size
+    grid_h, grid_w = geometry.grid_shape
+    wth, wtw = win_h // ph, win_w // pw
+    # Raised-cosine weights where windows overlap; uniform along any dim that is not
+    # actually tiled (a single window there) — avoids needless edge attenuation.
+    fdtype = torch.float32
+    wh = (
+        _hann_1d(wth, batch.device, fdtype)
+        if len(starts_h) > 1
+        else torch.ones(wth, device=batch.device, dtype=fdtype)
+    )
+    ww = (
+        _hann_1d(wtw, batch.device, fdtype)
+        if len(starts_w) > 1
+        else torch.ones(wtw, device=batch.device, dtype=fdtype)
+    )
+    weight = torch.outer(wh, ww)  # (wth, wtw)
+
+    acc: torch.Tensor | None = None
+    wsum = torch.zeros(1, 1, grid_h, grid_w, device=batch.device, dtype=fdtype)
+    for sh in starts_h:
+        th = sh // ph
+        for sw in starts_w:
+            tw = sw // pw
+            window = batch[:, :, sh : sh + win_h, sw : sw + win_w]
+            sub = encoder.encode_tiles_dense(window).to(fdtype)  # (B, d, wth, wtw)
+            if acc is None:
+                acc = torch.zeros(
+                    sub.shape[0], sub.shape[1], grid_h, grid_w, device=batch.device, dtype=fdtype
+                )
+            acc[:, :, th : th + wth, tw : tw + wtw] += sub * weight
+            wsum[:, :, th : th + wth, tw : tw + wtw] += weight
+    assert acc is not None  # at least one window always runs
+    return acc / wsum

@@ -213,6 +213,8 @@ def _build_dense_cache_metadata(
     execution: EncoderConfig,
     preprocessing: PreprocessingConfig | None = None,
     dense_input_mode: str = "whole",
+    window_size: int | None,
+    overlap: float,
     channel_dim: int = 0,
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -228,6 +230,8 @@ def _build_dense_cache_metadata(
         execution=execution,
         preprocessing=preprocessing,
         dense_input_mode=dense_input_mode,
+        window_size=window_size,
+        overlap=overlap,
     )
     geometry = compute_dense_geometry(target_size=target_size, patch_size=patch_size)
     metadata = {
@@ -246,6 +250,8 @@ def _build_dense_cache_metadata(
         "feature_dim": None,
         "channel_dim": int(channel_dim),
         "dense_input_mode": str(dense_input_mode),
+        "window_size": None if window_size is None else int(window_size),
+        "overlap": float(overlap),
         "target_size": [int(geometry.target_size[0]), int(geometry.target_size[1])],
         "patch_size": [int(geometry.patch_size[0]), int(geometry.patch_size[1])],
         "encoded_size": [int(geometry.encoded_size[0]), int(geometry.encoded_size[1])],
@@ -777,6 +783,8 @@ def resolve_dense_cache(
     execution: EncoderConfig,
     preprocessing: PreprocessingConfig | None = None,
     dense_input_mode: str = "whole",
+    window_size: int | None,
+    overlap: float,
     channel_dim: int = 0,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
@@ -792,6 +800,8 @@ def resolve_dense_cache(
         execution=execution,
         preprocessing=preprocessing,
         dense_input_mode=dense_input_mode,
+        window_size=window_size,
+        overlap=overlap,
         channel_dim=channel_dim,
         backend_provenance=backend_provenance,
     )

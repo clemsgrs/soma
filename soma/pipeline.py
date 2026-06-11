@@ -45,6 +45,7 @@ from soma.config import (
     save_config,
 )
 from soma.dataset import Dataset, FoldSplit, SampleRecord, SegmentationManifest, Splits
+from soma.dense.live import LiveSegmentationSource
 from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.dense_artifacts import DenseArtifactWriter
@@ -69,10 +70,19 @@ from soma.tasks.registry import task_registry
 from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
-from soma.training.model import EmbeddingModel, MILModel, SegmentationModel
+from soma.training.model import (
+    EmbeddingModel,
+    LiveSegmentationModel,
+    MILModel,
+    SegmentationModel,
+)
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
 from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
-from soma.training.segmentation_dataset import SegmentationDataset, segmentation_collate_fn
+from soma.training.segmentation_dataset import (
+    LiveSegmentationDataset,
+    SegmentationDataset,
+    segmentation_collate_fn,
+)
 from soma.training.seed import seed_everything
 from soma.training.trainer import Trainer, TrainResult, accumulate_dense_stats, epoch_log_to_dict
 from soma.reporting import generate_report_from_result
@@ -242,6 +252,58 @@ def _make_loaders(
             **loader_kwargs,
         )
         for split_name, items in test_items_by_split.items()
+    }
+    return train_loader, tune_loader, test_loaders
+
+
+def _make_live_loaders(
+    source: "LiveSegmentationSource",
+    collate_fn,
+    train_records: list[SampleRecord],
+    tune_records: list[SampleRecord],
+    test_records_by_split: dict[str, list[SampleRecord]],
+    training: TrainingConfig,
+    *,
+    num_classes: int,
+    ignore_index: int,
+) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
+    """Live-path loaders: augmentation on the **train** split only, deterministic eval.
+
+    The augment-on-train asymmetry is why this cannot ride the uniform ``_make_loaders``
+    (which builds every split the same way). Tune/test datasets are built with
+    augmentation off so evaluation re-encodes deterministically.
+    """
+    from soma.dense.augment import build_segmentation_augmentation
+
+    loader_kwargs = _loader_kwargs(training)
+    train_augment = build_segmentation_augmentation(source.augmentation, ignore_index=ignore_index)
+
+    def _make(records: list[SampleRecord], augment) -> LiveSegmentationDataset:
+        return LiveSegmentationDataset(
+            records,
+            geometry=source.geometry,
+            dense_transform=source.dense_transform,
+            spacing_um=source.spacing_um,
+            backend=source.backend,
+            tolerance=source.tolerance,
+            num_classes=num_classes,
+            ignore_index=ignore_index,
+            augment=augment,
+            pad_mode=source.pad_mode,
+            image_pad_value=source.image_pad_value,
+        )
+
+    train_loader = DataLoader(
+        _make(train_records, train_augment), shuffle=True, collate_fn=collate_fn, **loader_kwargs
+    )
+    tune_loader = DataLoader(
+        _make(tune_records, None), shuffle=False, collate_fn=collate_fn, **loader_kwargs
+    )
+    test_loaders = {
+        split_name: DataLoader(
+            _make(records, None), shuffle=False, collate_fn=collate_fn, **loader_kwargs
+        )
+        for split_name, records in test_records_by_split.items()
     }
     return train_loader, tune_loader, test_loaders
 
@@ -878,8 +940,15 @@ def train_one_fold(
     )
 
 
+def _dense_spacings_match(a: float | None, b: float | None, *, tol: float = 1e-9) -> bool:
+    """True when two read-spacings agree: both flat (``None``) or equal within ``tol``."""
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(float(a) - float(b)) <= tol
+
+
 def train_one_segmentation_fold(
-    feature_store: "DenseFeatureStore",
+    feature_store: "DenseFeatureStore | LiveSegmentationSource",
     dataset: SegmentationManifest,
     fold_split: FoldSplit,
     task: TaskConfig,
@@ -888,6 +957,7 @@ def train_one_segmentation_fold(
     *,
     decoder: DecoderConfig | None,
     evaluation: EvalConfig | None = None,
+    preprocessing: PreprocessingConfig | None = None,
     fold: int = 0,
     num_folds: int = 1,
 ) -> FoldResult:
@@ -900,8 +970,14 @@ def train_one_segmentation_fold(
     head). The split→records selection and ``tune_is_test``/``allow_missing_tune``
     semantics are reused.
 
-    Scope (1f-b): metrics-only. Predictions are an empty list; per-pixel raster
-    outputs and overlays land with the dense evaluation report (1g).
+    Two data planes share this body (design §13.B-3), distinguished by
+    ``feature_store``: a :class:`~soma.dense.DenseFeatureStore` drives the **cached**
+    path (read pre-extracted grids + head-loaded masks), a
+    :class:`~soma.dense.live.LiveSegmentationSource` drives the **live** path
+    (re-encode augmented image+mask tiles through the frozen encoder each step). Only
+    five things differ — geometry source, feature_dim, coverage check, dataset, and
+    model — and they are handled with inline branches here; everything else (records,
+    num_classes, decoder/head build, trainer, eval, summary) is shared.
     """
     if decoder is None:
         raise ValueError("dataset_type='segmentation' requires a decoder configuration")
@@ -936,7 +1012,8 @@ def train_one_segmentation_fold(
             raise ValueError(f"{_fp} has no samples in split '{split_name}'")
 
     all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
-    feature_store.validate_coverage([r.sample_id for r in all_records])
+
+    is_live = isinstance(feature_store, LiveSegmentationSource)
 
     # num_classes is the single source — from task.params (no dataset auto-inject,
     # since segmentation has no scalar labels). Fed to BOTH decoder and head.
@@ -949,25 +1026,57 @@ def train_one_segmentation_fold(
         )
     num_classes = int(num_classes)
 
-    # Geometry from the dense sidecar (single source). The head crop + decoder are
-    # built from one reference sample, which is only correct if the run is uniform
-    # (fixed tile/grid size — the v1 assumption); assert it loudly rather than
-    # silently misregister logits cropped with a different sample's geometry.
-    ref_id = train_records[0].sample_id
-    geometry = feature_store.geometry(ref_id)
-    ref_feature_dim = feature_store.feature_dim
-    for record in all_records:
-        sid = record.sample_id
-        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+    # Geometry + feature_dim source (the first inline live/cached fork). Live computes
+    # a single geometry from patch_size + target_size (no per-sample sidecar), so the
+    # cohort is uniform by construction; cached reads the sidecar and asserts uniformity.
+    if is_live:
+        for record in all_records:
+            if record.image_path is None or record.mask_path is None:
+                raise ValueError(
+                    f"live segmentation sample '{record.sample_id}' needs both image_path "
+                    "and mask_path (the live path re-encodes from the raw tiles)."
+                )
+        geometry = feature_store.geometry
+        ref_feature_dim = feature_store.feature_dim
+    else:
+        feature_store.validate_coverage([r.sample_id for r in all_records])
+        # The head crop + decoder are built from one reference sample, which is only
+        # correct if the run is uniform (fixed tile/grid size — the v1 assumption);
+        # assert it loudly rather than silently misregister logits.
+        ref_id = train_records[0].sample_id
+        geometry = feature_store.geometry(ref_id)
+        ref_feature_dim = feature_store.feature_dim
+        for record in all_records:
+            sid = record.sample_id
+            if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+                raise ValueError(
+                    f"dense grid '{sid}' has geometry/feature_dim differing from reference "
+                    f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
+                    "size across the cohort."
+                )
+    # Masks are read spacing-aware (hs2p) at the same µm/px the dense grids were
+    # extracted at, so the target registers against the features. None ⇒ flat read.
+    mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    # Cached path: the grids were extracted at a fixed spacing recorded in the sidecar.
+    # Reading masks at a different spacing would silently shift/scale the supervision
+    # against the features — fail loud. (Live reads image+mask at one spacing each step,
+    # so it registers by construction and needs no cross-check.)
+    if not is_live:
+        grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+        if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
             raise ValueError(
-                f"dense grid '{sid}' has geometry/feature_dim differing from reference "
-                f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
-                "size across the cohort."
+                f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
+                f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px); "
+                "the mask would misregister against the features. Re-extract the grids at the "
+                "mask spacing, or set preprocessing.requested_spacing_um to match the grids."
             )
     head = SegmentationHead(
         num_classes=num_classes,
         geometry=geometry,
         metrics=evaluation.metrics,
+        spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
+        backend=preprocessing.backend if preprocessing is not None else "auto",
+        tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         **seg_params,
     )
     target_fn = head.extract_targets
@@ -984,7 +1093,7 @@ def train_one_segmentation_fold(
         ratio_w = geometry.encoded_size[1] / geometry.grid_shape[1]
         decoder_params["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(ratio_h, ratio_w))))
     decoder_obj = decoder_cls(
-        input_dim=feature_store.feature_dim,
+        input_dim=ref_feature_dim,
         num_classes=num_classes,
         **decoder_params,
     )
@@ -993,14 +1102,36 @@ def train_one_segmentation_fold(
             f"decoder num_classes ({decoder_obj.num_classes}) != head num_classes "
             f"({head.num_classes}) — a mismatch would misregister the logits."
         )
-    model = SegmentationModel(decoder=decoder_obj, task_head=head)
 
     seg_collate = functools.partial(segmentation_collate_fn, target_dtypes=head.target_dtypes)
-    train_loader, tune_loader, test_loaders = _make_loaders(
-        SegmentationDataset, seg_collate,
-        train_records, tune_records, test_records_by_split,
-        training, feature_store, target_fn,
-    )
+    # Model + loaders (the remaining live/cached fork). Live wraps the shared frozen
+    # encoder so each step re-encodes the augmented tiles; cached consumes pre-extracted
+    # grids. The trainer, eval, and checkpoint reload paths below are identical.
+    if is_live:
+        model = LiveSegmentationModel(
+            encoder=feature_store.encoder,
+            decoder=decoder_obj,
+            task_head=head,
+            device=feature_store.device,
+            precision=feature_store.precision,
+            geometry=geometry,
+            window_size=feature_store.window_size,
+            overlap=feature_store.overlap,
+        )
+        train_loader, tune_loader, test_loaders = _make_live_loaders(
+            feature_store, seg_collate,
+            train_records, tune_records, test_records_by_split,
+            training,
+            num_classes=num_classes,
+            ignore_index=head.ignore_index,
+        )
+    else:
+        model = SegmentationModel(decoder=decoder_obj, task_head=head)
+        train_loader, tune_loader, test_loaders = _make_loaders(
+            SegmentationDataset, seg_collate,
+            train_records, tune_records, test_records_by_split,
+            training, feature_store, target_fn,
+        )
 
     summary = _format_fold_summary(
         fold=fold,
@@ -1011,7 +1142,13 @@ def train_one_segmentation_fold(
     )
     logger.info(summary)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Live: the trainer must move inputs to the encoder's device (the encoder is not a
+    # registered submodule, so model.to() won't relocate it). Cached: standard device.
+    device = (
+        torch.device(feature_store.device)
+        if is_live
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -1106,6 +1243,7 @@ def train(
                 evaluation=evaluation,
                 training=training,
                 fold_dir=fold_dir,
+                preprocessing=preprocessing,
                 fold=fold_idx,
                 num_folds=splits.num_folds,
             )
@@ -1537,8 +1675,14 @@ class Pipeline:
         finally:
             _release_parent_cuda_state()
 
-    def _get_dense_feature_store(self, *, run_dir: Path) -> "DenseFeatureStore":
+    def _get_dense_feature_store(self, *, run_dir: Path):
         from soma.dense import DenseFeatureStore
+
+        # Live re-encode path: no cached grids — hold the frozen encoder + geometry and
+        # re-encode (augmented) tiles each step. Built before the fold loop so the
+        # backbone loads once and is shared across folds.
+        if self._config.feature_mode == "live":
+            return self._build_live_segmentation_source()
 
         if self._feature_dir is not None:
             return DenseFeatureStore(self._feature_dir)
@@ -1548,15 +1692,25 @@ class Pipeline:
                 "PipelineConfig.encoder is required for dataset_type='segmentation' "
                 "when feature_dir is not provided."
             )
+        # Resolve preprocessing so requested_spacing_um defaults to the encoder's
+        # supported spacing (without overriding an explicit value); the dense read is
+        # spacing-aware (hs2p). requested_tile_size_px stays the supervision size.
+        preprocessing = self._resolve_preprocessing()
         # The dense supervision size (tile/mask size) drives the pad-to-patch
         # geometry. Reuse the existing tile-size knob — a segmentation tile is an
         # image of this size — rather than duplicating it on the decoder config.
-        target_size = self._config.preprocessing.requested_tile_size_px
+        target_size = preprocessing.requested_tile_size_px
         if target_size is None:
             raise ValueError(
                 "dataset_type='segmentation' extraction requires "
                 "preprocessing.requested_tile_size_px (the mask/tile supervision size) "
                 "when feature_dir is not provided."
+            )
+        if preprocessing.requested_spacing_um is None:
+            raise ValueError(
+                "dataset_type='segmentation' extraction requires a spacing — set "
+                "preprocessing.requested_spacing_um or use an encoder that advertises "
+                "a single supported_spacing_um."
             )
         from soma.dense_extraction import DenseTileFeatureExtractor
 
@@ -1570,13 +1724,117 @@ class Pipeline:
             self._dataset,
             self._config.encoder,
             target_size=int(target_size),
+            spacing_um=float(preprocessing.requested_spacing_um),
+            backend=preprocessing.backend,
+            tolerance=float(preprocessing.tolerance),
+            window_size=preprocessing.dense_window_size,
+            overlap=float(preprocessing.dense_window_overlap),
             execution=self._config.execution,
             cache=cache_config,
+            preprocessing=preprocessing,
         )
         try:
             return extractor.run(feature_dir=run_dir / "features")
         finally:
             _release_parent_cuda_state()
+
+    def _build_live_segmentation_source(self) -> "LiveSegmentationSource":
+        """Load the frozen encoder once and bundle it with geometry/transform for live.
+
+        Mirrors :meth:`DenseTileFeatureExtractor.run`'s encoder construction (same
+        ``load_model`` + ``dynamic_img_size`` + dense transform + resolved precision) so
+        a live-no-aug run reproduces the cached features exactly. ``feature_dim`` comes
+        from a probe forward — the same ``grid.shape[1]`` source the cached extractor
+        uses — which also fails fast if the encoder lacks a patch grid.
+        """
+        import torch as _torch
+        from slide2vec.inference import load_model
+        from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
+
+        from soma.dense.geometry import compute_dense_geometry
+        from soma.dense.live import LiveSegmentationSource
+        from soma.encoders.validation import resolve_encoder_precision
+
+        if self._config.encoder is None:
+            raise ValueError(
+                "PipelineConfig.encoder is required for feature_mode='live' segmentation."
+            )
+        preprocessing = self._resolve_preprocessing()
+        target_size = preprocessing.requested_tile_size_px
+        if target_size is None:
+            raise ValueError(
+                "feature_mode='live' segmentation requires preprocessing.requested_tile_size_px "
+                "(the mask/tile supervision size)."
+            )
+        if preprocessing.requested_spacing_um is None:
+            raise ValueError(
+                "feature_mode='live' segmentation requires a spacing — set "
+                "preprocessing.requested_spacing_um or use an encoder that advertises a "
+                "single supported_spacing_um."
+            )
+
+        loaded = load_model(
+            name=self._config.encoder.name,
+            output_variant=self._config.encoder.output_variant,
+            allow_non_recommended_settings=self._config.encoder.allow_non_recommended_settings,
+            dynamic_img_size=True,
+        )
+        encoder = loaded.model
+        device = loaded.device
+        precision = resolve_encoder_precision(
+            self._config.encoder, encoder_name=self._config.encoder.name
+        )
+        geometry = compute_dense_geometry(
+            target_size=int(target_size), patch_size=encoder.patch_size
+        )
+        window_size = preprocessing.dense_window_size
+        overlap = float(preprocessing.dense_window_overlap)
+        from soma.dense.sliding import describe_dense_mode, resolve_window_geometry
+
+        # print, not logger: always visible regardless of logging config (same as the
+        # cached extractor's announcement) so the resolved mode is never silent.
+        print(f"Live segmentation dense mode: {describe_dense_mode(window_size, overlap)}")
+
+        # Probe feature_dim (d) on a single forward (same source of truth as the cached
+        # extractor's grids.shape[1]; also a fail-fast dense-capability check). When
+        # sliding, probe ONE resolved window rather than the full padded tile: the whole
+        # point of a smaller window is to avoid the full-size forward (which can OOM at
+        # large scale-ups), and d is spatial-size-independent, so a window probe yields
+        # the same channel count.
+
+        probe_h, probe_w = (
+            geometry.encoded_size
+            if window_size is None
+            else resolve_window_geometry(geometry, window_size=window_size, overlap=overlap)[0]
+        )
+        dummy = _torch.zeros(1, 3, probe_h, probe_w, device=device)
+        with _torch.no_grad(), slide_encode_autocast_ctx(device, precision):
+            probe = encoder.encode_tiles_dense(dummy)
+        if probe.ndim != 4:
+            raise ValueError(
+                f"encode_tiles_dense returned a {probe.ndim}-D tensor for encoder "
+                f"'{self._config.encoder.name}'; expected (B, d, grid_h, grid_w)."
+            )
+        feature_dim = int(probe.shape[1])
+
+        # Reflect padding (no out-of-distribution constant border), matching the cached
+        # extractor's default; image_pad_value is unused for reflect.
+        return LiveSegmentationSource(
+            encoder=encoder,
+            device=device,
+            precision=precision,
+            geometry=geometry,
+            feature_dim=feature_dim,
+            dense_transform=encoder.get_dense_transform(),
+            augmentation=self._config.augmentation,
+            spacing_um=float(preprocessing.requested_spacing_um),
+            backend=preprocessing.backend,
+            tolerance=float(preprocessing.tolerance),
+            pad_mode="reflect",
+            image_pad_value=None,
+            window_size=window_size,
+            overlap=overlap,
+        )
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":
         """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""

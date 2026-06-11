@@ -15,56 +15,21 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from torch import Tensor
 
+from soma.dense.reader import load_mask, read_mask_at_spacing
 from soma.evaluation.metrics import resolve_metrics
 from soma.tasks.base import TaskHead
 from soma.tasks.dense_metrics import (
-    cross_entropy_dice_loss,
     dense_confusion_counts,
     reduce_dice_iou,
+    segmentation_loss,
 )
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
     from soma.dataset import SampleRecord
     from soma.dense.geometry import DenseGridGeometry
-
-
-def load_mask(path, *, expected_size: tuple[int, int] | None = None) -> Tensor:
-    """Load a segmentation mask as a 2-D ``long`` tensor of class indices.
-
-    Fails loud on RGB/palette masks (a classic silent corruption — class indices
-    smeared across channels) and on non-integer dtypes. v1 loads at native
-    resolution (no resize); when resizing arrives it must be nearest-neighbor only
-    so class indices and ``ignore_index`` survive.
-    """
-    with Image.open(path) as image:
-        # Palette ("P"/"PA") images load as a 2-D index array and would pass the
-        # rank/dtype checks below, but palette indices are NOT class ids — reject
-        # explicitly so a colormapped mask can't be silently misread.
-        if image.mode in ("P", "PA"):
-            raise ValueError(
-                f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
-                "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
-            )
-        array = np.array(image)
-    if array.ndim != 2:
-        raise ValueError(
-            f"mask '{path}' must be a 2-D single-channel class-index raster, got shape "
-            f"{array.shape}. RGB/palette masks are not supported."
-        )
-    if not np.issubdtype(array.dtype, np.integer):
-        raise ValueError(
-            f"mask '{path}' must have an integer dtype (class indices), got {array.dtype}."
-        )
-    tensor = torch.from_numpy(array.astype(np.int64))
-    if expected_size is not None and tuple(int(s) for s in tensor.shape) != tuple(expected_size):
-        raise ValueError(
-            f"mask '{path}' is {tuple(int(s) for s in tensor.shape)}, expected {tuple(expected_size)}."
-        )
-    return tensor
 
 
 class SegmentationHead(TaskHead):
@@ -76,7 +41,17 @@ class SegmentationHead(TaskHead):
             and ``crop_box`` so ``forward`` maps decoder logits to the mask's
             ``target_size``. The same geometry the extractor used (single source).
         ignore_index: Mask value excluded from loss and metrics.
-        dice_weight: Weight on the soft-Dice term added to cross-entropy.
+        dice_weight: Weight on the overlap (soft-Dice / Tversky) term added to the
+            region (cross-entropy) term.
+        class_weights: Optional per-class ``(num_classes,)`` weights for the
+            cross-entropy term (e.g. inverse frequency) up-weighting rare classes.
+            ``None`` = unweighted.
+        ce_gamma: Focal exponent on cross-entropy. ``0.0`` = plain (optionally
+            class-weighted) CE; ``> 0`` down-weights easy, well-classified pixels.
+        tversky_alpha / tversky_beta / tversky_gamma: Overlap-term shape. The
+            default ``(0.5, 0.5, 1.0)`` *is* soft-Dice; ``beta > alpha`` penalizes
+            false negatives more (recall-oriented for small structures), ``gamma > 1``
+            focuses on hard, low-overlap classes (focal-Tversky).
         metrics: Metric names (validated against the ``segmentation`` family);
             empty uses the default ``[mean_dice, mean_iou]``.
     """
@@ -95,7 +70,15 @@ class SegmentationHead(TaskHead):
         geometry: "DenseGridGeometry",
         ignore_index: int = 255,
         dice_weight: float = 1.0,
+        class_weights: list[float] | None = None,
+        ce_gamma: float = 0.0,
+        tversky_alpha: float = 0.5,
+        tversky_beta: float = 0.5,
+        tversky_gamma: float = 1.0,
         metrics: list[str] | None = None,
+        spacing_um: float | None = None,
+        backend: str = "auto",
+        tolerance: float = 0.05,
     ) -> None:
         super().__init__()
         if num_classes < 1:
@@ -107,6 +90,33 @@ class SegmentationHead(TaskHead):
         self.num_classes = int(num_classes)
         self.ignore_index = int(ignore_index)
         self.dice_weight = float(dice_weight)
+        if class_weights is not None:
+            class_weights = [float(w) for w in class_weights]
+            if len(class_weights) != self.num_classes:
+                raise ValueError(
+                    f"class_weights must have num_classes={self.num_classes} entries, "
+                    f"got {len(class_weights)}."
+                )
+            if any(w < 0.0 for w in class_weights):
+                raise ValueError(f"class_weights must be non-negative, got {class_weights}.")
+        self.class_weights = class_weights
+        if float(ce_gamma) < 0.0:
+            raise ValueError(f"ce_gamma must be >= 0, got {ce_gamma}.")
+        self.ce_gamma = float(ce_gamma)
+        if float(tversky_alpha) < 0.0 or float(tversky_beta) < 0.0:
+            raise ValueError(
+                f"tversky_alpha/beta must be >= 0, got ({tversky_alpha}, {tversky_beta})."
+            )
+        if float(tversky_gamma) <= 0.0:
+            raise ValueError(f"tversky_gamma must be > 0, got {tversky_gamma}.")
+        self.tversky_alpha = float(tversky_alpha)
+        self.tversky_beta = float(tversky_beta)
+        self.tversky_gamma = float(tversky_gamma)
+        # When set, masks are read spacing-aware (hs2p) at this µm/px to register
+        # against the dense grid; None falls back to a flat page-0 load_mask read.
+        self._spacing_um = float(spacing_um) if spacing_um is not None else None
+        self._backend = backend
+        self._tolerance = float(tolerance)
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
@@ -128,7 +138,15 @@ class SegmentationHead(TaskHead):
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
         if record.mask_path is None:
             raise ValueError(f"segmentation sample '{record.sample_id}' has no mask_path")
-        mask = load_mask(record.mask_path)
+        # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
+        # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
+        array = read_mask_at_spacing(
+            record.mask_path,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+        )
+        mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy
         # index assert (a device-side async assert on CUDA) far from the cause.
@@ -142,12 +160,17 @@ class SegmentationHead(TaskHead):
         return {"mask": mask}
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
-        return cross_entropy_dice_loss(
+        return segmentation_loss(
             predictions,
             targets["mask"],
             num_classes=self.num_classes,
             ignore_index=self.ignore_index,
             dice_weight=self.dice_weight,
+            class_weights=self.class_weights,
+            ce_gamma=self.ce_gamma,
+            tversky_alpha=self.tversky_alpha,
+            tversky_beta=self.tversky_beta,
+            tversky_gamma=self.tversky_gamma,
         )
 
     def dense_stats(self, raw_output: Tensor, targets: dict[str, Tensor]) -> Tensor:

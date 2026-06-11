@@ -8,6 +8,9 @@ data:
   dataset_csv: data/dataset.csv
   splits_csv: data/splits.csv
   dataset_type: slide
+  # cached: read pre-extracted dense grids. live: re-encode (augmented) tiles through
+  # the frozen encoder every step (segmentation only — enables augmentation).
+  feature_mode: cached
 
 preprocessing:
   backend: auto
@@ -20,6 +23,13 @@ preprocessing:
   tissue_method: hsv
   tissue_threshold: 0.1
   overlap: 0.0
+  # Dense (segmentation) encoder-window knobs — how the padded supervision tile reaches
+  # the frozen encoder (NOT the tiling `overlap` above). dense_window_size: null => the
+  # `whole` path (one padded forward; the default and cached-parity anchor). A smaller
+  # window (e.g. 224 or 512) slides the encoder over patch-aligned windows and blends the
+  # token grids over dense_window_overlap (raised-cosine), useful at large scale-ups.
+  dense_window_size: null
+  dense_window_overlap: 0.0
   seg_downsample: 64
   sam2_device: cpu
   sam2_num_workers: null
@@ -87,6 +97,20 @@ training:
   num_workers: 0
   pin_memory: true
   persistent_workers: true
+
+# Image/mask augmentation — only applied when data.feature_mode is 'live'
+# (segmentation). Geometric ops transform image + mask jointly (mask nearest); the
+# photometric ops transform the image only. All-zero = no augmentation (live-no-aug).
+augmentation:
+  horizontal_flip: 0.0
+  vertical_flip: 0.0
+  rotation_degrees: 0.0
+  translate: 0.0
+  scale: 0.0
+  brightness: 0.0
+  contrast: 0.0
+  saturation: 0.0
+  hue: 0.0
 
 reports:
   heatmaps:

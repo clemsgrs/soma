@@ -62,6 +62,8 @@ def test_extract_dense_grids_roundtrip(tmp_path: Path):
         geometry=geometry,
         records=records,
         out_dir=out_dir,
+        window_size=None,
+        overlap=0.0,
         batch_size=2,
     )
     assert feature_dim == enc.encode_dim  # 192 for vit_tiny
@@ -92,6 +94,8 @@ def test_extract_dense_grids_padded_patch_multiple(tmp_path: Path):
         geometry=geometry,
         records=records,
         out_dir=out_dir,
+        window_size=None,
+        overlap=0.0,
         batch_size=1,
     )
     assert tuple(DenseFeatureStore(out_dir).load("s0").shape) == (enc.encode_dim, 3, 3)
@@ -109,6 +113,8 @@ def test_extract_dense_grids_rejects_wrong_tile_size(tmp_path: Path):
             geometry=geometry,
             records=records,
             out_dir=tmp_path / "dense_embeddings",
+            window_size=None,
+            overlap=0.0,
             batch_size=1,
         )
 
@@ -144,6 +150,8 @@ def test_extract_then_cache_resolve_complete_and_store_read(tmp_path: Path):
         patch_size=(16, 16),
         pad_mode="reflect",
         execution=EncoderConfig(name="uni", precision="fp32"),
+        window_size=None,
+        overlap=0.0,
     )
     res = resolve_dense_cache(**kw)
     assert res.complete is False
@@ -156,6 +164,8 @@ def test_extract_then_cache_resolve_complete_and_store_read(tmp_path: Path):
         geometry=geometry,
         records=[dataset.samples[i] for i in dataset.sample_ids],
         out_dir=res.features_dir,  # write into the cache payload dir
+        window_size=None,
+        overlap=0.0,
         batch_size=2,
     )
     record_feature_dim(res, feature_dim)
@@ -167,16 +177,44 @@ def test_extract_then_cache_resolve_complete_and_store_read(tmp_path: Path):
     assert tuple(store.load(dataset.sample_ids[0]).shape) == (enc.encode_dim, 2, 2)
 
 
-def test_extract_dense_grids_sliding_window_not_implemented(tmp_path: Path):
+def test_extract_dense_grids_sliding_window_writes_full_grid_and_metadata(tmp_path: Path):
+    # target 64 -> 4x4 grid; a 32px window (+0.5 overlap) slides over it and stitches
+    # back to the same 4x4 grid. The sidecar records the derived sliding mode + knobs.
+    enc = _encoder()
+    geometry = compute_dense_geometry(target_size=64, patch_size=16)
+    records = _make_tiles(tmp_path, n=2, size=64)
+    out_dir = tmp_path / "dense_embeddings"
+    feature_dim = extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=records,
+        out_dir=out_dir,
+        window_size=32,
+        overlap=0.5,
+        batch_size=2,
+    )
+    assert feature_dim == enc.encode_dim
+    store = DenseFeatureStore(out_dir)
+    assert tuple(store.load("s0").shape) == (enc.encode_dim, 4, 4)
+    meta = store.metadata("s0")
+    assert meta["dense_input_mode"] == "sliding_window"
+    assert meta["window_size"] == 32 and meta["overlap"] == 0.5
+
+
+def test_extract_dense_grids_window_none_records_whole(tmp_path: Path):
     enc = _encoder()
     geometry = compute_dense_geometry(target_size=32, patch_size=16)
-    with pytest.raises(NotImplementedError, match="sliding_window"):
-        extract_dense_grids(
-            encoder=enc,
-            device="cpu",
-            dense_transform=enc.get_dense_transform(),
-            geometry=geometry,
-            records=_make_tiles(tmp_path, n=1, size=32),
-            out_dir=tmp_path / "dense_embeddings",
-            dense_input_mode="sliding_window",
-        )
+    extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=_make_tiles(tmp_path, n=1, size=32),
+        out_dir=tmp_path / "dense_embeddings",
+        window_size=None,
+        overlap=0.0,
+    )
+    meta = DenseFeatureStore(tmp_path / "dense_embeddings").metadata("s0")
+    assert meta["dense_input_mode"] == "whole" and meta["window_size"] is None

@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import torch
 from torch import Tensor, nn
+
+from typing import TYPE_CHECKING
 
 from soma.aggregators.base import Aggregator
 from soma.decoders.base import Decoder
 from soma.tasks.base import TaskHead
+
+if TYPE_CHECKING:
+    from soma.dense.geometry import DenseGridGeometry
 
 
 @dataclass
@@ -116,3 +122,104 @@ class SegmentationModel(nn.Module):
 
     def forward(self, X: Tensor) -> SegmentationModelOutput:
         return SegmentationModelOutput(logits=self.task_head(self.decoder(X)))
+
+
+def _set_encoder_eval(encoder: object) -> None:
+    """Put a slide2vec tile encoder (and its inner module) into eval mode.
+
+    The encoder is slide2vec's ``TileEncoder`` wrapper — not an ``nn.Module`` — so it
+    has no ``.eval()``; the trainable backbone lives on its inner ``_model``. Eval-lock
+    that so frozen BN/dropout never drift during training.
+    """
+    if hasattr(encoder, "eval"):
+        encoder.eval()  # future-proof: a Module-style encoder
+    inner = getattr(encoder, "_model", None)
+    if isinstance(inner, nn.Module):
+        inner.eval()
+
+
+class LiveSegmentationModel(nn.Module):
+    """Frozen encoder + decoder + segmentation head — re-encodes tiles each step.
+
+    The live counterpart of :class:`SegmentationModel`: instead of consuming cached
+    dense grids, it runs the **frozen** foundation-model encoder on the (augmented)
+    image batch every forward, so the trainer's ``out = model(features)`` →
+    ``out.logits`` → ``task_head.compute_loss`` contract is unchanged (the streaming
+    ``accumulate_dense_stats`` eval works as-is too).
+
+    The encoder is slide2vec's ``TileEncoder`` wrapper, which is *not* an ``nn.Module``;
+    assigning it as an attribute therefore does **not** register it as a submodule, so
+    it is automatically excluded from ``state_dict()`` (checkpoints carry only
+    decoder+head — the backbone is reconstructed by ``load_model``) and from
+    ``parameters()`` (the optimizer only ever sees the trainable decoder+head). We
+    assert that non-registration so a future ``nn.Module`` encoder fails loud here
+    rather than silently bloating checkpoints / entering the optimizer.
+
+    Gradient/precision (design §13.B-9): the encoder runs under ``torch.no_grad()``
+    (NOT ``inference_mode``, which taints outputs for the downstream autograd graph)
+    and the extraction autocast context, then the grid is cast to ``float()`` to mirror
+    the cached extractor exactly — so a live-no-aug run is numerically identical to the
+    cached path (a real regression anchor). The decoder/head run in fp32 outside
+    ``no_grad`` so backprop flows to them and stops at the frozen grid.
+
+    Args:
+        encoder: A dense-capable slide2vec tile encoder (``encode_tiles_dense``).
+        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``.
+        task_head: SegmentationHead (geometry + targets/loss/metric/postprocess).
+        device: Device the encoder runs on (the trainer moves inputs here too).
+        precision: Encoder autocast precision (resolved exactly as extraction does).
+    """
+
+    def __init__(
+        self,
+        *,
+        encoder: object,
+        decoder: Decoder,
+        task_head: TaskHead,
+        device: torch.device | str,
+        precision: str,
+        geometry: "DenseGridGeometry",
+        window_size: int | None = None,
+        overlap: float = 0.0,
+    ) -> None:
+        super().__init__()
+        self.decoder = decoder
+        self.task_head = task_head
+        self._geometry = geometry
+        self._window_size = None if window_size is None else int(window_size)
+        self._overlap = float(overlap)
+        # NOT a registered submodule (encoder is slide2vec's non-Module wrapper) —
+        # see the class docstring. Assert the invariant the checkpoint/optimizer rely on.
+        self.encoder = encoder
+        if "encoder" in self._modules:
+            raise TypeError(
+                "LiveSegmentationModel.encoder was registered as a submodule (the encoder "
+                "is an nn.Module). That would write the frozen backbone into every checkpoint "
+                "and feed it to the optimizer — revisit the state_dict / freeze handling."
+            )
+        self._device = torch.device(device)
+        self._precision = str(precision)
+        _set_encoder_eval(self.encoder)
+
+    def train(self, mode: bool = True) -> "LiveSegmentationModel":
+        """Toggle decoder/head train mode but keep the frozen encoder in eval."""
+        super().train(mode)
+        _set_encoder_eval(self.encoder)
+        return self
+
+    def forward(self, X: Tensor) -> SegmentationModelOutput:
+        from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
+
+        from soma.dense.sliding import encode_dense_sliding
+
+        with torch.no_grad(), slide_encode_autocast_ctx(self._device, self._precision):
+            # window_size=None ⇒ the whole single forward (byte-identical to the cached
+            # extractor — the parity anchor); a smaller window slides + blends identically.
+            grid = encode_dense_sliding(
+                self.encoder,
+                X,
+                geometry=self._geometry,
+                window_size=self._window_size,
+                overlap=self._overlap,
+            ).float()  # mirror extraction
+        return SegmentationModelOutput(logits=self.task_head(self.decoder(grid)))
