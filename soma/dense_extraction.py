@@ -45,6 +45,7 @@ from soma.dense import (
     normalize_hw,
     write_dense_grid,
 )
+from soma.dense.reader import read_image_at_spacing
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
@@ -83,20 +84,34 @@ class _DenseTileImageDataset(TorchDataset):
         *,
         pad_mode: str,
         image_pad_value: float | None,
+        spacing_um: float | None = None,
+        backend: str = "auto",
+        tolerance: float = 0.05,
     ) -> None:
         self._records = records
         self._transform = dense_transform
         self._geometry = geometry
         self._pad_mode = pad_mode
         self._image_pad_value = image_pad_value
+        self._spacing_um = spacing_um
+        self._backend = backend
+        self._tolerance = tolerance
 
     def __len__(self) -> int:
         return len(self._records)
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, str]:
         record = self._records[idx]
-        with Image.open(record.image_path) as image:
-            tensor = self._transform(image.convert("RGB"))
+        # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
+        # spacing ignored; pyramidal/spacing-bearing → hs2p (finest level <= requested
+        # spacing, downscaled; byte-identical to a page-0 PIL read at an exact match).
+        array = read_image_at_spacing(
+            record.image_path,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+        )
+        tensor = self._transform(Image.fromarray(array))
         tensor = torch.as_tensor(tensor).as_subclass(torch.Tensor)
         if tensor.ndim != 3:
             raise ValueError(
@@ -124,6 +139,9 @@ def extract_dense_grids(
     geometry: DenseGridGeometry,
     records: Sequence[SampleRecord],
     out_dir: Path | str,
+    spacing_um: float | None = None,
+    backend: str = "auto",
+    tolerance: float = 0.05,
     pad_mode: str = "reflect",
     image_pad_value: float | None = None,
     mask_pad_value: int | None = None,
@@ -150,7 +168,14 @@ def extract_dense_grids(
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     dataset = _DenseTileImageDataset(
-        list(records), dense_transform, geometry, pad_mode=pad_mode, image_pad_value=image_pad_value
+        list(records),
+        dense_transform,
+        geometry,
+        pad_mode=pad_mode,
+        image_pad_value=image_pad_value,
+        spacing_um=spacing_um,
+        backend=backend,
+        tolerance=tolerance,
     )
     loader_kwargs: dict = {
         "batch_size": batch_size,
@@ -209,6 +234,9 @@ class DenseTileFeatureExtractor:
         encoder: EncoderConfig,
         *,
         target_size: int | tuple[int, int],
+        spacing_um: float,
+        backend: str = "auto",
+        tolerance: float = 0.05,
         pad_mode: str = "reflect",
         dense_input_mode: str = "whole",
         execution: ExecutionConfig = ExecutionConfig(),
@@ -223,6 +251,9 @@ class DenseTileFeatureExtractor:
         self._dataset = dataset
         self._encoder = encoder
         self._target_size = normalize_hw(target_size, name="target_size")
+        self._spacing_um = float(spacing_um)
+        self._backend = backend
+        self._tolerance = float(tolerance)
         self._pad_mode = pad_mode
         self._dense_input_mode = dense_input_mode
         self._execution = execution
@@ -300,6 +331,9 @@ class DenseTileFeatureExtractor:
             geometry=geometry,
             records=records,
             out_dir=out_dir,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
             pad_mode=self._pad_mode,
             image_pad_value=self._image_pad_value(),
             mask_pad_value=None,  # ignore_index is owned by the segmentation dataset slice

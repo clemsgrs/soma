@@ -17,12 +17,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
 from soma.dataset import SampleRecord
 from soma.dense import DenseFeatureStore
+from soma.dense.geometry import DenseGridGeometry
 
 
 class SegmentationDataset(Dataset):
@@ -70,6 +72,136 @@ class SegmentationDataset(Dataset):
                 f"but the dense grid records target_size {tuple(int(s) for s in target_size)}."
             )
         return grid, targets, record.sample_id
+
+
+class LiveSegmentationDataset(Dataset):
+    """Image+mask pairs read and (optionally) augmented for the live re-encode path.
+
+    The live counterpart of :class:`SegmentationDataset`: instead of a cached grid +
+    a head-loaded mask, it yields the **augmented image tensor** ``(C, Henc, Wenc)``
+    that :class:`~soma.training.model.LiveSegmentationModel` re-encodes on-GPU, plus
+    the jointly-transformed mask ``(H, W)`` at the supervision ``target_size``. The
+    collated batch reuses :func:`segmentation_collate_fn` (now stacking images, not
+    grids).
+
+    Why a dedicated dataset (it bypasses the head's ``extract_targets``): augmentation
+    requires the image and mask to be loaded *together* and transformed *jointly*
+    (geometric ops must agree pixel-for-pixel), so the head's fixed-mask ``target_fn``
+    cannot be used. Both are read spacing-aware (so they register against the dense
+    grid by construction), wrapped as ``tv_tensors.Image``/``Mask``, passed through the
+    joint v2 transform, then the image is normalized with the encoder's dense transform
+    and padded to ``encoded_size`` while the mask stays at ``target_size`` (the head
+    crops the decoded logits back to it).
+
+    Args:
+        records: SampleRecords (with ``image_path`` and ``mask_path``) for this split.
+        geometry: The run's :class:`DenseGridGeometry` (target/encoded size + pad).
+        dense_transform: The encoder's normalization-only transform (PIL -> tensor).
+        spacing_um: µm/px to read both image and mask at (``None`` = flat PIL read).
+        backend: hs2p backend for spacing-aware reads.
+        tolerance: hs2p spacing tolerance.
+        num_classes / ignore_index: validate mask label values (fail loud, with the
+            sample id, before a cryptic device-side one_hot/CE assert).
+        augment: Joint ``(image, mask)`` v2 transform, or ``None`` for no augmentation.
+        pad_mode / image_pad_value: How to pad the image up to ``encoded_size`` (same
+            contract as the cached extractor).
+    """
+
+    def __init__(
+        self,
+        records: list[SampleRecord],
+        *,
+        geometry: DenseGridGeometry,
+        dense_transform: Callable,
+        spacing_um: float | None,
+        backend: str,
+        tolerance: float,
+        num_classes: int,
+        ignore_index: int,
+        augment: Callable | None = None,
+        pad_mode: str = "reflect",
+        image_pad_value: float | None = None,
+    ) -> None:
+        self._records = records
+        self._geometry = geometry
+        self._transform = dense_transform
+        self._spacing_um = float(spacing_um) if spacing_um is not None else None
+        self._backend = backend
+        self._tolerance = float(tolerance)
+        self._num_classes = int(num_classes)
+        self._ignore_index = int(ignore_index)
+        self._augment = augment
+        self._pad_mode = pad_mode
+        self._image_pad_value = image_pad_value
+
+    def __len__(self) -> int:
+        return len(self._records)
+
+    def __getitem__(self, idx: int) -> tuple[Tensor, dict[str, Tensor], str]:
+        from PIL import Image
+
+        from soma.dense.reader import read_image_at_spacing, read_mask_at_spacing
+        from soma.dense_extraction import _pad_image_to_encoded
+
+        record = self._records[idx]
+        if record.mask_path is None:
+            raise ValueError(f"segmentation sample '{record.sample_id}' has no mask_path")
+        # Read both at the same spacing so they register against the dense grid.
+        image_array = read_image_at_spacing(
+            record.image_path,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+        )
+        mask_array = read_mask_at_spacing(
+            record.mask_path,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+        )
+
+        if self._augment is not None:
+            from torchvision import tv_tensors
+
+            image_tv = tv_tensors.Image(
+                torch.from_numpy(np.ascontiguousarray(image_array)).permute(2, 0, 1)
+            )  # (C, H, W) uint8
+            mask_tv = tv_tensors.Mask(
+                torch.from_numpy(np.ascontiguousarray(mask_array).astype(np.int64))
+            )  # (H, W)
+            image_tv, mask_tv = self._augment(image_tv, mask_tv)
+            image_array = image_tv.permute(1, 2, 0).contiguous().numpy().astype(np.uint8)
+            mask = mask_tv.as_subclass(torch.Tensor).to(torch.long)
+        else:
+            mask = torch.from_numpy(np.ascontiguousarray(mask_array).astype(np.int64))
+
+        # Normalize the (augmented) image exactly as the cached extractor does, so a
+        # live-no-aug run is byte-identical to the cached path (the parity anchor).
+        tensor = self._transform(Image.fromarray(image_array))
+        tensor = torch.as_tensor(tensor).as_subclass(torch.Tensor)
+        if tuple(int(s) for s in tensor.shape[-2:]) != self._geometry.target_size:
+            raise ValueError(
+                f"tile '{record.sample_id}' is {tuple(int(s) for s in tensor.shape[-2:])} "
+                f"after the dense transform, but the run's target_size is "
+                f"{self._geometry.target_size}."
+            )
+        padded = _pad_image_to_encoded(
+            tensor, self._geometry, pad_mode=self._pad_mode, image_pad_value=self._image_pad_value
+        )
+
+        if tuple(int(s) for s in mask.shape[-2:]) != self._geometry.target_size:
+            raise ValueError(
+                f"mask for '{record.sample_id}' is {tuple(int(s) for s in mask.shape[-2:])} "
+                f"but the run's target_size is {self._geometry.target_size}."
+            )
+        allowed = set(range(self._num_classes)) | {self._ignore_index}
+        invalid = sorted(v for v in torch.unique(mask).tolist() if v not in allowed)
+        if invalid:
+            raise ValueError(
+                f"mask for '{record.sample_id}' has label value(s) {invalid} outside "
+                f"[0, num_classes={self._num_classes}) ∪ {{ignore_index={self._ignore_index}}}."
+            )
+        return padded, {"mask": mask}, record.sample_id
 
 
 @dataclass

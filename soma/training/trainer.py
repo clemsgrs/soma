@@ -516,7 +516,10 @@ def accumulate_dense_stats(
 
 
 def _build_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim.Optimizer:
-    params = model.parameters()
+    # Only optimize trainable params: the live segmentation model holds a frozen
+    # encoder, and an optimizer raises if handed params with requires_grad=False. A
+    # strict no-op for fully-trainable models (every param requires grad).
+    params = [p for p in model.parameters() if p.requires_grad]
     if config.optimizer == "adam":
         return torch.optim.Adam(params, lr=config.learning_rate, weight_decay=config.weight_decay)
     elif config.optimizer == "adamw":

@@ -2,6 +2,7 @@
 
 from soma.config import (
     AggregatorConfig,
+    AugmentationConfig,
     CacheConfig,
     DecoderConfig,
     EncoderConfig,
@@ -30,14 +31,17 @@ from soma.preprocessing import (
     write_coordinate_preview,
 )
 from soma.tile_extraction import TileFeatureExtractor
+from soma.dense.live import LiveSegmentationSource
 from soma.training.model import (
     EmbeddingModel,
     EmbeddingModelOutput,
+    LiveSegmentationModel,
     SegmentationModel,
     SegmentationModelOutput,
 )
 from soma.training.sample_dataset import SampleBatch, SampleDataset, sample_collate_fn
 from soma.training.segmentation_dataset import (
+    LiveSegmentationDataset,
     SegmentationBatch,
     SegmentationDataset,
     segmentation_collate_fn,
@@ -47,6 +51,7 @@ from soma.tasks import list_task_heads
 __all__ = [
     # Config
     "AggregatorConfig",
+    "AugmentationConfig",
     "CacheConfig",
     "DecoderConfig",
     "EncoderConfig",
@@ -84,11 +89,14 @@ __all__ = [
     "write_coordinate_preview",
     "EmbeddingModel",
     "EmbeddingModelOutput",
+    "LiveSegmentationModel",
+    "LiveSegmentationSource",
     "SegmentationModel",
     "SegmentationModelOutput",
     "SampleBatch",
     "SampleDataset",
     "sample_collate_fn",
+    "LiveSegmentationDataset",
     "SegmentationBatch",
     "SegmentationDataset",
     "segmentation_collate_fn",

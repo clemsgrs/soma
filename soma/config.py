@@ -75,6 +75,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "training",
         "execution",
         "cache",
+        "augmentation",
         "reports",
     }
     unknown_keys = [key for key in data if key not in allowed_sections]
@@ -105,6 +106,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "training",
         "execution",
         "cache",
+        "augmentation",
     ):
         if section in data:
             value = data[section]
@@ -138,6 +140,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         splits_csv=data_data["splits_csv"],
         output_root=run_data["output_root"],
         dataset_type=data_data["dataset_type"],
+        feature_mode=data_data.get("feature_mode", "cached"),
         preprocessing=PreprocessingConfig(
             **preprocessing_data,
             preview=PreviewConfig(**preview_data),
@@ -151,6 +154,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
+        augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
     )
 
@@ -358,6 +362,65 @@ class TrainingConfig:
 
 
 @dataclass(frozen=True)
+class AugmentationConfig:
+    """Image/mask augmentation for the live segmentation path (``feature_mode='live'``).
+
+    Augmentation is only possible when tiles are re-encoded each step (live), never
+    on cached grids (the encoder is frozen-but-applied per step — see design §4/§13.B).
+    Geometric ops (``horizontal_flip``/``vertical_flip``/``rotation_degrees``/
+    ``translate``/``scale``) apply jointly to the image **and** mask (mask resampled
+    nearest-neighbor automatically); photometric ops (``brightness``/``contrast``/
+    ``saturation``/``hue``) apply to the **image only**. ``rotation_degrees``,
+    ``translate``, and ``scale`` together drive a single ``RandomAffine``; affine
+    out-of-canvas pixels fill the image with 0 and the mask with ``ignore_index`` (so
+    they are excluded from loss/metrics). All-default = no-op (legal: the live-no-aug
+    parity / future ``sliding_window`` case).
+    """
+
+    horizontal_flip: float = 0.0  # probability in [0, 1]
+    vertical_flip: float = 0.0  # probability in [0, 1]
+    rotation_degrees: float = 0.0  # RandomAffine symmetric degree range (±value)
+    translate: float = 0.0  # RandomAffine max translate fraction (both axes)
+    scale: float = 0.0  # RandomAffine scale jitter: scale ∈ (1-value, 1+value)
+    brightness: float = 0.0
+    contrast: float = 0.0
+    saturation: float = 0.0
+    hue: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("horizontal_flip", "vertical_flip"):
+            value = getattr(self, name)
+            if not 0.0 <= float(value) <= 1.0:
+                raise ValueError(f"AugmentationConfig.{name} must be in [0, 1], got {value}")
+        for name in ("rotation_degrees", "translate", "scale", "brightness", "contrast", "saturation", "hue"):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"AugmentationConfig.{name} must be >= 0, got {getattr(self, name)}")
+        if float(self.translate) > 1.0:
+            raise ValueError(f"AugmentationConfig.translate must be in [0, 1], got {self.translate}")
+        if float(self.scale) >= 1.0:
+            raise ValueError(f"AugmentationConfig.scale must be in [0, 1), got {self.scale}")
+        if float(self.hue) > 0.5:
+            raise ValueError(f"AugmentationConfig.hue must be in [0, 0.5], got {self.hue}")
+
+    def is_enabled(self) -> bool:
+        """True if any field departs from its no-op default."""
+        return any(
+            float(v) != 0.0
+            for v in (
+                self.horizontal_flip,
+                self.vertical_flip,
+                self.rotation_degrees,
+                self.translate,
+                self.scale,
+                self.brightness,
+                self.contrast,
+                self.saturation,
+                self.hue,
+            )
+        )
+
+
+@dataclass(frozen=True)
 class HeatmapConfig:
     """Attention heatmap generation and rendering settings."""
 
@@ -399,6 +462,7 @@ class PipelineConfig:
     splits_csv: str | Path
     output_root: str | Path
     dataset_type: str
+    feature_mode: str = "cached"
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
@@ -409,6 +473,7 @@ class PipelineConfig:
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
+    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -448,6 +513,26 @@ class PipelineConfig:
                 f"decoder must be None for dataset_type={self.dataset_type!r} — "
                 "decoders are only used for dataset_type='segmentation'."
             )
+        # feature_mode / augmentation (the live re-encode segmentation path, §13.B).
+        # `cached` reads pre-extracted dense grids; `live` re-encodes augmented tiles
+        # through the frozen encoder every step. Fail loud rather than silently no-op.
+        if self.feature_mode not in {"cached", "live"}:
+            raise ValueError(
+                f"Invalid feature_mode {self.feature_mode!r}; must be 'cached' or 'live'."
+            )
+        if self.feature_mode == "live" and self.dataset_type != "segmentation":
+            raise ValueError(
+                "feature_mode='live' is only supported for dataset_type='segmentation' "
+                f"(re-encoding augmented tiles), got dataset_type={self.dataset_type!r}."
+            )
+        if self.augmentation.is_enabled():
+            if self.feature_mode != "live":
+                raise ValueError(
+                    "augmentation requires feature_mode='live' — cached dense grids cannot "
+                    "be augmented (the features are frozen). Set feature_mode='live' or clear "
+                    "the augmentation section."
+                )
+            # dataset_type is already guaranteed 'segmentation' by the live check above.
         if self.task.name == "survival":
             if self.dataset_type == "tile":
                 raise ValueError(
@@ -580,6 +665,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             "dataset_csv": _normalize_yaml_value(config.dataset_csv),
             "splits_csv": _normalize_yaml_value(config.splits_csv),
             "dataset_type": config.dataset_type,
+            "feature_mode": config.feature_mode,
         },
         "preprocessing": _normalize_yaml_value(asdict(config.preprocessing)),
         "execution": _normalize_yaml_value(asdict(config.execution)),
@@ -595,6 +681,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
                 if key != "seed"
             }
         ),
+        "augmentation": _normalize_yaml_value(asdict(config.augmentation)),
         "reports": {
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },

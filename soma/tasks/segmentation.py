@@ -15,9 +15,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
 from torch import Tensor
 
+from soma.dense.reader import load_mask, read_mask_at_spacing
 from soma.evaluation.metrics import resolve_metrics
 from soma.tasks.base import TaskHead
 from soma.tasks.dense_metrics import (
@@ -30,41 +30,6 @@ from soma.tasks.registry import task_registry
 if TYPE_CHECKING:
     from soma.dataset import SampleRecord
     from soma.dense.geometry import DenseGridGeometry
-
-
-def load_mask(path, *, expected_size: tuple[int, int] | None = None) -> Tensor:
-    """Load a segmentation mask as a 2-D ``long`` tensor of class indices.
-
-    Fails loud on RGB/palette masks (a classic silent corruption — class indices
-    smeared across channels) and on non-integer dtypes. v1 loads at native
-    resolution (no resize); when resizing arrives it must be nearest-neighbor only
-    so class indices and ``ignore_index`` survive.
-    """
-    with Image.open(path) as image:
-        # Palette ("P"/"PA") images load as a 2-D index array and would pass the
-        # rank/dtype checks below, but palette indices are NOT class ids — reject
-        # explicitly so a colormapped mask can't be silently misread.
-        if image.mode in ("P", "PA"):
-            raise ValueError(
-                f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
-                "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
-            )
-        array = np.array(image)
-    if array.ndim != 2:
-        raise ValueError(
-            f"mask '{path}' must be a 2-D single-channel class-index raster, got shape "
-            f"{array.shape}. RGB/palette masks are not supported."
-        )
-    if not np.issubdtype(array.dtype, np.integer):
-        raise ValueError(
-            f"mask '{path}' must have an integer dtype (class indices), got {array.dtype}."
-        )
-    tensor = torch.from_numpy(array.astype(np.int64))
-    if expected_size is not None and tuple(int(s) for s in tensor.shape) != tuple(expected_size):
-        raise ValueError(
-            f"mask '{path}' is {tuple(int(s) for s in tensor.shape)}, expected {tuple(expected_size)}."
-        )
-    return tensor
 
 
 class SegmentationHead(TaskHead):
@@ -96,6 +61,9 @@ class SegmentationHead(TaskHead):
         ignore_index: int = 255,
         dice_weight: float = 1.0,
         metrics: list[str] | None = None,
+        spacing_um: float | None = None,
+        backend: str = "auto",
+        tolerance: float = 0.05,
     ) -> None:
         super().__init__()
         if num_classes < 1:
@@ -107,6 +75,11 @@ class SegmentationHead(TaskHead):
         self.num_classes = int(num_classes)
         self.ignore_index = int(ignore_index)
         self.dice_weight = float(dice_weight)
+        # When set, masks are read spacing-aware (hs2p) at this µm/px to register
+        # against the dense grid; None falls back to a flat page-0 load_mask read.
+        self._spacing_um = float(spacing_um) if spacing_um is not None else None
+        self._backend = backend
+        self._tolerance = float(tolerance)
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
@@ -128,7 +101,15 @@ class SegmentationHead(TaskHead):
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
         if record.mask_path is None:
             raise ValueError(f"segmentation sample '{record.sample_id}' has no mask_path")
-        mask = load_mask(record.mask_path)
+        # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
+        # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
+        array = read_mask_at_spacing(
+            record.mask_path,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+        )
+        mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy
         # index assert (a device-side async assert on CUDA) far from the cause.
