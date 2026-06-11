@@ -940,6 +940,13 @@ def train_one_fold(
     )
 
 
+def _dense_spacings_match(a: float | None, b: float | None, *, tol: float = 1e-9) -> bool:
+    """True when two read-spacings agree: both flat (``None``) or equal within ``tol``."""
+    if a is None or b is None:
+        return a is None and b is None
+    return abs(float(a) - float(b)) <= tol
+
+
 def train_one_segmentation_fold(
     feature_store: "DenseFeatureStore | LiveSegmentationSource",
     dataset: SegmentationManifest,
@@ -1050,6 +1057,19 @@ def train_one_segmentation_fold(
     # Masks are read spacing-aware (hs2p) at the same µm/px the dense grids were
     # extracted at, so the target registers against the features. None ⇒ flat read.
     mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    # Cached path: the grids were extracted at a fixed spacing recorded in the sidecar.
+    # Reading masks at a different spacing would silently shift/scale the supervision
+    # against the features — fail loud. (Live reads image+mask at one spacing each step,
+    # so it registers by construction and needs no cross-check.)
+    if not is_live:
+        grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+        if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
+            raise ValueError(
+                f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
+                f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px); "
+                "the mask would misregister against the features. Re-extract the grids at the "
+                "mask spacing, or set preprocessing.requested_spacing_um to match the grids."
+            )
     head = SegmentationHead(
         num_classes=num_classes,
         geometry=geometry,
@@ -1711,6 +1731,7 @@ class Pipeline:
             overlap=float(preprocessing.dense_window_overlap),
             execution=self._config.execution,
             cache=cache_config,
+            preprocessing=preprocessing,
         )
         try:
             return extractor.run(feature_dir=run_dir / "features")

@@ -65,6 +65,7 @@ def dense_grid_metadata(
     dense_input_mode: str = "whole",
     window_size: int | None = None,
     overlap: float = 0.0,
+    spacing_um: float | None = None,
     channel_dim: int = 0,
 ) -> dict:
     """Build the self-describing sidecar payload for one dense grid.
@@ -77,6 +78,12 @@ def dense_grid_metadata(
     the feature-grid extractor does not own mask semantics, so it is left ``None``
     here and set by the segmentation dataset/collate slice, which pads masks with
     ``ignore_index`` using this same geometry.
+
+    ``spacing_um`` is the µm/px the tile was *read* at (``None`` = flat page-0 read).
+    It is recorded so the segmentation fold can assert the mask is read at the same
+    spacing the grid was extracted at — otherwise the supervision silently shifts
+    against the features. (It is also part of the cache *key*, via the plumbed
+    ``PreprocessingConfig``, so two spacings can never alias to one cache entry.)
     """
     return {
         "artifact_type": DENSE_ARTIFACT_TYPE,
@@ -95,6 +102,7 @@ def dense_grid_metadata(
         "dense_input_mode": str(dense_input_mode),
         "window_size": None if window_size is None else int(window_size),
         "overlap": float(overlap),
+        "spacing_um": None if spacing_um is None else float(spacing_um),
     }
 
 

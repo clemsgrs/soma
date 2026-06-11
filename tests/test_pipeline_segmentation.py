@@ -29,14 +29,18 @@ PATCH = 4
 FEATURE_DIM = 4
 
 
-def _build_dense_run(root: Path, sample_ids: list[str]) -> tuple[SegmentationManifest, Splits, DenseFeatureStore]:
+def _build_dense_run(
+    root: Path, sample_ids: list[str], *, grid_spacing_um: float | None = None
+) -> tuple[SegmentationManifest, Splits, DenseFeatureStore]:
     dense_dir = root / "dense"
     masks_dir = root / "masks"
     dense_dir.mkdir()
     masks_dir.mkdir()
 
     geom = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)  # grid 2x2, encoded 8
-    meta = dense_grid_metadata(geom, feature_dim=FEATURE_DIM, pad_mode="reflect")
+    meta = dense_grid_metadata(
+        geom, feature_dim=FEATURE_DIM, pad_mode="reflect", spacing_um=grid_spacing_um
+    )
 
     rows = []
     rng = np.random.default_rng(0)
@@ -117,6 +121,27 @@ def test_segmentation_fold_requires_num_classes(tmp_path: Path):
             training=TrainingConfig(epochs=1, batch_size=2),
             fold_dir=tmp_path / "fold",
             decoder=DecoderConfig(name="lightweight_conv"),
+        )
+
+
+def test_segmentation_fold_rejects_mask_grid_spacing_mismatch(tmp_path: Path):
+    # Grids extracted at 0.5 µm/px but masks would be read at 1.0 — the supervision
+    # would misregister against the features. The fold must fail loud, not train.
+    from soma.config import PreprocessingConfig
+
+    manifest, splits, store = _build_dense_run(
+        tmp_path, ["s0", "s1", "s2", "s3"], grid_spacing_um=0.5
+    )
+    with pytest.raises(ValueError, match="does not match"):
+        train_one_segmentation_fold(
+            feature_store=store,
+            dataset=manifest,
+            fold_split=splits.folds[0],
+            task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+            training=TrainingConfig(epochs=1, batch_size=2),
+            fold_dir=tmp_path / "fold",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            preprocessing=PreprocessingConfig(requested_spacing_um=1.0),
         )
 
 

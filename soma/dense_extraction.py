@@ -38,7 +38,7 @@ from soma.cache import (
     resolve_cache_root,
     resolve_dense_cache,
 )
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
+from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.dense import (
     DenseFeatureStore,
@@ -220,6 +220,7 @@ def extract_dense_grids(
                     dense_input_mode=dense_input_mode,
                     window_size=window_size,
                     overlap=overlap,
+                    spacing_um=spacing_um,
                 )
                 write_dense_grid(out_dir, str(sample_id), grid, metadata)
     return feature_dim
@@ -255,6 +256,7 @@ class DenseTileFeatureExtractor:
         overlap: float = 0.0,
         execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig | None = None,
+        preprocessing: PreprocessingConfig | None = None,
     ) -> None:
         if pad_mode not in _PAD_MODES:
             raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
@@ -274,6 +276,10 @@ class DenseTileFeatureExtractor:
         self._dense_input_mode = "whole" if window_size is None else "sliding_window"
         self._execution = execution
         self._cache = cache or CacheConfig(enabled=False)
+        # The run's preprocessing identity (spacing/tolerance/backend/tile size) is
+        # folded into the dense cache key — so grids read at different spacings can
+        # never alias to one cache entry (mirrors the pooled/bag tile path).
+        self._preprocessing = preprocessing
 
     def _image_pad_value(self) -> float | None:
         # Only meaningful for constant/zero padding; None (N/A) for reflect/replicate.
@@ -319,6 +325,7 @@ class DenseTileFeatureExtractor:
                 patch_size=patch_size,
                 pad_mode=self._pad_mode,
                 execution=self._encoder,
+                preprocessing=self._preprocessing,
                 dense_input_mode=self._dense_input_mode,
                 window_size=self._window_size,
                 overlap=self._overlap,

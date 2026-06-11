@@ -133,15 +133,19 @@ def encode_dense_sliding(
     ph, pw = geometry.patch_size
     grid_h, grid_w = geometry.grid_shape
     wth, wtw = win_h // ph, win_w // pw
-    # Uniform weights along any dim that is not actually tiled (single window there),
-    # raised-cosine where windows overlap — avoids needless edge attenuation.
+    # Raised-cosine weights where windows overlap; uniform along any dim that is not
+    # actually tiled (a single window there) — avoids needless edge attenuation.
     fdtype = torch.float32
-    wh = _hann_1d(wth if len(starts_h) > 1 else 1, batch.device, fdtype)
-    if len(starts_h) == 1:
-        wh = torch.ones(wth, device=batch.device, dtype=fdtype)
-    ww = _hann_1d(wtw if len(starts_w) > 1 else 1, batch.device, fdtype)
-    if len(starts_w) == 1:
-        ww = torch.ones(wtw, device=batch.device, dtype=fdtype)
+    wh = (
+        _hann_1d(wth, batch.device, fdtype)
+        if len(starts_h) > 1
+        else torch.ones(wth, device=batch.device, dtype=fdtype)
+    )
+    ww = (
+        _hann_1d(wtw, batch.device, fdtype)
+        if len(starts_w) > 1
+        else torch.ones(wtw, device=batch.device, dtype=fdtype)
+    )
     weight = torch.outer(wh, ww)  # (wth, wtw)
 
     acc: torch.Tensor | None = None

@@ -15,7 +15,9 @@ from soma.tasks import task_registry
 from soma.tasks.dense_metrics import (
     cross_entropy_dice_loss,
     dense_confusion_counts,
+    focal_tversky_loss,
     reduce_dice_iou,
+    segmentation_loss,
     soft_dice_loss,
 )
 from soma.tasks.segmentation import SegmentationHead, load_mask
@@ -97,6 +99,94 @@ def test_soft_dice_loss_gradients_flow():
     logits = torch.randn(1, 2, 2, 2, requires_grad=True)
     soft_dice_loss(logits, mask, num_classes=2, ignore_index=255).backward()
     assert logits.grad is not None and torch.isfinite(logits.grad).all()
+
+
+# --------------------------------------------------------------------------- #
+# Imbalance-aware loss knobs (class weights / focal CE / focal-Tversky).
+# --------------------------------------------------------------------------- #
+
+
+def test_segmentation_loss_defaults_match_ce_dice_baseline():
+    # The opt-in knobs must leave the default path numerically identical to the
+    # legacy CE + soft-Dice (the parity anchor for reproducibility).
+    torch.manual_seed(0)
+    mask = torch.tensor([[[0, 1], [1, 255]]])
+    logits = torch.randn(1, 2, 2, 2)
+    baseline = cross_entropy_dice_loss(logits, mask, num_classes=2, ignore_index=255)
+    composite = segmentation_loss(logits, mask, num_classes=2, ignore_index=255)
+    assert torch.allclose(baseline, composite, atol=0.0)
+
+
+def test_focal_tversky_default_equals_dice_up_to_eps():
+    # alpha=beta=0.5, gamma=1 IS soft-Dice (modulo the eps term).
+    torch.manual_seed(1)
+    mask = torch.tensor([[[0, 1], [1, 0]]])
+    logits = torch.randn(1, 2, 2, 2)
+    dice = soft_dice_loss(logits, mask, num_classes=2, ignore_index=255)
+    tversky = focal_tversky_loss(logits, mask, num_classes=2, ignore_index=255)
+    assert torch.allclose(dice, tversky, atol=1e-4)
+
+
+def test_class_weights_increase_rare_class_penalty():
+    # A wrong prediction on the rare class (1) costs more when that class is up-weighted.
+    mask = torch.tensor([[[0, 0], [0, 1]]])  # class 1 is rare (1/4 pixels)
+    wrong = _logits_from_pred(torch.tensor([[[0, 0], [0, 0]]]), num_classes=2)  # misses class 1
+    base = segmentation_loss(wrong, mask, num_classes=2, ignore_index=255, dice_weight=0.0)
+    weighted = segmentation_loss(
+        wrong, mask, num_classes=2, ignore_index=255, dice_weight=0.0, class_weights=[1.0, 5.0]
+    )
+    assert float(weighted) > float(base)
+
+
+def test_focal_ce_downweights_easy_pixels():
+    # With mostly-correct predictions, focal CE (gamma>0) < plain CE (easy pixels muted).
+    mask = torch.tensor([[[0, 1], [1, 0]]])
+    almost = _logits_from_pred(mask.clone(), num_classes=2) * 0.3  # confident-ish, correct
+    plain = segmentation_loss(almost, mask, num_classes=2, ignore_index=255, dice_weight=0.0)
+    focal = segmentation_loss(
+        almost, mask, num_classes=2, ignore_index=255, dice_weight=0.0, ce_gamma=2.0
+    )
+    assert float(focal) < float(plain)
+
+
+def test_focal_tversky_recall_tilt_and_gradients():
+    mask = torch.tensor([[[0, 1], [1, 0]]])
+    logits = torch.randn(1, 2, 2, 2, requires_grad=True)
+    loss = segmentation_loss(
+        logits, mask, num_classes=2, ignore_index=255,
+        tversky_alpha=0.3, tversky_beta=0.7, tversky_gamma=1.5,
+    )
+    loss.backward()
+    assert torch.isfinite(loss) and logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+
+
+def test_head_validates_loss_knobs():
+    geom = compute_dense_geometry(target_size=8, patch_size=4)
+    with pytest.raises(ValueError, match="class_weights must have"):
+        SegmentationHead(num_classes=2, geometry=geom, class_weights=[1.0])  # wrong length
+    with pytest.raises(ValueError, match="non-negative"):
+        SegmentationHead(num_classes=2, geometry=geom, class_weights=[1.0, -1.0])
+    with pytest.raises(ValueError, match="ce_gamma"):
+        SegmentationHead(num_classes=2, geometry=geom, ce_gamma=-1.0)
+    with pytest.raises(ValueError, match="tversky_gamma"):
+        SegmentationHead(num_classes=2, geometry=geom, tversky_gamma=0.0)
+
+
+def test_head_compute_loss_threads_knobs():
+    # The head forwards its configured knobs to segmentation_loss (parity with a
+    # direct call), so a swept config actually changes the optimized objective.
+    geom = compute_dense_geometry(target_size=2, patch_size=1)  # grid==target, no resize
+    head = SegmentationHead(
+        num_classes=2, geometry=geom, class_weights=[1.0, 4.0], ce_gamma=2.0, tversky_beta=0.7
+    )
+    mask = torch.tensor([[[0, 1], [1, 0]]])
+    logits = torch.randn(1, 2, 2, 2)
+    direct = segmentation_loss(
+        logits, mask, num_classes=2, ignore_index=255,
+        class_weights=[1.0, 4.0], ce_gamma=2.0, tversky_beta=0.7,
+    )
+    assert torch.allclose(head.compute_loss(logits, {"mask": mask}), direct)
 
 
 # --------------------------------------------------------------------------- #
