@@ -63,6 +63,8 @@ def dense_grid_metadata(
     image_pad_value: float | None = None,
     mask_pad_value: int | None = None,
     dense_input_mode: str = "whole",
+    window_size: int | None = None,
+    overlap: float = 0.0,
     channel_dim: int = 0,
 ) -> dict:
     """Build the self-describing sidecar payload for one dense grid.
@@ -91,6 +93,8 @@ def dense_grid_metadata(
         "image_pad_value": None if image_pad_value is None else float(image_pad_value),
         "mask_pad_value": None if mask_pad_value is None else int(mask_pad_value),
         "dense_input_mode": str(dense_input_mode),
+        "window_size": None if window_size is None else int(window_size),
+        "overlap": float(overlap),
     }
 
 

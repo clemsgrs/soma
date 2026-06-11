@@ -74,7 +74,13 @@ def _build_run(root: Path, sample_ids: list[str]) -> tuple[SegmentationManifest,
     return SegmentationManifest(manifest_csv), Splits(splits_csv, SegmentationManifest(manifest_csv))
 
 
-def _live_source(encoder: TimmTileEncoder, *, augmentation: AugmentationConfig | None = None) -> LiveSegmentationSource:
+def _live_source(
+    encoder: TimmTileEncoder,
+    *,
+    augmentation: AugmentationConfig | None = None,
+    window_size: int | None = None,
+    overlap: float = 0.0,
+) -> LiveSegmentationSource:
     geom = compute_dense_geometry(target_size=TARGET, patch_size=encoder.patch_size)
     return LiveSegmentationSource(
         encoder=encoder,
@@ -87,6 +93,8 @@ def _live_source(encoder: TimmTileEncoder, *, augmentation: AugmentationConfig |
         spacing_um=None,  # flat PNG read (spacing ignored)
         backend="auto",
         tolerance=0.05,
+        window_size=window_size,
+        overlap=overlap,
     )
 
 
@@ -111,6 +119,8 @@ def test_live_no_aug_grids_match_cached_bit_for_bit(tmp_path: Path):
         geometry=geom,
         records=records,
         out_dir=tmp_path / "dense",
+        window_size=None,
+        overlap=0.0,
         batch_size=len(records),
     )
     cached_store = DenseFeatureStore(tmp_path / "dense")
@@ -151,6 +161,8 @@ def test_live_no_aug_metrics_match_cached(tmp_path: Path):
         geometry=geom,
         records=list(manifest.samples.values()),
         out_dir=tmp_path / "dense",
+        window_size=None,
+        overlap=0.0,
         batch_size=2,
     )
     cached_store = DenseFeatureStore(tmp_path / "dense")
@@ -206,6 +218,26 @@ def test_live_fold_with_augmentation_trains_and_evaluates(tmp_path: Path):
     assert (tmp_path / "fold" / "preds" / "test" / "s3.png").is_file()
 
 
+def test_live_fold_with_sliding_window_trains_and_evaluates(tmp_path: Path):
+    """The live model routes through encode_dense_sliding: a 16px window over the 32px
+    tile (patch-16 -> 2x2 grid) tiles into two windows per dim, exercising the stitch
+    path end-to-end through the trainer + streaming eval."""
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits = _build_run(tmp_path, sample_ids)
+    source = _live_source(_encoder(), window_size=PATCH, overlap=0.0)
+    result = train_one_segmentation_fold(
+        feature_store=source,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+    )
+    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+
+
 def test_live_checkpoint_excludes_encoder_and_reloads(tmp_path: Path):
     sample_ids = ["s0", "s1", "s2", "s3"]
     manifest, splits = _build_run(tmp_path, sample_ids)
@@ -238,7 +270,8 @@ def test_live_checkpoint_excludes_encoder_and_reloads(tmp_path: Path):
         input_dim=encoder.encode_dim, num_classes=NUM_CLASSES, num_upsample_blocks=4
     )
     model = LiveSegmentationModel(
-        encoder=encoder, decoder=decoder, task_head=head, device="cpu", precision="fp32"
+        encoder=encoder, decoder=decoder, task_head=head, device="cpu", precision="fp32",
+        geometry=geom,
     )
     model.load_state_dict(state)  # strict=False under the hood: encoder already built
 
@@ -246,3 +279,54 @@ def test_live_checkpoint_excludes_encoder_and_reloads(tmp_path: Path):
 def test_live_source_validate_coverage_is_noop():
     source = _live_source(_encoder())
     assert source.validate_coverage(["s0", "s1"]) is None
+
+
+def test_build_live_source_probes_a_single_window_when_sliding(tmp_path: Path, monkeypatch):
+    """Regression: ``_build_live_segmentation_source`` must NOT probe feature_dim on the
+    full padded tile when a window is set — the whole point of a smaller window is to
+    avoid the full-size forward (OOM at large scale-ups). The probe should run on one
+    resolved window instead. (The direct ``LiveSegmentationSource`` tests bypass this
+    initialization path, so the probe is only covered here.)"""
+    import types
+
+    from soma.config import DecoderConfig, EncoderConfig, PipelineConfig, PreprocessingConfig
+    from soma.pipeline import Pipeline
+
+    _build_run(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    encoder = _encoder()
+    probe_shapes: list[tuple[int, int]] = []
+    original = encoder.encode_tiles_dense
+
+    def _spy(x):
+        probe_shapes.append((int(x.shape[-2]), int(x.shape[-1])))
+        return original(x)
+
+    encoder.encode_tiles_dense = _spy  # TileEncoder is a plain object: instance attr shadows
+    monkeypatch.setattr(
+        "slide2vec.inference.load_model",
+        lambda **_: types.SimpleNamespace(model=encoder, device="cpu"),
+    )
+
+    config = PipelineConfig(
+        dataset_csv=str(tmp_path / "manifest.csv"),
+        splits_csv=str(tmp_path / "splits.csv"),
+        output_root=str(tmp_path / "out"),
+        dataset_type="segmentation",
+        feature_mode="live",
+        encoder=EncoderConfig(name="uni2", precision="fp32"),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+            dense_window_size=PATCH,  # 16px window over the 32px tile
+            dense_window_overlap=0.0,
+        ),
+    )
+    source = Pipeline(config)._build_live_segmentation_source()
+
+    # The single probe forward ran on ONE window (16x16), not the full padded tile (32x32).
+    assert probe_shapes == [(PATCH, PATCH)]
+    assert source.feature_dim == encoder.encode_dim
+    assert source.window_size == PATCH

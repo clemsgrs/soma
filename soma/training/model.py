@@ -7,9 +7,14 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor, nn
 
+from typing import TYPE_CHECKING
+
 from soma.aggregators.base import Aggregator
 from soma.decoders.base import Decoder
 from soma.tasks.base import TaskHead
+
+if TYPE_CHECKING:
+    from soma.dense.geometry import DenseGridGeometry
 
 
 @dataclass
@@ -173,10 +178,16 @@ class LiveSegmentationModel(nn.Module):
         task_head: TaskHead,
         device: torch.device | str,
         precision: str,
+        geometry: "DenseGridGeometry",
+        window_size: int | None = None,
+        overlap: float = 0.0,
     ) -> None:
         super().__init__()
         self.decoder = decoder
         self.task_head = task_head
+        self._geometry = geometry
+        self._window_size = None if window_size is None else int(window_size)
+        self._overlap = float(overlap)
         # NOT a registered submodule (encoder is slide2vec's non-Module wrapper) —
         # see the class docstring. Assert the invariant the checkpoint/optimizer rely on.
         self.encoder = encoder
@@ -199,6 +210,16 @@ class LiveSegmentationModel(nn.Module):
     def forward(self, X: Tensor) -> SegmentationModelOutput:
         from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
 
+        from soma.dense.sliding import encode_dense_sliding
+
         with torch.no_grad(), slide_encode_autocast_ctx(self._device, self._precision):
-            grid = self.encoder.encode_tiles_dense(X).float()  # mirror extraction
+            # window_size=None ⇒ the whole single forward (byte-identical to the cached
+            # extractor — the parity anchor); a smaller window slides + blends identically.
+            grid = encode_dense_sliding(
+                self.encoder,
+                X,
+                geometry=self._geometry,
+                window_size=self._window_size,
+                overlap=self._overlap,
+            ).float()  # mirror extraction
         return SegmentationModelOutput(logits=self.task_head(self.decoder(grid)))

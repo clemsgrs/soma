@@ -73,6 +73,38 @@ def test_preprocessing_config_defaults():
     assert cfg.preview.mask_overlay_alpha == pytest.approx(0.5)
 
 
+def test_preprocessing_dense_window_defaults_to_whole():
+    cfg = PreprocessingConfig()
+    assert cfg.dense_window_size is None
+    assert cfg.dense_window_overlap == 0.0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"dense_window_size": 0}, "dense_window_size"),
+        ({"dense_window_size": -64}, "dense_window_size"),
+        ({"dense_window_overlap": 1.0}, "dense_window_overlap"),
+        ({"dense_window_overlap": -0.1}, "dense_window_overlap"),
+        ({"dense_window_overlap": 0.5}, "dense_window_overlap requires dense_window_size"),
+    ],
+)
+def test_preprocessing_dense_window_rejects_invalid(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        PreprocessingConfig(**kwargs)
+
+
+def test_preprocessing_dense_window_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        preprocessing=PreprocessingConfig(dense_window_size=512, dense_window_overlap=0.5)
+    )
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.preprocessing.dense_window_size == 512
+    assert loaded.preprocessing.dense_window_overlap == 0.5
+
+
 def test_training_config_defaults():
     cfg = TrainingConfig()
     assert cfg.seed == 0

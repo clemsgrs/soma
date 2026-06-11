@@ -294,16 +294,20 @@ def build_dense_cache_key(
     execution: EncoderConfig,
     preprocessing: PreprocessingConfig | None = None,
     dense_input_mode: str = "whole",
+    window_size: int | None,
+    overlap: float,
 ) -> str:
     """Cache key for a dense ``(d, h, w)`` grid extraction.
 
     Distinct from the pooled tile key by ``feature_type="dense_grid"`` and by the
     dense geometry (``target_size``/``patch_size``/``pad_mode``) and
     ``dense_input_mode`` — so a 512px run and a 224px run, or whole-tile vs
-    sliding-window, never collide. ``output_variant`` is intentionally omitted:
-    the dense grid is pre-pooling (``forward_features`` → reshape), so the variant
-    (which only changes pooling) does not affect it; keying on it would split
-    identical caches.
+    sliding-window, never collide. Sliding runs additionally key on
+    ``window_size``/``overlap`` (different windows ⇒ different grids); these are
+    injected **only** when ``window_size`` is set, so existing ``whole`` keys are
+    unchanged. ``output_variant`` is intentionally omitted: the dense grid is
+    pre-pooling (``forward_features`` → reshape), so the variant (which only changes
+    pooling) does not affect it; keying on it would split identical caches.
     """
     execution_payload = execution_signature(
         execution,
@@ -323,6 +327,10 @@ def build_dense_cache_key(
         "pad_mode": str(pad_mode),
         "execution": execution_payload,
     }
+    if window_size is not None:
+        # Only sliding runs carry these — keeps legacy 'whole' keys byte-stable.
+        payload["window_size"] = int(window_size)
+        payload["overlap"] = float(overlap)
     if preprocessing is not None:
         payload["preprocessing"] = preprocessing_signature(preprocessing)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]

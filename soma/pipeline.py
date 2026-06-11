@@ -1094,6 +1094,9 @@ def train_one_segmentation_fold(
             task_head=head,
             device=feature_store.device,
             precision=feature_store.precision,
+            geometry=geometry,
+            window_size=feature_store.window_size,
+            overlap=feature_store.overlap,
         )
         train_loader, tune_loader, test_loaders = _make_live_loaders(
             feature_store, seg_collate,
@@ -1704,6 +1707,8 @@ class Pipeline:
             spacing_um=float(preprocessing.requested_spacing_um),
             backend=preprocessing.backend,
             tolerance=float(preprocessing.tolerance),
+            window_size=preprocessing.dense_window_size,
+            overlap=float(preprocessing.dense_window_overlap),
             execution=self._config.execution,
             cache=cache_config,
         )
@@ -1761,10 +1766,27 @@ class Pipeline:
         geometry = compute_dense_geometry(
             target_size=int(target_size), patch_size=encoder.patch_size
         )
+        window_size = preprocessing.dense_window_size
+        overlap = float(preprocessing.dense_window_overlap)
+        from soma.dense.sliding import describe_dense_mode, resolve_window_geometry
 
-        # Probe feature_dim on a dummy padded tile (same source of truth as the cached
-        # extractor's grids.shape[1]); also a fail-fast dense-capability check.
-        dummy = _torch.zeros(1, 3, geometry.encoded_size[0], geometry.encoded_size[1], device=device)
+        # print, not logger: always visible regardless of logging config (same as the
+        # cached extractor's announcement) so the resolved mode is never silent.
+        print(f"Live segmentation dense mode: {describe_dense_mode(window_size, overlap)}")
+
+        # Probe feature_dim (d) on a single forward (same source of truth as the cached
+        # extractor's grids.shape[1]; also a fail-fast dense-capability check). When
+        # sliding, probe ONE resolved window rather than the full padded tile: the whole
+        # point of a smaller window is to avoid the full-size forward (which can OOM at
+        # large scale-ups), and d is spatial-size-independent, so a window probe yields
+        # the same channel count.
+
+        probe_h, probe_w = (
+            geometry.encoded_size
+            if window_size is None
+            else resolve_window_geometry(geometry, window_size=window_size, overlap=overlap)[0]
+        )
+        dummy = _torch.zeros(1, 3, probe_h, probe_w, device=device)
         with _torch.no_grad(), slide_encode_autocast_ctx(device, precision):
             probe = encoder.encode_tiles_dense(dummy)
         if probe.ndim != 4:
@@ -1789,6 +1811,8 @@ class Pipeline:
             tolerance=float(preprocessing.tolerance),
             pad_mode="reflect",
             image_pad_value=None,
+            window_size=window_size,
+            overlap=overlap,
         )
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":

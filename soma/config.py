@@ -188,7 +188,29 @@ class PreprocessingConfig:
     ref_tile_size_px: int | None = None
     a_t: int = 4
     tissue_mask_tissue_value: int = 1
+    # Dense (segmentation) encoder-window knobs (design §5, window-as-knob). These are
+    # NOT the tiling ``overlap`` above: they control how the padded supervision tile
+    # reaches the frozen encoder. ``dense_window_size=None`` ⇒ ``whole`` (one padded
+    # forward); a smaller window slides the encoder over patch-aligned windows and
+    # blends the token grids over ``dense_window_overlap``.
+    dense_window_size: int | None = None
+    dense_window_overlap: float = 0.0
     preview: PreviewConfig = field(default_factory=_default_preview_config)
+
+    def __post_init__(self) -> None:
+        if self.dense_window_size is not None and int(self.dense_window_size) <= 0:
+            raise ValueError(
+                f"dense_window_size must be a positive int or None, got {self.dense_window_size!r}"
+            )
+        if not (0.0 <= float(self.dense_window_overlap) < 1.0):
+            raise ValueError(
+                f"dense_window_overlap must be in [0, 1), got {self.dense_window_overlap!r}"
+            )
+        if self.dense_window_size is None and float(self.dense_window_overlap) != 0.0:
+            raise ValueError(
+                "dense_window_overlap requires dense_window_size — overlap is meaningless "
+                "for the 'whole' path (no windows). Set dense_window_size or clear the overlap."
+            )
 
     @property
     def requested_backend(self) -> str:

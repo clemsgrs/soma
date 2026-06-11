@@ -100,6 +100,8 @@ def _key(**overrides) -> str:
         patch_size=(16, 16),
         pad_mode="reflect",
         execution=_enc(),
+        window_size=None,
+        overlap=0.0,
     )
     base.update(overrides)
     return build_dense_cache_key(**base)
@@ -113,6 +115,32 @@ def test_dense_key_changes_with_patch_and_pad_and_mode():
     assert _key(patch_size=(16, 16)) != _key(patch_size=(14, 14))
     assert _key(pad_mode="reflect") != _key(pad_mode="zero")
     assert _key(dense_input_mode="whole") != _key(dense_input_mode="sliding_window")
+
+
+def test_dense_key_changes_with_window_size_and_overlap():
+    # Different windows produce different grids -> must not collide.
+    assert _key(window_size=256, overlap=0.5) != _key(window_size=128, overlap=0.5)
+    assert _key(window_size=256, overlap=0.25) != _key(window_size=256, overlap=0.5)
+
+
+def test_dense_key_whole_is_stable_when_window_unset():
+    # window_size=None must reproduce the legacy 'whole' key byte-for-byte (the
+    # window fields are injected only for sliding runs), so existing caches survive.
+    assert _key() == _key(window_size=None, overlap=0.0)
+
+
+def test_dense_key_requires_explicit_window(monkeypatch):
+    # The cache key has no silent window default: a caller MUST decide whole vs sliding,
+    # so a sliding run can never be mis-keyed as 'whole' by omission.
+    base = dict(
+        tile_encoder_name="uni",
+        target_size=(512, 512),
+        patch_size=(16, 16),
+        pad_mode="reflect",
+        execution=_enc(),
+    )
+    with pytest.raises(TypeError):
+        build_dense_cache_key(**base)  # window_size / overlap not supplied
 
 
 def test_dense_key_independent_of_output_variant():
@@ -242,6 +270,8 @@ def _dense_kw(tmp_path: Path, dataset) -> dict:
         patch_size=(16, 16),
         pad_mode="reflect",
         execution=_enc(),
+        window_size=None,
+        overlap=0.0,
     )
 
 

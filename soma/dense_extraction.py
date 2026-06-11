@@ -11,8 +11,11 @@ The extraction loop (:func:`extract_dense_grids`) takes an already-loaded encode
 so it is unit-testable offline with random weights, independent of the GPU/weights
 needed by :meth:`DenseTileFeatureExtractor.run`.
 
-Scope (v1): ``dense_input_mode="whole"`` (single forward, padded), single-GPU.
-Multi-GPU sharding and the ``sliding_window`` mode are deferred.
+Dense-input mode is a *derived* window-as-knob (design §5): ``window_size=None`` ⇒
+``whole`` (one padded forward); a smaller ``window_size`` (+ ``overlap``) slides the
+encoder over patch-aligned windows and blends the token grids (see
+:func:`soma.dense.sliding.encode_dense_sliding`). Single-GPU only (multi-GPU sharding
+deferred).
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from soma.dense import (
     write_dense_grid,
 )
 from soma.dense.reader import read_image_at_spacing
+from soma.dense.sliding import describe_dense_mode, encode_dense_sliding
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
@@ -145,7 +149,8 @@ def extract_dense_grids(
     pad_mode: str = "reflect",
     image_pad_value: float | None = None,
     mask_pad_value: int | None = None,
-    dense_input_mode: str = "whole",
+    window_size: int | None,
+    overlap: float,
     batch_size: int = 1,
     precision: str = "fp32",
     num_workers: int = 0,
@@ -155,13 +160,12 @@ def extract_dense_grids(
 
     Injectable core: takes a constructed dense-capable ``encoder`` (with
     ``encode_tiles_dense``), so it runs offline in tests with random weights.
+    ``window_size``/``overlap`` are required (no silent default): ``window_size=None``
+    is the ``whole`` path (one padded forward), a smaller ``window_size`` slides the
+    encoder over patch-aligned windows — the caller must choose so a sliding run is
+    never mis-keyed/mis-extracted as ``whole``.
     """
-    if dense_input_mode != "whole":
-        raise NotImplementedError(
-            f"dense_input_mode={dense_input_mode!r} is not implemented; only 'whole' "
-            "(single padded forward) is built. 'sliding_window' (overlapping native-size "
-            "windows + blended overlaps) is the planned fidelity-preserving mode."
-        )
+    dense_input_mode = "whole" if window_size is None else "sliding_window"
     if pad_mode not in _PAD_MODES:
         raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
 
@@ -191,7 +195,14 @@ def extract_dense_grids(
     with torch.inference_mode(), slide_encode_autocast_ctx(device, precision):
         for batch, sample_ids in loader:
             batch = batch.to(device, non_blocking=True)
-            grids = encoder.encode_tiles_dense(batch).detach().float().cpu()
+            grids = (
+                encode_dense_sliding(
+                    encoder, batch, geometry=geometry, window_size=window_size, overlap=overlap
+                )
+                .detach()
+                .float()
+                .cpu()
+            )
             if grids.ndim != 4:
                 raise ValueError(
                     f"encode_tiles_dense returned a {grids.ndim}-D tensor; expected "
@@ -207,6 +218,8 @@ def extract_dense_grids(
                     image_pad_value=image_pad_value,
                     mask_pad_value=mask_pad_value,
                     dense_input_mode=dense_input_mode,
+                    window_size=window_size,
+                    overlap=overlap,
                 )
                 write_dense_grid(out_dir, str(sample_id), grid, metadata)
     return feature_dim
@@ -238,16 +251,17 @@ class DenseTileFeatureExtractor:
         backend: str = "auto",
         tolerance: float = 0.05,
         pad_mode: str = "reflect",
-        dense_input_mode: str = "whole",
+        window_size: int | None = None,
+        overlap: float = 0.0,
         execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig | None = None,
     ) -> None:
-        if dense_input_mode != "whole":
-            raise NotImplementedError(
-                f"dense_input_mode={dense_input_mode!r} is not implemented; only 'whole' is built."
-            )
         if pad_mode not in _PAD_MODES:
             raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
+        if window_size is not None and int(window_size) <= 0:
+            raise ValueError(f"window_size must be a positive int or None, got {window_size!r}")
+        if not (0.0 <= float(overlap) < 1.0):
+            raise ValueError(f"overlap must be in [0, 1), got {overlap!r}")
         self._dataset = dataset
         self._encoder = encoder
         self._target_size = normalize_hw(target_size, name="target_size")
@@ -255,7 +269,9 @@ class DenseTileFeatureExtractor:
         self._backend = backend
         self._tolerance = float(tolerance)
         self._pad_mode = pad_mode
-        self._dense_input_mode = dense_input_mode
+        self._window_size = None if window_size is None else int(window_size)
+        self._overlap = float(overlap)
+        self._dense_input_mode = "whole" if window_size is None else "sliding_window"
         self._execution = execution
         self._cache = cache or CacheConfig(enabled=False)
 
@@ -282,6 +298,11 @@ class DenseTileFeatureExtractor:
         geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
         dense_transform = encoder.get_dense_transform()  # NOT loaded.transforms (pooled, crops!)
 
+        # Announce the resolved dense-input mode before the cache check, so it always shows
+        # (cache hit too — extract_dense_grids only runs on a miss) regardless of logging
+        # config. print, not logger, so the user never has to opt into seeing it.
+        print(f"Dense extraction mode: {describe_dense_mode(self._window_size, self._overlap)}")
+
         cache_resolution = None
         out_dir = feature_dir
         if self._cache.enabled:
@@ -299,6 +320,8 @@ class DenseTileFeatureExtractor:
                 pad_mode=self._pad_mode,
                 execution=self._encoder,
                 dense_input_mode=self._dense_input_mode,
+                window_size=self._window_size,
+                overlap=self._overlap,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
             )
@@ -337,7 +360,8 @@ class DenseTileFeatureExtractor:
             pad_mode=self._pad_mode,
             image_pad_value=self._image_pad_value(),
             mask_pad_value=None,  # ignore_index is owned by the segmentation dataset slice
-            dense_input_mode=self._dense_input_mode,
+            window_size=self._window_size,
+            overlap=self._overlap,
             batch_size=self._encoder.batch_size,
             # execution.precision honors an ExecutionConfig.precision override
             # (build_execution_options falls back to the encoder's precision when unset),

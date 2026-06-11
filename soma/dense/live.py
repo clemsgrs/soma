@@ -42,6 +42,11 @@ class LiveSegmentationSource:
         spacing_um: µm/px to read image+mask at (``None`` = flat PIL read).
         backend / tolerance: hs2p reader settings.
         pad_mode / image_pad_value: image pad-to-encoded contract (mirrors extraction).
+        window_size / overlap: dense encoder-window knobs (design §5, window-as-knob).
+            ``window_size=None`` ⇒ ``whole`` (one padded forward, the live default and
+            the cached-parity anchor); a smaller window slides the encoder over
+            patch-aligned windows and blends the token grids — identical mechanism to
+            the cached extractor, so cached/live agree under any window setting.
     """
 
     encoder: object
@@ -56,6 +61,8 @@ class LiveSegmentationSource:
     tolerance: float = 0.05
     pad_mode: str = "reflect"
     image_pad_value: float | None = None
+    window_size: int | None = None
+    overlap: float = 0.0
 
     def validate_coverage(self, sample_ids) -> None:
         """No-op coverage hook (name-compatible with ``DenseFeatureStore``).
