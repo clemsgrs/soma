@@ -215,6 +215,9 @@ def _build_dense_cache_metadata(
     dense_input_mode: str = "whole",
     window_size: int | None,
     overlap: float,
+    feature_kind: str = "patch_features",
+    attention_blocks: tuple[int, ...] | None = None,
+    attention_include_registers: bool = False,
     channel_dim: int = 0,
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -232,6 +235,9 @@ def _build_dense_cache_metadata(
         dense_input_mode=dense_input_mode,
         window_size=window_size,
         overlap=overlap,
+        feature_kind=feature_kind,
+        attention_blocks=attention_blocks,
+        attention_include_registers=attention_include_registers,
     )
     geometry = compute_dense_geometry(target_size=target_size, patch_size=patch_size)
     metadata = {
@@ -247,6 +253,9 @@ def _build_dense_cache_metadata(
             output_variant=None,
         ),
         "feature_type": "dense_grid",
+        "feature_kind": str(feature_kind),
+        "attention_blocks": [int(b) for b in (attention_blocks or ())] if feature_kind != "patch_features" else None,
+        "attention_include_registers": bool(attention_include_registers) if feature_kind != "patch_features" else None,
         "feature_dim": None,
         "channel_dim": int(channel_dim),
         "dense_input_mode": str(dense_input_mode),
@@ -785,6 +794,9 @@ def resolve_dense_cache(
     dense_input_mode: str = "whole",
     window_size: int | None,
     overlap: float,
+    feature_kind: str = "patch_features",
+    attention_blocks: tuple[int, ...] | None = None,
+    attention_include_registers: bool = False,
     channel_dim: int = 0,
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
@@ -802,6 +814,9 @@ def resolve_dense_cache(
         dense_input_mode=dense_input_mode,
         window_size=window_size,
         overlap=overlap,
+        feature_kind=feature_kind,
+        attention_blocks=attention_blocks,
+        attention_include_registers=attention_include_registers,
         channel_dim=channel_dim,
         backend_provenance=backend_provenance,
     )

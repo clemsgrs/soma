@@ -56,28 +56,27 @@ cache:
   fingerprint_files: false
   validate_payloads: false
 
-encoder:
-  name: uni2
-  batch_size: 32
-  adaptive_batching: false
-  output_variant: null
-  allow_non_recommended_settings: false
-  save_tile_features: false
+# No default encoder — the framework stays neutral on model choice (you must set
+# `encoder:` for a single encoder, or `encoders:` for a multi-encoder composite).
+# A baked-in default here would also collide with `encoders:` via the encoder/encoders
+# XOR check (the merged default encoder would make both present).
+encoder: null
 
-aggregation:
-  name: abmil
-  params:
-    hidden_dim: 256
-    dropout: 0.25
+# No default aggregator — stay neutral on the trainable component. For slide MIL set
+# `aggregation:` explicitly; omitting it means slide-level features with no MIL. A baked-in
+# default would also leak into the tile/patient/segmentation paths (which forbid an
+# aggregator) when a config is hand-written without nulling it.
+aggregation: null
 
 task:
   name: binary_classification
   params: {}
 
+# No default metrics — stay neutral (the slide-classification metrics would otherwise leak
+# into segmentation/regression/survival configs and fail metric validation). Set
+# `evaluation.metrics:` for the task at hand.
 evaluation:
-  metrics:
-    - auroc
-    - balanced_accuracy
+  metrics: []
   subgroups:
     columns: []
 

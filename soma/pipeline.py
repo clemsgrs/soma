@@ -39,6 +39,7 @@ from soma.config import (
     EvalConfig,
     HeatmapConfig,
     PipelineConfig,
+    PixelClassifierConfig,
     PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
@@ -102,7 +103,9 @@ class FoldResult:
     """Result of training + evaluation for a single fold."""
 
     fold: int
-    train_result: TrainResult
+    # None for the pixel-classifier segmentation path — it has no torch Trainer / epoch
+    # history (the classifier owns its own fit loop internally).
+    train_result: TrainResult | None
     tune_report: EvaluationReport
     test_reports: dict[str, EvaluationReport]  # split_name → report
 
@@ -1189,6 +1192,174 @@ def train_one_segmentation_fold(
     )
 
 
+def train_one_pixel_classifier_fold(
+    feature_store: "DenseFeatureStore",
+    dataset: SegmentationManifest,
+    fold_split: FoldSplit,
+    task: TaskConfig,
+    training: TrainingConfig,
+    fold_dir: str | Path,
+    *,
+    pixel_classifier: PixelClassifierConfig,
+    evaluation: EvalConfig | None = None,
+    preprocessing: PreprocessingConfig | None = None,
+    fold: int = 0,
+    num_folds: int = 1,
+) -> FoldResult:
+    """Train + evaluate one **decoder-free** segmentation fold (design §9).
+
+    The pixel-classifier counterpart of :func:`train_one_segmentation_fold`: no torch
+    ``Trainer``, no decoder, no checkpoints. It samples class-stratified pixels from the
+    train split into ``(X, y)`` matrices (the tune split supplies ``X_val`` for early
+    stopping), fits the swappable :class:`~soma.pixel_classifiers.base.PixelClassifier`
+    once, then predicts **every** pixel of every tune/test tile and reuses the shared
+    dense metrics + artifact writer verbatim. Cached features only (no live re-encode /
+    augmentation — that would require re-encoding augmented images).
+
+    The split→records selection, ``num_classes`` source, geometry/uniformity assertion,
+    and mask-spacing cross-check are identical to the decoder fold; only the model and
+    its (Trainer-free) fit/eval loop differ.
+    """
+    import numpy as np
+
+    from soma.pixel_classifiers import pixel_classifier_registry
+    from soma.pixel_classifiers.segmentation import (
+        build_training_matrix,
+        evaluate_pixel_classifier,
+        inverse_frequency_sample_weight,
+    )
+
+    evaluation = evaluation or EvalConfig()
+    fold_dir = Path(fold_dir)
+    fold_dir.mkdir(parents=True, exist_ok=True)
+    seed_everything(training.seed, fold=fold)
+    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+
+    # Split -> records (same selection as the decoder fold).
+    train_records = [dataset.samples[sid] for sid in fold_split.train]
+    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+    test_records_by_split = {
+        split_name: [dataset.samples[sid] for sid in ids]
+        for split_name, ids in fold_split.tests.items()
+    }
+    if training.tune_is_test:
+        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
+        tune_records = list(test_records_by_split[tune_from_test_split_name])
+    if not train_records:
+        raise ValueError(f"{_fp} has no training samples")
+    if not tune_records:
+        if not training.allow_missing_tune:
+            raise ValueError(f"{_fp} has no tuning samples")
+        logger.warning("%s has no tune samples; using train as tune (allow_missing_tune)", _fp)
+        tune_records = list(train_records)
+    for split_name, records in test_records_by_split.items():
+        if not records:
+            raise ValueError(f"{_fp} has no samples in split '{split_name}'")
+
+    all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
+    feature_store.validate_coverage([r.sample_id for r in all_records])
+
+    seg_params = dict(task.params)
+    num_classes = seg_params.pop("num_classes", None)
+    if num_classes is None:
+        raise ValueError(
+            "dataset_type='segmentation' requires task.params.num_classes "
+            "(the number of segmentation classes)."
+        )
+    num_classes = int(num_classes)
+
+    # Geometry + feature_dim from one reference sample; assert cohort uniformity.
+    ref_id = train_records[0].sample_id
+    geometry = feature_store.geometry(ref_id)
+    ref_feature_dim = feature_store.feature_dim
+    for record in all_records:
+        sid = record.sample_id
+        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+            raise ValueError(
+                f"dense grid '{sid}' has geometry/feature_dim differing from reference "
+                f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
+                "size across the cohort."
+            )
+    # Masks read at the same µm/px the grids were extracted at (else misregistration).
+    mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+    if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
+        raise ValueError(
+            f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
+            f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px); "
+            "the mask would misregister against the features. Re-extract the grids at the "
+            "mask spacing, or set preprocessing.requested_spacing_um to match the grids."
+        )
+
+    head = SegmentationHead(
+        num_classes=num_classes,
+        geometry=geometry,
+        metrics=evaluation.metrics,
+        spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
+        backend=preprocessing.backend if preprocessing is not None else "auto",
+        tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
+        **seg_params,
+    )
+
+    # Build the classifier (num_classes injected like a decoder). ``class_balanced_weights``
+    # is a fold-level knob (inverse-frequency per-pixel sample weights), not a classifier
+    # hyperparameter, so pop it before constructing.
+    clf_params = dict(pixel_classifier.params)
+    class_balanced_weights = bool(clf_params.pop("class_balanced_weights", False))
+    clf = pixel_classifier_registry.get(pixel_classifier.name)(
+        num_classes=num_classes, **clf_params
+    )
+
+    summary = _format_fold_summary(
+        fold=fold,
+        train_count=len(train_records),
+        tune_count=len(tune_records),
+        tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
+        empty_sample_ids_by_split=None,
+    )
+    logger.info(summary)
+
+    # Sampled pixel matrices: train fits, tune supplies early-stopping validation. The
+    # tune budget is a fraction of train (it only guides stopping, not the fit).
+    rng = np.random.default_rng(training.seed + fold)
+    X_train, y_train = build_training_matrix(
+        train_records, feature_store, head, max_pixels=training.max_train_pixels, rng=rng
+    )
+    val_budget = max(num_classes, training.max_train_pixels // 5)
+    X_val, y_val = build_training_matrix(
+        tune_records, feature_store, head, max_pixels=val_budget, rng=rng
+    )
+    sample_weight = (
+        inverse_frequency_sample_weight(y_train, num_classes) if class_balanced_weights else None
+    )
+    logger.info(
+        "%s: fitting '%s' on %d sampled train pixels (%d val), K=%d, num_classes=%d",
+        _fp, pixel_classifier.name, len(y_train), len(y_val), ref_feature_dim, num_classes,
+    )
+    clf.fit(X_train, y_train, X_val=X_val, y_val=y_val, sample_weight=sample_weight)
+    clf.save(fold_dir / "pixel_classifier")
+
+    tune_report = evaluate_pixel_classifier(
+        clf, tune_records, feature_store, head, "tune",
+        dataset=dataset, output_dir=fold_dir, save_probabilities=evaluation.save_probabilities,
+    )
+    test_reports = {
+        split_name: evaluate_pixel_classifier(
+            clf, records, feature_store, head, split_name,
+            dataset=dataset, output_dir=fold_dir, save_probabilities=evaluation.save_probabilities,
+        )
+        for split_name, records in test_records_by_split.items()
+    }
+    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+
+    return FoldResult(
+        fold=fold,
+        train_result=None,
+        tune_report=tune_report,
+        test_reports=test_reports,
+    )
+
+
 def train(
     feature_store: FeatureStore,
     dataset: Dataset,
@@ -1198,6 +1369,7 @@ def train(
     run_dir: str | Path,
     aggregator: AggregatorConfig | None = None,
     decoder: DecoderConfig | None = None,
+    pixel_classifier: PixelClassifierConfig | None = None,
     evaluation: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
@@ -1233,7 +1405,24 @@ def train(
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
         fold_dir = run_dir if single_fold else run_dir / f"fold_{fold_idx}"
-        if dataset_type == "segmentation":
+        if dataset_type == "segmentation" and pixel_classifier is not None:
+            # Decoder-free path: the cross-defaulted feature_kind=cls_attention grids
+            # feed a per-pixel classifier (no Trainer). Mutually exclusive with decoder,
+            # enforced in PipelineConfig.
+            result = train_one_pixel_classifier_fold(
+                feature_store=feature_store,
+                dataset=dataset,
+                fold_split=fold_split,
+                task=task,
+                pixel_classifier=pixel_classifier,
+                evaluation=evaluation,
+                training=training,
+                fold_dir=fold_dir,
+                preprocessing=preprocessing,
+                fold=fold_idx,
+                num_folds=splits.num_folds,
+            )
+        elif dataset_type == "segmentation":
             result = train_one_segmentation_fold(
                 feature_store=feature_store,
                 dataset=dataset,
@@ -1289,6 +1478,7 @@ def _build_run_summary_panel(
     feature_store: FeatureStore,
     dataset_type: str = "slide",
     decoder: DecoderConfig | None = None,
+    pixel_classifier: PixelClassifierConfig | None = None,
 ) -> Panel:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold", justify="right", no_wrap=True)
@@ -1305,9 +1495,14 @@ def _build_run_summary_panel(
         spacing = preprocessing.requested_spacing_um
         grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
 
-    # Aggregator (MIL path) or decoder (segmentation path) — the trainable component.
+    # Aggregator (MIL path), or decoder / pixel-classifier (segmentation) — the
+    # trainable component.
     if dataset_type == "segmentation":
-        grid.add_row("decoder", decoder.name if decoder is not None else "[dim]—[/dim]")
+        if pixel_classifier is not None:
+            grid.add_row("pixel_classifier", pixel_classifier.name)
+            grid.add_row("feature_kind", str(preprocessing.feature_kind))
+        else:
+            grid.add_row("decoder", decoder.name if decoder is not None else "[dim]—[/dim]")
     elif aggregator is not None:
         grid.add_row("aggregator", aggregator.name)
     else:
@@ -1579,6 +1774,7 @@ class Pipeline:
                     feature_store=store,
                     dataset_type=self._config.dataset_type,
                     decoder=self._config.decoder,
+                    pixel_classifier=self._config.pixel_classifier,
                 )
             )
 
@@ -1589,6 +1785,7 @@ class Pipeline:
                 dataset_type=self._config.dataset_type,
                 aggregator=self._config.aggregator,
                 decoder=self._config.decoder,
+                pixel_classifier=self._config.pixel_classifier,
                 task=self._config.task,
                 evaluation=self._config.evaluation,
                 training=self._config.training,
@@ -1687,6 +1884,11 @@ class Pipeline:
         if self._feature_dir is not None:
             return DenseFeatureStore(self._feature_dir)
 
+        # Multi-encoder composite: extract each member into its own cache, then present a
+        # load-time channel-concat view (design §8).
+        if self._config.encoders is not None:
+            return self._build_composite_dense_store(run_dir=run_dir)
+
         if self._config.encoder is None:
             raise ValueError(
                 "PipelineConfig.encoder is required for dataset_type='segmentation' "
@@ -1737,6 +1939,71 @@ class Pipeline:
             return extractor.run(feature_dir=run_dir / "features")
         finally:
             _release_parent_cuda_state()
+
+    def _build_composite_dense_store(self, *, run_dir: Path):
+        """Extract every member encoder into its own cache; return a concat view (§8).
+
+        Each member carries its own ``feature_kind`` / ``attention`` spec, so the
+        heterogeneous setup (several attention FMs + an optional patch-feature embedding)
+        needs no special-casing. Members share the run's spacing + supervision
+        ``target_size`` (v1); their token grids may differ and are upsampled to the shared
+        target at load time by :class:`CompositeDenseFeatureStore`.
+        """
+        from soma.dense.composite import CompositeDenseFeatureStore
+        from soma.dense_extraction import DenseTileFeatureExtractor
+
+        preprocessing = self._resolve_preprocessing()  # encoder is None → spacing not auto-set
+        target_size = preprocessing.requested_tile_size_px
+        if target_size is None:
+            raise ValueError(
+                "multi-encoder segmentation extraction requires "
+                "preprocessing.requested_tile_size_px (the mask/tile supervision size)."
+            )
+        if preprocessing.requested_spacing_um is None:
+            raise ValueError(
+                "multi-encoder segmentation extraction requires an explicit "
+                "preprocessing.requested_spacing_um — v1 reads every member at the same "
+                "µm/px (per-member native spacing is deferred)."
+            )
+        cache_config = self._config.cache
+        if cache_config.root_dir is None:
+            cache_config = replace(
+                cache_config, root_dir=Path(self._config.output_root) / "feature_cache"
+            )
+        member_stores = []
+        try:
+            for index, member in enumerate(self._config.encoders):
+                member_encoder = EncoderConfig(
+                    name=member.name,
+                    precision=member.precision,
+                    batch_size=member.batch_size,
+                    adaptive_batching=member.adaptive_batching,
+                    output_variant=member.output_variant,
+                    allow_non_recommended_settings=member.allow_non_recommended_settings,
+                )
+                member_prep = replace(
+                    preprocessing,
+                    feature_kind=member.feature_kind,
+                    attention=member.attention,
+                )
+                extractor = DenseTileFeatureExtractor(
+                    self._dataset,
+                    member_encoder,
+                    target_size=int(target_size),
+                    spacing_um=float(preprocessing.requested_spacing_um),
+                    backend=preprocessing.backend,
+                    tolerance=float(preprocessing.tolerance),
+                    window_size=preprocessing.dense_window_size,
+                    overlap=float(preprocessing.dense_window_overlap),
+                    execution=self._config.execution,
+                    cache=cache_config,
+                    preprocessing=member_prep,
+                )
+                member_dir = run_dir / "features" / f"member_{index}_{member.name}"
+                member_stores.append(extractor.run(feature_dir=member_dir))
+        finally:
+            _release_parent_cuda_state()
+        return CompositeDenseFeatureStore(member_stores)
 
     def _build_live_segmentation_source(self) -> "LiveSegmentationSource":
         """Load the frozen encoder once and bundle it with geometry/transform for live.

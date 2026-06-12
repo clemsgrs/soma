@@ -151,6 +151,9 @@ def extract_dense_grids(
     mask_pad_value: int | None = None,
     window_size: int | None,
     overlap: float,
+    feature_kind: str = "patch_features",
+    attention_blocks: tuple[int, ...] = (-1,),
+    attention_include_registers: bool = False,
     batch_size: int = 1,
     precision: str = "fp32",
     num_workers: int = 0,
@@ -159,15 +162,36 @@ def extract_dense_grids(
     """Encode ``records`` into dense grids written under ``out_dir``; return ``d``.
 
     Injectable core: takes a constructed dense-capable ``encoder`` (with
-    ``encode_tiles_dense``), so it runs offline in tests with random weights.
-    ``window_size``/``overlap`` are required (no silent default): ``window_size=None``
-    is the ``whole`` path (one padded forward), a smaller ``window_size`` slides the
-    encoder over patch-aligned windows — the caller must choose so a sliding run is
-    never mis-keyed/mis-extracted as ``whole``.
+    ``encode_tiles_dense`` / ``encode_tiles_attention``), so it runs offline in tests
+    with random weights. ``window_size``/``overlap`` are required (no silent default):
+    ``window_size=None`` is the ``whole`` path (one padded forward), a smaller
+    ``window_size`` slides the encoder over patch-aligned windows — the caller must
+    choose so a sliding run is never mis-keyed/mis-extracted as ``whole``.
+
+    ``feature_kind`` picks the per-window encode: ``patch_features`` →
+    ``encode_tiles_dense`` (the ViT patch grid); ``cls_attention`` →
+    ``encode_tiles_attention`` with ``attention_blocks`` / ``attention_include_registers``
+    (per-head prefix-token self-attention, ``K`` channels). The sliding/stitching and
+    write path are identical — an attention grid is just another ``(C, gh, gw)`` grid.
     """
     dense_input_mode = "whole" if window_size is None else "sliding_window"
     if pad_mode not in _PAD_MODES:
         raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
+
+    if feature_kind == "cls_attention":
+        attention_blocks = tuple(int(b) for b in attention_blocks)
+        attention_include_registers = bool(attention_include_registers)
+
+        def encode_fn(window: torch.Tensor) -> torch.Tensor:
+            return encoder.encode_tiles_attention(
+                window, blocks=attention_blocks, include_registers=attention_include_registers
+            )
+    elif feature_kind == "patch_features":
+        encode_fn = encoder.encode_tiles_dense
+    else:
+        raise ValueError(
+            f"unsupported feature_kind {feature_kind!r}; expected 'patch_features' or 'cls_attention'"
+        )
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -197,7 +221,12 @@ def extract_dense_grids(
             batch = batch.to(device, non_blocking=True)
             grids = (
                 encode_dense_sliding(
-                    encoder, batch, geometry=geometry, window_size=window_size, overlap=overlap
+                    encoder,
+                    batch,
+                    geometry=geometry,
+                    window_size=window_size,
+                    overlap=overlap,
+                    encode_fn=encode_fn,
                 )
                 .detach()
                 .float()
@@ -221,6 +250,9 @@ def extract_dense_grids(
                     window_size=window_size,
                     overlap=overlap,
                     spacing_um=spacing_um,
+                    feature_kind=feature_kind,
+                    attention_blocks=attention_blocks,
+                    attention_include_registers=attention_include_registers,
                 )
                 write_dense_grid(out_dir, str(sample_id), grid, metadata)
     return feature_dim
@@ -280,6 +312,19 @@ class DenseTileFeatureExtractor:
         # folded into the dense cache key — so grids read at different spacings can
         # never alias to one cache entry (mirrors the pooled/bag tile path).
         self._preprocessing = preprocessing
+        # feature_kind + attention knobs (design — attention-pixel segmentation §7).
+        # patch_features → encode_tiles_dense; cls_attention → encode_tiles_attention.
+        self._feature_kind = (
+            (preprocessing.feature_kind or "patch_features")
+            if preprocessing is not None
+            else "patch_features"
+        )
+        if preprocessing is not None and self._feature_kind == "cls_attention":
+            self._attention_blocks = tuple(preprocessing.attention.blocks)
+            self._attention_include_registers = bool(preprocessing.attention.include_registers)
+        else:
+            self._attention_blocks = (-1,)
+            self._attention_include_registers = False
 
     def _image_pad_value(self) -> float | None:
         # Only meaningful for constant/zero padding; None (N/A) for reflect/replicate.
@@ -329,6 +374,9 @@ class DenseTileFeatureExtractor:
                 dense_input_mode=self._dense_input_mode,
                 window_size=self._window_size,
                 overlap=self._overlap,
+                feature_kind=self._feature_kind,
+                attention_blocks=self._attention_blocks,
+                attention_include_registers=self._attention_include_registers,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
             )
@@ -369,6 +417,9 @@ class DenseTileFeatureExtractor:
             mask_pad_value=None,  # ignore_index is owned by the segmentation dataset slice
             window_size=self._window_size,
             overlap=self._overlap,
+            feature_kind=self._feature_kind,
+            attention_blocks=self._attention_blocks,
+            attention_include_registers=self._attention_include_registers,
             batch_size=self._encoder.batch_size,
             # execution.precision honors an ExecutionConfig.precision override
             # (build_execution_options falls back to the encoder's precision when unset),

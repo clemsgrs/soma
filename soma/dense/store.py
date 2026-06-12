@@ -66,6 +66,9 @@ def dense_grid_metadata(
     window_size: int | None = None,
     overlap: float = 0.0,
     spacing_um: float | None = None,
+    feature_kind: str = "patch_features",
+    attention_blocks: tuple[int, ...] | None = None,
+    attention_include_registers: bool = False,
     channel_dim: int = 0,
 ) -> dict:
     """Build the self-describing sidecar payload for one dense grid.
@@ -84,10 +87,22 @@ def dense_grid_metadata(
     spacing the grid was extracted at — otherwise the supervision silently shifts
     against the features. (It is also part of the cache *key*, via the plumbed
     ``PreprocessingConfig``, so two spacings can never alias to one cache entry.)
+
+    ``feature_kind`` records what the channels mean: ``patch_features`` (ViT patch
+    tokens) or ``cls_attention`` (per-head prefix-token self-attention). For the latter
+    the ``attention_*`` fields and ``channel_order`` describe the channel layout
+    (``[block][cls, reg…][head]``) so a loader / multi-encoder concat can interpret it.
     """
+    is_attention = feature_kind != "patch_features"
     return {
         "artifact_type": DENSE_ARTIFACT_TYPE,
         "feature_type": DENSE_ARTIFACT_TYPE,
+        "feature_kind": str(feature_kind),
+        "attention_blocks": (
+            [int(b) for b in (attention_blocks or ())] if is_attention else None
+        ),
+        "attention_include_registers": bool(attention_include_registers) if is_attention else None,
+        "channel_order": "[block][cls, reg…][head]" if is_attention else None,
         "feature_dim": int(feature_dim),
         "channel_dim": int(channel_dim),
         "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
