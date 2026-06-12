@@ -153,6 +153,27 @@ def test_dense_key_changes_with_spacing():
     assert half != _key()
 
 
+def test_dense_key_changes_with_feature_kind_and_attention_knobs():
+    # An attention grid must never alias a patch-feature grid, and different blocks /
+    # register inclusion are different channels -> different keys.
+    patch = _key()  # default feature_kind=patch_features
+    attn = _key(feature_kind="cls_attention", attention_blocks=(-1,))
+    assert patch != attn
+    assert attn != _key(feature_kind="cls_attention", attention_blocks=(-1, -2))
+    assert attn != _key(
+        feature_kind="cls_attention", attention_blocks=(-1,), attention_include_registers=True
+    )
+
+
+def test_dense_key_patch_features_is_byte_stable():
+    # Attention key fields are injected only for cls_attention, so existing
+    # patch-feature caches survive the schema addition byte-for-byte.
+    assert _key() == _key(feature_kind="patch_features")
+    assert _key() == _key(
+        feature_kind="patch_features", attention_blocks=(-1, -2), attention_include_registers=True
+    )
+
+
 def test_dense_key_independent_of_output_variant():
     # Dense grid is pre-pooling, so the variant must not split the cache.
     k_cls = _key(execution=EncoderConfig(name="uni", precision="fp16", output_variant="cls"))

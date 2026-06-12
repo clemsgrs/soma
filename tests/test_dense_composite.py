@@ -1,0 +1,126 @@
+"""Offline tests for the multi-encoder composite (load-time channel concat, §8).
+
+Builds two member dense stores with *different* patch sizes / token grids but a shared
+supervision ``target_size``, wraps them in a ``CompositeDenseFeatureStore``, and checks
+the concat shape + that the decoder-free fold runs end-to-end through the composite.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+import torch
+from PIL import Image
+
+from soma.dense import DenseFeatureStore
+from soma.dense.composite import CompositeDenseFeatureStore, resample_grid_to_target
+from soma.dense.geometry import compute_dense_geometry
+from soma.dense.store import dense_grid_metadata, write_dense_grid
+
+TARGET = 8
+
+
+def _write_member(root: Path, name: str, sample_ids, *, patch: int, k: int, spacing=None):
+    out = root / name
+    geom = compute_dense_geometry(target_size=TARGET, patch_size=patch)
+    meta = dense_grid_metadata(
+        geom, feature_dim=k, pad_mode="reflect", spacing_um=spacing,
+        feature_kind="cls_attention", attention_blocks=(-1,),
+    )
+    for sid in sample_ids:
+        write_dense_grid(out, sid, torch.rand(k, *geom.grid_shape), meta)
+    return DenseFeatureStore(out)
+
+
+def test_resample_grid_to_target_reaches_target_resolution():
+    geom = compute_dense_geometry(target_size=TARGET, patch_size=4)  # 2x2 grid -> 8x8
+    grid = torch.rand(3, *geom.grid_shape)
+    out = resample_grid_to_target(grid, geom)
+    assert out.shape == (3, TARGET, TARGET)
+
+
+def test_composite_concats_members_at_target_resolution(tmp_path: Path):
+    ids = ["s0", "s1", "s2", "s3"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)  # 2x2 grid
+    b = _write_member(tmp_path, "b", ids, patch=2, k=5)  # 4x4 grid
+    comp = CompositeDenseFeatureStore([a, b])
+
+    assert comp.feature_dim == 8  # 3 + 5
+    assert sorted(comp.available_samples) == ids
+    assert comp.grid_shape == (TARGET, TARGET)
+    grid = comp.load("s0")
+    assert grid.shape == (8, TARGET, TARGET)  # concat at shared target pixel grid
+    geom = comp.geometry("s0")
+    assert geom.grid_shape == (TARGET, TARGET) and geom.patch_size == (1, 1)
+    meta = comp.metadata("s0")
+    assert meta["feature_kind"] == "composite" and meta["feature_dim"] == 8
+    assert len(meta["members"]) == 2
+
+
+def test_composite_rejects_disjoint_samples(tmp_path: Path):
+    a = _write_member(tmp_path, "a", ["s0", "s1"], patch=4, k=3)
+    b = _write_member(tmp_path, "b", ["s2", "s3"], patch=4, k=3)
+    with pytest.raises(ValueError, match="no common samples"):
+        CompositeDenseFeatureStore([a, b])
+
+
+def test_composite_rejects_target_size_mismatch(tmp_path: Path):
+    a = _write_member(tmp_path, "a", ["s0"], patch=4, k=3)  # target 8
+    # member b at target 16 (different supervision size) -> mismatch on load.
+    out = tmp_path / "b"
+    geom = compute_dense_geometry(target_size=16, patch_size=4)
+    meta = dense_grid_metadata(geom, feature_dim=3, pad_mode="reflect")
+    write_dense_grid(out, "s0", torch.rand(3, *geom.grid_shape), meta)
+    comp = CompositeDenseFeatureStore([a, DenseFeatureStore(out)])
+    with pytest.raises(ValueError, match="disagree on target_size"):
+        comp.geometry("s0")
+
+
+def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
+    pytest.importorskip("xgboost")
+    from soma.config import EvalConfig, PixelClassifierConfig, TaskConfig, TrainingConfig
+    from soma.dataset import SegmentationManifest, Splits
+    from soma.pipeline import train_one_pixel_classifier_fold
+
+    ids = ["s0", "s1", "s2", "s3"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)
+    b = _write_member(tmp_path, "b", ids, patch=2, k=4)
+    comp = CompositeDenseFeatureStore([a, b])
+
+    masks_dir = tmp_path / "masks"
+    masks_dir.mkdir()
+    rng = np.random.default_rng(0)
+    rows = []
+    for sid in ids:
+        mask = rng.integers(0, 2, size=(TARGET, TARGET), dtype=np.uint8)
+        Image.fromarray(mask).save(masks_dir / f"{sid}.png")
+        rows.append((sid, f"{sid}.jpg", str(masks_dir / f"{sid}.png")))
+    manifest_csv = tmp_path / "manifest.csv"
+    manifest_csv.write_text(
+        "sample_id,image_path,mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
+    )
+    splits_csv = tmp_path / "splits.csv"
+    assign = {ids[0]: "train", ids[1]: "train", ids[2]: "tune", ids[3]: "test"}
+    splits_csv.write_text(
+        "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
+    )
+    manifest = SegmentationManifest(manifest_csv)
+    splits = Splits(splits_csv, manifest)
+
+    result = train_one_pixel_classifier_fold(
+        feature_store=comp,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+        training=TrainingConfig(epochs=1, batch_size=1, max_train_pixels=500),
+        fold_dir=tmp_path / "fold",
+        pixel_classifier=PixelClassifierConfig(
+            name="xgboost", params={"n_estimators": 8, "max_depth": 2, "early_stopping_rounds": None}
+        ),
+        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+    )
+    assert "test" in result.test_reports
+    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert (tmp_path / "fold" / "preds" / "test" / "s3.png").is_file()

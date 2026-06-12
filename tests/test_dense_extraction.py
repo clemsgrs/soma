@@ -101,6 +101,66 @@ def test_extract_dense_grids_padded_patch_multiple(tmp_path: Path):
     assert tuple(DenseFeatureStore(out_dir).load("s0").shape) == (enc.encode_dim, 3, 3)
 
 
+def test_extract_attention_grids_roundtrip_and_sidecar(tmp_path: Path):
+    """feature_kind='cls_attention' writes a (K, gh, gw) grid (K = nh per CLS row)
+    and records the channel-order contract in the sidecar."""
+    enc = _encoder()
+    nh = enc._model.blocks[-1].attn.num_heads
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)  # 2x2 grid
+    records = _make_tiles(tmp_path, n=2, size=32)
+    out_dir = tmp_path / "dense_embeddings"
+
+    feature_dim = extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=records,
+        out_dir=out_dir,
+        window_size=None,
+        overlap=0.0,
+        feature_kind="cls_attention",
+        attention_blocks=(-1,),
+        attention_include_registers=False,
+        batch_size=2,
+    )
+    assert feature_dim == nh  # 1 CLS row * nh heads (vit_tiny: nh=3)
+
+    store = DenseFeatureStore(out_dir)
+    assert store.feature_dim == nh
+    assert tuple(store.load("s0").shape) == (nh, 2, 2)
+    meta = store.metadata("s0")
+    assert meta["feature_kind"] == "cls_attention"
+    assert meta["attention_blocks"] == [-1]
+    assert meta["attention_include_registers"] is False
+    assert meta["channel_order"] == "[block][cls, reg…][head]"
+    # attention maps are non-negative softmax slices.
+    assert (store.load("s0") >= 0).all()
+
+
+def test_extract_attention_multiblock_channel_count(tmp_path: Path):
+    enc = _encoder()
+    nh = enc._model.blocks[-1].attn.num_heads
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)
+    records = _make_tiles(tmp_path, n=1, size=32)
+    out_dir = tmp_path / "dense_embeddings"
+    feature_dim = extract_dense_grids(
+        encoder=enc,
+        device="cpu",
+        dense_transform=enc.get_dense_transform(),
+        geometry=geometry,
+        records=records,
+        out_dir=out_dir,
+        window_size=None,
+        overlap=0.0,
+        feature_kind="cls_attention",
+        attention_blocks=(-1, -2),
+        attention_include_registers=False,
+        batch_size=1,
+    )
+    assert feature_dim == 2 * nh  # 2 blocks * 1 CLS * nh
+
+
 def test_extract_dense_grids_rejects_wrong_tile_size(tmp_path: Path):
     enc = _encoder()
     geometry = compute_dense_geometry(target_size=32, patch_size=16)

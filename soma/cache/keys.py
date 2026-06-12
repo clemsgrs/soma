@@ -296,6 +296,9 @@ def build_dense_cache_key(
     dense_input_mode: str = "whole",
     window_size: int | None,
     overlap: float,
+    feature_kind: str = "patch_features",
+    attention_blocks: tuple[int, ...] | None = None,
+    attention_include_registers: bool = False,
 ) -> str:
     """Cache key for a dense ``(d, h, w)`` grid extraction.
 
@@ -308,6 +311,13 @@ def build_dense_cache_key(
     unchanged. ``output_variant`` is intentionally omitted: the dense grid is
     pre-pooling (``forward_features`` → reshape), so the variant (which only changes
     pooling) does not affect it; keying on it would split identical caches.
+
+    ``feature_kind`` discriminates a patch-feature grid from a CLS-attention grid (an
+    attention grid must never alias a feature grid); the attention sub-knobs
+    (``attention_blocks``/``attention_include_registers``) join the key too, since
+    different blocks / register inclusion yield different channels. These are injected
+    **only** for ``feature_kind != "patch_features"``, so legacy patch-feature keys are
+    byte-stable.
     """
     execution_payload = execution_signature(
         execution,
@@ -331,6 +341,12 @@ def build_dense_cache_key(
         # Only sliding runs carry these — keeps legacy 'whole' keys byte-stable.
         payload["window_size"] = int(window_size)
         payload["overlap"] = float(overlap)
+    if feature_kind != "patch_features":
+        # Only attention (or future non-default) kinds carry these — keeps legacy
+        # patch-feature keys byte-stable.
+        payload["feature_kind"] = str(feature_kind)
+        payload["attention_blocks"] = [int(b) for b in (attention_blocks or ())]
+        payload["attention_include_registers"] = bool(attention_include_registers)
     if preprocessing is not None:
         payload["preprocessing"] = preprocessing_signature(preprocessing)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]

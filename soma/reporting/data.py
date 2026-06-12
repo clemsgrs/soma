@@ -282,7 +282,11 @@ def run_data_from_result(
 
     folds = []
     for fold_result in result.fold_results:
-        training_history = [epoch_log_to_dict(log) for log in fold_result.train_result.history]
+        training_history = (
+            [epoch_log_to_dict(log) for log in fold_result.train_result.history]
+            if fold_result.train_result is not None
+            else []
+        )
 
         predictions: dict[str, pd.DataFrame] = {
             split_name: _predictions_to_dataframe(report.predictions)

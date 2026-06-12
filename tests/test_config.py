@@ -241,7 +241,7 @@ def test_segmentation_config_valid():
 
 
 def test_segmentation_requires_decoder():
-    with pytest.raises(ValueError, match="decoder is required"):
+    with pytest.raises(ValueError, match="requires either a decoder .* or a pixel_classifier"):
         _seg_config(decoder=None)
 
 
@@ -280,6 +280,100 @@ def test_decoder_config_round_trips_through_yaml(tmp_path: Path):
     assert loaded.dataset_type == "segmentation"
     assert loaded.decoder.name == "lightweight_conv"
     assert loaded.decoder.params == {"num_upsample_blocks": 2}
+
+
+def test_pixel_classifier_config_round_trips_through_yaml(tmp_path: Path):
+    from soma.config import AttentionConfig, PixelClassifierConfig, PreprocessingConfig
+
+    cfg = _seg_config(
+        decoder=None,
+        pixel_classifier=PixelClassifierConfig(name="xgboost", params={"n_estimators": 100}),
+        preprocessing=PreprocessingConfig(
+            attention=AttentionConfig(blocks=[-1, -2], include_registers=True)
+        ),
+    )
+    # cross-defaulted feature_kind survives the roundtrip.
+    assert cfg.preprocessing.feature_kind == "cls_attention"
+    path = tmp_path / "cfg.yaml"
+    save_config(cfg, path)
+    loaded = load_config(path)
+    assert loaded.pixel_classifier.name == "xgboost"
+    assert loaded.pixel_classifier.params == {"n_estimators": 100}
+    assert loaded.decoder is None
+    assert loaded.preprocessing.feature_kind == "cls_attention"
+    assert loaded.preprocessing.attention.blocks == (-1, -2)
+    assert loaded.preprocessing.attention.include_registers is True
+
+
+def test_encoders_composite_round_trips_through_yaml(tmp_path: Path):
+    from soma.config import EncoderMemberConfig, PixelClassifierConfig
+
+    cfg = _seg_config(
+        decoder=None,
+        pixel_classifier=PixelClassifierConfig(name="xgboost"),
+        encoders=[
+            EncoderMemberConfig(name="uni", feature_kind="cls_attention"),
+            EncoderMemberConfig(name="phikon", feature_kind="patch_features"),
+        ],
+    )
+    path = tmp_path / "cfg.yaml"
+    save_config(cfg, path)
+    loaded = load_config(path)
+    assert loaded.encoders is not None and len(loaded.encoders) == 2
+    assert [m.name for m in loaded.encoders] == ["uni", "phikon"]
+    assert loaded.encoders[1].feature_kind == "patch_features"
+
+
+def test_encoders_only_yaml_loads_without_tripping_xor(tmp_path: Path):
+    # The real regression: a documented `encoders:` config (no `encoder:` key) must load.
+    # Previously the bundled default `encoder: uni2` merged in and tripped the XOR check.
+    raw = {
+        "data": {
+            "dataset_csv": "dataset.csv",
+            "splits_csv": "splits.csv",
+            "dataset_type": "segmentation",
+        },
+        "task": {"name": "segmentation", "params": {"num_classes": 3}},
+        "pixel_classifier": {"name": "xgboost"},
+        # A minimal segmentation YAML: with neutral defaults it needs no aggregation/metrics
+        # nulling — the bundled defaults no longer leak the slide-shaped aggregator/metrics.
+        "encoders": [
+            {"name": "uni", "feature_kind": "cls_attention"},
+            {"name": "phikon", "feature_kind": "patch_features"},
+        ],
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+    loaded = load_config(yaml_path)
+    assert loaded.encoder is None
+    assert [m.name for m in loaded.encoders] == ["uni", "phikon"]
+
+
+def test_encoder_xor_encoders():
+    from soma.config import EncoderConfig, EncoderMemberConfig, PixelClassifierConfig
+
+    with pytest.raises(ValueError, match="XOR"):
+        _seg_config(
+            decoder=None,
+            pixel_classifier=PixelClassifierConfig(name="xgboost"),
+            encoder=EncoderConfig(name="uni"),
+            encoders=[EncoderMemberConfig(name="phikon")],
+        )
+
+
+def test_encoders_rejected_for_non_segmentation():
+    from soma.config import EncoderMemberConfig
+
+    with pytest.raises(ValueError, match="only supported for dataset_type='segmentation'"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="slide",
+            encoders=[EncoderMemberConfig(name="uni")],
+            task=TaskConfig(name="binary_classification"),
+        )
 
 
 def test_subgroup_config_defaults():
@@ -414,7 +508,9 @@ def test_save_and_load_config_roundtrip(tmp_path: Path):
     assert loaded.encoder.name == original.encoder.name
     assert loaded.execution == original.execution
     assert loaded.aggregator.name == original.aggregator.name
-    assert loaded.aggregator.params == {"hidden_dim": 128, "dropout": 0.25}
+    # Clean roundtrip: params are exactly what was set (no default-merge bleed now that
+    # the bundled aggregation default is neutral).
+    assert loaded.aggregator.params == original.aggregator.params
     assert loaded.task.name == original.task.name
     assert loaded.task.params == original.task.params
     assert loaded.evaluation.metrics == original.evaluation.metrics
@@ -442,10 +538,11 @@ def test_load_config_merges_bundled_defaults_for_new_layout(tmp_path: Path):
     assert loaded.output_root == "runs"
     assert loaded.dataset_type == "slide"
     assert loaded.preprocessing.sam2_device == "cpu"
-    assert loaded.encoder.name == "uni2"
-    assert loaded.aggregator.name == "abmil"
+    # Neutral defaults: no baked-in encoder / aggregator / metrics (set those per run).
+    assert loaded.encoder is None
+    assert loaded.aggregator is None
     assert loaded.task.name == "binary_classification"
-    assert loaded.evaluation.metrics == ["auroc", "balanced_accuracy"]
+    assert loaded.evaluation.metrics == []
     assert loaded.training.epochs == 50
 
 
@@ -616,7 +713,7 @@ def test_load_config_blank_sections_inherit_defaults(tmp_path: Path):
     loaded = load_config(yaml_path)
 
     assert loaded.task.name == "binary_classification"
-    assert loaded.encoder.name == "uni2"
+    assert loaded.encoder is None  # blank encoder section + neutral default → no encoder
     assert loaded.output_root == "runs"
 
 

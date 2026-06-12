@@ -7,7 +7,7 @@ here so the Sphinx reference stays accurate.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
@@ -68,8 +68,10 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "data",
         "preprocessing",
         "encoder",
+        "encoders",
         "aggregation",
         "decoder",
+        "pixel_classifier",
         "task",
         "evaluation",
         "training",
@@ -101,6 +103,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "encoder",
         "aggregation",
         "decoder",
+        "pixel_classifier",
         "task",
         "evaluation",
         "training",
@@ -110,14 +113,27 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if section in data:
             value = data[section]
-            if section in ("aggregation", "decoder"):
+            if section in ("aggregation", "decoder", "pixel_classifier"):
                 if value is not None and not isinstance(value, dict):
                     raise TypeError(f"Config section '{section}' must be a mapping or null")
             elif value is not None and not isinstance(value, dict):
                 raise TypeError(f"Config section '{section}' must be a mapping")
             layout[section] = copy.deepcopy(value)
 
+    if "encoders" in data:
+        value = data["encoders"]
+        if value is not None and not isinstance(value, list):
+            raise TypeError("Config section 'encoders' must be a list of encoder mappings or null")
+        layout["encoders"] = copy.deepcopy(value)
+
     return layout
+
+
+def _encoder_member_from_dict(member: dict[str, Any]) -> "EncoderMemberConfig":
+    """Build one composite member, rebuilding its nested ``attention`` sub-config."""
+    member = dict(member)
+    attention_data = dict(member.pop("attention", {}))
+    return EncoderMemberConfig(**member, attention=AttentionConfig(**attention_data))
 
 
 def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
@@ -125,6 +141,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
     data_data = data.get("data", {})
     preprocessing_data = dict(data.get("preprocessing", {}))
     preview_data = dict(preprocessing_data.pop("preview", {}))
+    attention_data = dict(preprocessing_data.pop("attention", {}))
     tissue_contour_color = preview_data.get("tissue_contour_color")
     if isinstance(tissue_contour_color, list):
         preview_data["tissue_contour_color"] = tuple(tissue_contour_color)
@@ -143,13 +160,27 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         feature_mode=data_data.get("feature_mode", "cached"),
         preprocessing=PreprocessingConfig(
             **preprocessing_data,
+            attention=AttentionConfig(**attention_data),
             preview=PreviewConfig(**preview_data),
         ),
         execution=ExecutionConfig(**data.get("execution", {})),
         cache=CacheConfig(**data.get("cache", {})),
-        encoder=EncoderConfig(**data["encoder"]) if data.get("encoder") is not None else None,
+        # Truthiness (like aggregation/decoder below): a blank/omitted `encoder:` is no
+        # encoder, not an empty EncoderConfig — and with the neutral default there is no
+        # name to fall back on.
+        encoder=EncoderConfig(**data["encoder"]) if data.get("encoder") else None,
+        encoders=(
+            [_encoder_member_from_dict(member) for member in data["encoders"]]
+            if data.get("encoders")
+            else None
+        ),
         aggregator=AggregatorConfig(**data["aggregation"]) if data.get("aggregation") else None,
         decoder=DecoderConfig(**data["decoder"]) if data.get("decoder") else None,
+        pixel_classifier=(
+            PixelClassifierConfig(**data["pixel_classifier"])
+            if data.get("pixel_classifier")
+            else None
+        ),
         task=_load_task_config(data),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
@@ -157,6 +188,33 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
     )
+
+
+@dataclass(frozen=True)
+class AttentionConfig:
+    """Which frozen-encoder self-attention to extract (``feature_kind='cls_attention'``).
+
+    The attention-map segmentation path (re-impl of arXiv:2602.18747) treats a ViT's
+    per-head prefix-token self-attention as a dense ``(K, gh, gw)`` feature grid. These
+    knobs select *which* attention:
+
+    * ``blocks`` — which transformer blocks' attention to capture (negative indexes
+      from the end; ``(-1,)`` = last block, the paper's choice). Multiple blocks are
+      concatenated along the channel axis in the listed order.
+    * ``include_registers`` — also keep the register-token query rows (Darcet et al.)
+      as extra channels, not just the CLS row. No-op for models without registers.
+
+    Per-head is always preserved (head specialization is the signal); channels are
+    ordered ``[block][cls, reg…][head]`` and that order is recorded in the grid sidecar.
+    """
+
+    blocks: tuple[int, ...] = (-1,)
+    include_registers: bool = False
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "blocks", tuple(int(b) for b in self.blocks))
+        if not self.blocks:
+            raise ValueError("attention.blocks must list at least one block index")
 
 
 @dataclass(frozen=True)
@@ -195,9 +253,25 @@ class PreprocessingConfig:
     # blends the token grids over ``dense_window_overlap``.
     dense_window_size: int | None = None
     dense_window_overlap: float = 0.0
+    # What the dense (segmentation) encoder emits per tile (design — attention-pixel
+    # segmentation §3/§7). ``patch_features`` = the ViT patch-token grid (the existing
+    # decoder path); ``cls_attention`` = per-head prefix-token self-attention as a
+    # ``(K, gh, gw)`` grid (the pixel-classifier path). ``None`` = auto: the pipeline
+    # cross-defaults it from the trainable component (decoder ⇒ patch_features,
+    # pixel_classifier ⇒ cls_attention) — both overridable by setting this explicitly.
+    # Orthogonal to the component (either grid feeds a decoder or a pixel-classifier).
+    # ``attention`` selects which blocks / whether to keep register rows for cls_attention.
+    feature_kind: str | None = None
+    attention: AttentionConfig = field(default_factory=AttentionConfig)
     preview: PreviewConfig = field(default_factory=_default_preview_config)
 
     def __post_init__(self) -> None:
+        _valid_feature_kinds = {None, "patch_features", "cls_attention"}
+        if self.feature_kind not in _valid_feature_kinds:
+            raise ValueError(
+                f"Invalid feature_kind {self.feature_kind!r}; must be 'patch_features', "
+                "'cls_attention', or None (auto)."
+            )
         if self.dense_window_size is not None and int(self.dense_window_size) <= 0:
             raise ValueError(
                 f"dense_window_size must be a positive int or None, got {self.dense_window_size!r}"
@@ -258,6 +332,34 @@ class EncoderConfig:
 
 
 @dataclass(frozen=True)
+class EncoderMemberConfig:
+    """One member of a multi-encoder composite (``encoders:`` list, design §8).
+
+    Each member carries its *own* extraction spec — ``name``, ``feature_kind``
+    (``cls_attention`` by default, the composite's purpose; ``patch_features`` for an
+    embedding encoder like CellViT), and ``attention`` knobs — so the heterogeneous
+    paper setup (different FMs, some attention, some embedding) needs no special-casing.
+    Members are extracted into independent caches and concatenated at load time.
+    """
+
+    name: str
+    feature_kind: str = "cls_attention"
+    attention: AttentionConfig = field(default_factory=AttentionConfig)
+    output_variant: str | None = None
+    precision: str | None = None
+    batch_size: int = 32
+    adaptive_batching: bool = False
+    allow_non_recommended_settings: bool = False
+
+    def __post_init__(self) -> None:
+        if self.feature_kind not in {"patch_features", "cls_attention"}:
+            raise ValueError(
+                f"EncoderMemberConfig.feature_kind must be 'patch_features' or "
+                f"'cls_attention', got {self.feature_kind!r}."
+            )
+
+
+@dataclass(frozen=True)
 class CacheConfig:
     """Shared cache policy for tiling and extracted features.
 
@@ -292,6 +394,22 @@ class DecoderConfig:
     ``name`` selects the registered decoder class. ``params`` are passed through to
     the decoder constructor after the pipeline injects the feature dimension and
     ``num_classes``. The decoder is the segmentation counterpart of ``aggregator``.
+    """
+
+    name: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PixelClassifierConfig:
+    """Per-pixel classifier selection and constructor parameters (segmentation).
+
+    The decoder-free analog of ``decoder`` (design — attention-pixel segmentation §6):
+    instead of a neural decoder + Trainer, a per-pixel ``(K,) → class`` classifier
+    (XGBoost / random forest / logistic / pointwise MLP) consumes the dense grid. ``name``
+    selects the registered classifier; ``params`` pass through to its constructor after the
+    pipeline injects ``num_classes``. Mutually exclusive with ``decoder`` under
+    ``dataset_type='segmentation'``.
     """
 
     name: str
@@ -365,10 +483,17 @@ class TrainingConfig:
     num_workers: int = 0
     pin_memory: bool = True
     persistent_workers: bool = True
+    # Class-stratified pixel-sampling budget for the pixel-classifier segmentation path
+    # (design §9): the total number of supervised pixels drawn across the train cohort to
+    # fit a per-pixel classifier (XGBoost/RF/logreg/MLP). Eval still predicts *every*
+    # pixel. Ignored by the neural decoder/Trainer path.
+    max_train_pixels: int = 2_000_000
 
     def __post_init__(self) -> None:
         if self.epochs < 1:
             raise ValueError("TrainingConfig.epochs must be >= 1")
+        if self.max_train_pixels < 1:
+            raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
         if self.batch_size < 1:
             raise ValueError("TrainingConfig.batch_size must be >= 1")
         if self.gradient_accumulation < 1:
@@ -489,8 +614,10 @@ class PipelineConfig:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
+    encoders: list[EncoderMemberConfig] | None = None
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
+    pixel_classifier: PixelClassifierConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -518,23 +645,60 @@ class PipelineConfig:
                 "patient-level pipelines use a pretrained patient encoder, not a trainable aggregator."
             )
         if self.dataset_type == "segmentation":
-            if self.decoder is None:
-                raise ValueError("decoder is required for dataset_type='segmentation'.")
+            # Exactly one trainable component: a neural decoder (Trainer path) XOR a
+            # per-pixel classifier (decoder-free path). They are the two orthogonal
+            # "axis 2" options (design §7); never both, never neither.
+            if self.decoder is not None and self.pixel_classifier is not None:
+                raise ValueError(
+                    "dataset_type='segmentation' takes a decoder XOR a pixel_classifier, "
+                    "not both — a decoder is the neural (Trainer) path, a pixel_classifier "
+                    "is the decoder-free per-pixel path."
+                )
+            if self.decoder is None and self.pixel_classifier is None:
+                raise ValueError(
+                    "dataset_type='segmentation' requires either a decoder (neural path) "
+                    "or a pixel_classifier (decoder-free attention-map path)."
+                )
             if self.aggregator is not None:
                 raise ValueError(
                     "aggregator must be None for dataset_type='segmentation' — "
-                    "segmentation uses a decoder (dense per-pixel head), not MIL aggregation."
+                    "segmentation uses a decoder or pixel-classifier (dense per-pixel), "
+                    "not MIL aggregation."
                 )
             if self.task.name != "segmentation":
                 raise ValueError(
                     "dataset_type='segmentation' requires task.name='segmentation', "
                     f"got {self.task.name!r}."
                 )
-        elif self.decoder is not None:
-            raise ValueError(
-                f"decoder must be None for dataset_type={self.dataset_type!r} — "
-                "decoders are only used for dataset_type='segmentation'."
-            )
+            # Cross-default feature_kind from the component when the user left it auto
+            # (None): a pixel_classifier wants per-head CLS-attention, a decoder wants the
+            # patch-feature grid. Both remain overridable (an explicit feature_kind wins).
+            if self.preprocessing.feature_kind is None:
+                resolved_kind = (
+                    "cls_attention" if self.pixel_classifier is not None else "patch_features"
+                )
+                object.__setattr__(
+                    self,
+                    "preprocessing",
+                    replace(self.preprocessing, feature_kind=resolved_kind),
+                )
+            if self.pixel_classifier is not None and self.feature_mode != "cached":
+                raise ValueError(
+                    "pixel_classifier requires feature_mode='cached' — the decoder-free "
+                    "path fits on cached dense grids (no live re-encode / augmentation; "
+                    "those belong to the neural-decoder path)."
+                )
+        else:
+            if self.decoder is not None:
+                raise ValueError(
+                    f"decoder must be None for dataset_type={self.dataset_type!r} — "
+                    "decoders are only used for dataset_type='segmentation'."
+                )
+            if self.pixel_classifier is not None:
+                raise ValueError(
+                    f"pixel_classifier must be None for dataset_type={self.dataset_type!r} — "
+                    "pixel-classifiers are only used for dataset_type='segmentation'."
+                )
         # feature_mode / augmentation (the live re-encode segmentation path, §13.B).
         # `cached` reads pre-extracted dense grids; `live` re-encodes augmented tiles
         # through the frozen encoder every step. Fail loud rather than silently no-op.
@@ -628,6 +792,18 @@ class PipelineConfig:
         # Fail fast on unknown encoder / aggregator names — catching these at
         # config construction avoids burning hours of preprocessing before the
         # pipeline would otherwise crash at component-build time.
+        if self.encoder is not None and self.encoders is not None:
+            raise ValueError(
+                "Set 'encoder' (single) XOR 'encoders' (multi-encoder composite), not both."
+            )
+        if self.encoders is not None:
+            if self.dataset_type != "segmentation":
+                raise ValueError(
+                    "Multi-encoder 'encoders:' (composite concat) is only supported for "
+                    f"dataset_type='segmentation', got {self.dataset_type!r}."
+                )
+            if len(self.encoders) < 1:
+                raise ValueError("'encoders:' must list at least one member encoder.")
         if self.encoder is not None:
             from slide2vec.encoders.registry import encoder_registry
 
@@ -639,6 +815,18 @@ class PipelineConfig:
                     f"Unknown encoder name '{self.encoder.name}'. "
                     f"Available encoders: {available}"
                 ) from exc
+        if self.encoders is not None:
+            from slide2vec.encoders.registry import encoder_registry
+
+            for member in self.encoders:
+                try:
+                    encoder_registry.info(member.name)
+                except KeyError as exc:
+                    available = ", ".join(sorted(encoder_registry.names())) or "(none)"
+                    raise ValueError(
+                        f"Unknown encoder name '{member.name}' in 'encoders:'. "
+                        f"Available encoders: {available}"
+                    ) from exc
         if self.aggregator is not None:
             from soma.aggregators.registry import aggregator_registry
 
@@ -656,6 +844,15 @@ class PipelineConfig:
                 raise ValueError(
                     f"Unknown decoder name '{self.decoder.name}'. "
                     f"Available decoders: {available}"
+                )
+        if self.pixel_classifier is not None:
+            from soma.pixel_classifiers import pixel_classifier_registry
+
+            if self.pixel_classifier.name not in pixel_classifier_registry:
+                available = ", ".join(sorted(pixel_classifier_registry.list())) or "(none)"
+                raise ValueError(
+                    f"Unknown pixel_classifier name '{self.pixel_classifier.name}'. "
+                    f"Available pixel classifiers: {available}"
                 )
 
 
@@ -722,6 +919,16 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     data["decoder"] = (
         _normalize_yaml_value(asdict(config.decoder))
         if config.decoder is not None
+        else None
+    )
+    data["pixel_classifier"] = (
+        _normalize_yaml_value(asdict(config.pixel_classifier))
+        if config.pixel_classifier is not None
+        else None
+    )
+    data["encoders"] = (
+        [_normalize_yaml_value(asdict(member)) for member in config.encoders]
+        if config.encoders is not None
         else None
     )
     return data

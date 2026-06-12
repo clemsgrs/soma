@@ -31,6 +31,7 @@ remove the block-boundary seams naive non-overlapping tiling would introduce.
 from __future__ import annotations
 
 import math
+from typing import Callable
 
 import torch
 
@@ -113,22 +114,31 @@ def encode_dense_sliding(
     geometry: DenseGridGeometry,
     window_size: int | None,
     overlap: float = 0.0,
+    encode_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Encode a padded ``(B, C, enc_h, enc_w)`` batch into ``(B, d, grid_h, grid_w)``.
 
     ``window_size is None`` (or any window that covers the whole encoded input) is the
-    degenerate single-window case: it short-circuits to ``encode_tiles_dense(batch)``,
+    degenerate single-window case: it short-circuits to one full-tile forward,
     byte-identical to the legacy ``whole`` path. Otherwise the encoder runs over
     patch-aligned overlapping windows and the per-window token grids are blended with a
     separable raised-cosine importance map. The stitch math runs in fp32 (sub-grids are
     upcast before accumulation) so blended regions don't accumulate autocast-dtype error.
+
+    ``encode_fn`` is the per-window encode callable ``(B, C, wh, ww) -> (B, d, th, tw)``;
+    it defaults to ``encoder.encode_tiles_dense`` (the patch-feature grid). The
+    attention path passes ``encoder.encode_tiles_attention`` (partial-applied with its
+    block/register knobs) so a CLS-attention grid stitches through the identical
+    raised-cosine blending — the output is just ``(B, K, grid)`` instead of ``(B, d, grid)``.
     """
+    if encode_fn is None:
+        encode_fn = encoder.encode_tiles_dense
     (win_h, win_w), _, starts_h, starts_w = resolve_window_geometry(
         geometry, window_size=window_size, overlap=overlap
     )
     if len(starts_h) == 1 and len(starts_w) == 1:
         # Single window == the whole encoded tile: identical forward to the legacy path.
-        return encoder.encode_tiles_dense(batch)
+        return encode_fn(batch)
 
     ph, pw = geometry.patch_size
     grid_h, grid_w = geometry.grid_shape
@@ -155,7 +165,7 @@ def encode_dense_sliding(
         for sw in starts_w:
             tw = sw // pw
             window = batch[:, :, sh : sh + win_h, sw : sw + win_w]
-            sub = encoder.encode_tiles_dense(window).to(fdtype)  # (B, d, wth, wtw)
+            sub = encode_fn(window).to(fdtype)  # (B, d, wth, wtw)
             if acc is None:
                 acc = torch.zeros(
                     sub.shape[0], sub.shape[1], grid_h, grid_w, device=batch.device, dtype=fdtype
