@@ -207,7 +207,27 @@ class LiveSegmentationModel(nn.Module):
         _set_encoder_eval(self.encoder)
         return self
 
-    def forward(self, X: Tensor) -> SegmentationModelOutput:
+    @property
+    def window_size(self) -> int | None:
+        """Resolved dense encoder-window size (``None`` ⇒ whole). Read-only."""
+        return self._window_size
+
+    @property
+    def overlap(self) -> float:
+        """Resolved dense encoder-window overlap. Read-only."""
+        return self._overlap
+
+    def encode(self, X: Tensor) -> Tensor:
+        """Frozen encoder forward ``(B, 3, Henc, Wenc) -> (B, d, grid_h, grid_w)``.
+
+        The expensive half of :meth:`forward`, split out so an *ensemble of models that
+        share this encoder* (the multi-fold inference case) can encode each tile **once**
+        and run every fold's :meth:`forward_from_grid` on the shared grid — see
+        :class:`soma.dense.predict.SlidingWindowSegmentationPredictor`. Runs under
+        ``no_grad`` + the extraction autocast and casts to ``float()`` to mirror the cached
+        extractor exactly (the cached-parity anchor), so splitting the forward changes no
+        numerics: ``forward`` is still ``forward_from_grid(encode(X))``.
+        """
         from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
 
         from soma.dense.sliding import encode_dense_sliding
@@ -215,11 +235,17 @@ class LiveSegmentationModel(nn.Module):
         with torch.no_grad(), slide_encode_autocast_ctx(self._device, self._precision):
             # window_size=None ⇒ the whole single forward (byte-identical to the cached
             # extractor — the parity anchor); a smaller window slides + blends identically.
-            grid = encode_dense_sliding(
+            return encode_dense_sliding(
                 self.encoder,
                 X,
                 geometry=self._geometry,
                 window_size=self._window_size,
                 overlap=self._overlap,
             ).float()  # mirror extraction
+
+    def forward_from_grid(self, grid: Tensor) -> SegmentationModelOutput:
+        """Decoder + head on a precomputed dense grid — the trainable half of the forward."""
         return SegmentationModelOutput(logits=self.task_head(self.decoder(grid)))
+
+    def forward(self, X: Tensor) -> SegmentationModelOutput:
+        return self.forward_from_grid(self.encode(X))

@@ -37,7 +37,12 @@ import torch
 
 from soma.dense.geometry import DenseGridGeometry
 
-__all__ = ["describe_dense_mode", "encode_dense_sliding", "resolve_window_geometry"]
+__all__ = [
+    "cover_origins",
+    "describe_dense_mode",
+    "encode_dense_sliding",
+    "resolve_window_geometry",
+]
 
 
 def describe_dense_mode(window_size: int | None, overlap: float) -> str:
@@ -55,18 +60,28 @@ def _round_to(value: float, multiple: int) -> int:
     return max(multiple, int(round(value / multiple)) * multiple)
 
 
-def _window_starts(extent: int, win: int, stride: int) -> list[int]:
-    """Patch-aligned window start offsets that fully cover ``[0, extent)``.
+def cover_origins(extent: int, size: int, stride: int) -> list[int]:
+    """Start offsets of ``size``-wide windows that fully cover ``[0, extent)``.
 
-    All of ``extent``/``win``/``stride`` are patch multiples, so every start is too
-    (the final edge-aligned ``extent - win`` is a difference of patch multiples).
+    Walks ``[0, extent - size]`` in ``stride`` steps and, if the last step leaves a gap,
+    appends one final start flush to the far edge (``extent - size``) so coverage is
+    complete with no partial tail. The single shared cover rule for both sliding axes:
+    the **token-space** encoder-window slide here (where ``extent``/``size``/``stride``
+    are patch multiples, so every start is too — the edge-flush ``extent - size`` is a
+    difference of patch multiples) and the **pixel-space** tile slide over a whole image
+    in :mod:`soma.dense.predict`.
     """
-    if win >= extent:
+    if size >= extent:
         return [0]
-    starts = list(range(0, extent - win + 1, stride))
-    if starts[-1] + win < extent:
-        starts.append(extent - win)  # shift the last window flush to the edge
+    starts = list(range(0, extent - size + 1, stride))
+    if starts[-1] + size < extent:
+        starts.append(extent - size)  # shift the last window flush to the edge
     return starts
+
+
+def _window_starts(extent: int, win: int, stride: int) -> list[int]:
+    """Patch-aligned encoder-window starts — the token-space use of :func:`cover_origins`."""
+    return cover_origins(extent, win, stride)
 
 
 def resolve_window_geometry(
