@@ -305,27 +305,64 @@ def test_pixel_classifier_config_round_trips_through_yaml(tmp_path: Path):
     assert loaded.preprocessing.attention.include_registers is True
 
 
-def test_encoders_composite_round_trips_through_yaml(tmp_path: Path):
-    from soma.config import EncoderMemberConfig, PixelClassifierConfig
+def test_composite_round_trips_through_yaml(tmp_path: Path):
+    from soma.config import CompositeConfig, EncoderMemberConfig, PixelClassifierConfig
 
     cfg = _seg_config(
         decoder=None,
         pixel_classifier=PixelClassifierConfig(name="xgboost"),
-        encoders=[
-            EncoderMemberConfig(name="uni", feature_kind="cls_attention"),
-            EncoderMemberConfig(name="phikon", feature_kind="patch_features"),
-        ],
+        composite=CompositeConfig(
+            encoders=[
+                EncoderMemberConfig(name="uni", feature_kind="cls_attention"),
+                EncoderMemberConfig(name="phikon", feature_kind="patch_features"),
+            ],
+        ),
     )
     path = tmp_path / "cfg.yaml"
     save_config(cfg, path)
     loaded = load_config(path)
-    assert loaded.encoders is not None and len(loaded.encoders) == 2
-    assert [m.name for m in loaded.encoders] == ["uni", "phikon"]
-    assert loaded.encoders[1].feature_kind == "patch_features"
+    assert loaded.composite is not None and len(loaded.composite.encoders) == 2
+    assert [m.name for m in loaded.composite.encoders] == ["uni", "phikon"]
+    assert loaded.composite.encoders[1].feature_kind == "patch_features"
+    # Pixel-classifier consumer → target mode; member_norm cross-defaults by feature_kind.
+    assert loaded.composite.concat_resolution == "target"
+    assert loaded.composite.encoders[0].member_norm == "none"  # cls_attention
+    assert loaded.composite.encoders[1].member_norm == "l2"  # patch_features
 
 
-def test_encoders_only_yaml_loads_without_tripping_xor(tmp_path: Path):
-    # The real regression: a documented `encoders:` config (no `encoder:` key) must load.
+def test_composite_decoder_path_cross_defaults_to_grid(tmp_path: Path):
+    from soma.config import CompositeConfig, EncoderMemberConfig
+
+    cfg = _seg_config(
+        composite=CompositeConfig(
+            encoders=[EncoderMemberConfig(name="uni"), EncoderMemberConfig(name="phikon")]
+        ),
+    )
+    assert cfg.composite.concat_resolution == "grid"
+    assert all(m.feature_kind == "patch_features" for m in cfg.composite.encoders)
+    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
+
+
+def test_composite_grid_size_and_explicit_resolution_round_trip(tmp_path: Path):
+    from soma.config import CompositeConfig, EncoderMemberConfig
+
+    cfg = _seg_config(
+        composite=CompositeConfig(
+            encoders=[EncoderMemberConfig(name="uni", member_norm="layernorm")],
+            concat_resolution="target",
+            concat_grid_size=(37, 37),
+        ),
+    )
+    path = tmp_path / "cfg.yaml"
+    save_config(cfg, path)
+    loaded = load_config(path)
+    assert loaded.composite.concat_resolution == "target"
+    assert loaded.composite.concat_grid_size == (37, 37)
+    assert loaded.composite.encoders[0].member_norm == "layernorm"
+
+
+def test_composite_only_yaml_loads_without_tripping_xor(tmp_path: Path):
+    # The real regression: a documented `composite:` config (no `encoder:` key) must load.
     # Previously the bundled default `encoder: uni2` merged in and tripped the XOR check.
     raw = {
         "data": {
@@ -335,44 +372,92 @@ def test_encoders_only_yaml_loads_without_tripping_xor(tmp_path: Path):
         },
         "task": {"name": "segmentation", "params": {"num_classes": 3}},
         "pixel_classifier": {"name": "xgboost"},
-        # A minimal segmentation YAML: with neutral defaults it needs no aggregation/metrics
-        # nulling — the bundled defaults no longer leak the slide-shaped aggregator/metrics.
-        "encoders": [
-            {"name": "uni", "feature_kind": "cls_attention"},
-            {"name": "phikon", "feature_kind": "patch_features"},
-        ],
+        "composite": {
+            "encoders": [
+                {"name": "uni", "feature_kind": "cls_attention"},
+                {"name": "phikon", "feature_kind": "patch_features"},
+            ],
+        },
     }
     yaml_path = tmp_path / "config.yaml"
     with yaml_path.open("w") as f:
         yaml.safe_dump(raw, f)
     loaded = load_config(yaml_path)
     assert loaded.encoder is None
-    assert [m.name for m in loaded.encoders] == ["uni", "phikon"]
+    assert [m.name for m in loaded.composite.encoders] == ["uni", "phikon"]
 
 
-def test_encoder_xor_encoders():
-    from soma.config import EncoderConfig, EncoderMemberConfig, PixelClassifierConfig
+def test_composite_yaml_rejects_unknown_keys(tmp_path: Path):
+    raw = {
+        "data": {
+            "dataset_csv": "dataset.csv",
+            "splits_csv": "splits.csv",
+            "dataset_type": "segmentation",
+        },
+        "task": {"name": "segmentation", "params": {"num_classes": 3}},
+        "pixel_classifier": {"name": "xgboost"},
+        "composite": {
+            "encoders": [{"name": "uni"}],
+            "concat_resoluton": "target",
+        },
+    }
+    yaml_path = tmp_path / "config.yaml"
+    with yaml_path.open("w") as f:
+        yaml.safe_dump(raw, f)
+
+    with pytest.raises(ValueError, match="unsupported keys.*concat_resoluton"):
+        load_config(yaml_path)
+
+
+def test_composite_enabled_for_detection():
+    from soma.config import CompositeConfig, EncoderMemberConfig
+
+    cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="detection",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
+        task=TaskConfig(name="detection", params={"num_classes": 2}),
+    )
+    assert cfg.composite.concat_resolution == "grid"
+    assert cfg.composite.encoders[0].feature_kind == "patch_features"
+
+
+def test_encoder_xor_composite():
+    from soma.config import CompositeConfig, EncoderConfig, EncoderMemberConfig, PixelClassifierConfig
 
     with pytest.raises(ValueError, match="XOR"):
         _seg_config(
             decoder=None,
             pixel_classifier=PixelClassifierConfig(name="xgboost"),
             encoder=EncoderConfig(name="uni"),
-            encoders=[EncoderMemberConfig(name="phikon")],
+            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="phikon")]),
         )
 
 
-def test_encoders_rejected_for_non_segmentation():
-    from soma.config import EncoderMemberConfig
+def test_composite_rejected_for_non_dense_dataset():
+    from soma.config import CompositeConfig, EncoderMemberConfig
 
-    with pytest.raises(ValueError, match="only supported for dataset_type='segmentation'"):
+    with pytest.raises(ValueError, match="only supported for dataset_type"):
         PipelineConfig(
             dataset_csv="data.csv",
             splits_csv="splits.csv",
             output_root="out",
             dataset_type="slide",
-            encoders=[EncoderMemberConfig(name="uni")],
+            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
             task=TaskConfig(name="binary_classification"),
+        )
+
+
+def test_composite_live_is_hard_error():
+    from soma.config import CompositeConfig, EncoderMemberConfig
+
+    with pytest.raises(ValueError, match="cached-only"):
+        _seg_config(
+            feature_mode="live",
+            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
         )
 
 

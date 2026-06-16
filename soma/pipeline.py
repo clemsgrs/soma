@@ -2207,8 +2207,8 @@ class Pipeline:
             return DenseFeatureStore(self._feature_dir)
 
         # Multi-encoder composite: extract each member into its own cache, then present a
-        # load-time channel-concat view (design §8).
-        if self._config.encoders is not None:
+        # load-time channel-concat view (design §7).
+        if self._config.composite is not None:
             return self._build_composite_dense_store(run_dir=run_dir)
 
         dtype = self._config.dataset_type
@@ -2264,29 +2264,30 @@ class Pipeline:
             _release_parent_cuda_state()
 
     def _build_composite_dense_store(self, *, run_dir: Path):
-        """Extract every member encoder into its own cache; return a concat view (§8).
+        """Extract every member encoder into its own cache; return a concat view (§7).
 
-        Each member carries its own ``feature_kind`` / ``attention`` spec, so the
-        heterogeneous setup (several attention FMs + an optional patch-feature embedding)
-        needs no special-casing. Members share the run's spacing + supervision
-        ``target_size`` (v1); their token grids may differ and are upsampled to the shared
-        target at load time by :class:`CompositeDenseFeatureStore`.
+        Each member carries its own ``feature_kind`` / ``attention`` / ``member_norm``
+        spec (cross-defaulted in :class:`PipelineConfig`), so the heterogeneous setup
+        (several FMs, some attention, some patch-feature) needs no special-casing. Members
+        share the run's spacing + supervision ``target_size`` (v1); their token grids may
+        differ and are combined at load time by :class:`CompositeDenseFeatureStore` per the
+        composite's ``concat_resolution`` / ``concat_grid_size``.
         """
         from soma.dense.composite import CompositeDenseFeatureStore
         from soma.dense_extraction import DenseTileFeatureExtractor
 
-        preprocessing = self._resolve_preprocessing()  # encoder is None → spacing not auto-set
+        composite = self._config.composite
+        preprocessing = self._resolve_preprocessing()
         target_size = preprocessing.requested_tile_size_px
         if target_size is None:
             raise ValueError(
-                "multi-encoder segmentation extraction requires "
+                "multi-encoder extraction requires "
                 "preprocessing.requested_tile_size_px (the mask/tile supervision size)."
             )
         if preprocessing.requested_spacing_um is None:
             raise ValueError(
-                "multi-encoder segmentation extraction requires an explicit "
-                "preprocessing.requested_spacing_um — v1 reads every member at the same "
-                "µm/px (per-member native spacing is deferred)."
+                "multi-encoder extraction requires an explicit or auto-resolved "
+                "preprocessing.requested_spacing_um."
             )
         cache_config = self._config.cache
         if cache_config.root_dir is None:
@@ -2295,7 +2296,7 @@ class Pipeline:
             )
         member_stores = []
         try:
-            for index, member in enumerate(self._config.encoders):
+            for index, member in enumerate(composite.encoders):
                 member_encoder = EncoderConfig(
                     name=member.name,
                     precision=member.precision,
@@ -2304,10 +2305,24 @@ class Pipeline:
                     output_variant=member.output_variant,
                     allow_non_recommended_settings=member.allow_non_recommended_settings,
                 )
+                # Per-member sliding window (CONCH native-448 vs H0-mini native-224, …);
+                # fall back to the run's shared window when the member leaves it unset.
+                member_window = (
+                    member.dense_window_size
+                    if member.dense_window_size is not None
+                    else preprocessing.dense_window_size
+                )
+                member_overlap = (
+                    member.dense_window_overlap
+                    if member.dense_window_overlap is not None
+                    else preprocessing.dense_window_overlap
+                )
                 member_prep = replace(
                     preprocessing,
                     feature_kind=member.feature_kind,
                     attention=member.attention,
+                    dense_window_size=member_window,
+                    dense_window_overlap=member_overlap,
                 )
                 extractor = DenseTileFeatureExtractor(
                     self._dataset,
@@ -2316,8 +2331,8 @@ class Pipeline:
                     spacing_um=float(preprocessing.requested_spacing_um),
                     backend=preprocessing.backend,
                     tolerance=float(preprocessing.tolerance),
-                    window_size=preprocessing.dense_window_size,
-                    overlap=float(preprocessing.dense_window_overlap),
+                    window_size=member_window,
+                    overlap=float(member_overlap),
                     execution=self._config.execution,
                     cache=cache_config,
                     preprocessing=member_prep,
@@ -2326,7 +2341,43 @@ class Pipeline:
                 member_stores.append(extractor.run(feature_dir=member_dir))
         finally:
             _release_parent_cuda_state()
-        return CompositeDenseFeatureStore(member_stores)
+        return CompositeDenseFeatureStore(
+            member_stores,
+            concat_resolution=composite.concat_resolution or "target",
+            concat_grid_size=composite.concat_grid_size,
+            member_norms=[m.member_norm or "none" for m in composite.encoders],
+        )
+
+    @staticmethod
+    def _resolve_composite_spacing(composite: "CompositeConfig") -> float:
+        """Members' shared supported µm/px, for the requested_spacing_um auto-default.
+
+        v1 reads every member at one spacing, so this succeeds only when all members
+        advertise the *same* single supported spacing; a member with multiple supported
+        spacings, or members that disagree, must be pinned via
+        ``preprocessing.requested_spacing_um``.
+        """
+        from slide2vec.encoders.registry import resolve_preprocessing_requirements
+
+        per_member: dict[str, float] = {}
+        for member in composite.encoders:
+            spacing = resolve_preprocessing_requirements(member.name)["spacing_um"]
+            if isinstance(spacing, (list, tuple)):
+                if len(spacing) != 1:
+                    raise ValueError(
+                        f"composite member '{member.name}' supports multiple spacings "
+                        f"{list(spacing)}; set preprocessing.requested_spacing_um explicitly."
+                    )
+                spacing = spacing[0]
+            per_member[member.name] = float(spacing)
+        unique = sorted(set(per_member.values()))
+        if len(unique) != 1:
+            raise ValueError(
+                "composite members do not share a single supported spacing "
+                f"({per_member}); set preprocessing.requested_spacing_um explicitly "
+                "(v1 reads every member at the same µm/px)."
+            )
+        return unique[0]
 
     def _build_live_segmentation_source(self) -> "LiveSegmentationSource":
         """Load the frozen encoder once and bundle it with geometry/transform for live.
@@ -2439,6 +2490,14 @@ class Pipeline:
             preprocessing = resolve_preprocessing_config(
                 self._config.encoder,
                 preprocessing,
+            )
+        elif self._config.composite is not None and preprocessing.requested_spacing_um is None:
+            # Composite runs have no single encoder to feed into resolve_preprocessing_config,
+            # but v1 still reads every member at one shared spacing. Resolve that default
+            # here so extraction, run summary, and dense-fold spacing guards agree.
+            preprocessing = replace(
+                preprocessing,
+                requested_spacing_um=self._resolve_composite_spacing(self._config.composite),
             )
         return preprocessing
 

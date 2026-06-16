@@ -152,11 +152,11 @@ Attention grids sit at the same token-grid resolution as patch features, so they
 buy extra localisation resolution; they are best treated as an **ablation** against the
 ``patch_features`` baseline rather than an automatic win (a saliency scalar per head
 carries less sub-token detail than a full patch descriptor). Run the ``patch_features``
-baseline first so the attention number is interpretable relative to it. The decoder-free
-pixel-classifier route used for attention *segmentation* does **not** apply here:
-detection needs the decoder's spatial smoothing to shape clean, separable peaks, which a
-per-pixel-independent model cannot provide. Multi-encoder attention **ensembling** (the
-``encoders:`` composite) is currently segmentation-only.
+baseline first so the attention number is interpretable relative to it. Multi-encoder
+``composite:`` runs are supported on the decoder path and auto-concatenate at token-grid
+resolution. The decoder-free pixel-classifier route used for attention *segmentation* does
+**not** apply here: detection needs the decoder's spatial smoothing to shape clean,
+separable peaks, which a per-pixel-independent model cannot provide.
 
 Metric — F1 at matching distance δ
 ----------------------------------

@@ -68,7 +68,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "data",
         "preprocessing",
         "encoder",
-        "encoders",
+        "composite",
         "aggregation",
         "decoder",
         "pixel_classifier",
@@ -120,11 +120,14 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
                 raise TypeError(f"Config section '{section}' must be a mapping")
             layout[section] = copy.deepcopy(value)
 
-    if "encoders" in data:
-        value = data["encoders"]
-        if value is not None and not isinstance(value, list):
-            raise TypeError("Config section 'encoders' must be a list of encoder mappings or null")
-        layout["encoders"] = copy.deepcopy(value)
+    if "composite" in data:
+        value = data["composite"]
+        if value is not None and not isinstance(value, dict):
+            raise TypeError(
+                "Config section 'composite' must be a mapping "
+                "({encoders: [...], concat_resolution, concat_grid_size}) or null"
+            )
+        layout["composite"] = copy.deepcopy(value)
 
     return layout
 
@@ -134,6 +137,28 @@ def _encoder_member_from_dict(member: dict[str, Any]) -> "EncoderMemberConfig":
     member = dict(member)
     attention_data = dict(member.pop("attention", {}))
     return EncoderMemberConfig(**member, attention=AttentionConfig(**attention_data))
+
+
+def _composite_from_dict(data: dict[str, Any]) -> "CompositeConfig":
+    """Build a :class:`CompositeConfig` from the ``composite:`` mapping."""
+    data = dict(data)
+    members = data.pop("encoders", None)
+    if not members or not isinstance(members, list):
+        raise TypeError("composite.encoders must be a non-empty list of encoder mappings")
+    grid_size = data.pop("concat_grid_size", None)
+    if isinstance(grid_size, list):
+        grid_size = tuple(grid_size)
+    concat_resolution = data.pop("concat_resolution", None)
+    if data:
+        raise ValueError(
+            "Config section 'composite' uses unsupported keys: "
+            + ", ".join(sorted(str(key) for key in data))
+        )
+    return CompositeConfig(
+        encoders=[_encoder_member_from_dict(member) for member in members],
+        concat_resolution=concat_resolution,
+        concat_grid_size=grid_size,
+    )
 
 
 def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
@@ -169,11 +194,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         # encoder, not an empty EncoderConfig — and with the neutral default there is no
         # name to fall back on.
         encoder=EncoderConfig(**data["encoder"]) if data.get("encoder") else None,
-        encoders=(
-            [_encoder_member_from_dict(member) for member in data["encoders"]]
-            if data.get("encoders")
-            else None
-        ),
+        composite=_composite_from_dict(data["composite"]) if data.get("composite") else None,
         aggregator=AggregatorConfig(**data["aggregation"]) if data.get("aggregation") else None,
         decoder=DecoderConfig(**data["decoder"]) if data.get("decoder") else None,
         pixel_classifier=(
@@ -333,30 +354,94 @@ class EncoderConfig:
 
 @dataclass(frozen=True)
 class EncoderMemberConfig:
-    """One member of a multi-encoder composite (``encoders:`` list, design §8).
+    """One member of a multi-encoder composite (``composite.encoders`` list, design §7).
 
-    Each member carries its *own* extraction spec — ``name``, ``feature_kind``
-    (``cls_attention`` by default, the composite's purpose; ``patch_features`` for an
-    embedding encoder like CellViT), and ``attention`` knobs — so the heterogeneous
-    paper setup (different FMs, some attention, some embedding) needs no special-casing.
-    Members are extracted into independent caches and concatenated at load time.
+    Each member carries its *own* extraction spec — ``name``, ``feature_kind``, and
+    ``attention`` knobs — so the heterogeneous paper setup (different FMs, some attention,
+    some embedding) needs no special-casing. Members are extracted into independent caches
+    and concatenated at load time.
+
+    ``feature_kind`` is ``None`` (auto) by default and **cross-defaults from the
+    consumer** at config finalization — ``cls_attention`` when a ``pixel_classifier`` is
+    set (the decoder-free path), ``patch_features`` for the trained decoder / detection —
+    mirroring the single-encoder cross-default. An explicit value wins.
+
+    ``member_norm`` (``{none, l2, layernorm}``) is the per-member normalization applied at
+    load time **before concat** (after the resample), so one large-magnitude encoder does
+    not dominate the decoder. ``None`` (auto) defaults by the resolved ``feature_kind``:
+    ``l2`` for ``patch_features`` (raw tokens differ wildly in norm), ``none`` for
+    ``cls_attention`` (already bounded/comparable — keeps the pixel-classifier path
+    byte-identical).
+
+    ``dense_window_size`` / ``dense_window_overlap`` are the **per-member** sliding-window
+    knobs for dense extraction: encoders that lack ``dynamic_img_size`` (e.g. CONCH at its
+    native 448, H0-mini at 224) must slide their native window over the supervision tile,
+    and different members need different windows. ``None`` falls back to the run's shared
+    ``preprocessing.dense_window_size`` / ``dense_window_overlap``.
     """
 
     name: str
-    feature_kind: str = "cls_attention"
+    feature_kind: str | None = None
+    member_norm: str | None = None
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     output_variant: str | None = None
     precision: str | None = None
     batch_size: int = 32
     adaptive_batching: bool = False
     allow_non_recommended_settings: bool = False
+    dense_window_size: int | None = None
+    dense_window_overlap: float | None = None
 
     def __post_init__(self) -> None:
-        if self.feature_kind not in {"patch_features", "cls_attention"}:
+        if self.feature_kind not in {None, "patch_features", "cls_attention"}:
             raise ValueError(
-                f"EncoderMemberConfig.feature_kind must be 'patch_features' or "
-                f"'cls_attention', got {self.feature_kind!r}."
+                f"EncoderMemberConfig.feature_kind must be 'patch_features', "
+                f"'cls_attention', or None (auto), got {self.feature_kind!r}."
             )
+        if self.member_norm not in {None, "none", "l2", "layernorm"}:
+            raise ValueError(
+                f"EncoderMemberConfig.member_norm must be 'none', 'l2', 'layernorm', or "
+                f"None (auto), got {self.member_norm!r}."
+            )
+
+
+@dataclass(frozen=True)
+class CompositeConfig:
+    """Multi-encoder composite block (design §7 Angle 5).
+
+    Concatenates several frozen encoders' dense grids into one ``(Σd_i, ·, ·)`` feature
+    grid. ``encoders`` lists the members (extracted into independent caches); the two
+    knobs control how their grids are combined at load time:
+
+    - ``concat_resolution`` (``{grid, target}``): ``grid`` resamples each member's native
+      token grid to a common ``(h, w)`` and concatenates there (the trained decoder /
+      detection consume token grids); ``target`` upsamples every member to the mask
+      ``target_size`` first (the decoder-free per-pixel classifier). ``None`` (auto)
+      resolves by consumer: ``target`` when a ``pixel_classifier`` is set, else ``grid``.
+    - ``concat_grid_size``: the common ``(h, w)`` for ``grid`` mode. ``None`` defaults to
+      the largest member grid (finest available token resolution). Ignored in ``target``
+      mode.
+    """
+
+    encoders: list[EncoderMemberConfig]
+    concat_resolution: str | None = None
+    concat_grid_size: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.encoders:
+            raise ValueError("composite.encoders must list at least one member encoder.")
+        if self.concat_resolution not in {None, "grid", "target"}:
+            raise ValueError(
+                f"composite.concat_resolution must be 'grid', 'target', or None (auto), "
+                f"got {self.concat_resolution!r}."
+            )
+        if self.concat_grid_size is not None:
+            h, w = self.concat_grid_size
+            object.__setattr__(self, "concat_grid_size", (int(h), int(w)))
+            if int(h) <= 0 or int(w) <= 0:
+                raise ValueError(
+                    f"composite.concat_grid_size must be positive, got {self.concat_grid_size}."
+                )
 
 
 @dataclass(frozen=True)
@@ -614,7 +699,7 @@ class PipelineConfig:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     encoder: EncoderConfig | None = None
-    encoders: list[EncoderMemberConfig] | None = None
+    composite: CompositeConfig | None = None
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
     pixel_classifier: PixelClassifierConfig | None = None
@@ -827,18 +912,43 @@ class PipelineConfig:
         # Fail fast on unknown encoder / aggregator names — catching these at
         # config construction avoids burning hours of preprocessing before the
         # pipeline would otherwise crash at component-build time.
-        if self.encoder is not None and self.encoders is not None:
+        if self.encoder is not None and self.composite is not None:
             raise ValueError(
-                "Set 'encoder' (single) XOR 'encoders' (multi-encoder composite), not both."
+                "Set 'encoder' (single) XOR 'composite' (multi-encoder composite), not both."
             )
-        if self.encoders is not None:
-            if self.dataset_type != "segmentation":
+        if self.composite is not None:
+            if self.dataset_type not in {"segmentation", "detection"}:
                 raise ValueError(
-                    "Multi-encoder 'encoders:' (composite concat) is only supported for "
-                    f"dataset_type='segmentation', got {self.dataset_type!r}."
+                    "Multi-encoder 'composite:' (composite concat) is only supported for "
+                    f"dataset_type in {{'segmentation', 'detection'}}, got {self.dataset_type!r}."
                 )
-            if len(self.encoders) < 1:
-                raise ValueError("'encoders:' must list at least one member encoder.")
+            if self.feature_mode != "cached":
+                raise ValueError(
+                    "'composite:' is cached-only — live multi-encoder (N resident backbones, "
+                    "for live augmentation) is a deferred increment; set feature_mode='cached'."
+                )
+            # Cross-default each member's feature_kind + member_norm from the consumer, and
+            # the concat_resolution, mirroring the single-encoder preprocessing.feature_kind
+            # cross-default above. composite only reaches here for segmentation/detection,
+            # where the consumer signal is the presence of a pixel_classifier.
+            consumer_kind = "cls_attention" if self.pixel_classifier is not None else "patch_features"
+            resolved_members = []
+            for member in self.composite.encoders:
+                fk = member.feature_kind or consumer_kind
+                norm = member.member_norm or ("l2" if fk == "patch_features" else "none")
+                resolved_members.append(replace(member, feature_kind=fk, member_norm=norm))
+            concat_resolution = self.composite.concat_resolution or (
+                "target" if self.pixel_classifier is not None else "grid"
+            )
+            object.__setattr__(
+                self,
+                "composite",
+                replace(
+                    self.composite,
+                    encoders=resolved_members,
+                    concat_resolution=concat_resolution,
+                ),
+            )
         if self.encoder is not None:
             from slide2vec.encoders.registry import encoder_registry
 
@@ -850,16 +960,16 @@ class PipelineConfig:
                     f"Unknown encoder name '{self.encoder.name}'. "
                     f"Available encoders: {available}"
                 ) from exc
-        if self.encoders is not None:
+        if self.composite is not None:
             from slide2vec.encoders.registry import encoder_registry
 
-            for member in self.encoders:
+            for member in self.composite.encoders:
                 try:
                     encoder_registry.info(member.name)
                 except KeyError as exc:
                     available = ", ".join(sorted(encoder_registry.names())) or "(none)"
                     raise ValueError(
-                        f"Unknown encoder name '{member.name}' in 'encoders:'. "
+                        f"Unknown encoder name '{member.name}' in 'composite.encoders'. "
                         f"Available encoders: {available}"
                     ) from exc
         if self.aggregator is not None:
@@ -961,9 +1071,9 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
         if config.pixel_classifier is not None
         else None
     )
-    data["encoders"] = (
-        [_normalize_yaml_value(asdict(member)) for member in config.encoders]
-        if config.encoders is not None
+    data["composite"] = (
+        _normalize_yaml_value(asdict(config.composite))
+        if config.composite is not None
         else None
     )
     return data
