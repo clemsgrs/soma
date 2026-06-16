@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnuma1 \
     libspatialindex-dev \
     ca-certificates \
+    pandoc \
     curl \
     cmake \
     vim screen \

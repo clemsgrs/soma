@@ -37,7 +37,8 @@ from soma import Dataset, Splits
 dataset = Dataset("dataset.csv")
 splits = Splits("splits.csv", dataset)
 
-print(dataset.num_classes)
+print(len(dataset.sample_ids))
+print(sorted({s.label for s in dataset.samples.values()}))
 print(splits.num_folds)
 ```
 
