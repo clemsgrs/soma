@@ -9,6 +9,7 @@ from soma.tasks.classification import (
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
+from soma.tasks.detection import DetectionHead
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
 from soma.tasks.regression import RegressionHead
 from soma.tasks.segmentation import SegmentationHead, load_mask
@@ -32,5 +33,6 @@ __all__ = [
     "CoxSurvivalHead",
     "resolve_survival_head",
     "SegmentationHead",
+    "DetectionHead",
     "load_mask",
 ]

@@ -18,7 +18,14 @@ from soma.config import (
 )
 from soma.encoders import list_models
 from soma.aggregators import list_aggregators
-from soma.dataset import Dataset, FoldSplit, SampleRecord, SegmentationManifest, Splits
+from soma.dataset import (
+    Dataset,
+    DetectionManifest,
+    FoldSplit,
+    SampleRecord,
+    SegmentationManifest,
+    Splits,
+)
 from soma.decoders import list_decoders
 from soma.dense import DenseFeatureStore
 from soma.dense_extraction import DenseTileFeatureExtractor
@@ -73,6 +80,7 @@ __all__ = [
     "FoldSplit",
     "SampleRecord",
     "SegmentationManifest",
+    "DetectionManifest",
     "Splits",
     "FeatureExtractor",
     "FeatureStore",

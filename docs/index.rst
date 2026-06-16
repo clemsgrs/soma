@@ -70,6 +70,7 @@ for custom experiment orchestration.
    aggregators
    tasks
    attention-segmentation
+   detection
 
 .. toctree::
    :maxdepth: 1
