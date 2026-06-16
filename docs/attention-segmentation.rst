@@ -125,7 +125,7 @@ Two orthogonal axes under ``dataset_type: segmentation``:
      requested_tile_size_px: 512          # supervision (mask) size
      requested_spacing_um: 0.5            # read + native encoder spacing
      dense_window_size: null              # null=whole; =native input for native-window mode
-   encoder: { name: uni }                 # XOR `encoders:` (composite)
+   encoder: { name: uni }                 # XOR `composite:` (multi-encoder)
    pixel_classifier:                      # XOR `decoder:`
      name: xgboost                        # xgboost | random_forest | logistic | mlp
      params: { n_estimators: 100, tree_method: hist }
@@ -145,22 +145,28 @@ no ``.pt`` fold checkpoints on this path. Add
 Multi-encoder concatenation
 ---------------------------
 
-Per-pixel resolution makes concatenation **resolution-agnostic**: each member encoder
-upsamples its ``(K_i, grid_i)`` grid to the shared supervision target, then channels
-stack into ``(ΣK_i, H, W)``. Heterogeneous patch sizes / token grids simply land on the
-common target — no feature-space resampling.
+Members live under a ``composite:`` block (XOR the single ``encoder:``). For the
+pixel-classifier path, ``concat_resolution`` auto-resolves to ``target``: each member
+upsamples its ``(K_i, grid_i)`` grid to the shared supervision target via its own
+geometry, then channels stack into ``(ΣK_i, H, W)``. Per-pixel resolution makes this
+**resolution-agnostic** — heterogeneous patch sizes / token grids simply land on the
+common target, no feature-space resampling.
 
 .. code-block:: yaml
 
-   encoders:                               # XOR `encoder:`
-     - { name: uni,    feature_kind: cls_attention }
-     - { name: phikon, feature_kind: cls_attention }
-     - { name: cellvit, feature_kind: patch_features }   # embedding, not attention
+   composite:                               # XOR `encoder:`
+     # concat_resolution auto: `target` (pixel_classifier) | `grid` (decoder/detection)
+     encoders:
+       - { name: uni,    feature_kind: cls_attention }
+       - { name: phikon, feature_kind: cls_attention }
+       - { name: cellvit, feature_kind: patch_features, member_norm: l2 }  # embedding, not attention
 
 Each member carries its own extraction spec and is cached independently; the composite is
 a thin **load-time** concat view (:class:`soma.dense.composite.CompositeDenseFeatureStore`).
-v1 reads every member at the same spacing and supervision size; per-member native spacing
-is deferred.
+``member_norm`` (``{none, l2, layernorm}``) per-member normalizes before concat so a
+large-magnitude encoder cannot dominate; it auto-defaults to ``l2`` for ``patch_features``
+members and ``none`` for ``cls_attention``. v1 reads every member at the same spacing and
+supervision size; per-member native spacing is deferred.
 
 References
 ----------

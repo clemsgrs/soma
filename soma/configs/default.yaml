@@ -57,8 +57,8 @@ cache:
   validate_payloads: false
 
 # No default encoder — the framework stays neutral on model choice (you must set
-# `encoder:` for a single encoder, or `encoders:` for a multi-encoder composite).
-# A baked-in default here would also collide with `encoders:` via the encoder/encoders
+# `encoder:` for a single encoder, or `composite:` for a multi-encoder composite).
+# A baked-in default here would also collide with `composite:` via the encoder/composite
 # XOR check (the merged default encoder would make both present).
 encoder: null
 

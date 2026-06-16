@@ -56,6 +56,7 @@ def test_composite_concats_members_at_target_resolution(tmp_path: Path):
     assert geom.grid_shape == (TARGET, TARGET) and geom.patch_size == (1, 1)
     meta = comp.metadata("s0")
     assert meta["feature_kind"] == "composite" and meta["feature_dim"] == 8
+    assert meta["concat_resolution"] == "target"
     assert len(meta["members"]) == 2
 
 
@@ -76,6 +77,150 @@ def test_composite_rejects_target_size_mismatch(tmp_path: Path):
     comp = CompositeDenseFeatureStore([a, DenseFeatureStore(out)])
     with pytest.raises(ValueError, match="disagree on target_size"):
         comp.geometry("s0")
+
+
+def test_composite_grid_mode_concats_at_largest_member_grid(tmp_path: Path):
+    ids = ["s0", "s1"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)  # 2x2 grid
+    b = _write_member(tmp_path, "b", ids, patch=2, k=5)  # 4x4 grid (the largest)
+    comp = CompositeDenseFeatureStore([a, b], concat_resolution="grid")
+
+    grid = comp.load("s0")
+    assert grid.shape == (8, 4, 4)  # concat at the largest member token grid, not target
+    geom = comp.geometry("s0")
+    # grid_shape = the real (h, w) decoder input; encoded_size = target; crop = full frame.
+    assert geom.grid_shape == (4, 4)
+    assert geom.encoded_size == (TARGET, TARGET)
+    assert geom.crop_box == (0, 0, TARGET, TARGET)
+    # ratio target/grid = 8/4 = 2 → the decoder learns one 2x upsample (not a single jump).
+    assert geom.encoded_size[0] / geom.grid_shape[0] == 2.0
+    meta = comp.metadata("s0")
+    assert meta["concat_resolution"] == "grid" and meta["grid_shape"] == [4, 4]
+
+
+def test_composite_grid_mode_explicit_grid_size(tmp_path: Path):
+    ids = ["s0"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)
+    b = _write_member(tmp_path, "b", ids, patch=2, k=5)
+    comp = CompositeDenseFeatureStore([a, b], concat_resolution="grid", concat_grid_size=(3, 3))
+    assert comp.load("s0").shape == (8, 3, 3)
+    assert comp.geometry("s0").grid_shape == (3, 3)
+
+
+def test_composite_member_norm_l2_makes_per_member_slices_unit_norm(tmp_path: Path):
+    ids = ["s0"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)
+    b = _write_member(tmp_path, "b", ids, patch=2, k=5)
+    comp = CompositeDenseFeatureStore(
+        [a, b], concat_resolution="grid", member_norms=["l2", "l2"]
+    )
+    grid = comp.load("s0")  # (8, 4, 4)
+    # Each member's channel slice is independently unit-L2 per pixel.
+    assert torch.allclose(grid[:3].norm(dim=0), torch.ones(4, 4), atol=1e-5)
+    assert torch.allclose(grid[3:].norm(dim=0), torch.ones(4, 4), atol=1e-5)
+    meta = comp.metadata("s0")
+    assert [m["member_norm"] for m in meta["members"]] == ["l2", "l2"]
+
+
+def test_composite_target_mode_is_byte_identical_without_norm(tmp_path: Path):
+    # Default (no member_norm) target mode must reproduce a plain per-member resample+concat.
+    ids = ["s0"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)
+    b = _write_member(tmp_path, "b", ids, patch=2, k=5)
+    comp = CompositeDenseFeatureStore([a, b])  # defaults: target, no norm
+    expected = torch.cat(
+        [
+            resample_grid_to_target(a.load("s0"), a.geometry("s0")),
+            resample_grid_to_target(b.load("s0"), b.geometry("s0")),
+        ],
+        dim=0,
+    )
+    assert torch.allclose(comp.load("s0"), expected, atol=0.0)
+
+
+def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
+    from soma.config import DecoderConfig, EvalConfig, TaskConfig, TrainingConfig
+    from soma.dataset import SegmentationManifest, Splits
+    from soma.pipeline import train_one_segmentation_fold
+
+    ids = ["s0", "s1", "s2", "s3"]
+    a = _write_member(tmp_path, "a", ids, patch=4, k=3)  # 2x2 grid
+    b = _write_member(tmp_path, "b", ids, patch=2, k=4)  # 4x4 grid
+    comp = CompositeDenseFeatureStore([a, b], concat_resolution="grid", member_norms=["l2", "l2"])
+
+    masks_dir = tmp_path / "masks"
+    masks_dir.mkdir()
+    rng = np.random.default_rng(0)
+    rows = []
+    for sid in ids:
+        mask = rng.integers(0, 2, size=(TARGET, TARGET), dtype=np.uint8)
+        Image.fromarray(mask).save(masks_dir / f"{sid}.png")
+        rows.append((sid, f"{sid}.jpg", str(masks_dir / f"{sid}.png")))
+    manifest_csv = tmp_path / "manifest.csv"
+    manifest_csv.write_text(
+        "sample_id,image_path,mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
+    )
+    splits_csv = tmp_path / "splits.csv"
+    assign = {ids[0]: "train", ids[1]: "train", ids[2]: "tune", ids[3]: "test"}
+    splits_csv.write_text(
+        "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
+    )
+    manifest = SegmentationManifest(manifest_csv)
+    splits = Splits(splits_csv, manifest)
+
+    result = train_one_segmentation_fold(
+        feature_store=comp,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+    )
+    assert "test" in result.test_reports
+    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+
+
+def test_composite_spacing_auto_defaults_from_shared_member_spacing():
+    # conch + h0-mini both advertise 0.5 µm/px → auto-default resolves to 0.5 (no explicit
+    # preprocessing.requested_spacing_um needed). Mismatched/multi-spacing members must pin.
+    from soma.config import CompositeConfig, EncoderMemberConfig
+    from soma.pipeline import Pipeline
+
+    comp = CompositeConfig(
+        encoders=[EncoderMemberConfig(name="conch"), EncoderMemberConfig(name="h0-mini")]
+    )
+    assert Pipeline._resolve_composite_spacing(comp) == 0.5
+
+
+def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
+    from soma.config import (
+        CompositeConfig,
+        DecoderConfig,
+        EncoderMemberConfig,
+        PipelineConfig,
+        PreprocessingConfig,
+        TaskConfig,
+    )
+    from soma.pipeline import Pipeline
+
+    cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="segmentation",
+        preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        composite=CompositeConfig(
+            encoders=[EncoderMemberConfig(name="conch"), EncoderMemberConfig(name="h0-mini")]
+        ),
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    )
+    pipeline = object.__new__(Pipeline)
+    pipeline._config = cfg
+
+    assert pipeline._resolve_preprocessing().requested_spacing_um == 0.5
 
 
 def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
