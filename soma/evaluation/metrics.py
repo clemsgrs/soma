@@ -72,6 +72,13 @@ VALID_METRICS: dict[str, set[str]] = {
         "mean_iou",
         "dice_per_class",
     },
+    "detection": {
+        "mean_f1",
+        "f1_per_class",
+        "precision",
+        "recall",
+        "mean_f1_per_image",
+    },
 }
 
 DEFAULT_METRICS: dict[str, list[str]] = {
@@ -81,6 +88,7 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "regression": ["mae", "r2"],
     "survival": ["c_index"],
     "segmentation": ["mean_dice", "mean_iou"],
+    "detection": ["mean_f1"],
 }
 
 LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae"}

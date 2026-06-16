@@ -628,7 +628,7 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.task is None:
             raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
-        _valid_dataset_types = {"slide", "tile", "patient", "segmentation"}
+        _valid_dataset_types = {"slide", "tile", "patient", "segmentation", "detection"}
         if self.dataset_type not in _valid_dataset_types:
             raise ValueError(
                 f"Invalid dataset_type {self.dataset_type!r}. "
@@ -688,11 +688,46 @@ class PipelineConfig:
                     "path fits on cached dense grids (no live re-encode / augmentation; "
                     "those belong to the neural-decoder path)."
                 )
+        elif self.dataset_type == "detection":
+            # Detection-v1 reuses the segmentation dense front half: a decoder regresses a
+            # per-class peak heatmap that the DetectionHead turns into points (design §6).
+            if self.decoder is None:
+                raise ValueError(
+                    "dataset_type='detection' requires a decoder (the heatmap regressor; "
+                    "e.g. decoder: {name: lightweight_conv})."
+                )
+            if self.pixel_classifier is not None:
+                raise ValueError(
+                    "pixel_classifier must be None for dataset_type='detection' — detection "
+                    "uses a neural decoder + DetectionHead, not the decoder-free path."
+                )
+            if self.aggregator is not None:
+                raise ValueError(
+                    "aggregator must be None for dataset_type='detection' — detection is a "
+                    "dense per-pixel task, not MIL aggregation."
+                )
+            if self.task.name != "detection":
+                raise ValueError(
+                    "dataset_type='detection' requires task.name='detection', "
+                    f"got {self.task.name!r}."
+                )
+            # Detection consumes the ViT patch-token grid (same as the seg decoder path).
+            if self.preprocessing.feature_kind is None:
+                object.__setattr__(
+                    self,
+                    "preprocessing",
+                    replace(self.preprocessing, feature_kind="patch_features"),
+                )
+            if self.feature_mode != "cached":
+                raise ValueError(
+                    "dataset_type='detection' v1 is cached-only — live re-encode + "
+                    "geometric point-target augmentation is a deferred increment."
+                )
         else:
             if self.decoder is not None:
                 raise ValueError(
                     f"decoder must be None for dataset_type={self.dataset_type!r} — "
-                    "decoders are only used for dataset_type='segmentation'."
+                    "decoders are only used for dataset_type='segmentation' or 'detection'."
                 )
             if self.pixel_classifier is not None:
                 raise ValueError(

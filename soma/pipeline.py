@@ -45,7 +45,14 @@ from soma.config import (
     TrainingConfig,
     save_config,
 )
-from soma.dataset import Dataset, FoldSplit, SampleRecord, SegmentationManifest, Splits
+from soma.dataset import (
+    Dataset,
+    DetectionManifest,
+    FoldSplit,
+    SampleRecord,
+    SegmentationManifest,
+    Splits,
+)
 from soma.dense.live import LiveSegmentationSource
 from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
@@ -68,6 +75,7 @@ from soma.output_layout import (
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
+from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
@@ -79,6 +87,7 @@ from soma.training.model import (
 )
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
 from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
+from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
 from soma.training.segmentation_dataset import (
     LiveSegmentationDataset,
     SegmentationDataset,
@@ -1192,6 +1201,299 @@ def train_one_segmentation_fold(
     )
 
 
+def _resolve_detection_px(value_um: float, spacing_um: float | None, name: str) -> float:
+    """Resolve a detection distance (δ / σ / NMS), given in **µm**, to target-frame px.
+
+    Detection distances are always configured in µm — physically meaningful and
+    spacing-invariant (the same value means the same tolerance regardless of which
+    encoder / spacing the run uses, and there is no "px at which level?" ambiguity).
+    The grid's µm/px spacing converts them to the target frame the heatmap and matching
+    live in. Detection extraction always records a spacing, so this is always resolvable.
+    """
+    if spacing_um is None:
+        raise ValueError(
+            f"{name} is in µm but the dense grids carry no spacing; detection requires "
+            "preprocessing.requested_spacing_um (recorded in the grid sidecar)."
+        )
+    if float(value_um) <= 0.0:
+        raise ValueError(f"{name} must be > 0 µm, got {value_um}.")
+    return float(value_um) / float(spacing_um)
+
+
+def train_one_detection_fold(
+    feature_store: "DenseFeatureStore",
+    dataset: DetectionManifest,
+    fold_split: FoldSplit,
+    task: TaskConfig,
+    training: TrainingConfig,
+    fold_dir: str | Path,
+    *,
+    decoder: DecoderConfig | None,
+    evaluation: EvalConfig | None = None,
+    preprocessing: PreprocessingConfig | None = None,
+    fold: int = 0,
+    num_folds: int = 1,
+) -> FoldResult:
+    """Train and evaluate a single dense-detection fold (heatmap regression, design §6-§7).
+
+    The detection sibling of :func:`train_one_segmentation_fold`: the model is the same
+    ``decoder + head`` (here a :class:`DetectionHead` regressing a per-class peak
+    heatmap), built on cached dense grids. After training, the per-class score threshold
+    is swept on the **tune** split and frozen (design §7) before the tune/test splits are
+    scored with class-aware F1@δ. v1 is cached-only.
+    """
+    if decoder is None:
+        raise ValueError("dataset_type='detection' requires a decoder configuration")
+
+    evaluation = evaluation or EvalConfig()
+    fold_dir = Path(fold_dir)
+    fold_dir.mkdir(parents=True, exist_ok=True)
+    seed_everything(training.seed, fold=fold)
+    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+
+    train_records = [dataset.samples[sid] for sid in fold_split.train]
+    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+    test_records_by_split = {
+        split_name: [dataset.samples[sid] for sid in ids]
+        for split_name, ids in fold_split.tests.items()
+    }
+    if training.tune_is_test:
+        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
+        tune_records = list(test_records_by_split[tune_from_test_split_name])
+
+    if not train_records:
+        raise ValueError(f"{_fp} has no training samples")
+    if not tune_records:
+        if not training.allow_missing_tune:
+            raise ValueError(f"{_fp} has no tuning samples")
+        logger.warning("%s has no tune samples; using train as tune (allow_missing_tune)", _fp)
+        tune_records = list(train_records)
+    for split_name, records in test_records_by_split.items():
+        if not records:
+            raise ValueError(f"{_fp} has no samples in split '{split_name}'")
+
+    all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
+
+    # num_classes + detection knobs from task.params (no scalar-label auto-inject).
+    det_params = dict(task.params)
+    num_classes = det_params.pop("num_classes", None)
+    if num_classes is None:
+        raise ValueError(
+            "dataset_type='detection' requires task.params.num_classes (the number of "
+            "object classes)."
+        )
+    num_classes = int(num_classes)
+
+    feature_store.validate_coverage([r.sample_id for r in all_records])
+    ref_id = train_records[0].sample_id
+    geometry = feature_store.geometry(ref_id)
+    ref_feature_dim = feature_store.feature_dim
+    for record in all_records:
+        sid = record.sample_id
+        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+            raise ValueError(
+                f"dense grid '{sid}' has geometry/feature_dim differing from reference "
+                f"'{ref_id}'; dataset_type='detection' v1 requires a uniform tile/grid size."
+            )
+
+    # run_spacing = the spacing the grids were extracted at (sidecar), which the points
+    # transform maps level-0 into. Cross-check against the configured spacing (the
+    # detection analogue of the seg mask-spacing guard).
+    grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+    requested_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    if not _dense_spacings_match(grid_spacing_um, requested_spacing_um):
+        raise ValueError(
+            f"detection requested spacing ({requested_spacing_um} µm/px) does not match the "
+            f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px)."
+        )
+
+    # Matching distance / σ / NMS radius are configured in µm and resolved to
+    # target-frame pixels via the grid spacing (µm is spacing-invariant; px would
+    # silently change the physical tolerance across encoders / spacings). δ is
+    # required; σ defaults to δ/3 and NMS to δ.
+    match_distance_um = det_params.pop("match_distance", None)
+    if match_distance_um is None:
+        raise ValueError(
+            "dataset_type='detection' requires task.params.match_distance (the F1 "
+            "matching distance δ, in µm)."
+        )
+    delta_px = _resolve_detection_px(float(match_distance_um), grid_spacing_um, "match_distance")
+    sigma_um = det_params.pop("sigma", None)
+    sigma_px = (
+        _resolve_detection_px(float(sigma_um), grid_spacing_um, "sigma")
+        if sigma_um is not None
+        else delta_px / 3.0
+    )
+    nms_um = det_params.pop("nms_distance", None)
+    nms_px = (
+        _resolve_detection_px(float(nms_um), grid_spacing_um, "nms_distance")
+        if nms_um is not None
+        else delta_px
+    )
+
+    head = DetectionHead(
+        num_classes=num_classes,
+        geometry=geometry,
+        delta_px=delta_px,
+        sigma_px=sigma_px,
+        nms_distance_px=nms_px,
+        run_spacing=float(grid_spacing_um) if grid_spacing_um is not None else None,
+        metrics=evaluation.metrics,
+        **det_params,
+    )
+    target_fn = head.extract_targets
+
+    decoder_cls = decoder_registry.get(decoder.name)
+    decoder_params = dict(decoder.params)
+    ctor_params = inspect.signature(decoder_cls.__init__).parameters
+    if "num_upsample_blocks" in ctor_params and "num_upsample_blocks" not in decoder_params:
+        ratio_h = geometry.encoded_size[0] / geometry.grid_shape[0]
+        ratio_w = geometry.encoded_size[1] / geometry.grid_shape[1]
+        decoder_params["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(ratio_h, ratio_w))))
+    decoder_obj = decoder_cls(input_dim=ref_feature_dim, num_classes=num_classes, **decoder_params)
+    if decoder_obj.num_classes != head.num_classes:
+        raise ValueError(
+            f"decoder num_classes ({decoder_obj.num_classes}) != head num_classes "
+            f"({head.num_classes}) — a mismatch would misregister the heatmap channels."
+        )
+
+    det_collate = functools.partial(detection_collate_fn, target_dtypes=head.target_dtypes)
+    model = SegmentationModel(decoder=decoder_obj, task_head=head)
+    train_loader, tune_loader, test_loaders = _make_loaders(
+        DetectionDataset, det_collate,
+        train_records, tune_records, test_records_by_split,
+        training, feature_store, target_fn,
+    )
+
+    logger.info(
+        _format_fold_summary(
+            fold=fold,
+            train_count=len(train_records),
+            tune_count=len(tune_records),
+            tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
+            empty_sample_ids_by_split=None,
+        )
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    trainer = Trainer(
+        model=model, train_loader=train_loader, tune_loader=tune_loader,
+        config=training, fold_dir=fold_dir, device=device, fold=fold, num_folds=num_folds,
+    )
+    train_result = trainer.fit()
+
+    checkpoint = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+    model.eval()
+
+    # Freeze the per-class score threshold on the tune split (design §7), then score.
+    thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
+    head.score_threshold = thresholds
+    (fold_dir / "detection_thresholds.json").write_text(
+        json.dumps({"score_threshold_per_class": thresholds}, indent=2), encoding="utf-8"
+    )
+
+    tune_report = _evaluate_detection(
+        model, tune_loader, "tune", device, head=head, dataset=dataset, output_dir=fold_dir
+    )
+    test_reports = {
+        split_name: _evaluate_detection(
+            model, loader, split_name, device, head=head, dataset=dataset, output_dir=fold_dir
+        )
+        for split_name, loader in test_loaders.items()
+    }
+
+    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+    _save_training_history(train_result.history, fold_dir / "training_history.json")
+
+    return FoldResult(
+        fold=fold,
+        train_result=train_result,
+        tune_report=tune_report,
+        test_reports=test_reports,
+    )
+
+
+@torch.inference_mode()
+def _sweep_detection_thresholds(
+    model: torch.nn.Module,
+    tune_loader: DataLoader,
+    device: torch.device,
+    head: DetectionHead,
+) -> list[float]:
+    """Collect tune-split predictions (all candidate peaks) and sweep per-class thresholds."""
+    from soma.detection.matching import sweep_score_thresholds
+
+    model.eval()
+    saved = head.score_threshold
+    head.score_threshold = 0.0  # keep every local maximum so the sweep sees all candidates
+    pred_xy, pred_cls, pred_score, gt_xy, gt_cls = [], [], [], [], []
+    try:
+        for batch in tune_loader:
+            out = model(batch.features.to(device))
+            gt_points = batch.targets["gt_points"]
+            for b in range(out.logits.shape[0]):
+                xy, cls, score = head._predict_points(out.logits[b])
+                gxy, gcls = head._strip_padding(gt_points[b])
+                pred_xy.append(xy); pred_cls.append(cls); pred_score.append(score)
+                gt_xy.append(gxy); gt_cls.append(gcls)
+    finally:
+        head.score_threshold = saved
+    return sweep_score_thresholds(
+        pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
+        num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
+    )
+
+
+@torch.inference_mode()
+def _evaluate_detection(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    split_name: str,
+    device: torch.device,
+    *,
+    head: DetectionHead,
+    dataset: DetectionManifest,
+    output_dir: Path | None = None,
+) -> EvaluationReport:
+    """Streaming detection eval: per-image F1@δ counts + a level-0 predictions CSV.
+
+    Mirrors ``_evaluate_segmentation`` but accumulates per-image ``(C, 3)`` TP/FP/FN at
+    the frozen ``head.score_threshold`` instead of confusion counts, and writes the
+    predicted points back in the **level-0** frame (stitch-ready, design §4).
+    """
+    from soma.detection.encode import transform_points_to_level0
+
+    model.eval()
+    top, left, _, _ = head._crop_box
+    stat_rows: list[torch.Tensor] = []
+    pred_rows: list[str] = ["sample_id,x,y,class,score"]
+    for batch in loader:
+        out = model(batch.features.to(device))
+        targets = {k: v.to(device) for k, v in batch.targets.items()}
+        stat_rows.append(head.dense_stats(out.logits, targets).detach().cpu())
+        post = head.postprocess(out.logits)
+        for b, sid in enumerate(batch.sample_ids):
+            xy, cls, score = post["points_xy"][b], post["points_class"][b], post["points_score"][b]
+            if xy.shape[0] == 0:
+                continue
+            record = dataset.samples[sid]
+            l0, run = head.resolve_spacings(record)
+            xy_l0 = transform_points_to_level0(
+                xy, level0_spacing=l0, run_spacing=run, crop_top=top, crop_left=left
+            )
+            for (x, y), c, s in zip(xy_l0, cls, score):
+                pred_rows.append(f"{sid},{x:.3f},{y:.3f},{int(c)},{float(s):.4f}")
+
+    metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
+    if output_dir is not None:
+        (Path(output_dir) / f"predictions_{split_name}.csv").write_text(
+            "\n".join(pred_rows) + "\n", encoding="utf-8"
+        )
+    return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
+
+
 def train_one_pixel_classifier_fold(
     feature_store: "DenseFeatureStore",
     dataset: SegmentationManifest,
@@ -1436,6 +1738,20 @@ def train(
                 fold=fold_idx,
                 num_folds=splits.num_folds,
             )
+        elif dataset_type == "detection":
+            result = train_one_detection_fold(
+                feature_store=feature_store,
+                dataset=dataset,
+                fold_split=fold_split,
+                task=task,
+                decoder=decoder,
+                evaluation=evaluation,
+                training=training,
+                fold_dir=fold_dir,
+                preprocessing=preprocessing,
+                fold=fold_idx,
+                num_folds=splits.num_folds,
+            )
         else:
             result = train_one_fold(
                 feature_store=feature_store,
@@ -1503,6 +1819,8 @@ def _build_run_summary_panel(
             grid.add_row("feature_kind", str(preprocessing.feature_kind))
         else:
             grid.add_row("decoder", decoder.name if decoder is not None else "[dim]—[/dim]")
+    elif dataset_type == "detection":
+        grid.add_row("decoder", decoder.name if decoder is not None else "[dim]—[/dim]")
     elif aggregator is not None:
         grid.add_row("aggregator", aggregator.name)
     else:
@@ -1516,10 +1834,10 @@ def _build_run_summary_panel(
         level = "patient"
     elif dataset_type == "tile":
         level = "tile (encoded)"
-    elif dataset_type == "segmentation":
+    elif dataset_type in ("segmentation", "detection"):
         # DenseFeatureStore is not a FeatureStore (no is_slide_level/is_hierarchical);
         # branch before those attrs are touched.
-        level = "dense (segmentation)"
+        level = "dense (segmentation)" if dataset_type == "segmentation" else "dense (detection)"
     elif feature_store.is_slide_level:
         level = "slide"
     elif feature_store.is_hierarchical:
@@ -1730,6 +2048,10 @@ class Pipeline:
         # optional); it exposes the same samples/sample_ids surface Splits needs.
         if config.dataset_type == "segmentation":
             self._dataset = SegmentationManifest(config.dataset_csv)
+        elif config.dataset_type == "detection":
+            # Detection uses a point-annotation manifest (image_path/points_path, label
+            # optional); same samples/sample_ids surface Splits needs.
+            self._dataset = DetectionManifest(config.dataset_csv)
         else:
             self._dataset = Dataset(config.dataset_csv)
         self._splits = Splits(
@@ -1817,7 +2139,7 @@ class Pipeline:
         return result
 
     def _get_feature_store(self, *, run_dir: Path):
-        if self._config.dataset_type == "segmentation":
+        if self._config.dataset_type in ("segmentation", "detection"):
             return self._get_dense_feature_store(run_dir=run_dir)
         if self._feature_dir is not None:
             return FeatureStore(self._feature_dir)
@@ -1889,9 +2211,10 @@ class Pipeline:
         if self._config.encoders is not None:
             return self._build_composite_dense_store(run_dir=run_dir)
 
+        dtype = self._config.dataset_type
         if self._config.encoder is None:
             raise ValueError(
-                "PipelineConfig.encoder is required for dataset_type='segmentation' "
+                f"PipelineConfig.encoder is required for dataset_type={dtype!r} "
                 "when feature_dir is not provided."
             )
         # Resolve preprocessing so requested_spacing_um defaults to the encoder's
@@ -1904,13 +2227,13 @@ class Pipeline:
         target_size = preprocessing.requested_tile_size_px
         if target_size is None:
             raise ValueError(
-                "dataset_type='segmentation' extraction requires "
-                "preprocessing.requested_tile_size_px (the mask/tile supervision size) "
+                f"dataset_type={dtype!r} extraction requires "
+                "preprocessing.requested_tile_size_px (the supervision tile size) "
                 "when feature_dir is not provided."
             )
         if preprocessing.requested_spacing_um is None:
             raise ValueError(
-                "dataset_type='segmentation' extraction requires a spacing — set "
+                f"dataset_type={dtype!r} extraction requires a spacing — set "
                 "preprocessing.requested_spacing_um or use an encoder that advertises "
                 "a single supported_spacing_um."
             )

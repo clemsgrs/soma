@@ -40,6 +40,14 @@ Task Zoo
      - Discrete-time NLL
      - ``c_index``
      - Time-to-event with right censoring
+   * - ``segmentation``
+     - CE + soft-Dice
+     - ``mean_dice``, ``mean_iou``
+     - Dense per-pixel classification (``dataset_type: segmentation``)
+   * - ``detection``
+     - Foreground-weighted MSE
+     - ``mean_f1``
+     - Cell / nucleus point detection (``dataset_type: detection``); see :doc:`detection`
 
 Task details
 ------------
@@ -60,6 +68,12 @@ Task details
    :members:
 
 .. autoclass:: soma.tasks.survival.CoxSurvivalHead
+   :members:
+
+.. autoclass:: soma.tasks.segmentation.SegmentationHead
+   :members:
+
+.. autoclass:: soma.tasks.detection.DetectionHead
    :members:
 
 Survival
