@@ -9,7 +9,6 @@ the committed ``.ipynb`` directly); this builder only needs to run when the cell
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import nbformat

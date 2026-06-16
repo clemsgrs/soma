@@ -60,6 +60,7 @@ docs = [
     "sphinx-autodoc-typehints",
     "nbsphinx",
     "ipykernel",
+    "ipywidgets",
 ]
 
 [tool.hatch.build]
