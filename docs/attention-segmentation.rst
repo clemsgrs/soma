@@ -16,6 +16,12 @@ It sits alongside the neural-decoder segmentation path: both consume
 ``dataset_type="segmentation"`` (same manifest, splits, spacing-aware mask reader, dense
 metrics, and prediction artifacts) — only the trainable component differs.
 
+.. seealso::
+
+   The :doc:`dense-prediction walkthrough <tutorials/walkthrough-dense>` runs the
+   neural-decoder segmentation path end to end; this page is the decoder-free
+   alternative that swaps the trainable decoder for a per-pixel classifier.
+
 The method
 ----------
 

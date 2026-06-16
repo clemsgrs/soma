@@ -58,6 +58,8 @@ docs = [
     "furo",
     "sphinx-copybutton",
     "sphinx-autodoc-typehints",
+    "nbsphinx",
+    "ipykernel",
 ]
 
 [tool.hatch.build]

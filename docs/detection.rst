@@ -13,6 +13,12 @@ It sits alongside the segmentation paths: same manifest shape, splits, dense fea
 cache, decoder registry, and streaming evaluator — the head, target encoding, loss,
 postprocess, and metric are what differ.
 
+.. seealso::
+
+   The :doc:`dense-prediction walkthrough <tutorials/walkthrough-dense>` runs
+   detection end to end on a tiny synthetic dataset, right after segmentation, so
+   you can see exactly what changes between the two.
+
 The method
 ----------
 

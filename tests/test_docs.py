@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
+
+TUTORIALS = [
+    "walkthrough-slide-level.ipynb",
+    "walkthrough-dense.ipynb",
+]
 
 
 def _load_reference_generator():
@@ -42,3 +48,26 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
     assert "@pradyunsg" not in index_html
     assert (out_dir / "index.html").exists()
     assert (out_dir / "cli.html").exists()
+
+
+@pytest.mark.parametrize("name", TUTORIALS)
+def test_tutorial_notebook_is_executed(name: str) -> None:
+    """Tutorials ship with committed outputs (the docs build never executes them).
+
+    Guards against committing an empty / un-executed notebook: each must be valid
+    JSON, contain code cells, and every code cell must carry stored outputs with
+    no error output. Refresh via ``scripts/execute_tutorials.sh``.
+    """
+    path = Path(__file__).resolve().parents[1] / "docs" / "tutorials" / name
+    nb = json.loads(path.read_text(encoding="utf-8"))
+
+    code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
+    assert code_cells, f"{name} has no code cells"
+
+    for i, cell in enumerate(code_cells):
+        outputs = cell.get("outputs", [])
+        assert outputs, f"{name} code cell {i} has no stored outputs (re-execute it)"
+        for out in outputs:
+            assert out.get("output_type") != "error", (
+                f"{name} code cell {i} stored an error output: {out.get('ename')}"
+            )

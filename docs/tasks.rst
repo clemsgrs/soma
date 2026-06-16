@@ -4,6 +4,12 @@ Tasks
 Task heads map the aggregated representation to predictions and define the
 loss and metric contract.
 
+.. seealso::
+
+   The :doc:`slide-level walkthrough <tutorials/walkthrough-slide-level>` runs
+   classification, regression, and survival end to end on the **same** extracted
+   features — the clearest way to see how swapping a task head works in practice.
+
 The base abstraction is :class:`soma.tasks.base.TaskHead`.
 
 .. autoclass:: soma.tasks.base.TaskHead

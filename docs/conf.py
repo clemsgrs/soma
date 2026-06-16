@@ -54,10 +54,20 @@ extensions = [
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
-] + _optional_extension("sphinx_copybutton") + _optional_extension("sphinx_autodoc_typehints")
+] + _optional_extension("sphinx_copybutton") + _optional_extension(
+    "sphinx_autodoc_typehints"
+) + _optional_extension("nbsphinx")
+
+# Notebooks ship with their outputs already committed: never re-execute them at
+# build time (the docs build has no GPU, no gated HF token, and no slides). The
+# tutorials are refreshed out-of-band via scripts/execute_tutorials.sh.
+nbsphinx_execute = "never"
+# nbsphinx renders a "source" download link per notebook; keep it (handy for the
+# copy-and-run workflow the tutorials are built around).
+nbsphinx_allow_errors = False
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
 autosummary_generate = True
 autodoc_member_order = "bysource"
 autodoc_default_options = {

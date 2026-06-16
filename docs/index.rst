@@ -40,6 +40,10 @@ for custom experiment orchestration.
          <h3>CLI Guide</h3>
          <p>Run experiments from YAML configs and inspect registered presets.</p>
        </a>
+       <a class="soma-card" href="tutorials/walkthrough-slide-level.html">
+         <h3>Tutorials</h3>
+         <p>Runnable, end-to-end notebooks for slide-level and dense tasks.</p>
+       </a>
      </div>
    </section>
 
@@ -51,6 +55,14 @@ for custom experiment orchestration.
    pipeline
    api
    cli
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Tutorials
+
+   tutorials/walkthrough-slide-level
+   tutorials/walkthrough-dense
 
 .. toctree::
    :maxdepth: 1
