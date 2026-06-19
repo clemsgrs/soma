@@ -146,6 +146,51 @@ def test_load_slide_features(slide_feature_dir: Path):
     assert features.shape == (512,)
 
 
+def test_load_one_d_features_match_per_sample_files(slide_feature_dir: Path):
+    expected = {
+        sid: torch.load(slide_feature_dir / f"{sid}.pt", weights_only=True, map_location="cpu")
+        for sid in ("s1", "s2")
+    }
+    store = FeatureStore(slide_feature_dir)
+    for sid, vec in expected.items():
+        assert torch.equal(store.load(sid), vec.float())
+
+
+def test_one_d_features_write_packed_cache(slide_feature_dir: Path):
+    from soma.features import PACKED_FILENAME
+
+    store = FeatureStore(slide_feature_dir)
+    store.load("s1")  # triggers lazy pack build
+    packed = slide_feature_dir / PACKED_FILENAME
+    assert packed.is_file()
+    # the packed file must not be picked up as a sample
+    assert sorted(store.available_samples) == ["s1", "s2"]
+    assert len(store) == 2
+
+
+def test_packed_cache_is_reused_not_rebuilt_from_per_sample_files(slide_feature_dir: Path):
+    from soma.features import PACKED_FILENAME
+
+    # build + persist the pack, capturing the original value
+    FeatureStore(slide_feature_dir).load("s1")
+    original_s2 = torch.load(slide_feature_dir / "s2.pt", weights_only=True, map_location="cpu").float()
+    assert (slide_feature_dir / PACKED_FILENAME).is_file()
+
+    # corrupt the per-sample file: if a fresh store re-read it we'd see this value
+    torch.save(torch.zeros_like(original_s2), slide_feature_dir / "s2.pt")
+
+    store = FeatureStore(slide_feature_dir)
+    assert torch.equal(store.load("s2"), original_s2)  # served from the pack, not the file
+
+
+def test_bag_features_do_not_write_packed_cache(feature_dir: Path):
+    from soma.features import PACKED_FILENAME
+
+    store = FeatureStore(feature_dir)
+    store.load("s1")
+    assert not (feature_dir / PACKED_FILENAME).is_file()  # only 1-D features are packed
+
+
 def test_cache_directory_resolves_to_features_payload(tmp_path: Path):
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
     features_dir = cache_dir / "tile_embeddings"
