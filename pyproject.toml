@@ -70,7 +70,7 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["soma"]
-include = ["soma/configs/*.yaml"]
+include = ["soma/configs/*.yaml", "soma/benchmarks/reference/*.csv"]
 
 [tool.hatch.build.targets.sdist]
 only-include = [
