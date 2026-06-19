@@ -179,7 +179,11 @@ class FeatureStore:
         if self._packed_matrix is not None:
             row = self._packed_row.get(sample_id)
             if row is not None:
-                return self._packed_matrix[row]
+                # Clone so a caller can mutate the result in place (e.g. an
+                # augmentation/normalization transform) without corrupting the
+                # shared packed matrix; the per-file path also returns a fresh
+                # tensor per call. A single feature vector is cheap to copy.
+                return self._packed_matrix[row].clone()
         return self._read_file(self._index[sample_id])
 
     @staticmethod
