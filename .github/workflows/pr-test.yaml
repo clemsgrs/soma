@@ -12,6 +12,10 @@ jobs:
     permissions:
       contents: read
       actions: write
+
+    # skip the costly suite for release-* bump PRs (pyproject version-only change)
+    if: ${{ !startsWith(github.head_ref, 'release-') }}
+
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
