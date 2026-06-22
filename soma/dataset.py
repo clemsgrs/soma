@@ -24,6 +24,9 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "mask_path",
     "patient_id",
     "points_path",
+    # Slide-manifest segmentation ROI origin (level-0 px); typed onto SampleRecord.region.
+    "region_x",
+    "region_y",
 }
 REQUIRED_SPLITS_COLUMNS = {"sample_id", "split"}
 
@@ -71,6 +74,10 @@ class SampleRecord:
     mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
     patient_id: str | None = None
+    # Slide-manifest segmentation: an ROI's (x, y) top-left in level-0 pixel space.
+    # image_path/mask_path then point at the parent *slide* (+ annotation slide), and
+    # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
+    region: tuple[int, int] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -260,12 +267,16 @@ class SegmentationManifest:
                 else None
             )
             metadata = {c: row[c] for c in meta_columns}
+            region = None
+            if "region_x" in row.index and pd.notna(row.get("region_x")):
+                region = (int(row["region_x"]), int(row["region_y"]))
             samples[sid] = SampleRecord(
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
                 label=label,  # optional for segmentation; supervision is the mask
                 mask_path=Path(str(row["mask_path"])),
                 patient_id=patient_id,
+                region=region,
                 metadata=metadata,
             )
         return samples

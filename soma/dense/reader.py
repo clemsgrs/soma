@@ -114,3 +114,27 @@ def read_mask_at_spacing(
 
     wsi = WSI(Path(path), backend=backend)
     return read_label_at_spacing(wsi, float(spacing_um), tolerance=float(tolerance))
+
+
+def read_mask_region_at_spacing(
+    path: str | Path,
+    *,
+    location: tuple[int, int],
+    size: tuple[int, int],
+    spacing_um: float,
+    backend: str = "auto",
+    tolerance: float = 0.05,
+) -> np.ndarray:
+    """Read a ``size=(w, h)`` label-mask region at ``(x, y)`` (level-0) and ``spacing_um``.
+
+    The region counterpart of :func:`read_mask_at_spacing` for slide-manifest ROIs:
+    the mask is a whole-slide annotation raster, so each ROI reads its window at the
+    same spacing/size as its dense grid (so the supervision registers to the features).
+    """
+    from hs2p.wsi.masks import read_label_region_at_spacing
+    from hs2p.wsi.wsi import WSI
+
+    wsi = WSI(Path(path), backend=backend)
+    return read_label_region_at_spacing(
+        wsi, tuple(location), float(spacing_um), tuple(size), tolerance=float(tolerance)
+    )

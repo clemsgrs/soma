@@ -299,6 +299,7 @@ def build_dense_cache_key(
     feature_kind: str = "patch_features",
     attention_blocks: tuple[int, ...] | None = None,
     attention_include_registers: bool = False,
+    sampling_signature: dict[str, Any] | None = None,
 ) -> str:
     """Cache key for a dense ``(d, h, w)`` grid extraction.
 
@@ -349,6 +350,13 @@ def build_dense_cache_key(
         payload["attention_include_registers"] = bool(attention_include_registers)
     if preprocessing is not None:
         payload["preprocessing"] = preprocessing_signature(preprocessing)
+    if sampling_signature is not None:
+        # Slide-manifest segmentation: the ROIs (and thus the grids) are a function of the
+        # annotation-sampling spec — pixel mapping, per-class coverage, strategy, output
+        # mode, spacing/tile size. Folding it in means distinct sampling ⇒ distinct cache,
+        # even when two specs happen to yield colliding coordinates. Absent (None) for
+        # pre-cropped-tile inputs, which have no sampling step.
+        payload["sampling"] = sampling_signature
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 

@@ -17,7 +17,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from soma.dense.reader import load_mask, read_mask_at_spacing
+from soma.dense.reader import load_mask, read_mask_at_spacing, read_mask_region_at_spacing
 from soma.evaluation.metrics import resolve_metrics
 from soma.tasks.base import TaskHead
 from soma.tasks.dense_metrics import (
@@ -138,14 +138,32 @@ class SegmentationHead(TaskHead):
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
         if record.mask_path is None:
             raise ValueError(f"segmentation sample '{record.sample_id}' has no mask_path")
-        # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
-        # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
-        array = read_mask_at_spacing(
-            record.mask_path,
-            spacing_um=self._spacing_um,
-            backend=self._backend,
-            tolerance=self._tolerance,
-        )
+        if record.region is not None:
+            # Slide-manifest ROI: mask_path is the whole-slide annotation raster; read the
+            # ROI's window at the run's spacing/target_size so it registers to the grid.
+            if self._spacing_um is None:
+                raise ValueError(
+                    f"segmentation ROI '{record.sample_id}' has a region but no spacing; "
+                    "slide-manifest masks require preprocessing.requested_spacing_um."
+                )
+            _, _, target_h, target_w = self._crop_box
+            array = read_mask_region_at_spacing(
+                record.mask_path,
+                location=record.region,
+                size=(target_w, target_h),
+                spacing_um=self._spacing_um,
+                backend=self._backend,
+                tolerance=self._tolerance,
+            )
+        else:
+            # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
+            # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
+            array = read_mask_at_spacing(
+                record.mask_path,
+                spacing_um=self._spacing_um,
+                backend=self._backend,
+                tolerance=self._tolerance,
+            )
         mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy

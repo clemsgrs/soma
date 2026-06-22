@@ -72,6 +72,8 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "aggregation",
         "decoder",
         "pixel_classifier",
+        "masks",
+        "sampling",
         "task",
         "evaluation",
         "training",
@@ -104,6 +106,8 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "aggregation",
         "decoder",
         "pixel_classifier",
+        "masks",
+        "sampling",
         "task",
         "evaluation",
         "training",
@@ -113,7 +117,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if section in data:
             value = data[section]
-            if section in ("aggregation", "decoder", "pixel_classifier"):
+            if section in ("aggregation", "decoder", "pixel_classifier", "masks", "sampling"):
                 if value is not None and not isinstance(value, dict):
                     raise TypeError(f"Config section '{section}' must be a mapping or null")
             elif value is not None and not isinstance(value, dict):
@@ -161,6 +165,47 @@ def _composite_from_dict(data: dict[str, Any]) -> "CompositeConfig":
     )
 
 
+def _normalize_label_mapping(entries: Any, *, field_name: str) -> Any:
+    """Normalize a class→value mapping, tolerating hs2p's list-of-single-entry-mapping YAML
+    style (``[{background: 0}, {tumor: 1}]``) so an hs2p ``masks`` block pastes in unchanged."""
+    if entries is None or isinstance(entries, dict):
+        return entries
+    if isinstance(entries, (list, tuple)):
+        merged: dict[str, Any] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise TypeError(
+                    f"masks.{field_name} must be a mapping or a list of single-entry mappings"
+                )
+            merged.update(entry)
+        return merged
+    raise TypeError(f"masks.{field_name} must be a mapping or a list of single-entry mappings")
+
+
+def _masks_from_dict(data: dict[str, Any]) -> "MasksConfig":
+    data = dict(data)
+    pixel_mapping = _normalize_label_mapping(data.pop("pixel_mapping", None), field_name="pixel_mapping")
+    min_coverage = _normalize_label_mapping(data.pop("min_coverage", None), field_name="min_coverage")
+    colors = _normalize_label_mapping(data.pop("colors", None), field_name="colors")
+    if data:
+        raise ValueError(
+            "Config section 'masks' uses unsupported keys: "
+            + ", ".join(sorted(str(key) for key in data))
+            + ". Supported: pixel_mapping, min_coverage, colors."
+        )
+    if pixel_mapping is None:
+        raise ValueError("masks.pixel_mapping is required (class name → mask pixel value).")
+    return MasksConfig(
+        pixel_mapping={str(k): int(v) for k, v in pixel_mapping.items()},
+        min_coverage={str(k): float(v) for k, v in (min_coverage or {}).items()},
+        colors=(
+            {str(k): (list(v) if v is not None else None) for k, v in colors.items()}
+            if colors is not None
+            else None
+        ),
+    )
+
+
 def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
     run_data = data.get("run", {})
     data_data = data.get("data", {})
@@ -202,6 +247,8 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
             if data.get("pixel_classifier")
             else None
         ),
+        masks=_masks_from_dict(data["masks"]) if data.get("masks") else None,
+        sampling=SamplingConfig(**data["sampling"]) if data.get("sampling") else None,
         task=_load_task_config(data),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
@@ -502,6 +549,90 @@ class PixelClassifierConfig:
 
 
 @dataclass(frozen=True)
+class MasksConfig:
+    """Annotation-mask → class scheme for the segmentation slide-manifest input mode.
+
+    Mirrors hs2p's ``masks`` config 1:1 and is forwarded untouched into hs2p annotation
+    sampling (design — segmentation ingestion §5/§8). Its presence selects the slide-manifest
+    input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), mask_path (annotation
+    WSI))`` and soma samples ROIs from each slide, instead of the pre-cropped tile manifest.
+
+    * ``pixel_mapping`` — class name → mask pixel value; must include ``background``.
+    * ``min_coverage`` — per-class minimum tile coverage (in ``[0, 1]``) to sample a tile;
+      keys must be a subset of ``pixel_mapping``.
+    * ``colors`` — optional class → ``[r, g, b]`` (or ``None``) overlay color for mask previews;
+      keys must be a subset of ``pixel_mapping``.
+    """
+
+    pixel_mapping: dict[str, int]
+    min_coverage: dict[str, float] = field(default_factory=dict)
+    colors: dict[str, list[int] | None] | None = None
+
+    def __post_init__(self) -> None:
+        if not self.pixel_mapping:
+            raise ValueError("masks.pixel_mapping is required and must be non-empty.")
+        if "background" not in self.pixel_mapping:
+            raise ValueError("masks.pixel_mapping must include a 'background' label.")
+        unknown = sorted(set(self.min_coverage) - set(self.pixel_mapping))
+        if unknown:
+            raise ValueError(
+                "masks.min_coverage references labels absent from pixel_mapping: "
+                + ", ".join(unknown)
+            )
+        for label, frac in self.min_coverage.items():
+            if not 0.0 <= float(frac) <= 1.0:
+                raise ValueError(
+                    f"masks.min_coverage['{label}'] must be in [0, 1], got {frac!r}."
+                )
+        if self.colors is not None:
+            unexpected = sorted(set(self.colors) - set(self.pixel_mapping))
+            if unexpected:
+                raise ValueError(
+                    "masks.colors references labels absent from pixel_mapping: "
+                    + ", ".join(unexpected)
+                )
+            for label, color in self.colors.items():
+                if color is None:
+                    continue
+                if (
+                    not isinstance(color, (list, tuple))
+                    or len(color) != 3
+                    or any(not isinstance(c, int) or isinstance(c, bool) or c < 0 or c > 255 for c in color)
+                ):
+                    raise ValueError(
+                        f"masks.colors['{label}'] must be None or a length-3 RGB list of "
+                        f"ints in [0, 255], got {color!r}."
+                    )
+
+
+@dataclass(frozen=True)
+class SamplingConfig:
+    """ROI sampling strategy for the segmentation slide-manifest mode (sibling of ``masks``).
+
+    * ``strategy`` — ``joint`` (tile the union of all classes, then keep tiles passing any
+      class's ``min_coverage``) or ``independent`` (one sampling pass per class).
+    * ``output_mode`` — ``single`` (one merged coordinate set per slide; each tile encoded once
+      with its full multi-class mask attached downstream — the dense-segmentation contract) or
+      ``per_annotation`` (one set per ``(slide, class)``). Forwarded into hs2p sampling by the
+      segmentation pipeline. ``per_annotation`` feature extraction is deferred (soma issue #86).
+    """
+
+    strategy: str = "joint"
+    output_mode: str = "single"
+
+    def __post_init__(self) -> None:
+        if self.strategy not in {"joint", "independent"}:
+            raise ValueError(
+                f"sampling.strategy must be 'joint' or 'independent', got {self.strategy!r}."
+            )
+        if self.output_mode not in {"single", "per_annotation"}:
+            raise ValueError(
+                f"sampling.output_mode must be 'single' or 'per_annotation', got "
+                f"{self.output_mode!r}."
+            )
+
+
+@dataclass(frozen=True)
 class TaskConfig:
     """Task-head selection and constructor parameters.
 
@@ -703,6 +834,8 @@ class PipelineConfig:
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
     pixel_classifier: PixelClassifierConfig | None = None
+    masks: MasksConfig | None = None
+    sampling: SamplingConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -819,6 +952,29 @@ class PipelineConfig:
                     f"pixel_classifier must be None for dataset_type={self.dataset_type!r} — "
                     "pixel-classifiers are only used for dataset_type='segmentation'."
                 )
+        # masks:/sampling: are the segmentation slide-manifest ingestion mode (design —
+        # segmentation ingestion §5/§8). The presence of masks: selects slide-manifest input
+        # (slides + annotation masks → soma-sampled ROIs); both only apply to segmentation.
+        if self.masks is not None and self.dataset_type != "segmentation":
+            raise ValueError(
+                "masks: (the annotation slide-manifest input mode) is only valid for "
+                f"dataset_type='segmentation', got dataset_type={self.dataset_type!r}."
+            )
+        if self.sampling is not None and self.masks is None:
+            raise ValueError(
+                "sampling: requires a masks: block — it configures how ROIs are sampled from "
+                "the annotation masks. Add masks: or drop sampling:."
+            )
+        if (
+            self.masks is not None
+            and self.sampling is not None
+            and self.sampling.output_mode == "per_annotation"
+        ):
+            raise ValueError(
+                "sampling.output_mode='per_annotation' is not yet supported for feature "
+                "extraction (deferred — see soma issue #86). Use 'single' (one tile encoded "
+                "once with its full multi-class mask attached downstream)."
+            )
         # feature_mode / augmentation (the live re-encode segmentation path, §13.B).
         # `cached` reads pre-extracted dense grids; `live` re-encodes augmented tiles
         # through the frozen encoder every step. Fail loud rather than silently no-op.
@@ -1074,6 +1230,16 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     data["composite"] = (
         _normalize_yaml_value(asdict(config.composite))
         if config.composite is not None
+        else None
+    )
+    data["masks"] = (
+        _normalize_yaml_value(asdict(config.masks))
+        if config.masks is not None
+        else None
+    )
+    data["sampling"] = (
+        _normalize_yaml_value(asdict(config.sampling))
+        if config.sampling is not None
         else None
     )
     return data

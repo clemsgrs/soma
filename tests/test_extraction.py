@@ -852,6 +852,71 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
     assert loaded[0].backend == "openslide"
 
 
+def test_load_tilings_consumes_single_mode_sampling_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """S1: an hs2p annotation-sampling tiling dir produced with output_mode=SINGLE_OUTPUT has
+    exactly one row per slide (annotation None), so soma's per-slide extraction path consumes
+    it unchanged — one LoadedTiling per slide, no per-(slide, annotation) collapse."""
+    csv_path = tmp_path / "seg-dataset.csv"
+    pd.DataFrame(
+        [
+            {"sample_id": "s0", "image_path": str(tmp_path / "s0.svs"), "mask_path": str(tmp_path / "s0-mask.tif"), "label": "x"},
+            {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "mask_path": str(tmp_path / "s1-mask.tif"), "label": "x"},
+        ]
+    ).to_csv(csv_path, index=False)
+    dataset = Dataset(csv_path)
+
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    # SINGLE_OUTPUT sampling dir: one row per slide, with the annotation column present but
+    # empty (the merged per-slide result carries annotation=None).
+    process_df = pd.DataFrame(
+        [
+            {
+                "sample_id": sid,
+                "image_path": str(tmp_path / f"{sid}.svs"),
+                "mask_path": str(tmp_path / f"{sid}-mask.tif"),
+                "annotation": None,
+                "tiling_status": "success",
+                "num_tiles": 3,
+                "coordinates_npz_path": str(tmp_path / f"{sid}.npz"),
+                "coordinates_meta_path": str(tmp_path / f"{sid}.meta.json"),
+                "error": "",
+                "traceback": "",
+            }
+            for sid in ("s0", "s1")
+        ]
+    )
+    (tiling_dir / "process_list.csv").write_text(
+        "sample_id,annotation,tiling_status\ns0,,success\ns1,,success\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: process_df)
+    monkeypatch.setattr(
+        "soma.slide2vec_adapter.load_tiling_result_from_row",
+        lambda row: SimpleNamespace(
+            sample_id=str(row["sample_id"]),
+            requested_backend="auto",
+            backend="openslide",
+            requested_seg_downsample=64,
+            seg_downsample=64,
+            num_tiles=int(row["num_tiles"]),
+            annotation=None,
+        ),
+    )
+    monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *a, **k: None)
+
+    loaded = load_tilings(
+        dataset=dataset,
+        tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
+        tissue_mask_tissue_value=1,
+    )
+
+    # one tiling per slide (not per (slide, annotation)); the existing per-slide extraction
+    # path therefore yields one feature artifact per slide.
+    assert [lt.slide.sample_id for lt in loaded] == ["s0", "s1"]
+    assert all(lt.tiling_result.num_tiles == 3 for lt in loaded)
+
+
 def test_extract_tile_features_returns_store(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
