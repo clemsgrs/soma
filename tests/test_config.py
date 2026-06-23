@@ -13,8 +13,10 @@ from soma.config import (
     EncoderConfig,
     EvalConfig,
     ExecutionConfig,
+    MasksConfig,
     PipelineConfig,
     PreprocessingConfig,
+    SamplingConfig,
     SubgroupConfig,
     TaskConfig,
     TrainingConfig,
@@ -280,6 +282,116 @@ def test_decoder_config_round_trips_through_yaml(tmp_path: Path):
     assert loaded.dataset_type == "segmentation"
     assert loaded.decoder.name == "lightweight_conv"
     assert loaded.decoder.params == {"num_upsample_blocks": 2}
+
+
+# --- A2: segmentation slide-manifest ingestion (masks:/sampling:) ---
+
+_PIXEL_MAPPING = {"background": 0, "tumor": 1, "stroma": 2, "necrosis": 3}
+
+
+def test_masks_config_valid_defaults():
+    masks = MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1, "stroma": 0.5})
+    assert masks.colors is None
+    sampling = SamplingConfig()
+    assert (sampling.strategy, sampling.output_mode) == ("joint", "single")
+
+
+def test_masks_config_requires_background():
+    with pytest.raises(ValueError, match="must include a 'background' label"):
+        MasksConfig(pixel_mapping={"tumor": 1})
+
+
+def test_masks_config_min_coverage_must_be_subset():
+    with pytest.raises(ValueError, match="min_coverage references labels absent"):
+        MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"glands": 0.1})
+
+
+def test_masks_config_min_coverage_range():
+    with pytest.raises(ValueError, match=r"min_coverage\['tumor'\] must be in \[0, 1\]"):
+        MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 1.5})
+
+
+def test_masks_config_colors_must_be_subset_and_rgb():
+    with pytest.raises(ValueError, match="colors references labels absent"):
+        MasksConfig(pixel_mapping=_PIXEL_MAPPING, colors={"glands": [1, 2, 3]})
+    with pytest.raises(ValueError, match=r"colors\['tumor'\] must be None or a length-3 RGB"):
+        MasksConfig(pixel_mapping=_PIXEL_MAPPING, colors={"tumor": [1, 2]})
+
+
+def test_sampling_config_rejects_unknown_strategy_and_mode():
+    with pytest.raises(ValueError, match="sampling.strategy must be 'joint' or 'independent'"):
+        SamplingConfig(strategy="greedy")
+    with pytest.raises(ValueError, match="sampling.output_mode must be 'single' or 'per_annotation'"):
+        SamplingConfig(output_mode="merged")
+
+
+def test_segmentation_slide_manifest_config_valid():
+    cfg = _seg_config(
+        masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+        sampling=SamplingConfig(strategy="joint", output_mode="single"),
+    )
+    assert cfg.masks.pixel_mapping["necrosis"] == 3
+    assert cfg.sampling.output_mode == "single"
+
+
+def test_masks_rejected_for_non_segmentation():
+    with pytest.raises(ValueError, match="masks: .* only valid for dataset_type='segmentation'"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="slide",
+            task=TaskConfig(name="binary_classification"),
+            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING),
+        )
+
+
+def test_sampling_requires_masks():
+    with pytest.raises(ValueError, match="sampling: requires a masks: block"):
+        _seg_config(sampling=SamplingConfig())
+
+
+def test_per_annotation_output_mode_deferred():
+    with pytest.raises(ValueError, match="per_annotation.*deferred.*#86"):
+        _seg_config(
+            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING),
+            sampling=SamplingConfig(output_mode="per_annotation"),
+        )
+
+
+def test_masks_sampling_round_trip_through_yaml(tmp_path: Path):
+    cfg = _seg_config(
+        masks=MasksConfig(
+            pixel_mapping=_PIXEL_MAPPING,
+            min_coverage={"tumor": 0.1, "stroma": 0.5},
+            colors={"background": None, "tumor": [255, 0, 0], "stroma": [0, 255, 0], "necrosis": [0, 0, 255]},
+        ),
+        sampling=SamplingConfig(strategy="independent", output_mode="single"),
+    )
+    path = tmp_path / "seg-slide-manifest.yaml"
+    save_config(cfg, path)
+    loaded = load_config(path)
+    assert loaded.masks.pixel_mapping == _PIXEL_MAPPING
+    assert loaded.masks.min_coverage == {"tumor": 0.1, "stroma": 0.5}
+    assert loaded.masks.colors["tumor"] == [255, 0, 0]
+    assert loaded.masks.colors["background"] is None
+    assert (loaded.sampling.strategy, loaded.sampling.output_mode) == ("independent", "single")
+
+
+def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
+    """An hs2p-style masks block (list of single-entry mappings) pastes in unchanged."""
+    path = tmp_path / "cfg.yaml"
+    base = _seg_config()
+    save_config(base, path)
+    raw = yaml.safe_load(path.read_text())
+    raw["masks"] = {
+        "pixel_mapping": [{"background": 0}, {"tumor": 1}, {"stroma": 2}],
+        "min_coverage": [{"tumor": 0.1}],
+    }
+    path.write_text(yaml.safe_dump(raw))
+    loaded = load_config(path)
+    assert loaded.masks.pixel_mapping == {"background": 0, "tumor": 1, "stroma": 2}
+    assert loaded.masks.min_coverage == {"tumor": 0.1}
 
 
 def test_pixel_classifier_config_round_trips_through_yaml(tmp_path: Path):

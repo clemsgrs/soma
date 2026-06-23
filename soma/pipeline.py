@@ -41,6 +41,7 @@ from soma.config import (
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
+    SamplingConfig,
     TaskConfig,
     TrainingConfig,
     save_config,
@@ -2197,6 +2198,12 @@ class Pipeline:
     def _get_dense_feature_store(self, *, run_dir: Path):
         from soma.dense import DenseFeatureStore
 
+        # Slide-manifest mode: rows are whole slides + a masks:/sampling: config. soma
+        # samples ROIs (hs2p) and extracts dense grids over them (slide2vec), then runs the
+        # ordinary cached dense path on the derived ROI manifest. Orthogonal to feature_mode.
+        if self._config.masks is not None:
+            return self._build_slide_manifest_dense_store(run_dir=run_dir)
+
         # Live re-encode path: no cached grids — hold the frozen encoder + geometry and
         # re-encode (augmented) tiles each step. Built before the fold loop so the
         # backbone loads once and is shared across folds.
@@ -2257,6 +2264,83 @@ class Pipeline:
             execution=self._config.execution,
             cache=cache_config,
             preprocessing=preprocessing,
+        )
+        try:
+            return extractor.run(feature_dir=run_dir / "features")
+        finally:
+            _release_parent_cuda_state()
+
+    def _build_slide_manifest_dense_store(self, *, run_dir: Path):
+        """Sample ROIs from slides+masks, extract dense grids over them, return the store.
+
+        Mutates ``self._dataset``/``self._splits`` to the derived ROI manifest + ROI splits
+        (each ROI inherits its parent slide's split), so the fold loop trains on the sampled
+        tiles. The grids are extracted via slide2vec + cached by soma; the sampling spec is
+        folded into the dense cache key (distinct ``min_coverage``/spacing/strategy ⇒ distinct
+        cache). Cached path only — the live/augmentation path over the same ROIs is A4.
+        """
+        from soma.dataset import SegmentationManifest, Splits
+        from soma.dense_slide_extraction import (
+            SlideManifestDenseExtractor,
+            build_roi_manifest,
+            sample_slide_rois,
+        )
+
+        dtype = self._config.dataset_type
+        if dtype != "segmentation":
+            raise ValueError(f"slide-manifest masks: config requires dataset_type='segmentation', got {dtype!r}.")
+        if self._config.feature_mode == "live":
+            raise NotImplementedError(
+                "Live (augmentation) extraction over slide-manifest ROIs is not implemented "
+                "yet (A4). Use the default cached feature_mode for slide-manifest segmentation."
+            )
+        if self._config.composite is not None:
+            raise NotImplementedError(
+                "Multi-encoder composite extraction over slide-manifest ROIs is not implemented "
+                "yet. Use a single encoder for slide-manifest segmentation."
+            )
+        if self._feature_dir is not None:
+            raise ValueError(
+                "feature_dir is not supported with a slide-manifest masks: config — the ROIs "
+                "are sampled and extracted from the slides, not read from pre-extracted grids."
+            )
+        if self._config.preprocessing.dense_window_size is not None:
+            raise NotImplementedError(
+                "Sliding-window dense extraction (dense_window_size) over slide-manifest ROIs "
+                "is not implemented yet; each ROI is encoded whole. Unset dense_window_size."
+            )
+        if self._config.encoder is None:
+            raise ValueError(
+                "PipelineConfig.encoder is required for slide-manifest segmentation "
+                "(feature_dir is not supported here)."
+            )
+
+        preprocessing = self._resolve_preprocessing()
+        sampling = self._config.sampling or SamplingConfig()
+
+        logger.info("Sampling segmentation ROIs from %d slides...", len(self._dataset.sample_ids))
+        coords_by_slide = sample_slide_rois(
+            self._dataset, masks=self._config.masks, sampling=sampling, preprocessing=preprocessing
+        )
+        roi_dir = run_dir / "segmentation_rois"
+        roi_manifest_csv, roi_splits_csv = build_roi_manifest(
+            self._dataset, self._config.splits_csv, coords_by_slide, out_dir=roi_dir
+        )
+        # Swap the slide-level dataset/splits for the derived ROI ones (tiles inherit splits).
+        self._dataset = SegmentationManifest(roi_manifest_csv)
+        self._splits = Splits(roi_splits_csv, self._dataset, tune_is_test=self._config.training.tune_is_test)
+
+        cache_config = self._config.cache
+        if cache_config.root_dir is None:
+            cache_config = replace(cache_config, root_dir=Path(self._config.output_root) / "feature_cache")
+        extractor = SlideManifestDenseExtractor(
+            self._dataset,
+            self._config.encoder,
+            masks=self._config.masks,
+            sampling=sampling,
+            preprocessing=preprocessing,
+            execution=self._config.execution,
+            cache=cache_config,
         )
         try:
             return extractor.run(feature_dir=run_dir / "features")

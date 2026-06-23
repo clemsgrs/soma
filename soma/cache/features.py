@@ -220,6 +220,7 @@ def _build_dense_cache_metadata(
     attention_include_registers: bool = False,
     channel_dim: int = 0,
     backend_provenance: dict[str, Any] | None = None,
+    sampling_signature: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Imported lazily so the cache layer has no load-time dependency on soma.dense
     # (soma.dense.store imports soma.cache; a top-level import here would cycle).
@@ -238,6 +239,7 @@ def _build_dense_cache_metadata(
         feature_kind=feature_kind,
         attention_blocks=attention_blocks,
         attention_include_registers=attention_include_registers,
+        sampling_signature=sampling_signature,
     )
     geometry = compute_dense_geometry(target_size=target_size, patch_size=patch_size)
     metadata = {
@@ -273,6 +275,8 @@ def _build_dense_cache_metadata(
     metadata["execution"].pop("output_variant", None)
     if preprocessing is not None:
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
+    if sampling_signature is not None:
+        metadata["sampling"] = sampling_signature
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -799,6 +803,7 @@ def resolve_dense_cache(
     attention_include_registers: bool = False,
     channel_dim: int = 0,
     backend_provenance: dict[str, Any] | None = None,
+    sampling_signature: dict[str, Any] | None = None,
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
@@ -819,6 +824,7 @@ def resolve_dense_cache(
         attention_include_registers=attention_include_registers,
         channel_dim=channel_dim,
         backend_provenance=backend_provenance,
+        sampling_signature=sampling_signature,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
