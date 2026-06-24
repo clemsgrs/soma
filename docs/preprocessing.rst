@@ -40,8 +40,8 @@ Key knobs
    * - ``sam2_num_workers``
      - Cap on concurrent SAM2 tissue-segmentation workers
      - Reduce GPU memory pressure on smaller cards
-   * - ``tissue_threshold``
-     - Segmentation threshold
+   * - ``min_coverage.tissue``
+     - Minimum tissue fraction to keep a tile (masks-shaped map; ``min_coverage.tissue``)
      - Adjust only if tissue masks are too loose or too strict
 
 Guidance

@@ -305,7 +305,12 @@ class PreprocessingConfig:
     read_tile_size_px: int | None = None
     read_region_size_px: int | None = None
     tissue_method: str | None = None
-    tissue_threshold: float = 0.1
+    # Tissue coverage threshold expressed as a masks-shaped map (mirrors hs2p's
+    # ``TilingConfig.min_coverage``); ``min_coverage["tissue"]`` is the minimum tissue
+    # fraction to keep a tile. The single source of truth for the threshold across both the
+    # pooled and dense seams — there is no separate scalar. (The per-class segmentation
+    # coverage map lives on the top-level ``MasksConfig.min_coverage``, a distinct block.)
+    min_coverage: dict[str, float] = field(default_factory=lambda: {"tissue": 0.1})
     overlap: float = 0.0
     seg_downsample: int = 64
     sam2_device: str = "cpu"
@@ -353,6 +358,13 @@ class PreprocessingConfig:
                 "dense_window_overlap requires dense_window_size — overlap is meaningless "
                 "for the 'whole' path (no windows). Set dense_window_size or clear the overlap."
             )
+        coverage = {str(k): float(v) for k, v in self.min_coverage.items()}
+        for label, frac in coverage.items():
+            if not 0.0 <= frac <= 1.0:
+                raise ValueError(
+                    f"preprocessing.min_coverage['{label}'] must be in [0, 1], got {frac!r}."
+                )
+        object.__setattr__(self, "min_coverage", coverage)
 
     @property
     def requested_backend(self) -> str:

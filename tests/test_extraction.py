@@ -769,9 +769,10 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
         "region_tile_multiple",
         "tolerance",
         "overlap",
-        # slide2vec 4.8.0 dropped the top-level tissue_threshold field; soma now routes
-        # the tissue coverage threshold into masks.min_coverage.tissue, so ``masks`` is a
-        # translated field on the pooled adapter (asserted behaviourally below).
+        # soma expresses the tissue coverage threshold as preprocessing.min_coverage.tissue
+        # and routes it into slide2vec's masks.min_coverage.tissue (slide2vec has no top-level
+        # tissue_threshold field), so ``masks`` is a translated field on the pooled adapter
+        # (asserted behaviourally below).
         "masks",
         "on_the_fly",
         "adaptive_batching",
@@ -802,7 +803,7 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
             requested_region_size_px=1344,
             region_tile_multiple=6,
             tissue_method="hsv",
-            tissue_threshold=0.25,
+            min_coverage={"tissue": 0.25},
         )
     )
 
@@ -814,8 +815,8 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
     assert config.gpu_decode is False
     assert config.read_coordinates_from is None
     assert config.read_tiles_from is None
-    # tissue_threshold is routed into the masks block (slide2vec 4.8.0 single source of
-    # truth), not silently dropped by the __dataclass_fields__ filter.
+    # preprocessing.min_coverage.tissue is routed into the masks block (slide2vec's single
+    # source of truth), not silently dropped by the __dataclass_fields__ filter.
     assert config.masks["min_coverage"]["tissue"] == pytest.approx(0.25)
 
 

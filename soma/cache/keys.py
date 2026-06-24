@@ -102,7 +102,7 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "read_region_size_px": config.read_region_size_px,
         "tissue_method": config.tissue_method,
         "tissue_mask_tissue_value": config.tissue_mask_tissue_value,
-        "tissue_threshold": config.tissue_threshold,
+        "min_coverage": {k: config.min_coverage[k] for k in sorted(config.min_coverage)},
         "overlap": config.overlap,
         "seg_downsample": config.seg_downsample,
         "tolerance": config.tolerance,

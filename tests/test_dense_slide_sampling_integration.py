@@ -84,7 +84,7 @@ def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
         requested_tile_size_px=TARGET,
         requested_spacing_um=SPACING_UM,
         tolerance=0.07,
-        tissue_threshold=0.0,
+        min_coverage={"tissue": 0.0},
         overlap=0.0,
     )
 
@@ -114,7 +114,7 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
         requested_tile_size_px=TARGET,
         requested_spacing_um=SPACING_UM,
         tolerance=0.07,
-        tissue_threshold=0.0,
+        min_coverage={"tissue": 0.0},
         overlap=0.0,
     )
 
