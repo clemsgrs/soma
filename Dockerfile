@@ -170,9 +170,17 @@ COPY --from=build /usr/local/lib/libturbojpeg* /usr/local/lib/
 RUN ldconfig
 
 # install ASAP
+#
+# the ASAP .deb pulls in the distro python3.10; we purge it (and libpython3.10*)
+# so /usr/bin/python3 stays on the deadsnakes ${PYTHON_VERSION} we standardize on.
+# that purge cascade-removes the `vim` package (it hard-depends on libpython3.10),
+# so reinstall vim right after the purge: it pulls libpython3.10 back as a shared
+# library only -- not the 3.10 interpreter -- leaving the python3 -> ${PYTHON_VERSION}
+# symlink (set just below) intact.
 ARG ASAP_URL=https://github.com/computationalpathologygroup/ASAP/releases/download/ASAP-2.2-(Nightly)/ASAP-2.2-Ubuntu2204.deb
 RUN apt-get update && curl -L ${ASAP_URL} -o /tmp/ASAP.deb && apt-get install --assume-yes /tmp/ASAP.deb && \
     (apt-get purge -y 'python3.10*' 'libpython3.10*' || true) && \
+    apt-get install -y --no-install-recommends vim && \
     ln -sf /usr/bin/python${PYTHON_VERSION} /usr/bin/python3 && \
     SITE_PACKAGES=`python${PYTHON_VERSION} -c "import sysconfig; print(sysconfig.get_paths()['purelib'])"` && \
     printf "/opt/ASAP/bin/\n" > "${SITE_PACKAGES}/asap.pth" && \
