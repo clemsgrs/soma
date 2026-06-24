@@ -63,12 +63,16 @@ def _build_tiling_config(preprocessing: PreprocessingConfig, sampling: SamplingC
             "slide-manifest segmentation requires preprocessing.requested_spacing_um — set it "
             "or use an encoder advertising a single supported spacing."
         )
+    # hs2p 4.2.0 collapsed the scalar ``tissue_threshold`` into the resolved ``min_coverage``
+    # map (``min_coverage["tissue"]`` is the tissue threshold). The per-class sampling map
+    # still flows separately through ``_resolve_sampling_spec_from_masks(masks, …)``; this
+    # tiling-level entry only feeds the result's binary ``min_tissue_fraction`` provenance.
     return TilingConfig(
         requested_spacing_um=float(preprocessing.requested_spacing_um),
         requested_tile_size_px=int(preprocessing.requested_tile_size_px),
         tolerance=float(preprocessing.tolerance),
         overlap=float(preprocessing.overlap),
-        tissue_threshold=float(preprocessing.tissue_threshold),
+        min_coverage={"tissue": float(preprocessing.tissue_threshold)},
         backend=preprocessing.backend,
         independent_sampling=(sampling.strategy == "independent"),
     )
