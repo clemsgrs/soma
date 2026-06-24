@@ -41,7 +41,7 @@ preprocessing:
 # Annotation-mask -> class scheme (mirrors hs2p's masks config 1:1). pixel_mapping is the
 # class name -> RAW BEETLE pixel value; "background" (unannotated, value 0) is the ignore
 # label. soma derives the raw-pixel -> class-index remap (other->0, non_invasive->1,
-# invasive->2, necrosis->3; unannotated -> ignore_index 255), reproducing curate_beetle.py.
+# invasive->2, necrosis->3; unannotated -> ignore_index 255).
 masks:
   pixel_mapping:
     background: 0                  # unannotated -> ignore_index (255), excluded from loss/metrics

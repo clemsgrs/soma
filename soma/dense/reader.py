@@ -48,7 +48,7 @@ def build_label_remap(
     * ``num_classes is None`` or ``== len(pixel_mapping) - 1`` — ``background`` is the
       **unannotated/ignore** label: it maps to ``ignore_index`` and the non-background
       classes take class index = their order in ``pixel_mapping`` (``other`` → 0,
-      ``non_invasive`` → 1, … — matching curate_beetle.py's REMAP). This is the default.
+      ``non_invasive`` → 1, …). This is the default.
     * ``num_classes == len(pixel_mapping)`` — **every** label (including ``background``) is
       a real class, taking class index = its order in ``pixel_mapping`` (``background`` → 0).
 

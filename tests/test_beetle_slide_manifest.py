@@ -2,10 +2,10 @@
 
 These are config-only (no slide/mask I/O): they assert the tracked example config
 ``examples/segmentation_beetle.yaml`` loads through soma's loader and encodes the
-standalone baseline's recipe — the masks ``pixel_mapping`` (BEETLE's raw vocabulary),
+BEETLE recipe — the masks ``pixel_mapping`` (BEETLE's raw vocabulary),
 the 5%% min-coverage rule, 512 px @ 0.5 µm/px spacing-aware, phikon sliding-224 dense
 window, lightweight_conv decoder, num_classes=4, and the three metrics — and that the
-derived raw-pixel → class-index remap matches the curate_beetle.py REMAP exactly.
+derived raw-pixel → class-index remap matches BEETLE's pixel→class contract exactly.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from soma.dense.reader import build_label_remap
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BEETLE_CONFIG = REPO_ROOT / "examples" / "segmentation_beetle.yaml"
 
-# The contract from curate_beetle.py: BEETLE pixel -> soma class (255 = ignore).
+# BEETLE's pixel -> soma class contract (255 = ignore).
 EXPECTED_REMAP = {1: 0, 2: 1, 3: 2, 4: 3, 0: 255}
 
 
@@ -60,7 +60,7 @@ def test_beetle_config_encodes_recipe():
     assert cfg.sampling.output_mode == "merged"
 
 
-def test_beetle_remap_matches_curate_baseline():
+def test_beetle_remap_matches_curation_contract():
     cfg = load_config(BEETLE_CONFIG)
     lut, num_classes = build_label_remap(cfg.masks.pixel_mapping, ignore_index=255)
     assert num_classes == 4
