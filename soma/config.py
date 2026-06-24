@@ -611,23 +611,25 @@ class SamplingConfig:
 
     * ``strategy`` — ``joint`` (tile the union of all classes, then keep tiles passing any
       class's ``min_coverage``) or ``independent`` (one sampling pass per class).
-    * ``output_mode`` — ``single`` (one merged coordinate set per slide; each tile encoded once
-      with its full multi-class mask attached downstream — the dense-segmentation contract) or
-      ``per_annotation`` (one set per ``(slide, class)``). Forwarded into hs2p sampling by the
-      segmentation pipeline. ``per_annotation`` feature extraction is deferred (soma issue #86).
+    * ``output_mode`` — ``merged`` (one merged coordinate set per slide: the union of tiles
+      passing any active class threshold, collapsed to a single per-slide result; each tile is
+      encoded once with its full multi-class mask attached downstream — the dense-segmentation
+      contract) or ``per_annotation`` (one set per ``(slide, class)``). Forwarded into hs2p
+      ``CoordinateOutputMode`` by the segmentation pipeline. ``per_annotation`` feature
+      extraction is deferred (soma issue #86).
     """
 
     strategy: str = "joint"
-    output_mode: str = "single"
+    output_mode: str = "merged"
 
     def __post_init__(self) -> None:
         if self.strategy not in {"joint", "independent"}:
             raise ValueError(
                 f"sampling.strategy must be 'joint' or 'independent', got {self.strategy!r}."
             )
-        if self.output_mode not in {"single", "per_annotation"}:
+        if self.output_mode not in {"merged", "per_annotation"}:
             raise ValueError(
-                f"sampling.output_mode must be 'single' or 'per_annotation', got "
+                f"sampling.output_mode must be 'merged' or 'per_annotation', got "
                 f"{self.output_mode!r}."
             )
 
@@ -972,7 +974,7 @@ class PipelineConfig:
         ):
             raise ValueError(
                 "sampling.output_mode='per_annotation' is not yet supported for feature "
-                "extraction (deferred — see soma issue #86). Use 'single' (one tile encoded "
+                "extraction (deferred — see soma issue #86). Use 'merged' (one tile encoded "
                 "once with its full multi-class mask attached downstream)."
             )
         # feature_mode / augmentation (the live re-encode segmentation path, §13.B).

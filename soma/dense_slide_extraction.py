@@ -4,7 +4,7 @@ The slide-manifest counterpart of :class:`soma.dense_extraction.DenseTileFeature
 (which reads *pre-cropped* tile images). Here the dataset rows are **whole slides** plus a
 ``masks:``/``sampling:`` config; soma:
 
-1. runs **hs2p annotation sampling** (``tile_slide(sampling=…)``, single output mode) per
+1. runs **hs2p annotation sampling** (``tile_slide(sampling=…)``, ``merged`` output mode) per
    slide to get ROI coordinates (the union of tiles passing any class threshold);
 2. asks **slide2vec** to encode each ROI region into a dense ``(d, gh, gw)`` grid
    (:func:`slide2vec.runtime.dense_regions.encode_regions_dense` — region reads + the
@@ -106,9 +106,9 @@ def sample_slide_rois(
     from hs2p.configs.resolvers import _resolve_sampling_spec_from_masks
     from hs2p.wsi.types import CoordinateOutputMode
 
-    if sampling.output_mode != "single":
+    if sampling.output_mode != "merged":
         raise ValueError(
-            f"slide-manifest dense extraction supports output_mode='single' only, got "
+            f"slide-manifest dense extraction supports output_mode='merged' only, got "
             f"{sampling.output_mode!r} (per_annotation extraction is deferred — soma #86)."
         )
     tiling = _build_tiling_config(preprocessing, sampling)
@@ -124,9 +124,9 @@ def sample_slide_rois(
             tiling=tiling,
             sampling=spec,
             selection_strategy=strategy,
-            output_mode=CoordinateOutputMode.SINGLE_OUTPUT,
+            output_mode=CoordinateOutputMode.MERGED,
         )
-        # SINGLE_OUTPUT collapses to a {None: merged} dict (one result per slide).
+        # MERGED collapses to a {None: merged} dict (one result per slide).
         merged = result[None] if isinstance(result, dict) else result
         coords_by_slide[sid] = [
             (int(x), int(y)) for x, y in zip(merged.tiles.x.tolist(), merged.tiles.y.tolist())

@@ -102,7 +102,7 @@ def _config(root: Path, manifest: Path, splits: Path, *, masks: MasksConfig | No
         encoder=__import__("soma.config", fromlist=["EncoderConfig"]).EncoderConfig(name="phikon"),
         preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
         masks=masks or MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": min_cov}),
-        sampling=SamplingConfig(strategy="joint", output_mode="single"),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
         training=TrainingConfig(epochs=1, batch_size=2),
@@ -173,7 +173,7 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
     pre = PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5)
     masks_a = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.1})
     masks_b = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.5})
-    sampling = SamplingConfig(strategy="joint", output_mode="single")
+    sampling = SamplingConfig(strategy="joint", output_mode="merged")
 
     def _key(sig):
         return build_dense_cache_key(

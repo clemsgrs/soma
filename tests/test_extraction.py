@@ -852,8 +852,8 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
     assert loaded[0].backend == "openslide"
 
 
-def test_load_tilings_consumes_single_mode_sampling_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """S1: an hs2p annotation-sampling tiling dir produced with output_mode=SINGLE_OUTPUT has
+def test_load_tilings_consumes_merged_mode_sampling_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """S1: an hs2p annotation-sampling tiling dir produced with output_mode=MERGED has
     exactly one row per slide (annotation None), so soma's per-slide extraction path consumes
     it unchanged — one LoadedTiling per slide, no per-(slide, annotation) collapse."""
     csv_path = tmp_path / "seg-dataset.csv"
@@ -867,7 +867,7 @@ def test_load_tilings_consumes_single_mode_sampling_dir(tmp_path: Path, monkeypa
 
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
-    # SINGLE_OUTPUT sampling dir: one row per slide, with the annotation column present but
+    # MERGED sampling dir: one row per slide, with the annotation column present but
     # empty (the merged per-slide result carries annotation=None).
     process_df = pd.DataFrame(
         [
