@@ -293,7 +293,7 @@ def test_masks_config_valid_defaults():
     masks = MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1, "stroma": 0.5})
     assert masks.colors is None
     sampling = SamplingConfig()
-    assert (sampling.strategy, sampling.output_mode) == ("joint", "single")
+    assert (sampling.strategy, sampling.output_mode) == ("joint", "merged")
 
 
 def test_masks_config_requires_background():
@@ -321,17 +321,17 @@ def test_masks_config_colors_must_be_subset_and_rgb():
 def test_sampling_config_rejects_unknown_strategy_and_mode():
     with pytest.raises(ValueError, match="sampling.strategy must be 'joint' or 'independent'"):
         SamplingConfig(strategy="greedy")
-    with pytest.raises(ValueError, match="sampling.output_mode must be 'single' or 'per_annotation'"):
-        SamplingConfig(output_mode="merged")
+    with pytest.raises(ValueError, match="sampling.output_mode must be 'merged' or 'per_annotation'"):
+        SamplingConfig(output_mode="single")
 
 
 def test_segmentation_slide_manifest_config_valid():
     cfg = _seg_config(
         masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
-        sampling=SamplingConfig(strategy="joint", output_mode="single"),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
     )
     assert cfg.masks.pixel_mapping["necrosis"] == 3
-    assert cfg.sampling.output_mode == "single"
+    assert cfg.sampling.output_mode == "merged"
 
 
 def test_masks_rejected_for_non_segmentation():
@@ -366,7 +366,7 @@ def test_masks_sampling_round_trip_through_yaml(tmp_path: Path):
             min_coverage={"tumor": 0.1, "stroma": 0.5},
             colors={"background": None, "tumor": [255, 0, 0], "stroma": [0, 255, 0], "necrosis": [0, 0, 255]},
         ),
-        sampling=SamplingConfig(strategy="independent", output_mode="single"),
+        sampling=SamplingConfig(strategy="independent", output_mode="merged"),
     )
     path = tmp_path / "seg-slide-manifest.yaml"
     save_config(cfg, path)
@@ -375,7 +375,7 @@ def test_masks_sampling_round_trip_through_yaml(tmp_path: Path):
     assert loaded.masks.min_coverage == {"tumor": 0.1, "stroma": 0.5}
     assert loaded.masks.colors["tumor"] == [255, 0, 0]
     assert loaded.masks.colors["background"] is None
-    assert (loaded.sampling.strategy, loaded.sampling.output_mode) == ("independent", "single")
+    assert (loaded.sampling.strategy, loaded.sampling.output_mode) == ("independent", "merged")
 
 
 def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):

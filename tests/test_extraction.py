@@ -769,7 +769,10 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
         "region_tile_multiple",
         "tolerance",
         "overlap",
-        "tissue_threshold",
+        # slide2vec 4.8.0 dropped the top-level tissue_threshold field; soma now routes
+        # the tissue coverage threshold into masks.min_coverage.tissue, so ``masks`` is a
+        # translated field on the pooled adapter (asserted behaviourally below).
+        "masks",
         "on_the_fly",
         "adaptive_batching",
         "use_supertiles",
@@ -784,6 +787,10 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
         "read_coordinates_from",
         "read_tiles_from",
         "resume",
+        # Annotation-aware sampling toggle added in slide2vec 4.8.0. The pooled adapter
+        # does not drive annotation sampling (the dense path handles that via hs2p
+        # directly), so this stays slide2vec-owned here.
+        "independent_sampling",
     }
 
     assert slide2vec_fields == translated_fields | intentionally_slide2vec_owned_fields
@@ -795,6 +802,7 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
             requested_region_size_px=1344,
             region_tile_multiple=6,
             tissue_method="hsv",
+            tissue_threshold=0.25,
         )
     )
 
@@ -806,6 +814,9 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
     assert config.gpu_decode is False
     assert config.read_coordinates_from is None
     assert config.read_tiles_from is None
+    # tissue_threshold is routed into the masks block (slide2vec 4.8.0 single source of
+    # truth), not silently dropped by the __dataclass_fields__ filter.
+    assert config.masks["min_coverage"]["tissue"] == pytest.approx(0.25)
 
 
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -852,8 +863,8 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
     assert loaded[0].backend == "openslide"
 
 
-def test_load_tilings_consumes_single_mode_sampling_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """S1: an hs2p annotation-sampling tiling dir produced with output_mode=SINGLE_OUTPUT has
+def test_load_tilings_consumes_merged_mode_sampling_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """S1: an hs2p annotation-sampling tiling dir produced with output_mode=MERGED has
     exactly one row per slide (annotation None), so soma's per-slide extraction path consumes
     it unchanged — one LoadedTiling per slide, no per-(slide, annotation) collapse."""
     csv_path = tmp_path / "seg-dataset.csv"
@@ -867,7 +878,7 @@ def test_load_tilings_consumes_single_mode_sampling_dir(tmp_path: Path, monkeypa
 
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
-    # SINGLE_OUTPUT sampling dir: one row per slide, with the annotation column present but
+    # MERGED sampling dir: one row per slide, with the annotation column present but
     # empty (the merged per-slide result carries annotation=None).
     process_df = pd.DataFrame(
         [
