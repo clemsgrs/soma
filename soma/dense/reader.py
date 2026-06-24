@@ -153,6 +153,33 @@ def read_image_at_spacing(
     return np.ascontiguousarray(arr[..., :3])
 
 
+def read_image_region_at_spacing(
+    path: str | Path,
+    *,
+    location: tuple[int, int],
+    size: tuple[int, int],
+    spacing_um: float,
+    backend: str = "auto",
+    tolerance: float = 0.05,
+    interpolation: str = "area",
+) -> np.ndarray:
+    """Read a ``size=(w, h)`` RGB region at ``(x, y)`` (level-0) and ``spacing_um``.
+
+    The region counterpart of :func:`read_image_at_spacing` for slide-manifest ROIs: the
+    image is a whole-slide raster, so each ROI reads only its window (never the whole
+    gigapixel slide) at the same spacing/size as its dense grid — mirroring the read the
+    slide-manifest extractor uses, so overlays register to the features and the supervision.
+    """
+    from hs2p.wsi.wsi import WSI
+
+    wsi = WSI(Path(path), backend=backend)
+    arr = wsi.read_region_at_spacing(
+        tuple(location), float(spacing_um), tuple(size),
+        tolerance=float(tolerance), interpolation=interpolation,
+    )
+    return np.ascontiguousarray(np.asarray(arr)[..., :3])
+
+
 def read_mask_at_spacing(
     path: str | Path,
     *,
