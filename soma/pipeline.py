@@ -38,6 +38,7 @@ from soma.config import (
     EncoderConfig,
     EvalConfig,
     HeatmapConfig,
+    MasksConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
@@ -960,6 +961,24 @@ def _dense_spacings_match(a: float | None, b: float | None, *, tol: float = 1e-9
     return abs(float(a) - float(b)) <= tol
 
 
+def _segmentation_label_remap(masks: "MasksConfig | None", num_classes: int, ignore_index: int):
+    """Derive the raw-pixel → class-index LUT for slide-manifest masks (None otherwise).
+
+    Slide-manifest annotation rasters carry the dataset's own pixel vocabulary, so soma
+    remaps them to contiguous class indices (+ ignore) from ``masks.pixel_mapping``. The
+    pre-cropped-tile / flat-mask path has no ``masks:`` block and stays remap-free. Fails
+    loud if the mapping's non-background class count disagrees with ``task.num_classes``.
+    """
+    if masks is None:
+        return None
+    from soma.dense.reader import build_label_remap
+
+    lut, _ = build_label_remap(
+        masks.pixel_mapping, num_classes=num_classes, ignore_index=ignore_index
+    )
+    return lut
+
+
 def train_one_segmentation_fold(
     feature_store: "DenseFeatureStore | LiveSegmentationSource",
     dataset: SegmentationManifest,
@@ -971,6 +990,7 @@ def train_one_segmentation_fold(
     decoder: DecoderConfig | None,
     evaluation: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
+    masks: "MasksConfig | None" = None,
     fold: int = 0,
     num_folds: int = 1,
 ) -> FoldResult:
@@ -1090,6 +1110,9 @@ def train_one_segmentation_fold(
         spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
         backend=preprocessing.backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
+        label_remap=_segmentation_label_remap(
+            masks, num_classes, int(seg_params.get("ignore_index", 255))
+        ),
         **seg_params,
     )
     target_fn = head.extract_targets
@@ -1506,6 +1529,7 @@ def train_one_pixel_classifier_fold(
     pixel_classifier: PixelClassifierConfig,
     evaluation: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
+    masks: "MasksConfig | None" = None,
     fold: int = 0,
     num_folds: int = 1,
 ) -> FoldResult:
@@ -1601,6 +1625,9 @@ def train_one_pixel_classifier_fold(
         spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
         backend=preprocessing.backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
+        label_remap=_segmentation_label_remap(
+            masks, num_classes, int(seg_params.get("ignore_index", 255))
+        ),
         **seg_params,
     )
 
@@ -1675,6 +1702,7 @@ def train(
     pixel_classifier: PixelClassifierConfig | None = None,
     evaluation: EvalConfig | None = None,
     preprocessing: PreprocessingConfig | None = None,
+    masks: "MasksConfig | None" = None,
     heatmaps: HeatmapConfig | None = None,
     dataset_type: str = "slide",
 ) -> PipelineResult:
@@ -1722,6 +1750,7 @@ def train(
                 training=training,
                 fold_dir=fold_dir,
                 preprocessing=preprocessing,
+                masks=masks,
                 fold=fold_idx,
                 num_folds=splits.num_folds,
             )
@@ -1736,6 +1765,7 @@ def train(
                 training=training,
                 fold_dir=fold_dir,
                 preprocessing=preprocessing,
+                masks=masks,
                 fold=fold_idx,
                 num_folds=splits.num_folds,
             )
@@ -2114,6 +2144,7 @@ class Pipeline:
                 training=self._config.training,
                 run_dir=layout.run_dir,
                 preprocessing=preprocessing,
+                masks=self._config.masks,
                 heatmaps=self._config.heatmaps,
             )
 
@@ -2303,11 +2334,6 @@ class Pipeline:
             raise ValueError(
                 "feature_dir is not supported with a slide-manifest masks: config — the ROIs "
                 "are sampled and extracted from the slides, not read from pre-extracted grids."
-            )
-        if self._config.preprocessing.dense_window_size is not None:
-            raise NotImplementedError(
-                "Sliding-window dense extraction (dense_window_size) over slide-manifest ROIs "
-                "is not implemented yet; each ROI is encoded whole. Unset dense_window_size."
             )
         if self._config.encoder is None:
             raise ValueError(

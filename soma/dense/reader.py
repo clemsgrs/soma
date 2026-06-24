@@ -30,6 +30,60 @@ from torch import Tensor
 _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
 
+def build_label_remap(
+    pixel_mapping: dict[str, int],
+    *,
+    num_classes: int | None = None,
+    ignore_index: int = 255,
+) -> tuple[np.ndarray, int]:
+    """Build a raw-pixel → class-index lookup table from a ``masks.pixel_mapping``.
+
+    Slide-manifest annotation rasters carry the *dataset's own* pixel vocabulary (e.g.
+    BEETLE's ``{0 unannotated, 1 other, 2 non-invasive, 3 invasive, 4 necrosis}``); the
+    segmentation head needs contiguous class indices ``[0, num_classes)`` with unannotated
+    pixels collapsed to ``ignore_index``. This derives that mapping from ``pixel_mapping``
+    (class name → raw pixel value, mirroring hs2p's ``masks`` config). The role of
+    ``background`` is decided by ``num_classes`` (the task's class count):
+
+    * ``num_classes is None`` or ``== len(pixel_mapping) - 1`` — ``background`` is the
+      **unannotated/ignore** label: it maps to ``ignore_index`` and the non-background
+      classes take class index = their order in ``pixel_mapping`` (``other`` → 0,
+      ``non_invasive`` → 1, … — matching curate_beetle.py's REMAP). This is the default.
+    * ``num_classes == len(pixel_mapping)`` — **every** label (including ``background``) is
+      a real class, taking class index = its order in ``pixel_mapping`` (``background`` → 0).
+
+    Any raw pixel value not present in ``pixel_mapping`` always maps to ``ignore_index`` —
+    a stray value never silently aliases an in-range class.
+
+    Returns the 256-entry LUT (indexable by a raw uint8/int mask) and the resolved
+    ``num_classes`` it implies.
+    """
+    if "background" not in pixel_mapping:
+        raise ValueError(
+            "masks.pixel_mapping must include a 'background' label to derive the "
+            "segmentation label remap."
+        )
+    names = list(pixel_mapping)
+    background_is_class = num_classes is not None and int(num_classes) == len(names)
+    if background_is_class:
+        classes = names  # background included, takes index 0
+    else:
+        classes = [name for name in names if name != "background"]
+    if num_classes is not None and len(classes) != int(num_classes):
+        raise ValueError(
+            f"masks.pixel_mapping implies {len(classes)} class(es) but num_classes="
+            f"{num_classes}. Provide a pixel_mapping whose class count is either "
+            f"num_classes (background is a class) or num_classes + 1 (background is the "
+            "unannotated/ignore label)."
+        )
+    lut = np.full(256, int(ignore_index), dtype=np.int64)
+    for class_index, name in enumerate(classes):
+        lut[int(pixel_mapping[name])] = class_index
+    if not background_is_class:
+        lut[int(pixel_mapping["background"])] = int(ignore_index)
+    return lut, len(classes)
+
+
 def _is_flat(path: str | Path, spacing_um: float | None) -> bool:
     """Read flat (PIL) when the format is flat or no spacing was requested."""
     return spacing_um is None or Path(path).suffix.lower() in _FLAT_SUFFIXES

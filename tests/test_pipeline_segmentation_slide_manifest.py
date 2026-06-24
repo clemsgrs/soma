@@ -231,7 +231,6 @@ def test_extract_targets_reads_mask_region_when_record_has_region(tmp_path: Path
     "overrides,match",
     [
         ({"feature_mode": "live"}, "Live"),
-        ({"preprocessing": PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5, dense_window_size=16)}, "Sliding-window"),
     ],
 )
 def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
@@ -245,3 +244,77 @@ def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
     pipeline = Pipeline(cfg)
     with pytest.raises(NotImplementedError, match=match):
         pipeline._build_slide_manifest_dense_store(run_dir=tmp_path / "out" / "run")
+
+
+def test_slide_manifest_sliding_window_encodes_via_soma_sliding(tmp_path: Path, monkeypatch):
+    """A native-only encoder (window < target) slides over each padded ROI region and
+    writes cached dense grids — the phikon@224 → 512-tile path the BEETLE config uses."""
+    from dataclasses import replace
+
+    from soma.config import EncoderConfig
+    from soma.dense_slide_extraction import SlideManifestDenseExtractor
+    from soma.dataset import SegmentationManifest
+    from soma.dense.geometry import compute_dense_geometry
+
+    # A manifest of ROI rows (region origins) for one slide.
+    roi_manifest = tmp_path / "roi_manifest.csv"
+    roi_manifest.write_text(
+        "sample_id,image_path,mask_path,region_x,region_y\n"
+        "s0__x0_y0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
+        "s0__x32_y0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
+    )
+    dataset = SegmentationManifest(roi_manifest)
+
+    import slide2vec.inference as s2v_inference
+    import hs2p.wsi.wsi as hs2p_wsi
+
+    captured: dict = {}
+
+    class _Model:
+        patch_size = (PATCH, PATCH)
+
+        def get_dense_transform(self):
+            import torchvision.transforms as T
+
+            return T.ToTensor()
+
+        def encode_tiles_dense(self, window):
+            # Record the per-window spatial size to prove sliding (window < target).
+            captured.setdefault("window_hw", tuple(int(s) for s in window.shape[-2:]))
+            b = window.shape[0]
+            gh = window.shape[-2] // PATCH
+            gw = window.shape[-1] // PATCH
+            import torch as _t
+
+            return _t.zeros(b, FEATURE_DIM, gh, gw)
+
+    monkeypatch.setattr(
+        s2v_inference, "load_model",
+        lambda **kw: SimpleNamespace(model=_Model(), device="cpu"),
+    )
+
+    class _WSI:
+        def __init__(self, *a, **kw):
+            pass
+
+        def read_region_at_spacing(self, location, spacing, size, *, tolerance, interpolation):
+            w, h = size
+            return np.zeros((h, w, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(hs2p_wsi, "WSI", _WSI)
+
+    WINDOW = 16  # < TARGET (32) -> genuine sliding
+    extractor = SlideManifestDenseExtractor(
+        dataset,
+        EncoderConfig(name="phikon", batch_size=2),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET, requested_spacing_um=0.5,
+            dense_window_size=WINDOW, dense_window_overlap=0.5,
+        ),
+    )
+    store = extractor.run(feature_dir=tmp_path / "features")
+    assert captured["window_hw"] == (WINDOW, WINDOW)  # slid at the native window, not 32
+    grid = store.load("s0__x0_y0")
+    assert grid.shape == (FEATURE_DIM, GRID, GRID)  # stitched back to the target grid
