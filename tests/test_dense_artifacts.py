@@ -131,6 +131,65 @@ def test_overlay_fail_soft_on_missing_image(tmp_path):
     assert row["gt_overlay_path"] == ""
 
 
+def test_overlay_reads_roi_window_for_slide_manifest(tmp_path, monkeypatch):
+    """A record with ``region`` set (whole-slide image_path) reads just the ROI window
+    at the run spacing — never opening the gigapixel slide with PIL."""
+    import soma.dense.reader as reader
+
+    calls = {}
+
+    def fake_region(path, *, location, size, spacing_um, backend, tolerance):
+        calls["args"] = dict(path=str(path), location=location, size=size, spacing_um=spacing_um)
+        return np.zeros((size[1], size[0], 3), dtype=np.uint8)  # (h, w, 3)
+
+    monkeypatch.setattr(reader, "read_image_region_at_spacing", fake_region)
+
+    record = types.SimpleNamespace(
+        sample_id="roi0", image_path=tmp_path / "slide.tif", region=(64, 128)
+    )
+    dataset = types.SimpleNamespace(samples={"roi0": record})
+    writer = DenseArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        spacing_um=0.5, backend="auto", tolerance=0.1,
+    )
+    pred = torch.zeros(1, H, W, dtype=torch.long)
+    batch = SegmentationBatch(features=torch.zeros(1, 1, 2, 2), targets={"mask": pred}, sample_ids=("roi0",))
+    writer(batch, _logits_from_pred(pred, NUM_CLASSES), _stat_row(1))
+    writer.finalize()
+
+    # Read the ROI window (not the whole slide), at the run geometry.
+    assert calls["args"] == {
+        "path": str(tmp_path / "slide.tif"), "location": (64, 128), "size": (W, H), "spacing_um": 0.5,
+    }
+    assert (tmp_path / "pred_overlays" / "test" / "roi0.png").is_file()
+    assert (tmp_path / "gt_overlays" / "test" / "roi0.png").is_file()
+
+
+def test_overlay_fail_soft_on_decompression_bomb(tmp_path, monkeypatch):
+    """A slide-manifest ROI whose window read raises (e.g. PIL bomb) skips the overlay
+    but still writes the raster — the eval must not crash."""
+    import soma.dense.reader as reader
+
+    def boom(*args, **kwargs):
+        raise Image.DecompressionBombError("too big")
+
+    monkeypatch.setattr(reader, "read_image_region_at_spacing", boom)
+    record = types.SimpleNamespace(
+        sample_id="roi0", image_path=tmp_path / "slide.tif", region=(0, 0)
+    )
+    dataset = types.SimpleNamespace(samples={"roi0": record})
+    writer = DenseArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset, spacing_um=0.5,
+    )
+    pred = torch.zeros(1, H, W, dtype=torch.long)
+    batch = SegmentationBatch(features=torch.zeros(1, 1, 2, 2), targets={"mask": pred}, sample_ids=("roi0",))
+    writer(batch, _logits_from_pred(pred, NUM_CLASSES), _stat_row(1))
+    writer.finalize()
+
+    assert (tmp_path / "preds" / "test" / "roi0.png").is_file()
+    assert not (tmp_path / "pred_overlays" / "test" / "roi0.png").exists()
+
+
 def test_save_probabilities_writes_float16_sidecar(tmp_path):
     """save_probabilities=True -> a float16 (C,H,W) softmax npz whose argmax matches the raster."""
     sample_ids = ["s0", "s1"]

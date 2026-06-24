@@ -2758,6 +2758,11 @@ def _evaluate_segmentation(
             output_dir=output_dir,
             dataset=dataset,
             save_probabilities=save_probabilities,
+            # Slide-manifest ROIs (record.region set) carry a whole-slide image_path; the
+            # writer reads each ROI window at the run geometry rather than opening the slide.
+            spacing_um=getattr(head, "_spacing_um", None),
+            backend=getattr(head, "_backend", "auto"),
+            tolerance=getattr(head, "_tolerance", 0.05),
         )
         if output_dir is not None
         else None

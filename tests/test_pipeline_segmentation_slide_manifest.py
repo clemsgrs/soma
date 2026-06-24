@@ -62,11 +62,12 @@ def _coords_for(slide_id: str) -> list[tuple[int, int]]:
 
 
 def _patch_extraction(monkeypatch):
-    """Stub hs2p sampling + slide2vec encode + the WSI mask region read (offline determinism)."""
+    """Stub hs2p sampling + slide2vec encode + the WSI mask/image region reads (offline)."""
     import slide2vec.inference as s2v_inference
     import slide2vec.runtime.dense_regions as s2v_dense
     import hs2p.wsi.wsi as hs2p_wsi
     import soma.dense_slide_extraction as dse
+    import soma.dense.reader as reader_mod
     import soma.tasks.segmentation as segmod
 
     # hs2p sampling → known coords per slide.
@@ -91,6 +92,12 @@ def _patch_extraction(monkeypatch):
         w, h = size
         return np.full((h, w), 1 if x else 0, dtype=np.int64)  # ROI(0,0)→all bg, ROI(32,0)→all tumor
     monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake_mask_region)
+    # Image region read → a deterministic RGB window per ROI (the overlay writer reads the
+    # ROI window from the whole-slide image_path, never opening the gigapixel slide).
+    def _fake_image_region(path, *, location, size, spacing_um, backend, tolerance, interpolation="area"):
+        w, h = size
+        return np.zeros((h, w, 3), dtype=np.uint8)
+    monkeypatch.setattr(reader_mod, "read_image_region_at_spacing", _fake_image_region)
 
 
 def _config(root: Path, manifest: Path, splits: Path, *, masks: MasksConfig | None, min_cov: float = 0.0):

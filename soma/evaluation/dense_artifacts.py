@@ -98,6 +98,10 @@ class DenseArtifactWriter:
         save_probabilities: also write a per-tile float16 ``(C, H, W)`` softmax sidecar
             under ``probs/``. Off by default — the always-written argmax raster covers
             the common case; this is for post-hoc soft-output analysis.
+        spacing_um/backend/tolerance: the run's read geometry, used only for slide-manifest
+            ROIs (``record.region`` set), whose ``image_path`` is a whole slide — the overlay
+            reads just that ROI window at the run spacing rather than opening the gigapixel
+            slide. ``None`` spacing ⇒ flat tiles only (the pre-cropped path).
     """
 
     def __init__(
@@ -109,6 +113,9 @@ class DenseArtifactWriter:
         dataset=None,
         overlay_alpha: float = 0.5,
         save_probabilities: bool = False,
+        spacing_um: float | None = None,
+        backend: str = "auto",
+        tolerance: float = 0.05,
     ) -> None:
         self._num_classes = int(head.num_classes)
         # GT masks may carry ignore_index (outside [0, num_classes)); treat those
@@ -130,6 +137,9 @@ class DenseArtifactWriter:
         self._save_probabilities = bool(save_probabilities)
         self._dataset = dataset
         self._overlays_enabled = dataset is not None
+        self._spacing_um = None if spacing_um is None else float(spacing_um)
+        self._backend = backend
+        self._tolerance = float(tolerance)
         self._palette = class_palette(self._num_classes)
         self._overlay_alpha = float(overlay_alpha)
         self._rows: list[dict] = []
@@ -208,17 +218,35 @@ class DenseArtifactWriter:
         record = self._dataset.samples.get(sample_id)
         if record is None:
             return None, None
+        height, width = pred.shape
+        region = getattr(record, "region", None)
         try:
-            with Image.open(record.image_path) as img:
-                image = img.convert("RGB")
-        except (FileNotFoundError, OSError, ValueError):
-            # Fail-soft: cached-feature runs may not retain the source tile.
+            if region is not None:
+                # Slide-manifest ROI: image_path is a whole slide — read just this ROI
+                # window at the run spacing (never open the gigapixel slide with PIL).
+                if self._spacing_um is None:
+                    raise ValueError("slide-manifest overlay needs a run spacing")
+                from soma.dense.reader import read_image_region_at_spacing
+
+                image_arr = read_image_region_at_spacing(
+                    record.image_path,
+                    location=(int(region[0]), int(region[1])),
+                    size=(width, height),  # hs2p size is (w, h)
+                    spacing_um=self._spacing_um,
+                    backend=self._backend,
+                    tolerance=self._tolerance,
+                ).astype(np.float32)
+            else:
+                with Image.open(record.image_path) as img:
+                    image = img.convert("RGB")
+                if image.size != (width, height):
+                    image = image.resize((width, height))  # PIL size is (W, H)
+                image_arr = np.asarray(image, dtype=np.float32)
+        except (FileNotFoundError, OSError, ValueError, Image.DecompressionBombError):
+            # Fail-soft: cached-feature runs may not retain the source tile, and a slide
+            # whose ROI window can't be read shouldn't sink the whole eval.
             logger.debug("overlays skipped for '%s': source image unreadable", sample_id)
             return None, None
-        height, width = pred.shape
-        if image.size != (width, height):
-            image = image.resize((width, height))  # PIL size is (W, H)
-        image_arr = np.asarray(image, dtype=np.float32)
         pred_path = self._blend_and_save(image_arr, pred, self._pred_overlays_dir, sample_id)
         gt_path = self._blend_and_save(image_arr, mask, self._gt_overlays_dir, sample_id)
         return pred_path, gt_path
