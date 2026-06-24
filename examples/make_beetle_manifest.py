@@ -1,17 +1,15 @@
 """Emit a SLIDE-LEVEL BEETLE manifest + splits for soma's slide-manifest segmentation path.
 
-The slide-level counterpart of ``data/beetle/curate_beetle.py``: instead of cropping tiles,
-it pairs each development WSI with its multiresolution annotation mask (reusing the exact
-pairing + fold logic from ``curate_beetle.py``) and writes one row per slide —
+This is the BEETLE curation entry point: it pairs each development WSI with its
+multiresolution annotation mask and writes one row per slide —
 ``sample_id, image_path (WSI), mask_path (annotation raster)`` — plus slide-level CV splits.
-soma then runs hs2p annotation sampling over these slides (``masks:``/``sampling:`` in
-``examples/segmentation_beetle.yaml``), so no tiles are materialized here.
+No tiles are materialized here; soma runs hs2p annotation sampling over these slides
+(``masks:``/``sampling:`` in ``examples/segmentation_beetle.yaml``) to derive ROIs at
+train time, so the cached slide-manifest path is the sole BEETLE recipe.
 
 Splits preserve BEETLE's 5 predefined CV folds at the SLIDE level (soma never partitions;
 the sampled ROIs inherit their parent slide's split). For fold ``k``: a slide whose
-``validation_fold == k`` is ``test``, ``== (k+1) % 5`` is ``tune``, else ``train`` — the
-same rotation ``curate_beetle.py`` applies to tiles, so the slide assignment matches the
-standalone baseline.
+``validation_fold == k`` is ``test``, ``== (k+1) % 5`` is ``tune``, else ``train``.
 
 Outputs (under ``--out``, default ``data/beetle/curated_slide_manifest/`` — gitignored):
 ``manifest.csv``, ``splits.csv``, ``coverage.csv`` (per-slide per-class annotation
@@ -53,17 +51,17 @@ PIXEL_MAPPING = {
     "invasive_epithelium": 3,
     "necrosis": 4,
 }
-ANNOTATED_FRACTION_MIN = 0.05  # >=5% annotated to keep a tile (curate_beetle.py)
+ANNOTATED_FRACTION_MIN = 0.05  # >=5% annotated to keep a tile
 CANONICAL_MPP = 0.5
 CROP_SIZE = 512
 N_FOLDS = 5
 
 
 def read_usable_dev_rows() -> list[dict]:
-    """Dev rows whose WSI AND mask both exist on disk (curate_beetle.py's pairing rule).
+    """Dev rows whose WSI AND mask both exist on disk (the pairing rule).
 
     A blank ``wsi_path`` makes ``ROOT / ""`` resolve to ROOT (a real dir), so guard on a
-    non-empty path + ``is_file()`` — the same guard curate_beetle.py uses.
+    non-empty path + ``is_file()``.
     """
     rows = [r for r in csv.DictReader(OVERVIEW_CSV.open()) if r["split"] == "development"]
     if not rows:
@@ -82,7 +80,7 @@ def read_usable_dev_rows() -> list[dict]:
 
 
 def select_subset(rows: list[dict], n: int | None) -> list[dict]:
-    """Deterministically pick ~n dev WSIs balanced across folds (curate_beetle.py's scheme)."""
+    """Deterministically pick ~n dev WSIs balanced across folds."""
     if n is None:
         return rows
     by_fold: dict[str, list[dict]] = defaultdict(list)
@@ -117,7 +115,7 @@ def build_manifest_rows(rows: list[dict]) -> list[dict]:
 
 
 def build_split_rows(manifest: list[dict]) -> list[dict]:
-    """Slide-level CV splits matching curate_beetle.py's fold rotation (test/tune/train)."""
+    """Slide-level CV splits from BEETLE's fold rotation (test/tune/train)."""
     fold_ids = sorted({r["validation_fold"] for r in manifest})
     fold_nums = sorted(int(f.replace("fold", "")) for f in fold_ids)
     n_folds = len(fold_nums)
