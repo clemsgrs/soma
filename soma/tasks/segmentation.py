@@ -79,6 +79,7 @@ class SegmentationHead(TaskHead):
         spacing_um: float | None = None,
         backend: str = "auto",
         tolerance: float = 0.05,
+        label_remap: "np.ndarray | None" = None,
     ) -> None:
         super().__init__()
         if num_classes < 1:
@@ -117,6 +118,16 @@ class SegmentationHead(TaskHead):
         self._spacing_um = float(spacing_um) if spacing_um is not None else None
         self._backend = backend
         self._tolerance = float(tolerance)
+        # Optional raw-pixel → class-index LUT (slide-manifest masks carry the dataset's
+        # own vocabulary; see soma.dense.reader.build_label_remap). None ⇒ masks are
+        # already contiguous class indices (the pre-cropped-tile / flat-mask path).
+        if label_remap is not None:
+            label_remap = np.asarray(label_remap)
+            if label_remap.shape != (256,):
+                raise ValueError(
+                    f"label_remap must be a length-256 LUT, got shape {label_remap.shape}."
+                )
+        self._label_remap = label_remap
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
@@ -164,6 +175,17 @@ class SegmentationHead(TaskHead):
                 backend=self._backend,
                 tolerance=self._tolerance,
             )
+        array = np.ascontiguousarray(array).astype(np.int64)
+        if self._label_remap is not None:
+            # Raw annotation rasters carry the dataset's own pixel vocabulary; remap onto
+            # contiguous class indices (+ ignore) before validation. Guard against stray
+            # values > 255 that the 256-entry LUT cannot index.
+            if int(array.max(initial=0)) > 255 or int(array.min(initial=0)) < 0:
+                raise ValueError(
+                    f"mask for '{record.sample_id}' has raw pixel value(s) outside [0, 255]; "
+                    "the label remap LUT only covers single-byte annotation rasters."
+                )
+            array = self._label_remap[array]
         mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy

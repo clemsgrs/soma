@@ -294,6 +294,43 @@ def test_extract_targets_rejects_out_of_range_label(tmp_path: Path):
         head.extract_targets(record)
 
 
+def test_extract_targets_applies_label_remap_for_roi(monkeypatch):
+    """Slide-manifest ROI masks carry the dataset's raw pixel vocabulary; the head
+    must remap them to contiguous class indices (+ ignore) before validation/loss."""
+    import soma.tasks.segmentation as segmod
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import build_label_remap
+
+    # BEETLE raw mask window {0 unannot, 1 other, 3 invasive, 4 necrosis}.
+    raw = np.array([[0, 1], [3, 4]], dtype=np.int64)
+    monkeypatch.setattr(
+        segmod,
+        "read_mask_region_at_spacing",
+        lambda path, *, location, size, spacing_um, backend, tolerance: raw,
+    )
+    pixel_mapping = {
+        "background": 0,
+        "other": 1,
+        "non_invasive_epithelium": 2,
+        "invasive_epithelium": 3,
+        "necrosis": 4,
+    }
+    lut, num_classes = build_label_remap(pixel_mapping, num_classes=4, ignore_index=255)
+    assert num_classes == 4
+    geom = compute_dense_geometry(target_size=2, patch_size=1)
+    head = SegmentationHead(num_classes=4, geometry=geom, ignore_index=255, label_remap=lut)
+    record = SampleRecord(
+        sample_id="roi0", image_path=Path("/fake.tif"), label=None,
+        mask_path=Path("/fake_mask.tif"), region=(0, 0),
+    )
+    head._spacing_um = 0.5  # ROI path requires a read spacing
+    out = head.extract_targets(record)
+    # raw {0,1,3,4} -> {255, 0, 2, 3}
+    np.testing.assert_array_equal(
+        out["mask"].numpy(), np.array([[255, 0], [2, 3]], dtype=np.int64)
+    )
+
+
 def test_loss_is_zero_not_nan_for_all_ignore_batch():
     mask = torch.full((1, 2, 2), 255, dtype=torch.long)  # every pixel ignored
     logits = torch.randn(1, 2, 2, 2, requires_grad=True)
