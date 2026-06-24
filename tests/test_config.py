@@ -59,7 +59,7 @@ def test_preprocessing_config_defaults():
     assert "npatch" not in field_names
     assert "hierarchical_patch_size_px" not in field_names
     assert cfg.tissue_method is None
-    assert cfg.tissue_threshold == 0.1
+    assert cfg.min_coverage == {"tissue": 0.1}
     assert cfg.overlap == 0.0
     assert cfg.seg_downsample == 64
     assert cfg.sam2_device == "cpu"

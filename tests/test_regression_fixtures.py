@@ -52,7 +52,7 @@ def _regression_preprocessing() -> PreprocessingConfig:
         requested_tile_size_px=224,
         requested_spacing_um=0.5,
         tolerance=0.07,
-        tissue_threshold=0.1,
+        min_coverage={"tissue": 0.1},
         overlap=0.0,
         seg_downsample=64,
         ref_tile_size_px=224,

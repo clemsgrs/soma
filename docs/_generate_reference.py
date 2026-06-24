@@ -184,7 +184,8 @@ def build_cli_rst() -> str:
              # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
              # Leave empty/unused when pre-computed tissue masks are provided.
              tissue_method: hsv
-             tissue_threshold: 0.1
+             min_coverage:                   # tissue coverage threshold (min tissue fraction per tile)
+               tissue: 0.1
              overlap: 0.0
              seg_downsample: 64
              sam2_device: cpu

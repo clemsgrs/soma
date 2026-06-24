@@ -21,7 +21,10 @@ preprocessing:
   # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
   # Leave empty/unused when pre-computed tissue masks are provided.
   tissue_method: hsv
-  tissue_threshold: 0.1
+  # Tissue coverage threshold as a masks-shaped map (min_coverage.tissue is the minimum
+  # tissue fraction to keep a tile). Single source of truth; no separate scalar.
+  min_coverage:
+    tissue: 0.1
   overlap: 0.0
   # Dense (segmentation) encoder-window knobs — how the padded supervision tile reaches
   # the frozen encoder (NOT the tiling `overlap` above). dense_window_size: null => the

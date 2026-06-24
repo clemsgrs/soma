@@ -112,11 +112,12 @@ def build_preprocessing_config(
         "requested_tile_size_px": int(preprocessing.requested_tile_size_px),
         "tolerance": float(preprocessing.tolerance),
         "overlap": float(preprocessing.overlap),
-        # slide2vec 4.8.0 dropped the top-level ``tissue_threshold`` field; the tissue
-        # coverage threshold now lives in the ``masks`` block as
-        # ``min_coverage.tissue`` (the single source of truth). slide2vec deep-merges a
-        # partial ``masks`` over its shipped DEFAULT_MASKS, so we only state the override.
-        "masks": {"min_coverage": {"tissue": float(preprocessing.tissue_threshold)}},
+        # soma expresses the tissue coverage threshold as ``preprocessing.min_coverage["tissue"]``
+        # (a masks-shaped map mirroring hs2p's ``TilingConfig.min_coverage``). slide2vec has no
+        # top-level ``tissue_threshold`` field — the threshold lives in the ``masks`` block as
+        # ``min_coverage.tissue`` (the single source of truth). slide2vec deep-merges a partial
+        # ``masks`` over its shipped DEFAULT_MASKS, so we only state the override.
+        "masks": {"min_coverage": {"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)}},
         "on_the_fly": True,
         "adaptive_batching": False,
         "use_supertiles": True,

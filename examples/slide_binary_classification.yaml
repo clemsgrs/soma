@@ -9,7 +9,8 @@ data:
   dataset_type: slide
 
 preprocessing:
-  tissue_threshold: 0.1
+  min_coverage:
+    tissue: 0.1
 
 cache:
   enabled: true
