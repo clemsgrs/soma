@@ -1080,9 +1080,9 @@ class TestTrain:
 
     def test_aggregate_fold_metrics_handles_inconsistent_test_split_names(self):
         train_result = TrainResult(
-            best_epoch=0,
-            best_tune_loss=0.1,
-            best_tune_metrics={},
+            selected_epoch=0,
+            selected_tune_loss=0.1,
+            selected_tune_metrics={},
             history=[],
             checkpoint_path=Path("best_model.pt"),
         )

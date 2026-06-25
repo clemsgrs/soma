@@ -838,7 +838,7 @@ def train_one_fold(
     )
     train_result = trainer.fit()
 
-    # Load best checkpoint and evaluate
+    # Load selected checkpoint and evaluate
     checkpoint = torch.load(
         train_result.checkpoint_path, weights_only=True, map_location=device
     )
@@ -2947,8 +2947,23 @@ def _save_metrics(
 
 
 def _save_training_history(history: list, path: Path) -> None:
-    data = [epoch_log_to_dict(log) for log in history]
+    data = {
+        "epochs": [epoch_log_to_dict(log) for log in history],
+        "peak_per_metric": _peak_per_metric(history),
+    }
     path.write_text(json.dumps(data, indent=2))
+
+
+def _peak_per_metric(history: list) -> dict[str, dict[str, float | int]]:
+    peaks: dict[str, dict[str, float | int]] = {}
+    for log in history:
+        for metric_name, metric_value in log.tune_metrics.items():
+            value = float(metric_value)
+            if not math.isfinite(value):
+                continue
+            if metric_name not in peaks or value > peaks[metric_name]["value"]:
+                peaks[metric_name] = {"epoch": log.epoch, "value": value}
+    return peaks
 
 
 def _build_subgroup_data(

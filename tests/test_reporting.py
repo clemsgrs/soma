@@ -162,7 +162,7 @@ def _to_yaml(data: dict) -> str:
 
 
 def test_save_training_history(tmp_path: Path) -> None:
-    """_save_training_history writes a valid JSON array of epoch dicts."""
+    """_save_training_history writes epoch dicts under the history payload."""
     from soma.training.trainer import EpochLog
     from soma.pipeline import _save_training_history
 
@@ -188,8 +188,8 @@ def test_save_training_history(tmp_path: Path) -> None:
     _save_training_history(history, path)
 
     data = json.loads(path.read_text())
-    assert len(data) == 2
-    assert data[0] == {
+    assert len(data["epochs"]) == 2
+    assert data["epochs"][0] == {
         "epoch": 0,
         "train_loss": 0.8,
         "tune_loss": 0.75,
@@ -198,8 +198,46 @@ def test_save_training_history(tmp_path: Path) -> None:
         "elapsed_seconds": 12.5,
         "avg_epoch_seconds": 12.5,
     }
-    assert data[1]["epoch"] == 1
-    assert data[1]["tune_metrics"] == {"auroc": 0.70}
+    assert data["epochs"][1]["epoch"] == 1
+    assert data["epochs"][1]["tune_metrics"] == {"auroc": 0.70}
+
+
+def test_save_training_history_records_peak_per_metric_diagnostic(tmp_path: Path) -> None:
+    from soma.training.trainer import EpochLog
+    from soma.pipeline import _save_training_history
+
+    history = [
+        EpochLog(
+            epoch=0,
+            train_loss=0.8,
+            tune_loss=0.75,
+            tune_metrics={"auroc": 0.55, "rare_dice": 0.40},
+            lr=1e-4,
+        ),
+        EpochLog(
+            epoch=1,
+            train_loss=0.7,
+            tune_loss=0.70,
+            tune_metrics={"auroc": 0.70, "rare_dice": 0.35},
+            lr=9e-5,
+        ),
+        EpochLog(
+            epoch=2,
+            train_loss=0.6,
+            tune_loss=0.65,
+            tune_metrics={"auroc": 0.65, "rare_dice": 0.50},
+            lr=8e-5,
+        ),
+    ]
+    path = tmp_path / "training_history.json"
+    _save_training_history(history, path)
+
+    data = json.loads(path.read_text())
+
+    assert data["peak_per_metric"] == {
+        "auroc": {"epoch": 1, "value": 0.70},
+        "rare_dice": {"epoch": 2, "value": 0.50},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +259,24 @@ def test_load_run_data_binary(tmp_path: Path) -> None:
     assert "avg_epoch_seconds" in run_data.folds[0].training_history[0]
     assert "auroc" in run_data.folds[0].tune_metrics
     assert "prob_1" in run_data.folds[0].predictions["test"].columns
+
+
+def test_load_run_data_ignores_peak_per_metric_diagnostic(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path, task_name="binary_classification")
+    epochs = _make_training_history(n_epochs=2)
+    (run_dir / "training_history.json").write_text(
+        json.dumps(
+            {
+                "epochs": epochs,
+                "peak_per_metric": {"auroc": {"epoch": 1, "value": 0.90}},
+            }
+        )
+    )
+
+    run_data = load_run_data(run_dir)
+
+    assert run_data.folds[0].training_history == epochs
+    assert "peak_per_metric" not in run_data.summary
 
 
 def test_load_run_data_preserves_coverage_counts(tmp_path: Path) -> None:
@@ -299,9 +355,9 @@ def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
         )
     ]
     train_result = TrainResult(
-        best_epoch=0,
-        best_tune_loss=0.65,
-        best_tune_metrics={"auroc": 0.6},
+        selected_epoch=0,
+        selected_tune_loss=0.65,
+        selected_tune_metrics={"auroc": 0.6},
         history=history,
         checkpoint_path=tmp_path / "best_model.pt",
     )
