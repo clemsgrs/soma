@@ -69,7 +69,7 @@ The presence of ``preprocessing.masks`` selects the slide-manifest input mode
 See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
 
 Annotation vocabulary: background-present vs background-absent
--------------------------------------------------------------
+--------------------------------------------------------------
 
 ``pixel_mapping`` is the dataset's own raw-pixel vocabulary. **No reserved label name is
 required** — soma keeps only structural validation (non-empty mapping, unique pixel values,
