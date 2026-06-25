@@ -1,6 +1,6 @@
 """Tests for soma.config — frozen dataclass configurations."""
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 from pathlib import Path
 
 import pytest
@@ -223,6 +223,17 @@ def test_evaluation_config_metrics_explicit():
 
 
 def _seg_config(**overrides):
+    # masks/sampling now live under preprocessing (#109); accept them as top-level
+    # kwargs here for test convenience and fold them into a PreprocessingConfig.
+    masks = overrides.pop("masks", None)
+    sampling = overrides.pop("sampling", None)
+    preprocessing = overrides.pop("preprocessing", None)
+    if masks is not None or sampling is not None:
+        preprocessing = replace(
+            preprocessing if preprocessing is not None else PreprocessingConfig(),
+            masks=masks,
+            sampling=sampling,
+        )
     kwargs = dict(
         dataset_csv="data.csv",
         splits_csv="splits.csv",
@@ -231,6 +242,8 @@ def _seg_config(**overrides):
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(name="segmentation"),
     )
+    if preprocessing is not None:
+        kwargs["preprocessing"] = preprocessing
     kwargs.update(overrides)
     return PipelineConfig(**kwargs)
 
@@ -330,8 +343,44 @@ def test_segmentation_slide_manifest_config_valid():
         masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
     )
-    assert cfg.masks.pixel_mapping["necrosis"] == 3
-    assert cfg.sampling.output_mode == "merged"
+    # masks/sampling now live under preprocessing (#109).
+    assert cfg.preprocessing.masks.pixel_mapping["necrosis"] == 3
+    assert cfg.preprocessing.sampling.output_mode == "merged"
+
+
+def test_masks_and_sampling_live_under_preprocessing():
+    """masks/sampling are PreprocessingConfig fields, not top-level PipelineConfig fields (#109)."""
+    pipeline_field_names = {f.name for f in fields(PipelineConfig)}
+    assert "masks" not in pipeline_field_names
+    assert "sampling" not in pipeline_field_names
+    preprocessing_field_names = {f.name for f in fields(PreprocessingConfig)}
+    assert "masks" in preprocessing_field_names
+    assert "sampling" in preprocessing_field_names
+
+
+def test_pipeline_config_rejects_top_level_masks_kwarg():
+    """No backward-compat top-level masks= on PipelineConfig (clean break, #109)."""
+    with pytest.raises(TypeError):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="segmentation",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            task=TaskConfig(name="segmentation"),
+            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING),
+        )
+
+
+def test_top_level_masks_sampling_yaml_rejected(tmp_path: Path):
+    """A top-level masks:/sampling: block in YAML is no longer accepted (#109)."""
+    path = tmp_path / "cfg.yaml"
+    save_config(_seg_config(), path)
+    raw = yaml.safe_load(path.read_text())
+    raw["masks"] = {"pixel_mapping": {"background": 0, "tumor": 1}}
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="unsupported top-level keys"):
+        load_config(path)
 
 
 def test_masks_rejected_for_non_segmentation():
@@ -342,7 +391,7 @@ def test_masks_rejected_for_non_segmentation():
             output_root="out",
             dataset_type="slide",
             task=TaskConfig(name="binary_classification"),
-            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING),
+            preprocessing=PreprocessingConfig(masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING)),
         )
 
 
@@ -370,12 +419,19 @@ def test_masks_sampling_round_trip_through_yaml(tmp_path: Path):
     )
     path = tmp_path / "seg-slide-manifest.yaml"
     save_config(cfg, path)
+    # masks/sampling are serialized under preprocessing (#109).
+    raw = yaml.safe_load(path.read_text())
+    assert "masks" not in raw and "sampling" not in raw
+    assert "masks" in raw["preprocessing"] and "sampling" in raw["preprocessing"]
     loaded = load_config(path)
-    assert loaded.masks.pixel_mapping == _PIXEL_MAPPING
-    assert loaded.masks.min_coverage == {"tumor": 0.1, "stroma": 0.5}
-    assert loaded.masks.colors["tumor"] == [255, 0, 0]
-    assert loaded.masks.colors["background"] is None
-    assert (loaded.sampling.strategy, loaded.sampling.output_mode) == ("independent", "merged")
+    assert loaded.preprocessing.masks.pixel_mapping == _PIXEL_MAPPING
+    assert loaded.preprocessing.masks.min_coverage == {"tumor": 0.1, "stroma": 0.5}
+    assert loaded.preprocessing.masks.colors["tumor"] == [255, 0, 0]
+    assert loaded.preprocessing.masks.colors["background"] is None
+    assert (loaded.preprocessing.sampling.strategy, loaded.preprocessing.sampling.output_mode) == (
+        "independent",
+        "merged",
+    )
 
 
 def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
@@ -384,14 +440,14 @@ def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
     base = _seg_config()
     save_config(base, path)
     raw = yaml.safe_load(path.read_text())
-    raw["masks"] = {
+    raw["preprocessing"]["masks"] = {
         "pixel_mapping": [{"background": 0}, {"tumor": 1}, {"stroma": 2}],
         "min_coverage": [{"tumor": 0.1}],
     }
     path.write_text(yaml.safe_dump(raw))
     loaded = load_config(path)
-    assert loaded.masks.pixel_mapping == {"background": 0, "tumor": 1, "stroma": 2}
-    assert loaded.masks.min_coverage == {"tumor": 0.1}
+    assert loaded.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1, "stroma": 2}
+    assert loaded.preprocessing.masks.min_coverage == {"tumor": 0.1}
 
 
 def test_pixel_classifier_config_round_trips_through_yaml(tmp_path: Path):

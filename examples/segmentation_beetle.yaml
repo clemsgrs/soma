@@ -37,29 +37,28 @@ preprocessing:
   # (16 px patch -> 14x14 grid) over the padded 512 tile at 0.5 overlap and blend.
   dense_window_size: 224
   dense_window_overlap: 0.5
-
-# Annotation-mask -> class scheme (mirrors hs2p's masks config 1:1). pixel_mapping is the
-# class name -> RAW BEETLE pixel value; "background" (unannotated, value 0) is the ignore
-# label. soma derives the raw-pixel -> class-index remap (other->0, non_invasive->1,
-# invasive->2, necrosis->3; unannotated -> ignore_index 255).
-masks:
-  pixel_mapping:
-    background: 0                  # unannotated -> ignore_index (255), excluded from loss/metrics
-    other: 1                       # -> class 0
-    non_invasive_epithelium: 2     # -> class 1
-    invasive_epithelium: 3         # -> class 2
-    necrosis: 4                    # -> class 3
-  # Keep a tile only if >=5% of its pixels are annotated (any annotated class), per the
-  # baseline's ANNOTATED_FRACTION_MIN. joint_sampling unions all classes then thresholds.
-  min_coverage:
-    other: 0.05
-    non_invasive_epithelium: 0.05
-    invasive_epithelium: 0.05
-    necrosis: 0.05
-
-sampling:
-  strategy: joint
-  output_mode: merged
+  # Annotation-mask -> class scheme (mirrors hs2p's masks config 1:1; nests under
+  # preprocessing since annotation-based tile selection is a preprocessing concern, #109).
+  # pixel_mapping is the class name -> RAW BEETLE pixel value; "background" (unannotated,
+  # value 0) is the ignore label. soma derives the raw-pixel -> class-index remap (other->0,
+  # non_invasive->1, invasive->2, necrosis->3; unannotated -> ignore_index 255).
+  masks:
+    pixel_mapping:
+      background: 0                  # unannotated -> ignore_index (255), excluded from loss/metrics
+      other: 1                       # -> class 0
+      non_invasive_epithelium: 2     # -> class 1
+      invasive_epithelium: 3         # -> class 2
+      necrosis: 4                    # -> class 3
+    # Keep a tile only if >=5% of its pixels are annotated (any annotated class), per the
+    # baseline's ANNOTATED_FRACTION_MIN. joint_sampling unions all classes then thresholds.
+    min_coverage:
+      other: 0.05
+      non_invasive_epithelium: 0.05
+      invasive_epithelium: 0.05
+      necrosis: 0.05
+  sampling:
+    strategy: joint
+    output_mode: merged
 
 cache:
   enabled: true   # extract the dense grids once, reuse across folds

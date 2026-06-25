@@ -72,8 +72,6 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "aggregation",
         "decoder",
         "pixel_classifier",
-        "masks",
-        "sampling",
         "task",
         "evaluation",
         "training",
@@ -106,8 +104,6 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "aggregation",
         "decoder",
         "pixel_classifier",
-        "masks",
-        "sampling",
         "task",
         "evaluation",
         "training",
@@ -117,7 +113,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if section in data:
             value = data[section]
-            if section in ("aggregation", "decoder", "pixel_classifier", "masks", "sampling"):
+            if section in ("aggregation", "decoder", "pixel_classifier"):
                 if value is not None and not isinstance(value, dict):
                     raise TypeError(f"Config section '{section}' must be a mapping or null")
             elif value is not None and not isinstance(value, dict):
@@ -212,6 +208,9 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
     preprocessing_data = dict(data.get("preprocessing", {}))
     preview_data = dict(preprocessing_data.pop("preview", {}))
     attention_data = dict(preprocessing_data.pop("attention", {}))
+    # masks/sampling are nested under preprocessing (#109).
+    masks_data = preprocessing_data.pop("masks", None)
+    sampling_data = preprocessing_data.pop("sampling", None)
     tissue_contour_color = preview_data.get("tissue_contour_color")
     if isinstance(tissue_contour_color, list):
         preview_data["tissue_contour_color"] = tuple(tissue_contour_color)
@@ -232,6 +231,8 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
             **preprocessing_data,
             attention=AttentionConfig(**attention_data),
             preview=PreviewConfig(**preview_data),
+            masks=_masks_from_dict(masks_data) if masks_data else None,
+            sampling=SamplingConfig(**sampling_data) if sampling_data else None,
         ),
         execution=ExecutionConfig(**data.get("execution", {})),
         cache=CacheConfig(**data.get("cache", {})),
@@ -247,8 +248,6 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
             if data.get("pixel_classifier")
             else None
         ),
-        masks=_masks_from_dict(data["masks"]) if data.get("masks") else None,
-        sampling=SamplingConfig(**data["sampling"]) if data.get("sampling") else None,
         task=_load_task_config(data),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
@@ -337,6 +336,14 @@ class PreprocessingConfig:
     feature_kind: str | None = None
     attention: AttentionConfig = field(default_factory=AttentionConfig)
     preview: PreviewConfig = field(default_factory=_default_preview_config)
+    # Segmentation slide-manifest ingestion (design — segmentation ingestion §5/§8; #109).
+    # ``masks``/``sampling`` are a tiling/preprocessing concern (annotation-based tile
+    # selection mirrors slide2vec's own PreprocessingConfig), so they nest here rather than
+    # at the top level. The presence of ``masks`` selects the slide-manifest input mode
+    # (slides + annotation masks → soma-sampled ROIs). Cross-field rules (segmentation-only,
+    # ``sampling`` requires ``masks``, ``per_annotation`` deferred) live on PipelineConfig.
+    masks: MasksConfig | None = None
+    sampling: SamplingConfig | None = None
 
     def __post_init__(self) -> None:
         _valid_feature_kinds = {None, "patch_features", "cls_attention"}
@@ -848,8 +855,6 @@ class PipelineConfig:
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
     pixel_classifier: PixelClassifierConfig | None = None
-    masks: MasksConfig | None = None
-    sampling: SamplingConfig | None = None
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -966,23 +971,26 @@ class PipelineConfig:
                     f"pixel_classifier must be None for dataset_type={self.dataset_type!r} — "
                     "pixel-classifiers are only used for dataset_type='segmentation'."
                 )
-        # masks:/sampling: are the segmentation slide-manifest ingestion mode (design —
-        # segmentation ingestion §5/§8). The presence of masks: selects slide-manifest input
+        # preprocessing.masks/preprocessing.sampling are the segmentation slide-manifest
+        # ingestion mode (design — segmentation ingestion §5/§8; relocated under
+        # preprocessing in #109). The presence of masks selects slide-manifest input
         # (slides + annotation masks → soma-sampled ROIs); both only apply to segmentation.
-        if self.masks is not None and self.dataset_type != "segmentation":
+        masks = self.preprocessing.masks
+        sampling = self.preprocessing.sampling
+        if masks is not None and self.dataset_type != "segmentation":
             raise ValueError(
                 "masks: (the annotation slide-manifest input mode) is only valid for "
                 f"dataset_type='segmentation', got dataset_type={self.dataset_type!r}."
             )
-        if self.sampling is not None and self.masks is None:
+        if sampling is not None and masks is None:
             raise ValueError(
                 "sampling: requires a masks: block — it configures how ROIs are sampled from "
                 "the annotation masks. Add masks: or drop sampling:."
             )
         if (
-            self.masks is not None
-            and self.sampling is not None
-            and self.sampling.output_mode == "per_annotation"
+            masks is not None
+            and sampling is not None
+            and sampling.output_mode == "per_annotation"
         ):
             raise ValueError(
                 "sampling.output_mode='per_annotation' is not yet supported for feature "
@@ -1244,16 +1252,6 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     data["composite"] = (
         _normalize_yaml_value(asdict(config.composite))
         if config.composite is not None
-        else None
-    )
-    data["masks"] = (
-        _normalize_yaml_value(asdict(config.masks))
-        if config.masks is not None
-        else None
-    )
-    data["sampling"] = (
-        _normalize_yaml_value(asdict(config.sampling))
-        if config.sampling is not None
         else None
     )
     return data
