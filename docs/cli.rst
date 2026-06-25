@@ -41,41 +41,52 @@ Available commands
 What the CLI expects
 --------------------
 
-The config file follows the canonical nested schema below. Every key is
-optional except those marked *required*. Omit a section entirely to
-accept all its defaults.
+The config file follows the canonical nested schema below. This block
+is generated from ``soma/configs/default.yaml``, the bundled defaults
+merged by :func:`soma.config.load_config`. Copy it when you want the
+baseline public YAML shape, then replace neutral defaults such as
+``encoder: null`` and ``aggregation: null`` for your run.
 
 Full config reference
 ---------------------
 
 .. code-block:: yaml
 
-   # ── Run ──────────────────────────────────────────────────────────
    run:
-     output_root: runs          # required – directory for run artifacts
+     output_root: runs
      seed: 0
      tags:
-       - baseline               # free-form labels stored in metadata
+       - baseline
 
-   # ── Data ─────────────────────────────────────────────────────────
    data:
-     dataset_csv: data/dataset.csv   # required – slide list and labels
-     splits_csv: data/splits.csv     # required – train/tune/test folds
-     dataset_type: slide             # required – slide | tile | patient
+     dataset_csv: data/dataset.csv
+     splits_csv: data/splits.csv
+     dataset_type: slide
+     # cached: read pre-extracted dense grids. live: re-encode (augmented) tiles through
+     # the frozen encoder every step (segmentation only — enables augmentation).
+     feature_mode: cached
 
-   # ── Preprocessing ────────────────────────────────────────────────
    preprocessing:
-     backend: auto                   # auto | hs2p | sam2
-     requested_spacing_um: null      # primary scale knob (µm/px)
-     requested_tile_size_px: null    # tile edge length at the target spacing
-     requested_region_size_px: null  # HIPT region size (hierarchical only)
-     region_tile_multiple: null      # tiles-per-region (hierarchical only)
+     backend: auto
+     requested_tile_size_px: null
+     requested_spacing_um: null
+     requested_region_size_px: null
+     region_tile_multiple: null
      # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
      # Leave empty/unused when pre-computed tissue masks are provided.
      tissue_method: hsv
-     min_coverage:                   # tissue coverage threshold (min tissue fraction per tile)
+     # Tissue coverage threshold as a masks-shaped map (min_coverage.tissue is the minimum
+     # tissue fraction to keep a tile). Single source of truth; no separate scalar.
+     min_coverage:
        tissue: 0.1
      overlap: 0.0
+     # Dense (segmentation) encoder-window knobs — how the padded supervision tile reaches
+     # the frozen encoder (NOT the tiling `overlap` above). dense_window_size: null => the
+     # `whole` path (one padded forward; the default and cached-parity anchor). A smaller
+     # window (e.g. 224 or 512) slides the encoder over patch-aligned windows and blends the
+     # token grids over dense_window_overlap (raised-cosine), useful at large scale-ups.
+     dense_window_size: null
+     dense_window_overlap: 0.0
      seg_downsample: 64
      sam2_device: cpu
      sam2_num_workers: null
@@ -89,59 +100,74 @@ Full config reference
        downsample: 32
        tissue_contour_color: [37, 94, 59]
 
-   # ── Cache ────────────────────────────────────────────────────────
+   execution:
+     num_gpus: null
+     num_preprocessing_workers: null
+     prefetch_factor: null
+     precision: null
+
    cache:
      enabled: true
-     root_dir: null              # null → inside output_root
-     reuse_policy: strict        # strict | relaxed
-     fingerprint_files: false    # hash slide/mask contents for cache identity
-     validate_payloads: false    # load cached tensors to verify shape/dim
+     root_dir: null
+     reuse_policy: strict
+     fingerprint_files: false
+     validate_payloads: false
 
-   # ── Encoder ──────────────────────────────────────────────────────
-   encoder:
-     name: uni2                  # required – see `soma list encoders`
-     batch_size: 32
-     adaptive_batching: false
-     output_variant: null        # preset-specific feature variant
-     allow_non_recommended_settings: false
-     save_tile_features: false
+   # No default encoder — the framework stays neutral on model choice (you must set
+   # `encoder:` for a single encoder, or `composite:` for a multi-encoder composite).
+   # A baked-in default here would also collide with `composite:` via the encoder/composite
+   # XOR check (the merged default encoder would make both present).
+   encoder: null
 
-   # ── Aggregation (slide dataset_type only) ────────────────────────
-   aggregation:
-     name: abmil                 # see `soma list aggregators`
-     params:
-       hidden_dim: 256
-       dropout: 0.25
+   # No default aggregator — stay neutral on the trainable component. For slide MIL set
+   # `aggregation:` explicitly; omitting it means slide-level features with no MIL. A baked-in
+   # default would also leak into the tile/patient/segmentation paths (which forbid an
+   # aggregator) when a config is hand-written without nulling it.
+   aggregation: null
 
-   # ── Task ─────────────────────────────────────────────────────────
    task:
-     name: binary_classification  # required – see `soma list tasks`
+     name: binary_classification
      params: {}
 
-   # ── Evaluation ───────────────────────────────────────────────────
+   # No default metrics — stay neutral (the slide-classification metrics would otherwise leak
+   # into segmentation/regression/survival configs and fail metric validation). Set
+   # `evaluation.metrics:` for the task at hand.
    evaluation:
-     metrics:
-       - auroc
-       - balanced_accuracy
+     metrics: []
      subgroups:
-       columns: []              # dataset.csv columns for metric breakdowns
+       columns: []
 
-   # ── Training ─────────────────────────────────────────────────────
    training:
      epochs: 50
      learning_rate: 1.0e-4
      weight_decay: 1.0e-5
-     optimizer: adam            # adam | sgd | adamw
-     scheduler: cosine          # cosine | step | none
-     patience: 10               # early-stopping patience (epochs)
-     monitor: tune_loss         # tune_loss or a tune metric name
-     monitor_mode: min          # min | max
+     optimizer: adam
+     scheduler: cosine
+     patience: 10
+     monitor: tune_loss
+     monitor_mode: min
      batch_size: 1
      gradient_accumulation: 1
      tune_is_test: false
      allow_missing_tune: false
+     num_workers: 0
+     pin_memory: true
+     persistent_workers: true
 
-   # ── Reports ──────────────────────────────────────────────────────
+   # Image/mask augmentation — only applied when data.feature_mode is 'live'
+   # (segmentation). Geometric ops transform image + mask jointly (mask nearest); the
+   # photometric ops transform the image only. All-zero = no augmentation (live-no-aug).
+   augmentation:
+     horizontal_flip: 0.0
+     vertical_flip: 0.0
+     rotation_degrees: 0.0
+     translate: 0.0
+     scale: 0.0
+     brightness: 0.0
+     contrast: 0.0
+     saturation: 0.0
+     hue: 0.0
+
    reports:
      heatmaps:
        enabled: false

@@ -71,7 +71,7 @@ set to ``None`` because the model operates on per-tile features directly:
        encoder=EncoderConfig(name="uni2"),
        aggregator=None,
        task=TaskConfig(name="binary_classification"),
-       eval=EvalConfig(metrics=["accuracy"]),
+       evaluation=EvalConfig(metrics=["accuracy"]),
        training=TrainingConfig(epochs=50, learning_rate=1e-4),
    )
 
