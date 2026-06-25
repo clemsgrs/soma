@@ -219,6 +219,25 @@ def test_dense_grid_metadata_records_spacing():
     )
 
 
+def test_store_reports_spacing_from_sidecar(tmp_path: Path):
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    write_dense_grid(
+        tmp_path,
+        "flat",
+        torch.randn(8, 32, 32),
+        dense_grid_metadata(g, feature_dim=8, pad_mode="reflect"),
+    )
+    write_dense_grid(
+        tmp_path,
+        "spaced",
+        torch.randn(8, 32, 32),
+        dense_grid_metadata(g, feature_dim=8, pad_mode="reflect", spacing_um=0.5),
+    )
+    store = DenseFeatureStore(tmp_path)
+    assert store.spacing_um("flat") is None
+    assert store.spacing_um("spaced") == 0.5
+
+
 def test_store_reports_feature_dim_d_not_grid_width(tmp_path: Path):
     # d=1536 channels, 32x32 grid. A rank-based store would wrongly read 32 (w).
     _write_grid(tmp_path, "s1", d=1536, gh=32, gw=32)

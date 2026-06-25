@@ -245,6 +245,11 @@ class DenseFeatureStore:
             patch_size=tuple(int(v) for v in meta["patch_size"]),
         )
 
+    def spacing_um(self, sample_id: str) -> float | None:
+        """Read-spacing in µm/px recorded for ``sample_id`` (``None`` for flat reads)."""
+        value = self.metadata(sample_id).get("spacing_um")
+        return None if value is None else float(value)
+
     @property
     def feature_dir(self) -> Path:
         return self._feature_dir

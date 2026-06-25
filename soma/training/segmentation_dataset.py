@@ -1,7 +1,7 @@
 """SegmentationDataset — dense feature grids paired with per-pixel mask targets.
 
 Each item is ``(grid (d, h, w), targets {"mask": (H, W)}, sample_id)``: the grid is
-loaded from a :class:`~soma.dense.DenseFeatureStore`, and ``targets`` come from the
+loaded from a :class:`~soma.dense.DenseFeatureSource`, and ``targets`` come from the
 injected ``target_fn`` (the ``SegmentationHead.extract_targets``, a later slice,
 which loads ``mask_path``) — mirroring how :class:`SampleDataset` defers target
 semantics to the head.
@@ -23,7 +23,7 @@ from torch import Tensor
 from torch.utils.data import Dataset
 
 from soma.dataset import SampleRecord
-from soma.dense import DenseFeatureStore
+from soma.dense import DenseFeatureSource
 from soma.dense.geometry import DenseGridGeometry
 
 
@@ -32,7 +32,7 @@ class SegmentationDataset(Dataset):
 
     Args:
         records: SampleRecords (with ``mask_path``) for this split.
-        feature_store: DenseFeatureStore for loading cached dense grids.
+        feature_store: DenseFeatureSource for loading cached dense grids.
         target_fn: Callable mapping a SampleRecord to its targets dict, which must
             contain a ``"mask"`` tensor of shape ``(H, W)`` (the head's
             ``extract_targets``).
@@ -41,7 +41,7 @@ class SegmentationDataset(Dataset):
     def __init__(
         self,
         records: list[SampleRecord],
-        feature_store: DenseFeatureStore,
+        feature_store: DenseFeatureSource,
         target_fn: Callable[[SampleRecord], dict[str, Tensor]],
     ) -> None:
         self._records = records

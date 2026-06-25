@@ -5,12 +5,13 @@ cross-repo extraction primitives — hs2p annotation sampling (``sample_slide_ro
 slide2vec dense encode (``encode_regions_dense``) — are stubbed at their import seams (each
 is independently tested in its own repo: hs2p ``test_annotation_coverage``, slide2vec
 ``test_dense_regions``); everything in between (ROI manifest + split propagation, the dense
-cache keyed on the sampling spec, the dataset/splits swap, and the full cached dense
+cache keyed on the sampling spec, explicit ROI training context, and the full cached dense
 training/eval) runs for real.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -135,6 +136,19 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
 
     assert "test/mean_dice" in result.summary
     assert result.fold_results[0].test_reports["test"].metrics["mean_dice"] >= 0.0
+    assert pipeline.dataset.sample_ids == ["s0", "s1", "s2", "s3"]
+    assert pipeline.splits.folds[0].train == ("s0", "s1")
+    assert pipeline.splits.folds[0].tune == ("s2",)
+    assert pipeline.splits.folds[0].tests == {"test": ("s3",)}
+
+    provenance_files = list((tmp_path / "out").rglob("dense_source.json"))
+    assert len(provenance_files) == 1
+    provenance = json.loads(provenance_files[0].read_text(encoding="utf-8"))
+    assert provenance["kind"] == "slide_manifest_dense_cache"
+    assert provenance["parent_dataset_csv"] == str(manifest)
+    assert provenance["parent_splits_csv"] == str(splits)
+    assert Path(provenance["dataset_csv"]).name == "roi_manifest.csv"
+    assert Path(provenance["splits_csv"]).name == "roi_splits.csv"
 
     # The derived ROI manifest + ROI splits were written, one row per (slide, coord).
     roi_manifests = list((tmp_path / "out").rglob("roi_manifest.csv"))
@@ -253,7 +267,7 @@ def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
     cfg = replace(cfg, **overrides)
     pipeline = Pipeline(cfg)
     with pytest.raises(NotImplementedError, match=match):
-        pipeline._build_slide_manifest_dense_store(run_dir=tmp_path / "out" / "run")
+        pipeline._build_slide_manifest_dense_context(run_dir=tmp_path / "out" / "run")
 
 
 def test_slide_manifest_sliding_window_encodes_via_soma_sliding(tmp_path: Path, monkeypatch):
