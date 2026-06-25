@@ -353,6 +353,25 @@ def test_dense_cache_validator_accepts_real_payloads(tmp_path: Path):
     assert resolve_dense_cache(**kw, validate_payloads=True).complete is True
 
 
+def test_dense_cache_validator_reuses_valid_sidecars_without_loading_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+
+    def _fail_load_array(_path):
+        raise AssertionError("default dense cache validation must not deserialize tensors")
+
+    monkeypatch.setattr("soma.cache.features.load_array", _fail_load_array)
+
+    resumed = resolve_dense_cache(**kw)
+
+    assert resumed.complete is True
+    assert resumed.validation.complete is True
+    assert resumed.validation.reason is None
+
+
 def test_dense_cache_validator_requires_sidecar(tmp_path: Path):
     # validator-complete must imply store-readable: a .pt with no sidecar (e.g. if
     # population were ever routed through the hardlink helper) is NOT complete, even
@@ -365,6 +384,34 @@ def test_dense_cache_validator_requires_sidecar(tmp_path: Path):
         torch.save(torch.randn(1536, 32, 32), res.feature_path_for_id(sid))  # NO sidecar
     record_sample_identity_signatures(res, list(dataset.sample_ids))
     assert resolve_dense_cache(**kw).complete is False
+
+
+def test_dense_cache_validator_rejects_sidecar_shape_mismatch_without_loading_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Default cache validation is sidecar-first: it should reject a dense cache
+    # whose sidecars describe a different grid than this cache key, without loading
+    # potentially huge .pt tensors.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    wrong_geom = compute_dense_geometry(target_size=(256, 512), patch_size=16)
+    for sid in dataset.sample_ids:
+        meta = dense_grid_metadata(wrong_geom, feature_dim=1536, pad_mode="reflect")
+        write_dense_grid(res.features_dir, sid, torch.randn(1536, 16, 32), meta)
+    record_feature_dim(res, 1536)
+    record_sample_identity_signatures(res, list(dataset.sample_ids))
+
+    def _fail_load_array(_path):
+        raise AssertionError("default dense cache validation must not deserialize tensors")
+
+    monkeypatch.setattr("soma.cache.features.load_array", _fail_load_array)
+
+    resumed = resolve_dense_cache(**kw)
+
+    assert resumed.complete is False
+    assert resumed.validation.reason is not None
+    assert "dense sidecar grid_shape mismatch for s1" in resumed.validation.reason
 
 
 def test_dense_cache_validator_flags_wrong_grid_shape(tmp_path: Path):

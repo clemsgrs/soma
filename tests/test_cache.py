@@ -22,6 +22,7 @@ from soma.cache import (
     manifest_digest,
     probe_resolved_backends,
     record_empty_sample_ids,
+    record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_feature_payload_dir,
@@ -822,6 +823,36 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
     )
     assert reused.complete is True
     assert reused.reused is True
+
+
+def test_feature_cache_metadata_mutations_return_refreshed_resolution(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    for sample_id in dataset.sample_ids:
+        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
+
+    with_dim = record_feature_dim(resolution, 16)
+    assert with_dim.metadata["feature_dim"] == 16
+    assert with_dim.complete is False
+    assert with_dim.validation.reason == "missing cache identity for s1"
+
+    refreshed = record_sample_identity_signatures(with_dim, list(dataset.sample_ids))
+
+    assert refreshed.complete is True
+    assert refreshed.reused is True
+    assert refreshed.metadata["feature_dim"] == 16
+    assert refreshed.missing_sample_ids() == []
+    assert refreshed.metadata["sample_identity_signature_by_id"] == {
+        "s1": refreshed.cache_stem_by_id["s1"],
+        "s2": refreshed.cache_stem_by_id["s2"],
+    }
 
 
 def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):

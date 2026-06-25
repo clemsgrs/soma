@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -334,6 +335,66 @@ def _backfill_feature_cache_identity_metadata(
     return metadata
 
 
+def _normalized_dense_field(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [_normalized_dense_field(item) for item in value]
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, int):
+        return int(value)
+    return value
+
+
+def _validate_dense_sidecar_metadata(
+    *,
+    sidecar_path: Path,
+    metadata: dict[str, Any],
+    cache_id: str,
+) -> str | None:
+    try:
+        sidecar = _load_metadata(sidecar_path)
+    except Exception:
+        logger.debug("Could not read dense sidecar at %s", sidecar_path, exc_info=True)
+        return f"dense sidecar for {cache_id} could not be read"
+
+    artifact_type = sidecar.get("artifact_type", sidecar.get("feature_type"))
+    if artifact_type != "dense_grid":
+        return (
+            f"dense sidecar artifact_type mismatch for {cache_id}: "
+            f"expected 'dense_grid', found {artifact_type!r}"
+        )
+
+    expected_fields = {
+        "channel_dim": metadata.get("channel_dim"),
+        "grid_shape": metadata.get("grid_shape"),
+        "target_size": metadata.get("target_size"),
+        "encoded_size": metadata.get("encoded_size"),
+        "patch_size": metadata.get("patch_size"),
+        "pad_mode": metadata.get("pad_mode"),
+        "dense_input_mode": metadata.get("dense_input_mode"),
+        "window_size": metadata.get("window_size"),
+        "overlap": metadata.get("overlap"),
+        "feature_kind": metadata.get("feature_kind"),
+        "attention_blocks": metadata.get("attention_blocks"),
+        "attention_include_registers": metadata.get("attention_include_registers"),
+    }
+    if metadata.get("feature_dim") is not None:
+        expected_fields["feature_dim"] = metadata.get("feature_dim")
+    for field, expected in expected_fields.items():
+        expected = _normalized_dense_field(expected)
+        observed = _normalized_dense_field(sidecar.get(field))
+        if expected != observed:
+            return (
+                f"dense sidecar {field} mismatch for {cache_id}: "
+                f"expected {expected!r}, found {observed!r}"
+            )
+    return None
+
+
 def _validate_feature_cache_contents(
     *,
     features_dir: Path,
@@ -399,12 +460,21 @@ def _validate_feature_cache_contents(
                 if reason is None:
                     reason = f"missing feature for {cache_id}"
                 continue
-            if dense_sidecar_suffix is not None and not (
-                features_dir / f"{cache_id}{dense_sidecar_suffix}"
-            ).is_file():
-                if reason is None:
-                    reason = f"missing dense sidecar for {cache_id}"
-                continue
+            if dense_sidecar_suffix is not None:
+                sidecar_path = features_dir / f"{cache_id}{dense_sidecar_suffix}"
+                if not sidecar_path.is_file():
+                    if reason is None:
+                        reason = f"missing dense sidecar for {cache_id}"
+                    continue
+                sidecar_reason = _validate_dense_sidecar_metadata(
+                    sidecar_path=sidecar_path,
+                    metadata=metadata,
+                    cache_id=cache_id,
+                )
+                if sidecar_reason is not None:
+                    if reason is None:
+                        reason = sidecar_reason
+                    continue
             if validate_payloads:
                 try:
                     payload = load_array(path)
@@ -468,6 +538,28 @@ def _validate_feature_cache_contents(
         return CacheValidationResult(complete=complete, reason=reason), present, expected
     finally:
         progress.finish()
+
+
+def _refresh_feature_cache_resolution(
+    resolution: FeatureCacheResolution,
+    metadata: dict[str, Any],
+    *,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
+    validation, _present, _expected = _validate_feature_cache_contents(
+        features_dir=resolution.features_dir,
+        metadata=metadata,
+        cache_ids=resolution.cache_ids,
+        cache_stem_by_id=resolution.cache_stem_by_id,
+        validate_payloads=validate_payloads,
+    )
+    return replace(
+        resolution,
+        reused=validation.complete,
+        complete=validation.complete,
+        metadata=metadata,
+        validation=validation,
+    )
 
 
 def _resolve_cache(
@@ -561,6 +653,7 @@ def _resolve_cache(
             features_dir=features_dir,
             cache_ids=tuple(str(cache_id) for cache_id in cache_ids),
             cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
+            validation=validation,
         )
 
     if manifest_rows is not None:
@@ -584,6 +677,7 @@ def _resolve_cache(
         features_dir=features_dir,
         cache_ids=tuple(str(cache_id) for cache_id in cache_ids),
         cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
+        validation=CacheValidationResult(complete=False, reason=initial_reason),
     )
 
 
@@ -847,7 +941,12 @@ def resolve_dense_cache(
     )
 
 
-def record_feature_dim(resolution: FeatureCacheResolution, feature_dim: int) -> None:
+def record_feature_dim(
+    resolution: FeatureCacheResolution,
+    feature_dim: int,
+    *,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
     metadata = (
         _load_metadata(resolution.metadata_path)
         if resolution.metadata_path.is_file()
@@ -855,9 +954,19 @@ def record_feature_dim(resolution: FeatureCacheResolution, feature_dim: int) -> 
     )
     metadata["feature_dim"] = int(feature_dim)
     _write_metadata(resolution.metadata_path, metadata)
+    return _refresh_feature_cache_resolution(
+        resolution,
+        metadata,
+        validate_payloads=validate_payloads,
+    )
 
 
-def record_empty_sample_ids(resolution: FeatureCacheResolution, empty_sample_ids: Sequence[str]) -> None:
+def record_empty_sample_ids(
+    resolution: FeatureCacheResolution,
+    empty_sample_ids: Sequence[str],
+    *,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
     metadata = (
         _load_metadata(resolution.metadata_path)
         if resolution.metadata_path.is_file()
@@ -876,15 +985,22 @@ def record_empty_sample_ids(resolution: FeatureCacheResolution, empty_sample_ids
     metadata["empty_sample_ids"] = sorted(empty_ids)
     metadata["sample_identity_signature_by_id"] = signature_map
     _write_metadata(resolution.metadata_path, metadata)
+    return _refresh_feature_cache_resolution(
+        resolution,
+        metadata,
+        validate_payloads=validate_payloads,
+    )
 
 
 def record_sample_identity_signatures(
     resolution: FeatureCacheResolution,
     cache_ids: Sequence[str],
-) -> None:
+    *,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
     metadata_path = getattr(resolution, "metadata_path", None)
     if metadata_path is None:
-        return
+        return resolution
     metadata = (
         _load_metadata(metadata_path)
         if metadata_path.is_file()
@@ -900,3 +1016,8 @@ def record_sample_identity_signatures(
             signature_map[cache_id] = str(resolution.cache_stem_by_id[cache_id])
     metadata["sample_identity_signature_by_id"] = signature_map
     _write_metadata(metadata_path, metadata)
+    return _refresh_feature_cache_resolution(
+        resolution,
+        metadata,
+        validate_payloads=validate_payloads,
+    )

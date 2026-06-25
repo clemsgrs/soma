@@ -64,6 +64,7 @@ class FeatureCacheResolution(BaseCacheResolution):
     features_dir: Path
     cache_ids: tuple[str, ...]
     cache_stem_by_id: dict[str, str]
+    validation: CacheValidationResult
 
     @property
     def empty_sample_ids(self) -> set[str]:
