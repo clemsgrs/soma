@@ -1,29 +1,24 @@
-# soma reference configuration — canonical nested layout
+# soma reference configuration - canonical nested layout
 # Run with: soma /path/to/config.yaml
 #
-# This file shows the full user-facing YAML shape. For most runs, start from
-# this file or from soma/configs/default.yaml and only change the blocks you
-# care about.
+# This file mirrors soma/configs/default.yaml so copyable reference fields stay
+# aligned with the public config loader.
 
 run:
-  # Output directory for run artifacts.
-  output_root: runs/my_experiment
-  # Run seed used by training and reproducibility helpers.
+  output_root: runs
   seed: 0
-  # Free-form labels stored in the run metadata and report.
   tags:
     - baseline
 
 data:
-  # Dataset manifest and split manifest.
   dataset_csv: data/dataset.csv
   splits_csv: data/splits.csv
-  # Input mode for the pipeline.
-  # Options: slide | tile | patient
   dataset_type: slide
+  # cached: read pre-extracted dense grids. live: re-encode (augmented) tiles through
+  # the frozen encoder every step (segmentation only — enables augmentation).
+  feature_mode: cached
 
 preprocessing:
-  # WSI backend. Options: auto | openslide | cucim | asap | vips
   backend: auto
   requested_tile_size_px: null
   requested_spacing_um: null
@@ -32,9 +27,18 @@ preprocessing:
   # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
   # Leave empty/unused when pre-computed tissue masks are provided.
   tissue_method: hsv
+  # Tissue coverage threshold as a masks-shaped map (min_coverage.tissue is the minimum
+  # tissue fraction to keep a tile). Single source of truth; no separate scalar.
   min_coverage:
     tissue: 0.1
   overlap: 0.0
+  # Dense (segmentation) encoder-window knobs — how the padded supervision tile reaches
+  # the frozen encoder (NOT the tiling `overlap` above). dense_window_size: null => the
+  # `whole` path (one padded forward; the default and cached-parity anchor). A smaller
+  # window (e.g. 224 or 512) slides the encoder over patch-aligned windows and blends the
+  # token grids over dense_window_overlap (raised-cosine), useful at large scale-ups.
+  dense_window_size: null
+  dense_window_overlap: 0.0
   seg_downsample: 64
   sam2_device: cpu
   sam2_num_workers: null
@@ -50,7 +54,6 @@ preprocessing:
 
 execution:
   num_gpus: null
-  num_workers_per_gpu: null
   num_preprocessing_workers: null
   prefetch_factor: null
   precision: null
@@ -62,30 +65,27 @@ cache:
   fingerprint_files: false
   validate_payloads: false
 
-encoder:
-  # Foundation-model encoder.
-  name: uni2
-  batch_size: 32
-  adaptive_batching: false
-  output_variant: null
-  allow_non_recommended_settings: false
-  save_tile_features: false
+# No default encoder — the framework stays neutral on model choice (you must set
+# `encoder:` for a single encoder, or `composite:` for a multi-encoder composite).
+# A baked-in default here would also collide with `composite:` via the encoder/composite
+# XOR check (the merged default encoder would make both present).
+encoder: null
 
-aggregation:
-  # MIL aggregator.
-  name: abmil
-  params:
-    hidden_dim: 256
-    dropout: 0.25
+# No default aggregator — stay neutral on the trainable component. For slide MIL set
+# `aggregation:` explicitly; omitting it means slide-level features with no MIL. A baked-in
+# default would also leak into the tile/patient/segmentation paths (which forbid an
+# aggregator) when a config is hand-written without nulling it.
+aggregation: null
 
 task:
   name: binary_classification
   params: {}
 
+# No default metrics — stay neutral (the slide-classification metrics would otherwise leak
+# into segmentation/regression/survival configs and fail metric validation). Set
+# `evaluation.metrics:` for the task at hand.
 evaluation:
-  metrics:
-    - auroc
-    - balanced_accuracy
+  metrics: []
   subgroups:
     columns: []
 
@@ -102,13 +102,23 @@ training:
   gradient_accumulation: 1
   tune_is_test: false
   allow_missing_tune: false
-  # DataLoader parallelism. Defaults are conservative so the test suite stays
-  # fast. For real WSI runs (1000+ slides, big bags), set num_workers to the
-  # number of CPU cores available; pinning + persistent workers cut epoch time
-  # significantly when the GPU is fed from disk-backed features.
   num_workers: 0
   pin_memory: true
   persistent_workers: true
+
+# Image/mask augmentation — only applied when data.feature_mode is 'live'
+# (segmentation). Geometric ops transform image + mask jointly (mask nearest); the
+# photometric ops transform the image only. All-zero = no augmentation (live-no-aug).
+augmentation:
+  horizontal_flip: 0.0
+  vertical_flip: 0.0
+  rotation_degrees: 0.0
+  translate: 0.0
+  scale: 0.0
+  brightness: 0.0
+  contrast: 0.0
+  saturation: 0.0
+  hue: 0.0
 
 reports:
   heatmaps:
