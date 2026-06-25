@@ -430,8 +430,14 @@ class DenseTileFeatureExtractor:
         )
 
         if cache_resolution is not None and feature_dim is not None:
-            record_feature_dim(cache_resolution, feature_dim)
-            record_sample_identity_signatures(
-                cache_resolution, [record.sample_id for record in records]
+            cache_resolution = record_feature_dim(
+                cache_resolution,
+                feature_dim,
+                validate_payloads=self._cache.validate_payloads,
+            )
+            cache_resolution = record_sample_identity_signatures(
+                cache_resolution,
+                [record.sample_id for record in records],
+                validate_payloads=self._cache.validate_payloads,
             )
         return DenseFeatureStore(out_dir)

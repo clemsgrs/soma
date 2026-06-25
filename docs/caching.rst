@@ -45,8 +45,11 @@ extraction.
   may be replaced in place, but it requires reading each input file during
   cache resolution and can be expensive for large WSI cohorts.
 - By default, feature cache validation checks metadata identity and payload
-  existence only. Set ``cache.validate_payloads: true`` to load cached tensors
-  and verify rank and feature dimension before accepting a cache hit. This
+  existence. Dense grids also validate their per-sample sidecar metadata
+  (feature dimension, channel axis, grid shape, target/encoded geometry, and
+  dense input mode) before reuse, without loading the tensor payload. Set
+  ``cache.validate_payloads: true`` to load cached tensors and verify rank,
+  feature dimension, and dense grid shape before accepting a cache hit. This
   catches corrupt or wrong-shaped payloads, but it adds I/O proportional to the
   number of cached feature files.
 - Cache metadata stores a normalized ``feature_type``:
@@ -56,6 +59,7 @@ extraction.
   - ``slide``: 1-D slide-level embeddings
   - ``patient``: 1-D patient-level embeddings
   - ``hierarchical``: 3-D hierarchical embeddings
+  - ``dense_grid``: 3-D dense segmentation grids with shape stored in sidecars
 
 - Two datasets can therefore reuse the same cached feature payload for shared
   samples while still recomputing non-overlapping samples.
