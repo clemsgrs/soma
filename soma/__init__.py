@@ -2,14 +2,18 @@
 
 from soma.config import (
     AggregatorConfig,
+    AttentionConfig,
     AugmentationConfig,
     CacheConfig,
+    CompositeConfig,
     DecoderConfig,
     EncoderConfig,
+    EncoderMemberConfig,
     EvalConfig,
     ExecutionConfig,
     MasksConfig,
     PipelineConfig,
+    PixelClassifierConfig,
     PreprocessingConfig,
     PreviewConfig,
     SamplingConfig,
@@ -33,6 +37,7 @@ from soma.dense import DenseFeatureStore
 from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
+from soma.pixel_classifiers import list_pixel_classifiers
 from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
 from soma.preprocessing import (
     overlay_mask_on_slide,
@@ -60,14 +65,18 @@ from soma.tasks import list_task_heads
 __all__ = [
     # Config
     "AggregatorConfig",
+    "AttentionConfig",
     "AugmentationConfig",
     "CacheConfig",
+    "CompositeConfig",
     "DecoderConfig",
     "EncoderConfig",
+    "EncoderMemberConfig",
     "EvalConfig",
     "ExecutionConfig",
     "MasksConfig",
     "PipelineConfig",
+    "PixelClassifierConfig",
     "PreprocessingConfig",
     "PreviewConfig",
     "SamplingConfig",
@@ -78,6 +87,7 @@ __all__ = [
     "list_models",
     "list_aggregators",
     "list_decoders",
+    "list_pixel_classifiers",
     "list_task_heads",
     # Data
     "Dataset",

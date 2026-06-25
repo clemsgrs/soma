@@ -12,4 +12,10 @@ from soma.pixel_classifiers import mlp_clf  # noqa: F401,E402
 from soma.pixel_classifiers import sklearn_clf  # noqa: F401,E402
 from soma.pixel_classifiers import xgboost_clf  # noqa: F401,E402
 
-__all__ = ["PixelClassifier", "pixel_classifier_registry"]
+
+def list_pixel_classifiers() -> list[str]:
+    """Return registered per-pixel classifier names in a stable order."""
+    return sorted(pixel_classifier_registry.list())
+
+
+__all__ = ["PixelClassifier", "pixel_classifier_registry", "list_pixel_classifiers"]

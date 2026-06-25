@@ -163,10 +163,18 @@ Use the public discovery helpers to list currently registered presets:
 
 .. code-block:: python
 
-   from soma import list_aggregators, list_models, list_task_heads
+   from soma import (
+       list_aggregators,
+       list_decoders,
+       list_models,
+       list_pixel_classifiers,
+       list_task_heads,
+   )
 
    tile_encoders = list_models(level="tile")
    aggregators = list_aggregators()
+   decoders = list_decoders()
+   pixel_classifiers = list_pixel_classifiers()
    task_heads = list_task_heads()
 
 For more detail on what the generated HTML report contains, how subgroup

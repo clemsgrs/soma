@@ -29,6 +29,12 @@ Available commands
 ``soma list aggregators``
    List all registered MIL aggregator presets.
 
+``soma list decoders``
+   List all registered dense decoder presets.
+
+``soma list pixel-classifiers``
+   List all registered per-pixel classifier presets.
+
 ``soma list tasks``
    List all registered task-head presets.
 
