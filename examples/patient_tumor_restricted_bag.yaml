@@ -26,7 +26,8 @@ preprocessing:
   tissue_method: otsu
   # The annotation masks block restricts each slide's bag to the tumor compartment. Tile
   # selection gates on per-class min_coverage over the annotation mask (binary tissue
-  # filtering is bypassed under masks). pixel_mapping must include `background`.
+  # filtering is bypassed under masks). pixel_mapping names the raster's classes by their
+  # exact pixel value; `background` is optional (omit it if the raster has no unannotated region).
   masks:
     pixel_mapping: {background: 0, tumor: 1}
     min_coverage: {tumor: 0.5}   # keep tiles >= 50% tumor
