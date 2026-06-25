@@ -87,7 +87,9 @@ def _make_run_dir(
     (run_dir / "summary.json").write_text(json.dumps({"test/auroc": 0.85}))
 
     # single-fold: flat layout, artifacts directly in run_dir
-    (run_dir / "training_history.json").write_text(json.dumps([]))
+    (run_dir / "training_history.json").write_text(
+        json.dumps({"epochs": [], "peak_per_metric": {}})
+    )
     (run_dir / "metrics.json").write_text(json.dumps({
         "tune": {"auroc": 0.82},
         "test": {"auroc": 0.85},

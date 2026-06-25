@@ -615,6 +615,35 @@ def epoch_log_to_dict(log: EpochLog) -> dict[str, object]:
     return {key: value for key, value in data.items() if value is not None}
 
 
+def peak_per_metric(history: list[EpochLog]) -> dict[str, dict[str, float | int]]:
+    """Per-metric best value across all epochs, with the epoch it occurred at.
+
+    DIAGNOSTIC ONLY. This describes a model that never existed at any single
+    epoch (each metric peaks at its own epoch), so it is positively biased and
+    must never feed checkpoint selection, ``summary.json`` fold aggregates, or any
+    results table. It is recorded in the per-fold ``training_history.json`` purely
+    to judge whether the configured ``monitor`` is a good selection proxy -- e.g.
+    if a rare class's Dice peaks far from the selected epoch, the monitor may be
+    starving that class.
+
+    Every metric is treated as "higher is better", which holds for the metrics
+    soma reports (Dice, AUROC, accuracy, ...). ``tune_loss`` is not in
+    ``tune_metrics`` and is therefore excluded -- it is min-better, not a metric.
+
+    Returns ``{metric: {"epoch": <1-based epoch>, "value": <peak value>}}``.
+    """
+    peaks: dict[str, dict[str, float | int]] = {}
+    for log in history:
+        for name, raw_value in log.tune_metrics.items():
+            value = float(raw_value)
+            if not np.isfinite(value):
+                continue
+            current = peaks.get(name)
+            if current is None or value > current["value"]:
+                peaks[name] = {"epoch": log.epoch + 1, "value": value}
+    return peaks
+
+
 def _build_training_panel(
     *,
     title: str,

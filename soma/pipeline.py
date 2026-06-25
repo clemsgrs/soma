@@ -97,7 +97,13 @@ from soma.training.segmentation_dataset import (
     segmentation_collate_fn,
 )
 from soma.training.seed import seed_everything
-from soma.training.trainer import Trainer, TrainResult, accumulate_dense_stats, epoch_log_to_dict
+from soma.training.trainer import (
+    Trainer,
+    TrainResult,
+    accumulate_dense_stats,
+    epoch_log_to_dict,
+    peak_per_metric,
+)
 from soma.reporting import generate_report_from_result
 from soma.reporting.subgroups import subgroup_data_for_predictions, subgroup_report_for_predictions
 
@@ -3039,21 +3045,11 @@ def _save_metrics(
 def _save_training_history(history: list, path: Path) -> None:
     data = {
         "epochs": [epoch_log_to_dict(log) for log in history],
-        "peak_per_metric": _peak_per_metric(history),
+        # Diagnostic only (see soma.training.trainer.peak_per_metric); the reporting
+        # layer drops this so it never reaches summaries or results tables.
+        "peak_per_metric": peak_per_metric(history),
     }
     path.write_text(json.dumps(data, indent=2))
-
-
-def _peak_per_metric(history: list) -> dict[str, dict[str, float | int]]:
-    peaks: dict[str, dict[str, float | int]] = {}
-    for log in history:
-        for metric_name, metric_value in log.tune_metrics.items():
-            value = float(metric_value)
-            if not math.isfinite(value):
-                continue
-            if metric_name not in peaks or value > peaks[metric_name]["value"]:
-                peaks[metric_name] = {"epoch": log.epoch, "value": value}
-    return peaks
 
 
 def _build_subgroup_data(
