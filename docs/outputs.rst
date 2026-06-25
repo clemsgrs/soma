@@ -20,6 +20,28 @@ The main run directory contains:
 - attention artifacts when heatmaps are enabled
 - the final HTML report
 
+Experiment identity
+-------------------
+
+Managed outputs group runs by experiment identity before adding the per-run
+timestamp/W&B suffix. The identity is derived from the data manifests and the
+configuration choices that can change predictions, reported metrics, generated
+artifacts, or the experiment indexes. Changing those choices creates a new
+experiment namespace instead of mixing outputs under an existing one.
+
+The identity covers the dataset and split checksums, preprocessing and sampling
+choices, encoder or composite encoder choices, aggregation or dense decoder /
+pixel-classifier choices, task and training settings, feature mode, live
+augmentation, evaluation settings, and enabled heatmap artifact settings. The
+training seed is intentionally a run-level value, so repeated seeds produce
+separate runs under the same experiment when the rest of the configuration is
+unchanged.
+
+Evaluation settings are part of the identity because they change the reported
+outputs. Heatmap settings are also part of the identity when heatmaps are
+enabled because they change generated artifacts; inactive heatmap rendering
+options do not fork the namespace.
+
 Layout: single split vs cross-validation
 -----------------------------------------
 
