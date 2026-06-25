@@ -19,6 +19,7 @@ from soma.cache._types import (
     SCHEMA_VERSION,
     _FEATURE_TYPE_TO_RANK,
     _features_subdir_for_kind,
+    _list_feature_filenames,
     CacheValidationResult,
     FeatureCacheResolution,
 )
@@ -424,6 +425,9 @@ def _validate_feature_cache_contents(
         from soma.dense.store import DENSE_SIDECAR_SUFFIX
 
         dense_sidecar_suffix = DENSE_SIDECAR_SUFFIX
+    # One directory listing answers the <id>.pt and <id>.meta.json existence
+    # questions for every id; the hot loop below performs no per-id stat.
+    existing_filenames = _list_feature_filenames(features_dir)
     expected = 0
     present = 0
     reason: str | None = None
@@ -437,6 +441,7 @@ def _validate_feature_cache_contents(
             checked += 1
             progress.update(checked)
             path = features_dir / f"{cache_id}.pt"
+            feature_present = f"{cache_id}.pt" in existing_filenames
             expected_signature = str(cache_stem_by_id[cache_id])
             cached_signature = cached_signature_by_id.get(cache_id)
             if cached_signature is None:
@@ -448,7 +453,7 @@ def _validate_feature_cache_contents(
                     reason = f"cache identity mismatch for {cache_id}"
                 continue
             if cache_id in empty_sample_ids:
-                if path.is_file():
+                if feature_present:
                     return (
                         CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
                         present,
@@ -456,26 +461,36 @@ def _validate_feature_cache_contents(
                     )
                 continue
             expected += 1
-            if not path.is_file():
+            if not feature_present:
                 if reason is None:
                     reason = f"missing feature for {cache_id}"
                 continue
+            sidecar_path: Path | None = None
             if dense_sidecar_suffix is not None:
-                sidecar_path = features_dir / f"{cache_id}{dense_sidecar_suffix}"
-                if not sidecar_path.is_file():
+                # Existence is decided cheaply from the listing and always enforced:
+                # a half-written sample (a ``.pt`` whose sidecar never landed) must
+                # be treated as missing, never silently skipped into a load failure.
+                if f"{cache_id}{dense_sidecar_suffix}" not in existing_filenames:
                     if reason is None:
                         reason = f"missing dense sidecar for {cache_id}"
                     continue
-                sidecar_reason = _validate_dense_sidecar_metadata(
-                    sidecar_path=sidecar_path,
-                    metadata=metadata,
-                    cache_id=cache_id,
-                )
-                if sidecar_reason is not None:
-                    if reason is None:
-                        reason = sidecar_reason
-                    continue
+                sidecar_path = features_dir / f"{cache_id}{dense_sidecar_suffix}"
             if validate_payloads:
+                # Sidecar *content* validation (the JSON read + shape cross-check)
+                # is the one cost a listing cannot remove, so it joins the gated
+                # deep-validation block. It runs before the (also-gated) tensor
+                # load and short-circuits on mismatch, so a bad sidecar never pays
+                # for a deserialize.
+                if sidecar_path is not None:
+                    sidecar_reason = _validate_dense_sidecar_metadata(
+                        sidecar_path=sidecar_path,
+                        metadata=metadata,
+                        cache_id=cache_id,
+                    )
+                    if sidecar_reason is not None:
+                        if reason is None:
+                            reason = sidecar_reason
+                        continue
                 try:
                     payload = load_array(path)
                     tensor = payload if torch.is_tensor(payload) else torch.as_tensor(payload)
