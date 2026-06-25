@@ -136,6 +136,8 @@ You can also inspect the available presets directly from the terminal:
 ```bash
 soma list encoders --level tile
 soma list aggregators
+soma list decoders
+soma list pixel-classifiers
 soma list tasks
 ```
 

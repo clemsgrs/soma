@@ -162,6 +162,31 @@ def test_list_tasks_prints_results(capsys):
     assert "binary_classification" in out
 
 
+@pytest.mark.parametrize(
+    ("kind", "helper", "title", "values"),
+    [
+        ("decoders", "list_decoders", "Decoders", ["linear", "lightweight_conv"]),
+        (
+            "pixel-classifiers",
+            "list_pixel_classifiers",
+            "Pixel Classifiers",
+            ["logistic", "xgboost"],
+        ),
+    ],
+)
+def test_list_dense_registries_prints_results(kind, helper, title, values, capsys):
+    from soma.cli import main
+
+    with patch(f"soma.cli.{helper}", return_value=values) as mock_helper:
+        main(["list", kind])
+
+    mock_helper.assert_called_once_with()
+    out = capsys.readouterr().out
+    assert title in out
+    for value in values:
+        assert value in out
+
+
 def test_list_help_prints_structured_block(capsys):
     from soma.cli import main
 

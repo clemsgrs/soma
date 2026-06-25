@@ -8,8 +8,10 @@ from pathlib import Path
 
 from soma.aggregators import list_aggregators
 from soma.config import load_config
+from soma.decoders import list_decoders
 from soma.encoders import list_models
 from soma.pipeline import Pipeline
+from soma.pixel_classifiers import list_pixel_classifiers
 from soma.tasks import list_task_heads
 
 
@@ -32,7 +34,12 @@ def _print_table(title: str, values: list[str]) -> None:
     from rich.table import Table
 
     console = Console()
-    table = Table(title=title, show_header=True, header_style="bold")
+    table = Table(
+        title=title,
+        show_header=True,
+        header_style="bold",
+        min_width=max(len(title) + 4, 12),
+    )
     table.add_column("Name")
     if not values:
         table.add_row("(none)")
@@ -50,6 +57,12 @@ def _cmd_list(args: argparse.Namespace) -> None:
     elif kind == "aggregators":
         values = list_aggregators()
         title = "Aggregators"
+    elif kind == "decoders":
+        values = list_decoders()
+        title = "Decoders"
+    elif kind == "pixel-classifiers":
+        values = list_pixel_classifiers()
+        title = "Pixel Classifiers"
     else:
         values = list_task_heads()
         title = "Task Heads"
@@ -59,11 +72,11 @@ def _cmd_list(args: argparse.Namespace) -> None:
 def _build_list_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soma list",
-        description="List encoders, aggregators, or task heads.",
+        description="List encoders, aggregators, dense registries, or task heads.",
     )
     parser.add_argument(
         "kind",
-        choices=("encoders", "aggregators", "tasks"),
+        choices=("encoders", "aggregators", "decoders", "pixel-classifiers", "tasks"),
         help="Component family to list.",
     )
     parser.add_argument(
@@ -79,11 +92,11 @@ def _build_list_parser() -> argparse.ArgumentParser:
 def _print_top_level_help() -> None:
     print(
         "usage: soma CONFIG\n"
-        "       soma list {encoders,aggregators,tasks} [--level {tile,slide,patient}]\n"
+        "       soma list {encoders,aggregators,decoders,pixel-classifiers,tasks} [--level {tile,slide,patient}]\n"
         "\n"
         "commands:\n"
         "  CONFIG   run a pipeline from a YAML config file\n"
-        "  list     list encoders, aggregators, or task heads\n"
+        "  list     list public model/component registries\n"
         "\n"
         "examples:\n"
         "  soma /path/to/config.yaml\n"
@@ -94,11 +107,13 @@ def _print_top_level_help() -> None:
 
 def _print_list_help() -> None:
     print(
-        "usage: soma list {encoders,aggregators,tasks} [--level {tile,slide,patient}]\n"
+        "usage: soma list {encoders,aggregators,decoders,pixel-classifiers,tasks} [--level {tile,slide,patient}]\n"
         "\n"
         "commands:\n"
         "  encoders     list registered encoder presets\n"
         "  aggregators  list registered aggregator presets\n"
+        "  decoders     list registered dense decoder presets\n"
+        "  pixel-classifiers  list registered per-pixel classifier presets\n"
         "  tasks        list registered task-head presets\n"
         "\n"
         "options:\n"
