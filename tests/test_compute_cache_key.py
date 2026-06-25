@@ -317,3 +317,43 @@ def test_annotation_bag_colors_do_not_change_key():
     assert build_tiling_cache_key(preprocessing=no_colors) == build_tiling_cache_key(
         preprocessing=with_colors
     )
+
+
+# --- Annotation-restricted bag cache identity, patient path (#111) ----------------------
+#
+# A patient cache key wraps the upstream tile recipe via its ``tile_dependency_signature``
+# (the tile preprocessing_signature, which folds in the annotation-sampling projection when a
+# masks block is active). So a compartment-restricted patient run must never alias a
+# full-tissue patient run of the same encoder/geometry — exactly as on the slide path (#110).
+
+
+def test_patient_annotation_bag_differs_from_tissue_bag():
+    """AC3 (#111): a tumor-restricted patient run and a full-tissue patient run of the same
+    patient encoder produce different cache keys (the selection spec rides in the patient
+    key's tile_dependency_signature, just like slide)."""
+    tissue = PreprocessingConfig(
+        backend="asap",
+        requested_spacing_um=0.5,
+        requested_tile_size_px=224,
+        tissue_method="hsv",
+    )
+    tumor = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+    )
+    tissue_key = compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=tissue)
+    tumor_key = compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=tumor)
+    assert tissue_key != tumor_key
+
+
+def test_patient_annotation_bag_identical_specs_same_key():
+    """AC3 (#111): identical masks/sampling specs hash to the same patient key (determinism)."""
+    a = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
+    )
+    b = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
+    )
+    assert compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=a) == (
+        compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=b)
+    )

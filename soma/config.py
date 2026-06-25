@@ -986,10 +986,12 @@ class PipelineConfig:
         sampling = self.preprocessing.sampling
         # A masks block drives annotation-based tile selection. For 'segmentation' it is the
         # slide-manifest ingestion mode (slides + masks → soma-sampled ROIs); for 'slide' it
-        # restricts the merged MIL bag to the selected compartment(s) (#110). Both forward the
-        # block into slide2vec's annotation sampling. Tile/patient/detection have no
-        # annotation-sampling step, so a masks block there is a config error.
-        _masks_dataset_types = {"slide", "segmentation"}
+        # restricts the merged MIL bag to the selected compartment(s) (#110); for 'patient' it
+        # restricts every slide's merged bag the same way (tiling/selection identical to
+        # 'slide'), and patient-level aggregation then consumes those restricted slide bags
+        # (#111). All forward the block into slide2vec's annotation sampling. Tile/detection
+        # have no annotation-sampling step, so a masks block there is a config error.
+        _masks_dataset_types = {"slide", "patient", "segmentation"}
         if masks is not None and self.dataset_type not in _masks_dataset_types:
             raise ValueError(
                 "masks: (annotation-based tile selection) is only valid for "

@@ -1,0 +1,58 @@
+# Annotation-restricted merged bag, patient path (soma #111).
+#
+# A patient-level run whose per-slide bag is restricted to the tumor compartment: each
+# slide's `mask_path` annotation raster gates tile selection by per-class coverage, so only
+# tiles that are >= 50% tumor enter that slide's merged bag (tissue-only tiles are excluded).
+# Tiling and selection are identical to the slide path (#110); patient-level aggregation then
+# consumes those restricted slide bags to produce compartment-restricted patient features.
+# A patient pipeline uses a pretrained patient encoder (no trainable aggregator) — the masks
+# block changes *which* tiles enter each slide's bag, nothing else.
+run:
+  output_root: runs/patient_tumor_restricted_bag
+  seed: 0
+  tags: []
+
+data:
+  # dataset.csv rows are (sample_id, patient_id, image_path, mask_path, label): mask_path is
+  # the multi-class annotation raster named by preprocessing.masks.pixel_mapping; label is the
+  # ordinary patient-level classification target, and patient_id groups slides per patient.
+  dataset_csv: data/dataset.csv
+  splits_csv: data/splits.csv
+  dataset_type: patient
+
+preprocessing:
+  requested_tile_size_px: 224
+  requested_spacing_um: 0.5
+  tissue_method: otsu
+  # The annotation masks block restricts each slide's bag to the tumor compartment. Tile
+  # selection gates on per-class min_coverage over the annotation mask (binary tissue
+  # filtering is bypassed under masks). pixel_mapping must include `background`.
+  masks:
+    pixel_mapping: {background: 0, tumor: 1}
+    min_coverage: {tumor: 0.5}   # keep tiles >= 50% tumor
+  sampling:
+    output_mode: merged          # one merged bag per slide (required for dataset_type: patient)
+    strategy: joint              # 'independent' tiles each class separately
+
+cache:
+  enabled: true
+
+encoder:
+  # A patient-level encoder (pretrained); patient features aggregate from the restricted
+  # slide bags. No `aggregation:` block — patient pipelines do not use a trainable aggregator.
+  name: moozy
+
+task:
+  name: binary_classification
+
+evaluation:
+  metrics:
+    - auroc
+    - balanced_accuracy
+    - auprc
+    - f1
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  patience: 10

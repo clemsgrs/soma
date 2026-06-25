@@ -112,8 +112,8 @@ still requires a name: ``background`` stays the opt-in reserved name for that mo
    ``masks:`` / ``sampling:`` block is no longer accepted — move them under
    ``preprocessing:`` as shown above.
 
-Annotation-restricted bags (``dataset_type: slide``)
-----------------------------------------------------
+Annotation-restricted bags (``dataset_type: slide`` or ``patient``)
+-------------------------------------------------------------------
 
 The same ``preprocessing.masks`` block also restricts a **whole-slide MIL bag** to a
 chosen compartment. On a ``dataset_type: slide`` dataset, declaring a ``masks`` block
@@ -122,6 +122,13 @@ coverage threshold** — e.g. a tumor-only bag that excludes the surrounding tis
 restricted bag then flows through the ordinary featurizer → aggregator → predictor with
 its **ordinary slide-level label** (the dataset's ``label`` column); nothing in the MIL
 path changes, only *which* tiles enter the bag.
+
+The same block is also accepted on a ``dataset_type: patient`` dataset (#111): every
+slide is tiled to its annotation-restricted merged bag (tiling and selection identical to
+the slide path), and patient-level aggregation then consumes those restricted slide bags
+to produce **compartment-restricted patient features**. A patient pipeline uses a
+pretrained patient encoder rather than a trainable aggregator, so the masks block again
+changes only *which* tiles enter each slide's bag.
 
 .. code-block:: yaml
 
@@ -164,11 +171,10 @@ How it works:
 
 .. note::
 
-   ``output_mode`` **must be** ``merged`` for ``dataset_type: slide`` (the default).
-   ``output_mode: per_annotation`` (one bag per ``(slide, class)``) is deferred — see
-   soma issue #86 — and raises at config load. Patient-level annotation bags are tracked
-   separately (issue #111). A ``masks`` block is rejected on ``dataset_type: tile`` (patch
-   manifests have no annotation-sampling step).
+   ``output_mode`` **must be** ``merged`` for ``dataset_type: slide`` and ``patient`` (the
+   default). ``output_mode: per_annotation`` (one bag per ``(slide, class)``) is deferred —
+   see soma issue #86 — and raises at config load on both. A ``masks`` block is rejected on
+   ``dataset_type: tile`` (patch manifests have no annotation-sampling step).
 
 A ready-to-run example lives at ``examples/slide_tumor_restricted_bag.yaml``.
 

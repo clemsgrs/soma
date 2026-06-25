@@ -450,6 +450,46 @@ def test_per_annotation_output_mode_rejected_for_slide():
         )
 
 
+def test_masks_valid_for_patient_dataset():
+    """AC1/AC2 (#111): a masks block is valid on a dataset_type='patient' dataset — the
+    annotation-restricted merged bag extends from 'slide' to 'patient'. Every slide is tiled
+    to its restricted merged bag (tiling/selection identical to 'slide'); patient-level
+    aggregation then consumes those restricted slide bags. A patient pipeline carries no
+    trainable aggregator (it uses a pretrained patient encoder), so the masks block restricts
+    tile selection only; the patient-encoder + task head are untouched."""
+    cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="patient",
+        task=TaskConfig(name="binary_classification"),
+        preprocessing=PreprocessingConfig(
+            masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+        ),
+    )
+    assert cfg.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1}
+    assert cfg.dataset_type == "patient"
+    # Patient pipelines never carry a trainable aggregator; the masks block does not change that.
+    assert cfg.aggregator is None
+
+
+def test_per_annotation_output_mode_rejected_for_patient():
+    """AC4 (#111): output_mode='per_annotation' stays rejected on a patient dataset, pointing
+    at #86 (the bag path only supports the merged compartment bag)."""
+    with pytest.raises(ValueError, match="per_annotation.*#86"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            preprocessing=PreprocessingConfig(
+                masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+                sampling=SamplingConfig(output_mode="per_annotation"),
+            ),
+        )
+
+
 def test_sampling_requires_masks():
     with pytest.raises(ValueError, match="sampling: requires a masks: block"):
         _seg_config(sampling=SamplingConfig())

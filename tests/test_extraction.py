@@ -1006,6 +1006,63 @@ def test_load_tilings_skips_tissue_value_provenance_under_masks(
     assert captured["tissue_mask_tissue_value"] is None
 
 
+# --- Annotation-restricted merged bag forwarding, patient path (#111) -------------------
+
+
+def test_patient_restricted_bag_forwards_same_block_as_slide():
+    """AC2 (#111): a dataset_type='patient' run tiles each slide to its annotation-restricted
+    merged bag exactly as the slide path does. The tiling/forwarding goes through the shared
+    ``build_preprocessing_config`` (which never sees dataset_type), so the patient and slide
+    runs forward a byte-identical slide2vec masks block + independent_sampling toggle for the
+    same preprocessing — patient features then aggregate from those restricted slide bags."""
+    from soma.config import MasksConfig, PipelineConfig, SamplingConfig, TaskConfig
+
+    preprocessing = _PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        tissue_method="otsu",
+        min_coverage={"tissue": 0.1},
+        masks=MasksConfig(
+            pixel_mapping={"background": 0, "tumor": 1},
+            min_coverage={"tumor": 0.5},
+        ),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+    )
+
+    # The patient PipelineConfig is accepted (eligibility widened from slide to slide+patient)
+    # and reuses the same preprocessing block — no aggregator (patient uses a pretrained encoder).
+    patient_cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="patient",
+        task=TaskConfig(name="binary_classification"),
+        preprocessing=preprocessing,
+    )
+    slide_cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="slide",
+        task=TaskConfig(name="binary_classification"),
+        preprocessing=preprocessing,
+    )
+
+    patient_block = build_preprocessing_config(patient_cfg.preprocessing)
+    slide_block = build_preprocessing_config(slide_cfg.preprocessing)
+
+    # Each slide is tiled to the restricted merged bag: tumor forwarded, tissue nulled out,
+    # explicit merged output — identical to the slide path.
+    assert patient_block.masks["pixel_mapping"]["tumor"] == 1
+    assert patient_block.masks["pixel_mapping"]["tissue"] is None
+    assert patient_block.masks["min_coverage"]["tumor"] == pytest.approx(0.5)
+    assert patient_block.masks["output_mode"] == "merged"
+    assert patient_block.independent_sampling is False
+    # Byte-identical forwarding to the slide path (same shared adapter, no dataset_type branch).
+    assert patient_block.masks == slide_block.masks
+    assert patient_block.independent_sampling == slide_block.independent_sampling
+
+
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     dataset = _make_dataset(tmp_path, with_mask=True)
     tiling_dir = tmp_path / "tiling"
