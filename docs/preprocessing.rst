@@ -44,6 +44,37 @@ Key knobs
      - Minimum tissue fraction to keep a tile (masks-shaped map; ``min_coverage.tissue``)
      - Adjust only if tissue masks are too loose or too strict
 
+Segmentation slide-manifest sampling
+------------------------------------
+
+For the segmentation slide-manifest path (whole slides + annotation masks), the
+annotation ``masks`` and ROI ``sampling`` blocks nest **under** ``preprocessing``
+because annotation-based tile selection is a preprocessing/tiling concern (this
+mirrors slide2vec's own ``PreprocessingConfig``):
+
+.. code-block:: yaml
+
+   preprocessing:
+     requested_tile_size_px: 512
+     requested_spacing_um: 0.5
+     masks:
+       pixel_mapping: {background: 0, tumor: 1}
+       min_coverage: {tumor: 0.5}
+     sampling:
+       output_mode: merged
+       strategy: joint
+
+The presence of ``preprocessing.masks`` selects the slide-manifest input mode
+(slides + annotation masks → soma-sampled ROIs → dense grids → segmentation head).
+See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
+
+.. note::
+
+   **Migration (soma #109):** ``masks:`` and ``sampling:`` were previously
+   top-level config sections. They now live under ``preprocessing:``. A top-level
+   ``masks:`` / ``sampling:`` block is no longer accepted — move them under
+   ``preprocessing:`` as shown above.
+
 Guidance
 --------
 

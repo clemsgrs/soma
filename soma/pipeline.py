@@ -2144,7 +2144,7 @@ class Pipeline:
                 training=self._config.training,
                 run_dir=layout.run_dir,
                 preprocessing=preprocessing,
-                masks=self._config.masks,
+                masks=self._config.preprocessing.masks,
                 heatmaps=self._config.heatmaps,
             )
 
@@ -2232,7 +2232,7 @@ class Pipeline:
         # Slide-manifest mode: rows are whole slides + a masks:/sampling: config. soma
         # samples ROIs (hs2p) and extracts dense grids over them (slide2vec), then runs the
         # ordinary cached dense path on the derived ROI manifest. Orthogonal to feature_mode.
-        if self._config.masks is not None:
+        if self._config.preprocessing.masks is not None:
             return self._build_slide_manifest_dense_store(run_dir=run_dir)
 
         # Live re-encode path: no cached grids — hold the frozen encoder + geometry and
@@ -2342,11 +2342,11 @@ class Pipeline:
             )
 
         preprocessing = self._resolve_preprocessing()
-        sampling = self._config.sampling or SamplingConfig()
+        sampling = self._config.preprocessing.sampling or SamplingConfig()
 
         logger.info("Sampling segmentation ROIs from %d slides...", len(self._dataset.sample_ids))
         coords_by_slide = sample_slide_rois(
-            self._dataset, masks=self._config.masks, sampling=sampling, preprocessing=preprocessing
+            self._dataset, masks=self._config.preprocessing.masks, sampling=sampling, preprocessing=preprocessing
         )
         roi_dir = run_dir / "segmentation_rois"
         roi_manifest_csv, roi_splits_csv = build_roi_manifest(
@@ -2362,7 +2362,7 @@ class Pipeline:
         extractor = SlideManifestDenseExtractor(
             self._dataset,
             self._config.encoder,
-            masks=self._config.masks,
+            masks=self._config.preprocessing.masks,
             sampling=sampling,
             preprocessing=preprocessing,
             execution=self._config.execution,

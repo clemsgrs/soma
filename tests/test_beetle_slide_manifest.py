@@ -33,7 +33,7 @@ def test_beetle_config_loads_and_validates():
 
 def test_beetle_config_encodes_masks_contract():
     cfg = load_config(BEETLE_CONFIG)
-    masks = cfg.masks
+    masks = cfg.preprocessing.masks
     assert masks is not None
     # masks.pixel_mapping is the BEETLE raw vocabulary; must include background (unannotated).
     assert masks.pixel_mapping["background"] == 0
@@ -57,12 +57,12 @@ def test_beetle_config_encodes_recipe():
     assert cfg.encoder.name == "phikon"
     assert cfg.decoder.name == "lightweight_conv"
     assert cfg.evaluation.metrics == ["mean_dice", "mean_iou", "dice_per_class"]
-    assert cfg.sampling.output_mode == "merged"
+    assert cfg.preprocessing.sampling.output_mode == "merged"
 
 
 def test_beetle_remap_matches_curation_contract():
     cfg = load_config(BEETLE_CONFIG)
-    lut, num_classes = build_label_remap(cfg.masks.pixel_mapping, ignore_index=255)
+    lut, num_classes = build_label_remap(cfg.preprocessing.masks.pixel_mapping, ignore_index=255)
     assert num_classes == 4
     raw = np.array(sorted(EXPECTED_REMAP), dtype=np.int64)
     expected = np.array([EXPECTED_REMAP[int(v)] for v in raw], dtype=lut.dtype)
