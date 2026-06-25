@@ -90,6 +90,7 @@ from soma.training.model import (
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
 from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
 from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
+from soma.training.fold_planning import plan_dense_fold
 from soma.training.segmentation_dataset import (
     LiveSegmentationDataset,
     SegmentationDataset,
@@ -1023,30 +1024,17 @@ def train_one_segmentation_fold(
     seed_everything(training.seed, fold=fold)
     _fp = f"Fold {fold}" if num_folds > 1 else "Run"
 
-    # Split -> records (reuse the legacy, no-manifest selection; dense grids are
-    # required for every listed sample, validated below).
-    train_records = [dataset.samples[sid] for sid in fold_split.train]
-    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-    test_records_by_split = {
-        split_name: [dataset.samples[sid] for sid in ids]
-        for split_name, ids in fold_split.tests.items()
-    }
-    if training.tune_is_test:
-        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
-        tune_records = list(test_records_by_split[tune_from_test_split_name])
-
-    if not train_records:
-        raise ValueError(f"{_fp} has no training samples")
-    if not tune_records:
-        if not training.allow_missing_tune:
-            raise ValueError(f"{_fp} has no tuning samples")
-        logger.warning("%s has no tune samples; using train as tune (allow_missing_tune)", _fp)
-        tune_records = list(train_records)
-    for split_name, records in test_records_by_split.items():
-        if not records:
-            raise ValueError(f"{_fp} has no samples in split '{split_name}'")
-
-    all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
+    fold_plan = plan_dense_fold(
+        dataset=dataset,
+        fold_split=fold_split,
+        training=training,
+        fold_label=_fp,
+        logger=logger,
+    )
+    train_records = fold_plan.train_records
+    tune_records = fold_plan.tune_records
+    test_records_by_split = fold_plan.test_records_by_split
+    all_records = fold_plan.all_records
 
     is_live = isinstance(feature_store, LiveSegmentationSource)
 
@@ -1277,28 +1265,17 @@ def train_one_detection_fold(
     seed_everything(training.seed, fold=fold)
     _fp = f"Fold {fold}" if num_folds > 1 else "Run"
 
-    train_records = [dataset.samples[sid] for sid in fold_split.train]
-    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-    test_records_by_split = {
-        split_name: [dataset.samples[sid] for sid in ids]
-        for split_name, ids in fold_split.tests.items()
-    }
-    if training.tune_is_test:
-        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
-        tune_records = list(test_records_by_split[tune_from_test_split_name])
-
-    if not train_records:
-        raise ValueError(f"{_fp} has no training samples")
-    if not tune_records:
-        if not training.allow_missing_tune:
-            raise ValueError(f"{_fp} has no tuning samples")
-        logger.warning("%s has no tune samples; using train as tune (allow_missing_tune)", _fp)
-        tune_records = list(train_records)
-    for split_name, records in test_records_by_split.items():
-        if not records:
-            raise ValueError(f"{_fp} has no samples in split '{split_name}'")
-
-    all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
+    fold_plan = plan_dense_fold(
+        dataset=dataset,
+        fold_split=fold_split,
+        training=training,
+        fold_label=_fp,
+        logger=logger,
+    )
+    train_records = fold_plan.train_records
+    tune_records = fold_plan.tune_records
+    test_records_by_split = fold_plan.test_records_by_split
+    all_records = fold_plan.all_records
 
     # num_classes + detection knobs from task.params (no scalar-label auto-inject).
     det_params = dict(task.params)
@@ -1564,28 +1541,17 @@ def train_one_pixel_classifier_fold(
     seed_everything(training.seed, fold=fold)
     _fp = f"Fold {fold}" if num_folds > 1 else "Run"
 
-    # Split -> records (same selection as the decoder fold).
-    train_records = [dataset.samples[sid] for sid in fold_split.train]
-    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-    test_records_by_split = {
-        split_name: [dataset.samples[sid] for sid in ids]
-        for split_name, ids in fold_split.tests.items()
-    }
-    if training.tune_is_test:
-        tune_from_test_split_name = _resolve_tune_is_test_split(fold_split, _fp)
-        tune_records = list(test_records_by_split[tune_from_test_split_name])
-    if not train_records:
-        raise ValueError(f"{_fp} has no training samples")
-    if not tune_records:
-        if not training.allow_missing_tune:
-            raise ValueError(f"{_fp} has no tuning samples")
-        logger.warning("%s has no tune samples; using train as tune (allow_missing_tune)", _fp)
-        tune_records = list(train_records)
-    for split_name, records in test_records_by_split.items():
-        if not records:
-            raise ValueError(f"{_fp} has no samples in split '{split_name}'")
-
-    all_records = [*train_records, *tune_records, *(r for recs in test_records_by_split.values() for r in recs)]
+    fold_plan = plan_dense_fold(
+        dataset=dataset,
+        fold_split=fold_split,
+        training=training,
+        fold_label=_fp,
+        logger=logger,
+    )
+    train_records = fold_plan.train_records
+    tune_records = fold_plan.tune_records
+    test_records_by_split = fold_plan.test_records_by_split
+    all_records = fold_plan.all_records
     feature_store.validate_coverage([r.sample_id for r in all_records])
 
     seg_params = dict(task.params)
