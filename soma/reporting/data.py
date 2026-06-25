@@ -255,15 +255,15 @@ def load_run_data(run_dir: str | Path) -> RunData:
 
 
 def _load_training_history(history_path: Path) -> list[dict]:
+    """Read the per-epoch list from a ``training_history.json`` file.
+
+    The on-disk file is an object ``{"epochs": [...], "peak_per_metric": {...}}``.
+    Only the per-epoch list is consumed here; ``peak_per_metric`` is a diagnostic
+    and is intentionally dropped so it never reaches any report, chart, or aggregate.
+    """
     if not history_path.exists():
         return []
-    payload = json.loads(history_path.read_text())
-    if isinstance(payload, list):
-        return payload
-    if isinstance(payload, dict):
-        epochs = payload.get("epochs", [])
-        return epochs if isinstance(epochs, list) else []
-    return []
+    return json.loads(history_path.read_text())["epochs"]
 
 
 def run_data_from_result(

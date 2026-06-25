@@ -143,7 +143,7 @@ def _make_run_dir(
 
         if include_history:
             (fold_dir / "training_history.json").write_text(
-                json.dumps(_make_training_history())
+                json.dumps({"epochs": _make_training_history(), "peak_per_metric": {}})
             )
 
         (fold_dir / "metrics.json").write_text(json.dumps(metrics_data, indent=2))
@@ -234,9 +234,11 @@ def test_save_training_history_records_peak_per_metric_diagnostic(tmp_path: Path
 
     data = json.loads(path.read_text())
 
+    # Epochs are reported 1-based (matching the training panel's epoch numbering):
+    # auroc peaks at the 2nd epoch, rare_dice at the 3rd.
     assert data["peak_per_metric"] == {
-        "auroc": {"epoch": 1, "value": 0.70},
-        "rare_dice": {"epoch": 2, "value": 0.50},
+        "auroc": {"epoch": 2, "value": 0.70},
+        "rare_dice": {"epoch": 3, "value": 0.50},
     }
 
 

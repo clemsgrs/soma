@@ -95,7 +95,9 @@ def _make_run_dir(
     for fold_idx in range(n_folds):
         fold_dir = run_dir / f"fold_{fold_idx}"
         fold_dir.mkdir()
-        (fold_dir / "training_history.json").write_text(json.dumps(_make_training_history()))
+        (fold_dir / "training_history.json").write_text(
+            json.dumps({"epochs": _make_training_history(), "peak_per_metric": {}})
+        )
         metrics_data = {"tune": {m: 0.78 for m in resolved}, "test": {m: 0.75 for m in resolved}}
         (fold_dir / "metrics.json").write_text(json.dumps(metrics_data))
         _make_binary_predictions().to_csv(fold_dir / "predictions_test.csv", index=False)

@@ -16,12 +16,14 @@ from soma.tasks.regression import RegressionHead
 from soma.training.collate import bag_collate_fn
 from soma.training.model import MILModel
 from soma.training.trainer import (
+    EpochLog,
     Trainer,
     TrainResult,
     _build_training_panel,
     _format_batch_progress,
     _is_monitor_improvement,
     _resolve_monitor_value,
+    peak_per_metric,
 )
 from soma.training.seed import seed_everything
 
@@ -472,3 +474,46 @@ class TestTrainingProgressFormatting:
             ("train", 4, 5),
             ("train", 5, 5),
         ]
+
+
+class TestPeakPerMetric:
+    """peak_per_metric: diagnostic per-metric best across epochs (1-based epoch)."""
+
+    def _log(self, epoch: int, metrics: dict[str, float]) -> EpochLog:
+        return EpochLog(
+            epoch=epoch,
+            train_loss=0.5,
+            tune_loss=0.5,
+            tune_metrics=metrics,
+            lr=1e-4,
+        )
+
+    def test_reports_per_metric_peak_with_one_based_epoch(self):
+        history = [
+            self._log(0, {"auroc": 0.55, "rare_dice": 0.40}),
+            self._log(1, {"auroc": 0.70, "rare_dice": 0.35}),
+            self._log(2, {"auroc": 0.65, "rare_dice": 0.50}),
+        ]
+
+        peaks = peak_per_metric(history)
+
+        # 1-based epochs: auroc peaks at the 2nd epoch, rare_dice at the 3rd.
+        assert peaks == {
+            "auroc": {"epoch": 2, "value": 0.70},
+            "rare_dice": {"epoch": 3, "value": 0.50},
+        }
+
+    def test_excludes_tune_loss_and_skips_non_finite(self):
+        history = [
+            self._log(0, {"auroc": float("nan")}),
+            self._log(1, {"auroc": 0.60}),
+        ]
+
+        peaks = peak_per_metric(history)
+
+        # tune_loss is not a tune_metric, so it never appears; the NaN epoch is skipped.
+        assert "tune_loss" not in peaks
+        assert peaks == {"auroc": {"epoch": 2, "value": 0.60}}
+
+    def test_empty_history_is_empty(self):
+        assert peak_per_metric([]) == {}
