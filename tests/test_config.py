@@ -309,9 +309,22 @@ def test_masks_config_valid_defaults():
     assert (sampling.strategy, sampling.output_mode) == ("joint", "merged")
 
 
-def test_masks_config_requires_background():
-    with pytest.raises(ValueError, match="must include a 'background' label"):
-        MasksConfig(pixel_mapping={"tumor": 1})
+def test_masks_config_accepts_background_free_vocabulary():
+    # No reserved-name rule: a background-free vocabulary like {tumor: 2} is accepted,
+    # with structural validation still applied.
+    masks = MasksConfig(pixel_mapping={"tumor": 2}, min_coverage={"tumor": 0.5})
+    assert masks.pixel_mapping == {"tumor": 2}
+    assert masks.min_coverage == {"tumor": 0.5}
+
+
+def test_masks_config_rejects_empty_pixel_mapping():
+    with pytest.raises(ValueError, match="non-empty"):
+        MasksConfig(pixel_mapping={})
+
+
+def test_masks_config_rejects_duplicate_pixel_values():
+    with pytest.raises(ValueError, match="unique pixel values"):
+        MasksConfig(pixel_mapping={"tumor": 1, "stroma": 1})
 
 
 def test_masks_config_min_coverage_must_be_subset():

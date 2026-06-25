@@ -135,6 +135,29 @@ def test_build_label_remap_rejects_class_count_mismatch():
         build_label_remap({"background": 0, "tumor": 1, "stroma": 2}, num_classes=4)
 
 
-def test_build_label_remap_requires_background():
-    with pytest.raises(ValueError, match="background"):
-        build_label_remap({"tumor": 1}, ignore_index=255)
+def test_build_label_remap_background_absent_every_label_is_a_class():
+    # No reserved 'background' name: with class-count == mapping size, every named
+    # label is a real class (index = order) and any unlisted raw value -> ignore.
+    lut, num_classes = build_label_remap(
+        {"tumor": 1, "stroma": 2}, num_classes=2, ignore_index=255
+    )
+    assert num_classes == 2
+    raw = np.array([0, 1, 2, 7], dtype=np.int64)
+    # 0 is unlisted -> ignore; 1 -> tumor (class 0); 2 -> stroma (class 1); 7 -> ignore.
+    np.testing.assert_array_equal(lut[raw], np.array([255, 0, 1, 255]))
+
+
+def test_build_label_remap_background_absent_infers_num_classes():
+    # num_classes omitted: with no 'background', every label is a class, so the
+    # resolved class count is the mapping size.
+    lut, num_classes = build_label_remap({"tumor": 2}, ignore_index=255)
+    assert num_classes == 1
+    assert int(lut[2]) == 0  # the single named label -> class 0
+    assert int(lut[0]) == 255  # unlisted -> ignore
+
+
+def test_build_label_remap_background_absent_rejects_class_count_mismatch():
+    # Without a 'background' name there is no ignore-label mode: class-count must
+    # equal the mapping size, so a smaller num_classes is a clear error.
+    with pytest.raises(ValueError, match="num_classes"):
+        build_label_remap({"tumor": 1, "stroma": 2}, num_classes=1)
