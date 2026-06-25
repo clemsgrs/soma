@@ -7,10 +7,19 @@ import yaml
 
 from soma.config import (
     AggregatorConfig,
+    AugmentationConfig,
     CacheConfig,
+    CompositeConfig,
+    DecoderConfig,
     EncoderConfig,
+    EvalConfig,
+    EncoderMemberConfig,
+    HeatmapConfig,
+    MasksConfig,
     PipelineConfig,
+    PixelClassifierConfig,
     PreprocessingConfig,
+    SamplingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -56,6 +65,32 @@ def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
     return PipelineConfig(**defaults)
 
 
+def _make_segmentation_config(tmp_path: Path, **overrides) -> PipelineConfig:
+    dataset_csv = _write_csv(
+        tmp_path / "segmentation_dataset.csv",
+        "sample_id,image_path,mask_path\ns0,/slides/s0.png,/masks/s0.png\n",
+    )
+    splits_csv = _write_csv(
+        tmp_path / "segmentation_splits.csv",
+        "fold,sample_id,split\n0,s0,train\n",
+    )
+    defaults = dict(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "outputs",
+        dataset_type="segmentation",
+        preprocessing=PreprocessingConfig(requested_tile_size_px=256, requested_spacing_um=0.5),
+        cache=CacheConfig(),
+        encoder=EncoderConfig(name="uni2"),
+        aggregator=None,
+        decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+        training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
+    )
+    defaults.update(overrides)
+    return PipelineConfig(**defaults)
+
+
 def test_canonical_experiment_payload_omits_seed(tmp_path: Path):
     cfg_a = _make_pipeline_config(tmp_path, training=TrainingConfig(seed=1, epochs=10, learning_rate=1e-4))
     cfg_b = _make_pipeline_config(tmp_path, training=TrainingConfig(seed=999, epochs=10, learning_rate=1e-4))
@@ -89,6 +124,213 @@ def test_build_experiment_spec_distinguishes_dataset_type(tmp_path: Path):
     tile_spec = build_experiment_spec(tile_config)
 
     assert slide_spec.experiment_id != tile_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_dense_decoder_settings(tmp_path: Path):
+    shallow_decoder = _make_segmentation_config(
+        tmp_path,
+        decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+    )
+    wider_decoder = _make_segmentation_config(
+        tmp_path,
+        decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 128}),
+    )
+
+    shallow_spec = build_experiment_spec(shallow_decoder)
+    wider_spec = build_experiment_spec(wider_decoder)
+
+    assert shallow_spec.experiment_id != wider_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_dense_pixel_classifier_choices(tmp_path: Path):
+    logistic = _make_segmentation_config(
+        tmp_path,
+        decoder=None,
+        pixel_classifier=PixelClassifierConfig(name="logistic", params={"C": 1.0}),
+    )
+    random_forest = _make_segmentation_config(
+        tmp_path,
+        decoder=None,
+        pixel_classifier=PixelClassifierConfig(name="random_forest", params={"n_estimators": 25}),
+    )
+
+    logistic_spec = build_experiment_spec(logistic)
+    forest_spec = build_experiment_spec(random_forest)
+
+    assert logistic_spec.experiment_id != forest_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_dense_composite_model_choices(tmp_path: Path):
+    l2_composite = _make_segmentation_config(
+        tmp_path,
+        encoder=None,
+        composite=CompositeConfig(
+            encoders=[EncoderMemberConfig(name="uni2", member_norm="l2")]
+        ),
+    )
+    layernorm_composite = _make_segmentation_config(
+        tmp_path,
+        encoder=None,
+        composite=CompositeConfig(
+            encoders=[EncoderMemberConfig(name="uni2", member_norm="layernorm")]
+        ),
+    )
+
+    l2_spec = build_experiment_spec(l2_composite)
+    layernorm_spec = build_experiment_spec(layernorm_composite)
+
+    assert l2_spec.experiment_id != layernorm_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_evaluation_metrics(tmp_path: Path):
+    auroc_config = _make_pipeline_config(tmp_path, evaluation=EvalConfig(metrics=["auroc"]))
+    f1_config = _make_pipeline_config(tmp_path, evaluation=EvalConfig(metrics=["f1"]))
+
+    auroc_spec = build_experiment_spec(auroc_config)
+    f1_spec = build_experiment_spec(f1_config)
+
+    assert auroc_spec.experiment_id != f1_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_evaluation_probability_artifacts(tmp_path: Path):
+    without_probabilities = _make_segmentation_config(
+        tmp_path,
+        evaluation=EvalConfig(metrics=["mean_dice"], save_probabilities=False),
+    )
+    with_probabilities = _make_segmentation_config(
+        tmp_path,
+        evaluation=EvalConfig(metrics=["mean_dice"], save_probabilities=True),
+    )
+
+    without_spec = build_experiment_spec(without_probabilities)
+    with_spec = build_experiment_spec(with_probabilities)
+
+    assert without_spec.experiment_id != with_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_heatmap_artifact_settings(tmp_path: Path):
+    disabled = _make_pipeline_config(tmp_path, heatmaps=HeatmapConfig(enabled=False))
+    enabled = _make_pipeline_config(
+        tmp_path,
+        heatmaps=HeatmapConfig(enabled=True, cmap="viridis", alpha=0.75, blur_sigma=1.5),
+    )
+
+    disabled_spec = build_experiment_spec(disabled)
+    enabled_spec = build_experiment_spec(enabled)
+
+    assert disabled_spec.experiment_id != enabled_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_mask_settings_via_preprocessing(tmp_path: Path):
+    tumor_mask = _make_pipeline_config(
+        tmp_path,
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=MasksConfig(pixel_mapping={"tumor": 1}, min_coverage={"tumor": 0.2}),
+        ),
+    )
+    stroma_mask = _make_pipeline_config(
+        tmp_path,
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=MasksConfig(pixel_mapping={"stroma": 2}, min_coverage={"stroma": 0.2}),
+        ),
+    )
+
+    tumor_spec = build_experiment_spec(tumor_mask)
+    stroma_spec = build_experiment_spec(stroma_mask)
+
+    assert tumor_spec.experiment_id != stroma_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_sampling_settings_via_preprocessing(tmp_path: Path):
+    mask = MasksConfig(pixel_mapping={"tumor": 1}, min_coverage={"tumor": 0.2})
+    joint_sampling = _make_pipeline_config(
+        tmp_path,
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=mask,
+            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        ),
+    )
+    independent_sampling = _make_pipeline_config(
+        tmp_path,
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=mask,
+            sampling=SamplingConfig(strategy="independent", output_mode="merged"),
+        ),
+    )
+
+    joint_spec = build_experiment_spec(joint_sampling)
+    independent_spec = build_experiment_spec(independent_sampling)
+
+    assert joint_spec.experiment_id != independent_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_feature_mode(tmp_path: Path):
+    cached = _make_segmentation_config(tmp_path, feature_mode="cached")
+    live = _make_segmentation_config(tmp_path, feature_mode="live")
+
+    cached_spec = build_experiment_spec(cached)
+    live_spec = build_experiment_spec(live)
+
+    assert cached_spec.experiment_id != live_spec.experiment_id
+
+
+def test_build_experiment_spec_distinguishes_live_augmentation_choices(tmp_path: Path):
+    no_augmentation = _make_segmentation_config(tmp_path, feature_mode="live")
+    horizontal_flip = _make_segmentation_config(
+        tmp_path,
+        feature_mode="live",
+        augmentation=AugmentationConfig(horizontal_flip=0.5),
+    )
+
+    no_aug_spec = build_experiment_spec(no_augmentation)
+    flip_spec = build_experiment_spec(horizontal_flip)
+
+    assert no_aug_spec.experiment_id != flip_spec.experiment_id
+
+
+def test_build_experiment_spec_is_stable_for_equivalent_configurations(tmp_path: Path):
+    first = _make_segmentation_config(
+        tmp_path,
+        decoder=DecoderConfig(
+            name="lightweight_conv",
+            params={"hidden_dim": 64, "num_groups": 8},
+        ),
+    )
+    second = _make_segmentation_config(
+        tmp_path,
+        decoder=DecoderConfig(
+            name="lightweight_conv",
+            params={"num_groups": 8, "hidden_dim": 64},
+        ),
+    )
+
+    first_spec = build_experiment_spec(first)
+    repeated_first_spec = build_experiment_spec(first)
+    second_spec = build_experiment_spec(second)
+
+    assert first_spec.experiment_id == repeated_first_spec.experiment_id
+    assert first_spec.experiment_id == second_spec.experiment_id
+
+
+def test_build_experiment_spec_ignores_inactive_heatmap_rendering_settings(tmp_path: Path):
+    default_disabled = _make_pipeline_config(tmp_path, heatmaps=HeatmapConfig(enabled=False))
+    restyled_disabled = _make_pipeline_config(
+        tmp_path,
+        heatmaps=HeatmapConfig(enabled=False, cmap="viridis", alpha=0.75, blur_sigma=1.5),
+    )
+
+    default_spec = build_experiment_spec(default_disabled)
+    restyled_spec = build_experiment_spec(restyled_disabled)
+
+    assert default_spec.experiment_id == restyled_spec.experiment_id
 
 
 def test_resolve_managed_output_paths_groups_same_experiment_and_changes_run_dir(tmp_path: Path):

@@ -49,6 +49,13 @@ def _training_without_seed(config: PipelineConfig) -> dict[str, Any]:
     return training
 
 
+def _heatmap_identity(config: PipelineConfig) -> dict[str, Any]:
+    heatmaps = asdict(config.heatmaps)
+    if not config.heatmaps.enabled:
+        return {"enabled": False}
+    return heatmaps
+
+
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_path = Path(config.dataset_csv).resolve()
     splits_path = Path(config.splits_csv).resolve()
@@ -62,14 +69,23 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "checksum": _sha256_file(splits_path),
         },
         "dataset_type": config.dataset_type,
+        "feature_mode": config.feature_mode,
         "preprocessing": asdict(config.preprocessing),
         "cache": {
             "enabled": config.cache.enabled,
             "reuse_policy": config.cache.reuse_policy,
         },
         "encoder": asdict(config.encoder) if config.encoder is not None else None,
+        "composite": asdict(config.composite) if config.composite is not None else None,
         "aggregator": asdict(config.aggregator) if config.aggregator is not None else None,
+        "decoder": asdict(config.decoder) if config.decoder is not None else None,
+        "pixel_classifier": (
+            asdict(config.pixel_classifier) if config.pixel_classifier is not None else None
+        ),
         "task": asdict(config.task),
+        "evaluation": asdict(config.evaluation),
+        "heatmaps": _heatmap_identity(config),
+        "augmentation": asdict(config.augmentation),
         "training": _training_without_seed(config),
         "tags": list(config.tags),
     }
