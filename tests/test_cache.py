@@ -882,6 +882,31 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
     assert resumed.missing_sample_ids() == ["s2"]
 
 
+def test_non_dense_missing_sample_ids_ignores_sidecar(tmp_path: Path):
+    # A non-dense (tile) cache's .pt is self-describing: missing_sample_ids() must
+    # NOT require a sidecar. The dense-sidecar gate (#140) is intentionally asymmetric.
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    for sample_id in dataset.sample_ids:
+        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))  # bare .pt, no sidecar
+    record_sample_identity_signatures(resolution, list(dataset.sample_ids))
+    reused = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    assert reused.missing_sample_ids() == []
+
+
 def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"

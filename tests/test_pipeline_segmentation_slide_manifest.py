@@ -342,3 +342,95 @@ def test_slide_manifest_sliding_window_encodes_via_soma_sliding(tmp_path: Path, 
     assert captured["window_hw"] == (WINDOW, WINDOW)  # slid at the native window, not 32
     grid = store.load("s0__x0_y0")
     assert grid.shape == (FEATURE_DIM, GRID, GRID)  # stitched back to the target grid
+
+
+# --------------------------------------------------------------------------- #
+# Resumable dense extraction (#140): encode only the missing ROIs.
+# --------------------------------------------------------------------------- #
+
+
+def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch):
+    """A resumed dense run re-encodes only the absent ROIs; a fully-cached slide is
+    never opened, and already-materialized grids are left untouched."""
+    from soma.config import CacheConfig, EncoderConfig
+    from soma.dense.store import DENSE_SIDECAR_SUFFIX
+    from soma.dense_slide_extraction import SlideManifestDenseExtractor
+    from soma.dataset import SegmentationManifest
+
+    import slide2vec.inference as s2v_inference
+    import slide2vec.runtime.dense_regions as s2v_dense
+    import hs2p.wsi.wsi as hs2p_wsi
+
+    # Two slides, two ROIs each.
+    roi_manifest = tmp_path / "roi_manifest.csv"
+    roi_manifest.write_text(
+        "sample_id,image_path,mask_path,region_x,region_y\n"
+        "s0__x0_y0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
+        "s0__x32_y0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
+        "s1__x0_y0,/fake/s1.tif,/fake/s1_mask.tif,0,0\n"
+        "s1__x32_y0,/fake/s1.tif,/fake/s1_mask.tif,32,0\n"
+    )
+    dataset = SegmentationManifest(roi_manifest)
+
+    monkeypatch.setattr(
+        s2v_inference, "load_model",
+        lambda **kw: SimpleNamespace(model=SimpleNamespace(patch_size=(PATCH, PATCH)), device="cpu"),
+    )
+
+    opened_paths: list[str] = []
+    monkeypatch.setattr(
+        hs2p_wsi, "WSI",
+        lambda path, **kw: opened_paths.append(str(path)) or SimpleNamespace(),
+    )
+
+    encoded_coords: list[list] = []
+    rng = np.random.default_rng(0)
+
+    def _encode(*, coordinates, **kw):
+        encoded_coords.append([tuple(int(v) for v in c) for c in coordinates])
+        return rng.standard_normal((len(coordinates), FEATURE_DIM, GRID, GRID)).astype(np.float32)
+
+    monkeypatch.setattr(s2v_dense, "encode_regions_dense", _encode)
+
+    def _make_extractor():
+        return SlideManifestDenseExtractor(
+            dataset,
+            EncoderConfig(name="phikon", batch_size=2),
+            masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+            preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
+            cache=CacheConfig(enabled=True),
+        )
+
+    feature_dir = tmp_path / "features"
+    # Run 1: populate the whole cache.
+    store = _make_extractor().run(feature_dir=feature_dir)
+    assert sorted(store.available_samples) == [
+        "s0__x0_y0", "s0__x32_y0", "s1__x0_y0", "s1__x32_y0"
+    ]
+    features_dir = store.feature_dir
+
+    # Simulate a crash before s1's grids landed: drop s1's grids + sidecars.
+    for sid in ("s1__x0_y0", "s1__x32_y0"):
+        (features_dir / f"{sid}.pt").unlink()
+        (features_dir / f"{sid}{DENSE_SIDECAR_SUFFIX}").unlink()
+    s0_mtimes = {
+        sid: (features_dir / f"{sid}.pt").stat().st_mtime_ns
+        for sid in ("s0__x0_y0", "s0__x32_y0")
+    }
+
+    # Run 2: resume — only s1's ROIs are absent.
+    encoded_coords.clear()
+    opened_paths.clear()
+    resumed = _make_extractor().run(feature_dir=feature_dir)
+
+    # Exactly the absent set re-encoded; the fully-cached slide never opened.
+    assert encoded_coords == [[(0, 0), (32, 0)]]
+    assert opened_paths == ["/fake/s1.tif"]
+    # The present (s0) grids are left byte-for-byte untouched.
+    for sid, mtime in s0_mtimes.items():
+        assert (features_dir / f"{sid}.pt").stat().st_mtime_ns == mtime
+    # And the resume produced a complete, readable store.
+    assert sorted(resumed.available_samples) == [
+        "s0__x0_y0", "s0__x32_y0", "s1__x0_y0", "s1__x32_y0"
+    ]

@@ -89,11 +89,21 @@ class FeatureCacheResolution(BaseCacheResolution):
     def missing_sample_ids(self) -> list[str]:
         expected = self.cache_ids
         empty = self.empty_sample_ids
-        # One directory listing decides ``.pt`` existence for every id, mirroring
-        # the validator. (The dense sidecar gap is intentionally untouched here —
-        # it is the subject of #140 — so this keeps the existing present/absent
-        # verdicts, just without the per-id stat.)
+        # One directory listing decides ``.pt`` (and, for dense, ``.meta.json``)
+        # existence for every id, mirroring the validator — no per-id stat.
         existing = _list_feature_filenames(self.features_dir)
+        # Dense (``dense_grid``) caches additionally require the shape sidecar to
+        # exist before a sample counts as present, matching the validator (which
+        # gates the sidecar requirement on ``dense_grid``). The ``.pt`` and sidecar
+        # are written non-atomically (``.pt`` first), so a crash between them leaves
+        # a ``.pt`` with no sidecar; that grid is not loadable and must be
+        # re-encoded, never silently skipped. Non-dense caches stay sidecar-agnostic
+        # (their ``.pt`` is self-describing); the asymmetry is intentional.
+        dense_sidecar_suffix: str | None = None
+        if str(self.metadata.get("feature_type", "")) == "dense_grid":
+            from soma.dense.store import DENSE_SIDECAR_SUFFIX
+
+            dense_sidecar_suffix = DENSE_SIDECAR_SUFFIX
         cached_signature_by_id = {
             str(cache_id): str(signature)
             for cache_id, signature in self.metadata.get("sample_identity_signature_by_id", {}).items()
@@ -109,6 +119,9 @@ class FeatureCacheResolution(BaseCacheResolution):
                 missing.append(cache_id)
                 continue
             if f"{cache_id}.pt" not in existing:
+                missing.append(cache_id)
+                continue
+            if dense_sidecar_suffix is not None and f"{cache_id}{dense_sidecar_suffix}" not in existing:
                 missing.append(cache_id)
         return missing
 

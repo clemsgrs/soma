@@ -303,9 +303,21 @@ class SlideManifestDenseExtractor:
             save_tile_embeddings=True,
         )
 
+        # Resume: encode only the ROIs absent from the cache (the missing set comes
+        # from the shared FeatureCacheResolution contract — no inline missing-logic).
+        # A slide whose every ROI is already cached is dropped here, so it is never
+        # opened/read; its grids on disk stay untouched. Cache disabled ⇒ encode all.
+        wanted: set[str] | None = None
+        if cache_resolution is not None:
+            wanted = set(cache_resolution.missing_sample_ids())
+            if not wanted:
+                return DenseFeatureStore(out_dir)
+
         # Group ROI records by parent slide so each slide is opened/read once.
         records_by_slide: dict[Path, list["SampleRecord"]] = defaultdict(list)
         for record in self._dataset.samples.values():
+            if wanted is not None and record.sample_id not in wanted:
+                continue
             if record.region is None:
                 raise ValueError(
                     f"ROI '{record.sample_id}' has no region; the ROI manifest must carry "

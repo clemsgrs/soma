@@ -394,6 +394,14 @@ class DenseTileFeatureExtractor:
             save_tile_embeddings=True,
         )
         records = list(self._dataset.samples.values())
+        # Resume: encode only the tiles absent from the cache (missing set comes from
+        # the shared FeatureCacheResolution contract — no inline missing-logic). Present
+        # grids are left untouched. Cache disabled ⇒ encode all.
+        if cache_resolution is not None:
+            wanted = set(cache_resolution.missing_sample_ids())
+            if not wanted:
+                return DenseFeatureStore(out_dir)
+            records = [record for record in records if record.sample_id in wanted]
         logger.info(
             "Encoding %d tiles into dense grids with '%s' at target_size=%s, patch=%s -> grid %s",
             len(records),

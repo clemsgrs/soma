@@ -278,3 +278,64 @@ def test_extract_dense_grids_window_none_records_whole(tmp_path: Path):
     )
     meta = DenseFeatureStore(tmp_path / "dense_embeddings").metadata("s0")
     assert meta["dense_input_mode"] == "whole" and meta["window_size"] is None
+
+
+def test_dense_tile_extractor_resume_encodes_only_missing(tmp_path: Path, monkeypatch):
+    """DenseTileFeatureExtractor.run resumes: only the absent tiles are re-encoded,
+    and the already-materialized grids are left untouched (#140)."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    import soma.dense_extraction as de
+    from soma.config import CacheConfig, EncoderConfig
+    from soma.dataset import Dataset
+    from soma.dense.store import DENSE_SIDECAR_SUFFIX
+    from soma.dense_extraction import DenseTileFeatureExtractor
+
+    enc = _encoder()  # vit_tiny, random weights, offline
+    records = _make_tiles(tmp_path, n=3, size=32)
+    csv_path = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        [{"sample_id": r.sample_id, "image_path": str(r.image_path), "label": "x"} for r in records]
+    ).to_csv(csv_path, index=False)
+    dataset = Dataset(csv_path)
+
+    monkeypatch.setattr(de, "load_model", lambda **kw: SimpleNamespace(model=enc, device="cpu"))
+
+    def _make_extractor():
+        return DenseTileFeatureExtractor(
+            dataset,
+            EncoderConfig(name="uni", precision="fp32"),
+            target_size=32,
+            spacing_um=0.5,
+            cache=CacheConfig(enabled=True),
+        )
+
+    feature_dir = tmp_path / "features"
+    store = _make_extractor().run(feature_dir)
+    assert sorted(store.available_samples) == ["s0", "s1", "s2"]
+    features_dir = store.feature_dir
+
+    # Crash window: s1's grid + sidecar never landed.
+    (features_dir / "s1.pt").unlink()
+    (features_dir / f"s1{DENSE_SIDECAR_SUFFIX}").unlink()
+    survivor_mtimes = {
+        sid: (features_dir / f"{sid}.pt").stat().st_mtime_ns for sid in ("s0", "s2")
+    }
+
+    # Spy on the encode core to capture exactly which records are encoded on resume.
+    real_extract = de.extract_dense_grids
+    captured: dict = {}
+
+    def _spy(**kw):
+        captured["records"] = [r.sample_id for r in kw["records"]]
+        return real_extract(**kw)
+
+    monkeypatch.setattr(de, "extract_dense_grids", _spy)
+
+    resumed = _make_extractor().run(feature_dir)
+    assert captured["records"] == ["s1"]  # only the absent tile re-encoded
+    for sid, mtime in survivor_mtimes.items():
+        assert (features_dir / f"{sid}.pt").stat().st_mtime_ns == mtime  # untouched
+    assert sorted(resumed.available_samples) == ["s0", "s1", "s2"]

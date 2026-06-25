@@ -30,6 +30,7 @@ from soma.dense import (
     dense_grid_metadata,
     write_dense_grid,
 )
+from soma.dense.store import DENSE_SIDECAR_SUFFIX
 
 
 def _make_dataset(tmp_path: Path) -> Dataset:
@@ -490,3 +491,37 @@ def test_dense_cache_validator_flags_wrong_channel_dim(tmp_path: Path):
     for sid in dataset.sample_ids:
         torch.save(torch.randn(768, 32, 32), res.feature_path_for_id(sid))
     assert resolve_dense_cache(**kw, validate_payloads=True).complete is False
+
+
+# --------------------------------------------------------------------------- #
+# missing_sample_ids() — dense-sidecar awareness (#140, A′).
+# --------------------------------------------------------------------------- #
+
+
+def test_dense_missing_sample_ids_empty_when_fully_populated(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    assert resolve_dense_cache(**kw).missing_sample_ids() == []
+
+
+def test_dense_missing_sample_ids_treats_pt_without_sidecar_as_missing(tmp_path: Path):
+    # Crash-window: .pt written, sidecar not (writes are .pt-then-sidecar, non-atomic).
+    # That grid is not loadable, so missing_sample_ids() must re-report it — never
+    # silently skip it into a downstream load failure.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    victim = dataset.sample_ids[0]
+    (resolve_dense_cache(**kw).features_dir / f"{victim}{DENSE_SIDECAR_SUFFIX}").unlink()
+    assert resolve_dense_cache(**kw).missing_sample_ids() == [victim]
+
+
+def test_dense_missing_sample_ids_treats_missing_pt_as_missing(tmp_path: Path):
+    # Sanity: a bare sidecar with no .pt is also missing (existing behaviour, kept).
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    victim = dataset.sample_ids[1]
+    resolve_dense_cache(**kw).feature_path_for_id(victim).unlink()
+    assert resolve_dense_cache(**kw).missing_sample_ids() == [victim]
