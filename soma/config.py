@@ -576,7 +576,10 @@ class MasksConfig:
     input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), mask_path (annotation
     WSI))`` and soma samples ROIs from each slide, instead of the pre-cropped tile manifest.
 
-    * ``pixel_mapping`` — class name → mask pixel value; must include ``background``.
+    * ``pixel_mapping`` — class name → mask pixel value; must be non-empty with unique pixel
+      values. No reserved label name is required: a background-free vocabulary like
+      ``{tumor: 2}`` is accepted (``background`` stays an opt-in name for the ignore-label
+      remap mode — see :func:`soma.dense.reader.build_label_remap`).
     * ``min_coverage`` — per-class minimum tile coverage (in ``[0, 1]``) to sample a tile;
       keys must be a subset of ``pixel_mapping``.
     * ``colors`` — optional class → ``[r, g, b]`` (or ``None``) overlay color for mask previews;
@@ -590,8 +593,12 @@ class MasksConfig:
     def __post_init__(self) -> None:
         if not self.pixel_mapping:
             raise ValueError("masks.pixel_mapping is required and must be non-empty.")
-        if "background" not in self.pixel_mapping:
-            raise ValueError("masks.pixel_mapping must include a 'background' label.")
+        values = list(self.pixel_mapping.values())
+        if len(set(values)) != len(values):
+            raise ValueError(
+                "masks.pixel_mapping must use unique pixel values (no two labels may "
+                f"share a raw value): {self.pixel_mapping!r}."
+            )
         unknown = sorted(set(self.min_coverage) - set(self.pixel_mapping))
         if unknown:
             raise ValueError(

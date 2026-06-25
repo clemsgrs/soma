@@ -967,7 +967,9 @@ def _segmentation_label_remap(masks: "MasksConfig | None", num_classes: int, ign
     Slide-manifest annotation rasters carry the dataset's own pixel vocabulary, so soma
     remaps them to contiguous class indices (+ ignore) from ``masks.pixel_mapping``. The
     pre-cropped-tile / flat-mask path has no ``masks:`` block and stays remap-free. Fails
-    loud if the mapping's non-background class count disagrees with ``task.num_classes``.
+    loud if the mapping's class count disagrees with ``task.num_classes`` (see
+    :func:`soma.dense.reader.build_label_remap` for how ``background`` — when present —
+    selects the ignore-label mode).
     """
     if masks is None:
         return None
