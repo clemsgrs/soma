@@ -23,6 +23,13 @@ from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, Pre
 from soma.dataset import Dataset, SampleRecord
 from soma.encoders.validation import resolve_encoder_precision
 
+# slide2vec deep-merges a partial ``masks`` block over these shipped default labels. A
+# customized annotation vocabulary that omits one of them (notably ``tissue``) must null it
+# out so the merge does not re-admit it (see ``_build_masks_block``).
+_SLIDE2VEC_DEFAULT_MASK_LABELS: tuple[str, ...] = tuple(
+    slide2vec_api.DEFAULT_MASKS["pixel_mapping"].keys()
+)
+
 
 @dataclass(frozen=True)
 class LoadedTiling:
@@ -85,6 +92,11 @@ def ensure_supported_mask_value(
     dataset: Dataset,
     preprocessing: PreprocessingConfig,
 ) -> None:
+    # A customized masks block governs tile selection by per-class coverage over its own
+    # pixel_mapping (the single source of truth, #110): arbitrary mask values like
+    # {background:1, tumor:2} are honored, so the legacy tissue-value==1 guard must not fire.
+    if preprocessing.masks is not None:
+        return
     if int(preprocessing.tissue_mask_tissue_value) == 1:
         return
     if not any(record.mask_path is not None for record in dataset.samples.values()):
@@ -92,6 +104,68 @@ def ensure_supported_mask_value(
     raise ValueError(
         "slide2vec-backed tiling currently supports only tissue_mask_tissue_value=1 "
         "when mask_path is provided."
+    )
+
+
+def _build_masks_block(
+    preprocessing: PreprocessingConfig,
+) -> tuple[dict[str, object], bool]:
+    """Translate soma preprocessing into slide2vec's ``masks`` block + ``independent_sampling``.
+
+    Two regimes:
+
+    * No annotation ``masks`` block (the default tissue path): emit only the tissue threshold
+      (``min_coverage.tissue``). slide2vec deep-merges this over its shipped DEFAULT_MASKS, so
+      the untouched ``{background:0, tissue:1}`` / ``per_annotation`` default stays byte-for-byte
+      tissue tiling. ``independent_sampling`` keeps slide2vec's default (``True``).
+    * A customized annotation ``masks`` block (the annotation-restricted merged bag, #110):
+      forward the FULL annotation vocabulary — ``pixel_mapping``, per-class ``min_coverage``,
+      and ``colors`` — plus an EXPLICIT ``output_mode``. The explicit ``output_mode`` is
+      load-bearing: slide2vec's DEFAULT_MASKS ``output_mode`` is ``per_annotation`` and is
+      deep-merged, so omitting it would silently route a customized bag run to per-annotation
+      tiling (which collides on sample_id in load_tilings). ``independent_sampling`` is derived
+      from ``sampling.strategy`` (``independent`` → ``True``; ``joint`` → ``False``).
+    """
+    masks = preprocessing.masks
+    if masks is None:
+        tissue_only = {
+            "min_coverage": {"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)}
+        }
+        return tissue_only, True
+
+    sampling = preprocessing.sampling
+    output_mode = sampling.output_mode if sampling is not None else "merged"
+    strategy = sampling.strategy if sampling is not None else "joint"
+    pixel_mapping: dict[str, object] = dict(masks.pixel_mapping)
+    min_coverage: dict[str, object] = dict(masks.min_coverage)
+    # Always forward a colors map covering every label in the vocabulary. hs2p validates that
+    # ``colors`` carries a key for each ``pixel_mapping`` label, and slide2vec's deep-merge
+    # leaves the default ``{background, tissue}`` colors in place; without an explicit entry
+    # for each user class (e.g. ``tumor``) that check raises. Unspecified classes get ``None``
+    # (no overlay) — cosmetic only, excluded from cache identity.
+    user_colors = masks.colors or {}
+    colors: dict[str, object] = {
+        label: (list(user_colors[label]) if user_colors.get(label) is not None else None)
+        for label in pixel_mapping
+    }
+    # slide2vec deep-merges this block over its DEFAULT_MASKS ``{background:0, tissue:1}``,
+    # so a default label the user's vocabulary omits (notably ``tissue``) would otherwise
+    # survive the merge — colliding pixel values and re-admitting tissue-only tiles. Drop
+    # each such default label via hs2p's null-to-drop idiom (set its pixel value to null;
+    # hs2p strips it from sampling, and from the companion maps for coherence).
+    for default_label in _SLIDE2VEC_DEFAULT_MASK_LABELS:
+        if default_label not in pixel_mapping:
+            pixel_mapping[default_label] = None
+            min_coverage[default_label] = None
+            colors[default_label] = None
+    return (
+        {
+            "output_mode": output_mode,
+            "pixel_mapping": pixel_mapping,
+            "min_coverage": min_coverage,
+            "colors": colors,
+        },
+        strategy == "independent",
     )
 
 
@@ -106,6 +180,7 @@ def build_preprocessing_config(
         raise ValueError(
             "tissue_method is required unless the dataset provides precomputed masks"
         )
+    masks_block, independent_sampling = _build_masks_block(preprocessing)
     payload: dict[str, object] = {
         "backend": preprocessing.backend,
         "requested_spacing_um": float(preprocessing.requested_spacing_um),
@@ -116,8 +191,11 @@ def build_preprocessing_config(
         # (a masks-shaped map mirroring hs2p's ``TilingConfig.min_coverage``). slide2vec has no
         # top-level ``tissue_threshold`` field — the threshold lives in the ``masks`` block as
         # ``min_coverage.tissue`` (the single source of truth). slide2vec deep-merges a partial
-        # ``masks`` over its shipped DEFAULT_MASKS, so we only state the override.
-        "masks": {"min_coverage": {"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)}},
+        # ``masks`` over its shipped DEFAULT_MASKS, so we only state the override. When a
+        # customized annotation masks block is active (#110), ``_build_masks_block`` instead
+        # forwards the full annotation vocabulary + an explicit output_mode.
+        "masks": masks_block,
+        "independent_sampling": independent_sampling,
         "on_the_fly": True,
         "adaptive_batching": False,
         "use_supertiles": True,
@@ -201,7 +279,14 @@ def load_tilings(
     tiling_dir: Path,
     requested_seg_downsample: int,
     tissue_mask_tissue_value: int,
+    masks_active: bool = False,
 ) -> list[LoadedTiling]:
+    # Under a customized annotation masks block (#110), tile selection gates on per-class
+    # coverage over the masks' own pixel_mapping — arbitrary mask values are honored — so the
+    # hs2p provenance validator's tissue-value==1 check must not fire. Passing None to its
+    # ``tissue_mask_tissue_value`` skips that check while keeping the rest of the provenance
+    # validation (image/mask path identity) intact.
+    effective_tissue_value = None if masks_active else int(tissue_mask_tissue_value)
     process_list_path = tiling_dir / "process_list.csv"
     if not process_list_path.is_file():
         raise ValueError(
@@ -234,7 +319,7 @@ def load_tilings(
                 image_path=record.image_path,
                 mask_path=record.mask_path,
                 tissue_mask_tissue_value=(
-                    int(tissue_mask_tissue_value) if record.mask_path is not None else None
+                    effective_tissue_value if record.mask_path is not None else None
                 ),
             )
             validate_tiling_result_segmentation(

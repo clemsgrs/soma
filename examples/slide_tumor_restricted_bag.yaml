@@ -1,0 +1,57 @@
+# Annotation-restricted merged bag (soma #110).
+#
+# A whole-slide MIL run whose bag is restricted to the tumor compartment: each slide's
+# `mask_path` annotation raster gates tile selection by per-class coverage, so only tiles
+# that are >= 50% tumor enter the bag (tissue-only tiles are excluded). The restricted bag
+# carries its ordinary slide-level `label` and flows through the usual aggregator + task
+# head — the masks block changes *which* tiles are sampled, nothing else.
+run:
+  output_root: runs/tumor_restricted_bag
+  seed: 0
+  tags: []
+
+data:
+  # dataset.csv rows are (sample_id, image_path, mask_path, label): mask_path is the
+  # multi-class annotation raster named by preprocessing.masks.pixel_mapping; label is the
+  # ordinary slide-level classification target.
+  dataset_csv: data/dataset.csv
+  splits_csv: data/splits.csv
+  dataset_type: slide
+
+preprocessing:
+  requested_tile_size_px: 224
+  requested_spacing_um: 0.5
+  tissue_method: otsu
+  # The annotation masks block restricts the bag to the tumor compartment. Tile selection
+  # gates on per-class min_coverage over the annotation mask (binary tissue filtering is
+  # bypassed under masks). pixel_mapping must include `background`.
+  masks:
+    pixel_mapping: {background: 0, tumor: 1}
+    min_coverage: {tumor: 0.5}   # keep tiles >= 50% tumor
+  sampling:
+    output_mode: merged          # one merged bag per slide (required for dataset_type: slide)
+    strategy: joint              # 'independent' tiles each class separately
+
+cache:
+  enabled: true
+
+encoder:
+  name: uni2
+
+aggregation:
+  name: abmil
+
+task:
+  name: binary_classification
+
+evaluation:
+  metrics:
+    - auroc
+    - balanced_accuracy
+    - auprc
+    - f1
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  patience: 10

@@ -984,10 +984,17 @@ class PipelineConfig:
         # (slides + annotation masks → soma-sampled ROIs); both only apply to segmentation.
         masks = self.preprocessing.masks
         sampling = self.preprocessing.sampling
-        if masks is not None and self.dataset_type != "segmentation":
+        # A masks block drives annotation-based tile selection. For 'segmentation' it is the
+        # slide-manifest ingestion mode (slides + masks → soma-sampled ROIs); for 'slide' it
+        # restricts the merged MIL bag to the selected compartment(s) (#110). Both forward the
+        # block into slide2vec's annotation sampling. Tile/patient/detection have no
+        # annotation-sampling step, so a masks block there is a config error.
+        _masks_dataset_types = {"slide", "segmentation"}
+        if masks is not None and self.dataset_type not in _masks_dataset_types:
             raise ValueError(
-                "masks: (the annotation slide-manifest input mode) is only valid for "
-                f"dataset_type='segmentation', got dataset_type={self.dataset_type!r}."
+                "masks: (annotation-based tile selection) is only valid for "
+                f"dataset_type in {sorted(_masks_dataset_types)}, got "
+                f"dataset_type={self.dataset_type!r}."
             )
         if sampling is not None and masks is None:
             raise ValueError(

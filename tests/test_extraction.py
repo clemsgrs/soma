@@ -788,11 +788,11 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
         "read_coordinates_from",
         "read_tiles_from",
         "resume",
-        # Annotation-aware sampling toggle added in slide2vec 4.8.0. The pooled adapter
-        # does not drive annotation sampling (the dense path handles that via hs2p
-        # directly), so this stays slide2vec-owned here.
-        "independent_sampling",
     }
+    # Annotation-restricted merged bag (#110): the pooled adapter now forwards the full
+    # masks block + the independent_sampling toggle (derived from sampling.strategy) when a
+    # masks block is active, so independent_sampling is a translated field too.
+    translated_fields = translated_fields | {"independent_sampling"}
 
     assert slide2vec_fields == translated_fields | intentionally_slide2vec_owned_fields
 
@@ -818,6 +818,192 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
     # preprocessing.min_coverage.tissue is routed into the masks block (slide2vec's single
     # source of truth), not silently dropped by the __dataclass_fields__ filter.
     assert config.masks["min_coverage"]["tissue"] == pytest.approx(0.25)
+
+
+# --- Annotation-restricted merged bag forwarding (#110) ---------------------------------
+
+
+def test_build_preprocessing_config_default_masks_forwards_tissue_only():
+    """AC4: no masks block ⇒ the adapter still emits the tissue-only spec (only
+    ``min_coverage.tissue``, deep-merged over slide2vec's default ``{background, tissue}``),
+    so existing tissue-only bag runs are unchanged."""
+    config = build_preprocessing_config(
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            min_coverage={"tissue": 0.1},
+        )
+    )
+    # Only the tissue threshold is stated; pixel_mapping/output_mode are NOT overridden,
+    # so slide2vec's deep-merge keeps the default {background:0, tissue:1} / per_annotation.
+    assert config.masks["pixel_mapping"] == {"background": 0, "tissue": 1}
+    assert config.masks["output_mode"] == "per_annotation"
+    assert config.masks["min_coverage"]["tissue"] == pytest.approx(0.1)
+    # independent_sampling stays at slide2vec's default (no masks block to override it).
+    assert config.independent_sampling is True
+
+
+def test_build_preprocessing_config_forwards_full_annotation_block():
+    """AC3: a masks block forwards the full pixel_mapping + per-class min_coverage +
+    explicit output_mode='merged' + independent_sampling (from sampling.strategy)."""
+    from soma.config import MasksConfig, SamplingConfig
+
+    config = build_preprocessing_config(
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            min_coverage={"tissue": 0.1},
+            masks=MasksConfig(
+                pixel_mapping={"background": 0, "tumor": 1},
+                min_coverage={"tumor": 0.5},
+                colors={"background": None, "tumor": [255, 0, 0]},
+            ),
+            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        )
+    )
+    # tumor is forwarded; the default ``tissue`` label is nulled out so the deep-merge does
+    # not re-admit tissue-only tiles (it is dropped at hs2p sampling time).
+    assert config.masks["pixel_mapping"]["tumor"] == 1
+    assert config.masks["pixel_mapping"]["tissue"] is None
+    assert "background" in config.masks["pixel_mapping"]
+    assert config.masks["min_coverage"]["tumor"] == pytest.approx(0.5)
+    assert config.masks["min_coverage"]["tissue"] is None
+    # EXPLICIT output_mode='merged' — guards against slide2vec's per_annotation default
+    # leaking through the deep-merge and colliding on sample_id in load_tilings.
+    assert config.masks["output_mode"] == "merged"
+    assert config.masks["colors"]["tumor"] == [255, 0, 0]
+    # strategy='joint' ⇒ independent_sampling=False.
+    assert config.independent_sampling is False
+
+
+def test_build_preprocessing_config_independent_strategy_sets_independent_sampling():
+    """AC3: sampling.strategy='independent' ⇒ independent_sampling=True."""
+    from soma.config import MasksConfig, SamplingConfig
+
+    config = build_preprocessing_config(
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=MasksConfig(
+                pixel_mapping={"background": 0, "tumor": 1},
+                min_coverage={"tumor": 0.5},
+            ),
+            sampling=SamplingConfig(strategy="independent", output_mode="merged"),
+        )
+    )
+    assert config.independent_sampling is True
+
+
+def test_build_preprocessing_config_masks_default_sampling_is_merged():
+    """AC3: a masks block without an explicit sampling block defaults to merged output
+    and joint strategy (SamplingConfig defaults), still forwarded explicitly."""
+    from soma.config import MasksConfig
+
+    config = build_preprocessing_config(
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=MasksConfig(
+                pixel_mapping={"background": 0, "tumor": 1},
+                min_coverage={"tumor": 0.5},
+            ),
+        )
+    )
+    assert config.masks["output_mode"] == "merged"
+    assert config.independent_sampling is False
+
+
+def test_build_preprocessing_config_honors_relabeled_vocabulary():
+    """AC6: a relabeled vocabulary {background:1, tumor:2} routes to annotation sampling and
+    is forwarded verbatim (the tissue-value ==1 guard does not gate the masks path)."""
+    from soma.config import MasksConfig
+
+    config = build_preprocessing_config(
+        PreprocessingConfig(
+            requested_tile_size_px=224,
+            requested_spacing_um=0.5,
+            masks=MasksConfig(
+                pixel_mapping={"background": 1, "tumor": 2},
+                min_coverage={"tumor": 0.5},
+            ),
+        )
+    )
+    assert config.masks["pixel_mapping"]["background"] == 1
+    assert config.masks["pixel_mapping"]["tumor"] == 2
+    assert config.masks["pixel_mapping"]["tissue"] is None
+    assert config.masks["output_mode"] == "merged"
+
+
+def test_ensure_supported_mask_value_skips_guard_under_masks(tmp_path: Path):
+    """AC6: the legacy ``tissue_mask_tissue_value == 1`` guard does not fire when a
+    customized masks block is active — pixel_mapping is the single source of truth."""
+    from soma.config import MasksConfig
+    from soma.slide2vec_adapter import ensure_supported_mask_value
+
+    dataset = _make_dataset(tmp_path, with_mask=True)
+    preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        tissue_mask_tissue_value=2,  # would trip the guard on its own
+        masks=MasksConfig(
+            pixel_mapping={"background": 1, "tumor": 2},
+            min_coverage={"tumor": 0.5},
+        ),
+    )
+    # No raise: the masks block bypasses the tissue-value guard.
+    ensure_supported_mask_value(dataset, preprocessing)
+
+
+def test_ensure_supported_mask_value_still_guards_without_masks(tmp_path: Path):
+    """AC6 (counterpart): without a masks block, the tissue-value guard still fires."""
+    from soma.slide2vec_adapter import ensure_supported_mask_value
+
+    dataset = _make_dataset(tmp_path, with_mask=True)
+    preprocessing = PreprocessingConfig(
+        requested_tile_size_px=224,
+        requested_spacing_um=0.5,
+        tissue_mask_tissue_value=2,
+    )
+    with pytest.raises(ValueError, match="tissue_mask_tissue_value=1"):
+        ensure_supported_mask_value(dataset, preprocessing)
+
+
+def test_load_tilings_skips_tissue_value_provenance_under_masks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """AC6: under an active masks block, load_tilings passes tissue_mask_tissue_value=None to
+    the hs2p provenance validator (the ==1 check is bypassed — pixel_mapping governs)."""
+    dataset = _make_dataset(tmp_path, with_mask=True)
+    tiling_dir = tmp_path / "tiling"
+    tiling_dir.mkdir()
+    (tiling_dir / "process_list.csv").write_text("sample_id\ns0,success\n", encoding="utf-8")
+
+    process_df = pd.DataFrame([{"sample_id": "s0", "tiling_status": "success", "error": ""}])
+    monkeypatch.setattr("soma.slide2vec_adapter.load_tiling_process_df", lambda path: process_df)
+    monkeypatch.setattr(
+        "soma.slide2vec_adapter.load_tiling_result_from_row",
+        lambda row: SimpleNamespace(
+            requested_backend="auto",
+            backend="openslide",
+            requested_seg_downsample=64,
+            seg_downsample=64,
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def _fake_validate(result, *, sample_id, image_path, mask_path, tissue_mask_tissue_value):
+        captured["tissue_mask_tissue_value"] = tissue_mask_tissue_value
+
+    monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", _fake_validate)
+
+    load_tilings(
+        dataset=dataset,
+        tiling_dir=tiling_dir,
+        requested_seg_downsample=64,
+        tissue_mask_tissue_value=2,
+        masks_active=True,
+    )
+    assert captured["tissue_mask_tissue_value"] is None
 
 
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

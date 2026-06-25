@@ -91,8 +91,32 @@ def _sample_cache_stem(*, sample_signature: str, identity_payload: dict[str, Any
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
-def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
+def annotation_sampling_signature(config: PreprocessingConfig) -> dict[str, Any] | None:
+    """Selection-relevant projection of the annotation ``masks``/``sampling`` block.
+
+    Returns ``None`` when no ``masks`` block is active (the default tissue path), so legacy
+    tissue-only cache keys stay byte-stable. When a customized masks block governs tile
+    selection (the annotation-restricted bag, #110), the projection folds the fields that
+    change *which tiles are sampled* — the ``pixel_mapping`` vocabulary, per-class
+    ``min_coverage`` (the active class set), and the ``sampling`` ``strategy`` /
+    ``output_mode`` — into cache identity, so a tumor-restricted bag never aliases a
+    full-tissue bag of the same slide/encoder. ``colors`` is cosmetic (preview overlay only)
+    and is deliberately excluded.
+    """
+    masks = config.masks
+    if masks is None:
+        return None
+    sampling = config.sampling
     return {
+        "pixel_mapping": {k: masks.pixel_mapping[k] for k in sorted(masks.pixel_mapping)},
+        "min_coverage": {k: masks.min_coverage[k] for k in sorted(masks.min_coverage)},
+        "strategy": sampling.strategy if sampling is not None else "joint",
+        "output_mode": sampling.output_mode if sampling is not None else "merged",
+    }
+
+
+def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
+    signature: dict[str, Any] = {
         "backend": config.backend,
         "requested_tile_size_px": config.requested_tile_size_px,
         "requested_spacing_um": config.requested_spacing_um,
@@ -109,6 +133,11 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "ref_tile_size_px": config.ref_tile_size_px,
         "a_t": config.a_t,
     }
+    annotation = annotation_sampling_signature(config)
+    if annotation is not None:
+        # Injected only when a masks block is active — keeps tissue-only keys byte-stable.
+        signature["annotation_sampling"] = annotation
+    return signature
 
 
 def preprocessing_backend_provenance(

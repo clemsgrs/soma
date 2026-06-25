@@ -401,6 +401,7 @@ class FeatureExtractor:
             tiling_dir=tiling_dir,
             requested_seg_downsample=int(resolved_preprocessing.seg_downsample),
             tissue_mask_tissue_value=int(resolved_preprocessing.tissue_mask_tissue_value),
+            masks_active=resolved_preprocessing.masks is not None,
         )
 
         if is_hierarchical and level != "tile":
