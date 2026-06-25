@@ -42,15 +42,25 @@ def build_label_remap(
     BEETLE's ``{0 unannotated, 1 other, 2 non-invasive, 3 invasive, 4 necrosis}``); the
     segmentation head needs contiguous class indices ``[0, num_classes)`` with unannotated
     pixels collapsed to ``ignore_index``. This derives that mapping from ``pixel_mapping``
-    (class name → raw pixel value, mirroring hs2p's ``masks`` config). The role of
-    ``background`` is decided by ``num_classes`` (the task's class count):
+    (class name → raw pixel value, mirroring hs2p's ``masks`` config). No reserved label
+    name is required; ``background`` is an opt-in name that only selects the ignore-label
+    mode:
 
-    * ``num_classes is None`` or ``== len(pixel_mapping) - 1`` — ``background`` is the
-      **unannotated/ignore** label: it maps to ``ignore_index`` and the non-background
-      classes take class index = their order in ``pixel_mapping`` (``other`` → 0,
-      ``non_invasive`` → 1, …). This is the default.
-    * ``num_classes == len(pixel_mapping)`` — **every** label (including ``background``) is
-      a real class, taking class index = its order in ``pixel_mapping`` (``background`` → 0).
+    * ``background`` **present** — its role is decided by ``num_classes`` (the task's
+      class count):
+
+      * ``num_classes is None`` or ``== len(pixel_mapping) - 1`` — ``background`` is the
+        **unannotated/ignore** label: it maps to ``ignore_index`` and the non-background
+        classes take class index = their order in ``pixel_mapping`` (``other`` → 0,
+        ``non_invasive`` → 1, …). This is the default.
+      * ``num_classes == len(pixel_mapping)`` — **every** label (including ``background``)
+        is a real class, taking class index = its order (``background`` → 0).
+
+    * ``background`` **absent** — there is no ignore-label name, so **every** named label
+      is a real class (index = order) and ``num_classes`` (when given) must equal the
+      mapping size. A background-free vocabulary like ``{tumor: 2}`` therefore maps the
+      single named value to class 0; every unlisted raw value (the unannotated regions,
+      expressed without naming them) collapses to ``ignore_index``.
 
     Any raw pixel value not present in ``pixel_mapping`` always maps to ``ignore_index`` —
     a stray value never silently aliases an in-range class.
@@ -58,28 +68,35 @@ def build_label_remap(
     Returns the 256-entry LUT (indexable by a raw uint8/int mask) and the resolved
     ``num_classes`` it implies.
     """
-    if "background" not in pixel_mapping:
-        raise ValueError(
-            "masks.pixel_mapping must include a 'background' label to derive the "
-            "segmentation label remap."
-        )
     names = list(pixel_mapping)
-    background_is_class = num_classes is not None and int(num_classes) == len(names)
+    has_background = "background" in pixel_mapping
+    # ``background`` is the ignore label only in the (size - 1) mode; in every other case
+    # (no background, or num_classes == size) every named label is a real class.
+    background_is_class = (not has_background) or (
+        num_classes is not None and int(num_classes) == len(names)
+    )
     if background_is_class:
-        classes = names  # background included, takes index 0
+        classes = names  # every label is a real class, background (if any) takes its order
     else:
         classes = [name for name in names if name != "background"]
     if num_classes is not None and len(classes) != int(num_classes):
+        hint = (
+            "Provide a pixel_mapping whose class count equals num_classes."
+            if not has_background
+            else (
+                "Provide a pixel_mapping whose class count is either num_classes "
+                "(background is a class) or num_classes + 1 (background is the "
+                "unannotated/ignore label)."
+            )
+        )
         raise ValueError(
             f"masks.pixel_mapping implies {len(classes)} class(es) but num_classes="
-            f"{num_classes}. Provide a pixel_mapping whose class count is either "
-            f"num_classes (background is a class) or num_classes + 1 (background is the "
-            "unannotated/ignore label)."
+            f"{num_classes}. {hint}"
         )
     lut = np.full(256, int(ignore_index), dtype=np.int64)
     for class_index, name in enumerate(classes):
         lut[int(pixel_mapping[name])] = class_index
-    if not background_is_class:
+    if has_background and not background_is_class:
         lut[int(pixel_mapping["background"])] = int(ignore_index)
     return lut, len(classes)
 

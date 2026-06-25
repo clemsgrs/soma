@@ -68,6 +68,43 @@ The presence of ``preprocessing.masks`` selects the slide-manifest input mode
 (slides + annotation masks → soma-sampled ROIs → dense grids → segmentation head).
 See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
 
+Annotation vocabulary: background-present vs background-absent
+-------------------------------------------------------------
+
+``pixel_mapping`` is the dataset's own raw-pixel vocabulary. **No reserved label name is
+required** — soma keeps only structural validation (non-empty mapping, unique pixel values,
+``min_coverage``/``colors`` keys ⊆ ``pixel_mapping``, fractions in ``[0, 1]``, RGB shape).
+``background`` is an *opt-in* name that only changes how the segmentation-head label remap
+(:func:`soma.dense.reader.build_label_remap`) treats unannotated regions.
+
+**Background present** — ``background`` names the unannotated/ignore label. With a class
+count one less than the mapping size, ``background`` maps to ``ignore_index`` and the other
+labels take class index = their order. (If the class count *equals* the mapping size,
+``background`` is instead a real class at index 0.) For example, the BEETLE exact-value
+vocabulary ``{background: 1, tumor: 2}`` with one task class:
+
+.. code-block:: yaml
+
+   preprocessing:
+     masks:
+       pixel_mapping: {background: 1, tumor: 2}   # raw value 1 -> ignore, 2 -> class 0
+       min_coverage: {tumor: 0.5}
+
+**Background absent** — every named label is a real class (index = order) and the task's
+class count must equal the mapping size. Any raw pixel value *not* in the mapping collapses
+to ``ignore_index`` — that is how unannotated regions are expressed without naming them. A
+background-free vocabulary like ``{tumor: 2}`` is accepted:
+
+.. code-block:: yaml
+
+   preprocessing:
+     masks:
+       pixel_mapping: {tumor: 2}   # raw value 2 -> class 0; every other value -> ignore
+       min_coverage: {tumor: 0.5}
+
+The "exactly one *named* label is the ignore label" mode (class count == mapping size − 1)
+still requires a name: ``background`` stays the opt-in reserved name for that mode only.
+
 .. note::
 
    **Migration (soma #109):** ``masks:`` and ``sampling:`` were previously
