@@ -386,12 +386,16 @@ def test_dense_cache_validator_requires_sidecar(tmp_path: Path):
     assert resolve_dense_cache(**kw).complete is False
 
 
-def test_dense_cache_validator_rejects_sidecar_shape_mismatch_without_loading_payload(
+def test_dense_cache_validator_gates_sidecar_content_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # Default cache validation is sidecar-first: it should reject a dense cache
-    # whose sidecars describe a different grid than this cache key, without loading
-    # potentially huge .pt tensors.
+    # Sidecar *content* validation (JSON read + shape cross-check) is the one scan
+    # cost a single directory listing cannot remove, so it lives behind
+    # validate_payloads: the default fast path trusts sidecar *existence* (decided
+    # from the listing), and deep content validation is one flag away. A sidecar
+    # that describes a different grid than this cache key is therefore accepted on
+    # the default path and flagged only under validate_payloads. The sidecar check
+    # short-circuits before the (also-gated) tensor load, so load_array is never hit.
     dataset = _make_dataset(tmp_path)
     kw = _dense_kw(tmp_path, dataset)
     res = resolve_dense_cache(**kw)
@@ -403,15 +407,63 @@ def test_dense_cache_validator_rejects_sidecar_shape_mismatch_without_loading_pa
     record_sample_identity_signatures(res, list(dataset.sample_ids))
 
     def _fail_load_array(_path):
-        raise AssertionError("default dense cache validation must not deserialize tensors")
+        raise AssertionError("dense cache validation must not deserialize tensors here")
 
     monkeypatch.setattr("soma.cache.features.load_array", _fail_load_array)
 
-    resumed = resolve_dense_cache(**kw)
+    # Default path: sidecar existence only — no JSON read, no tensor load.
+    assert resolve_dense_cache(**kw).complete is True
 
-    assert resumed.complete is False
-    assert resumed.validation.reason is not None
-    assert "dense sidecar grid_shape mismatch for s1" in resumed.validation.reason
+    # Opt-in deep validation reads the sidecar and flags the grid mismatch.
+    deep = resolve_dense_cache(**kw, validate_payloads=True)
+    assert deep.complete is False
+    assert deep.validation.reason is not None
+    assert "dense sidecar grid_shape mismatch for s1" in deep.validation.reason
+
+
+def test_dense_cache_validator_scans_directory_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # The hot loop must answer every <id>.pt / <id>.meta.json existence question
+    # from a single directory listing, never a per-id filesystem stat — that per-id
+    # stat tax is what makes a resume on a slow/near-full mount take tens of minutes.
+    import soma.cache.features as features_mod
+
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+
+    list_calls = {"n": 0}
+    real_list = features_mod._list_feature_filenames
+
+    def counting_list(features_dir):
+        list_calls["n"] += 1
+        return real_list(features_dir)
+
+    monkeypatch.setattr(features_mod, "_list_feature_filenames", counting_list)
+
+    stat_names: list[str] = []
+    real_is_file = Path.is_file
+
+    def recording_is_file(self):
+        stat_names.append(self.name)
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", recording_is_file)
+
+    result, present, expected = features_mod._validate_feature_cache_contents(
+        features_dir=res.features_dir,
+        metadata=json.loads(res.metadata_path.read_text()),
+        cache_ids=list(dataset.sample_ids),
+        cache_stem_by_id=res.cache_stem_by_id,
+    )
+
+    assert result.complete is True
+    assert present == expected == len(dataset.sample_ids)
+    assert list_calls["n"] == 1  # exactly one directory listing per pass
+    assert not any(name.endswith(".pt") for name in stat_names)  # no per-id .pt stat
+    assert not any(name.endswith(".meta.json") for name in stat_names)  # nor sidecar
 
 
 def test_dense_cache_validator_flags_wrong_grid_shape(tmp_path: Path):
