@@ -50,10 +50,9 @@ preprocessing:
 
 execution:
   num_gpus: null
-  num_workers: null
+  num_workers_per_gpu: null
   num_preprocessing_workers: null
   prefetch_factor: null
-  persistent_workers: null
   precision: null
 
 cache:
