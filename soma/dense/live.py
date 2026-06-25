@@ -1,9 +1,9 @@
 """LiveSegmentationSource — the carrier for the live re-encode segmentation path.
 
-Where the cached path returns a :class:`~soma.dense.DenseFeatureStore` (grids on
-disk), the live path returns a :class:`LiveSegmentationSource`: a passive struct that
-holds the **single loaded frozen encoder** plus everything the fold needs to build a
-:class:`~soma.training.model.LiveSegmentationModel` and a
+Where the cached path returns a :class:`~soma.dense.DenseFeatureSource` (grids on
+disk plus provenance), the live path returns a :class:`LiveSegmentationSource`: a
+passive struct that holds the **single loaded frozen encoder** plus everything the
+fold needs to build a :class:`~soma.training.model.LiveSegmentationModel` and a
 :class:`~soma.training.segmentation_dataset.LiveSegmentationDataset` —
 ``{encoder, device, precision, geometry, feature_dim, dense_transform, augmentation,
 spacing, pad}``.
@@ -12,9 +12,9 @@ It is built **once**, before the fold loop, so the (large) backbone loads a sing
 time and every fold's model shares the same frozen encoder (safe: it has no trainable
 state — each fold gets a fresh decoder+head and its own optimizer). It is not a
 behavioral protocol; the segmentation fold reads its fields directly in an inline
-branch (design §13.B-3/§13.B-8). It deliberately does *not* subclass
-``DenseFeatureStore`` — the two share the ``validate_coverage(ids)`` name, not an
-inheritance relationship.
+branch (design §13.B-3/§13.B-8). It deliberately stays outside the cache-backed
+``DenseFeatureSource`` interface — the live and cached paths share the
+``validate_coverage(ids)`` name, not an inheritance relationship.
 """
 
 from __future__ import annotations

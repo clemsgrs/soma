@@ -26,7 +26,7 @@ from soma.training.segmentation_dataset import SegmentationBatch
 
 if TYPE_CHECKING:
     from soma.dataset import SampleRecord, SegmentationManifest
-    from soma.dense import DenseFeatureStore
+    from soma.dense import DenseFeatureSource
     from soma.pixel_classifiers.base import PixelClassifier
     from soma.tasks.segmentation import SegmentationHead
 
@@ -50,7 +50,7 @@ def grid_to_target_features(grid: torch.Tensor, head: "SegmentationHead") -> tor
 
 def _valid_pixel_features(
     record: "SampleRecord",
-    feature_store: "DenseFeatureStore",
+    feature_store: "DenseFeatureSource",
     head: "SegmentationHead",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(features (P, K), mask (P,))`` flattened over all pixels of one tile."""
@@ -64,7 +64,7 @@ def _valid_pixel_features(
 
 def build_training_matrix(
     records: list["SampleRecord"],
-    feature_store: "DenseFeatureStore",
+    feature_store: "DenseFeatureSource",
     head: "SegmentationHead",
     *,
     max_pixels: int,
@@ -161,7 +161,7 @@ def predict_tile_pseudologits(
 def evaluate_pixel_classifier(
     clf: "PixelClassifier",
     records: list["SampleRecord"],
-    feature_store: "DenseFeatureStore",
+    feature_store: "DenseFeatureSource",
     head: "SegmentationHead",
     split_name: str,
     *,

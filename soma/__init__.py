@@ -33,7 +33,12 @@ from soma.dataset import (
     Splits,
 )
 from soma.decoders import list_decoders
-from soma.dense import DenseFeatureStore
+from soma.dense import (
+    CacheBackedDenseSource,
+    DenseFeatureSource,
+    DenseFeatureStore,
+    DenseSourceProvenance,
+)
 from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
@@ -98,8 +103,11 @@ __all__ = [
     "Splits",
     "FeatureExtractor",
     "FeatureStore",
+    "CacheBackedDenseSource",
+    "DenseFeatureSource",
     "TileFeatureExtractor",
     "DenseFeatureStore",
+    "DenseSourceProvenance",
     "DenseTileFeatureExtractor",
     "FoldResult",
     "Pipeline",

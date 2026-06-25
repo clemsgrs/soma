@@ -132,6 +132,15 @@ class PipelineResult:
 
 
 @dataclass(frozen=True)
+class _FeatureSourceContext:
+    """Feature source plus the dataset/splits it trains against."""
+
+    feature_store: object
+    dataset: object
+    splits: Splits
+
+
+@dataclass(frozen=True)
 class _DeterministicBaseline:
     """Deterministic fallback prediction derived from the training split."""
 
@@ -214,6 +223,15 @@ def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, Sampl
             continue
         placeholder_records[record.patient_id] = record
     return placeholder_records
+
+
+def _write_dense_source_provenance(run_dir: Path, feature_store: object) -> None:
+    provenance = getattr(feature_store, "provenance", None)
+    if provenance is None:
+        return
+    path = run_dir / "dense_source.json"
+    path.write_text(json.dumps(provenance.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("Dense source provenance saved to %s", path)
 
 
 # ---------------------------------------------------------------------------
@@ -983,7 +1001,7 @@ def _segmentation_label_remap(masks: "MasksConfig | None", num_classes: int, ign
 
 
 def train_one_segmentation_fold(
-    feature_store: "DenseFeatureStore | LiveSegmentationSource",
+    feature_store: "DenseFeatureSource | LiveSegmentationSource",
     dataset: SegmentationManifest,
     fold_split: FoldSplit,
     task: TaskConfig,
@@ -1007,8 +1025,8 @@ def train_one_segmentation_fold(
     semantics are reused.
 
     Two data planes share this body (design §13.B-3), distinguished by
-    ``feature_store``: a :class:`~soma.dense.DenseFeatureStore` drives the **cached**
-    path (read pre-extracted grids + head-loaded masks), a
+    ``feature_store``: a :class:`~soma.dense.DenseFeatureSource` drives the **cached**
+    path (read pre-extracted grids + head-loaded masks with explicit provenance), a
     :class:`~soma.dense.live.LiveSegmentationSource` drives the **live** path
     (re-encode augmented image+mask tiles through the frozen encoder each step). Only
     five things differ — geometry source, feature_dim, coverage check, dataset, and
@@ -1085,7 +1103,7 @@ def train_one_segmentation_fold(
     # against the features — fail loud. (Live reads image+mask at one spacing each step,
     # so it registers by construction and needs no cross-check.)
     if not is_live:
-        grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+        grid_spacing_um = feature_store.spacing_um(ref_id)
         if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
             raise ValueError(
                 f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
@@ -1235,7 +1253,7 @@ def _resolve_detection_px(value_um: float, spacing_um: float | None, name: str) 
 
 
 def train_one_detection_fold(
-    feature_store: "DenseFeatureStore",
+    feature_store: "DenseFeatureSource",
     dataset: DetectionManifest,
     fold_split: FoldSplit,
     task: TaskConfig,
@@ -1302,7 +1320,7 @@ def train_one_detection_fold(
     # run_spacing = the spacing the grids were extracted at (sidecar), which the points
     # transform maps level-0 into. Cross-check against the configured spacing (the
     # detection analogue of the seg mask-spacing guard).
-    grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+    grid_spacing_um = feature_store.spacing_um(ref_id)
     requested_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
     if not _dense_spacings_match(grid_spacing_um, requested_spacing_um):
         raise ValueError(
@@ -1498,7 +1516,7 @@ def _evaluate_detection(
 
 
 def train_one_pixel_classifier_fold(
-    feature_store: "DenseFeatureStore",
+    feature_store: "DenseFeatureSource",
     dataset: SegmentationManifest,
     fold_split: FoldSplit,
     task: TaskConfig,
@@ -1577,7 +1595,7 @@ def train_one_pixel_classifier_fold(
             )
     # Masks read at the same µm/px the grids were extracted at (else misregistration).
     mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    grid_spacing_um = feature_store.metadata(ref_id).get("spacing_um")
+    grid_spacing_um = feature_store.spacing_um(ref_id)
     if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
         raise ValueError(
             f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
@@ -2084,7 +2102,11 @@ class Pipeline:
         save_config(self._config, layout.run_dir / "config.yaml")
 
         with _RunRecorder(layout, self._config) as recorder:
-            store = self._get_feature_store(run_dir=layout.run_dir)
+            source_context = self._get_feature_source_context(run_dir=layout.run_dir)
+            store = source_context.feature_store
+            training_dataset = source_context.dataset
+            training_splits = source_context.splits
+            _write_dense_source_provenance(layout.run_dir, store)
             preprocessing = self._resolve_preprocessing()
             Console().print(
                 _build_run_summary_panel(
@@ -2101,8 +2123,8 @@ class Pipeline:
 
             result = train(
                 feature_store=store,
-                dataset=self._dataset,
-                splits=self._splits,
+                dataset=training_dataset,
+                splits=training_splits,
                 dataset_type=self._config.dataset_type,
                 aggregator=self._config.aggregator,
                 decoder=self._config.decoder,
@@ -2121,14 +2143,16 @@ class Pipeline:
                 logger.info("Rendering attention heatmaps...")
                 render_heatmaps(
                     run_dir=layout.run_dir,
-                    dataset=self._dataset,
+                    dataset=training_dataset,
                     tiling_dir=layout.run_dir / "tiling",
                     heatmap_config=self._config.heatmaps,
                     seg_downsample=self._config.preprocessing.seg_downsample,
                 )
 
             try:
-                report_path = generate_report_from_result(result, self._config, dataset=self._dataset)
+                report_path = generate_report_from_result(
+                    result, self._config, dataset=training_dataset
+                )
                 logger.info("Report saved to %s", report_path)
             except Exception:
                 logger.warning("Report generation failed", exc_info=True)
@@ -2138,9 +2162,18 @@ class Pipeline:
 
         return result
 
+    def _get_feature_source_context(self, *, run_dir: Path) -> _FeatureSourceContext:
+        if self._config.dataset_type in ("segmentation", "detection"):
+            return self._get_dense_feature_source_context(run_dir=run_dir)
+        return _FeatureSourceContext(
+            feature_store=self._get_feature_store(run_dir=run_dir),
+            dataset=self._dataset,
+            splits=self._splits,
+        )
+
     def _get_feature_store(self, *, run_dir: Path):
         if self._config.dataset_type in ("segmentation", "detection"):
-            return self._get_dense_feature_store(run_dir=run_dir)
+            return self._get_dense_feature_source_context(run_dir=run_dir).feature_store
         if self._feature_dir is not None:
             return FeatureStore(self._feature_dir)
 
@@ -2194,14 +2227,41 @@ class Pipeline:
         finally:
             _release_parent_cuda_state()
 
-    def _get_dense_feature_store(self, *, run_dir: Path):
-        from soma.dense import DenseFeatureStore
-
-        # Slide-manifest mode: rows are whole slides + a masks:/sampling: config. soma
-        # samples ROIs (hs2p) and extracts dense grids over them (slide2vec), then runs the
-        # ordinary cached dense path on the derived ROI manifest. Orthogonal to feature_mode.
+    def _get_dense_feature_source_context(self, *, run_dir: Path) -> _FeatureSourceContext:
         if self._config.preprocessing.masks is not None:
-            return self._build_slide_manifest_dense_store(run_dir=run_dir)
+            return self._build_slide_manifest_dense_context(run_dir=run_dir)
+        return _FeatureSourceContext(
+            feature_store=self._get_dense_source(run_dir=run_dir),
+            dataset=self._dataset,
+            splits=self._splits,
+        )
+
+    def _cache_backed_dense_source(
+        self,
+        store,
+        *,
+        kind: str,
+        dataset_csv: str | Path,
+        splits_csv: str | Path,
+        parent_dataset_csv: str | Path | None = None,
+        parent_splits_csv: str | Path | None = None,
+    ):
+        from soma.dense import CacheBackedDenseSource, DenseSourceProvenance
+
+        return CacheBackedDenseSource(
+            store,
+            provenance=DenseSourceProvenance(
+                kind=kind,
+                feature_dir=getattr(store, "feature_dir", None),
+                dataset_csv=dataset_csv,
+                splits_csv=splits_csv,
+                parent_dataset_csv=parent_dataset_csv,
+                parent_splits_csv=parent_splits_csv,
+            ),
+        )
+
+    def _get_dense_source(self, *, run_dir: Path):
+        from soma.dense import DenseFeatureStore
 
         # Live re-encode path: no cached grids — hold the frozen encoder + geometry and
         # re-encode (augmented) tiles each step. Built before the fold loop so the
@@ -2210,12 +2270,22 @@ class Pipeline:
             return self._build_live_segmentation_source()
 
         if self._feature_dir is not None:
-            return DenseFeatureStore(self._feature_dir)
+            return self._cache_backed_dense_source(
+                DenseFeatureStore(self._feature_dir),
+                kind="dense_cache",
+                dataset_csv=self._config.dataset_csv,
+                splits_csv=self._config.splits_csv,
+            )
 
         # Multi-encoder composite: extract each member into its own cache, then present a
         # load-time channel-concat view (design §7).
         if self._config.composite is not None:
-            return self._build_composite_dense_store(run_dir=run_dir)
+            return self._cache_backed_dense_source(
+                self._build_composite_dense_store(run_dir=run_dir),
+                kind="composite_dense_cache",
+                dataset_csv=self._config.dataset_csv,
+                splits_csv=self._config.splits_csv,
+            )
 
         dtype = self._config.dataset_type
         if self._config.encoder is None:
@@ -2265,16 +2335,21 @@ class Pipeline:
             preprocessing=preprocessing,
         )
         try:
-            return extractor.run(feature_dir=run_dir / "features")
+            return self._cache_backed_dense_source(
+                extractor.run(feature_dir=run_dir / "features"),
+                kind="dense_cache",
+                dataset_csv=self._config.dataset_csv,
+                splits_csv=self._config.splits_csv,
+            )
         finally:
             _release_parent_cuda_state()
 
-    def _build_slide_manifest_dense_store(self, *, run_dir: Path):
-        """Sample ROIs from slides+masks, extract dense grids over them, return the store.
+    def _build_slide_manifest_dense_context(self, *, run_dir: Path):
+        """Sample ROIs from slides+masks, extract dense grids, return derived context.
 
-        Mutates ``self._dataset``/``self._splits`` to the derived ROI manifest + ROI splits
-        (each ROI inherits its parent slide's split), so the fold loop trains on the sampled
-        tiles. The grids are extracted via slide2vec + cached by soma; the sampling spec is
+        The derived ROI manifest + ROI splits (each ROI inherits its parent slide's split)
+        are returned explicitly so the pipeline's configured slide-level dataset/splits stay
+        intact. The grids are extracted via slide2vec + cached by soma; the sampling spec is
         folded into the dense cache key (distinct ``min_coverage``/spacing/strategy ⇒ distinct
         cache). Cached path only — the live/augmentation path over the same ROIs is A4.
         """
@@ -2320,15 +2395,18 @@ class Pipeline:
         roi_manifest_csv, roi_splits_csv = build_roi_manifest(
             self._dataset, self._config.splits_csv, coords_by_slide, out_dir=roi_dir
         )
-        # Swap the slide-level dataset/splits for the derived ROI ones (tiles inherit splits).
-        self._dataset = SegmentationManifest(roi_manifest_csv)
-        self._splits = Splits(roi_splits_csv, self._dataset, tune_is_test=self._config.training.tune_is_test)
+        roi_dataset = SegmentationManifest(roi_manifest_csv)
+        roi_splits = Splits(
+            roi_splits_csv,
+            roi_dataset,
+            tune_is_test=self._config.training.tune_is_test,
+        )
 
         cache_config = self._config.cache
         if cache_config.root_dir is None:
             cache_config = replace(cache_config, root_dir=Path(self._config.output_root) / "feature_cache")
         extractor = SlideManifestDenseExtractor(
-            self._dataset,
+            roi_dataset,
             self._config.encoder,
             masks=self._config.preprocessing.masks,
             sampling=sampling,
@@ -2337,9 +2415,21 @@ class Pipeline:
             cache=cache_config,
         )
         try:
-            return extractor.run(feature_dir=run_dir / "features")
+            store = extractor.run(feature_dir=run_dir / "features")
         finally:
             _release_parent_cuda_state()
+        return _FeatureSourceContext(
+            feature_store=self._cache_backed_dense_source(
+                store,
+                kind="slide_manifest_dense_cache",
+                dataset_csv=roi_manifest_csv,
+                splits_csv=roi_splits_csv,
+                parent_dataset_csv=self._config.dataset_csv,
+                parent_splits_csv=self._config.splits_csv,
+            ),
+            dataset=roi_dataset,
+            splits=roi_splits,
+        )
 
     def _build_composite_dense_store(self, *, run_dir: Path):
         """Extract every member encoder into its own cache; return a concat view (§7).

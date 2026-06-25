@@ -239,6 +239,10 @@ class CompositeDenseFeatureStore:
             ],
         }
 
+    def spacing_um(self, sample_id: str) -> float | None:
+        value = self.metadata(sample_id).get("spacing_um")
+        return None if value is None else float(value)
+
     def load(self, sample_id: str) -> torch.Tensor:
         """Concatenate every member's resampled+normalized grid along the channel axis.
 

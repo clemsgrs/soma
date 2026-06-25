@@ -6,6 +6,11 @@ from soma.dense.geometry import (
     normalize_hw,
 )
 from soma.dense.sliding import encode_dense_sliding, resolve_window_geometry
+from soma.dense.source import (
+    CacheBackedDenseSource,
+    DenseFeatureSource,
+    DenseSourceProvenance,
+)
 from soma.dense.store import (
     DENSE_ARTIFACT_TYPE,
     DENSE_PAYLOAD_SUBDIR,
@@ -22,6 +27,9 @@ __all__ = [
     "normalize_hw",
     "encode_dense_sliding",
     "resolve_window_geometry",
+    "CacheBackedDenseSource",
+    "DenseFeatureSource",
+    "DenseSourceProvenance",
     "DENSE_ARTIFACT_TYPE",
     "DENSE_PAYLOAD_SUBDIR",
     "DENSE_SIDECAR_SUFFIX",
