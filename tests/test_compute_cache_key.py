@@ -144,3 +144,176 @@ def test_compute_cache_key_rejects_unknown_kind():
             preprocessing=PreprocessingConfig(tissue_method="hsv"),
             execution=EncoderConfig(name="virchow"),
         )
+
+
+# --- Annotation-restricted bag cache identity (#110) ------------------------------------
+#
+# A tumor-restricted merged bag must never alias a full-tissue bag of the same
+# slide/encoder/geometry: the selection-relevant projection of masks/sampling
+# (active pixel_mapping entries, per-class min_coverage, strategy, output_mode) folds into
+# the preprocessing signature that keys tiling/tile/slide caches. ``colors`` is cosmetic
+# and is excluded. The no-masks case stays byte-stable (asserted by the ground-truth hashes
+# above remaining unchanged).
+
+
+def _masks_preprocessing(**masks_kwargs):
+    from soma.config import MasksConfig, SamplingConfig
+
+    sampling_kwargs = {
+        key: masks_kwargs.pop(key)
+        for key in ("strategy", "output_mode")
+        if key in masks_kwargs
+    }
+    return PreprocessingConfig(
+        backend="asap",
+        requested_spacing_um=0.5,
+        requested_tile_size_px=224,
+        tissue_method="hsv",
+        masks=MasksConfig(**masks_kwargs),
+        sampling=SamplingConfig(**sampling_kwargs) if sampling_kwargs else None,
+    )
+
+
+def test_preprocessing_signature_omits_masks_when_absent():
+    """No masks block ⇒ no ``masks``/``sampling`` keys in the signature, so legacy
+    tissue-only cache keys are byte-stable."""
+    from soma.cache.keys import preprocessing_signature
+
+    sig = preprocessing_signature(
+        PreprocessingConfig(
+            backend="asap",
+            requested_spacing_um=0.5,
+            requested_tile_size_px=224,
+            tissue_method="hsv",
+        )
+    )
+    assert "masks" not in sig
+    assert "sampling" not in sig
+
+
+def test_tumor_restricted_bag_differs_from_tissue_bag():
+    """AC7: a tumor-restricted bag and a full-tissue bag of the same slide/encoder produce
+    different cache keys across tiling, tile, and slide kinds."""
+    from soma.cache.keys import (
+        build_slide_cache_key,
+        build_tile_cache_key,
+        build_tiling_cache_key,
+        execution_signature,
+        preprocessing_signature,
+    )
+
+    tissue = PreprocessingConfig(
+        backend="asap",
+        requested_spacing_um=0.5,
+        requested_tile_size_px=224,
+        tissue_method="hsv",
+    )
+    tumor = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+    )
+    execution = EncoderConfig(name="virchow")
+
+    assert build_tiling_cache_key(preprocessing=tissue) != build_tiling_cache_key(
+        preprocessing=tumor
+    )
+    assert build_tile_cache_key(
+        tile_encoder_name="virchow", preprocessing=tissue, execution=execution
+    ) != build_tile_cache_key(
+        tile_encoder_name="virchow", preprocessing=tumor, execution=execution
+    )
+
+    def _slide_key(prep):
+        tile_dep = {
+            "tile_encoder_name": "virchow",
+            "tile_preprocessing": preprocessing_signature(prep),
+            "tile_execution": execution_signature(execution, encoder_name="virchow"),
+        }
+        return build_slide_cache_key(
+            slide_encoder_name="prism",
+            tile_dependency_signature=tile_dep,
+            execution=EncoderConfig(name="prism"),
+        )
+
+    assert _slide_key(tissue) != _slide_key(tumor)
+
+
+def test_annotation_bag_identical_specs_same_key():
+    """AC7: identical masks/sampling specs hash to the same key."""
+    from soma.cache.keys import build_tiling_cache_key
+
+    a = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
+    )
+    b = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
+    )
+    assert build_tiling_cache_key(preprocessing=a) == build_tiling_cache_key(preprocessing=b)
+
+
+def test_annotation_bag_min_coverage_changes_key():
+    """AC7: changing ``min_coverage`` changes the key."""
+    from soma.cache.keys import build_tiling_cache_key
+
+    low = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.25}
+    )
+    high = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.75}
+    )
+    assert build_tiling_cache_key(preprocessing=low) != build_tiling_cache_key(preprocessing=high)
+
+
+def test_annotation_bag_strategy_changes_key():
+    """AC7: changing ``sampling.strategy`` changes the key."""
+    from soma.cache.keys import build_tiling_cache_key
+
+    joint = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+        strategy="joint",
+    )
+    independent = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+        strategy="independent",
+    )
+    assert build_tiling_cache_key(preprocessing=joint) != build_tiling_cache_key(
+        preprocessing=independent
+    )
+
+
+def test_annotation_bag_active_class_set_changes_key():
+    """AC7: changing the active class set (the ``pixel_mapping``/``min_coverage`` vocabulary)
+    changes the key."""
+    from soma.cache.keys import build_tiling_cache_key
+
+    tumor_only = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+    )
+    tumor_and_stroma = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1, "stroma": 2},
+        min_coverage={"tumor": 0.5, "stroma": 0.5},
+    )
+    assert build_tiling_cache_key(preprocessing=tumor_only) != build_tiling_cache_key(
+        preprocessing=tumor_and_stroma
+    )
+
+
+def test_annotation_bag_colors_do_not_change_key():
+    """AC7: ``colors`` is cosmetic and excluded from cache identity."""
+    from soma.cache.keys import build_tiling_cache_key
+
+    no_colors = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+    )
+    with_colors = _masks_preprocessing(
+        pixel_mapping={"background": 0, "tumor": 1},
+        min_coverage={"tumor": 0.5},
+        colors={"background": None, "tumor": [255, 0, 0]},
+    )
+    assert build_tiling_cache_key(preprocessing=no_colors) == build_tiling_cache_key(
+        preprocessing=with_colors
+    )

@@ -383,15 +383,57 @@ def test_top_level_masks_sampling_yaml_rejected(tmp_path: Path):
         load_config(path)
 
 
-def test_masks_rejected_for_non_segmentation():
-    with pytest.raises(ValueError, match="masks: .* only valid for dataset_type='segmentation'"):
+def test_masks_valid_for_slide_dataset():
+    """AC1/AC2: a masks block is valid on a dataset_type='slide' dataset (the
+    annotation-restricted merged bag, #110), wired through the ordinary
+    featurizer→aggregator→predictor with an ordinary slide-level classification task — the
+    masks block restricts tile selection only; the MIL aggregator + task head are untouched."""
+    cfg = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="slide",
+        aggregator=AggregatorConfig(name="abmil"),
+        task=TaskConfig(name="binary_classification"),
+        preprocessing=PreprocessingConfig(
+            masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+        ),
+    )
+    assert cfg.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1}
+    # The aggregator + task head are the ordinary slide-level pair, not special-cased by masks.
+    assert cfg.aggregator.name == "abmil"
+    assert cfg.task.name == "binary_classification"
+
+
+def test_masks_rejected_for_tile_dataset():
+    """AC5: a masks block on a dataset_type='tile' dataset raises — patch manifests have no
+    annotation-sampling step."""
+    with pytest.raises(ValueError, match="masks: .* dataset_type"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="tile",
+            task=TaskConfig(name="binary_classification"),
+            preprocessing=PreprocessingConfig(
+                masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+            ),
+        )
+
+
+def test_per_annotation_output_mode_rejected_for_slide():
+    """AC5: output_mode='per_annotation' on a slide dataset raises, pointing at #86."""
+    with pytest.raises(ValueError, match="per_annotation.*#86"):
         PipelineConfig(
             dataset_csv="data.csv",
             splits_csv="splits.csv",
             output_root="out",
             dataset_type="slide",
             task=TaskConfig(name="binary_classification"),
-            preprocessing=PreprocessingConfig(masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING)),
+            preprocessing=PreprocessingConfig(
+                masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+                sampling=SamplingConfig(output_mode="per_annotation"),
+            ),
         )
 
 
