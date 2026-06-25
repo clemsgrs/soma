@@ -215,7 +215,7 @@ def load_run_data(run_dir: str | Path) -> RunData:
     folds = []
     for fold_dir, fold_idx in fold_dirs_indexed:
         history_path = fold_dir / "training_history.json"
-        training_history = json.loads(history_path.read_text()) if history_path.exists() else []
+        training_history = _load_training_history(history_path)
 
         metrics_data = json.loads((fold_dir / "metrics.json").read_text())
         test_split_names = [k for k in metrics_data if k != "tune"]
@@ -252,6 +252,18 @@ def load_run_data(run_dir: str | Path) -> RunData:
         metrics=metrics,
         subgroup_columns=subgroup_columns,
     )
+
+
+def _load_training_history(history_path: Path) -> list[dict]:
+    if not history_path.exists():
+        return []
+    payload = json.loads(history_path.read_text())
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        epochs = payload.get("epochs", [])
+        return epochs if isinstance(epochs, list) else []
+    return []
 
 
 def run_data_from_result(

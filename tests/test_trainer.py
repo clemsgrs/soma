@@ -140,9 +140,9 @@ class TestTrainer:
 
         assert isinstance(result, TrainResult)
         assert len(result.history) == 3
-        assert result.best_epoch >= 0
-        assert result.best_tune_loss >= 0
-        assert set(result.best_tune_metrics) >= {"auroc", "balanced_accuracy", "auprc", "f1"}
+        assert result.selected_epoch >= 0
+        assert result.selected_tune_loss >= 0
+        assert set(result.selected_tune_metrics) >= {"auroc", "balanced_accuracy", "auprc", "f1"}
 
     def test_loss_decreases(self, tmp_path: Path):
         """Training loss should decrease over epochs on synthetic data."""
@@ -319,7 +319,7 @@ class TestTrainerWithRegressionHead:
         assert len(result.history) == 3
         assert result.checkpoint_path.exists()
         for key in ["mae", "r2"]:
-            assert key in result.best_tune_metrics
+            assert key in result.selected_tune_metrics
 
 
 class _TwoKeyHead(BinaryClassificationHead):
@@ -390,15 +390,48 @@ class TestTrainingProgressFormatting:
         text = _format_batch_progress(87, 10000, phase="train")
         assert "train 87/10000" in text
 
+    def test_training_panel_labels_selected_checkpoint_by_monitor_value(self):
+        panel = _build_training_panel(
+            title="Training progress",
+            subtitle="epoch 2/10 | tune",
+            log=None,
+            total_epochs=10,
+            selected_epoch=1,
+            selected_tune_loss=0.95,
+            selected_tune_metrics={"balanced_accuracy": 0.8, "auroc": 0.7},
+            monitor_name="balanced_accuracy",
+            selected_monitor_value=0.8,
+            patience_counter=0,
+            patience_limit=10,
+            status="new selected checkpoint saved at epoch 2",
+            trainable_param_count=1234,
+            fold=None,
+            num_folds=1,
+            elapsed_seconds=0.0,
+            avg_epoch_seconds=None,
+            eta_seconds=None,
+            batch_progress=None,
+        )
+        console = Console(record=True, width=120)
+        console.print(panel)
+        rendered = console.export_text()
+
+        assert "selected" in rendered
+        assert "balanced_accuracy=0.8000 @ 02" in rendered
+        assert "0.9500 @ 02" not in rendered
+        assert "best metrics" not in rendered
+
     def test_training_panel_shows_fold_position_for_multifold_runs(self):
         panel = _build_training_panel(
             title="Training progress",
             subtitle="epoch 1/10 | train",
             log=None,
             total_epochs=10,
-            best_epoch=0,
-            best_tune_loss=float("inf"),
-            best_tune_metrics={},
+            selected_epoch=0,
+            selected_tune_loss=float("inf"),
+            selected_tune_metrics={},
+            monitor_name="tune_loss",
+            selected_monitor_value=float("inf"),
             patience_counter=0,
             patience_limit=10,
             status="waiting for epoch 1",

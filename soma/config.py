@@ -703,7 +703,7 @@ class TrainingConfig:
     ``batch_size`` and ``gradient_accumulation`` control the effective batch
     size, while ``epochs``, ``learning_rate``, ``optimizer``, ``scheduler``,
     and ``patience`` define the optimization schedule. ``monitor`` and
-    ``monitor_mode`` choose the tune loss or metric used for best-checkpoint
+    ``monitor_mode`` choose the tune loss or metric used for selected-checkpoint
     selection and early stopping. ``tune_is_test`` ties the tune and test
     splits to the same samples for protocols with a single held-out set: a fold
     may provide either a tune split or a test split (not both), and that split

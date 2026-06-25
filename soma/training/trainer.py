@@ -38,9 +38,9 @@ class EpochLog:
 class TrainResult:
     """Result of a training run."""
 
-    best_epoch: int
-    best_tune_loss: float
-    best_tune_metrics: dict[str, float]
+    selected_epoch: int
+    selected_tune_loss: float
+    selected_tune_metrics: dict[str, float]
     history: list[EpochLog]
     checkpoint_path: Path
 
@@ -92,16 +92,16 @@ class Trainer:
         """Run the full training loop.
 
         Returns:
-            TrainResult with best epoch, metrics, history, and checkpoint path.
+            TrainResult with selected epoch, metrics, history, and checkpoint path.
         """
         self._fold_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_path = self._fold_dir / "best_model.pt"
 
         history: list[EpochLog] = []
-        best_tune_loss = float("inf")
-        best_monitor_value = _initial_monitor_value(self._config.monitor_mode)
-        best_epoch = 0
-        best_tune_metrics: dict[str, float] = {}
+        selected_tune_loss = float("inf")
+        selected_monitor_value = _initial_monitor_value(self._config.monitor_mode)
+        selected_epoch = 0
+        selected_tune_metrics: dict[str, float] = {}
         patience_counter = 0
         started_at = time.perf_counter()
 
@@ -122,9 +122,11 @@ class Trainer:
                     subtitle=current_subtitle,
                     log=current_log,
                     total_epochs=self._config.epochs,
-                    best_epoch=best_epoch,
-                    best_tune_loss=best_tune_loss,
-                    best_tune_metrics=best_tune_metrics,
+                    selected_epoch=selected_epoch,
+                    selected_tune_loss=selected_tune_loss,
+                    selected_tune_metrics=selected_tune_metrics,
+                    monitor_name=self._config.monitor,
+                    selected_monitor_value=selected_monitor_value,
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
                     status=current_status,
@@ -145,9 +147,11 @@ class Trainer:
                 subtitle="starting",
                 log=None,
                 total_epochs=self._config.epochs,
-                best_epoch=best_epoch,
-                best_tune_loss=best_tune_loss,
-                best_tune_metrics=best_tune_metrics,
+                selected_epoch=selected_epoch,
+                selected_tune_loss=selected_tune_loss,
+                selected_tune_metrics=selected_tune_metrics,
+                monitor_name=self._config.monitor,
+                selected_monitor_value=selected_monitor_value,
                 patience_counter=patience_counter,
                 patience_limit=self._config.patience,
                 status="waiting for epoch 1",
@@ -218,18 +222,18 @@ class Trainer:
                 )
                 improved = _is_monitor_improvement(
                     monitor_value,
-                    best_monitor_value,
+                    selected_monitor_value,
                     self._config.monitor_mode,
                 )
                 status: str
                 if improved:
-                    best_tune_loss = tune_loss
-                    best_monitor_value = monitor_value
-                    best_epoch = epoch
-                    best_tune_metrics = tune_metrics
+                    selected_tune_loss = tune_loss
+                    selected_monitor_value = monitor_value
+                    selected_epoch = epoch
+                    selected_tune_metrics = tune_metrics
                     patience_counter = 0
                     _save_checkpoint(self._model, self._optimizer, epoch, tune_loss, checkpoint_path)
-                    status = f"new best checkpoint saved at epoch {epoch + 1}"
+                    status = f"new selected checkpoint saved at epoch {epoch + 1}"
                 else:
                     patience_counter += 1
                     status = f"no improvement ({patience_counter}/{self._config.patience})"
@@ -251,9 +255,11 @@ class Trainer:
                     subtitle=current_subtitle,
                     log=history[-1] if history else None,
                     total_epochs=self._config.epochs,
-                    best_epoch=best_epoch,
-                    best_tune_loss=best_tune_loss,
-                    best_tune_metrics=best_tune_metrics,
+                    selected_epoch=selected_epoch,
+                    selected_tune_loss=selected_tune_loss,
+                    selected_tune_metrics=selected_tune_metrics,
+                    monitor_name=self._config.monitor,
+                    selected_monitor_value=selected_monitor_value,
                     patience_counter=patience_counter,
                     patience_limit=self._config.patience,
                     status=current_status,
@@ -269,9 +275,9 @@ class Trainer:
             )
 
         return TrainResult(
-            best_epoch=best_epoch,
-            best_tune_loss=best_tune_loss,
-            best_tune_metrics=best_tune_metrics,
+            selected_epoch=selected_epoch,
+            selected_tune_loss=selected_tune_loss,
+            selected_tune_metrics=selected_tune_metrics,
             history=history,
             checkpoint_path=checkpoint_path,
         )
@@ -615,9 +621,11 @@ def _build_training_panel(
     subtitle: str,
     log: EpochLog | None,
     total_epochs: int,
-    best_epoch: int,
-    best_tune_loss: float,
-    best_tune_metrics: dict[str, float],
+    selected_epoch: int,
+    selected_tune_loss: float,
+    selected_tune_metrics: dict[str, float],
+    monitor_name: str,
+    selected_monitor_value: float,
     patience_counter: int,
     patience_limit: int,
     status: str,
@@ -655,17 +663,21 @@ def _build_training_panel(
     if batch_progress is not None:
         table.add_row("batch", Text(batch_progress, style="white"))
 
-    best_metrics_text = _format_metrics(best_tune_metrics)
-    best_loss_text = _format_finite(best_tune_loss)
-    best_epoch_text = f"{best_epoch + 1:02d}" if np.isfinite(best_tune_loss) else "n/a"
+    selected_metrics_text = _format_metrics(selected_tune_metrics)
+    selected_monitor_text = _format_selected_monitor(monitor_name, selected_monitor_value)
+    selected_epoch_text = f"{selected_epoch + 1:02d}" if np.isfinite(selected_monitor_value) else "n/a"
     table.add_row(
-        "best",
-        Text.assemble((best_loss_text, "green"), (" @ ", "dim"), (best_epoch_text, "green")),
+        "selected",
+        Text.assemble(
+            (selected_monitor_text, "green"),
+            (" @ ", "dim"),
+            (selected_epoch_text, "green"),
+        ),
     )
-    if best_metrics_text:
-        table.add_row("best metrics", Text(best_metrics_text, style="green"))
+    if selected_metrics_text:
+        table.add_row("selected @ epoch", Text(selected_metrics_text, style="green"))
     table.add_row("patience", Text(f"{patience_counter}/{patience_limit}", style="white"))
-    table.add_row("status", Text(status, style="bold yellow" if "best" not in status else "bold green"))
+    table.add_row("status", Text(status, style="bold green" if "selected" in status else "bold yellow"))
     table.add_row("epoch avg", Text(_format_optional_duration(avg_epoch_seconds), style="white"))
     table.add_row("elapsed", Text(_format_elapsed_with_eta(elapsed_seconds, eta_seconds), style="white"))
 
@@ -676,6 +688,12 @@ def _build_training_panel(
         border_style="cyan",
         box=box.ROUNDED,
     )
+
+
+def _format_selected_monitor(monitor_name: str, selected_monitor_value: float) -> str:
+    if not np.isfinite(selected_monitor_value):
+        return "n/a"
+    return f"{monitor_name}={selected_monitor_value:.4f}"
 
 
 def _format_metrics(metrics: dict[str, float]) -> str:
