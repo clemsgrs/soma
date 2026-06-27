@@ -95,6 +95,13 @@ for custom experiment orchestration.
 .. toctree::
    :maxdepth: 1
    :hidden:
+   :caption: Benchmarks
+
+   ocelot-detection-benchmark
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
    :caption: System
 
    caching
