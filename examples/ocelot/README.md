@@ -51,6 +51,25 @@ train→`train`, val→`tune`, test→`test`, single fold), one `points/<sample_
 > it. This is intentionally kept local (under the git-ignored `data/`), not
 > shipped here.
 
+### Magnification variants (encoder × spacing ablation)
+
+The dense reader reads flat JPEGs with PIL and ignores any `requested_spacing_um`, so
+a coarser magnification must be **materialized at curation time**. Pass
+`--render-spacing-um` to downsample every cell patch to a target µm/px (≥ the native
+0.2) and rescale its points by the same factor; the emitted manifest stamps a
+`level0_spacing` column equal to the rendered spacing and the patches land under
+`curated/images/`. Each variant is its own output dir (own manifest digest in the
+dense cache):
+
+```bash
+python -m soma.curation.ocelot \
+  --raw-root        <data_root>/ocelot \
+  --output-dir      <data_root>/ocelot/curated_0p4 \
+  --render-spacing-um 0.4   # half-resolution (512×512) patches
+```
+
+Omitting the flag reproduces the native-resolution manifest above unchanged.
+
 ## 3. Run
 
 CONCH is gated on Hugging Face — authenticate first (`huggingface-cli login` or
