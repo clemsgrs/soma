@@ -32,7 +32,7 @@ preprocessing:
 encoder:
   name: uni2
   batch_size: 8
-  allow_non_recommended_settings: true   # reading flat OCELOT patches at a fixed spacing
+  allow_non_recommended_settings: true   # 0.25 µm/px is below UNI2's recommended 20x (0.5) regime — off-distribution on purpose
 
 decoder:
   name: lightweight_conv

@@ -34,7 +34,7 @@ preprocessing:
 encoder:
   name: virchow2
   batch_size: 8
-  allow_non_recommended_settings: true   # reading flat OCELOT patches at a fixed spacing
+  allow_non_recommended_settings: true   # 0.2 µm/px is below Virchow2's finest recommended spacing (0.25) — native-anchor probe, off-recommended on purpose
 
 decoder:
   name: lightweight_conv
