@@ -39,8 +39,10 @@ def test_cli_generator_matches_checked_in_file() -> None:
 
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    example_paths = sorted((repo_root / "examples").glob("*.yaml")) + sorted(
-        (repo_root / "examples" / "eva").glob("*.yaml")
+    example_paths = (
+        sorted((repo_root / "examples").glob("*.yaml"))
+        + sorted((repo_root / "examples" / "eva").glob("*.yaml"))
+        + sorted((repo_root / "examples" / "ocelot").glob("*.yaml"))
     )
 
     assert example_paths
