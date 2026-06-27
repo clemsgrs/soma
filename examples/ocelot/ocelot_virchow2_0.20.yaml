@@ -12,7 +12,7 @@
 # slide2vec >= 5.0.1 is required to *run* Virchow2 (it loads without it).
 
 run:
-  output_root: /maindisk/clement/runs/ocelot_virchow2_0p20_lightconv
+  output_root: output/ocelot_virchow2_0p20_lightconv
   seed: 0
   tags: [ocelot, detection, virchow2, lightweight_conv, spacing_0p20]
 

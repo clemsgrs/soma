@@ -11,7 +11,7 @@
 # Then run:  python -m soma examples/ocelot/ocelot_uni2_0.25.yaml
 
 run:
-  output_root: /maindisk/clement/runs/ocelot_uni2_0p25_lightconv
+  output_root: output/ocelot_uni2_0p25_lightconv
   seed: 0
   tags: [ocelot, detection, uni2, lightweight_conv, spacing_0p25]
 
