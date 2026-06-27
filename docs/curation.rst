@@ -90,3 +90,38 @@ Raw layout expectations
 
 Segmentation datasets from EVA, such as MoNuSAC, CoNSeP, and BCSS, are not
 covered by this tile-classification curation path.
+
+OCELOT 2023 cell detection
+--------------------------
+
+The OCELOT curator targets Soma's ``dataset_type: detection`` path. It converts
+the unzipped `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ release
+(Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) into Soma's detection
+manifests. Like the EVA curators it does not download anything; accept the Zenodo
+terms and unzip first (see ``examples/ocelot/README.md`` for the download step).
+
+Curate from Python::
+
+    from soma.curation.ocelot import curate_ocelot_detection
+
+    curate_ocelot_detection("<raw>/ocelot2023_v1.0.1", "<out>/curated")
+
+or from the command line::
+
+    python -m soma.curation.ocelot \
+        --raw-root <raw>/ocelot2023_v1.0.1 \
+        --output-dir <out>/curated
+
+OCELOT ships paired *cell* and *tissue* patches; detection-v1 uses the **cell**
+patches only (1024×1024 JPEGs at ~0.2 µm/px). Each is paired with a headerless
+``x,y,label`` point CSV whose 1-based cell label (``1`` = background cell, ``2`` =
+tumor cell) is remapped to Soma's 0-based class ids (BC→0, TC→1). The curator
+writes ``dataset.csv`` (``sample_id, image_path, points_path``), ``splits.csv``,
+one ``points/<sample_id>.csv`` per sample, and ``summary.json``.
+
+Split policy
+~~~~~~~~~~~~
+
+OCELOT's own train/val/test split is emitted verbatim as a single fold, with
+train → ``train``, val → ``tune`` (threshold sweep / monitor), and test →
+``test``. Soma never partitions the data itself.
