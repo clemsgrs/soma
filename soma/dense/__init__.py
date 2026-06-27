@@ -5,7 +5,6 @@ from soma.dense.geometry import (
     compute_dense_geometry,
     normalize_hw,
 )
-from soma.dense.sliding import encode_dense_sliding, resolve_window_geometry
 from soma.dense.source import (
     CacheBackedDenseSource,
     DenseFeatureSource,
@@ -25,8 +24,6 @@ __all__ = [
     "DenseGridGeometry",
     "compute_dense_geometry",
     "normalize_hw",
-    "encode_dense_sliding",
-    "resolve_window_geometry",
     "CacheBackedDenseSource",
     "DenseFeatureSource",
     "DenseSourceProvenance",

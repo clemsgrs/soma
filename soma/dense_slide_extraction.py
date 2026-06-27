@@ -7,9 +7,10 @@ The slide-manifest counterpart of :class:`soma.dense_extraction.DenseTileFeature
 1. runs **hs2p annotation sampling** (``tile_slide(sampling=…)``, ``merged`` output mode) per
    slide to get ROI coordinates (the union of tiles passing any class threshold);
 2. asks **slide2vec** to encode each ROI region into a dense ``(d, gh, gw)`` grid
-   (:func:`slide2vec.runtime.dense_regions.encode_regions_dense` — region reads + the
-   encoder's ``encode_tiles_dense``); soma never reads slide regions or runs the encoder
-   itself, mirroring how the pooled path defers to slide2vec;
+   (:func:`slide2vec.runtime.dense_regions.iter_regions_dense` — region reads + the
+   encoder's whole/sliding dense forward, streamed one grid per coordinate); soma never
+   reads slide regions or runs the encoder itself, mirroring how the pooled path defers
+   to slide2vec;
 3. **caches** the grids via soma's own dense cache layer, with the sampling spec folded into
    the cache key so distinct ``min_coverage``/spacing/strategy never alias.
 
@@ -230,10 +231,10 @@ class SlideManifestDenseExtractor:
         self._target_size = normalize_hw(int(preprocessing.requested_tile_size_px), name="target_size")
         self._spacing_um = float(preprocessing.requested_spacing_um)
         self._pad_mode = "reflect"
-        # Encoder-window knobs (design §5): window_size=None ⇒ one whole-region forward
-        # (delegated to slide2vec); a smaller window slides the encoder over patch-aligned
-        # windows of each padded ROI and blends the grids (soma's encode_dense_sliding —
-        # the same path the pre-cropped dense extractor uses). Sliding is required for
+        # Encoder-window knobs (design §5): window_size=None ⇒ one whole-region forward;
+        # a smaller window slides the encoder over patch-aligned windows of each padded ROI
+        # and blends the grids. Both are delegated to slide2vec's unified dense primitive
+        # (the same path the pre-cropped dense extractor uses). Sliding is required for
         # encoders that only accept their native input size (e.g. phikon at 224).
         self._window_size = preprocessing.dense_window_size
         self._overlap = float(preprocessing.dense_window_overlap)
@@ -247,7 +248,7 @@ class SlideManifestDenseExtractor:
 
     def run(self, feature_dir: str | Path) -> DenseFeatureStore:
         from slide2vec.inference import load_model
-        from slide2vec.runtime.dense_regions import encode_regions_dense
+        from slide2vec.runtime.dense_regions import iter_regions_dense
 
         dense_input_mode = "whole" if self._window_size is None else "sliding_window"
 
@@ -331,35 +332,28 @@ class SlideManifestDenseExtractor:
         for image_path, records in records_by_slide.items():
             wsi = WSI(Path(image_path), backend=self._preprocessing.backend)
             coords = [record.region for record in records]
-            if self._window_size is None:
-                # Whole-region forward — delegated to slide2vec (the extraction layer).
-                grids = encode_regions_dense(
-                    model=model,
-                    device=device,
-                    wsi=wsi,
-                    coordinates=coords,
-                    requested_spacing_um=self._spacing_um,
-                    target_size=self._target_size,
-                    tolerance=float(self._preprocessing.tolerance),
-                    pad_mode=self._pad_mode,
-                    feature_kind=self._feature_kind,
-                    attention_blocks=self._attention_blocks,
-                    attention_include_registers=self._attention_include_registers,
-                    batch_size=self._encoder.batch_size,
-                    precision=execution.precision,
-                )
-            else:
-                # Sliding-window: read each padded ROI region and slide the encoder over
-                # patch-aligned windows (reusing soma's tested encode_dense_sliding), so
-                # native-only encoders (phikon@224) can serve a 512 supervision tile.
-                grids = self._encode_regions_sliding(
-                    model=model,
-                    device=device,
-                    wsi=wsi,
-                    coordinates=coords,
-                    geometry=geometry,
-                    precision=execution.precision,
-                )
+            # One streaming call per slide: slide2vec's unified dense primitive reads each
+            # ROI region, encodes it (whole-region forward when window_size is None, else the
+            # encoder slid over patch-aligned windows + blended), and yields one (d, gh, gw)
+            # grid per coordinate in order — one batch resident at a time.
+            grids = iter_regions_dense(
+                model=model,
+                device=device,
+                wsi=wsi,
+                coordinates=coords,
+                requested_spacing_um=self._spacing_um,
+                target_size=self._target_size,
+                tolerance=float(self._preprocessing.tolerance),
+                pad_mode=self._pad_mode,
+                window_size=self._window_size,
+                overlap=self._overlap,
+                feature_kind=self._feature_kind,
+                attention_blocks=self._attention_blocks,
+                attention_include_registers=self._attention_include_registers,
+                batch_size=int(self._encoder.batch_size),
+                precision=execution.precision,
+                dense_transform=model.get_dense_transform(),
+            )
             for record, grid in zip(records, grids):
                 if feature_dim is None:
                     feature_dim = int(grid.shape[0])
@@ -389,77 +383,3 @@ class SlideManifestDenseExtractor:
                 validate_payloads=self._cache.validate_payloads,
             )
         return DenseFeatureStore(out_dir)
-
-    def _encode_regions_sliding(
-        self,
-        *,
-        model,
-        device,
-        wsi,
-        coordinates,
-        geometry,
-        precision: str,
-    ):
-        """Encode ROI regions with the encoder slid over patch-aligned windows.
-
-        The sliding counterpart of slide2vec's whole-region ``encode_regions_dense``:
-        each ROI is read at the run spacing/target_size, normalization-transformed, padded
-        to ``encoded_size``, then fed through soma's :func:`encode_dense_sliding` (the same
-        blended stitch the pre-cropped dense extractor uses). Returns ``(N, d, gh, gw)``.
-        """
-        import numpy as np
-        from PIL import Image
-        from slide2vec.runtime.dense_regions import pad_image_to_encoded
-        from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
-
-        from soma.dense.sliding import encode_dense_sliding
-
-        target_h, target_w = geometry.target_size
-        dense_transform = model.get_dense_transform()
-        if self._feature_kind == "cls_attention":
-            blocks = self._attention_blocks
-            include_reg = self._attention_include_registers
-
-            def encode_fn(window):
-                return model.encode_tiles_attention(window, blocks=blocks, include_registers=include_reg)
-        else:
-            encode_fn = model.encode_tiles_dense
-
-        def _read_padded(location):
-            region = wsi.read_region_at_spacing(
-                location,
-                float(self._spacing_um),
-                (target_w, target_h),  # hs2p size is (width, height)
-                tolerance=float(self._preprocessing.tolerance),
-                interpolation="area",
-            )
-            region = np.ascontiguousarray(np.asarray(region)[..., :3])
-            tensor = torch.as_tensor(dense_transform(Image.fromarray(region))).as_subclass(torch.Tensor)
-            if tensor.ndim != 3 or tuple(int(s) for s in tensor.shape[-2:]) != (target_h, target_w):
-                raise ValueError(
-                    f"region at {location} is {tuple(int(s) for s in tensor.shape)} after the dense "
-                    f"transform; expected (C, {target_h}, {target_w}) (normalization-only transform)."
-                )
-            return pad_image_to_encoded(
-                tensor, geometry, pad_mode=self._pad_mode, image_pad_value=None
-            )
-
-        coords = [(int(x), int(y)) for x, y in coordinates]
-        batch_size = max(1, int(self._encoder.batch_size))
-        out: list[np.ndarray] = []
-        with torch.inference_mode(), slide_encode_autocast_ctx(device, precision):
-            for start in range(0, len(coords), batch_size):
-                chunk = coords[start : start + batch_size]
-                batch = torch.stack([_read_padded(loc) for loc in chunk]).to(device, non_blocking=True)
-                grids = encode_dense_sliding(
-                    model,
-                    batch,
-                    geometry=geometry,
-                    window_size=self._window_size,
-                    overlap=self._overlap,
-                    encode_fn=encode_fn,
-                )
-                out.append(grids.detach().float().cpu().numpy())
-        import numpy as _np
-
-        return _np.concatenate(out, axis=0)

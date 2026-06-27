@@ -2604,7 +2604,9 @@ class Pipeline:
         )
         window_size = preprocessing.dense_window_size
         overlap = float(preprocessing.dense_window_overlap)
-        from soma.dense.sliding import describe_dense_mode, resolve_window_geometry
+        from slide2vec.runtime.dense_sliding import resolve_window_geometry
+
+        from soma.dense.sliding import describe_dense_mode
 
         # print, not logger: always visible regardless of logging config (same as the
         # cached extractor's announcement) so the resolved mode is never silent.

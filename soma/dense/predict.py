@@ -40,9 +40,10 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+from slide2vec.runtime.dense_sliding import cover_origins
+
 from soma.dense.geometry import DenseGridGeometry
 from soma.dense.reader import read_image_at_spacing
-from soma.dense.sliding import cover_origins
 
 __all__ = [
     "PredictionResult",
