@@ -9,7 +9,7 @@
 # Then run:  python -m soma examples/ocelot/ocelot.yaml
 
 run:
-  output_root: /maindisk/clement/runs/ocelot_conch_lightconv
+  output_root: output/ocelot_conch_lightconv
   seed: 0
   tags: [ocelot, detection, conch, lightweight_conv, baseline]
 
