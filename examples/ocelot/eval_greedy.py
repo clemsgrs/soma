@@ -6,6 +6,12 @@ cached dense grids + the saved ``best_model.pt`` and re-run just the back half o
 thresholds on the tune split, then score tune + test. Prints both so they can be
 compared to the Hungarian headline in the run's ``metrics.json``.
 
+For each test split this emits two numbers: the leakage-free **headline** (per-class
+thresholds frozen from the tune split — what a real submitter reports) and an
+**oracle** ceiling (thresholds re-swept directly on that test split — a diagnostic
+ceiling ONLY, never the reported result). The headline-to-oracle gap measures how well
+the tune-to-test operating point transferred.
+
 Usage (from the soma repo; slide2vec>=5.0.0 must be importable):
     python examples/ocelot/eval_greedy.py \
         --run-dir /maindisk/clement/runs/ocelot_conch_lightconv \
@@ -34,6 +40,63 @@ from soma.pipeline import (
     _resolve_detection_px,
     _sweep_detection_thresholds,
 )
+
+
+def build_greedy_report(
+    *,
+    model,
+    head,
+    device,
+    tune_loader,
+    test_loaders: dict,
+    dataset,
+    matching: str,
+) -> dict:
+    """Greedy (OCELOT-official) report: a leakage-free headline plus an oracle ceiling.
+
+    Headline: per-class score thresholds swept on the *tune* split, frozen, then applied
+    once to each test split — the leakage-free number a real submitter reports. Oracle:
+    the same per-class thresholds re-swept directly on each test split — a DIAGNOSTIC
+    CEILING ONLY, never the reported result. The headline-to-oracle gap measures how well
+    the tune-to-test operating point transferred (a large gap = a fragile threshold).
+
+    The greedy matcher is whatever ``head.matching`` selects, so both sweeps and both
+    evaluations stay greedy-consistent.
+    """
+    headline_thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
+    head.score_threshold = headline_thresholds
+    tune_report = _evaluate_detection(model, tune_loader, "tune", device, head=head, dataset=dataset)
+    out: dict = {
+        "matching": matching,
+        "score_threshold_per_class": headline_thresholds,
+        "tune": tune_report.metrics,
+    }
+    for name, loader in test_loaders.items():
+        # Headline: the frozen tune thresholds applied once to this test split.
+        head.score_threshold = headline_thresholds
+        headline = _evaluate_detection(model, loader, name, device, head=head, dataset=dataset)
+        # Oracle: re-sweep on this very split — leaky by construction, a ceiling only.
+        oracle_thresholds = _sweep_detection_thresholds(model, loader, device, head)
+        head.score_threshold = oracle_thresholds
+        oracle = _evaluate_detection(model, loader, name, device, head=head, dataset=dataset)
+        head.score_threshold = headline_thresholds  # leave the head on the reported op-point
+        out[name] = {
+            "headline": {
+                "note": "reported result — per-class thresholds frozen from the tune split (leakage-free)",
+                "score_threshold_per_class": headline_thresholds,
+                "metrics": headline.metrics,
+            },
+            "oracle": {
+                "note": (
+                    "DIAGNOSTIC CEILING ONLY — per-class thresholds swept on this test split "
+                    "(leaky); never the reported result. The headline-to-oracle gap measures "
+                    "operating-point fragility."
+                ),
+                "score_threshold_per_class": oracle_thresholds,
+                "metrics": oracle.metrics,
+            },
+        }
+    return out
 
 
 def main() -> None:
@@ -102,16 +165,20 @@ def main() -> None:
         cfg.training, store, head.extract_targets,
     )
 
-    thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
-    head.score_threshold = thresholds
+    out = build_greedy_report(
+        model=model, head=head, device=device,
+        tune_loader=tune_loader, test_loaders=test_loaders,
+        dataset=manifest, matching=args.matching,
+    )
     print(f"\nmatching = {args.matching}")
-    print(f"swept per-class thresholds: {thresholds}")
-    tune_report = _evaluate_detection(model, tune_loader, "tune", device, head=head, dataset=manifest)
-    out = {"matching": args.matching, "score_threshold_per_class": thresholds,
-           "tune": tune_report.metrics}
-    for name, loader in test_loaders.items():
-        rep = _evaluate_detection(model, loader, name, device, head=head, dataset=manifest)
-        out[name] = rep.metrics
+    print(f"tune-frozen per-class thresholds (headline): {out['score_threshold_per_class']}")
+    for name in test_loaders:
+        headline_f1 = out[name]["headline"]["metrics"].get("mean_f1")
+        oracle_f1 = out[name]["oracle"]["metrics"].get("mean_f1")
+        print(
+            f"  [{name}] headline mF1={headline_f1}  |  "
+            f"oracle mF1 (diagnostic ceiling, NOT reported)={oracle_f1}"
+        )
     print(json.dumps(out, indent=2))
 
 
