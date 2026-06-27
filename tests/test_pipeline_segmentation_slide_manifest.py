@@ -2,7 +2,7 @@
 
 The genuinely-new A3a soma integration, tested deterministically and offline. The two
 cross-repo extraction primitives — hs2p annotation sampling (``sample_slide_rois``) and the
-slide2vec dense encode (``encode_regions_dense``) — are stubbed at their import seams (each
+slide2vec dense encode (``iter_regions_dense``) — are stubbed at their import seams (each
 is independently tested in its own repo: hs2p ``test_annotation_coverage``, slide2vec
 ``test_dense_regions``); everything in between (ROI manifest + split propagation, the dense
 cache keyed on the sampling spec, explicit ROI training context, and the full cached dense
@@ -74,18 +74,24 @@ def _patch_extraction(monkeypatch):
     # hs2p sampling → known coords per slide.
     monkeypatch.setattr(dse, "sample_slide_rois", lambda dataset, **kw: {sid: _coords_for(sid) for sid in dataset.sample_ids})
 
-    # slide2vec model load → a dummy carrying only patch_size (encode is stubbed below).
+    # slide2vec model load → a dummy carrying patch_size + a no-op dense transform (the
+    # streaming encode is stubbed below, so the transform is only passed through).
     monkeypatch.setattr(
         s2v_inference, "load_model",
-        lambda **kw: SimpleNamespace(model=SimpleNamespace(patch_size=(PATCH, PATCH)), device="cpu"),
+        lambda **kw: SimpleNamespace(
+            model=SimpleNamespace(patch_size=(PATCH, PATCH), get_dense_transform=lambda: None),
+            device="cpu",
+        ),
     )
     # A WSI that opens any path without touching disk (encode is stubbed, so it's unused).
     monkeypatch.setattr(hs2p_wsi, "WSI", lambda *a, **kw: SimpleNamespace())
-    # slide2vec dense encode → deterministic random grids of the right shape.
+    # slide2vec dense encode → a generator yielding one deterministic random grid per coord.
     rng = np.random.default_rng(0)
     monkeypatch.setattr(
-        s2v_dense, "encode_regions_dense",
-        lambda *, coordinates, **kw: rng.standard_normal((len(coordinates), FEATURE_DIM, GRID, GRID)).astype(np.float32),
+        s2v_dense, "iter_regions_dense",
+        lambda *, coordinates, **kw: (
+            rng.standard_normal((FEATURE_DIM, GRID, GRID)).astype(np.float32) for _ in coordinates
+        ),
     )
     # Mask region read → a deterministic label window per ROI origin.
     def _fake_mask_region(path, *, location, size, spacing_um, backend, tolerance):
@@ -374,7 +380,10 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
 
     monkeypatch.setattr(
         s2v_inference, "load_model",
-        lambda **kw: SimpleNamespace(model=SimpleNamespace(patch_size=(PATCH, PATCH)), device="cpu"),
+        lambda **kw: SimpleNamespace(
+            model=SimpleNamespace(patch_size=(PATCH, PATCH), get_dense_transform=lambda: None),
+            device="cpu",
+        ),
     )
 
     opened_paths: list[str] = []
@@ -388,9 +397,10 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
 
     def _encode(*, coordinates, **kw):
         encoded_coords.append([tuple(int(v) for v in c) for c in coordinates])
-        return rng.standard_normal((len(coordinates), FEATURE_DIM, GRID, GRID)).astype(np.float32)
+        for _ in coordinates:
+            yield rng.standard_normal((FEATURE_DIM, GRID, GRID)).astype(np.float32)
 
-    monkeypatch.setattr(s2v_dense, "encode_regions_dense", _encode)
+    monkeypatch.setattr(s2v_dense, "iter_regions_dense", _encode)
 
     def _make_extractor():
         return SlideManifestDenseExtractor(

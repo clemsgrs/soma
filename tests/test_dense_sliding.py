@@ -16,12 +16,13 @@ pytest.importorskip("timm")
 
 from slide2vec.encoders.base import TimmTileEncoder  # noqa: E402
 
-from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.sliding import (  # noqa: E402
+from slide2vec.runtime.dense_sliding import (  # noqa: E402
     _window_starts,
     encode_dense_sliding,
     resolve_window_geometry,
 )
+
+from soma.dense.geometry import compute_dense_geometry  # noqa: E402
 
 PATCH = 16
 

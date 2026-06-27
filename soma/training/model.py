@@ -229,8 +229,7 @@ class LiveSegmentationModel(nn.Module):
         numerics: ``forward`` is still ``forward_from_grid(encode(X))``.
         """
         from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
-
-        from soma.dense.sliding import encode_dense_sliding
+        from slide2vec.runtime.dense_sliding import encode_dense_sliding
 
         with torch.no_grad(), slide_encode_autocast_ctx(self._device, self._precision):
             # window_size=None ⇒ the whole single forward (byte-identical to the cached

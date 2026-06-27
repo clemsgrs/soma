@@ -49,7 +49,8 @@ from soma.dense import (
     write_dense_grid,
 )
 from soma.dense.reader import read_image_at_spacing
-from soma.dense.sliding import describe_dense_mode, encode_dense_sliding
+from soma.dense.sliding import describe_dense_mode
+from slide2vec.runtime.dense_sliding import encode_dense_sliding
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
