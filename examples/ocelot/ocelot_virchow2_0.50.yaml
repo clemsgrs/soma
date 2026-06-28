@@ -62,7 +62,6 @@ training:
   monitor: mean_f1
   monitor_mode: max
   # Decoder upsamples the grid to a 1024x1024x2 heatmap; batch 1 on a 12 GB card
-  # (run with PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True).
   batch_size: 1
   gradient_accumulation: 8
   num_workers: 4

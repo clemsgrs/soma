@@ -229,3 +229,16 @@ design/
 panda*.py
 unicorn*.py
 leopard*.py
+
+# local agent-skill caches (maintained outside the repo)
+.agents/
+docs/agents/
+
+# local scratch artifacts
+Dockerfile.s2v
+Dockerfile.save
+TODO.md
+TODO.html
+eva.csv
+review.md
+scratch_logs/
