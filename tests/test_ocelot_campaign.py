@@ -106,6 +106,59 @@ def test_pick_winner_is_max_tune_mf1():
     assert m.pick_winner(summaries) == "virchow2_0.25"
 
 
+def test_test_split_names_and_headline_metrics():
+    m = _load_campaign()
+    report = {
+        "matching": "greedy",
+        "score_threshold_per_class": [0.5, 0.49],
+        "tune": {"mean_f1": 0.71},
+        "test": {"headline": {"metrics": {"mean_f1": 0.6995, "recall_class_0": 0.6}}},
+    }
+    assert m.test_split_names(report) == ["test"]
+    assert m.test_headline_metrics(report)["mean_f1"] == pytest.approx(0.6995)
+
+
+def test_test_headline_metrics_requires_exactly_one_test_split():
+    m = _load_campaign()
+    two = {"matching": "greedy", "score_threshold_per_class": [], "tune": {},
+           "test": {"headline": {"metrics": {}}}, "test_2": {"headline": {"metrics": {}}}}
+    with pytest.raises(ValueError):
+        m.test_headline_metrics(two)
+    tune_only = {"matching": "greedy", "score_threshold_per_class": [], "tune": {"mean_f1": 0.7}}
+    with pytest.raises(ValueError):
+        m.test_headline_metrics(tune_only)
+
+
+def test_confirmation_cells_dedups_anchor_winner():
+    m = _load_campaign()
+    # non-anchor winner → winner + anchor
+    keys = [c.key for c in m.confirmation_cells("virchow2_0.25")]
+    assert keys == ["virchow2_0.25", "virchow2_0.20"]
+    # anchor winner → just the anchor, no duplicate
+    assert [c.key for c in m.confirmation_cells("virchow2_0.20")] == ["virchow2_0.20"]
+
+
+def test_format_confirmation_markdown_head_to_head():
+    m = _load_campaign()
+    results = {
+        "virchow2_0.25": {
+            "greedy": {"mean_f1_mean": 0.71, "mean_f1_std": 0.01, "n_seeds": 3,
+                       "recall_bc_mean": 0.66, "recall_tc_mean": 0.73},
+            "hungarian_mean_f1_mean": 0.711,
+        },
+        "virchow2_0.20": {
+            "greedy": {"mean_f1_mean": 0.6995, "mean_f1_std": 0.005, "n_seeds": 3,
+                       "recall_bc_mean": 0.67, "recall_tc_mean": 0.72},
+            "hungarian_mean_f1_mean": 0.6996,
+        },
+    }
+    md = m.format_confirmation_markdown(results, "virchow2_0.25")
+    assert "confirmation (test)" in md.lower()
+    assert "⭐winner" in md
+    assert "(anchor)" in md
+    assert "0.7100" in md and "0.6995" in md
+
+
 def test_format_selection_markdown_marks_winner_and_interaction():
     m = _load_campaign()
     summaries = {

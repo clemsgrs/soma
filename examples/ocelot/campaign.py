@@ -48,6 +48,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[1]
 EVAL_GREEDY = HERE / "eval_greedy.py"
+OUT_DIR = REPO_ROOT / "output" / "campaign152"  # campaign reports land here (git-ignored)
 
 # A throwaway seed for the confirmation test-grid backfill (a 1-epoch holdout_test=false
 # pass that only exists to encode the test split into the shared dense cache). Kept distinct
@@ -312,14 +313,170 @@ def run_selection(data_root: Path, seeds: list[int], *, train: bool, dry_run: bo
         "winner": winner,
         "per_cell_seed_tune_metrics": per_cell_seed_metrics,
     }
-    out_dir = REPO_ROOT / "output" / "campaign152"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "selection_report.json").write_text(json.dumps(report, indent=2))
-    (out_dir / "selection_report.md").write_text(
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    (OUT_DIR / "selection_report.json").write_text(json.dumps(report, indent=2))
+    (OUT_DIR / "selection_report.md").write_text(
         format_selection_markdown(summaries, winner, interaction)
     )
-    print(f"\nwrote {out_dir / 'selection_report.json'} and selection_report.md")
+    print(f"\nwrote {OUT_DIR / 'selection_report.json'} and selection_report.md")
     print(format_selection_markdown(summaries, winner, interaction))
+    return report
+
+
+# --- confirmation phase --------------------------------------------------------------
+
+
+def test_split_names(report: dict) -> list[str]:
+    """The test-split keys in an eval_greedy report (everything but the fixed top-level keys)."""
+    fixed = {"matching", "score_threshold_per_class", "tune"}
+    return [k for k in report if k not in fixed]
+
+
+def test_headline_metrics(report: dict) -> dict:
+    """The single test split's tune-frozen headline metrics (OCELOT has one test split)."""
+    names = test_split_names(report)
+    if len(names) != 1:
+        raise ValueError(f"expected exactly one test split in the report, got {names}")
+    return report[names[0]]["headline"]["metrics"]
+
+
+def dense_embeddings_dir(cell: Cell) -> Path | None:
+    """The cached dense-grid dir for a cell, or None if it has not been extracted yet."""
+    base = output_root_for(cell) / "feature_cache" / "dense"
+    if not base.exists():
+        return None
+    hashes = [p / "dense_embeddings" for p in base.glob("*") if (p / "dense_embeddings").is_dir()]
+    return hashes[0] if hashes else None
+
+
+def test_sample_ids(cell: Cell, data_root: Path) -> list[str]:
+    from soma.dataset import DetectionManifest, Splits
+
+    curated = data_root / cell.curated
+    manifest = DetectionManifest(curated / "dataset.csv")
+    splits = Splits(curated / "splits.csv", manifest)
+    return [sid for ids in splits.folds[0].tests.values() for sid in ids]
+
+
+def test_grids_present(cell: Cell, data_root: Path) -> bool:
+    """True iff every test-split dense grid is already cached for this cell."""
+    emb = dense_embeddings_dir(cell)
+    if emb is None:
+        return False
+    return all((emb / f"{sid}.pt").exists() for sid in test_sample_ids(cell, data_root))
+
+
+def backfill_test_grids(cell: Cell, data_root: Path) -> None:
+    """Encode this cell's test split into its (shared) dense cache without a real training.
+
+    Selection ran under holdout_test, so test grids were never extracted. A 1-epoch
+    holdout_test=false pass extracts them incrementally (train/tune already cached) into the
+    seed-independent cache; its throwaway decoder (BACKFILL_SEED) is never scored.
+    """
+    train_cell_seed(
+        cell, BACKFILL_SEED, data_root, holdout_test=False, extra=["--set", "training.epochs=1"]
+    )
+
+
+def format_confirmation_markdown(results: dict[str, dict], winner: str) -> str:
+    by_key = {c.key: c for c in CELLS}
+    lines = [
+        "# OCELOT encoder×spacing — confirmation (test)",
+        "",
+        "The tune-selected winner and the Virchow2 @ 0.2 native anchor, scored on test only "
+        "(3 seeds, tune-frozen thresholds). Greedy is OCELOT's official, leaderboard-"
+        "comparable matcher; Hungarian is the secondary. This is the only test exposure.",
+        "",
+        "| Encoder | Spacing | Test greedy mF1 ± std | Test Hungarian mF1 | Recall BC | Recall TC | seeds |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for key, r in results.items():
+        cell = by_key[key]
+        g = r["greedy"]
+        tag = " ⭐winner" if key == winner else ""
+        anchor = " (anchor)" if cell.is_anchor else ""
+        rbc = g.get("recall_bc_mean")
+        rtc = g.get("recall_tc_mean")
+        rbc_s = f"{rbc:.4f}" if rbc is not None else "—"
+        rtc_s = f"{rtc:.4f}" if rtc is not None else "—"
+        lines.append(
+            f"| {cell.encoder}{tag} | {cell.spacing}{anchor} | "
+            f"{g['mean_f1_mean']:.4f} ± {g['mean_f1_std']:.4f} | "
+            f"{r['hungarian_mean_f1_mean']:.4f} | {rbc_s} | {rtc_s} | {g['n_seeds']} |"
+        )
+    lines += [
+        "",
+        "Per-class recall tracks the localization confound (the 14-px token spans more µm at "
+        "coarser spacing, so coarse localization shows up as missed cells).",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def confirmation_cells(winner: str) -> list[Cell]:
+    """The winner plus the native anchor (deduped if the winner *is* the anchor)."""
+    by_key = {c.key: c for c in CELLS}
+    cells = [by_key[winner]]
+    if ANCHOR.key != winner:
+        cells.append(ANCHOR)
+    return cells
+
+
+def run_confirmation(
+    data_root: Path, seeds: list[int], winner: str | None, *, dry_run: bool
+) -> dict:
+    """Score the tune-selected winner + anchor on test (greedy headline + Hungarian)."""
+    if winner is None:
+        sel = OUT_DIR / "selection_report.json"
+        if not sel.exists():
+            raise SystemExit(
+                f"no {sel}; run the selection phase first, or pass --winner <cell-key>"
+            )
+        winner = json.loads(sel.read_text())["winner"]
+    print(f"confirmation: winner={winner}, anchor={ANCHOR.key}")
+
+    results: dict[str, dict] = {}
+    for cell in confirmation_cells(winner):
+        if not test_grids_present(cell, data_root):
+            if dry_run:
+                print(f"[{cell.key}] would backfill test grids (1-epoch holdout_test=false)")
+            else:
+                backfill_test_grids(cell, data_root)
+        runs = find_seed_runs(output_root_for(cell))
+        greedy_metrics, hungarian_f1s = [], []
+        for seed in seeds:
+            if seed not in runs:
+                print(f"[{cell.key}] seed {seed}: no checkpoint to score, skipping")
+                continue
+            if dry_run:
+                print(f"[{cell.key}] seed {seed}: would score test (greedy + hungarian)")
+                continue
+            greedy = score_run(cell, runs[seed], tune_only=False, matching="greedy")
+            greedy_metrics.append(test_headline_metrics(greedy))
+            hung = score_run(cell, runs[seed], tune_only=False, matching="hungarian")
+            hungarian_f1s.append(float(test_headline_metrics(hung)["mean_f1"]))
+        if greedy_metrics:
+            results[cell.key] = {
+                "greedy": summarize_seed_metrics(greedy_metrics),
+                "hungarian_mean_f1_mean": statistics.fmean(hungarian_f1s),
+                "hungarian_mean_f1_per_seed": hungarian_f1s,
+                "greedy_test_metrics_per_seed": greedy_metrics,
+            }
+    if dry_run or not results:
+        return {"winner": winner, "results": results}
+    report = {
+        "phase": "confirmation",
+        "winner": winner,
+        "anchor": ANCHOR.key,
+        "seeds": seeds,
+        "results": results,
+    }
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    (OUT_DIR / "confirmation_report.json").write_text(json.dumps(report, indent=2))
+    md = format_confirmation_markdown(results, winner)
+    (OUT_DIR / "confirmation_report.md").write_text(md)
+    print(f"\nwrote {OUT_DIR / 'confirmation_report.json'} and confirmation_report.md")
+    print(md)
     return report
 
 
@@ -333,12 +490,15 @@ def main(argv: list[str] | None = None) -> int:
                     help="score/aggregate existing runs only; do not launch training")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the planned train/score steps without running anything")
+    ap.add_argument("--winner", default=None,
+                    help="confirmation: cell key to confirm (default: read from selection_report.json)")
     args = ap.parse_args(argv)
 
     if args.phase == "selection":
         run_selection(args.data_root, args.seeds, train=not args.no_train, dry_run=args.dry_run)
         return 0
-    raise SystemExit("confirmation phase not yet implemented")
+    run_confirmation(args.data_root, args.seeds, args.winner, dry_run=args.dry_run)
+    return 0
 
 
 if __name__ == "__main__":
