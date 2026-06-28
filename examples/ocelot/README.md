@@ -1,9 +1,14 @@
 # OCELOT 2023 — cell detection (detection-v1)
 
 End-to-end recipe for the [OCELOT 2023](https://ocelot2023.grand-challenge.org/)
-cell-detection benchmark on Soma's `dataset_type: detection` path: frozen CONCH →
+cell-detection benchmark on Soma's `dataset_type: detection` path: frozen encoder →
 dense token grid → `lightweight_conv` decoder → per-class peak heatmap, scored with
 class-aware **F1 @ δ = 3 µm (15 px @ 0.2 µm/px)**, OCELOT's official tolerance.
+
+The encoder is swappable (the configs cover an encoder × spacing ablation): `ocelot.yaml`
+is a CONCH example, and the `ocelot_{virchow2,uni2}_*.yaml` configs vary encoder and
+spacing. The **published anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow2 @ 0.2
+µm/px, greedy test mean_F1 0.6995) — see [`RESULTS.md`](RESULTS.md).
 
 The dataset itself lives outside the repo (`data/` is git-ignored). Only the curation
 code (`soma/curation/ocelot.py`), these configs, and `eval_greedy.py` are tracked.
