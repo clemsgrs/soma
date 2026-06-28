@@ -99,6 +99,12 @@ def main() -> None:
         help="specific experiments/*/runs/<ts> dir holding best_model.pt; defaults to the "
         "newest run under --run-dir (disambiguates when several runs share an output_root)",
     )
+    ap.add_argument(
+        "--tune-only",
+        action="store_true",
+        help="score the tune split only (no test inference). Mirrors evaluation.holdout_test: "
+        "use for model-selection re-scoring of runs whose test grids were never cached.",
+    )
     args = ap.parse_args()
 
     from soma.training.model import SegmentationModel
@@ -129,7 +135,13 @@ def main() -> None:
 
     train_records = [manifest.samples[s] for s in fold_split.train]
     tune_records = [manifest.samples[s] for s in fold_split.tune]
-    test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
+    # --tune-only drops the test splits before any loader/grid is touched, so a run trained
+    # under evaluation.holdout_test (test grids never extracted) can still be re-scored.
+    test_by_split = (
+        {}
+        if args.tune_only
+        else {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
+    )
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])
