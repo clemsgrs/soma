@@ -339,3 +339,51 @@ def test_dense_tile_extractor_resume_encodes_only_missing(tmp_path: Path, monkey
     for sid, mtime in survivor_mtimes.items():
         assert (features_dir / f"{sid}.pt").stat().st_mtime_ns == mtime  # untouched
     assert sorted(resumed.available_samples) == ["s0", "s1", "s2"]
+
+
+def test_dense_tile_extractor_cache_hit_loads_no_encoder(tmp_path: Path, monkeypatch):
+    """Check-before-load (#165): a full dense cache hit resolves via static patch_size
+    metadata and never constructs the encoder. patch_size comes from slide2vec's
+    resolve_patch_size(name), so load_model is called only on the populate (miss) run."""
+    from types import SimpleNamespace
+
+    import pandas as pd
+
+    import soma.dense_extraction as de
+    from soma.config import CacheConfig, EncoderConfig
+    from soma.dataset import Dataset
+    from soma.dense_extraction import DenseTileFeatureExtractor
+
+    enc = _encoder()  # vit_tiny, random weights, offline
+    records = _make_tiles(tmp_path, n=3, size=32)
+    csv_path = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        [{"sample_id": r.sample_id, "image_path": str(r.image_path), "label": "x"} for r in records]
+    ).to_csv(csv_path, index=False)
+    dataset = Dataset(csv_path)
+
+    load_calls = {"n": 0}
+
+    def _counting_load_model(**kw):
+        load_calls["n"] += 1
+        return SimpleNamespace(model=enc, device="cpu")
+
+    monkeypatch.setattr(de, "load_model", _counting_load_model)
+
+    def _make_extractor():
+        return DenseTileFeatureExtractor(
+            dataset,
+            EncoderConfig(name="uni", precision="fp32"),  # name only feeds patch_size + key
+            target_size=32,
+            spacing_um=0.5,
+            cache=CacheConfig(enabled=True),
+        )
+
+    feature_dir = tmp_path / "features"
+    _make_extractor().run(feature_dir)  # populate: a miss, so the encoder loads
+    assert load_calls["n"] == 1
+
+    # Second run is a full cache hit: no encoder construction at all.
+    store = _make_extractor().run(feature_dir)
+    assert load_calls["n"] == 1  # unchanged — load_model not called on the hit path
+    assert sorted(store.available_samples) == ["s0", "s1", "s2"]

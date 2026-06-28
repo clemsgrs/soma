@@ -248,23 +248,20 @@ class SlideManifestDenseExtractor:
             self._attention_include_registers = False
 
     def run(self, feature_dir: str | Path) -> DenseFeatureStore:
-        from slide2vec.inference import load_model
-        from slide2vec.runtime.dense_regions import iter_regions_dense
+        from slide2vec.encoders.registry import resolve_patch_size
 
         dense_input_mode = "whole" if self._window_size is None else "sliding_window"
 
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
 
-        loaded = load_model(
-            name=self._encoder.name,
-            output_variant=self._encoder.output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            dynamic_img_size=True,
-        )
-        model = loaded.model
-        device = loaded.device
-        patch_size = model.patch_size
+        # Check-before-load (#165): the dense cache key needs only patch_size, which
+        # slide2vec exposes as static registry metadata — read it without constructing
+        # the (multi-GB) encoder so a full ROI-grid cache hit pays no ViT load. load_model
+        # is deferred to the miss path below. The static value is parity-tested against the
+        # runtime encoder.patch_size in slide2vec (and re-asserted by load_model), so the
+        # cache key is byte-identical to the pre-change key.
+        patch_size = resolve_patch_size(self._encoder.name)
         geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
         signature = sampling_signature(self._masks, self._sampling, self._preprocessing)
 
@@ -304,15 +301,6 @@ class SlideManifestDenseExtractor:
                 return DenseFeatureStore(cache_resolution.cache_dir)
             out_dir = cache_resolution.features_dir
 
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
-            encoder_name=self._encoder.name,
-            output_dir=out_dir,
-            num_gpus=1,
-            save_tile_embeddings=True,
-        )
-
         # Resume: encode only the ROIs absent from the cache (the missing set comes
         # from the shared FeatureCacheResolution contract — no inline missing-logic).
         # A slide whose every ROI is already cached is dropped here, so it is never
@@ -335,7 +323,29 @@ class SlideManifestDenseExtractor:
                 )
             records_by_slide[record.image_path].append(record)
 
+        # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
+        from slide2vec.inference import load_model
+        from slide2vec.runtime.dense_regions import iter_regions_dense
+
         from hs2p.wsi.wsi import WSI
+
+        loaded = load_model(
+            name=self._encoder.name,
+            output_variant=self._encoder.output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            dynamic_img_size=True,
+        )
+        model = loaded.model
+        device = loaded.device
+
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=self._encoder.name,
+            output_dir=out_dir,
+            num_gpus=1,
+            save_tile_embeddings=True,
+        )
 
         feature_dim: int | None = None
         for image_path, records in records_by_slide.items():

@@ -111,6 +111,29 @@ from soma.reporting.subgroups import subgroup_data_for_predictions, subgroup_rep
 logger = logging.getLogger(__name__)
 
 
+def _log_cuda_memory(tag: str) -> None:
+    """Print the torch CUDA allocator state for memory diagnostics.
+
+    nvidia-smi's per-process "used" = CUDA context + cuDNN/cuBLAS kernel images +
+    this ``reserved`` figure. Printing it right after the encoder is released
+    exposes how much of the working set is fixed framework/context overhead (the
+    gap between nvidia-smi "used" and ``reserved``) versus live tensors. ``print``,
+    not ``logger`` — so it always shows without opting into a log level, matching
+    the dense-mode announce in dense_extraction.
+    """
+    if not torch.cuda.is_available():
+        return
+    gib = 1024**3
+    print(
+        f"CUDA memory [{tag}]: "
+        f"allocated={torch.cuda.memory_allocated() / gib:.2f} GiB  "
+        f"reserved={torch.cuda.memory_reserved() / gib:.2f} GiB  "
+        f"max_reserved={torch.cuda.max_memory_reserved() / gib:.2f} GiB"
+    )
+    # Reset the peak so a later read reflects the decoder-training phase only.
+    torch.cuda.reset_peak_memory_stats()
+
+
 # ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
@@ -2370,6 +2393,7 @@ class Pipeline:
             )
         finally:
             _release_parent_cuda_state()
+            _log_cuda_memory("after dense extraction release")
 
     def _build_slide_manifest_dense_context(self, *, run_dir: Path):
         """Sample ROIs from slides+masks, extract dense grids, return derived context.
@@ -2536,6 +2560,7 @@ class Pipeline:
                 member_stores.append(extractor.run(feature_dir=member_dir))
         finally:
             _release_parent_cuda_state()
+            _log_cuda_memory("after composite dense extraction release")
         return CompositeDenseFeatureStore(
             member_stores,
             concat_resolution=composite.concat_resolution or "target",

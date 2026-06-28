@@ -27,6 +27,7 @@ from typing import Callable, Sequence
 import torch
 import torch.nn.functional as F
 from PIL import Image
+from slide2vec.encoders.registry import resolve_patch_size
 from slide2vec.inference import load_model
 from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
 from torch.utils.data import DataLoader
@@ -335,20 +336,15 @@ class DenseTileFeatureExtractor:
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
 
-        # Construct a dense-capable encoder: dynamic_img_size for non-native sizes
-        # (signature-gated in load_model; a no-op for encoders that hardcode it, and
-        # the opt-in for H-optimus when allow_non_recommended_settings is set).
-        loaded = load_model(
-            name=self._encoder.name,
-            output_variant=self._encoder.output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            dynamic_img_size=True,
-        )
-        encoder = loaded.model
-        device = loaded.device
-        patch_size = encoder.patch_size  # encoder-authoritative
+        # Check-before-load (#165): the dense cache key needs only patch_size, an
+        # architectural constant slide2vec exposes as static registry metadata. Read it
+        # without constructing the (multi-GB) encoder, so a full cache hit pays no ViT
+        # load / CUDA context — the common case for campaign reruns. load_model is
+        # deferred to the miss path below, where extraction genuinely needs the encoder.
+        # The static value is parity-tested against the runtime encoder.patch_size in
+        # slide2vec, and load_model re-asserts the match, so the cache key is unchanged.
+        patch_size = resolve_patch_size(self._encoder.name)
         geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
-        dense_transform = encoder.get_dense_transform()  # NOT loaded.transforms (pooled, crops!)
 
         # Announce the resolved dense-input mode before the cache check, so it always shows
         # (cache hit too — extract_dense_grids only runs on a miss) regardless of logging
@@ -358,10 +354,6 @@ class DenseTileFeatureExtractor:
         cache_resolution = None
         out_dir = feature_dir
         if self._cache.enabled:
-            # NOTE deferred optimization: this loads the encoder before checking the
-            # cache, so a full cache hit still pays the (one-time) model load. The
-            # cache key needs patch_size, which is encoder-authoritative. Matching
-            # TileFeatureExtractor's check-before-load is a follow-up.
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
             cache_resolution = resolve_dense_cache(
                 cache_root=cache_root,
@@ -386,14 +378,6 @@ class DenseTileFeatureExtractor:
                 return DenseFeatureStore(cache_resolution.cache_dir)
             out_dir = cache_resolution.features_dir
 
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
-            encoder_name=self._encoder.name,
-            output_dir=out_dir,
-            num_gpus=1,  # single-GPU path (multi-GPU sharding deferred)
-            save_tile_embeddings=True,
-        )
         records = list(self._dataset.samples.values())
         # Resume: encode only the tiles absent from the cache (missing set comes from
         # the shared FeatureCacheResolution contract — no inline missing-logic). Present
@@ -403,6 +387,29 @@ class DenseTileFeatureExtractor:
             if not wanted:
                 return DenseFeatureStore(out_dir)
             records = [record for record in records if record.sample_id in wanted]
+
+        # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
+        # Construct a dense-capable encoder: dynamic_img_size for non-native sizes
+        # (signature-gated in load_model; a no-op for encoders that hardcode it, and
+        # the opt-in for H-optimus when allow_non_recommended_settings is set).
+        loaded = load_model(
+            name=self._encoder.name,
+            output_variant=self._encoder.output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            dynamic_img_size=True,
+        )
+        encoder = loaded.model
+        device = loaded.device
+        dense_transform = encoder.get_dense_transform()  # NOT loaded.transforms (pooled, crops!)
+
+        execution = build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=self._encoder.name,
+            output_dir=out_dir,
+            num_gpus=1,  # single-GPU path (multi-GPU sharding deferred)
+            save_tile_embeddings=True,
+        )
         logger.info(
             "Encoding %d tiles into dense grids with '%s' at target_size=%s, patch=%s -> grid %s",
             len(records),
