@@ -104,6 +104,13 @@ def main() -> None:
     ap.add_argument("--run-dir", type=Path, required=True, help="output_root of the trained run")
     ap.add_argument("--config", type=Path, required=True, help="the run's config yaml")
     ap.add_argument("--matching", default="greedy", choices=["greedy", "hungarian"])
+    ap.add_argument(
+        "--run-subdir",
+        type=Path,
+        default=None,
+        help="specific experiments/*/runs/<ts> dir holding best_model.pt; defaults to the "
+        "newest run under --run-dir (disambiguates when several runs share an output_root)",
+    )
     args = ap.parse_args()
 
     from soma.training.model import SegmentationModel
@@ -116,7 +123,20 @@ def main() -> None:
     # Locate the cached feature store + best_model.pt for this run.
     store_dir = next((args.run_dir / "feature_cache" / "dense").glob("*"))
     store = DenseFeatureStore(store_dir)
-    ckpt = next(args.run_dir.glob("experiments/*/runs/*/best_model.pt"))
+    if args.run_subdir is not None:
+        ckpt = args.run_subdir / "best_model.pt"
+        if not ckpt.exists():
+            raise FileNotFoundError(f"no best_model.pt under --run-subdir {args.run_subdir}")
+    else:
+        # Pick the most-recently-written checkpoint (not an arbitrary glob hit) so this is
+        # deterministic when an output_root accumulates several runs across experiments.
+        candidates = sorted(
+            args.run_dir.glob("experiments/*/runs/*/best_model.pt"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not candidates:
+            raise FileNotFoundError(f"no experiments/*/runs/*/best_model.pt under {args.run_dir}")
+        ckpt = candidates[-1]
     print(f"feature store: {store_dir}\ncheckpoint:    {ckpt}")
 
     train_records = [manifest.samples[s] for s in fold_split.train]
