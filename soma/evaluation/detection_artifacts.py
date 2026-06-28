@@ -12,7 +12,8 @@ uses and cannot drift from it.
 Artifacts written under ``fold_dir`` (the per-point ``predictions_<split>.csv`` is written
 by the pipeline, not here, and is unchanged):
   - ``pred_overlays/<split>/<sample_id>.png`` all predicted points as filled dots,
-                                         color = class (``class_palette``), over the
+                                         color = class (neutral H&E-friendly
+                                         ``_detection_palette``), over the
                                          source tile — **on by default**, suppressible via
                                          ``save_detection_overlays`` for a metrics-only run.
                                          **Fail-soft**: skipped (logged) when the source tile
@@ -76,7 +77,6 @@ import torch
 from PIL import Image, ImageDraw
 
 from soma.detection.matching import reduce_f1
-from soma.evaluation.dense_artifacts import class_palette
 
 if TYPE_CHECKING:
     from soma.detection.matching import ClassMatch
@@ -85,13 +85,40 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DetectionArtifactWriter"]
 
-# Match-overlay outcome hues (slice #175). Conventional green/red/blue; ring-vs-dot
-# redundantly carries pred-vs-GT, so the red-green pair stays separable for colorblind
-# viewers. Class is encoded by the filename, freeing hue + shape for the match structure.
-_TP_COLOR = (0, 200, 0)  # true positive  — matched pred, green
-_FP_COLOR = (220, 0, 0)  # false positive — unmatched pred, red
-_FN_COLOR = (0, 0, 220)  # false negative — unmatched GT, blue
+# Match-overlay outcome hues (slice #175). Here the colour is *meant* to read as good/bad,
+# so the conventional mapping is kept on purpose: green = matched (good), red = spurious
+# (bad), blue = missed. Ring-vs-dot redundantly carries pred-vs-GT and the class is in the
+# filename, so hue is free to carry the outcome. Every marker is stroked with a thin dark
+# casing (_MARKER_OUTLINE) so it stays legible on both hematoxylin (dark) and eosin (pink).
+_TP_COLOR = (0, 210, 0)     # true positive  — matched pred, green (good)
+_FP_COLOR = (235, 25, 25)   # false positive — unmatched pred, red (bad)
+_FN_COLOR = (40, 85, 255)   # false negative — unmatched GT, blue (missed; max-blue vivid,
+                            #                  lifted off navy so it reads on dark nuclei)
 _RING_WIDTH = 2  # outline width (px) of the δ-radius GT ring
+_MARKER_OUTLINE = (15, 15, 15)  # thin dark casing stroked on every dot/ring for edge contrast
+
+# Pred/GT point-overlay class colours — deliberately SEPARATE from the match hues above.
+# These encode arbitrary object *classes*, which carry no good/bad meaning, so the palette
+# is intentionally NEUTRAL: it avoids red and green (whose good/bad pull would mislead when
+# all that differs is cell type) and avoids black (index 0 of the segmentation palette is
+# *background*, but every detection class is a real object). The hues are bright and absent
+# from H&E so a dot never sinks into a nucleus or the pink stroma. Cycles past the last entry.
+_DETECTION_CLASS_COLORS: list[tuple[int, int, int]] = [
+    (0, 200, 255),    # 0: cyan
+    (255, 190, 0),    # 1: amber
+    (240, 50, 230),   # 2: magenta
+    (255, 120, 0),    # 3: orange
+    (150, 80, 230),   # 4: violet
+    (0, 200, 180),    # 5: teal
+    (250, 150, 200),  # 6: pink
+    (255, 255, 255),  # 7: white
+]
+
+
+def _detection_palette(num_classes: int) -> np.ndarray:
+    """Neutral H&E-friendly ``(num_classes, 3)`` uint8 palette (cycles; no black/red/green)."""
+    colors = [_DETECTION_CLASS_COLORS[c % len(_DETECTION_CLASS_COLORS)] for c in range(num_classes)]
+    return np.asarray(colors, dtype=np.uint8)
 
 
 class DetectionArtifactWriter:
@@ -165,7 +192,7 @@ class DetectionArtifactWriter:
         self._dot_radius = int(overlay_dot_radius)
         self._heatmap_cmap = heatmap_cmap
         self._heatmap_overlay_alpha = float(heatmap_overlay_alpha)
-        self._palette = class_palette(self._num_classes)
+        self._palette = _detection_palette(self._num_classes)
         self._rows: list[dict] = []
         self._stat_rows: list[torch.Tensor] = []
 
@@ -294,10 +321,9 @@ class DetectionArtifactWriter:
         draw = ImageDraw.Draw(image)
         pts = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
         cls = np.asarray(points_class, dtype=np.int64).reshape(-1)
-        r = self._dot_radius
         for (x, y), c in zip(pts, cls):
             color = tuple(int(v) for v in self._palette[int(c) % self._num_classes])
-            draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+            self._dot(draw, (x, y), color)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{sample_id}.png"
         image.save(path)
@@ -350,16 +376,28 @@ class DetectionArtifactWriter:
         return path
 
     def _dot(self, draw: ImageDraw.ImageDraw, xy: np.ndarray, color: tuple) -> None:
-        """Filled dot of radius ``overlay_dot_radius`` at ``xy`` — a predicted point."""
+        """Filled dot of radius ``overlay_dot_radius`` at ``xy`` — a predicted point.
+
+        Stroked with a thin dark casing so the bright fill keeps a crisp edge on pale
+        eosin stroma (the fill itself carries it on dark hematoxylin).
+        """
         x, y = float(xy[0]), float(xy[1])
         r = self._dot_radius
-        draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+        draw.ellipse(
+            [x - r, y - r, x + r, y + r], fill=color, outline=_MARKER_OUTLINE, width=1
+        )
 
     def _ring(self, draw: ImageDraw.ImageDraw, xy: np.ndarray, color: tuple) -> None:
-        """Outline ring of radius δ at ``xy`` — a GT point + its matching tolerance."""
+        """Outline ring of radius δ at ``xy`` — a GT point + its matching tolerance.
+
+        Drawn as a dark casing first, then the coloured ring on top, so the ring reads on
+        pale tissue too (the dark fringe defines it) without hiding the outcome hue.
+        """
         x, y = float(xy[0]), float(xy[1])
         r = self._delta
-        draw.ellipse([x - r, y - r, x + r, y + r], outline=color, width=_RING_WIDTH)
+        box = [x - r, y - r, x + r, y + r]
+        draw.ellipse(box, outline=_MARKER_OUTLINE, width=_RING_WIDTH + 2)
+        draw.ellipse(box, outline=color, width=_RING_WIDTH)
 
     def _write_heatmaps(
         self, sample_id: str, heatmap: torch.Tensor, image_arr: np.ndarray | None
