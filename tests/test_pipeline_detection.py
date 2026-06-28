@@ -121,6 +121,55 @@ def test_train_one_detection_fold_end_to_end(tmp_path: Path):
     assert header == "sample_id,x,y,class,score"
 
 
+def test_train_one_detection_fold_eval_only_from_checkpoint(tmp_path: Path):
+    """``checkpoint_path`` loads a trained checkpoint and skips the train loop, so a
+    finished fold's eval artifacts can be regenerated without retraining. The threshold
+    sweep + scoring are deterministic, so the regenerated metrics reproduce the original;
+    no epoch history exists (``train_result is None``, no ``training_history.json``) and no
+    new checkpoint is written."""
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
+
+    common = dict(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="detection",
+            params={
+                "num_classes": NUM_CLASSES,
+                "match_distance": 0.6,
+                "sigma": 0.3,
+                "level0_spacing": SPACING,
+            },
+        ),
+        training=TrainingConfig(epochs=2, batch_size=2),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
+        preprocessing=PreprocessingConfig(
+            requested_spacing_um=SPACING, requested_tile_size_px=TARGET
+        ),
+    )
+
+    trained = train_one_detection_fold(fold_dir=tmp_path / "trained", **common)
+    checkpoint = tmp_path / "trained" / "best_model.pt"
+    assert checkpoint.exists()
+
+    eval_only = train_one_detection_fold(
+        fold_dir=tmp_path / "eval_only", checkpoint_path=checkpoint, **common
+    )
+
+    # Training was skipped: no epoch history, no history file, no fresh checkpoint.
+    assert eval_only.train_result is None
+    assert not (tmp_path / "eval_only" / "training_history.json").exists()
+    assert not (tmp_path / "eval_only" / "best_model.pt").exists()
+    # The same weights + deterministic decode/match reproduce the headline metric exactly.
+    assert (
+        eval_only.test_reports["test"].metrics["mean_f1"]
+        == trained.test_reports["test"].metrics["mean_f1"]
+    )
+
+
 def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
     """Detection on cls_attention grids is a pure feature_kind flip — the head/decoder
     are input_dim-agnostic, so a K-channel attention grid trains the same fold."""

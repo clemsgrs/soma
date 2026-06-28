@@ -1314,6 +1314,7 @@ def train_one_detection_fold(
     preprocessing: PreprocessingConfig | None = None,
     fold: int = 0,
     num_folds: int = 1,
+    checkpoint_path: str | Path | None = None,
 ) -> FoldResult:
     """Train and evaluate a single dense-detection fold (heatmap regression, design §6-§7).
 
@@ -1322,6 +1323,13 @@ def train_one_detection_fold(
     heatmap), built on cached dense grids. After training, the per-class score threshold
     is swept on the **tune** split and frozen (design §7) before the tune/test splits are
     scored with class-aware F1@δ. v1 is cached-only.
+
+    When ``checkpoint_path`` is given, the train loop is skipped and the model is loaded
+    from it instead — the eval-only path that regenerates a finished run's artifacts
+    (overlays/heatmaps/metrics) under the current code without retraining. The threshold
+    sweep and scoring are deterministic, so the regenerated metrics reproduce the original
+    run's; ``FoldResult.train_result`` is ``None`` (no epoch history, mirroring the
+    pixel-classifier path) and no ``training_history.json`` is written.
     """
     if decoder is None:
         raise ValueError("dataset_type='detection' requires a decoder configuration")
@@ -1447,14 +1455,20 @@ def train_one_detection_fold(
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    trainer = Trainer(
-        model=model, train_loader=train_loader, tune_loader=tune_loader,
-        config=training, fold_dir=fold_dir, device=device, fold=fold, num_folds=num_folds,
-    )
-    train_result = trainer.fit()
-
-    checkpoint = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    if checkpoint_path is not None:
+        # Eval-only: load a previously trained checkpoint and skip the train loop, so a
+        # finished run's artifacts can be regenerated under the current code. No epoch
+        # history exists → train_result stays None (the pixel-classifier path's precedent).
+        train_result = None
+        state = torch.load(checkpoint_path, weights_only=True, map_location=device)
+    else:
+        trainer = Trainer(
+            model=model, train_loader=train_loader, tune_loader=tune_loader,
+            config=training, fold_dir=fold_dir, device=device, fold=fold, num_folds=num_folds,
+        )
+        train_result = trainer.fit()
+        state = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
+    model.load_state_dict(state["model_state_dict"])
     model.to(device)
     model.eval()
 
@@ -1480,7 +1494,8 @@ def train_one_detection_fold(
     }
 
     _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
-    _save_training_history(train_result.history, fold_dir / "training_history.json")
+    if train_result is not None:
+        _save_training_history(train_result.history, fold_dir / "training_history.json")
 
     return FoldResult(
         fold=fold,
