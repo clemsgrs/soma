@@ -25,7 +25,9 @@ from soma.detection.encode import (
     transform_points_to_target,
 )
 from soma.detection.matching import (
+    ClassMatch,
     detection_counts,
+    match_assignment,
     match_points,
     reduce_f1,
     sweep_score_thresholds,
@@ -37,6 +39,8 @@ __all__ = [
     "transform_points_to_level0",
     "render_peak_heatmap",
     "extract_peaks",
+    "ClassMatch",
+    "match_assignment",
     "match_points",
     "detection_counts",
     "reduce_f1",

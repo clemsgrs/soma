@@ -12,7 +12,9 @@ import torch
 
 from soma.detection.encode import render_peak_heatmap, transform_points_to_target
 from soma.detection.matching import (
+    ClassMatch,
     detection_counts,
+    match_assignment,
     match_points,
     reduce_f1,
     sweep_score_thresholds,
@@ -227,6 +229,82 @@ def test_match_greedy_matches_by_confidence():
         num_classes=1, delta=2.0, method="greedy",
     )
     np.testing.assert_array_equal(counts, [[1, 1, 0]])
+
+
+# --------------------------------------------------------------------------- #
+# Matching assignment primitive (pairs -> derived counts)
+# --------------------------------------------------------------------------- #
+
+
+def test_classmatch_derives_counts_from_pairs():
+    # tp = #pairs; fp = unmatched preds; fn = unmatched GT — all derived from one place.
+    m = ClassMatch(pairs=np.array([[0, 1], [2, 0]]), n_pred=4, n_gt=3)
+    assert m.tp == 2
+    assert m.fp == 2  # 4 preds, 2 matched
+    assert m.fn == 1  # 3 GT, 2 matched
+    assert m.counts == (2, 2, 1)
+
+
+def test_match_assignment_labels_tp_fp_fn_indices():
+    # pred 0 lands on gt 0 (TP); pred 1 is far away (FP); gt 1 is unmatched (FN).
+    pred = np.array([[1.0, 1.0], [50.0, 50.0]])
+    gt = np.array([[1.0, 1.0], [9.0, 9.0]])
+    matches = match_assignment(
+        pred, np.array([0, 0]), np.array([0.9, 0.8]), gt, np.array([0, 0]),
+        num_classes=1, delta=2.0,
+    )
+    (m,) = matches
+    np.testing.assert_array_equal(m.pairs, [[0, 0]])
+    assert m.n_pred == 2 and m.n_gt == 2
+    assert m.counts == (1, 1, 1)
+    # The assignment labels predicted index 0 as TP, index 1 as FP; GT index 1 as FN.
+    matched_pred = set(m.pairs[:, 0].tolist())
+    matched_gt = set(m.pairs[:, 1].tolist())
+    assert matched_pred == {0}  # pred 1 (unmatched) is the FP
+    assert matched_gt == {0}    # gt 1 (unmatched) is the FN
+
+
+def test_match_assignment_class_aware_two_channels():
+    # One location fires in BOTH class channels; GT has it only in class 0. The class-0
+    # prediction is a TP, the class-1 prediction an FP. Global pred indices disambiguate
+    # which channel fired, so the pair points back to the right original prediction.
+    pred = np.array([[3.0, 3.0], [3.0, 3.0]])
+    pred_cls = np.array([0, 1])
+    pred_score = np.array([0.9, 0.8])
+    gt = np.array([[3.0, 3.0]])
+    gt_cls = np.array([0])
+    matches = match_assignment(
+        pred, pred_cls, pred_score, gt, gt_cls, num_classes=2, delta=2.0,
+    )
+    # class 0: global pred index 0 matches global gt index 0.
+    np.testing.assert_array_equal(matches[0].pairs, [[0, 0]])
+    assert matches[0].counts == (1, 0, 0)
+    # class 1: global pred index 1 is an FP with no GT in the channel.
+    assert matches[1].pairs.shape == (0, 2)
+    assert matches[1].n_pred == 1 and matches[1].n_gt == 0
+    assert matches[1].counts == (0, 1, 0)
+
+
+@pytest.mark.parametrize("method", ["hungarian", "greedy"])
+def test_match_points_counts_equal_assignment_derivation(method):
+    # match_points' (C, 3) must be exactly what the assignment derives — no second path.
+    pred = np.array([[1.0, 1.0], [1.4, 1.0], [9.0, 9.0]])
+    pred_cls = np.array([0, 0, 1])
+    pred_score = np.array([0.9, 0.8, 0.7])
+    gt = np.array([[1.0, 1.0], [9.0, 9.0]])
+    gt_cls = np.array([0, 1])
+    counts = match_points(
+        pred, pred_cls, pred_score, gt, gt_cls,
+        num_classes=2, delta=2.0, method=method,
+    )
+    matches = match_assignment(
+        pred, pred_cls, pred_score, gt, gt_cls,
+        num_classes=2, delta=2.0, method=method,
+    )
+    derived = np.array([list(m.counts) for m in matches], dtype=np.int64)
+    np.testing.assert_array_equal(counts, derived)
+    # class 0: two preds near one GT -> 1 TP, 1 FP, 0 FN; class 1: clean hit.
+    np.testing.assert_array_equal(counts, [[1, 1, 0], [1, 0, 0]])
 
 
 def test_reduce_f1_dataset_global():
