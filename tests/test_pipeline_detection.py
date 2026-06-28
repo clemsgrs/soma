@@ -235,6 +235,7 @@ def test_detection_fold_writes_qualitative_artifacts(tmp_path: Path):
         assert rows  # one row per evaluated tile
         assert {
             "sample_id", "pred_overlay_path", "gt_overlay_path",
+            *(f"match_overlay_class_{c}" for c in range(NUM_CLASSES)),
             "n_pred", "n_gt", "tp", "fp", "fn", "mean_f1",
         } <= set(rows[0])
         # Split-level per-class metrics CSV (always).
@@ -242,9 +243,12 @@ def test_detection_fold_writes_qualitative_artifacts(tmp_path: Path):
         assert "mean_f1" in metrics_rows
         assert {f"f1_class_{c}" for c in range(NUM_CLASSES)} <= metrics_rows
 
-    # Real source tiles -> pred/GT overlays per evaluated tile (test split = s3).
+    # Real source tiles -> pred/GT overlays + one per-class match overlay per evaluated
+    # tile (test split = s3).
     assert (fold / "pred_overlays" / "test" / "s3.png").is_file()
     assert (fold / "gt_overlays" / "test" / "s3.png").is_file()
+    for c in range(NUM_CLASSES):
+        assert (fold / "match_overlays" / f"class_{c}" / "test" / "s3.png").is_file()
 
 
 def test_detection_fold_overlays_suppressible(tmp_path: Path):
@@ -276,6 +280,7 @@ def test_detection_fold_overlays_suppressible(tmp_path: Path):
 
     assert not (fold / "pred_overlays").exists()
     assert not (fold / "gt_overlays").exists()
+    assert not (fold / "match_overlays").exists()
     assert (fold / "predictions_test.csv").exists()
     assert (fold / "detection_per_image_test.csv").exists()
     assert (fold / "metrics_test.csv").exists()

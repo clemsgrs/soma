@@ -30,8 +30,9 @@ DELTA = 3.0
 
 
 def _head(num_classes: int = NUM_CLASSES):
-    # The writer needs only num_classes (palette) and crop_box (target-frame size).
-    return types.SimpleNamespace(num_classes=num_classes, _crop_box=(0, 0, H, W))
+    # The writer needs num_classes (palette), crop_box (target-frame size) and delta_px
+    # (the match-overlay ring radius = the matching tolerance).
+    return types.SimpleNamespace(num_classes=num_classes, delta_px=DELTA, _crop_box=(0, 0, H, W))
 
 
 def _dataset_with_images(tmp_path: Path, sample_ids: list[str], make_image: bool, size=(8, 8)):
@@ -119,6 +120,60 @@ def test_writer_emits_overlays_manifest_and_metrics(tmp_path):
     assert metrics_rows["f1_class_0"]["aggregation"] == "dataset_global"
 
 
+def test_writer_emits_per_class_match_overlays(tmp_path):
+    """One match overlay per class per tile + a manifest column per class (slice #175).
+
+    The payload yields, for class 1, a TP (matched pred+GT at (4,4)) and an FN (lone GT
+    at (12,12)); for class 0, a lone FP pred at (10,10). The overlay grammar is therefore
+    exercised end to end: green (TP) + blue (FN) in the class-1 image, red (FP) in the
+    class-0 image, GT as δ-radius rings, predictions as filled dots.
+    """
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=True)
+    writer = DetectionArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset
+    )
+    writer.add_image(
+        sample_id="s0",
+        **_payload(
+            pred_xy=[[4.0, 4.0], [10.0, 10.0]],
+            pred_class=[1, 0],
+            pred_score=[0.9, 0.8],
+            gt_xy=[[4.0, 4.0], [12.0, 12.0]],
+            gt_class=[1, 1],
+        ),
+    )
+    manifest_path = writer.finalize()
+
+    # One overlay per class per tile, under match_overlays/class_<c>/<split>/, RGB, target frame.
+    for c in range(NUM_CLASSES):
+        overlay = tmp_path / "match_overlays" / f"class_{c}" / "test" / "s0.png"
+        assert overlay.is_file()
+        assert np.asarray(Image.open(overlay)).shape == (H, W, 3)
+
+    # The per-image manifest lists each class's match overlay path.
+    row = next(csv.DictReader(manifest_path.open()))
+    for c in range(NUM_CLASSES):
+        assert row[f"match_overlay_class_{c}"] == f"match_overlays/class_{c}/test/s0.png"
+
+    # Hue grammar (TP green / FP red / FN blue), asserted as channel-dominant pixels —
+    # external behavior, not pixel-exact rendering.
+    def _has_hue(arr: np.ndarray, channel: int) -> bool:
+        others = [i for i in range(3) if i != channel]
+        return bool(
+            np.any(
+                (arr[..., channel] > 150)
+                & (arr[..., others[0]] < 90)
+                & (arr[..., others[1]] < 90)
+            )
+        )
+
+    c0 = np.asarray(Image.open(tmp_path / "match_overlays" / "class_0" / "test" / "s0.png"))
+    c1 = np.asarray(Image.open(tmp_path / "match_overlays" / "class_1" / "test" / "s0.png"))
+    assert _has_hue(c0, 0)  # class-0: a lone red FP dot
+    assert _has_hue(c1, 1)  # class-1: a green TP
+    assert _has_hue(c1, 2)  # class-1: a blue FN ring
+
+
 def test_manifest_mean_f1_matches_reduce_f1(tmp_path):
     """Each row's mean_f1 is reduce_f1 on that image's own (1, C, 3) counts — so the
     per-image number cannot drift from the headline reduction."""
@@ -164,10 +219,13 @@ def test_save_detection_overlays_false_suppresses_overlays(tmp_path):
 
     assert not (tmp_path / "pred_overlays").exists()
     assert not (tmp_path / "gt_overlays").exists()
+    assert not (tmp_path / "match_overlays").exists()
     assert (tmp_path / "metrics_test.csv").is_file()
     row = next(csv.DictReader(manifest_path.open()))
     assert row["pred_overlay_path"] == ""
     assert row["gt_overlay_path"] == ""
+    for c in range(NUM_CLASSES):
+        assert row[f"match_overlay_class_{c}"] == ""
     assert int(row["tp"]) == 1
 
 
@@ -185,9 +243,12 @@ def test_overlay_fail_soft_on_missing_image(tmp_path):
 
     assert not (tmp_path / "pred_overlays" / "test" / "s0.png").exists()
     assert not (tmp_path / "gt_overlays" / "test" / "s0.png").exists()
+    assert not (tmp_path / "match_overlays").exists()
     row = next(csv.DictReader(manifest_path.open()))
     assert row["pred_overlay_path"] == ""  # skipped, recorded empty
     assert row["gt_overlay_path"] == ""
+    for c in range(NUM_CLASSES):
+        assert row[f"match_overlay_class_{c}"] == ""  # skipped, recorded empty
     assert int(row["tp"]) == 1  # counts still recorded
 
 
@@ -203,6 +264,7 @@ def test_writer_without_dataset_skips_overlays(tmp_path):
     assert manifest_path.is_file()
     assert not (tmp_path / "pred_overlays").exists()
     assert not (tmp_path / "gt_overlays").exists()
+    assert not (tmp_path / "match_overlays").exists()
     assert (tmp_path / "metrics_tune.csv").is_file()
 
 
