@@ -1466,11 +1466,13 @@ def train_one_detection_fold(
     )
 
     tune_report = _evaluate_detection(
-        model, tune_loader, "tune", device, head=head, dataset=dataset, output_dir=fold_dir
+        model, tune_loader, "tune", device, head=head, dataset=dataset, output_dir=fold_dir,
+        save_detection_overlays=evaluation.save_detection_overlays,
     )
     test_reports = {
         split_name: _evaluate_detection(
-            model, loader, split_name, device, head=head, dataset=dataset, output_dir=fold_dir
+            model, loader, split_name, device, head=head, dataset=dataset, output_dir=fold_dir,
+            save_detection_overlays=evaluation.save_detection_overlays,
         )
         for split_name, loader in test_loaders.items()
     }
@@ -1527,41 +1529,77 @@ def _evaluate_detection(
     head: DetectionHead,
     dataset: DetectionManifest,
     output_dir: Path | None = None,
+    save_detection_overlays: bool = True,
 ) -> EvaluationReport:
-    """Streaming detection eval: per-image F1@δ counts + a level-0 predictions CSV.
+    """Consolidated detection eval: decode + match **once** per image, fan out to all.
 
-    Mirrors ``_evaluate_segmentation`` but accumulates per-image ``(C, 3)`` TP/FP/FN at
-    the frozen ``head.score_threshold`` instead of confusion counts, and writes the
-    predicted points back in the **level-0** frame (stitch-ready, design §4).
+    Each image is decoded (NMS peaks at the frozen per-class ``head.score_threshold``)
+    and class-aware F1@δ matched exactly once; that single result feeds three consumers
+    so they cannot drift: the per-class ``(C, 3)`` TP/FP/FN counts → the headline metric
+    (``finalize_eval_metrics``); the decoded points → the level-0 ``predictions_<split>.csv``
+    (stitch-ready, design §4, byte-identical to the pre-consolidation output); and the
+    assignment + heatmap + GT points → the :class:`DetectionArtifactWriter` (plain pred/GT
+    overlays + per-image manifest + split-level metrics CSVs). ``head.dense_stats`` /
+    ``head.postprocess`` are left untouched (the Trainer's tune monitor still uses them).
     """
     from soma.detection.encode import transform_points_to_level0
+    from soma.detection.matching import match_assignment
+    from soma.evaluation.detection_artifacts import DetectionArtifactWriter
 
     model.eval()
     top, left, _, _ = head._crop_box
+    writer = (
+        DetectionArtifactWriter(
+            head=head,
+            split=split_name,
+            output_dir=output_dir,
+            dataset=dataset,
+            save_detection_overlays=save_detection_overlays,
+        )
+        if output_dir is not None
+        else None
+    )
     stat_rows: list[torch.Tensor] = []
     pred_rows: list[str] = ["sample_id,x,y,class,score"]
     for batch in loader:
         out = model(batch.features.to(device))
-        targets = {k: v.to(device) for k, v in batch.targets.items()}
-        stat_rows.append(head.dense_stats(out.logits, targets).detach().cpu())
-        post = head.postprocess(out.logits)
+        gt_points = batch.targets["gt_points"]
         for b, sid in enumerate(batch.sample_ids):
-            xy, cls, score = post["points_xy"][b], post["points_class"][b], post["points_score"][b]
-            if xy.shape[0] == 0:
-                continue
-            record = dataset.samples[sid]
-            l0, run = head.resolve_spacings(record)
-            xy_l0 = transform_points_to_level0(
-                xy, level0_spacing=l0, run_spacing=run, crop_top=top, crop_left=left
+            heatmap = out.logits[b]
+            pred_xy, pred_cls, pred_score = head._predict_points(heatmap)
+            gt_xy, gt_cls = head._strip_padding(gt_points[b])
+            # The one match the headline counts, the per-point CSV, and the overlays
+            # all derive from (mirrors match_points' reduction, so counts are identical).
+            assignment = match_assignment(
+                pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
+                num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
             )
-            for (x, y), c, s in zip(xy_l0, cls, score):
-                pred_rows.append(f"{sid},{x:.3f},{y:.3f},{int(c)},{float(s):.4f}")
+            counts = np.zeros((head.num_classes, 3), dtype=np.int64)
+            for c, m in enumerate(assignment):
+                counts[c] = m.counts
+            stat_rows.append(torch.from_numpy(counts).to(torch.long).unsqueeze(0))
+            if pred_xy.shape[0]:
+                record = dataset.samples[sid]
+                l0, run = head.resolve_spacings(record)
+                xy_l0 = transform_points_to_level0(
+                    pred_xy, level0_spacing=l0, run_spacing=run, crop_top=top, crop_left=left
+                )
+                for (x, y), c, s in zip(xy_l0, pred_cls, pred_score):
+                    pred_rows.append(f"{sid},{x:.3f},{y:.3f},{int(c)},{float(s):.4f}")
+            if writer is not None:
+                writer.add_image(
+                    sample_id=sid, heatmap=heatmap,
+                    pred_xy=pred_xy, pred_class=pred_cls, pred_score=pred_score,
+                    assignment=assignment, gt_xy=gt_xy, gt_class=gt_cls,
+                )
 
     metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
     if output_dir is not None:
         (Path(output_dir) / f"predictions_{split_name}.csv").write_text(
             "\n".join(pred_rows) + "\n", encoding="utf-8"
         )
+    if writer is not None:
+        writer.finalize()
     return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
 
 

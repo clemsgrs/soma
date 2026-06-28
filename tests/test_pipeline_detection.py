@@ -39,7 +39,7 @@ FEATURE_DIM = 4
 SPACING = 0.2  # µm/px; 0.6 µm -> 3 px (δ), 0.3 µm -> 1.5 px (σ)
 
 
-def _build_detection_run(root: Path, sample_ids: list[str]):
+def _build_detection_run(root: Path, sample_ids: list[str], make_images: bool = False):
     dense_dir = root / "dense"
     points_dir = root / "points"
     dense_dir.mkdir()
@@ -55,7 +55,17 @@ def _build_detection_run(root: Path, sample_ids: list[str]):
         # A couple of points per tile, well inside the frame, classes 0/1.
         pts = points_dir / f"{sid}.csv"
         pts.write_text("x,y,class\n4,4,0\n11,11,1\n")
-        rows.append((sid, f"{sid}.jpg", str(pts)))
+        if make_images:
+            # A real source tile (absolute path) so the overlay writer can render — the
+            # default builder leaves image_path dangling (overlays then fail-soft).
+            from PIL import Image
+
+            img_path = root / f"{sid}.jpg"
+            Image.fromarray(np.full((TARGET, TARGET, 3), 127, dtype=np.uint8)).save(img_path)
+            img_ref = str(img_path)
+        else:
+            img_ref = f"{sid}.jpg"
+        rows.append((sid, img_ref, str(pts)))
 
     manifest_csv = root / "manifest.csv"
     manifest_csv.write_text(
@@ -182,6 +192,93 @@ def test_train_one_detection_fold_requires_num_classes(tmp_path: Path):
             fold_dir=tmp_path / "fold",
             decoder=DecoderConfig(name="lightweight_conv"),
         )
+
+
+def test_detection_fold_writes_qualitative_artifacts(tmp_path: Path):
+    """A detection fold writes the per-image manifest + split-level metrics CSVs and,
+    with real source tiles, the plain pred/GT point overlays (design §3) — all from the
+    consolidated single decode+match, leaving the per-point CSV byte-for-byte unchanged."""
+    import csv
+
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
+
+    train_one_detection_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="detection",
+            params={
+                "num_classes": NUM_CLASSES,
+                "match_distance": 0.6,
+                "sigma": 0.3,
+                "level0_spacing": SPACING,
+            },
+        ),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
+        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    )
+    fold = tmp_path / "fold"
+
+    # Per-point CSV header unchanged (the documented stitch-ready level-0 output).
+    assert (fold / "predictions_test.csv").read_text().splitlines()[0] == "sample_id,x,y,class,score"
+
+    for split in ("tune", "test"):
+        # Per-image manifest CSV (always) with the specified columns.
+        manifest_csv = fold / f"detection_per_image_{split}.csv"
+        assert manifest_csv.exists()
+        rows = list(csv.DictReader(manifest_csv.open()))
+        assert rows  # one row per evaluated tile
+        assert {
+            "sample_id", "pred_overlay_path", "gt_overlay_path",
+            "n_pred", "n_gt", "tp", "fp", "fn", "mean_f1",
+        } <= set(rows[0])
+        # Split-level per-class metrics CSV (always).
+        metrics_rows = {r["metric"] for r in csv.DictReader((fold / f"metrics_{split}.csv").open())}
+        assert "mean_f1" in metrics_rows
+        assert {f"f1_class_{c}" for c in range(NUM_CLASSES)} <= metrics_rows
+
+    # Real source tiles -> pred/GT overlays per evaluated tile (test split = s3).
+    assert (fold / "pred_overlays" / "test" / "s3.png").is_file()
+    assert (fold / "gt_overlays" / "test" / "s3.png").is_file()
+
+
+def test_detection_fold_overlays_suppressible(tmp_path: Path):
+    """save_detection_overlays=False suppresses the overlays; the per-point CSV, the
+    per-image manifest, and the split-level metrics CSV are still written."""
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
+
+    train_one_detection_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="detection",
+            params={
+                "num_classes": NUM_CLASSES,
+                "match_distance": 0.6,
+                "sigma": 0.3,
+                "level0_spacing": SPACING,
+            },
+        ),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1"], save_detection_overlays=False),
+        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    )
+    fold = tmp_path / "fold"
+
+    assert not (fold / "pred_overlays").exists()
+    assert not (fold / "gt_overlays").exists()
+    assert (fold / "predictions_test.csv").exists()
+    assert (fold / "detection_per_image_test.csv").exists()
+    assert (fold / "metrics_test.csv").exists()
 
 
 def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
