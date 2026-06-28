@@ -20,13 +20,19 @@ from soma.cache import (
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
+    resolve_output_dtype,
     resolve_tile_cache,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
+from soma.encoders.validation import resolve_encoder_precision
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import build_execution_options
 from soma.tile_extraction_spawn import spawn_tile_feature_workers
+
+
+# On-disk feature storage dtype → torch cast dtype for the per-tile save chokepoint.
+_FEATURE_TORCH_DTYPE = {"fp16": torch.float16, "fp32": torch.float32}
 
 
 logger = logging.getLogger(__name__)
@@ -135,6 +141,14 @@ class TileFeatureExtractor:
         """
         feature_dir = Path(feature_dir).resolve()
 
+        # On-disk feature dtype (#164): one resolved value folded into the cache key and
+        # used to cast at the per-tile save chokepoint, so storage matches the key.
+        dtype = resolve_output_dtype(
+            self._cache.dtype,
+            resolve_encoder_precision(self._encoder, encoder_name=self._encoder.name),
+        )
+        feature_torch_dtype = _FEATURE_TORCH_DTYPE[dtype]
+
         cache_resolution: FeatureCacheResolution | None = None
         if self._cache.enabled:
             cache_root = resolve_cache_root(
@@ -149,6 +163,7 @@ class TileFeatureExtractor:
                 execution=self._encoder,
                 output_variant=self._encoder.output_variant,
                 feature_type="tile",
+                dtype=dtype,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
             )
@@ -257,6 +272,7 @@ class TileFeatureExtractor:
                     num_workers_per_gpu=tile_num_workers,
                     prefetch_factor=execution.prefetch_factor,
                     precision=execution.precision,
+                    feature_dtype=dtype,
                     on_model_ready=_on_model_ready,
                     on_progress=_on_progress,
                 )
@@ -336,7 +352,7 @@ class TileFeatureExtractor:
             with torch.inference_mode(), slide_encode_autocast_ctx(device, execution.precision):
                 for batch_images, batch_ids in loader:
                     batch_images = batch_images.to(device, non_blocking=True)
-                    features = encoder.encode_tiles(batch_images).detach().float().cpu()
+                    features = encoder.encode_tiles(batch_images).detach().to(feature_torch_dtype).cpu()
                     if feature_dim is None:
                         feature_dim = features.shape[1]
                     for feat, sample_id in zip(features, batch_ids):

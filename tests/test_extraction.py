@@ -1292,6 +1292,53 @@ def test_tile_feature_extractor_keeps_encoder_inputs_in_float32(tmp_path: Path):
     assert torch.equal(store.load("s0"), torch.ones(4))
 
 
+@pytest.mark.parametrize(
+    "dtype, expected_torch_dtype",
+    [(None, torch.float32), ("fp32", torch.float32), ("fp16", torch.float16)],
+)
+def test_tile_feature_extractor_casts_saved_features_to_cache_dtype(
+    tmp_path: Path, dtype, expected_torch_dtype
+):
+    """cache.dtype controls the on-disk feature precision (#164): the per-tile save
+    chokepoint casts to fp16 when requested (else fp32), and the dtype folds into the key."""
+    image_path = tmp_path / "tile.png"
+    from PIL import Image
+
+    Image.new("RGB", (8, 8), color="white").save(image_path)
+
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        {"sample_id": ["s0"], "image_path": [str(image_path)], "label": ["tumor"]}
+    ).to_csv(dataset_csv, index=False)
+    dataset = Dataset(dataset_csv)
+
+    class _FakeEncoder:
+        def encode_tiles(self, batch):
+            # Emit fp32 from compute; the extractor owns the storage cast.
+            return torch.ones(batch.shape[0], 4, dtype=torch.float32)
+
+    fake_loaded = SimpleNamespace(
+        model=_FakeEncoder(),
+        transforms=lambda image: torch.zeros(3, 8, 8),
+        device=torch.device("cpu"),
+    )
+
+    with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
+        store = TileFeatureExtractor(
+            dataset,
+            EncoderConfig(name=_TEST_TILE, precision="fp32"),
+            execution=ExecutionConfig(num_workers_per_gpu=0),
+            cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", dtype=dtype),
+        ).run(feature_dir=tmp_path / "features")
+
+    # FeatureStore.load upcasts fp16→fp32 for downstream layers, so inspect the raw .pt.
+    raw = torch.load(store.feature_dir / "s0.pt")
+    assert raw.dtype == expected_torch_dtype
+    # cache_metadata.json sits in the cache dir (parent of the tile_embeddings features dir).
+    meta = json.loads((store.feature_dir.parent / "cache_metadata.json").read_text())
+    assert meta["dtype"] == ("fp16" if dtype == "fp16" else "fp32")
+
+
 def test_tile_feature_extractor_uses_cpu_worker_budget_when_num_workers_per_gpu_is_unset(monkeypatch, tmp_path: Path):
     image_path = tmp_path / "tile.png"
     from PIL import Image
@@ -1441,6 +1488,7 @@ def test_tile_feature_extractor_shards_tile_encoding_across_gpus(tmp_path: Path)
         num_workers_per_gpu,
         prefetch_factor,
         precision,
+        feature_dtype="fp32",
         on_model_ready=None,
         on_progress=None,
     ):
@@ -1453,6 +1501,7 @@ def test_tile_feature_extractor_shards_tile_encoding_across_gpus(tmp_path: Path)
                 "num_workers_per_gpu": num_workers_per_gpu,
                 "prefetch_factor": prefetch_factor,
                 "precision": precision,
+                "feature_dtype": feature_dtype,
             }
         )
         written_ids = []
@@ -3575,6 +3624,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         execution_batch_size,
         execution_num_workers_per_gpu,
         execution_prefetch_factor,
+        execution_output_dtype="fp32",
         output_dir,
         shard_payloads_by_rank,
         on_shard_complete,

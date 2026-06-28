@@ -146,6 +146,51 @@ def test_compute_cache_key_rejects_unknown_kind():
         )
 
 
+# --- Pooled storage-dtype cache identity (#164) -----------------------------------------
+#
+# cache.dtype folds into every pooled key, guarded so fp32 (the legacy default) keys stay
+# byte-stable — i.e. the ground-truth hashes above never move — while an fp16 cache resolves
+# to a distinct key so the two precisions can never be mixed. Mirrors the dense key's guard.
+
+
+def test_pooled_cache_keys_fp32_is_byte_stable_and_fp16_distinct():
+    from soma.cache.keys import (
+        build_hierarchical_cache_key,
+        build_patient_cache_key,
+        build_slide_cache_key,
+        build_tile_cache_key,
+    )
+
+    enc = EncoderConfig(name="virchow")
+    preprocessing = PreprocessingConfig(
+        backend="asap",
+        requested_spacing_um=0.5,
+        requested_tile_size_px=224,
+        tissue_method="hsv",
+    )
+    tile_dep = {"tile_encoder_name": "virchow", "tile_execution": {"precision": "fp16"}}
+
+    builders = {
+        "tile": lambda **kw: build_tile_cache_key(
+            tile_encoder_name="virchow", preprocessing=preprocessing, execution=enc, **kw
+        ),
+        "slide": lambda **kw: build_slide_cache_key(
+            slide_encoder_name="prism", tile_dependency_signature=tile_dep, execution=enc, **kw
+        ),
+        "patient": lambda **kw: build_patient_cache_key(
+            patient_encoder_name="prism", tile_dependency_signature=tile_dep, execution=enc, **kw
+        ),
+        "hierarchical": lambda **kw: build_hierarchical_cache_key(
+            tile_encoder_name="virchow", preprocessing=preprocessing, execution=enc, **kw
+        ),
+    }
+    for name, build in builders.items():
+        # Default == explicit fp32 == the pre-#164 key (guard drops dtype from the payload).
+        assert build() == build(dtype="fp32"), name
+        # fp16 storage ⇒ a distinct key, so an fp16 cache never aliases the fp32 one.
+        assert build(dtype="fp16") != build(dtype="fp32"), name
+
+
 # --- Annotation-restricted bag cache identity (#110) ------------------------------------
 #
 # A tumor-restricted merged bag must never alias a full-tissue bag of the same

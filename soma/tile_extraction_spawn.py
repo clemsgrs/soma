@@ -96,12 +96,15 @@ def _tile_extraction_shard_worker(rank: int, shared: dict[str, object], result_q
         out_dir.mkdir(parents=True, exist_ok=True)
         precision = shared.get("precision")
         precision = str(precision) if precision is not None else None
+        feature_torch_dtype = (
+            torch.float16 if str(shared.get("feature_dtype", "fp32")) == "fp16" else torch.float32
+        )
         written_ids: list[str] = []
         feature_dim: int | None = None
         with torch.inference_mode(), slide_encode_autocast_ctx(loaded.device, precision):
             for batch_images, batch_ids in loader:
                 batch_images = batch_images.to(loaded.device, non_blocking=True)
-                features = loaded.model.encode_tiles(batch_images).detach().float().cpu()
+                features = loaded.model.encode_tiles(batch_images).detach().to(feature_torch_dtype).cpu()
                 if feature_dim is None:
                     feature_dim = int(features.shape[1])
                 for feat, sample_id in zip(features, batch_ids):
@@ -142,6 +145,7 @@ def spawn_tile_feature_workers(
     num_workers_per_gpu: int,
     prefetch_factor: int,
     precision: str | None,
+    feature_dtype: str = "fp32",
     on_model_ready: Callable[[int, str], None] | None = None,
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[str], int | None]:
@@ -192,6 +196,7 @@ def spawn_tile_feature_workers(
         "num_workers_per_gpu": int(num_workers_per_gpu),
         "prefetch_factor": int(prefetch_factor),
         "precision": precision,
+        "feature_dtype": feature_dtype,
         "load_events": load_events,
     }
     process_ctx = torch.multiprocessing.spawn(

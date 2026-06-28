@@ -21,7 +21,7 @@ from soma.cache import (
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_dense_cache,
-    resolve_dense_dtype,
+    resolve_output_dtype,
 )
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -213,31 +213,31 @@ def test_dense_key_fp16_distinct_from_fp32():
     assert _key(dtype="fp16") != _key()
 
 
-def test_resolve_dense_dtype_explicit_wins_over_precision():
+def test_resolve_output_dtype_explicit_wins_over_precision():
     # An explicit choice overrides whatever the compute precision is.
-    assert resolve_dense_dtype("fp16", "fp32") == "fp16"
-    assert resolve_dense_dtype("fp32", "fp16") == "fp32"
+    assert resolve_output_dtype("fp16", "fp32") == "fp16"
+    assert resolve_output_dtype("fp32", "fp16") == "fp32"
 
 
-def test_resolve_dense_dtype_aliases():
+def test_resolve_output_dtype_aliases():
     for alias in ("fp16", "float16", "half", "16", "FP16"):
-        assert resolve_dense_dtype(alias, None) == "fp16"
+        assert resolve_output_dtype(alias, None) == "fp16"
     for alias in ("fp32", "float32", "32", "FP32"):
-        assert resolve_dense_dtype(alias, None) == "fp32"
+        assert resolve_output_dtype(alias, None) == "fp32"
 
 
-def test_resolve_dense_dtype_none_follows_precision():
-    # None ⇒ inherit slide2vec's native (compute precision): fp16 run -> fp16 grid.
-    assert resolve_dense_dtype(None, "fp16") == "fp16"
+def test_resolve_output_dtype_none_follows_precision():
+    # None ⇒ follow the compute precision: fp16 run -> fp16 grid.
+    assert resolve_output_dtype(None, "fp16") == "fp16"
     # bf16/fp32/unknown all key fp32 (numpy has no bfloat16 grid).
-    assert resolve_dense_dtype(None, "fp32") == "fp32"
-    assert resolve_dense_dtype(None, "bf16") == "fp32"
-    assert resolve_dense_dtype(None, None) == "fp32"
+    assert resolve_output_dtype(None, "fp32") == "fp32"
+    assert resolve_output_dtype(None, "bf16") == "fp32"
+    assert resolve_output_dtype(None, None) == "fp32"
 
 
-def test_resolve_dense_dtype_rejects_garbage():
-    with pytest.raises(ValueError, match="dense_dtype"):
-        resolve_dense_dtype("int8", "fp16")
+def test_resolve_output_dtype_rejects_garbage():
+    with pytest.raises(ValueError, match="cache.dtype"):
+        resolve_output_dtype("int8", "fp16")
 
 
 # --------------------------------------------------------------------------- #

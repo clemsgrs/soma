@@ -39,6 +39,7 @@ from soma.cache import (
     probe_resolved_backends,
     resolve_cache_root,
     resolve_hierarchical_cache,
+    resolve_output_dtype,
     resolve_patient_cache,
     resolve_slide_cache,
     resolve_tiling_cache,
@@ -262,6 +263,18 @@ class FeatureExtractor:
             self._encoder,
             output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
         )
+
+    def _resolved_dtype(self, *, encoder_name: str | None = None) -> str:
+        """Resolve the on-disk feature dtype ('fp16'/'fp32') from cache.dtype + precision.
+
+        The single value soma folds into the cache key AND passes to slide2vec's writer
+        (via ExecutionOptions.output_dtype), so the stored dtype always matches the key.
+        ``encoder_name`` selects whose compute precision a ``cache.dtype=None`` follows —
+        the tile encoder for a tile-dependency cache, the slide/patient encoder for its own.
+        """
+        name = encoder_name or self._encoder.name
+        precision = resolve_encoder_precision(self._encoder, encoder_name=name)
+        return resolve_output_dtype(self._cache.dtype, precision)
 
     def preprocess(
         self,
@@ -763,6 +776,7 @@ class FeatureExtractor:
             output_dir=feature_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=(level == "tile" or self._encoder.save_tile_features or hierarchical),
+            output_dtype=self._resolved_dtype(),
         )
         embeddable_tilings = _non_empty_loaded_tilings(loaded_tilings)
         slides = [loaded.slide for loaded in embeddable_tilings]
@@ -824,6 +838,7 @@ class FeatureExtractor:
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
                     save_tile_embeddings=True,
+                    output_dtype=self._resolved_dtype(),
                 )
                 tile_artifacts = _embed_tiles(
                     model_name=model_name,
@@ -869,6 +884,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
@@ -900,6 +916,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
@@ -935,6 +952,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
@@ -966,6 +984,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
@@ -1009,6 +1028,7 @@ class FeatureExtractor:
                 output_variant=str(tile_dependency_output["output_variant"]),
             ),
             output_variant=str(tile_dependency_output["output_variant"]),
+            dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
@@ -1031,6 +1051,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
@@ -1069,6 +1090,7 @@ class FeatureExtractor:
                     output_variant=str(tile_dependency_output["output_variant"]),
                 ),
                 output_variant=str(tile_dependency_output["output_variant"]),
+                dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
                 backend_provenance=backend_provenance,
                 complete_state="populated",
                 fingerprint_files=self._cache.fingerprint_files,
@@ -1103,6 +1125,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
@@ -1146,6 +1169,7 @@ class FeatureExtractor:
                 output_variant=str(tile_dependency_output["output_variant"]),
             ),
             output_variant=str(tile_dependency_output["output_variant"]),
+            dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
@@ -1168,6 +1192,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
@@ -1201,6 +1226,7 @@ class FeatureExtractor:
                 output_variant=str(tile_dependency_output["output_variant"]),
             ),
             output_variant=str(tile_dependency_output["output_variant"]),
+            dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
@@ -1234,6 +1260,7 @@ class FeatureExtractor:
                 output_variant=resolved_output_variant,
             ),
             output_variant=resolved_output_variant,
+            dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
@@ -1288,6 +1315,7 @@ class FeatureExtractor:
             output_dir=patient_cache.cache_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=False,
+            output_dtype=self._resolved_dtype(encoder_name=model_name),
         )
         patient_exec = build_execution_options(
             self._encoder,
@@ -1296,6 +1324,7 @@ class FeatureExtractor:
             output_dir=patient_cache.cache_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=False,
+            output_dtype=self._resolved_dtype(encoder_name=model_name),
         )
         # The scratch ``.meta.json`` sidecars are consumed by _aggregate_patients,
         # so the temp dir must outlive that call (not just the build step).
@@ -1407,6 +1436,7 @@ class FeatureExtractor:
             output_dir=cache_resolution.cache_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=True,
+            output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
         artifacts = _embed_tile_artifacts_with_coordinates(
             model_name=encoder_name,
@@ -1459,6 +1489,7 @@ class FeatureExtractor:
             output_dir=cache_resolution.cache_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=True,
+            output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
         artifacts = _embed_hierarchical_artifacts_with_coordinates(
             model_name=encoder_name,
@@ -1515,6 +1546,7 @@ class FeatureExtractor:
                 output_dir=slide_cache.cache_dir,
                 num_gpus=num_gpus,
                 save_tile_embeddings=False,
+                output_dtype=self._resolved_dtype(encoder_name=model_name),
             )
             slide_feature_dim: int | None = None
             if slide_execution.num_gpus > 1 and len(selected_loaded) > 1:
@@ -1566,6 +1598,7 @@ class FeatureExtractor:
                     execution_precision=slide_execution.precision,
                     execution_batch_size=slide_execution.batch_size,
                     execution_num_workers_per_gpu=slide_execution.resolved_num_workers_per_gpu(),
+                    execution_output_dtype=slide_execution.output_dtype,
                     execution_prefetch_factor=slide_execution.prefetch_factor,
                     output_dir=slide_cache.cache_dir,
                     shard_payloads_by_rank=shard_payloads,
