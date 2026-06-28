@@ -159,6 +159,33 @@ def test_format_confirmation_markdown_head_to_head():
     assert "0.7100" in md and "0.6995" in md
 
 
+def test_run_selection_isolates_a_failing_cell(monkeypatch, tmp_path):
+    """A (cell, seed) whose scoring raises is recorded in ``failures`` and skipped; the rest of
+    the grid still aggregates and yields a winner — so one deterministic OOM can't sink the
+    unattended run. Monkeypatches the GPU/subprocess seams so no encoder or dataset is needed."""
+    m = _load_campaign()
+    monkeypatch.setattr(m, "output_root_for", lambda cell: tmp_path / cell.key)
+    monkeypatch.setattr(m, "find_seed_runs", lambda root: {0: root / "run0"})  # seed 0 "trained"
+    monkeypatch.setattr(m, "OUT_DIR", tmp_path / "out")
+
+    def fake_score(cell, run_subdir, *, tune_only, matching="greedy"):
+        assert tune_only  # selection always scores tune-only
+        if cell.key == "uni2_0.25":
+            raise ValueError("simulated OOM during scoring")
+        return {"tune": {"mean_f1": 0.5, "recall_class_0": 0.4, "recall_class_1": 0.6}}
+
+    monkeypatch.setattr(m, "score_run", fake_score)
+
+    report = m.run_selection(tmp_path, [0], train=False, dry_run=False)
+
+    # the failing cell is recorded and omitted; the survivors still produce a winner.
+    assert any(f["cell"] == "uni2_0.25" and f["stage"] == "score" for f in report["failures"])
+    assert "uni2_0.25" not in report["summaries"]
+    assert set(report["summaries"]) == {"virchow2_0.20", "virchow2_0.25", "virchow2_0.50", "uni2_0.50"}
+    assert report["winner"] in report["summaries"]
+    assert (tmp_path / "out" / "selection_report.json").exists()
+
+
 def test_format_selection_markdown_marks_winner_and_interaction():
     m = _load_campaign()
     summaries = {

@@ -275,9 +275,17 @@ def score_run(
 
 
 def run_selection(data_root: Path, seeds: list[int], *, train: bool, dry_run: bool) -> dict:
-    """Train (idempotent) + greedy-rescore tune for every cell × seed; aggregate + pick winner."""
+    """Train (idempotent) + greedy-rescore tune for every cell × seed; aggregate + pick winner.
+
+    Resilient by design for the long unattended run: a (cell, seed) whose training or scoring
+    raises is recorded in ``failures`` and skipped, so one *deterministic* failure (e.g. an OOM
+    on a single encoder×spacing) can't sink the whole campaign or block the cells ordered after
+    it. Failures are written into the report and re-printed at the end; re-invoking resumes the
+    survivors (training is idempotent) and retries the failures.
+    """
     summaries: dict[str, dict] = {}
     per_cell_seed_metrics: dict[str, dict] = {}
+    failures: list[dict] = []
     for cell in CELLS:
         output_root = output_root_for(cell)
         for seed in seeds:
@@ -285,7 +293,11 @@ def run_selection(data_root: Path, seeds: list[int], *, train: bool, dry_run: bo
             if seed in existing:
                 print(f"[{cell.key}] seed {seed}: checkpoint exists ({existing[seed]}), skip train")
             elif train and not dry_run:
-                train_cell_seed(cell, seed, data_root, holdout_test=True)
+                try:
+                    train_cell_seed(cell, seed, data_root, holdout_test=True)
+                except subprocess.CalledProcessError as e:
+                    failures.append({"cell": cell.key, "seed": seed, "stage": "train", "error": str(e)})
+                    print(f"[{cell.key}] seed {seed}: TRAIN FAILED ({e}); continuing", flush=True)
             else:
                 print(f"[{cell.key}] seed {seed}: would train (holdout_test=true)")
         if dry_run:
@@ -296,13 +308,20 @@ def run_selection(data_root: Path, seeds: list[int], *, train: bool, dry_run: bo
             if seed not in runs:
                 print(f"[{cell.key}] seed {seed}: no checkpoint to score, skipping")
                 continue
-            report = score_run(cell, runs[seed], tune_only=True)
-            seed_metrics.append(report["tune"])
+            try:
+                report = score_run(cell, runs[seed], tune_only=True)
+                seed_metrics.append(report["tune"])
+            except (subprocess.CalledProcessError, ValueError, KeyError) as e:
+                failures.append({"cell": cell.key, "seed": seed, "stage": "score", "error": str(e)})
+                print(f"[{cell.key}] seed {seed}: SCORE FAILED ({e}); continuing", flush=True)
         if seed_metrics:
             per_cell_seed_metrics[cell.key] = seed_metrics
             summaries[cell.key] = summarize_seed_metrics(seed_metrics)
-    if dry_run or not summaries:
-        return {"summaries": summaries}
+    if dry_run:
+        return {"summaries": summaries, "failures": failures}
+    if not summaries:
+        print("\nno cells produced metrics; failures:\n" + json.dumps(failures, indent=2))
+        return {"summaries": summaries, "failures": failures}
     interaction = magnification_interaction(summaries)
     winner = pick_winner(summaries)
     report = {
@@ -312,6 +331,7 @@ def run_selection(data_root: Path, seeds: list[int], *, train: bool, dry_run: bo
         "interaction": interaction,
         "winner": winner,
         "per_cell_seed_tune_metrics": per_cell_seed_metrics,
+        "failures": failures,
     }
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUT_DIR / "selection_report.json").write_text(json.dumps(report, indent=2))
@@ -319,6 +339,8 @@ def run_selection(data_root: Path, seeds: list[int], *, train: bool, dry_run: bo
         format_selection_markdown(summaries, winner, interaction)
     )
     print(f"\nwrote {OUT_DIR / 'selection_report.json'} and selection_report.md")
+    if failures:
+        print(f"\n{len(failures)} (cell, seed) failure(s) recorded:\n" + json.dumps(failures, indent=2))
     print(format_selection_markdown(summaries, winner, interaction))
     return report
 
