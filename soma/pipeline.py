@@ -1259,12 +1259,14 @@ def train_one_segmentation_fold(
 
     tune_report = _evaluate_segmentation(
         model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir,
-        save_probabilities=evaluation.save_probabilities,
+        save_segmentation_overlays=evaluation.save_segmentation_overlays,
+        save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
     )
     test_reports = {
         split_name: _evaluate_segmentation(
             model, loader, split_name, device, dataset=dataset, output_dir=fold_dir,
-            save_probabilities=evaluation.save_probabilities,
+            save_segmentation_overlays=evaluation.save_segmentation_overlays,
+            save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
         )
         for split_name, loader in test_loaders.items()
     }
@@ -1706,12 +1708,16 @@ def train_one_pixel_classifier_fold(
 
     tune_report = evaluate_pixel_classifier(
         clf, tune_records, feature_store, head, "tune",
-        dataset=dataset, output_dir=fold_dir, save_probabilities=evaluation.save_probabilities,
+        dataset=dataset, output_dir=fold_dir,
+        save_segmentation_overlays=evaluation.save_segmentation_overlays,
+        save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
     )
     test_reports = {
         split_name: evaluate_pixel_classifier(
             clf, records, feature_store, head, split_name,
-            dataset=dataset, output_dir=fold_dir, save_probabilities=evaluation.save_probabilities,
+            dataset=dataset, output_dir=fold_dir,
+            save_segmentation_overlays=evaluation.save_segmentation_overlays,
+            save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
         )
         for split_name, records in test_records_by_split.items()
     }
@@ -2846,7 +2852,8 @@ def _evaluate_segmentation(
     *,
     dataset: SegmentationManifest | None = None,
     output_dir: Path | None = None,
-    save_probabilities: bool = False,
+    save_segmentation_overlays: bool = True,
+    save_segmentation_probabilities: bool = False,
 ) -> EvaluationReport:
     """Streaming dense evaluation: accumulate compact per-image confusion counts.
 
@@ -2869,7 +2876,8 @@ def _evaluate_segmentation(
             split=split_name,
             output_dir=output_dir,
             dataset=dataset,
-            save_probabilities=save_probabilities,
+            save_segmentation_overlays=save_segmentation_overlays,
+            save_segmentation_probabilities=save_segmentation_probabilities,
             # Slide-manifest ROIs (record.region set) carry a whole-slide image_path; the
             # writer reads each ROI window at the run geometry rather than opening the slide.
             spacing_um=getattr(head, "_spacing_um", None),

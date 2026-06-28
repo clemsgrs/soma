@@ -13,18 +13,21 @@ Artifacts written under ``fold_dir``:
                                          always written; the canonical, exact, viewable
                                          prediction.
   - ``probs/<split>/<sample_id>.npz``    float16 ``(C, H, W)`` softmax probabilities —
-                                         **opt-in** (``save_probabilities``); ~C×/precision×
-                                         larger than the argmax raster, for post-hoc
-                                         soft-Dice / calibration / entropy / ensembling.
+                                         **opt-in** (``save_segmentation_probabilities``);
+                                         ~C×/precision× larger than the argmax raster, for
+                                         post-hoc soft-Dice / calibration / entropy / ensembling.
   - ``pred_overlays/<split>/<sample_id>.png`` predicted foreground color-blended over
-                                         the source tile — **fail-soft**: skipped (logged)
-                                         when the source image is unreadable, the
-                                         pred raster is still written.
+                                         the source tile — **on by default**, suppressible
+                                         via ``save_segmentation_overlays`` for a metrics-only
+                                         run. Also **fail-soft**: skipped (logged) when the
+                                         source image is unreadable, the pred raster is still
+                                         written.
   - ``gt_overlays/<split>/<sample_id>.png`` ground-truth mask color-blended over the
                                          same source tile with the same palette/alpha,
                                          for side-by-side comparison with the prediction
-                                         overlay. Same fail-soft behavior; ``ignore_index``
-                                         pixels are treated as background (unblended).
+                                         overlay. Same on-by-default/suppressible + fail-soft
+                                         behavior; ``ignore_index`` pixels are treated as
+                                         background (unblended).
   - ``predictions_<split>.csv``          one row per tile: raster/overlay/gt-overlay paths
                                          + per-tile Dice/IoU (from the same per-image
                                          confusion counts the metric monitor uses).
@@ -95,8 +98,11 @@ class DenseArtifactWriter:
         dataset: the ``SegmentationManifest`` (``samples[sample_id].image_path``) for
             overlays. ``None`` disables overlays entirely (rasters still written).
         overlay_alpha: blend weight of the predicted color over the source image.
-        save_probabilities: also write a per-tile float16 ``(C, H, W)`` softmax sidecar
-            under ``probs/``. Off by default — the always-written argmax raster covers
+        save_segmentation_overlays: write the pred/GT color overlay PNGs. On by default
+            (a viewable prediction is cheap), but suppressible for a metrics-only run.
+            Rasters/probabilities/CSV are unaffected by this toggle.
+        save_segmentation_probabilities: also write a per-tile float16 ``(C, H, W)`` softmax
+            sidecar under ``probs/``. Off by default — the always-written argmax raster covers
             the common case; this is for post-hoc soft-output analysis.
         spacing_um/backend/tolerance: the run's read geometry, used only for slide-manifest
             ROIs (``record.region`` set), whose ``image_path`` is a whole slide — the overlay
@@ -112,7 +118,8 @@ class DenseArtifactWriter:
         output_dir: Path | str,
         dataset=None,
         overlay_alpha: float = 0.5,
-        save_probabilities: bool = False,
+        save_segmentation_overlays: bool = True,
+        save_segmentation_probabilities: bool = False,
         spacing_um: float | None = None,
         backend: str = "auto",
         tolerance: float = 0.05,
@@ -134,9 +141,11 @@ class DenseArtifactWriter:
         self._probs_dir = self._output_dir / "probs" / split
         self._pred_overlays_dir = self._output_dir / "pred_overlays" / split
         self._gt_overlays_dir = self._output_dir / "gt_overlays" / split
-        self._save_probabilities = bool(save_probabilities)
+        self._save_segmentation_probabilities = bool(save_segmentation_probabilities)
         self._dataset = dataset
-        self._overlays_enabled = dataset is not None
+        # Overlays are written only when enabled (default) AND a dataset supplies the
+        # source tiles; suppressing the flag yields a metrics-only run (rasters/CSV stay).
+        self._overlays_enabled = dataset is not None and bool(save_segmentation_overlays)
         self._spacing_um = None if spacing_um is None else float(spacing_um)
         self._backend = backend
         self._tolerance = float(tolerance)
@@ -159,7 +168,7 @@ class DenseArtifactWriter:
         # after this call, so the conversion has to happen here, not in finalize).
         probs = (
             logits.softmax(dim=1).to(torch.float16).cpu().numpy()  # (B, C, H, W)
-            if self._save_probabilities
+            if self._save_segmentation_probabilities
             else None
         )
         for i, sample_id in enumerate(batch.sample_ids):

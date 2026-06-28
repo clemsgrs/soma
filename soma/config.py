@@ -691,10 +691,16 @@ class EvalConfig:
 
     Metrics are validated against the selected task family, and subgroup
     columns are used to break down the reported metrics in the run outputs.
-    ``save_probabilities`` (segmentation only) additionally writes a per-tile
-    float16 ``(C, H, W)`` softmax sidecar under ``probs/`` — opt-in because it is
+    The dense-artifact toggles form a symmetric 2×2 over the segmentation and
+    detection paths — cheap visual overlays default on (but suppressible, for a
+    metrics-only run), heavy raw outputs default off:
+    ``save_segmentation_overlays`` writes the pred/GT color overlays;
+    ``save_segmentation_probabilities`` additionally writes a per-tile float16
+    ``(C, H, W)`` softmax sidecar under ``probs/`` — opt-in because it is
     ~C×/precision× larger than the always-written argmax raster, and unlocks
-    post-hoc soft-Dice/calibration/entropy/ensembling without re-running inference.
+    post-hoc soft-Dice/calibration/entropy/ensembling without re-running inference;
+    ``save_detection_overlays`` writes the detection point overlays;
+    ``save_detection_heatmaps`` writes the colormap overlays and the npz sidecar.
     ``holdout_test`` skips *all* test-split work (no test inference, no
     ``predictions_test.csv``, no ``test`` entries in ``metrics.json``/``summary.json``)
     and reports tune only — the model-selection protocol for benchmark sweeps: rank
@@ -706,7 +712,10 @@ class EvalConfig:
 
     metrics: list[str] = field(default_factory=list)
     subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
-    save_probabilities: bool = False
+    save_segmentation_overlays: bool = True
+    save_segmentation_probabilities: bool = False
+    save_detection_overlays: bool = True
+    save_detection_heatmaps: bool = False
     holdout_test: bool = False
 
 
@@ -1333,6 +1342,11 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
     return EvalConfig(
         metrics=evaluation_data.get("metrics", []),
         subgroups=SubgroupConfig(columns=columns),
-        save_probabilities=bool(evaluation_data.get("save_probabilities", False)),
+        save_segmentation_overlays=bool(evaluation_data.get("save_segmentation_overlays", True)),
+        save_segmentation_probabilities=bool(
+            evaluation_data.get("save_segmentation_probabilities", False)
+        ),
+        save_detection_overlays=bool(evaluation_data.get("save_detection_overlays", True)),
+        save_detection_heatmaps=bool(evaluation_data.get("save_detection_heatmaps", False)),
         holdout_test=bool(evaluation_data.get("holdout_test", False)),
     )

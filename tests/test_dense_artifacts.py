@@ -190,12 +190,41 @@ def test_overlay_fail_soft_on_decompression_bomb(tmp_path, monkeypatch):
     assert not (tmp_path / "pred_overlays" / "test" / "roi0.png").exists()
 
 
-def test_save_probabilities_writes_float16_sidecar(tmp_path):
-    """save_probabilities=True -> a float16 (C,H,W) softmax npz whose argmax matches the raster."""
+def test_save_segmentation_overlays_false_suppresses_overlays(tmp_path):
+    """save_segmentation_overlays=False -> no overlay PNGs, but rasters + CSV still written
+    (rasters/probabilities/CSV are unaffected by the overlay toggle)."""
     sample_ids = ["s0", "s1"]
     dataset = _dataset_with_images(tmp_path, sample_ids, make_image=True)
     writer = DenseArtifactWriter(
-        head=_head(), split="test", output_dir=tmp_path, dataset=dataset, save_probabilities=True
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        save_segmentation_overlays=False,
+    )
+    pred = torch.zeros(2, H, W, dtype=torch.long)
+    batch = SegmentationBatch(
+        features=torch.zeros(2, 1, 2, 2), targets={"mask": pred}, sample_ids=tuple(sample_ids)
+    )
+    writer(batch, _logits_from_pred(pred, NUM_CLASSES), _stat_row(2))
+    csv_path = writer.finalize()
+
+    rows = {r["sample_id"]: r for r in csv.DictReader(csv_path.open())}
+    for sid in sample_ids:
+        # Raster is unaffected; overlay PNGs are suppressed (no overlay dirs).
+        assert (tmp_path / "preds" / "test" / f"{sid}.png").is_file()
+        assert not (tmp_path / "pred_overlays" / "test" / f"{sid}.png").exists()
+        assert not (tmp_path / "gt_overlays" / "test" / f"{sid}.png").exists()
+        assert rows[sid]["pred_overlay_path"] == ""
+        assert rows[sid]["gt_overlay_path"] == ""
+    assert not (tmp_path / "pred_overlays").exists()
+    assert not (tmp_path / "gt_overlays").exists()
+
+
+def test_save_segmentation_probabilities_writes_float16_sidecar(tmp_path):
+    """save_segmentation_probabilities=True -> a float16 (C,H,W) softmax npz whose argmax matches the raster."""
+    sample_ids = ["s0", "s1"]
+    dataset = _dataset_with_images(tmp_path, sample_ids, make_image=True)
+    writer = DenseArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        save_segmentation_probabilities=True,
     )
     pred = torch.tensor(
         [[[0, 1, 1, 0], [0, 1, 1, 0], [2, 2, 0, 0], [2, 2, 0, 0]],
