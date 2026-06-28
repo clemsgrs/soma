@@ -195,11 +195,11 @@ def test_build_experiment_spec_distinguishes_evaluation_metrics(tmp_path: Path):
 def test_build_experiment_spec_distinguishes_evaluation_probability_artifacts(tmp_path: Path):
     without_probabilities = _make_segmentation_config(
         tmp_path,
-        evaluation=EvalConfig(metrics=["mean_dice"], save_probabilities=False),
+        evaluation=EvalConfig(metrics=["mean_dice"], save_segmentation_probabilities=False),
     )
     with_probabilities = _make_segmentation_config(
         tmp_path,
-        evaluation=EvalConfig(metrics=["mean_dice"], save_probabilities=True),
+        evaluation=EvalConfig(metrics=["mean_dice"], save_segmentation_probabilities=True),
     )
 
     without_spec = build_experiment_spec(without_probabilities)

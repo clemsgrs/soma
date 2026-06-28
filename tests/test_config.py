@@ -170,7 +170,12 @@ def test_evaluation_config_defaults():
     cfg = EvalConfig()
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
-    assert cfg.save_probabilities is False
+    # Symmetric 2x2 of dense-artifact toggles: cheap visual overlays default on,
+    # heavy raw outputs default off.
+    assert cfg.save_segmentation_overlays is True
+    assert cfg.save_segmentation_probabilities is False
+    assert cfg.save_detection_overlays is True
+    assert cfg.save_detection_heatmaps is False
     assert cfg.holdout_test is False
 
 
@@ -985,12 +990,23 @@ def test_evaluation_metrics_empty_roundtrip(tmp_path: Path):
     assert loaded.evaluation.metrics == []
 
 
-def test_evaluation_save_probabilities_roundtrip(tmp_path: Path):
-    cfg = _make_pipeline_config(evaluation=EvalConfig(save_probabilities=True))
+def test_evaluation_dense_artifact_flags_roundtrip(tmp_path: Path):
+    # Flip every flag away from its default so the round-trip has to carry all four.
+    cfg = _make_pipeline_config(
+        evaluation=EvalConfig(
+            save_segmentation_overlays=False,
+            save_segmentation_probabilities=True,
+            save_detection_overlays=False,
+            save_detection_heatmaps=True,
+        )
+    )
     yaml_path = tmp_path / "config.yaml"
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
-    assert loaded.evaluation.save_probabilities is True
+    assert loaded.evaluation.save_segmentation_overlays is False
+    assert loaded.evaluation.save_segmentation_probabilities is True
+    assert loaded.evaluation.save_detection_overlays is False
+    assert loaded.evaluation.save_detection_heatmaps is True
 
 
 def test_evaluation_holdout_test_roundtrip(tmp_path: Path):

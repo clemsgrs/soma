@@ -167,7 +167,8 @@ def evaluate_pixel_classifier(
     *,
     dataset: "SegmentationManifest | None" = None,
     output_dir: Path | None = None,
-    save_probabilities: bool = False,
+    save_segmentation_overlays: bool = True,
+    save_segmentation_probabilities: bool = False,
 ) -> EvaluationReport:
     """Predict every pixel of every tile and reduce to dense metrics + artifacts.
 
@@ -182,7 +183,8 @@ def evaluate_pixel_classifier(
             split=split_name,
             output_dir=output_dir,
             dataset=dataset,
-            save_probabilities=save_probabilities,
+            save_segmentation_overlays=save_segmentation_overlays,
+            save_segmentation_probabilities=save_segmentation_probabilities,
         )
         if output_dir is not None
         else None
