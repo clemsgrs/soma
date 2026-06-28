@@ -49,7 +49,7 @@ def _dataset_with_images(tmp_path: Path, sample_ids: list[str], make_image: bool
     return types.SimpleNamespace(samples=samples)
 
 
-def _payload(pred_xy, pred_class, pred_score, gt_xy, gt_class):
+def _payload(pred_xy, pred_class, pred_score, gt_xy, gt_class, heatmap=None):
     """Build the once-per-image decode+match payload the eval loop hands the writer."""
     pred_xy = np.asarray(pred_xy, dtype=np.float64).reshape(-1, 2)
     pred_class = np.asarray(pred_class, dtype=np.int64).reshape(-1)
@@ -61,7 +61,7 @@ def _payload(pred_xy, pred_class, pred_score, gt_xy, gt_class):
         num_classes=NUM_CLASSES, delta=DELTA, method="hungarian",
     )
     return dict(
-        heatmap=torch.zeros(NUM_CLASSES, H, W),
+        heatmap=torch.zeros(NUM_CLASSES, H, W) if heatmap is None else heatmap,
         pred_xy=pred_xy, pred_class=pred_class, pred_score=pred_score,
         assignment=assignment, gt_xy=gt_xy, gt_class=gt_class,
     )
@@ -280,3 +280,128 @@ def test_metrics_csv_written_with_no_images(tmp_path):
     }
     assert "mean_f1" in metrics_rows
     assert {f"f1_class_{c}" for c in range(NUM_CLASSES)} <= set(metrics_rows)
+
+
+def test_save_detection_heatmaps_off_writes_no_heatmap_artifacts(tmp_path):
+    """Default (flag off): no heatmap overlays, no npz; the manifest's heatmap columns
+    are present but empty (exactly how the seg CSV leaves probs_path empty)."""
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=True)
+    writer = DetectionArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset
+    )
+    writer.add_image(
+        sample_id="s0",
+        **_payload([[4.0, 4.0]], [1], [0.9], [[4.0, 4.0]], [1]),
+    )
+    manifest_path = writer.finalize()
+
+    assert not (tmp_path / "heatmap_overlays").exists()
+    assert not (tmp_path / "heatmaps").exists()
+    row = next(csv.DictReader(manifest_path.open()))
+    for c in range(NUM_CLASSES):
+        assert f"heatmap_overlay_class_{c}" in row
+        assert row[f"heatmap_overlay_class_{c}"] == ""
+    assert "heatmap_npz_path" in row
+    assert row["heatmap_npz_path"] == ""
+
+
+def test_save_detection_heatmaps_writes_overlays_and_npz(tmp_path):
+    """Flag on: per-class viridis overlay PNGs under heatmap_overlays/class_<c>/<split>/,
+    a raw float16 (C,H,W) npz sidecar keyed 'heatmap', and populated manifest columns."""
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=True)
+    writer = DetectionArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        save_detection_heatmaps=True,
+    )
+    writer.add_image(
+        sample_id="s0",
+        **_payload([[4.0, 4.0]], [1], [0.9], [[4.0, 4.0]], [1]),
+    )
+    manifest_path = writer.finalize()
+
+    row = next(csv.DictReader(manifest_path.open()))
+    for c in range(NUM_CLASSES):
+        overlay = tmp_path / "heatmap_overlays" / f"class_{c}" / "test" / "s0.png"
+        assert overlay.is_file()
+        assert np.asarray(Image.open(overlay)).shape == (H, W, 3)
+        assert row[f"heatmap_overlay_class_{c}"] == f"heatmap_overlays/class_{c}/test/s0.png"
+
+    npz_path = tmp_path / "heatmaps" / "test" / "s0.npz"
+    assert npz_path.is_file()
+    assert row["heatmap_npz_path"] == "heatmaps/test/s0.npz"
+    arr = np.load(npz_path)["heatmap"]
+    assert arr.dtype == np.float16
+    assert arr.shape == (NUM_CLASSES, H, W)
+
+
+def test_heatmap_overlay_uses_raw_sigmoid_viridis_without_normalization(tmp_path):
+    """The overlay colormaps the raw [0,1] sigmoid (no per-tile min-max): a constant 0.3
+    heatmap renders viridis(0.3), NOT viridis(0.5) (which min-max of a constant yields)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=True)
+    writer = DetectionArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        save_detection_heatmaps=True,
+    )
+    value = 0.3
+    writer.add_image(
+        sample_id="s0",
+        **_payload(
+            [[4.0, 4.0]], [1], [0.9], [[4.0, 4.0]], [1],
+            heatmap=torch.full((NUM_CLASSES, H, W), value),
+        ),
+    )
+    writer.finalize()
+
+    overlay = np.asarray(Image.open(tmp_path / "heatmap_overlays" / "class_0" / "test" / "s0.png"))
+    # Source tile is a uniform gray 127 (resized → still 127); blend at the default 0.5.
+    color = np.asarray(plt.get_cmap("viridis")(value)[:3]) * 255.0
+    expected = 0.5 * color + 0.5 * 127.0
+    assert np.allclose(overlay[0, 0], expected, atol=1)
+    norm_color = np.asarray(plt.get_cmap("viridis")(0.5)[:3]) * 255.0
+    assert not np.allclose(overlay[0, 0], 0.5 * norm_color + 0.5 * 127.0, atol=1)
+
+
+def test_save_detection_heatmaps_independent_of_point_overlays(tmp_path):
+    """heatmaps gate is orthogonal to the pred/GT-overlay gate: with point overlays off
+    but heatmaps on, the heatmap overlays + npz still render from the source tile."""
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=True)
+    writer = DetectionArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        save_detection_overlays=False, save_detection_heatmaps=True,
+    )
+    writer.add_image(
+        sample_id="s0",
+        **_payload([[4.0, 4.0]], [1], [0.9], [[4.0, 4.0]], [1]),
+    )
+    writer.finalize()
+
+    assert not (tmp_path / "pred_overlays").exists()
+    assert not (tmp_path / "gt_overlays").exists()
+    assert (tmp_path / "heatmap_overlays" / "class_0" / "test" / "s0.png").is_file()
+    assert (tmp_path / "heatmaps" / "test" / "s0.npz").is_file()
+
+
+def test_heatmap_npz_written_even_when_source_unreadable(tmp_path):
+    """The npz is a payload sidecar (no source tile needed): it is written even when the
+    source tile is unreadable (fail-soft only suppresses the blended overlay)."""
+    dataset = _dataset_with_images(tmp_path, ["s0"], make_image=False)
+    writer = DetectionArtifactWriter(
+        head=_head(), split="test", output_dir=tmp_path, dataset=dataset,
+        save_detection_heatmaps=True,
+    )
+    writer.add_image(
+        sample_id="s0",
+        **_payload([[4.0, 4.0]], [1], [0.9], [[4.0, 4.0]], [1]),
+    )
+    manifest_path = writer.finalize()
+
+    assert (tmp_path / "heatmaps" / "test" / "s0.npz").is_file()
+    assert not (tmp_path / "heatmap_overlays" / "class_0" / "test" / "s0.png").exists()
+    row = next(csv.DictReader(manifest_path.open()))
+    assert row["heatmap_npz_path"] == "heatmaps/test/s0.npz"
+    assert row["heatmap_overlay_class_0"] == ""  # blended overlay skipped, npz still kept

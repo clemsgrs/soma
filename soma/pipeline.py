@@ -1468,11 +1468,13 @@ def train_one_detection_fold(
     tune_report = _evaluate_detection(
         model, tune_loader, "tune", device, head=head, dataset=dataset, output_dir=fold_dir,
         save_detection_overlays=evaluation.save_detection_overlays,
+        save_detection_heatmaps=evaluation.save_detection_heatmaps,
     )
     test_reports = {
         split_name: _evaluate_detection(
             model, loader, split_name, device, head=head, dataset=dataset, output_dir=fold_dir,
             save_detection_overlays=evaluation.save_detection_overlays,
+            save_detection_heatmaps=evaluation.save_detection_heatmaps,
         )
         for split_name, loader in test_loaders.items()
     }
@@ -1530,6 +1532,7 @@ def _evaluate_detection(
     dataset: DetectionManifest,
     output_dir: Path | None = None,
     save_detection_overlays: bool = True,
+    save_detection_heatmaps: bool = False,
 ) -> EvaluationReport:
     """Consolidated detection eval: decode + match **once** per image, fan out to all.
 
@@ -1539,7 +1542,8 @@ def _evaluate_detection(
     (``finalize_eval_metrics``); the decoded points → the level-0 ``predictions_<split>.csv``
     (stitch-ready, design §4, byte-identical to the pre-consolidation output); and the
     assignment + heatmap + GT points → the :class:`DetectionArtifactWriter` (plain pred/GT
-    overlays + per-image manifest + split-level metrics CSVs). ``head.dense_stats`` /
+    overlays + per-image manifest + split-level metrics CSVs, plus opt-in raw heatmap
+    overlays + npz when ``save_detection_heatmaps``). ``head.dense_stats`` /
     ``head.postprocess`` are left untouched (the Trainer's tune monitor still uses them).
     """
     from soma.detection.encode import transform_points_to_level0
@@ -1555,6 +1559,7 @@ def _evaluate_detection(
             output_dir=output_dir,
             dataset=dataset,
             save_detection_overlays=save_detection_overlays,
+            save_detection_heatmaps=save_detection_heatmaps,
         )
         if output_dir is not None
         else None

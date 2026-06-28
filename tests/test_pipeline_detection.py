@@ -286,6 +286,51 @@ def test_detection_fold_overlays_suppressible(tmp_path: Path):
     assert (fold / "metrics_test.csv").exists()
 
 
+def test_detection_fold_heatmap_artifacts_opt_in(tmp_path: Path):
+    """save_detection_heatmaps=True writes per-class viridis overlays + a float16 npz
+    sidecar per evaluated tile, and threads the manifest's heatmap columns; off by default
+    those artifacts are absent and the columns are empty."""
+    import csv
+
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
+
+    train_one_detection_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="detection",
+            params={
+                "num_classes": NUM_CLASSES,
+                "match_distance": 0.6,
+                "sigma": 0.3,
+                "level0_spacing": SPACING,
+            },
+        ),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1"], save_detection_heatmaps=True),
+        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    )
+    fold = tmp_path / "fold"
+
+    # Test split = s3: per-class colormap overlay + raw float16 (C,H,W) npz sidecar.
+    for c in range(NUM_CLASSES):
+        assert (fold / "heatmap_overlays" / f"class_{c}" / "test" / "s3.png").is_file()
+    npz = fold / "heatmaps" / "test" / "s3.npz"
+    assert npz.is_file()
+    arr = np.load(npz)["heatmap"]
+    assert arr.dtype == np.float16
+    assert arr.shape[0] == NUM_CLASSES
+
+    row = next(r for r in csv.DictReader((fold / "detection_per_image_test.csv").open()) if r["sample_id"] == "s3")
+    assert {f"heatmap_overlay_class_{c}" for c in range(NUM_CLASSES)} <= set(row)
+    assert row["heatmap_npz_path"] == "heatmaps/test/s3.npz"
+    assert row["heatmap_overlay_class_0"] == "heatmap_overlays/class_0/test/s3.png"
+
+
 def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
     """evaluation.holdout_test: no test inference, no test artifacts, tune-only metrics.
 
