@@ -19,12 +19,16 @@ resolves ``delta`` from µm/px via the run spacing before calling in.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
 from torch import Tensor
 
 __all__ = [
+    "ClassMatch",
+    "match_assignment",
     "match_points",
     "detection_counts",
     "reduce_f1",
@@ -35,6 +39,40 @@ __all__ = [
 VALID_MATCHING = ("hungarian", "greedy")
 
 
+@dataclass(frozen=True)
+class ClassMatch:
+    """One class's point-matching assignment — the primitive the counts derive from.
+
+    ``pairs`` is an ``(L, 2)`` int array of matched ``(pred_idx, gt_idx)`` pairs and
+    ``n_pred`` / ``n_gt`` the number of predictions / GT in the class. ``tp`` is the
+    number of matched pairs, ``fp`` the unmatched predictions, ``fn`` the unmatched GT —
+    derived here, in one place, so a ``(tp, fp, fn)`` count and a match-status overlay
+    that reads ``pairs`` cannot disagree. The match overlay reads ``pairs`` directly;
+    :func:`match_assignment` returns global indices, so an index points back into the
+    original ``pred_*`` / ``gt_*`` arrays (e.g. recovering which class channel fired).
+    """
+
+    pairs: np.ndarray  # (L, 2) int64 matched (pred_idx, gt_idx)
+    n_pred: int
+    n_gt: int
+
+    @property
+    def tp(self) -> int:
+        return int(self.pairs.shape[0])
+
+    @property
+    def fp(self) -> int:
+        return self.n_pred - self.tp
+
+    @property
+    def fn(self) -> int:
+        return self.n_gt - self.tp
+
+    @property
+    def counts(self) -> tuple[int, int, int]:
+        return self.tp, self.fp, self.fn
+
+
 def _match_single_class(
     pred_xy: np.ndarray,
     pred_score: np.ndarray,
@@ -42,14 +80,17 @@ def _match_single_class(
     *,
     delta: float,
     method: str,
-) -> tuple[int, int, int]:
-    """Match one class's predictions to its GT; return ``(tp, fp, fn)``."""
+) -> ClassMatch:
+    """Match one class's predictions to its GT; return the :class:`ClassMatch`.
+
+    ``pairs`` hold indices **local** to the passed (already class-filtered) arrays;
+    :func:`match_assignment` lifts them to global indices.
+    """
     n_pred = int(pred_xy.shape[0])
     n_gt = int(gt_xy.shape[0])
-    if n_pred == 0:
-        return 0, 0, n_gt
-    if n_gt == 0:
-        return 0, n_pred, 0
+    empty = np.zeros((0, 2), dtype=np.int64)
+    if n_pred == 0 or n_gt == 0:
+        return ClassMatch(pairs=empty, n_pred=n_pred, n_gt=n_gt)
 
     # Pairwise Euclidean distance (n_pred, n_gt).
     diff = pred_xy[:, None, :] - gt_xy[None, :, :]
@@ -62,13 +103,13 @@ def _match_single_class(
         big = float(delta) * 1e6 + 1.0
         cost = np.where(within, dist, big)
         rows, cols = linear_sum_assignment(cost)
-        tp = int(sum(1 for r, c in zip(rows, cols) if within[r, c]))
+        pairs = [(int(r), int(c)) for r, c in zip(rows, cols) if within[r, c]]
     elif method == "greedy":
         # Sort predictions by descending score; each claims the nearest unclaimed
         # in-δ GT. OCELOT's official convention.
         order = np.argsort(-pred_score)
         claimed = np.zeros(n_gt, dtype=bool)
-        tp = 0
+        pairs = []
         for r in order:
             in_range = within[r] & ~claimed
             if not in_range.any():
@@ -76,16 +117,16 @@ def _match_single_class(
             masked = np.where(in_range, dist[r], np.inf)
             g = int(np.argmin(masked))
             claimed[g] = True
-            tp += 1
+            pairs.append((int(r), g))
     else:
         raise ValueError(f"unknown matching method {method!r}; use one of {VALID_MATCHING}.")
 
-    fp = n_pred - tp
-    fn = n_gt - tp
-    return tp, fp, fn
+    return ClassMatch(
+        pairs=np.asarray(pairs, dtype=np.int64).reshape(-1, 2), n_pred=n_pred, n_gt=n_gt
+    )
 
 
-def match_points(
+def match_assignment(
     pred_xy: np.ndarray,
     pred_class: np.ndarray,
     pred_score: np.ndarray,
@@ -95,8 +136,14 @@ def match_points(
     num_classes: int,
     delta: float,
     method: str = "hungarian",
-) -> np.ndarray:
-    """Class-aware point matching for one image -> ``(C, 3)`` ``(tp, fp, fn)`` counts.
+) -> list[ClassMatch]:
+    """Class-aware point matching for one image -> per-class :class:`ClassMatch`.
+
+    The assignment primitive: a length-``C`` list, one :class:`ClassMatch` per object
+    class, with ``pairs`` holding **global** ``(pred_idx, gt_idx)`` indices into the
+    original ``pred_*`` / ``gt_*`` arrays. :func:`match_points` derives its ``(C, 3)``
+    counts from these and the match overlay reads the same ``pairs``, so the headline
+    F1 and the overlay are the same computation.
 
     Args:
         pred_xy / pred_class / pred_score: predicted points ``(M, 2)``, class ids
@@ -118,14 +165,44 @@ def match_points(
     if gt_xy.shape[0] != gt_class.shape[0]:
         raise ValueError("gt_xy and gt_class must share length.")
 
-    counts = np.zeros((int(num_classes), 3), dtype=np.int64)
+    matches: list[ClassMatch] = []
     for c in range(int(num_classes)):
-        p = pred_class == c
-        g = gt_class == c
-        tp, fp, fn = _match_single_class(
+        p = np.nonzero(pred_class == c)[0]  # global predicted indices for this class
+        g = np.nonzero(gt_class == c)[0]  # global GT indices for this class
+        local = _match_single_class(
             pred_xy[p], pred_score[p], gt_xy[g], delta=float(delta), method=method
         )
-        counts[c] = (tp, fp, fn)
+        if local.pairs.shape[0]:
+            global_pairs = np.stack([p[local.pairs[:, 0]], g[local.pairs[:, 1]]], axis=1)
+        else:
+            global_pairs = np.zeros((0, 2), dtype=np.int64)
+        matches.append(ClassMatch(pairs=global_pairs, n_pred=local.n_pred, n_gt=local.n_gt))
+    return matches
+
+
+def match_points(
+    pred_xy: np.ndarray,
+    pred_class: np.ndarray,
+    pred_score: np.ndarray,
+    gt_xy: np.ndarray,
+    gt_class: np.ndarray,
+    *,
+    num_classes: int,
+    delta: float,
+    method: str = "hungarian",
+) -> np.ndarray:
+    """Class-aware point matching for one image -> ``(C, 3)`` ``(tp, fp, fn)`` counts.
+
+    A thin reduction of :func:`match_assignment`: the counts are derived from each
+    class's :class:`ClassMatch` (``tp = #pairs``), never computed on a separate path.
+    """
+    matches = match_assignment(
+        pred_xy, pred_class, pred_score, gt_xy, gt_class,
+        num_classes=num_classes, delta=delta, method=method,
+    )
+    counts = np.zeros((int(num_classes), 3), dtype=np.int64)
+    for c, m in enumerate(matches):
+        counts[c] = m.counts
     return counts
 
 
@@ -273,13 +350,13 @@ def sweep_score_thresholds(
                 keep = (cls_i == c) & (score_i >= thr)
                 gcls = np.asarray(per_image_gt_class[i]).reshape(-1).astype(np.int64)
                 gxy = np.asarray(per_image_gt_xy[i], dtype=np.float64).reshape(-1, 2)
-                t, f, n = _match_single_class(
+                m = _match_single_class(
                     xy_i[keep], score_i[keep], gxy[gcls == c],
                     delta=float(delta), method=method,
                 )
-                tp += t
-                fp += f
-                fn += n
+                tp += m.tp
+                fp += m.fp
+                fn += m.fn
             _, _, f1 = _prf1(tp, fp, fn)
             f1 = 0.0 if np.isnan(f1) else f1
             # ``>=`` over ascending candidates tie-breaks toward the higher threshold
