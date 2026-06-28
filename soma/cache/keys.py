@@ -314,6 +314,27 @@ def build_hierarchical_cache_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
+_FP16_ALIASES = {"fp16", "float16", "half", "16"}
+_FP32_ALIASES = {"fp32", "float32", "32"}
+
+
+def resolve_dense_dtype(dense_dtype: str | None, precision: str | None) -> str:
+    """Resolve the on-disk dense-grid dtype (``'fp16'``/``'fp32'``) for the cache key.
+
+    Mirrors slide2vec's ``output_dtype`` default: an explicit choice wins; ``None`` follows
+    the compute ``precision`` — fp16 → fp16, else fp32 (fp32/bf16/unknown, since numpy has
+    no bfloat16). Folding the result into the key keeps fp16 and fp32 caches from colliding.
+    """
+    if dense_dtype is not None:
+        d = str(dense_dtype).lower()
+        if d in _FP16_ALIASES:
+            return "fp16"
+        if d in _FP32_ALIASES:
+            return "fp32"
+        raise ValueError(f"cache.dense_dtype must be 'fp16'/'fp32' or null, got {dense_dtype!r}")
+    return "fp16" if str(precision or "").lower() in _FP16_ALIASES else "fp32"
+
+
 def build_dense_cache_key(
     *,
     tile_encoder_name: str,
@@ -328,6 +349,7 @@ def build_dense_cache_key(
     feature_kind: str = "patch_features",
     attention_blocks: tuple[int, ...] | None = None,
     attention_include_registers: bool = False,
+    dtype: str = "fp32",
     sampling_signature: dict[str, Any] | None = None,
 ) -> str:
     """Cache key for a dense ``(d, h, w)`` grid extraction.
@@ -377,6 +399,11 @@ def build_dense_cache_key(
         payload["feature_kind"] = str(feature_kind)
         payload["attention_blocks"] = [int(b) for b in (attention_blocks or ())]
         payload["attention_include_registers"] = bool(attention_include_registers)
+    if dtype != "fp32":
+        # Injected only for non-fp32 storage — legacy fp32 caches (the historical default
+        # when slide2vec force-upcast every grid) keep their byte-stable keys, while an
+        # fp16 cache resolves to a distinct key so the two can never be mixed.
+        payload["dtype"] = str(dtype)
     if preprocessing is not None:
         payload["preprocessing"] = preprocessing_signature(preprocessing)
     if sampling_signature is not None:
