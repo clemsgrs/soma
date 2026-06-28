@@ -26,10 +26,6 @@ tolerance). Per-class score thresholds are swept on **tune**, frozen, and applie
   result is matcher-independent.
 - Frozen per-class thresholds (swept on tune): **BC 0.5317, TC 0.4913**.
 - tune→test mean_F1 drop is only −0.015 → the operating point transfers; not overfit to tune.
-- **Oracle ceiling** (test-side threshold sweep, *diagnostic only*): greedy mean_F1 0.7062,
-  i.e. only ~0.7 F1 points lie between the frozen result and the test-optimal thresholds →
-  the result is **signal-limited, not threshold-limited**. Gains come from the
-  representation (encoder × spacing × decoder), not from thresholding.
 
 A frozen probe at **0.70 mean_F1** lands in the OCELOT 2023 competitive band (top
 fully-trained methods ~0.70–0.73) — a strong frozen-probe baseline, not merely "plumbing

@@ -1,10 +1,11 @@
-"""Oracle-bound reporting in the greedy (OCELOT-official) eval path (#146).
+"""Headline reporting in the greedy (OCELOT-official) eval path (#146, oracle dropped #152).
 
 ``examples/ocelot/eval_greedy.build_greedy_report`` is the testable seam: it emits, per
-test split, a leakage-free **headline** (per-class thresholds frozen on the tune split)
-and an **oracle** ceiling (thresholds re-swept on that very test split, labeled as a
-diagnostic ceiling). This builds a tiny on-disk dense detection setup + an (untrained)
-DetectionHead model — no encoder/GPU needed — and asserts the report shape and labeling.
+test split, the leakage-free **headline** (per-class thresholds frozen on the tune split,
+applied once to test). The oracle ceiling that #146 added for the health gate is gone
+(#152), so no test-side threshold sweep happens here. This builds a tiny on-disk dense
+detection setup + an (untrained) DetectionHead model — no encoder/GPU needed — and
+asserts the report shape, including the tune-only form used by holdout_test sweeps.
 """
 
 from __future__ import annotations
@@ -61,7 +62,7 @@ def _build_detection_run(root: Path, sample_ids: list[str]):
         + "\n".join(f"{sid},{sid}.jpg,{points_dir / f'{sid}.csv'}" for sid in sample_ids)
         + "\n"
     )
-    # Two test splits so per-split oracle reporting is exercised.
+    # Two test splits so per-split headline reporting is exercised.
     assign = {
         sample_ids[0]: "train", sample_ids[1]: "train", sample_ids[2]: "tune",
         sample_ids[3]: "test", sample_ids[4]: "test_2",
@@ -113,7 +114,7 @@ def _build_model_and_loaders(manifest, splits, store):
     return model, head, tune_loader, test_loaders
 
 
-def test_build_greedy_report_emits_headline_and_oracle(tmp_path: Path):
+def test_build_greedy_report_emits_headline_only(tmp_path: Path):
     np.random.seed(0)
     torch.manual_seed(0)
     sample_ids = ["s0", "s1", "s2", "s3", "s4"]
@@ -132,26 +133,38 @@ def test_build_greedy_report_emits_headline_and_oracle(tmp_path: Path):
     assert len(headline_thresholds) == NUM_CLASSES
     assert "mean_f1" in report["tune"]
 
-    # Both test splits carry a headline + oracle block.
+    # Each test split carries a headline block and no oracle (dropped in #152).
     assert set(test_loaders) == {"test", "test_2"}
     for name in test_loaders:
         block = report[name]
-        assert set(block) == {"headline", "oracle"}
+        assert set(block) == {"headline"}
 
-        # AC1: both a tune-frozen headline mF1 and an oracle mF1 per split.
+        # A tune-frozen headline mF1 per split, with per-class thresholds.
         assert "mean_f1" in block["headline"]["metrics"]
-        assert "mean_f1" in block["oracle"]["metrics"]
-
-        # AC3: per-class thresholds for both, length == num_classes.
         assert len(block["headline"]["score_threshold_per_class"]) == NUM_CLASSES
-        assert len(block["oracle"]["score_threshold_per_class"]) == NUM_CLASSES
 
-        # AC4: the headline uses exactly the tune-frozen thresholds (unchanged behaviour).
+        # The headline uses exactly the tune-frozen thresholds (unchanged behaviour).
         assert block["headline"]["score_threshold_per_class"] == headline_thresholds
-
-        # AC2: the oracle is explicitly labeled a diagnostic ceiling, distinct from headline.
-        assert "ceiling" in block["oracle"]["note"].lower()
         assert "ceiling" not in block["headline"]["note"].lower()
+
+
+def test_build_greedy_report_tune_only(tmp_path: Path):
+    """With no test loaders (the holdout_test model-selection form), the report carries
+    only matching + tune-frozen thresholds + tune metrics — no per-split blocks."""
+    np.random.seed(0)
+    torch.manual_seed(0)
+    sample_ids = ["s0", "s1", "s2", "s3", "s4"]
+    manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
+    model, head, tune_loader, _ = _build_model_and_loaders(manifest, splits, store)
+
+    module = _load_eval_greedy()
+    report = module.build_greedy_report(
+        model=model, head=head, device=torch.device("cpu"),
+        tune_loader=tune_loader, test_loaders={},
+        dataset=manifest, matching="greedy",
+    )
+    assert set(report) == {"matching", "score_threshold_per_class", "tune"}
+    assert "mean_f1" in report["tune"]
 
 
 def test_build_greedy_report_headline_matches_frozen_eval(tmp_path: Path):

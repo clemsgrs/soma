@@ -53,10 +53,13 @@ verified faithful to it (see :doc:`detection`).
 
 Operating point (leakage-free): per-class score thresholds are swept on the
 **tune** split, frozen, and applied once to test — exactly a real submission.
-The tune-frozen greedy test mF1 is the leaderboard-comparable headline. An
-**oracle** ceiling (thresholds tuned on test) is reported alongside as a labelled
-diagnostic upper bound, never as the result; a large oracle–headline gap signals a
-fragile operating point.
+The tune-frozen greedy test mF1 is the leaderboard-comparable headline.
+
+The campaign is run as **tune-select → test-confirm** (no oracle): every cell is
+ranked on a **tune-only** sweep (``evaluation.holdout_test``; no test inference),
+the winner is chosen on tune, and only the winner plus the native anchor are then
+scored on **test**. This keeps the headline off the test set, so it carries no
+winner's-curse bias from maximising test mF1 over many cells × seeds.
 
 Reference numbers
 -----------------
@@ -97,49 +100,65 @@ Watch per-class **recall** especially: token size is fixed at 14 px, so token-µ
 scales with spacing (3.5 µm @ 0.25 vs 7 µm @ 0.5 against δ = 3 µm), and coarse
 localization manifests as missed cells.
 
-Results
--------
+Selection (tune only)
+---------------------
 
-soma greedy test mF1 (headline), mean ± std over 3 seeds, with the Hungarian
-secondary, the oracle ceiling, and per-class recall. **Populated by the run
-issues — do not invent results.**
+Per-cell **tune** greedy mF1, mean ± std over 3 seeds, with per-class recall — the
+ranking the winner is chosen on. No test inference happens for these runs. **Populated
+by the run issues — do not invent results.**
 
 .. list-table::
    :header-rows: 1
-   :widths: 16 12 22 16 14 20
+   :widths: 16 14 26 24
 
    * - Encoder
      - Spacing (µm/px)
-     - Greedy mF1 (headline) ± std
-     - Hungarian mF1 (secondary)
-     - Oracle ceiling
+     - Tune greedy mF1 ± std
+     - Per-class recall (BC / TC)
+   * - Virchow2
+     - 0.2 (native anchor)
+     - TBD
+     - TBD
+   * - Virchow2
+     - 0.25
+     - TBD
+     - TBD
+   * - Virchow2
+     - 0.5
+     - TBD
+     - TBD
+   * - UNI2
+     - 0.25
+     - TBD
+     - TBD
+   * - UNI2
+     - 0.5
+     - TBD
+     - TBD
+
+Confirmation (test)
+-------------------
+
+The tune-selected winner and the Virchow2 @ 0.2 native anchor, scored on **test** only
+(3 seeds, tune-frozen thresholds): greedy mF1 (leaderboard-comparable headline), the
+Hungarian secondary, and per-class recall. This single head-to-head is the only test
+exposure.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 14 26 22 22
+
+   * - Encoder
+     - Spacing (µm/px)
+     - Test greedy mF1 ± std
+     - Test Hungarian mF1
      - Per-class recall (BC / TC)
    * - Virchow2
      - 0.2 (native anchor)
      - TBD
      - TBD
      - TBD
-     - TBD
-   * - Virchow2
-     - 0.25
-     - TBD
-     - TBD
-     - TBD
-     - TBD
-   * - Virchow2
-     - 0.5
-     - TBD
-     - TBD
-     - TBD
-     - TBD
-   * - UNI2
-     - 0.25
-     - TBD
-     - TBD
-     - TBD
-     - TBD
-   * - UNI2
-     - 0.5
+   * - winner
      - TBD
      - TBD
      - TBD
