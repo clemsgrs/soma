@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 from soma.aggregators import list_aggregators
 from soma.config import load_config
@@ -15,13 +18,45 @@ from soma.pixel_classifiers import list_pixel_classifiers
 from soma.tasks import list_task_heads
 
 
-def _run_config_path(config_path: Path) -> None:
+def _parse_set_overrides(pairs: list[str]) -> dict[str, Any]:
+    """Turn ``--set a.b.c=value`` strings into a nested override dict.
+
+    Keys are dotted paths into the config layout (``data.dataset_csv``,
+    ``run.output_root``, ``training.epochs`` …). Values are parsed as YAML scalars so
+    types come through naturally (``epochs=2`` → int, ``pin_memory=false`` → bool, paths
+    stay strings). Lets a committed config be repointed at a new machine without editing
+    it on disk.
+    """
+    overrides: dict[str, Any] = {}
+    for pair in pairs:
+        if "=" not in pair:
+            print(f"Error: --set expects key=value, got {pair!r}", file=sys.stderr)
+            sys.exit(2)
+        key, _, raw_value = pair.partition("=")
+        key = key.strip()
+        if not key:
+            print(f"Error: --set has an empty key in {pair!r}", file=sys.stderr)
+            sys.exit(2)
+        value = yaml.safe_load(raw_value)
+        cursor = overrides
+        parts = key.split(".")
+        for part in parts[:-1]:
+            existing = cursor.get(part)
+            if not isinstance(existing, dict):
+                existing = {}
+                cursor[part] = existing
+            cursor = existing
+        cursor[parts[-1]] = value
+    return overrides
+
+
+def _run_config_path(config_path: Path, overrides: dict[str, Any] | None = None) -> None:
     if not config_path.exists():
         print(f"Error: config file not found: {config_path}", file=sys.stderr)
         sys.exit(1)
 
     try:
-        config = load_config(config_path)
+        config = load_config(config_path, overrides=overrides)
     except Exception as exc:
         print(f"Error: failed to load config from {config_path}: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -152,14 +187,39 @@ def main(argv: list[str] | None = None) -> None:
         )
         sys.exit(2)
 
-    if len(args) != 1:
+    # Config-run form: one config path, then any number of `--set key=value` overrides.
+    config_path = args[0]
+    if config_path.startswith("-"):
         print(
             "Error: expected one config path or the 'list' subcommand.",
             file=sys.stderr,
         )
         sys.exit(2)
 
-    _run_config_path(Path(args[0]))
+    set_pairs: list[str] = []
+    rest = args[1:]
+    i = 0
+    while i < len(rest):
+        token = rest[i]
+        if token == "--set":
+            if i + 1 >= len(rest):
+                print("Error: --set requires a key=value argument", file=sys.stderr)
+                sys.exit(2)
+            set_pairs.append(rest[i + 1])
+            i += 2
+        elif token.startswith("--set="):
+            set_pairs.append(token[len("--set="):])
+            i += 1
+        else:
+            print(
+                f"Error: unexpected argument {token!r} "
+                "(expected one config path and optional --set key=value)",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    overrides = _parse_set_overrides(set_pairs) if set_pairs else None
+    _run_config_path(Path(config_path), overrides)
 
 
 if __name__ == "__main__":

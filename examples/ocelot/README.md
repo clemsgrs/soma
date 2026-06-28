@@ -72,17 +72,36 @@ Omitting the flag reproduces the native-resolution manifest above unchanged.
 
 ## 3. Run
 
-CONCH is gated on Hugging Face — authenticate first (`huggingface-cli login` or
-`export HF_TOKEN=...`). The config uses batch 1 over a 1024² heatmap, so set
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Edit the `dataset_csv` /
-`splits_csv` / `output_root` paths in the config to match your environment.
+The encoder is gated on Hugging Face — authenticate first (`huggingface-cli login` or
+`export HF_TOKEN=...`). Repoint the committed config at your paths with `--set`
+(`key=value` into the config layout) rather than editing it on disk:
 
 ```bash
 # full baseline (50 epochs, 663 samples)
-python -m soma examples/ocelot/ocelot.yaml
+python -m soma examples/ocelot/ocelot.yaml \
+  --set data.dataset_csv=<data_root>/ocelot/curated/dataset.csv \
+  --set data.splits_csv=<data_root>/ocelot/curated/splits.csv
 
 # OCELOT-official greedy re-score of the trained fold (Hungarian is the run headline)
 python examples/ocelot/eval_greedy.py \
   --run-dir <output_root>/ocelot_conch_lightconv \
   --config  examples/ocelot/ocelot.yaml --matching greedy
 ```
+
+## 4. Reproduce the published anchor
+
+The **Virchow2 @ 0.2 µm/px** anchor (frozen-probe greedy test mean_F1 **0.6995**) is
+recorded in [`RESULTS.md`](RESULTS.md) / [`expected_metrics.json`](expected_metrics.json).
+`reproduce.py` runs the whole curate → train → greedy-score → check loop and asserts the
+result is within tolerance of that reference:
+
+```bash
+# full: curate (if needed) → train → score → check   (~3 h on one GPU)
+python examples/ocelot/reproduce.py --data-root <data_root>/ocelot
+
+# fast: re-score an already-trained run-dir and check (seconds, no training)
+python examples/ocelot/reproduce.py \
+  --from-run-dir <output_root>/ocelot_virchow2_0p20_lightconv
+```
+
+Exit code 0 = within the ±0.02 mean_F1 band; 1 = a real environment/plumbing difference.

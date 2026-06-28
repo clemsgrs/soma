@@ -63,6 +63,76 @@ def test_run_shorthand_passes_correct_config_to_pipeline(tmp_path: Path):
     assert config_arg.task.name == "binary_classification"
 
 
+# --- --set overrides ---
+
+
+def _run_with_args(config_args: list[str]):
+    """Run main() with Pipeline patched; return the PipelineConfig it received."""
+    with patch("soma.cli.Pipeline") as MockPipeline:
+        MockPipeline.return_value = MagicMock()
+        from soma.cli import main
+        main(config_args)
+    return MockPipeline.call_args[0][0]
+
+
+def test_set_override_repoints_scalar(tmp_path: Path):
+    config_path = _make_valid_config(tmp_path)
+    config_arg = _run_with_args([str(config_path), "--set", "encoder.name=phikon"])
+    assert config_arg.encoder.name == "phikon"
+
+
+def test_set_override_parses_value_type(tmp_path: Path):
+    config_path = _make_valid_config(tmp_path)
+    config_arg = _run_with_args([str(config_path), "--set", "training.epochs=3"])
+    # YAML-parsed, so it lands as an int, not the string "3".
+    assert config_arg.training.epochs == 3
+    assert isinstance(config_arg.training.epochs, int)
+
+
+def test_set_override_equals_form_and_paths(tmp_path: Path):
+    config_path = _make_valid_config(tmp_path)
+    config_arg = _run_with_args(
+        [str(config_path), "--set=data.dataset_csv=/elsewhere/dataset.csv"]
+    )
+    assert str(config_arg.dataset_csv) == "/elsewhere/dataset.csv"
+
+
+def test_multiple_set_overrides(tmp_path: Path):
+    config_path = _make_valid_config(tmp_path)
+    config_arg = _run_with_args(
+        [str(config_path), "--set", "encoder.name=phikon", "--set", "run.output_root=/out"]
+    )
+    assert config_arg.encoder.name == "phikon"
+    assert str(config_arg.output_root) == "/out"
+
+
+def test_parse_set_overrides_builds_nested_dict():
+    from soma.cli import _parse_set_overrides
+
+    out = _parse_set_overrides(["a.b.c=1", "a.b.d=hello", "x=true"])
+    assert out == {"a": {"b": {"c": 1, "d": "hello"}}, "x": True}
+
+
+def test_set_without_value_exits(tmp_path: Path, capsys):
+    config_path = _make_valid_config(tmp_path)
+    from soma.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main([str(config_path), "--set"])
+    assert exc_info.value.code == 2
+    assert "--set requires" in capsys.readouterr().err
+
+
+def test_set_malformed_pair_exits(tmp_path: Path, capsys):
+    config_path = _make_valid_config(tmp_path)
+    from soma.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main([str(config_path), "--set", "noequalssign"])
+    assert exc_info.value.code == 2
+    assert "key=value" in capsys.readouterr().err
+
+
 # --- Error cases ---
 
 

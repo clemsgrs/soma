@@ -1287,12 +1287,23 @@ def save_config(config: PipelineConfig, path: Path | str) -> None:
         yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
 
 
-def load_config(path: Path | str) -> PipelineConfig:
-    """Load a PipelineConfig from YAML, merging bundled defaults first."""
+def load_config(
+    path: Path | str, overrides: dict[str, Any] | None = None
+) -> PipelineConfig:
+    """Load a PipelineConfig from YAML, merging bundled defaults first.
+
+    ``overrides`` is an optional nested dict applied to the user-facing layout (the YAML
+    structure: ``data``/``run``/``preprocessing``/``encoder``/``decoder``/``task``/
+    ``training``/``evaluation``) *before* defaults are merged, so callers can repoint a
+    committed config without editing it on disk (e.g. the ``--set`` CLI flag, or a
+    reproduction runner substituting data/output paths).
+    """
     with open(path) as f:
         raw_data = yaml.safe_load(f) or {}
     if not isinstance(raw_data, dict):
         raise TypeError("Config file must contain a top-level mapping")
+    if overrides:
+        raw_data = _deep_merge_dicts(raw_data, overrides)
     canonical = _deep_merge_dicts(_load_default_config_data(), _layout_to_config_dict(raw_data))
     return _layout_to_pipeline_config(canonical)
 
