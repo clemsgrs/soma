@@ -84,6 +84,7 @@ def _aggregate_slide_shard_worker(
             save_tile_embeddings=False,
             save_slide_embeddings=False,
             save_latents=False,
+            output_dtype=shared["execution_output_dtype"],
         )
         slide_artifacts = _aggregate_tiles(
             model_name=str(shared["model_name"]),
@@ -127,6 +128,7 @@ def spawn_slide_aggregation_workers(
     execution_batch_size: int,
     execution_num_workers_per_gpu: int,
     execution_prefetch_factor: int,
+    execution_output_dtype: str | None = None,
     output_dir: Path,
     shard_payloads_by_rank: list[list[dict[str, str]]],
     on_shard_complete: Callable[[list[str], int | None], None],
@@ -143,6 +145,7 @@ def spawn_slide_aggregation_workers(
         "execution_batch_size": execution_batch_size,
         "execution_num_workers_per_gpu": execution_num_workers_per_gpu,
         "execution_prefetch_factor": execution_prefetch_factor,
+        "execution_output_dtype": execution_output_dtype,
         "output_dir": str(output_dir),
         "shard_payloads_by_rank": shard_payloads_by_rank,
     }

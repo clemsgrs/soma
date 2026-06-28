@@ -99,6 +99,7 @@ def compute_cache_key(
     output_variant: str | None = None,
     has_precomputed_masks: bool = False,
     tile_encoder_name: str | None = None,
+    dtype: str = "fp32",
 ) -> str:
     """Recompute the cache_key soma would assign to the given inputs.
 
@@ -109,6 +110,10 @@ def compute_cache_key(
     tile recipe; the slide- or patient-stage execution is auto-derived from
     ``encoder_name`` using registry defaults. ``tile_encoder_name`` defaults
     to the slide/patient encoder's registry-declared ``tile_encoder``.
+
+    ``dtype`` is the on-disk storage precision (``cache.dtype`` resolved to
+    ``'fp16'``/``'fp32'``); it folds into the key guarded so ``'fp32'`` (the
+    default) reproduces the legacy byte-stable keys.
     """
     if kind not in _SUPPORTED_KINDS:
         raise ValueError(f"unsupported kind '{kind}'; expected one of {_SUPPORTED_KINDS}")
@@ -126,6 +131,7 @@ def compute_cache_key(
             preprocessing=resolved_prep,
             execution=exec_for_cache,
             output_variant=ov,
+            dtype=dtype,
         )
 
     # slide / patient — wrap an upstream tile recipe.
@@ -159,4 +165,5 @@ def compute_cache_key(
         tile_dependency_signature=tile_dep,
         execution=stage_exec,
         output_variant=stage_ov,
+        dtype=dtype,
     )

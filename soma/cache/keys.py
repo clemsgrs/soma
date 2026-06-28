@@ -221,6 +221,18 @@ def execution_signature(
     return signature
 
 
+def _maybe_fold_dtype(payload: dict[str, Any], dtype: str) -> None:
+    """Fold the on-disk dtype into a pooled cache-key payload, in place.
+
+    Injected only for non-fp32 storage — legacy fp32 caches (the historical default,
+    since soma force-upcast pooled features to fp32 before slide2vec grew a pooled
+    ``output_dtype``) keep their byte-stable keys, while an fp16 cache resolves to a
+    distinct key so the two can never be mixed. Mirrors the dense key's dtype guard.
+    """
+    if dtype != "fp32":
+        payload["dtype"] = str(dtype)
+
+
 def build_tile_cache_key(
     *,
     tile_encoder_name: str,
@@ -228,6 +240,7 @@ def build_tile_cache_key(
     execution: EncoderConfig,
     output_variant: str | None = None,
     feature_type: str = "bag",
+    dtype: str = "fp32",
 ) -> str:
     if feature_type not in _FEATURE_TYPE_TO_RANK:
         raise ValueError(f"Unsupported feature_type '{feature_type}' for tile cache key")
@@ -245,6 +258,7 @@ def build_tile_cache_key(
     }
     if preprocessing is not None:
         payload["preprocessing"] = preprocessing_signature(preprocessing)
+    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -254,6 +268,7 @@ def build_slide_cache_key(
     tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -267,6 +282,7 @@ def build_slide_cache_key(
             output_variant=output_variant,
         ),
     }
+    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -276,6 +292,7 @@ def build_patient_cache_key(
     tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -289,6 +306,7 @@ def build_patient_cache_key(
             output_variant=output_variant,
         ),
     }
+    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -298,6 +316,7 @@ def build_hierarchical_cache_key(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
 ) -> str:
     payload = {
         "schema_version": SCHEMA_VERSION,
@@ -311,6 +330,7 @@ def build_hierarchical_cache_key(
             output_variant=output_variant,
         ),
     }
+    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -318,20 +338,21 @@ _FP16_ALIASES = {"fp16", "float16", "half", "16"}
 _FP32_ALIASES = {"fp32", "float32", "32"}
 
 
-def resolve_dense_dtype(dense_dtype: str | None, precision: str | None) -> str:
-    """Resolve the on-disk dense-grid dtype (``'fp16'``/``'fp32'``) for the cache key.
+def resolve_output_dtype(dtype: str | None, precision: str | None) -> str:
+    """Resolve the on-disk feature dtype (``'fp16'``/``'fp32'``) for the cache key.
 
+    The single resolver shared by the pooled and dense paths, governed by ``cache.dtype``.
     Mirrors slide2vec's ``output_dtype`` default: an explicit choice wins; ``None`` follows
     the compute ``precision`` — fp16 → fp16, else fp32 (fp32/bf16/unknown, since numpy has
     no bfloat16). Folding the result into the key keeps fp16 and fp32 caches from colliding.
     """
-    if dense_dtype is not None:
-        d = str(dense_dtype).lower()
+    if dtype is not None:
+        d = str(dtype).lower()
         if d in _FP16_ALIASES:
             return "fp16"
         if d in _FP32_ALIASES:
             return "fp32"
-        raise ValueError(f"cache.dense_dtype must be 'fp16'/'fp32' or null, got {dense_dtype!r}")
+        raise ValueError(f"cache.dtype must be 'fp16'/'fp32' or null, got {dtype!r}")
     return "fp16" if str(precision or "").lower() in _FP16_ALIASES else "fp32"
 
 

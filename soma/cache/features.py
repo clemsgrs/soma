@@ -60,6 +60,7 @@ def _build_tile_cache_metadata(
     execution: EncoderConfig,
     output_variant: str | None = None,
     feature_type: str = "bag",
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if feature_type not in _FEATURE_TYPE_TO_RANK:
@@ -70,6 +71,7 @@ def _build_tile_cache_metadata(
         execution=execution,
         output_variant=output_variant,
         feature_type=feature_type,
+        dtype=dtype,
     )
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -84,6 +86,7 @@ def _build_tile_cache_metadata(
             output_variant=output_variant,
         ),
         "feature_type": str(feature_type),
+        "dtype": str(dtype),
         "feature_dim": None,
         "sample_identity_signature_by_id": {},
     }
@@ -101,6 +104,7 @@ def _build_slide_cache_metadata(
     tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_slide_cache_key(
@@ -108,6 +112,7 @@ def _build_slide_cache_metadata(
         tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
+        dtype=dtype,
     )
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -124,6 +129,7 @@ def _build_slide_cache_metadata(
             output_variant=output_variant,
         ),
         "feature_type": "slide",
+        "dtype": str(dtype),
         "feature_dim": None,
         "sample_identity_signature_by_id": {},
     }
@@ -139,6 +145,7 @@ def _build_patient_cache_metadata(
     tile_dependency_signature: dict[str, Any],
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_patient_cache_key(
@@ -146,6 +153,7 @@ def _build_patient_cache_metadata(
         tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
+        dtype=dtype,
     )
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -162,6 +170,7 @@ def _build_patient_cache_metadata(
             output_variant=output_variant,
         ),
         "feature_type": "patient",
+        "dtype": str(dtype),
         "feature_dim": None,
         "sample_identity_signature_by_id": {},
     }
@@ -176,6 +185,7 @@ def _build_hierarchical_cache_metadata(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_hierarchical_cache_key(
@@ -183,6 +193,7 @@ def _build_hierarchical_cache_metadata(
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
+        dtype=dtype,
     )
     metadata = {
         "schema_version": SCHEMA_VERSION,
@@ -198,6 +209,7 @@ def _build_hierarchical_cache_metadata(
             output_variant=output_variant,
         ),
         "feature_type": "hierarchical",
+        "dtype": str(dtype),
         "feature_dim": None,
         "sample_identity_signature_by_id": {},
     }
@@ -292,6 +304,11 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     comparable.pop("feature_dim", None)
     comparable.pop("empty_sample_ids", None)
     comparable.pop("sample_identity_signature_by_id", None)
+    # dtype is recorded for symmetry/provenance but excluded from the equality check: the
+    # cache key already folds the dtype (guarded so fp32 keys stay byte-stable), so a dir's
+    # dtype is fixed by its key. Excluding it lets legacy caches (whose metadata predates
+    # the dtype field) still validate without a spurious "missing=[dtype=...]" mismatch.
+    comparable.pop("dtype", None)
     return comparable
 
 
@@ -708,6 +725,7 @@ def resolve_tile_cache(
     execution: EncoderConfig,
     output_variant: str | None = None,
     feature_type: str = "bag",
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
     fingerprint_files: bool = False,
@@ -720,6 +738,7 @@ def resolve_tile_cache(
         execution=execution,
         output_variant=output_variant,
         feature_type=feature_type,
+        dtype=dtype,
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
@@ -754,6 +773,7 @@ def resolve_slide_cache(
     tile_output_variant: str | None = None,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
     fingerprint_files: bool = False,
@@ -776,6 +796,7 @@ def resolve_slide_cache(
         tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
+        dtype=dtype,
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
@@ -810,6 +831,7 @@ def resolve_patient_cache(
     tile_output_variant: str | None = None,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
     fingerprint_files: bool = False,
@@ -832,6 +854,7 @@ def resolve_patient_cache(
         tile_dependency_signature=tile_dependency_signature,
         execution=execution,
         output_variant=output_variant,
+        dtype=dtype,
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _patient_stems_for_kind(
@@ -863,6 +886,7 @@ def resolve_hierarchical_cache(
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
     output_variant: str | None = None,
+    dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
     fingerprint_files: bool = False,
@@ -874,6 +898,7 @@ def resolve_hierarchical_cache(
         preprocessing=preprocessing,
         execution=execution,
         output_variant=output_variant,
+        dtype=dtype,
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(

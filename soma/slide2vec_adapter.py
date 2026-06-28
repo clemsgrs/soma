@@ -242,6 +242,7 @@ def build_execution_options(
     output_dir: Path,
     num_gpus: int | None,
     save_tile_embeddings: bool,
+    output_dtype: str | None = None,
 ) -> ExecutionOptions:
     execution = execution or ExecutionConfig()
     num_gpus_value = num_gpus if num_gpus is not None else execution.num_gpus
@@ -270,6 +271,11 @@ def build_execution_options(
         save_tile_embeddings=save_tile_embeddings,
         save_slide_embeddings=False,
         save_latents=False,
+        # On-disk feature precision (#164). soma resolves cache.dtype → 'fp16'/'fp32' once
+        # and passes the concrete value, so slide2vec casts at its artifact writer to the
+        # exact dtype folded into the cache key (key and storage can never drift). None
+        # would let slide2vec follow precision; soma always passes a resolved value.
+        output_dtype=output_dtype,
     )
 
 

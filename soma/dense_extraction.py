@@ -38,6 +38,7 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_dense_cache,
+    resolve_output_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
@@ -158,6 +159,7 @@ def extract_dense_grids(
     attention_include_registers: bool = False,
     batch_size: int = 1,
     precision: str = "fp32",
+    output_dtype: str = "fp32",
     num_workers: int = 0,
     prefetch_factor: int | None = None,
 ) -> int | None:
@@ -179,6 +181,9 @@ def extract_dense_grids(
     dense_input_mode = "whole" if window_size is None else "sliding_window"
     if pad_mode not in _PAD_MODES:
         raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
+    # On-disk grid dtype (#164): stitch/blend in fp32, then cast to the requested storage
+    # dtype just before write_dense_grid, so the saved grid matches the dtype in the key.
+    write_torch_dtype = torch.float16 if str(output_dtype) == "fp16" else torch.float32
 
     if feature_kind == "cls_attention":
         attention_blocks = tuple(int(b) for b in attention_blocks)
@@ -256,7 +261,7 @@ def extract_dense_grids(
                     attention_blocks=attention_blocks,
                     attention_include_registers=attention_include_registers,
                 )
-                write_dense_grid(out_dir, str(sample_id), grid, metadata)
+                write_dense_grid(out_dir, str(sample_id), grid.to(write_torch_dtype), metadata)
     return feature_dim
 
 
@@ -351,6 +356,14 @@ class DenseTileFeatureExtractor:
         # config. print, not logger, so the user never has to opt into seeing it.
         print(f"Dense extraction mode: {describe_dense_mode(self._window_size, self._overlap)}")
 
+        # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
+        # None ⇒ follow the compute precision; 'fp16'/'fp32' force it. Folded into the cache
+        # key (guarded so fp32 keys stay byte-stable) and used to cast the grids at write
+        # time, so storage matches the key.
+        dense_dtype = resolve_output_dtype(
+            self._cache.dtype, self._execution.precision or self._encoder.precision
+        )
+
         cache_resolution = None
         out_dir = feature_dir
         if self._cache.enabled:
@@ -370,6 +383,7 @@ class DenseTileFeatureExtractor:
                 feature_kind=self._feature_kind,
                 attention_blocks=self._attention_blocks,
                 attention_include_registers=self._attention_include_registers,
+                dtype=dense_dtype,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
             )
@@ -441,6 +455,7 @@ class DenseTileFeatureExtractor:
             # (build_execution_options falls back to the encoder's precision when unset),
             # matching TileFeatureExtractor.
             precision=execution.precision,
+            output_dtype=dense_dtype,
             num_workers=execution.resolved_num_workers_per_gpu(),
             prefetch_factor=execution.prefetch_factor,
         )
