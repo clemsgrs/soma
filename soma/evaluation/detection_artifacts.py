@@ -19,6 +19,15 @@ by the pipeline, not here, and is unchanged):
                                          is unreadable; the manifest row is still written.
   - ``gt_overlays/<split>/<sample_id>.png`` all ground-truth points, same palette, for
                                          side-by-side comparison with the predictions.
+  - ``match_overlays/class_<c>/<split>/<sample_id>.png`` per class, the headline
+                                         match-status overlay: GT points as δ-radius
+                                         rings, predictions as filled dots, hue = outcome
+                                         (TP green / FP red / FN blue). TP/FP markers at
+                                         the predicted xy, FN at the GT xy — drawn from
+                                         the *same* per-class ``assignment`` the headline
+                                         F1 reduces, so overlay and metric cannot drift.
+                                         Same ``save_detection_overlays`` gate + fail-soft
+                                         source read as the plain overlays.
   - ``detection_per_image_<split>.csv``  one row per tile: overlay paths + ``n_pred``,
                                          ``n_gt``, ``tp``, ``fp``, ``fn`` (summed over
                                          classes) + ``mean_f1`` (``reduce_f1`` on the
@@ -28,10 +37,10 @@ by the pipeline, not here, and is unchanged):
                                          breakdown exists even when the monitor metric is
                                          just ``mean_f1``).
 
-The per-class match-status overlays (slice #175) and the raw heatmap overlays + npz
-sidecar (slice #176) extend this writer: the ``heatmap`` / ``assignment`` payload fields
-are already threaded through ``add_image`` for them, and per-class artifacts use a
-``class_<c>`` index subdir (matching the ``f1_class_<c>`` metric vocabulary).
+The raw heatmap overlays + npz sidecar (slice #176) extend this writer further: the
+``heatmap`` payload field is already threaded through ``add_image`` for them, and
+per-class artifacts use a ``class_<c>`` index subdir (matching the ``f1_class_<c>``
+metric vocabulary).
 """
 
 from __future__ import annotations
@@ -54,6 +63,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 __all__ = ["DetectionArtifactWriter"]
+
+# Match-overlay outcome hues (slice #175). Conventional green/red/blue; ring-vs-dot
+# redundantly carries pred-vs-GT, so the red-green pair stays separable for colorblind
+# viewers. Class is encoded by the filename, freeing hue + shape for the match structure.
+_TP_COLOR = (0, 200, 0)  # true positive  — matched pred, green
+_FP_COLOR = (220, 0, 0)  # false positive — unmatched pred, red
+_FN_COLOR = (0, 0, 220)  # false negative — unmatched GT, blue
+_RING_WIDTH = 2  # outline width (px) of the δ-radius GT ring
 
 
 class DetectionArtifactWriter:
@@ -93,10 +110,14 @@ class DetectionArtifactWriter:
         _, _, height, width = (int(v) for v in head._crop_box)
         self._target_h = height
         self._target_w = width
+        # The matching tolerance δ (target-frame px) — the match-overlay GT-ring radius,
+        # so the ring literally is the tolerance every TP fell within.
+        self._delta = float(head.delta_px)
         self._split = split
         self._output_dir = Path(output_dir)
         self._pred_overlays_dir = self._output_dir / "pred_overlays" / split
         self._gt_overlays_dir = self._output_dir / "gt_overlays" / split
+        self._match_overlays_dir = self._output_dir / "match_overlays"
         self._dataset = dataset
         # Overlays need both the flag (default on) and a dataset to read source tiles;
         # suppressing either yields a metrics-only run (manifest + metrics still written).
@@ -118,13 +139,14 @@ class DetectionArtifactWriter:
         gt_xy: np.ndarray,
         gt_class: np.ndarray,
     ) -> None:
-        """Accumulate one image's manifest row and render its plain pred/GT overlays.
+        """Accumulate one image's manifest row and render its overlays (pred/GT + match).
 
         ``assignment`` is the per-class :class:`~soma.detection.matching.ClassMatch` list
-        from the single upstream match — the manifest counts/F1 derive from it (never a
-        second match). ``heatmap`` and ``pred_score`` are part of the per-image payload for
-        the heatmap-overlay (#176) / match-status (#175) slices; this slice draws the plain
-        predicted-point and ground-truth overlays, which need only the point xy + class.
+        from the single upstream match — the manifest counts/F1 *and* the per-class match
+        overlays both derive from it (never a second match). ``heatmap`` and ``pred_score``
+        are part of the per-image payload for the heatmap-overlay (#176) slice; the plain
+        pred/GT overlays need only the point xy + class, while the match overlays read each
+        class's ``pairs`` to colour every point by its TP/FP/FN outcome.
         """
         # Per-class (tp, fp, fn) from the assignment — the same reduction match_points /
         # the headline metric uses, so per-image numbers can't drift from the split.
@@ -151,11 +173,28 @@ class DetectionArtifactWriter:
             if image_arr is not None
             else None
         )
-        self._rows.append(
+        # One match-status overlay per class (slice #175). Skipped (None) wholesale when the
+        # source tile is unreadable — same fail-soft gate as the plain overlays above.
+        match_overlays = (
+            [
+                self._draw_match_overlay(
+                    image_arr, c, assignment[c],
+                    pred_xy, pred_class, gt_xy, gt_class, sample_id,
+                )
+                for c in range(self._num_classes)
+            ]
+            if image_arr is not None
+            else [None] * self._num_classes
+        )
+        row = {
+            "sample_id": sample_id,
+            "pred_overlay_path": "" if pred_overlay is None else self._rel(pred_overlay),
+            "gt_overlay_path": "" if gt_overlay is None else self._rel(gt_overlay),
+        }
+        for c, overlay in enumerate(match_overlays):
+            row[f"match_overlay_class_{c}"] = "" if overlay is None else self._rel(overlay)
+        row.update(
             {
-                "sample_id": sample_id,
-                "pred_overlay_path": "" if pred_overlay is None else self._rel(pred_overlay),
-                "gt_overlay_path": "" if gt_overlay is None else self._rel(gt_overlay),
                 "n_pred": n_pred,
                 "n_gt": n_gt,
                 "tp": tp,
@@ -164,6 +203,7 @@ class DetectionArtifactWriter:
                 "mean_f1": mean_f1,
             }
         )
+        self._rows.append(row)
 
     def _rel(self, path: Path) -> str:
         return str(path.relative_to(self._output_dir))
@@ -214,6 +254,64 @@ class DetectionArtifactWriter:
         image.save(path)
         return path
 
+    def _draw_match_overlay(
+        self,
+        image_arr: np.ndarray,
+        class_idx: int,
+        match: "ClassMatch",
+        pred_xy: np.ndarray,
+        pred_class: np.ndarray,
+        gt_xy: np.ndarray,
+        gt_class: np.ndarray,
+        sample_id: str,
+    ) -> Path:
+        """Draw one class's TP/FP/FN match-status overlay (slice #175).
+
+        Reads ``match.pairs`` (global ``(pred_idx, gt_idx)`` for this class) — the *same*
+        assignment the headline F1 reduces — so the overlay and the metric are one
+        computation, never two that coincide. Each matched pair is a TP (green dot at the
+        predicted xy + green δ-ring at the GT xy); each unmatched class-``c`` prediction is
+        an FP (red dot at its xy); each unmatched class-``c`` GT is an FN (blue δ-ring at
+        its xy). Ring-vs-dot carries pred-vs-GT, hue carries outcome, ring radius carries δ.
+        """
+        image = Image.fromarray(image_arr, mode="RGB").copy()
+        draw = ImageDraw.Draw(image)
+        pred_xy = np.asarray(pred_xy, dtype=np.float64).reshape(-1, 2)
+        gt_xy = np.asarray(gt_xy, dtype=np.float64).reshape(-1, 2)
+        pred_class = np.asarray(pred_class, dtype=np.int64).reshape(-1)
+        gt_class = np.asarray(gt_class, dtype=np.int64).reshape(-1)
+        matched_pred = {int(i) for i in match.pairs[:, 0]}
+        matched_gt = {int(i) for i in match.pairs[:, 1]}
+        # TP: a green dot at the prediction inside a green ring at the matched GT.
+        for p_idx, g_idx in match.pairs:
+            self._ring(draw, gt_xy[int(g_idx)], _TP_COLOR)
+            self._dot(draw, pred_xy[int(p_idx)], _TP_COLOR)
+        # FP: a lone red dot at each unmatched class-c prediction.
+        for i in np.nonzero(pred_class == class_idx)[0]:
+            if int(i) not in matched_pred:
+                self._dot(draw, pred_xy[int(i)], _FP_COLOR)
+        # FN: a lone blue ring at each unmatched class-c GT.
+        for i in np.nonzero(gt_class == class_idx)[0]:
+            if int(i) not in matched_gt:
+                self._ring(draw, gt_xy[int(i)], _FN_COLOR)
+        out_dir = self._match_overlays_dir / f"class_{class_idx}" / self._split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{sample_id}.png"
+        image.save(path)
+        return path
+
+    def _dot(self, draw: ImageDraw.ImageDraw, xy: np.ndarray, color: tuple) -> None:
+        """Filled dot of radius ``overlay_dot_radius`` at ``xy`` — a predicted point."""
+        x, y = float(xy[0]), float(xy[1])
+        r = self._dot_radius
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=color)
+
+    def _ring(self, draw: ImageDraw.ImageDraw, xy: np.ndarray, color: tuple) -> None:
+        """Outline ring of radius δ at ``xy`` — a GT point + its matching tolerance."""
+        x, y = float(xy[0]), float(xy[1])
+        r = self._delta
+        draw.ellipse([x - r, y - r, x + r, y + r], outline=color, width=_RING_WIDTH)
+
     def finalize(self) -> Path:
         """Flush ``detection_per_image_<split>.csv`` + ``metrics_<split>.csv``.
 
@@ -229,6 +327,7 @@ class DetectionArtifactWriter:
                     "sample_id",
                     "pred_overlay_path",
                     "gt_overlay_path",
+                    *(f"match_overlay_class_{c}" for c in range(self._num_classes)),
                     "n_pred",
                     "n_gt",
                     "tp",
