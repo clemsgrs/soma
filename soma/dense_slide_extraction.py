@@ -36,6 +36,7 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_dense_cache,
+    resolve_dense_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, MasksConfig, PreprocessingConfig, SamplingConfig
 from soma.dense import DenseFeatureStore, compute_dense_geometry, dense_grid_metadata, normalize_hw, write_dense_grid
@@ -267,6 +268,13 @@ class SlideManifestDenseExtractor:
         geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
         signature = sampling_signature(self._masks, self._sampling, self._preprocessing)
 
+        # Resolve the grid storage dtype: None ⇒ inherit slide2vec's native (compute
+        # precision); 'fp16'/'fp32' force it. Folded into the cache key so an fp16 cache
+        # never aliases an fp32 one. (None-resolution needs the precision; with an
+        # unspecified precision it conservatively keys fp32 — prefer an explicit setting.)
+        precision_hint = self._execution.precision or self._encoder.precision
+        dense_dtype = resolve_dense_dtype(self._cache.dense_dtype, precision_hint)
+
         cache_resolution = None
         out_dir = feature_dir
         if self._cache.enabled:
@@ -286,6 +294,7 @@ class SlideManifestDenseExtractor:
                 feature_kind=self._feature_kind,
                 attention_blocks=self._attention_blocks,
                 attention_include_registers=self._attention_include_registers,
+                dtype=dense_dtype,
                 sampling_signature=signature,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
@@ -352,6 +361,14 @@ class SlideManifestDenseExtractor:
                 attention_include_registers=self._attention_include_registers,
                 batch_size=int(self._encoder.batch_size),
                 precision=execution.precision,
+                # None ⇒ slide2vec yields its native (compute-precision) dtype; an explicit
+                # cache.dense_dtype forces fp16/fp32. Keeps the on-disk grid dtype in lockstep
+                # with the dtype folded into the cache key above.
+                output_dtype=(
+                    None
+                    if self._cache.dense_dtype is None
+                    else {"fp16": torch.float16, "fp32": torch.float32}[dense_dtype]
+                ),
                 dense_transform=model.get_dense_transform(),
             )
             for record, grid in zip(records, grids):

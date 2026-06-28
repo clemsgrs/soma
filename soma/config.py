@@ -523,6 +523,11 @@ class CacheConfig:
     reuse_policy: str = "strict"
     fingerprint_files: bool = False
     validate_payloads: bool = False
+    # Storage dtype for dense grids: None ⇒ keep whatever slide2vec yields (the model's
+    # compute precision — fp16 for an fp16 run), 'fp16'/'fp32' force it. fp16 halves the
+    # dense cache + per-epoch read I/O. Folded into the dense cache key so an fp16 cache
+    # and an fp32 cache never collide.
+    dense_dtype: str | None = None
 
 
 @dataclass(frozen=True)
