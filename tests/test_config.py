@@ -171,6 +171,7 @@ def test_evaluation_config_defaults():
     assert cfg.metrics == []
     assert cfg.subgroups.columns == []
     assert cfg.save_probabilities is False
+    assert cfg.holdout_test is False
 
 
 def test_pipeline_config_rejects_unknown_encoder():
@@ -990,6 +991,14 @@ def test_evaluation_save_probabilities_roundtrip(tmp_path: Path):
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
     assert loaded.evaluation.save_probabilities is True
+
+
+def test_evaluation_holdout_test_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(evaluation=EvalConfig(holdout_test=True))
+    yaml_path = tmp_path / "config.yaml"
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+    assert loaded.evaluation.holdout_test is True
 
 
 def test_evaluation_subgroups_roundtrip(tmp_path: Path):

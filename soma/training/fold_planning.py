@@ -33,8 +33,16 @@ def plan_dense_fold(
     training: TrainingConfig,
     fold_label: str,
     logger: logging.Logger | None = None,
+    holdout_test: bool = False,
 ) -> DenseFoldPlan:
-    """Select dense train, tune, and test records for one fold."""
+    """Select dense train, tune, and test records for one fold.
+
+    ``holdout_test`` (from ``evaluation.holdout_test``) drops every declared test
+    split from the plan so downstream coverage/geometry checks, loaders, inference,
+    and metrics never touch it (tune-only model-selection runs). The drop happens
+    *after* ``tune_is_test`` has resolved the tune records from the test split, so
+    checkpoint selection and training are unaffected.
+    """
     train_records = [dataset.samples[sid] for sid in fold_split.train]
     tune_records = [dataset.samples[sid] for sid in fold_split.tune]
     test_records_by_split = {
@@ -60,6 +68,10 @@ def plan_dense_fold(
                 fold_label,
             )
         tune_records = list(train_records)
+    if holdout_test:
+        # Tune is already resolved (incl. tune_is_test); drop test before validating
+        # or returning so the split is never touched (not even coverage-checked).
+        test_records_by_split = {}
     for split_name, records in test_records_by_split.items():
         if not records:
             raise ValueError(f"{fold_label} has no samples in split '{split_name}'")

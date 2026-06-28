@@ -182,3 +182,46 @@ def test_train_one_detection_fold_requires_num_classes(tmp_path: Path):
             fold_dir=tmp_path / "fold",
             decoder=DecoderConfig(name="lightweight_conv"),
         )
+
+
+def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
+    """evaluation.holdout_test: no test inference, no test artifacts, tune-only metrics.
+
+    The tune-split threshold sweep and tune evaluation still run, so the run is a
+    valid model-selection candidate while never touching the declared test split.
+    """
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
+
+    result = train_one_detection_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="detection",
+            params={
+                "num_classes": NUM_CLASSES,
+                "match_distance": 0.6,
+                "sigma": 0.3,
+                "level0_spacing": SPACING,
+            },
+        ),
+        training=TrainingConfig(epochs=2, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"], holdout_test=True),
+        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    )
+
+    # Tune still evaluated; no test split touched.
+    assert "mean_f1" in result.tune_report.metrics
+    assert result.test_reports == {}
+
+    # Threshold sweep (tune-only) still ran and was frozen.
+    thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
+    assert len(thr["score_threshold_per_class"]) == NUM_CLASSES
+
+    # No test prediction CSV; metrics.json carries tune only.
+    assert not (tmp_path / "fold" / "predictions_test.csv").exists()
+    metrics = json.loads((tmp_path / "fold" / "metrics.json").read_text())
+    assert list(metrics.keys()) == ["tune"]
