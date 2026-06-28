@@ -20,6 +20,7 @@ from soma.config import (
     AggregatorConfig,
     CacheConfig,
     EncoderConfig,
+    EvalConfig,
     PipelineConfig,
     PreprocessingConfig as _PreprocessingConfig,
     TaskConfig,
@@ -1040,6 +1041,43 @@ class TestTrain:
         summary = json.loads((run_dir / "summary.json").read_text())
         assert "test/auroc" in summary
 
+    def test_holdout_test_reports_tune_only(self, tmp_path: Path):
+        """evaluation.holdout_test skips all test work and reports tune (classification).
+
+        summary.json carries tune (so the run is rankable in a selection sweep) and no
+        test entries; the fold's metrics.json is tune-only and no test predictions land.
+        """
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        dataset = Dataset(dataset_csv)
+        splits = Splits(splits_csv, dataset)
+        store = FeatureStore(feature_dir)
+        run_dir = tmp_path / "output"
+
+        result = train(
+            feature_store=store,
+            dataset=dataset,
+            splits=splits,
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            evaluation=EvalConfig(holdout_test=True),
+            run_dir=run_dir,
+        )
+
+        # No test split evaluated anywhere; tune still reported.
+        assert result.fold_results[0].test_reports == {}
+        assert result.fold_results[0].tune_report.split == "tune"
+
+        # summary.json carries tune only — rankable, no test leakage.
+        summary = json.loads((run_dir / "summary.json").read_text())
+        assert any(key.startswith("tune/") for key in summary)
+        assert not any(key.startswith("test") for key in summary)
+
+        # Per-fold (== run_dir for a single fold) metrics.json is tune-only; no test CSV.
+        metrics = json.loads((run_dir / "metrics.json").read_text())
+        assert list(metrics.keys()) == ["tune"]
+        assert not (run_dir / "predictions_test.csv").exists()
+
     def test_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         for sample_id in ("s6", "s7"):
@@ -1117,6 +1155,47 @@ class TestTrain:
 
         assert summary["test/auroc_mean"] == pytest.approx(0.8)
         assert summary["test_external/auroc_mean"] == pytest.approx(0.7)
+
+    def test_aggregate_fold_metrics_include_tune_single_fold(self):
+        """holdout_test runs have no test splits: include_tune surfaces tune so the
+        summary is non-empty and rankable. Default (False) stays test-only."""
+        fold_results = [
+            FoldResult(
+                fold=0,
+                train_result=None,
+                tune_report=EvaluationReport(
+                    split="tune", metrics={"auroc": 0.9}, predictions=[]
+                ),
+                test_reports={},
+            )
+        ]
+
+        assert _aggregate_fold_metrics(fold_results) == {}
+        assert _aggregate_fold_metrics(fold_results, include_tune=True) == {"tune/auroc": 0.9}
+
+    def test_aggregate_fold_metrics_include_tune_multi_fold(self):
+        fold_results = [
+            FoldResult(
+                fold=0,
+                train_result=None,
+                tune_report=EvaluationReport(
+                    split="tune", metrics={"auroc": 0.8}, predictions=[]
+                ),
+                test_reports={},
+            ),
+            FoldResult(
+                fold=1,
+                train_result=None,
+                tune_report=EvaluationReport(
+                    split="tune", metrics={"auroc": 1.0}, predictions=[]
+                ),
+                test_reports={},
+            ),
+        ]
+
+        summary = _aggregate_fold_metrics(fold_results, include_tune=True)
+        assert summary["tune/auroc_mean"] == pytest.approx(0.9)
+        assert summary["tune/auroc_std"] == pytest.approx(0.1)
 
     def test_completed_run_panel_includes_coverage_summary(self):
         panel = _build_completed_run_panel(

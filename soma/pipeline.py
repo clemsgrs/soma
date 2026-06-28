@@ -589,6 +589,23 @@ def train_one_fold(
                 empty_sample_ids_by_split.get(tune_from_test_split_name, [])
             )
 
+    if evaluation.holdout_test:
+        # Tune-only model-selection run: drop every declared test split so no test
+        # loader is built, no test inference runs, and metrics/summary carry tune
+        # only. Done after tune_is_test has resolved tune from the test split, so
+        # tune selection and training are unaffected. The split stays in splits.csv;
+        # it is simply not touched (not even feature-validated below).
+        test_records_by_split = {}
+        if dataset_type == "patient":
+            test_patient_ids_by_split = {}
+            raw_test_patient_ids_by_split = {}
+        if empty_sample_ids_by_split is not None:
+            empty_sample_ids_by_split = {
+                name: ids
+                for name, ids in empty_sample_ids_by_split.items()
+                if name in ("train", "tune")
+            }
+
     if dataset_type == "patient":
         if not train_patient_ids:
             msg = f"{_fp} has no training patients with available features"
@@ -1054,6 +1071,7 @@ def train_one_segmentation_fold(
         training=training,
         fold_label=_fp,
         logger=logger,
+        holdout_test=evaluation.holdout_test,
     )
     train_records = fold_plan.train_records
     tune_records = fold_plan.tune_records
@@ -1295,6 +1313,7 @@ def train_one_detection_fold(
         training=training,
         fold_label=_fp,
         logger=logger,
+        holdout_test=evaluation.holdout_test,
     )
     train_records = fold_plan.train_records
     tune_records = fold_plan.tune_records
@@ -1571,6 +1590,7 @@ def train_one_pixel_classifier_fold(
         training=training,
         fold_label=_fp,
         logger=logger,
+        holdout_test=evaluation.holdout_test,
     )
     train_records = fold_plan.train_records
     tune_records = fold_plan.tune_records
@@ -1720,6 +1740,7 @@ def train(
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    evaluation = evaluation or EvalConfig()
 
     if dataset_type == "patient" or dataset.has_patient_ids:
         splits.validate_no_patient_leakage(dataset)
@@ -1793,7 +1814,7 @@ def train(
             )
         fold_results.append(result)
 
-    summary = _aggregate_fold_metrics(fold_results)
+    summary = _aggregate_fold_metrics(fold_results, include_tune=evaluation.holdout_test)
     _save_summary(summary, run_dir / "summary.json")
 
     return PipelineResult(
@@ -3174,18 +3195,32 @@ def _save_predictions(
                 _write_row(writer, row, pred)
 
 
-def _aggregate_fold_metrics(fold_results: list[FoldResult]) -> dict[str, float]:
+def _aggregate_fold_metrics(
+    fold_results: list[FoldResult], *, include_tune: bool = False
+) -> dict[str, float]:
     """Compute per-split metrics summary. For a single fold, emit values directly.
-    For multiple folds, emit mean and std."""
+    For multiple folds, emit mean and std.
+
+    Normally the summary covers the test splits only. ``include_tune`` (set for
+    ``evaluation.holdout_test`` runs, which have no test splits) additionally emits
+    the tune report under a ``tune/`` prefix so a tune-only selection sweep produces
+    a non-empty, rankable summary."""
     if not fold_results:
         return {}
 
     single_fold = len(fold_results) == 1
     summary: dict[str, float] = {}
-    test_split_names = sorted({s for fr in fold_results for s in fr.test_reports})
+    # Map each reported split name to its per-fold reports. Tune leads (when
+    # requested) so it heads the summary; test splits follow in sorted order.
+    reports_by_split: dict[str, list[EvaluationReport]] = {}
+    if include_tune:
+        reports_by_split["tune"] = [fr.tune_report for fr in fold_results]
+    for split_name in sorted({s for fr in fold_results for s in fr.test_reports}):
+        reports_by_split[split_name] = [
+            fr.test_reports[split_name] for fr in fold_results if split_name in fr.test_reports
+        ]
 
-    for split_name in test_split_names:
-        split_reports = [fr.test_reports[split_name] for fr in fold_results if split_name in fr.test_reports]
+    for split_name, split_reports in reports_by_split.items():
         if not split_reports:
             continue
         metric_keys = list(split_reports[0].metrics.keys())

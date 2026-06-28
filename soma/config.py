@@ -694,11 +694,19 @@ class EvalConfig:
     float16 ``(C, H, W)`` softmax sidecar under ``probs/`` — opt-in because it is
     ~C×/precision× larger than the always-written argmax raster, and unlocks
     post-hoc soft-Dice/calibration/entropy/ensembling without re-running inference.
+    ``holdout_test`` skips *all* test-split work (no test inference, no
+    ``predictions_test.csv``, no ``test`` entries in ``metrics.json``/``summary.json``)
+    and reports tune only — the model-selection protocol for benchmark sweeps: rank
+    every candidate by tune score, then re-run only the winner with the test held out
+    in. The test split may still be declared in ``splits.csv``; it is simply not
+    touched. Tune evaluation, threshold sweeps, checkpoint selection, and training
+    are unaffected.
     """
 
     metrics: list[str] = field(default_factory=list)
     subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
     save_probabilities: bool = False
+    holdout_test: bool = False
 
 
 @dataclass(frozen=True)
@@ -1325,4 +1333,5 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
         metrics=evaluation_data.get("metrics", []),
         subgroups=SubgroupConfig(columns=columns),
         save_probabilities=bool(evaluation_data.get("save_probabilities", False)),
+        holdout_test=bool(evaluation_data.get("holdout_test", False)),
     )

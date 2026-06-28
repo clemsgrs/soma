@@ -45,6 +45,51 @@ def test_plan_dense_fold_selects_train_tune_and_test_records():
     assert _ids(plan.all_records) == ["train_a", "train_b", "tune", "test_a", "test_b"]
 
 
+def test_plan_dense_fold_holdout_test_drops_test_splits():
+    dataset = _dataset("train_a", "train_b", "tune", "test_a", "test_b")
+    fold_split = FoldSplit(
+        train=("train_a", "train_b"),
+        tune=("tune",),
+        tests={"test": ("test_a", "test_b")},
+    )
+
+    plan = plan_dense_fold(
+        dataset=dataset,
+        fold_split=fold_split,
+        training=TrainingConfig(),
+        fold_label="Run",
+        holdout_test=True,
+    )
+
+    # Train/tune unchanged; test dropped entirely (also out of all_records, so
+    # coverage/geometry checks never touch it).
+    assert _ids(plan.train_records) == ["train_a", "train_b"]
+    assert _ids(plan.tune_records) == ["tune"]
+    assert plan.test_records_by_split == {}
+    assert _ids(plan.all_records) == ["train_a", "train_b", "tune"]
+
+
+def test_plan_dense_fold_holdout_test_keeps_tune_is_test_resolution():
+    """holdout_test drops test *after* tune_is_test mirrors it into tune."""
+    dataset = _dataset("train", "heldout_a", "heldout_b")
+    fold_split = FoldSplit(
+        train=("train",),
+        tune=(),
+        tests={"test": ("heldout_a", "heldout_b")},
+    )
+
+    plan = plan_dense_fold(
+        dataset=dataset,
+        fold_split=fold_split,
+        training=TrainingConfig(tune_is_test=True),
+        fold_label="Run",
+        holdout_test=True,
+    )
+
+    assert _ids(plan.tune_records) == ["heldout_a", "heldout_b"]
+    assert plan.test_records_by_split == {}
+
+
 def test_plan_dense_fold_uses_single_test_split_as_tune_when_tune_is_test():
     dataset = _dataset("train", "configured_tune", "heldout_a", "heldout_b")
     fold_split = FoldSplit(
