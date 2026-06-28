@@ -28,19 +28,40 @@ by the pipeline, not here, and is unchanged):
                                          F1 reduces, so overlay and metric cannot drift.
                                          Same ``save_detection_overlays`` gate + fail-soft
                                          source read as the plain overlays.
+  - ``heatmap_overlays/class_<c>/<split>/<sample_id>.png`` per class, a colormap overlay of
+                                         the pre-decode ``[0, 1]`` sigmoid heatmap blended
+                                         over the source tile — **opt-in** via
+                                         ``save_detection_heatmaps``. Two deliberate
+                                         divergences from the MIL heatmap convention: NO
+                                         per-tile min-max normalization (the sigmoid has
+                                         absolute meaning, so brightness is comparable
+                                         across tiles) and a SEQUENTIAL colormap
+                                         (``viridis``), not the MIL diverging map. Fail-soft
+                                         like the point overlays (skipped when the source
+                                         tile is unreadable; the npz below is still written).
+  - ``heatmaps/<split>/<sample_id>.npz``  raw ``float16 (C, H, W)`` sigmoid heatmap keyed
+                                         ``"heatmap"`` — the detection analog of the
+                                         segmentation probability sidecar, for post-hoc
+                                         quantitative work. Gated together with the
+                                         overlays by ``save_detection_heatmaps``; needs no
+                                         source tile, so it is written even when the overlay
+                                         can't be (fail-soft).
   - ``detection_per_image_<split>.csv``  one row per tile: overlay paths + ``n_pred``,
                                          ``n_gt``, ``tp``, ``fp``, ``fn`` (summed over
                                          classes) + ``mean_f1`` (``reduce_f1`` on the
                                          image's own ``(1, C, 3)`` counts) — always written.
+                                         Carries ``heatmap_overlay_class_<c>`` /
+                                         ``heatmap_npz_path`` columns, empty unless
+                                         ``save_detection_heatmaps``.
   - ``metrics_<split>.csv``              split-level per-class F1/precision/recall
                                          (dataset-global), always written (the per-class
                                          breakdown exists even when the monitor metric is
                                          just ``mean_f1``).
 
-The raw heatmap overlays + npz sidecar (slice #176) extend this writer further: the
-``heatmap`` payload field is already threaded through ``add_image`` for them, and
-per-class artifacts use a ``class_<c>`` index subdir (matching the ``f1_class_<c>``
-metric vocabulary).
+The per-class match-status overlays (slice #175) and the opt-in raw heatmap overlays + npz
+sidecar (slice #176) both extend this writer: the ``assignment`` and ``heatmap`` payload
+fields are threaded through ``add_image`` for them, and per-class artifacts use a
+``class_<c>`` index subdir (matching the ``f1_class_<c>`` metric vocabulary).
 """
 
 from __future__ import annotations
@@ -91,7 +112,16 @@ class DetectionArtifactWriter:
         save_detection_overlays: write the pred/GT point overlay PNGs. On by default (a
             viewable prediction is cheap), but suppressible for a metrics-only run — the
             manifest + metrics CSVs are unaffected.
+        save_detection_heatmaps: also write per-class colormap overlays of the raw
+            ``[0, 1]`` sigmoid heatmap (``heatmap_overlays/class_<c>/``) **and** a raw
+            ``float16 (C, H, W)`` npz sidecar (``heatmaps/``). Off by default — the
+            colormap overlay and the npz are gated together (one conceptual feature). The
+            overlay diverges from the MIL convention deliberately: no per-tile min-max
+            normalization and a sequential (``heatmap_cmap``) colormap.
         overlay_dot_radius: radius (target-frame px) of each plotted point dot.
+        heatmap_cmap: sequential matplotlib colormap for the heatmap overlay (a ``[0, 1]``
+            probability is sequential, not diverging like the MIL ``coolwarm`` default).
+        heatmap_overlay_alpha: blend weight of the colormap over the source tile.
     """
 
     def __init__(
@@ -102,7 +132,10 @@ class DetectionArtifactWriter:
         output_dir: Path | str,
         dataset=None,
         save_detection_overlays: bool = True,
+        save_detection_heatmaps: bool = False,
         overlay_dot_radius: int = 4,
+        heatmap_cmap: str = "viridis",
+        heatmap_overlay_alpha: float = 0.5,
     ) -> None:
         self._num_classes = int(head.num_classes)
         # crop_box = (top, left, height, width); the target frame the points + heatmap
@@ -118,11 +151,20 @@ class DetectionArtifactWriter:
         self._pred_overlays_dir = self._output_dir / "pred_overlays" / split
         self._gt_overlays_dir = self._output_dir / "gt_overlays" / split
         self._match_overlays_dir = self._output_dir / "match_overlays"
+        self._heatmaps_dir = self._output_dir / "heatmaps" / split
         self._dataset = dataset
         # Overlays need both the flag (default on) and a dataset to read source tiles;
         # suppressing either yields a metrics-only run (manifest + metrics still written).
         self._overlays_enabled = dataset is not None and bool(save_detection_overlays)
+        self._save_detection_heatmaps = bool(save_detection_heatmaps)
+        # The source tile is read once per image and reused by the point overlays AND the
+        # heatmap overlays, so read it whenever *either* needs it (the npz needs no tile).
+        self._needs_source = dataset is not None and (
+            bool(save_detection_overlays) or self._save_detection_heatmaps
+        )
         self._dot_radius = int(overlay_dot_radius)
+        self._heatmap_cmap = heatmap_cmap
+        self._heatmap_overlay_alpha = float(heatmap_overlay_alpha)
         self._palette = class_palette(self._num_classes)
         self._rows: list[dict] = []
         self._stat_rows: list[torch.Tensor] = []
@@ -143,10 +185,11 @@ class DetectionArtifactWriter:
 
         ``assignment`` is the per-class :class:`~soma.detection.matching.ClassMatch` list
         from the single upstream match — the manifest counts/F1 *and* the per-class match
-        overlays both derive from it (never a second match). ``heatmap`` and ``pred_score``
-        are part of the per-image payload for the heatmap-overlay (#176) slice; the plain
-        pred/GT overlays need only the point xy + class, while the match overlays read each
-        class's ``pairs`` to colour every point by its TP/FP/FN outcome.
+        overlays both derive from it (never a second match); the match overlays read each
+        class's ``pairs`` to colour every point by its TP/FP/FN outcome. ``heatmap`` is the
+        pre-decode ``[0, 1]`` sigmoid ``(C, H, W)`` that feeds the opt-in heatmap overlays +
+        npz (``save_detection_heatmaps``). ``pred_score`` is threaded through the per-image
+        payload for completeness (the plain pred/GT overlays need only the point xy + class).
         """
         # Per-class (tp, fp, fn) from the assignment — the same reduction match_points /
         # the headline metric uses, so per-image numbers can't drift from the split.
@@ -162,15 +205,18 @@ class DetectionArtifactWriter:
             stat_row, num_classes=self._num_classes, aggregation="dataset_global"
         )["mean_f1"]
 
+        # The source tile is read once and shared by the point and heatmap overlays
+        # (None when overlays are disabled or the tile is unreadable — fail-soft).
         image_arr = self._read_source(sample_id)
+        draw_points = image_arr is not None and self._overlays_enabled
         pred_overlay = (
             self._draw_points(image_arr, pred_xy, pred_class, self._pred_overlays_dir, sample_id)
-            if image_arr is not None
+            if draw_points
             else None
         )
         gt_overlay = (
             self._draw_points(image_arr, gt_xy, gt_class, self._gt_overlays_dir, sample_id)
-            if image_arr is not None
+            if draw_points
             else None
         )
         # One match-status overlay per class (slice #175). Skipped (None) wholesale when the
@@ -186,6 +232,8 @@ class DetectionArtifactWriter:
             if image_arr is not None
             else [None] * self._num_classes
         )
+        # Opt-in raw heatmap artifacts (slice #176); columns empty when the flag is off.
+        heatmap_cols = self._write_heatmaps(sample_id, heatmap, image_arr)
         row = {
             "sample_id": sample_id,
             "pred_overlay_path": "" if pred_overlay is None else self._rel(pred_overlay),
@@ -193,6 +241,7 @@ class DetectionArtifactWriter:
         }
         for c, overlay in enumerate(match_overlays):
             row[f"match_overlay_class_{c}"] = "" if overlay is None else self._rel(overlay)
+        row.update(heatmap_cols)
         row.update(
             {
                 "n_pred": n_pred,
@@ -213,11 +262,11 @@ class DetectionArtifactWriter:
 
         Detection is flat-tile only (no ``region`` on ``DetectionManifest``), so a plain
         ``Image.open`` + resize suffices — no slide-ROI/spacing handling (kept out of the
-        shared seg reader deliberately). ``None`` when overlays are disabled, the record
-        is unknown, or the tile is unreadable (fail-soft: cached-feature runs may not
-        retain the source tile).
+        shared seg reader deliberately). ``None`` when no overlay (point or heatmap) needs
+        the tile, the record is unknown, or the tile is unreadable (fail-soft: cached-feature
+        runs may not retain the source tile).
         """
-        if not self._overlays_enabled:
+        if not self._needs_source:
             return None
         record = self._dataset.samples.get(sample_id)
         if record is None:
@@ -312,6 +361,67 @@ class DetectionArtifactWriter:
         r = self._delta
         draw.ellipse([x - r, y - r, x + r, y + r], outline=color, width=_RING_WIDTH)
 
+    def _write_heatmaps(
+        self, sample_id: str, heatmap: torch.Tensor, image_arr: np.ndarray | None
+    ) -> dict[str, str]:
+        """Write the opt-in raw heatmap artifacts; return their manifest columns.
+
+        When ``save_detection_heatmaps`` is on: a raw ``float16 (C, H, W)`` npz sidecar
+        (keyed ``"heatmap"``, no source tile needed) plus, when the tile is readable, a
+        per-class ``viridis`` colormap overlay blended over it. All columns are empty when
+        the flag is off (the npz/overlay are simply not written). The npz survives an
+        unreadable tile (only the blended overlay is fail-soft).
+        """
+        cols: dict[str, str] = {
+            f"heatmap_overlay_class_{c}": "" for c in range(self._num_classes)
+        }
+        cols["heatmap_npz_path"] = ""
+        if not self._save_detection_heatmaps:
+            return cols
+        hm = heatmap.detach().to(torch.float32).cpu().numpy()  # (C, H, W) sigmoid in [0, 1]
+        cols["heatmap_npz_path"] = self._rel(self._write_heatmap_npz(sample_id, hm))
+        if image_arr is not None:
+            for c in range(self._num_classes):
+                overlay = self._render_heatmap_overlay(image_arr, hm[c], c, sample_id)
+                cols[f"heatmap_overlay_class_{c}"] = self._rel(overlay)
+        return cols
+
+    def _write_heatmap_npz(self, sample_id: str, heatmap: np.ndarray) -> Path:
+        """Compressed ``float16 (C, H, W)`` sigmoid sidecar, keyed ``"heatmap"``.
+
+        The detection analog of the segmentation probability sidecar — ``float16`` halves
+        the on-disk size and is plenty for post-hoc soft-output analysis.
+        """
+        self._heatmaps_dir.mkdir(parents=True, exist_ok=True)
+        path = self._heatmaps_dir / f"{sample_id}.npz"
+        np.savez_compressed(path, heatmap=heatmap.astype(np.float16))
+        return path
+
+    def _render_heatmap_overlay(
+        self, image_arr: np.ndarray, channel: np.ndarray, class_idx: int, sample_id: str
+    ) -> Path:
+        """Alpha-blend ``cmap(channel)`` over the tile and save under ``class_<c>``.
+
+        Diverges from :func:`soma.heatmaps.render_attention_heatmap` deliberately: the
+        ``[0, 1]`` sigmoid is colormapped **as-is** (no per-tile min-max), so a weak peak
+        renders weak and brightness is comparable across tiles, and the colormap is
+        sequential (``viridis``), not the MIL diverging map.
+        """
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        cmap_fn = plt.get_cmap(self._heatmap_cmap)
+        colored = cmap_fn(np.clip(channel, 0.0, 1.0))[:, :, :3].astype(np.float32)  # (H, W, 3) [0,1]
+        alpha = self._heatmap_overlay_alpha
+        blended = alpha * colored * 255.0 + (1.0 - alpha) * image_arr.astype(np.float32)
+        out_dir = self._output_dir / "heatmap_overlays" / f"class_{class_idx}" / self._split
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / f"{sample_id}.png"
+        Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8), mode="RGB").save(path)
+        return path
+
     def finalize(self) -> Path:
         """Flush ``detection_per_image_<split>.csv`` + ``metrics_<split>.csv``.
 
@@ -320,22 +430,25 @@ class DetectionArtifactWriter:
         breakdown always exists, independent of the run's monitor-metric selection.
         """
         path = self._output_dir / f"detection_per_image_{self._split}.csv"
+        # Overlay/heatmap columns are always present (empty when their flag is off, exactly
+        # how the seg manifest leaves probs_path empty): one match-overlay column per class,
+        # one heatmap-overlay column per class, and the heatmap npz path.
+        fieldnames = [
+            "sample_id",
+            "pred_overlay_path",
+            "gt_overlay_path",
+            *(f"match_overlay_class_{c}" for c in range(self._num_classes)),
+            *(f"heatmap_overlay_class_{c}" for c in range(self._num_classes)),
+            "heatmap_npz_path",
+            "n_pred",
+            "n_gt",
+            "tp",
+            "fp",
+            "fn",
+            "mean_f1",
+        ]
         with open(path, "w", newline="") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    "sample_id",
-                    "pred_overlay_path",
-                    "gt_overlay_path",
-                    *(f"match_overlay_class_{c}" for c in range(self._num_classes)),
-                    "n_pred",
-                    "n_gt",
-                    "tp",
-                    "fp",
-                    "fn",
-                    "mean_f1",
-                ],
-            )
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(self._rows)
         self._write_metrics_csv()
