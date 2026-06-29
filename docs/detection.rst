@@ -227,6 +227,12 @@ augmentation) and assumes a uniform tile/grid size across the cohort. The P2PNet
 point-set head, live augmentation, and WSI-level stitching are deferred increments. Full
 rationale and the locked design decisions are in ``design/detection-design.md``.
 
+Benchmarks
+----------
+
+* :doc:`ocelot-detection-benchmark` — this path reproduced on the OCELOT 2023
+  cell-detection challenge, with the encoder × spacing ablation.
+
 References
 ----------
 

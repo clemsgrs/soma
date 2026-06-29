@@ -107,6 +107,7 @@ for custom experiment orchestration.
    :hidden:
    :caption: Benchmarks
 
+   eva-patch-classification-benchmark
    ocelot-detection-benchmark
 
 .. toctree::

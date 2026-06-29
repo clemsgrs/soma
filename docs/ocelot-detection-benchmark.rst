@@ -1,11 +1,14 @@
 OCELOT 2023 detection benchmark
 ===============================
 
-A **frozen-probe** benchmark of soma's :doc:`detection path <detection>` on the
-`OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ cell-detection challenge.
-It mirrors the EVA patch-level reproduction precedent: a single bundled protocol
-(config builder + recipe), a verified set of reference numbers to land against,
-and a results table filled in by the run issues — **not** invented here.
+*Maps to task:* :doc:`detection` — this is soma's detection path reproduced on the
+OCELOT 2023 cell-detection challenge.
+
+A benchmark of soma's :doc:`detection path <detection>` on the
+`OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ cell-detection challenge:
+a single bundled protocol (config builder + recipe), a verified set of reference
+numbers to land against, and a results table filled in by the run issues — **not**
+invented here.
 
 .. note::
 
@@ -13,23 +16,6 @@ and a results table filled in by the run issues — **not** invented here.
    literature; the soma result cells are intentionally left as ``TBD`` and are
    populated by the campaign run issues as the numbers are produced. Do not
    backfill them with estimates.
-
-Headline framing — frozen probe vs fine-tuned baseline
-------------------------------------------------------
-
-The scientific question this benchmark is built to answer:
-
-   *How close can a* **frozen** *foundation-model probe get to a* **fine-tuned**
-   *baseline on cell detection?*
-
-The frozen encoder is a **hard architectural invariant** — fine-tuning is off the
-table. Fine-tuning would break soma's caching/extraction contract (features would
-change every step, coupling extraction back into the training loop and
-contradicting the slide2vec = pure-extraction-engine split). Only a lightweight
-decoder (``lightweight_conv``, framed as a dense linear-probe analogue) is
-trained on top of the frozen dense token grid. The competitive story is therefore
-explicitly a *dense probing* protocol, not an attempt to beat fine-tuned SOTA by
-any means.
 
 v1 is **cell-only**. Cell–tissue fusion — where the entire reported headroom over
 the cell-only baseline lives — is a deliberate later increment, not smuggled into
@@ -88,8 +74,8 @@ Encoder × spacing ablation
 
 The campaign runs a 2×2 encoder × spacing grid plus a native anchor, isolating the
 **pretraining-alignment effect** (does dropping 0.5 → 0.25 µm/px *help* the
-mixed-magnification Virchow2 but *hurt* the 20×-only UNI2). The headline frozen
-probe is **Virchow2**; UNI2 is an ablation point. Each cell is run for **3 seeds**
+mixed-magnification Virchow2 but *hurt* the 20×-only UNI2). The headline probe is
+**Virchow2**; UNI2 is an ablation point. Each cell is run for **3 seeds**
 (mean ± std); the dense extraction is seed-independent and shared across seeds and
 decoder ablations.
 
@@ -144,6 +130,14 @@ issues — do not invent results.**
      - TBD
      - TBD
      - TBD
+
+Reproduce
+---------
+
+The full curate → train → greedy-score → check recipe lives at
+``examples/ocelot/README.md``; the published anchor (frozen Virchow2 @ 0.2 µm/px)
+is reproduced end to end by ``examples/ocelot/reproduce.py``. The encoder × spacing
+grid is the set of ``examples/ocelot/ocelot_{virchow2,uni2}_*.yaml`` configs.
 
 .. seealso::
 

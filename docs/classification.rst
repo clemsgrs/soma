@@ -30,3 +30,10 @@ Metric compatibility
 ``multiclass_classification`` accepts ``qwk`` as an opt-in metric when the
 class labels have an ordinal interpretation. The task still uses
 cross-entropy loss; the metric only changes how results are summarized.
+
+Benchmarks
+----------
+
+* :doc:`eva-patch-classification-benchmark` — frozen-tile-probe runs of these
+  heads on the EVA patch-level datasets (``bach``, ``breakhis``, ``crc``,
+  ``mhist``, ``patch_camelyon``).
