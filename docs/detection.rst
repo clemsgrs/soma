@@ -3,13 +3,14 @@ Detection (point detection)
 
 A dense **point-detection** path for cell / nucleus detection: predict object
 **centroids** (+ class) in a tile, not bounding boxes. detection-v1 reuses the
-segmentation *front half* verbatim — a **frozen** foundation-model encoder produces a
-dense ``(d, grid_h, grid_w)`` token grid (cached as ``feature_type="dense_grid"``) — and
-only the output representation is detection-specific: a decoder regresses a per-class
-**peak heatmap**, and a :class:`~soma.tasks.detection.DetectionHead` turns it back into
-points and scores them with **F1 at a matching distance δ** (the OCELOT convention).
+:doc:`segmentation` *front half* verbatim — the shared **dense contract** (a **frozen**
+foundation-model encoder produces a dense ``(d, grid_h, grid_w)`` token grid, cached as
+``feature_type="dense_grid"``) — and only the output representation is detection-specific:
+a decoder regresses a per-class **peak heatmap**, and a
+:class:`~soma.tasks.detection.DetectionHead` turns it back into points and scores them with
+**F1 at a matching distance δ** (the OCELOT convention).
 
-It sits alongside the segmentation paths: same manifest shape, splits, dense feature
+It sits alongside the :doc:`segmentation` paths: same manifest shape, splits, dense feature
 cache, decoder registry, and streaming evaluator — the head, target encoding, loss,
 postprocess, and metric are what differ.
 
@@ -151,12 +152,43 @@ Attention grids sit at the same token-grid resolution as patch features, so they
 buy extra localisation resolution; they are best treated as an **ablation** against the
 ``patch_features`` baseline rather than an automatic win (a saliency scalar per head
 carries less sub-token detail than a full patch descriptor). Run the ``patch_features``
-baseline first so the attention number is interpretable relative to it. Multi-encoder
-:doc:`composite <encoders/composite>` runs are supported on the decoder path and
-auto-concatenate at token-grid resolution. The decoder-free
-:doc:`pixel-classifier <decoders/pixel-classifier>` route used for attention
-*segmentation* does **not** apply here: detection needs the decoder's spatial smoothing
-to shape clean, separable peaks, which a per-pixel-independent model cannot provide.
+baseline first so the attention number is interpretable relative to it.
+
+Methods
+-------
+
+The dense grid admits two **feature substrates** (what the encoder emits) and two
+**trainable components** on that grid. The neural decoder is detection's default and
+required component; the rows below are the alternatives, shared with the
+:doc:`segmentation` dense contract.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 38 22
+
+   * - Method
+     - Detection
+     - Summary
+     - Tutorial
+   * - **Feature substrate**
+     -
+     -
+     -
+   * - :doc:`Multi-encoder concat <encoders/composite>`
+     - ✓
+     - Concatenate the dense outputs of several foundation models into one richer
+       per-position vector; auto-concatenates at token-grid resolution before the decoder.
+     - *(notebook planned)*
+   * - **Trainable component**
+     -
+     -
+     -
+   * - :doc:`Decoder-free pixel classifier <decoders/pixel-classifier>`
+     - planned
+     - A per-pixel classifier on the encoder's own attention. Detection needs the decoder's
+       spatial smoothing to shape clean, separable peaks, which a per-pixel-independent
+       model cannot provide — so this route is not yet wired for detection.
+     - *(notebook planned)*
 
 Metric — F1 at matching distance δ
 ----------------------------------
@@ -181,6 +213,12 @@ Each fold writes ``metrics.json`` (tune + per test split), ``detection_threshold
 (the frozen per-class thresholds), and ``predictions_<split>.csv`` with columns
 ``sample_id, x, y, class, score`` in **level-0** coordinates.
 
+Task head
+---------
+
+.. autoclass:: soma.tasks.detection.DetectionHead
+   :members:
+
 Status & scope
 --------------
 
@@ -197,6 +235,5 @@ References
 * *Towards Effective and Efficient Context-aware Nucleus Detection in Histopathology
   WSIs* (2025), `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`_ — P2PNet on frozen
   features.
-* The decoder segmentation path and shared dense extraction (see :doc:`tasks`,
-  :doc:`decoders`, the decoder-free :doc:`decoders/pixel-classifier`, and
-  :doc:`preprocessing`).
+* The decoder :doc:`segmentation` path and shared dense extraction (see :doc:`decoders`,
+  the decoder-free :doc:`decoders/pixel-classifier`, and :doc:`preprocessing`).

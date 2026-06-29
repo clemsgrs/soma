@@ -22,7 +22,7 @@ Tasks split by the representation substrate they consume:
   vector before the head: :doc:`classification`, :doc:`regression`, and
   :doc:`survival`.
 * **Dense** tasks consume a token grid, which a decoder turns into a per-pixel
-  map before the head: segmentation and
+  map before the head: :doc:`segmentation` and
   :doc:`detection`.
 
 The base abstraction is :class:`soma.tasks.base.TaskHead`.
@@ -64,7 +64,7 @@ Task Zoo
    * - ``segmentation``
      - CE + soft-Dice
      - ``mean_dice``, ``mean_iou``
-     - Dense per-pixel classification (``dataset_type: segmentation``)
+     - Dense per-pixel classification (``dataset_type: segmentation``); see :doc:`segmentation`
    * - ``detection``
      - Foreground-weighted MSE
      - ``mean_f1``
@@ -81,17 +81,8 @@ Slide-level tasks (bag → :doc:`aggregator <aggregators>` → head):
 
 Dense tasks (token grid → decoder → head):
 
-* segmentation
-* :doc:`detection`
-
-The autoclass directives for the dense heads live here until the dense task
-pages are added:
-
-.. autoclass:: soma.tasks.segmentation.SegmentationHead
-   :members:
-
-.. autoclass:: soma.tasks.detection.DetectionHead
-   :members:
+* :doc:`segmentation` — the dense contract + neural-decoder default path.
+* :doc:`detection` — point detection with the F1@δ metric.
 
 Discovery helper
 ----------------

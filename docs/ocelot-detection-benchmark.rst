@@ -45,11 +45,11 @@ class 1). Splits are **400 / 137 / 126** (v1.0.1 drops 4 under-annotated test
 cases). See :doc:`curation` and ``examples/ocelot/README.md`` for the download and
 curation recipe.
 
-The metric is a class-aware **mean F1 at δ = 3 µm = 15 px @ 0.2 µm/px** — the mean
-of the two per-class F1 scores (background cell, tumor cell), with detections
-pooled across the split (dataset-global). The official matcher is
-**greedy nearest-neighbor by descending confidence**; soma's greedy matcher is
-verified faithful to it (see :doc:`detection`).
+The metric is OCELOT's class-aware **mean F1@δ** over the two cell classes
+(background cell, tumor cell), with detections pooled across the split — the
+:doc:`detection` page is the canonical definition of the matcher and the px↔µm
+conversion; for this benchmark δ and the matcher are fixed to OCELOT's official
+settings, and soma's greedy matcher is verified faithful to it.
 
 Operating point (leakage-free): per-class score thresholds are swept on the
 **tune** split, frozen, and applied once to test — exactly a real submission.

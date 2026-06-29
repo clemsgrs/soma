@@ -16,7 +16,7 @@ how the frozen encoder is read (see :ref:`native-window`).
 It sits alongside the neural-decoder segmentation path: both consume
 ``dataset_type="segmentation"`` (same manifest, splits, spacing-aware mask reader, dense
 metrics, and prediction artifacts) — only the trainable component differs. Both land on
-the same dense contract (see :doc:`../tasks` and :doc:`../detection`).
+the same :doc:`../segmentation` dense contract.
 
 .. seealso::
 
@@ -164,5 +164,5 @@ References
   Segmentation* (2026), `arXiv:2602.18747 <https://arxiv.org/abs/2602.18747>`_.
 * Darcet et al., *Vision Transformers Need Registers* (2024),
   `arXiv:2309.16588 <https://arxiv.org/abs/2309.16588>`_.
-* The neural-decoder segmentation path and the window-as-knob sliding extraction it shares
-  (see :doc:`../tasks` and :doc:`../preprocessing`).
+* The neural-decoder :doc:`../segmentation` path and the window-as-knob sliding extraction
+  it shares (see :doc:`../preprocessing`).

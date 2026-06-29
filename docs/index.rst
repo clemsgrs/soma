@@ -91,6 +91,7 @@ for custom experiment orchestration.
    classification
    regression
    survival
+   segmentation
    detection
 
 .. toctree::
