@@ -114,7 +114,7 @@ below are the alternatives a segmentation run can swap in.
      - ✓
      - Swap the neural decoder for a per-pixel classifier on the encoder's own
        per-head attention (XGBoost / RF / logistic / MLP).
-     - *(notebook planned)*
+     - :doc:`Attention-probing walkthrough <tutorials/walkthrough-attention-segmentation>`
 
 Task head
 ---------

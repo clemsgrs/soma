@@ -20,9 +20,12 @@ the same :doc:`../segmentation` dense contract.
 
 .. seealso::
 
-   The :doc:`dense-prediction walkthrough <../tutorials/walkthrough-dense>` runs the
-   neural-decoder segmentation path end to end; this page is the decoder-free
-   alternative that swaps the trainable decoder for a per-pixel classifier.
+   The :doc:`attention-probing walkthrough <../tutorials/walkthrough-attention-segmentation>`
+   runs this decoder-free path end to end on a tiny synthetic dataset — per-head
+   CLS-attention grids into a per-pixel classifier. The
+   :doc:`dense-prediction walkthrough <../tutorials/walkthrough-dense>` runs the
+   neural-decoder segmentation path for contrast: same contract, only the trainable
+   component differs.
 
 The method
 ----------

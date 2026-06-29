@@ -64,6 +64,7 @@ for custom experiment orchestration.
    tutorials/walkthrough-slide-level
    tutorials/walkthrough-dense
    tutorials/walkthrough-composite
+   tutorials/walkthrough-attention-segmentation
 
 .. toctree::
    :maxdepth: 1
