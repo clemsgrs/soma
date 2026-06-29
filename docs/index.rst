@@ -76,12 +76,18 @@ for custom experiment orchestration.
 .. toctree::
    :maxdepth: 1
    :hidden:
-   :caption: Models
+   :caption: Components
 
    encoders
    aggregators
+   decoders
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Tasks
+
    tasks
-   attention-segmentation
    detection
 
 .. toctree::
