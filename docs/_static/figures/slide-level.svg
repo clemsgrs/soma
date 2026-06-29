@@ -1,0 +1,89 @@
+<svg viewBox="0 0 680 428" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, 'Helvetica Neue', Inter, Arial, sans-serif">
+<title>From a frozen foundation model to slide-level predictions</title>
+<desc>A frozen trunk tiles a slide and encodes it with a frozen tile-level foundation model into a bag of tile features. The bag is pooled into a slide-level vector by either a trained MIL aggregator (ABMIL, CLAM-SB, CLAM-MB, DSMIL, TransMIL, HIPT, DTFDMIL) or a frozen slide-level foundation model (TITAN, PRISM, GigaPath, MOOZY). A trained task head then maps the vector to a prediction — classification with CE loss, regression with MSE loss, or survival with Cox loss.</desc>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+<path d="M0 0 L10 5 L0 10 z" fill="#888780"/>
+</marker>
+</defs>
+<style>
+.h{font-weight:500;font-size:13px;fill:#3d3d3a}
+.t{font-weight:400;font-size:12px;fill:#3d3d3a}
+.s{font-weight:400;font-size:11px;fill:#73726c}
+.ey{font-weight:500;font-size:11px;fill:#712B13}
+.pill{font-weight:500;font-size:11px;fill:#993C1D}
+.pillb{font-weight:500;font-size:11px;fill:#185FA5}
+.ln{stroke:#888780;stroke-width:1.5;fill:none}
+</style>
+
+<!-- frozen trunk -->
+<rect x="81" y="40" width="150" height="56" rx="6" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="156" y="72" text-anchor="middle">tissue tiles</text>
+<rect x="255" y="40" width="170" height="56" rx="6" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="340" y="72" text-anchor="middle">tile-level FM</text>
+<rect x="449" y="40" width="150" height="56" rx="6" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="524" y="64" text-anchor="middle">bag of features</text>
+<text class="s" x="524" y="82" text-anchor="middle">N × d tokens</text>
+<line class="ln" x1="231" y1="68" x2="251" y2="68" marker-end="url(#ah)"/>
+<line class="ln" x1="425" y1="68" x2="445" y2="68" marker-end="url(#ah)"/>
+
+<!-- fork: bag -> two aggregation options -->
+<path class="ln" d="M524 96 L524 114"/>
+<path class="ln" d="M230 114 L540 114"/>
+<line class="ln" x1="230" y1="114" x2="230" y2="128" marker-end="url(#ah)"/>
+<line class="ln" x1="540" y1="114" x2="540" y2="128" marker-end="url(#ah)"/>
+
+<!-- option A: trained MIL aggregator -->
+<rect x="40" y="130" width="380" height="88" rx="8" fill="#FAECE7" stroke="#F0997B"/>
+<text class="h" x="230" y="150" text-anchor="middle">MIL aggregator</text>
+<rect x="80" y="160" width="58" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="109" y="174" text-anchor="middle">ABMIL</text>
+<rect x="150" y="160" width="72" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="186" y="174" text-anchor="middle">CLAM-SB</text>
+<rect x="234" y="160" width="74" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="271" y="174" text-anchor="middle">CLAM-MB</text>
+<rect x="320" y="160" width="60" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="350" y="174" text-anchor="middle">DSMIL</text>
+<rect x="113" y="187" width="80" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="153" y="201" text-anchor="middle">DTFDMIL</text>
+<rect x="205" y="187" width="78" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="244" y="201" text-anchor="middle">TransMIL</text>
+<rect x="295" y="187" width="52" height="21" rx="10.5" fill="#fff" stroke="#E0A48C"/><text class="pill" x="321" y="201" text-anchor="middle">HIPT</text>
+
+<text class="s" x="430" y="178" text-anchor="middle">or</text>
+
+<!-- option B: frozen slide-level FM -->
+<rect x="440" y="130" width="200" height="88" rx="8" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="540" y="150" text-anchor="middle">slide-level FM</text>
+<rect x="490" y="160" width="44" height="21" rx="10.5" fill="#fff" stroke="#9CC3E8"/><text class="pillb" x="512" y="174" text-anchor="middle">TITAN</text>
+<rect x="544" y="160" width="46" height="21" rx="10.5" fill="#fff" stroke="#9CC3E8"/><text class="pillb" x="567" y="174" text-anchor="middle">PRISM</text>
+<rect x="482" y="187" width="62" height="21" rx="10.5" fill="#fff" stroke="#9CC3E8"/><text class="pillb" x="513" y="201" text-anchor="middle">GigaPath</text>
+<rect x="552" y="187" width="48" height="21" rx="10.5" fill="#fff" stroke="#9CC3E8"/><text class="pillb" x="576" y="201" text-anchor="middle">MOOZY</text>
+
+<!-- merge -> slide-level vector -->
+<path class="ln" d="M230 218 L230 238"/>
+<path class="ln" d="M540 218 L540 238"/>
+<path class="ln" d="M230 238 L540 238"/>
+<line class="ln" x1="340" y1="238" x2="340" y2="255" marker-end="url(#ah)"/>
+<rect x="255" y="257" width="170" height="46" rx="6" fill="#F1EFE8" stroke="#D3D1C7"/>
+<text class="h" x="340" y="277" text-anchor="middle">slide-level vector</text>
+<text class="s" x="340" y="293" text-anchor="middle">1 × d</text>
+
+<!-- fan-out to task heads -->
+<path class="ln" d="M340 303 L340 318"/>
+<path class="ln" d="M145 318 L535 318"/>
+<line class="ln" x1="145" y1="318" x2="145" y2="330" marker-end="url(#ah)"/>
+<line class="ln" x1="340" y1="318" x2="340" y2="330" marker-end="url(#ah)"/>
+<line class="ln" x1="535" y1="318" x2="535" y2="330" marker-end="url(#ah)"/>
+
+<!-- trained task heads -->
+<rect x="60" y="332" width="170" height="52" rx="6" fill="#FAECE7" stroke="#F0997B"/>
+<text class="h" x="145" y="354" text-anchor="middle">classification</text>
+<text class="ey" x="145" y="372" text-anchor="middle">CE loss</text>
+<rect x="255" y="332" width="170" height="52" rx="6" fill="#FAECE7" stroke="#F0997B"/>
+<text class="h" x="340" y="354" text-anchor="middle">regression</text>
+<text class="ey" x="340" y="372" text-anchor="middle">MSE loss</text>
+<rect x="450" y="332" width="170" height="52" rx="6" fill="#FAECE7" stroke="#F0997B"/>
+<text class="h" x="535" y="354" text-anchor="middle">survival</text>
+<text class="ey" x="535" y="372" text-anchor="middle">Cox loss</text>
+
+<!-- legend -->
+<rect x="260" y="400" width="14" height="14" rx="3" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="s" x="280" y="411">frozen</text>
+<rect x="350" y="400" width="14" height="14" rx="3" fill="#FAECE7" stroke="#F0997B"/>
+<text class="s" x="370" y="411">trained</text>
+</svg>

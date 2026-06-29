@@ -1,5 +1,7 @@
-Pixel-classifier (attention-map segmentation)
-=============================================
+:orphan:
+
+Attention-based segmentation
+============================
 
 A **decoder-free** method on the dense grid: an alternative trainable component to the
 :doc:`../decoders` neural decoder. Instead of training a neural decoder on a frozen

@@ -1,5 +1,5 @@
-Segmentation (dense per-pixel)
-==============================
+Segmentation
+============
 
 A dense **semantic-segmentation** path: predict a per-pixel class map for each
 tile. Segmentation is the canonical **dense contract** — the shared front half and
@@ -86,35 +86,9 @@ Methods
 -------
 
 The dense grid admits two **feature substrates** (what the encoder emits) and two
-**trainable components** on that grid. The neural decoder above is the default; the rows
-below are the alternatives a segmentation run can swap in.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 10 38 22
-
-   * - Method
-     - Segmentation
-     - Summary
-     - Tutorial
-   * - **Feature substrate**
-     -
-     -
-     -
-   * - :doc:`Multi-encoder concat <encoders/composite>`
-     - ✓
-     - Concatenate the dense outputs of several foundation models into one richer
-       per-position vector (the paper's +7.95% mean Dice headline).
-     - :doc:`walkthrough <tutorials/walkthrough-composite>`
-   * - **Trainable component**
-     -
-     -
-     -
-   * - :doc:`Decoder-free pixel classifier <decoders/pixel-classifier>`
-     - ✓
-     - Swap the neural decoder for a per-pixel classifier on the encoder's own
-       per-head attention (XGBoost / RF / logistic / MLP).
-     - :doc:`Attention-probing walkthrough <tutorials/walkthrough-attention-segmentation>`
+**trainable components** on it; the neural decoder above is the default. The
+:doc:`Segmentation tutorial <tutorials/segmentation>` lists the substrate and component
+alternatives with the runnable walkthrough for each.
 
 Task head
 ---------

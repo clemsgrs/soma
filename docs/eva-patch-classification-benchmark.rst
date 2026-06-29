@@ -1,5 +1,5 @@
-EVA patch-classification suite
-==============================
+EVA
+===
 
 *Maps to task:* :doc:`classification` — these are frozen-tile-probe runs of the
 multiclass / binary classification heads on public patch-level benchmarks.

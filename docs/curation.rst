@@ -1,5 +1,5 @@
-Dataset curation
-================
+Curation
+========
 
 Soma includes small curators for converting known public benchmark layouts into
 the standard ``dataset.csv`` and ``splits.csv`` manifests described in

@@ -6,6 +6,13 @@ selected by ``EncoderConfig.name`` and configured through runtime behavior
 fields such as precision, batch size, and output variant. Geometry is handled
 through preprocessing, not the encoder config itself.
 
+**Encoding methods**
+
+- **Single encoder** — pick one preset from the model zoo below (the common case).
+- **Composite (multi-encoder)** — concatenate several presets into one richer
+  per-position vector: :doc:`details <encoders/composite>` ·
+  :doc:`tutorial <tutorials/walkthrough-composite>`.
+
 The main configuration object is :class:`soma.config.EncoderConfig`.
 
 .. autoclass:: soma.config.EncoderConfig
@@ -152,15 +159,3 @@ Discovery helpers
 
 Use ``soma.list_models()`` when you want the available encoder presets in code.
 Pass ``level="tile"``, ``"slide"``, or ``"patient"`` to narrow the list.
-
-Methods
--------
-
-A **composite** encoder concatenates the dense outputs of several foundation models
-into one richer per-position vector — the single home for multi-encoder concatenation
-across the dense paths. See the nested method page below.
-
-.. toctree::
-   :maxdepth: 1
-
-   encoders/composite

@@ -2,6 +2,12 @@
 
 `soma` is a modular framework to streamline computational pathology research.
 
+<p align="center">
+  <img src="docs/_static/figures/pipeline-overview.png" alt="The soma pipeline — data, a frozen encoder, a trained decoder, and evaluation." width="640">
+</p>
+
+📖 **[Documentation](https://clemsgrs.github.io/soma)** · 📦 **[PyPI](https://pypi.org/project/soma-pathology/)**
+
 It provides a unified API to go from a dataset of slides and labels to a full, reproducible result report. Along the way, it makes it easy to sweep core design choices such as preprocessing (spacing, field-of-view), encoding (foundation models), and aggregation (MIL) so you can quickly find the strongest configuration for your data.
 
 You can use it either as a full end-to-end pipeline or as a set of composable building blocks for custom experiment orchestration.
@@ -145,16 +151,18 @@ soma list tasks
 
 ## Docs
 
-- [Getting Started](docs/getting-started.rst)
-- [Pipeline](docs/pipeline.rst)
-- [Preprocessing](docs/preprocessing.rst)
-- [Encoders](docs/encoders.rst)
-- [Aggregators](docs/aggregators.rst)
-- [Tasks](docs/tasks.rst)
-- [Training and Evaluation](docs/training.rst)
-- [Caching](docs/caching.rst)
-- [Run Outputs](docs/outputs.rst)
-- [CLI Guide](docs/cli.rst)
+Full documentation is hosted at **https://clemsgrs.github.io/soma**.
+
+- [Getting started](https://clemsgrs.github.io/soma/getting-started.html)
+- [Pipeline](https://clemsgrs.github.io/soma/pipeline.html)
+- [Preprocessing](https://clemsgrs.github.io/soma/preprocessing.html)
+- [Encoders](https://clemsgrs.github.io/soma/encoders.html)
+- [Aggregators](https://clemsgrs.github.io/soma/aggregators.html)
+- [Tasks](https://clemsgrs.github.io/soma/tasks.html)
+- [Training and Evaluation](https://clemsgrs.github.io/soma/training.html)
+- [Caching](https://clemsgrs.github.io/soma/caching.html)
+- [Run outputs](https://clemsgrs.github.io/soma/outputs.html)
+- [CLI](https://clemsgrs.github.io/soma/cli.html)
 
 ## License
 

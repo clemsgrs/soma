@@ -5,6 +5,14 @@ Aggregators combine tile features into a bag-level representation for MIL.
 Start with the simplest preset that matches the task, then tune only the
 knobs you need.
 
+.. figure:: /_static/figures/slide-level.svg
+   :figclass: soma-figure
+   :alt: A frozen tile encoder turns a slide into a bag of features; a trained MIL aggregator or a frozen slide-level FM pools it into one slide-level vector for the task head.
+
+   Where aggregators sit. A frozen tile encoder turns a slide into a bag of
+   features; a **trained** MIL aggregator (or, alternatively, a frozen slide-level
+   foundation model) pools that bag into one slide-level vector for the task head.
+
 The shared base classes are :class:`soma.aggregators.base.Aggregator` and
 :class:`soma.aggregators.base.AggregatorOutput`.
 

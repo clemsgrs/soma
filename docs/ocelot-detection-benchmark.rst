@@ -1,5 +1,5 @@
-OCELOT 2023 detection benchmark
-===============================
+OCELOT
+======
 
 *Maps to task:* :doc:`detection` — this is soma's detection path reproduced on the
 OCELOT 2023 cell-detection challenge.

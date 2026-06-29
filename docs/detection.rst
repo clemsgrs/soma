@@ -1,5 +1,5 @@
-Detection (point detection)
-===========================
+Detection
+=========
 
 A dense **point-detection** path for cell / nucleus detection: predict object
 **centroids** (+ class) in a tile, not bounding boxes. detection-v1 reuses the
@@ -13,6 +13,15 @@ a decoder regresses a per-class **peak heatmap**, and a
 It sits alongside the :doc:`segmentation` paths: same manifest shape, splits, dense feature
 cache, decoder registry, and streaming evaluator — the head, target encoding, loss,
 postprocess, and metric are what differ.
+
+.. figure:: /_static/figures/dense-prediction.svg
+   :figclass: soma-figure
+   :alt: A frozen foundation model produces a 2D feature grid; the same trained conv decoder feeds a detection branch (sigmoid heatmap, peak extraction, cell points) and a segmentation branch (per-pixel argmax, mask).
+
+   The dense path. A frozen encoder produces a 2D feature grid; the same trained
+   lightweight conv decoder drives both dense tasks — detection reads peaks out of a
+   per-class heatmap, segmentation argmaxes per pixel. This page covers the detection
+   branch (left).
 
 .. seealso::
 
@@ -158,37 +167,9 @@ Methods
 -------
 
 The dense grid admits two **feature substrates** (what the encoder emits) and two
-**trainable components** on that grid. The neural decoder is detection's default and
-required component; the rows below are the alternatives, shared with the
-:doc:`segmentation` dense contract.
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 10 38 22
-
-   * - Method
-     - Detection
-     - Summary
-     - Tutorial
-   * - **Feature substrate**
-     -
-     -
-     -
-   * - :doc:`Multi-encoder concat <encoders/composite>`
-     - ✓
-     - Concatenate the dense outputs of several foundation models into one richer
-       per-position vector; auto-concatenates at token-grid resolution before the decoder.
-     - :doc:`walkthrough <tutorials/walkthrough-composite>`
-   * - **Trainable component**
-     -
-     -
-     -
-   * - :doc:`Decoder-free pixel classifier <decoders/pixel-classifier>`
-     - planned
-     - A per-pixel classifier on the encoder's own attention. Detection needs the decoder's
-       spatial smoothing to shape clean, separable peaks, which a per-pixel-independent
-       model cannot provide — so this route is not yet wired for detection.
-     - *(notebook planned)*
+**trainable components** on it; the neural decoder is detection's default and required
+component. The :doc:`Detection tutorial <tutorials/detection>` lists the substrate and
+component alternatives with the runnable walkthrough for each.
 
 Metric — F1 at matching distance δ
 ----------------------------------
