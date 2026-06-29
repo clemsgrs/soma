@@ -1,9 +1,16 @@
-CLI Guide
-=========
+CLI
+===
 
 ``soma`` exposes a compact command-line interface for running
 experiments from YAML config files and for listing the available model
 presets.
+
+.. figure:: /_static/figures/run-flow.svg
+   :figclass: soma-figure
+   :alt: Three input files flow into one soma command that schedules tiling, feature extraction, training, and metrics.
+
+   You provide three files — a dataset, splits, and a config. ``soma`` then
+   schedules every step: tiling, feature extraction, training, and metrics.
 
 Basic usage
 -----------

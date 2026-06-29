@@ -1,5 +1,7 @@
-Composite (multi-encoder)
-=========================
+:orphan:
+
+Composite
+=========
 
 A **composite** encoder concatenates the dense outputs of several foundation
 models into one richer per-position vector. It is the single home for

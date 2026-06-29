@@ -25,7 +25,7 @@ code = new_code_cell
 def build() -> nbformat.NotebookNode:
     cells = [
         md(
-            "# Slide-level walkthrough\n"
+            "# Slide-level\n"
             "\n"
             "This notebook walks through soma's **modular building-block API** for a\n"
             "slide-level prediction task, end to end:\n"
@@ -348,6 +348,9 @@ def build() -> nbformat.NotebookNode:
         "name": "python3",
     }
     nb.metadata["language_info"] = {"name": "python"}
+    # Reachable via :doc: links from the tutorial hub pages, but kept out of the
+    # sidebar nav (the hub pages are the nav entries).
+    nb.metadata["nbsphinx"] = {"orphan": True}
     return nb
 
 

@@ -12,8 +12,16 @@ trained.
 The dense paths share the same front half — a frozen encoder produces a dense
 ``(d, grid)`` grid (cached as ``feature_type="dense_grid"``) — and differ only in the
 trainable component on that grid and its output representation. The decoder is the
-default trainable component; the decoder-free :doc:`decoders/pixel-classifier` method
-is the alternative.
+default trainable component; the decoder-free :doc:`pixel-classifier
+<decoders/pixel-classifier>` method is the alternative.
+
+**Decoding methods**
+
+- **lightweight_conv** — the default trainable neural decoder (documented below).
+- **Decoder-free pixel classifier** — classifies the encoder's own attention per
+  pixel, no neural decoder: :doc:`Attention-based segmentation
+  <decoders/pixel-classifier>` ·
+  :doc:`tutorial <tutorials/walkthrough-attention-segmentation>`.
 
 lightweight_conv
 ----------------
@@ -35,15 +43,3 @@ prefix-token self-attention as a ``(K, grid)`` grid). Switching between them is 
 config flip** — the decoder is simply built with ``input_dim`` set to the emitted channel
 count (``d`` or ``K``). Multi-encoder :doc:`encoders/composite` runs are supported and
 auto-concatenate at token-grid resolution (``concat_resolution: grid``).
-
-Methods
--------
-
-The decoder-free **pixel-classifier** is an alternative trainable component on the same
-dense grid — it swaps the neural decoder for a per-pixel classifier on the encoder's own
-attention. See the nested method page below.
-
-.. toctree::
-   :maxdepth: 1
-
-   decoders/pixel-classifier

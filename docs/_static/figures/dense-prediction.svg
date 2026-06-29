@@ -1,0 +1,72 @@
+<svg viewBox="0 0 680 410" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, 'Helvetica Neue', Inter, Arial, sans-serif">
+<title>From a frozen foundation model to dense predictions</title>
+<desc>A shared frozen trunk tiles a region, encodes it with a frozen foundation model into a 2D feature grid; that grid feeds two branches that share the same lightweight conv decoder: a detection branch (sigmoid heatmap, peak extraction with NMS, cell points) and a segmentation branch (per-pixel argmax, mask). Only the decoder is trained.</desc>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+<path d="M0 0 L10 5 L0 10 z" fill="#888780"/>
+</marker>
+</defs>
+<style>
+.h{font-weight:500;font-size:13px;fill:#3d3d3a}
+.t{font-weight:400;font-size:12px;fill:#3d3d3a}
+.s{font-weight:400;font-size:11px;fill:#73726c}
+.ey{font-weight:500;font-size:11px;fill:#712B13}
+.ln{stroke:#888780;stroke-width:1.5;fill:none}
+</style>
+
+<rect x="81" y="40" width="150" height="56" rx="6" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="156" y="72" text-anchor="middle">tissue tile</text>
+
+<rect x="255" y="40" width="170" height="56" rx="6" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="340" y="72" text-anchor="middle">foundation model</text>
+
+<rect x="449" y="40" width="150" height="56" rx="6" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="h" x="524" y="64" text-anchor="middle">2D feature grid</text>
+<text class="s" x="524" y="82" text-anchor="middle">d × H × W tokens</text>
+
+<line class="ln" x1="231" y1="68" x2="251" y2="68" marker-end="url(#ah)"/>
+<line class="ln" x1="425" y1="68" x2="445" y2="68" marker-end="url(#ah)"/>
+
+<path class="ln" d="M524 96 L524 120 L190 120 L190 150" marker-end="url(#ah)"/>
+<path class="ln" d="M480 120 L480 150" marker-end="url(#ah)"/>
+
+<text class="s" x="335" y="166" text-anchor="middle">same decoder,</text>
+<text class="s" x="335" y="180" text-anchor="middle">different head</text>
+<line x1="283" y1="190" x2="387" y2="190" stroke="#D3D1C7" stroke-width="1" stroke-dasharray="3 3"/>
+
+<rect x="100" y="152" width="180" height="52" rx="6" fill="#FAECE7" stroke="#F0997B"/>
+<text class="ey" x="190" y="172" text-anchor="middle">trained</text>
+<text class="h" x="190" y="190" text-anchor="middle">lightweight conv decoder</text>
+
+<rect x="390" y="152" width="180" height="52" rx="6" fill="#FAECE7" stroke="#F0997B"/>
+<text class="ey" x="480" y="172" text-anchor="middle">trained</text>
+<text class="h" x="480" y="190" text-anchor="middle">lightweight conv decoder</text>
+
+<line class="ln" x1="190" y1="204" x2="190" y2="224" marker-end="url(#ah)"/>
+<line class="ln" x1="480" y1="204" x2="480" y2="224" marker-end="url(#ah)"/>
+
+<text class="s" x="190" y="238" text-anchor="middle">sigmoid → per-class heatmap</text>
+<rect x="120" y="246" width="140" height="58" rx="4" fill="#F1EFE8" stroke="#D3D1C7"/>
+<circle cx="150" cy="268" r="8" fill="none" stroke="#B4B2A9"/><circle cx="150" cy="268" r="3" fill="#444441"/>
+<circle cx="196" cy="262" r="8" fill="none" stroke="#B4B2A9"/><circle cx="196" cy="262" r="3" fill="#444441"/>
+<circle cx="232" cy="282" r="8" fill="none" stroke="#B4B2A9"/><circle cx="232" cy="282" r="3" fill="#444441"/>
+<circle cx="168" cy="290" r="8" fill="none" stroke="#B4B2A9"/><circle cx="168" cy="290" r="3" fill="#444441"/>
+<circle cx="214" cy="288" r="8" fill="none" stroke="#B4B2A9"/><circle cx="214" cy="288" r="3" fill="#444441"/>
+<text class="s" x="190" y="320" text-anchor="middle">peak extraction + NMS</text>
+<rect x="120" y="328" width="140" height="30" rx="4" fill="#fff" stroke="#D3D1C7"/>
+<text class="t" x="190" y="347" text-anchor="middle">cell points</text>
+
+<text class="s" x="480" y="238" text-anchor="middle">per-pixel logits → argmax</text>
+<rect x="410" y="246" width="140" height="58" rx="4" fill="#D3D1C7" stroke="#B4B2A9"/>
+<path d="M410 246 H470 V275 H410 Z" fill="#888780"/>
+<path d="M495 261 q30 -10 55 6 V304 H470 V288 q12 -22 25 -27 Z" fill="#B4B2A9"/>
+<path d="M410 288 q24 10 40 16 H410 Z" fill="#5F5E5A"/>
+<text class="s" x="480" y="320" text-anchor="middle">dense class map</text>
+<rect x="410" y="328" width="140" height="30" rx="4" fill="#fff" stroke="#D3D1C7"/>
+<text class="t" x="480" y="347" text-anchor="middle">mask</text>
+
+<rect x="260" y="384" width="14" height="14" rx="3" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="s" x="280" y="395">frozen</text>
+<rect x="350" y="384" width="14" height="14" rx="3" fill="#FAECE7" stroke="#F0997B"/>
+<text class="s" x="370" y="395">trained</text>
+</svg>

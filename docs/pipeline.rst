@@ -21,37 +21,8 @@ The main configuration object is :class:`soma.config.PipelineConfig`:
 Examples
 --------
 
-Slide-level pipeline
-~~~~~~~~~~~~~~~~~~~~
-
-This is the smallest typical slide-level pipeline configuration:
-
-.. code-block:: python
-
-   from soma import (
-       AggregatorConfig,
-       EncoderConfig,
-       EvalConfig,
-       Pipeline,
-       PipelineConfig,
-       TaskConfig,
-       TrainingConfig,
-   )
-
-   config = PipelineConfig(
-       dataset_csv="dataset.csv",
-       splits_csv="splits.csv",
-       output_root="output",
-       dataset_type="slide",
-       encoder=EncoderConfig(name="uni2"),
-       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-       task=TaskConfig(name="binary_classification"),
-       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-   )
-
-   result = Pipeline(config).run()
-
+The minimal slide-level run lives in :doc:`getting-started`. The variants below
+show how the other ``dataset_type`` values differ from it.
 
 Tile-level pipeline
 ~~~~~~~~~~~~~~~~~~~

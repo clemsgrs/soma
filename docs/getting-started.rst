@@ -1,51 +1,34 @@
 Getting started
 ===============
 
-`soma` is a modular framework to streamline computational pathology research.
-It helps you go from a dataset of slides and labels to a reproducible result
-report through a single, coherent API.
+`soma` takes a dataset of slides and labels to a reproducible result report
+through a single, coherent API.
 
-Running a pipeline
-------------------
+.. figure:: /_static/figures/run-flow.svg
+   :figclass: soma-figure
+   :alt: Three input files flow into one soma command that schedules tiling, feature extraction, training, and metrics.
 
-The quickest way to get started is to think of a pipeline run as one
-beginner-friendly sequence: you provide the dataset and split manifests, pick
-the model pieces, and let ``soma`` handle the rest.
+   You provide three files — a dataset, splits, and a config. ``soma`` then
+   schedules every step: tiling, feature extraction, training, and metrics.
 
-Practical workflow
-~~~~~~~~~~~~~~~~~~
+Install
+-------
 
-1. Start with a valid :doc:`dataset and split <dataset>` manifest.
-2. Choose an :doc:`encoder <encoders>`.
-3. If working with a tile-level encoder, add an :doc:`aggregator <aggregators>`.
-4. Pick a :doc:`task <tasks>`, :doc:`evaluation config <evaluation>`, and
-   :doc:`training config <training>`.
-5. Run ``Pipeline(config).run()``.
-6. Inspect the returned ``result`` and the saved run outputs.
+.. code-block:: bash
 
-What happens under the hood
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   pip install soma-pathology
 
-When you call :class:`soma.pipeline.Pipeline`, the framework turns your
-configuration into one reproducible run directory and then executes the
-experiment in a fixed order:
+Three ways to use soma
+----------------------
 
-1. Read ``dataset.csv`` and ``splits.csv``.
-2. Resolve preprocessing, encoder, and aggregator settings.
-3. Extract or load features for each sample.
-4. Train one model per fold, using the tune split for checkpoint selection.
-5. Evaluate the best checkpoint on the tune and test splits.
-6. Write metrics, predictions, checkpoints, and a final HTML report to disk.
-   If heatmaps are enabled, those are written too.
+The same components, cache, and run outputs back all three workflows, so you can
+move between them freely. Pick the one that matches how much control you want.
 
-**Importantly**, ``soma`` builds a shared :doc:`cache <caching>` to make experiment sweeps
-more efficient by reusing preprocessing and feature extraction whenever upstream settings
-are identical. This allows repeated runs to skip previously completed upstream work.
+Pipeline API — one config, one call
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Run a full pipeline
--------------------
-
-The simplest end-to-end path is ``Pipeline(config).run()``:
+The quickest path: describe the whole run in one
+:class:`~soma.config.PipelineConfig` and call ``.run()``.
 
 .. code-block:: python
 
@@ -53,7 +36,6 @@ The simplest end-to-end path is ``Pipeline(config).run()``:
        AggregatorConfig,
        EncoderConfig,
        EvalConfig,
-       HeatmapConfig,
        Pipeline,
        PipelineConfig,
        TaskConfig,
@@ -69,37 +51,44 @@ The simplest end-to-end path is ``Pipeline(config).run()``:
        aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
        task=TaskConfig(name="binary_classification"),
        evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
-       heatmaps=HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5),
        training=TrainingConfig(epochs=50, learning_rate=1e-4),
    )
 
    result = Pipeline(config).run()
 
-The returned ``result`` is a :class:`soma.pipeline.PipelineResult`. It gives
-you a Python handle on the run you just completed:
+The returned ``result`` is a :class:`~soma.pipeline.PipelineResult` — a handle on
+the run you just completed: ``result.run_dir`` (the run directory on disk),
+``result.summary`` (aggregated metrics, mirroring ``summary.json``), and
+``result.fold_results`` (one :class:`~soma.pipeline.FoldResult` per fold, each
+carrying the training result, the tune report, and per-split test reports). The
+same experiment is also persisted on disk; see :doc:`outputs`.
 
-- ``result.run_dir`` is the run directory on disk.
-- ``result.summary`` is the aggregated metric dictionary saved to
-  ``summary.json`` and mirrored in the run report.
-- ``result.fold_results`` contains one entry per fold.
+Under the hood, ``soma`` turns the config into one run directory and runs a fixed
+sequence: read the manifests, resolve settings, extract or load features, train one
+model per fold (tune split for checkpoint selection), evaluate on the tune and test
+splits, then write metrics, predictions, checkpoints, and an HTML report. A shared
+:doc:`cache <caching>` reuses preprocessing and features across runs whenever
+upstream settings match, so sweeps skip work already done.
 
-Each fold entry is a :class:`soma.pipeline.FoldResult` with:
+The full configuration reference, plus the tile- and patient-level variants, is in
+:doc:`pipeline`.
 
-- ``train_result``: best epoch, tune loss, training history, and the saved
-  checkpoint path.
-- ``tune_report``: evaluation metrics and per-sample predictions for the tune
-  split.
-- ``test_reports``: a split-name keyed mapping of evaluation reports for every
-  test split.
+Step-by-step API — compose the building blocks
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-In other words, the returned object gives you the key artifacts in memory,
-while the run directory on disk contains the same experiment in a persistent,
-reproducible form. For the files written to disk, see :doc:`outputs`.
+For finer control, drive the individual :doc:`building blocks <api>` yourself —
+preprocessing, feature extraction, training, evaluation, reporting, or heatmaps as
+separate steps instead of one call. The :doc:`slide-level tutorial
+<tutorials/walkthrough-slide-level>` builds a run this way, end to end.
 
-Modular API
------------
+CLI — run from the shell
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-If you want finer grained control, you can use individual :doc:`building blocks <api>`
-directly instead of running the full pipeline in one call. This is useful when you want
-to manage preprocessing, feature extraction, training, evaluation, reporting,
-or heatmap generation as separate steps in a custom experiment workflow.
+Prefer the terminal? Point ``soma`` at a YAML config:
+
+.. code-block:: bash
+
+   soma config.yaml
+
+The YAML mirrors ``PipelineConfig`` field for field. See :doc:`cli` for the full
+command set and the canonical config schema.

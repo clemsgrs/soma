@@ -1,5 +1,5 @@
-API Reference
-=============
+API
+===
 
 `soma` exposes a modular public API that can be used either end to end or one
 piece at a time.

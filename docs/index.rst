@@ -3,6 +3,13 @@ soma
 
 ``soma`` is a modular framework to streamline computational pathology research.
 
+.. figure:: /_static/figures/pipeline-overview.svg
+   :figclass: soma-figure soma-hero
+   :alt: The soma pipeline — data, a frozen encoder, a trained decoder, and evaluation.
+
+   Data and evaluation are fixed scaffolding; the encoder and decoder are the two
+   swappable axes — change one in a single line and keep the rest.
+
 It provides a unified API to go from a dataset of slides and labels to a full,
 reproducible result report. Along the way, it makes it easy to sweep core
 design choices such as preprocessing (spacing, field-of-view), encoding
@@ -27,12 +34,12 @@ Where to next? Pick the card that matches what you came to do.
    <section class="soma-section" style="margin-top: 1.5rem">
      <div class="soma-card-grid">
        <a class="soma-card" href="getting-started.html">
-         <h3>New here →</h3>
-         <p>Install soma and run your first end-to-end pipeline in minutes.</p>
+         <h3>Start here →</h3>
+         <p>Install soma, run your first pipeline, and pick how you'll use it: pipeline API, building blocks, or CLI.</p>
        </a>
-       <a class="soma-card" href="pipeline.html">
-         <h3>Run an experiment →</h3>
-         <p>Configure a full run from one YAML file, then launch it from the CLI.</p>
+       <a class="soma-card" href="api.html">
+         <h3>Compose building blocks →</h3>
+         <p>Mix and match encoders, aggregators, and decoders for custom orchestration.</p>
        </a>
        <a class="soma-card" href="tasks.html">
          <h3>Pick a task →</h3>
@@ -41,10 +48,6 @@ Where to next? Pick the card that matches what you came to do.
        <a class="soma-card" href="eva-patch-classification-benchmark.html">
          <h3>Reproduce a benchmark →</h3>
          <p>Refit the EVA patch-classification suite or the OCELOT detection benchmark.</p>
-       </a>
-       <a class="soma-card" href="api.html">
-         <h3>Compose building blocks →</h3>
-         <p>Mix and match encoders, aggregators, and decoders for custom orchestration.</p>
        </a>
      </div>
    </section>
@@ -57,16 +60,6 @@ Where to next? Pick the card that matches what you came to do.
    pipeline
    api
    cli
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Tutorials
-
-   tutorials/walkthrough-slide-level
-   tutorials/walkthrough-dense
-   tutorials/walkthrough-composite
-   tutorials/walkthrough-attention-segmentation
 
 .. toctree::
    :maxdepth: 1
@@ -105,6 +98,15 @@ Where to next? Pick the card that matches what you came to do.
 
    training
    evaluation
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Tutorials
+
+   tutorials/slide-level
+   tutorials/detection
+   tutorials/segmentation
 
 .. toctree::
    :maxdepth: 1

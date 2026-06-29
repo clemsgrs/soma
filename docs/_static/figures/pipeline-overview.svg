@@ -1,0 +1,86 @@
+<svg viewBox="0 0 680 232" role="img" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Helvetica Neue', Inter, Arial, sans-serif">
+<title>The soma pipeline: frozen encoder, trained decoder</title>
+<desc>A four-stage pipeline: Data and Evaluate are fixed scaffolding; Encode and Decode are the two swappable axes. Encode is a frozen foundation model (virchow2, uni2, phikon). Decode is a trained head spanning classification, survival, detection and segmentation.</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+<path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</marker>
+</defs>
+<style>
+text { stroke: none; }
+.th { fill: #3d3d3a; font-size: 14px; font-weight: 500; }
+.ts { fill: #73726c; font-size: 12px; font-weight: 400; }
+.box { fill: #f7f6f1; stroke: rgba(60,60,55,0.20); }
+.arr { stroke: #888780; stroke-width: 1.5; fill: none; }
+.leader { stroke: #888780; stroke-width: 1; stroke-dasharray: 3 3; fill: none; }
+.c-purple { fill: #EEEDFE; stroke: #534AB7; }
+.c-purple > .th { fill: #3C3489; }
+.c-purple > .ts { fill: #534AB7; }
+</style>
+
+<g class="box">
+<rect x="44" y="44" width="130" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="109" y="66" text-anchor="middle" dominant-baseline="central">Data</text>
+<text class="ts" x="109" y="84" text-anchor="middle" dominant-baseline="central">slides + labels</text>
+</g>
+
+<g class="c-purple">
+<rect x="198" y="44" width="130" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="263" y="66" text-anchor="middle" dominant-baseline="central">Encode</text>
+<text class="ts" x="263" y="84" text-anchor="middle" dominant-baseline="central">frozen FM</text>
+</g>
+
+<g class="c-purple">
+<rect x="352" y="44" width="130" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="417" y="66" text-anchor="middle" dominant-baseline="central">Decode</text>
+<text class="ts" x="417" y="84" text-anchor="middle" dominant-baseline="central">trained head</text>
+</g>
+
+<g class="box">
+<rect x="506" y="44" width="130" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="571" y="66" text-anchor="middle" dominant-baseline="central">Evaluate</text>
+<text class="ts" x="571" y="84" text-anchor="middle" dominant-baseline="central">metrics report</text>
+</g>
+
+<line x1="176" y1="72" x2="196" y2="72" class="arr" marker-end="url(#arrow)"/>
+<line x1="330" y1="72" x2="350" y2="72" class="arr" marker-end="url(#arrow)"/>
+<line x1="484" y1="72" x2="504" y2="72" class="arr" marker-end="url(#arrow)"/>
+
+<line x1="263" y1="100" x2="263" y2="108" class="leader"/>
+<line x1="417" y1="100" x2="417" y2="108" class="leader"/>
+
+<g class="c-purple">
+<rect x="215" y="108" width="96" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="263" y="118" text-anchor="middle" dominant-baseline="central">virchow2</text>
+</g>
+<g class="c-purple">
+<rect x="215" y="132" width="96" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="263" y="142" text-anchor="middle" dominant-baseline="central">uni2</text>
+</g>
+<g class="c-purple">
+<rect x="215" y="156" width="96" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="263" y="166" text-anchor="middle" dominant-baseline="central">phikon</text>
+</g>
+
+<g class="c-purple">
+<rect x="361" y="108" width="112" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="417" y="118" text-anchor="middle" dominant-baseline="central">classification</text>
+</g>
+<g class="c-purple">
+<rect x="361" y="132" width="112" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="417" y="142" text-anchor="middle" dominant-baseline="central">survival</text>
+</g>
+<g class="c-purple">
+<rect x="361" y="156" width="112" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="417" y="166" text-anchor="middle" dominant-baseline="central">detection</text>
+</g>
+<g class="c-purple">
+<rect x="361" y="180" width="112" height="20" rx="10" stroke-width="0.5"/>
+<text class="ts" x="417" y="190" text-anchor="middle" dominant-baseline="central">segmentation</text>
+</g>
+
+<g class="c-purple"><rect x="210" y="210" width="14" height="14" rx="3" stroke-width="0.5"/></g>
+<text class="ts" x="230" y="217" dominant-baseline="central">swap any axis</text>
+<g class="box"><rect x="360" y="210" width="14" height="14" rx="3" stroke-width="0.5"/></g>
+<text class="ts" x="380" y="217" dominant-baseline="central">fixed scaffolding</text>
+</svg>

@@ -1,5 +1,5 @@
-Dataset and splits
-==================
+Dataset
+=======
 
 The first thing ``soma`` needs is a pair of CSV manifests:
 

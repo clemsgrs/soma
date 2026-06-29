@@ -145,6 +145,50 @@
   }
 }
 
+/* ─── Diagram figures ──────────────────────────────── */
+
+/*
+ * The reused talk diagrams are drawn on white. Wrap them in a light card so they
+ * stay legible in both light and dark themes (a transparent SVG on the dark
+ * content background would float washed-out gray boxes). `figclass: soma-figure`
+ * on a `.. figure::` directive lands this class on the <figure> element.
+ */
+figure.soma-figure {
+  margin: 1.75rem auto;
+  padding: 1.25rem 1.25rem 1rem;
+  background: #ffffff;
+  border: 1px solid var(--color-background-border);
+  border-radius: 0.9rem;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+  text-align: center;
+}
+
+figure.soma-figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+/* Hero on the landing page: a touch more presence, capped so it never sprawls. */
+figure.soma-figure.soma-hero {
+  max-width: 620px;
+  margin-top: 1.25rem;
+}
+
+figure.soma-figure > figcaption {
+  margin-top: 0.85rem;
+  padding: 0;
+  color: var(--color-foreground-muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+figure.soma-figure > figcaption p {
+  margin: 0;
+}
+
 /* ─── API class / function blocks ──────────────────── */
 
 /*

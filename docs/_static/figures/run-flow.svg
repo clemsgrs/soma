@@ -1,0 +1,74 @@
+<svg viewBox="0 0 680 360" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, 'Helvetica Neue', Inter, Arial, sans-serif">
+<title>Running an experiment: three inputs, one command, an auto-scheduled pipeline</title>
+<desc>You provide three files — a dataset (slides + labels), splits (train/tune/test per fold), and a config (the experiment contract: task, encoder, decoder, metrics). One command, soma config.yaml, then schedules every step automatically: tiling, feature extraction, training, and metrics.</desc>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+<path d="M0 0 L10 5 L0 10 z" fill="#888780"/>
+</marker>
+</defs>
+<style>
+.lbl{font-weight:500;font-size:11px;fill:#8a8780;letter-spacing:1.5px}
+.h{font-weight:600;font-size:15px;fill:#2B2B28}
+.d{font-weight:400;font-size:11.5px;fill:#73726c}
+.fn{font-weight:500;font-size:11px;fill:#993C1D;font-family:Menlo,monospace}
+.cmd{font-size:17px;font-family:Menlo,monospace}
+.ey{font-weight:600;font-size:12.5px;fill:#993C1D;letter-spacing:.3px}
+.st{font-weight:600;font-size:13px;fill:#993C1D}
+.ln{stroke:#888780;stroke-width:1.5;fill:none}
+</style>
+
+<!-- section label: inputs -->
+<text class="lbl" x="340" y="14" text-anchor="middle">WHAT YOU PROVIDE</text>
+
+<!-- three input cards -->
+<g>
+<rect x="40" y="22" width="180" height="74" rx="8" fill="#F1EFE8" stroke="#D3D1C7"/>
+<text class="h" x="130" y="49" text-anchor="middle">dataset</text>
+<text class="d" x="130" y="68" text-anchor="middle">slides + labels</text>
+<text class="fn" x="130" y="86" text-anchor="middle">dataset.csv</text>
+</g>
+<g>
+<rect x="250" y="22" width="180" height="74" rx="8" fill="#F1EFE8" stroke="#D3D1C7"/>
+<text class="h" x="340" y="49" text-anchor="middle">splits</text>
+<text class="d" x="340" y="68" text-anchor="middle">train · tune · test, per fold</text>
+<text class="fn" x="340" y="86" text-anchor="middle">splits.csv</text>
+</g>
+<g>
+<rect x="460" y="22" width="180" height="74" rx="8" fill="#F1EFE8" stroke="#D3D1C7"/>
+<text class="h" x="550" y="49" text-anchor="middle">config</text>
+<text class="d" x="550" y="68" text-anchor="middle">task · encoder · decoder</text>
+<text class="fn" x="550" y="86" text-anchor="middle">config.yaml</text>
+</g>
+
+<!-- manifold: three cards converge into one command -->
+<line class="ln" x1="130" y1="96" x2="130" y2="114"/>
+<line class="ln" x1="340" y1="96" x2="340" y2="114"/>
+<line class="ln" x1="550" y1="96" x2="550" y2="114"/>
+<path class="ln" d="M130 114 L550 114"/>
+<line class="ln" x1="340" y1="114" x2="340" y2="136" marker-end="url(#ah)"/>
+
+<!-- one command -->
+<rect x="170" y="138" width="340" height="44" rx="8" fill="#2B2B28"/>
+<text class="cmd" x="340" y="166" text-anchor="middle"><tspan fill="#8a8780">$ </tspan><tspan fill="#F5F4EF">soma config.yaml</tspan></text>
+
+<!-- command fans out into the scheduled pipeline -->
+<line class="ln" x1="340" y1="182" x2="340" y2="202" marker-end="url(#ah)"/>
+
+<!-- auto-scheduled pipeline -->
+<rect x="40" y="204" width="600" height="132" rx="10" fill="#FAECE7" stroke="#F0997B"/>
+<text class="ey" x="340" y="230" text-anchor="middle">one command schedules every step</text>
+
+<rect x="58" y="256" width="120" height="56" rx="6" fill="#fff" stroke="#F0997B"/>
+<text class="st" x="118" y="289" text-anchor="middle">tiling</text>
+<rect x="206" y="256" width="120" height="56" rx="6" fill="#fff" stroke="#F0997B"/>
+<text class="st" x="266" y="282" text-anchor="middle">feature</text>
+<text class="st" x="266" y="300" text-anchor="middle">extraction</text>
+<rect x="354" y="256" width="120" height="56" rx="6" fill="#fff" stroke="#F0997B"/>
+<text class="st" x="414" y="289" text-anchor="middle">training</text>
+<rect x="502" y="256" width="120" height="56" rx="6" fill="#fff" stroke="#F0997B"/>
+<text class="st" x="562" y="289" text-anchor="middle">metrics</text>
+
+<line class="ln" x1="178" y1="284" x2="206" y2="284" marker-end="url(#ah)"/>
+<line class="ln" x1="326" y1="284" x2="354" y2="284" marker-end="url(#ah)"/>
+<line class="ln" x1="474" y1="284" x2="502" y2="284" marker-end="url(#ah)"/>
+</svg>

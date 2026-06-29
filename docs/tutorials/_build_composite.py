@@ -32,7 +32,7 @@ code = new_code_cell
 def build() -> nbformat.NotebookNode:
     cells = [
         md(
-            "# Multi-encoder composite walkthrough\n"
+            "# Composite\n"
             "\n"
             "This notebook walks through soma's **composite** encoder — concatenating the\n"
             "dense outputs of several frozen foundation models into one richer per-position\n"
@@ -256,6 +256,9 @@ def build() -> nbformat.NotebookNode:
     nb = new_notebook(cells=cells)
     nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
     nb.metadata["language_info"] = {"name": "python"}
+    # Reachable via :doc: links from the tutorial hub pages, but kept out of the
+    # sidebar nav (the hub pages are the nav entries).
+    nb.metadata["nbsphinx"] = {"orphan": True}
     return nb
 
 
