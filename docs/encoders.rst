@@ -152,3 +152,15 @@ Discovery helpers
 
 Use ``soma.list_models()`` when you want the available encoder presets in code.
 Pass ``level="tile"``, ``"slide"``, or ``"patient"`` to narrow the list.
+
+Methods
+-------
+
+A **composite** encoder concatenates the dense outputs of several foundation models
+into one richer per-position vector — the single home for multi-encoder concatenation
+across the dense paths. See the nested method page below.
+
+.. toctree::
+   :maxdepth: 1
+
+   encoders/composite

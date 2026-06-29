@@ -1,11 +1,12 @@
-Attention-Map Segmentation
-===========================
+Pixel-classifier (attention-map segmentation)
+=============================================
 
-A **decoder-free** semantic-segmentation path: instead of training a neural decoder on
-a frozen encoder's patch features, it uses the encoder's own **per-head self-attention**
-as dense per-pixel features and classifies each pixel with a lightweight, swappable
-classifier (XGBoost, random forest, logistic regression, or a pointwise MLP). No
-gradients flow through the backbone, and there is no neural decoder.
+A **decoder-free** method on the dense grid: an alternative trainable component to the
+:doc:`../decoders` neural decoder. Instead of training a neural decoder on a frozen
+encoder's patch features, it uses the encoder's own **per-head self-attention** as dense
+per-pixel features and classifies each pixel with a lightweight, swappable classifier
+(XGBoost, random forest, logistic regression, or a pointwise MLP). No gradients flow
+through the backbone, and there is no neural decoder.
 
 This re-implements Ramchandani et al., *Benchmarking Computational Pathology Foundation
 Models for Semantic Segmentation* (2026, `arXiv:2602.18747
@@ -14,11 +15,12 @@ how the frozen encoder is read (see :ref:`native-window`).
 
 It sits alongside the neural-decoder segmentation path: both consume
 ``dataset_type="segmentation"`` (same manifest, splits, spacing-aware mask reader, dense
-metrics, and prediction artifacts) — only the trainable component differs.
+metrics, and prediction artifacts) — only the trainable component differs. Both land on
+the same dense contract (see :doc:`../tasks` and :doc:`../detection`).
 
 .. seealso::
 
-   The :doc:`dense-prediction walkthrough <tutorials/walkthrough-dense>` runs the
+   The :doc:`dense-prediction walkthrough <../tutorials/walkthrough-dense>` runs the
    neural-decoder segmentation path end to end; this page is the decoder-free
    alternative that swaps the trainable decoder for a per-pixel classifier.
 
@@ -39,7 +41,7 @@ For each tile:
    prediction-raster / overlay / CSV artifact writer verbatim.
 4. Optionally **concatenate** attention from several foundation models for a richer
    per-pixel vector (the paper's headline, +7.95% mean Dice) — see
-   :ref:`multi-encoder`.
+   :doc:`../encoders/composite`.
 
 Per-head is always preserved — head specialization is the signal the classifier exploits;
 reducing it would be lossy and irreversible in the cache. Channels are ordered
@@ -146,33 +148,14 @@ the MLP runs internal mini-batch SGD epochs with early stopping — no torch ``T
 no ``.pt`` fold checkpoints on this path. Add
 ``params.class_balanced_weights: true`` to weight the fit by inverse class frequency.
 
-.. _multi-encoder:
-
 Multi-encoder concatenation
 ---------------------------
 
-Members live under a ``composite:`` block (XOR the single ``encoder:``). For the
-pixel-classifier path, ``concat_resolution`` auto-resolves to ``target``: each member
-upsamples its ``(K_i, grid_i)`` grid to the shared supervision target via its own
-geometry, then channels stack into ``(ΣK_i, H, W)``. Per-pixel resolution makes this
-**resolution-agnostic** — heterogeneous patch sizes / token grids simply land on the
-common target, no feature-space resampling.
-
-.. code-block:: yaml
-
-   composite:                               # XOR `encoder:`
-     # concat_resolution auto: `target` (pixel_classifier) | `grid` (decoder/detection)
-     encoders:
-       - { name: uni,    feature_kind: cls_attention }
-       - { name: phikon, feature_kind: cls_attention }
-       - { name: cellvit, feature_kind: patch_features, member_norm: l2 }  # embedding, not attention
-
-Each member carries its own extraction spec and is cached independently; the composite is
-a thin **load-time** concat view (:class:`soma.dense.composite.CompositeDenseFeatureStore`).
-``member_norm`` (``{none, l2, layernorm}``) per-member normalizes before concat so a
-large-magnitude encoder cannot dominate; it auto-defaults to ``l2`` for ``patch_features``
-members and ``none`` for ``cls_attention``. v1 reads every member at the same spacing and
-supervision size; per-member native spacing is deferred.
+Concatenating attention from several foundation models is the paper's headline (+7.95%
+mean Dice). For the pixel-classifier path, ``concat_resolution`` auto-resolves to
+``target`` — each member upsamples its ``(K_i, grid_i)`` grid to the shared supervision
+target via its own geometry, then channels stack into ``(ΣK_i, H, W)``. The full config
+and concat-resolution semantics live on the :doc:`../encoders/composite` page.
 
 References
 ----------
@@ -182,4 +165,4 @@ References
 * Darcet et al., *Vision Transformers Need Registers* (2024),
   `arXiv:2309.16588 <https://arxiv.org/abs/2309.16588>`_.
 * The neural-decoder segmentation path and the window-as-knob sliding extraction it shares
-  (see :doc:`tasks` and :doc:`preprocessing`).
+  (see :doc:`../tasks` and :doc:`../preprocessing`).

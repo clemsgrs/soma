@@ -131,8 +131,7 @@ Feature substrate — patch features or attention grids
 -----------------------------------------------------
 
 The decoder is **input-agnostic**: it consumes whatever dense ``(d, grid)`` grid the
-encoder emits, set by ``preprocessing.feature_kind`` (the same axis as
-:doc:`attention-segmentation`). Two choices:
+encoder emits, set by ``preprocessing.feature_kind`` (see :doc:`decoders`). Two choices:
 
 * ``patch_features`` *(default)* — the ViT patch-token grid (``d`` = the encoder's
   feature dim). The richest descriptor for sub-token localisation; the recommended
@@ -153,10 +152,11 @@ buy extra localisation resolution; they are best treated as an **ablation** agai
 ``patch_features`` baseline rather than an automatic win (a saliency scalar per head
 carries less sub-token detail than a full patch descriptor). Run the ``patch_features``
 baseline first so the attention number is interpretable relative to it. Multi-encoder
-``composite:`` runs are supported on the decoder path and auto-concatenate at token-grid
-resolution. The decoder-free pixel-classifier route used for attention *segmentation* does
-**not** apply here: detection needs the decoder's spatial smoothing to shape clean,
-separable peaks, which a per-pixel-independent model cannot provide.
+:doc:`composite <encoders/composite>` runs are supported on the decoder path and
+auto-concatenate at token-grid resolution. The decoder-free
+:doc:`pixel-classifier <decoders/pixel-classifier>` route used for attention
+*segmentation* does **not** apply here: detection needs the decoder's spatial smoothing
+to shape clean, separable peaks, which a per-pixel-independent model cannot provide.
 
 Metric — F1 at matching distance δ
 ----------------------------------
@@ -198,4 +198,5 @@ References
   WSIs* (2025), `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`_ — P2PNet on frozen
   features.
 * The decoder segmentation path and shared dense extraction (see :doc:`tasks`,
-  :doc:`attention-segmentation`, and :doc:`preprocessing`).
+  :doc:`decoders`, the decoder-free :doc:`decoders/pixel-classifier`, and
+  :doc:`preprocessing`).
