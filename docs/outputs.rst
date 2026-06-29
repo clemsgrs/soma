@@ -1,4 +1,4 @@
-Run Outputs
+Run outputs
 ===========
 
 Each pipeline run writes a self-contained bundle beneath ``output_root``.

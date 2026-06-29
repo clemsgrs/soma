@@ -20,29 +20,31 @@ Under the hood, it builds on two open-source projects of mine:
 as a full end-to-end :doc:`pipeline <pipeline>` or as a set of composable :doc:`building blocks <api>`
 for custom experiment orchestration.
 
+Where to next? Pick the card that matches what you came to do.
+
 .. raw:: html
 
    <section class="soma-section" style="margin-top: 1.5rem">
      <div class="soma-card-grid">
        <a class="soma-card" href="getting-started.html">
-         <h3>Getting started</h3>
+         <h3>New here →</h3>
          <p>Install soma and run your first end-to-end pipeline in minutes.</p>
        </a>
        <a class="soma-card" href="pipeline.html">
-         <h3>Pipeline</h3>
-         <p>Configure a full end-to-end run from a single YAML file.</p>
+         <h3>Run an experiment →</h3>
+         <p>Configure a full run from one YAML file, then launch it from the CLI.</p>
+       </a>
+       <a class="soma-card" href="tasks.html">
+         <h3>Pick a task →</h3>
+         <p>Classification, regression, survival, segmentation, or detection — with the methods that fit each.</p>
+       </a>
+       <a class="soma-card" href="eva-patch-classification-benchmark.html">
+         <h3>Reproduce a benchmark →</h3>
+         <p>Refit the EVA patch-classification suite or the OCELOT detection benchmark.</p>
        </a>
        <a class="soma-card" href="api.html">
-         <h3>API Guide</h3>
-         <p>Mix and match building blocks for custom experiment orchestration.</p>
-       </a>
-       <a class="soma-card" href="cli.html">
-         <h3>CLI Guide</h3>
-         <p>Run experiments from YAML configs and inspect registered presets.</p>
-       </a>
-       <a class="soma-card" href="tutorials/walkthrough-slide-level.html">
-         <h3>Tutorials</h3>
-         <p>Runnable, end-to-end notebooks for slide-level and dense tasks.</p>
+         <h3>Compose building blocks →</h3>
+         <p>Mix and match encoders, aggregators, and decoders for custom orchestration.</p>
        </a>
      </div>
    </section>
