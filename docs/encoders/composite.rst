@@ -46,6 +46,14 @@ Reading each member at its own **native spacing** — so a composite can mix enc
 operating at different physical resolutions — is a planned increment. v1 reads every
 member at the same spacing and supervision size; per-member native spacing is deferred.
 
+Tutorial
+--------
+
+The :doc:`multi-encoder composite walkthrough <../tutorials/walkthrough-composite>` runs
+the ``composite:`` path end to end on a tiny synthetic CPU dataset — extracting two
+ungated members, concatenating them into a :class:`~soma.dense.composite.CompositeDenseFeatureStore`,
+and training a dense segmentation decoder on the stacked grid.
+
 References
 ----------
 

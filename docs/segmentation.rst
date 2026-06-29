@@ -105,7 +105,7 @@ below are the alternatives a segmentation run can swap in.
      - ✓
      - Concatenate the dense outputs of several foundation models into one richer
        per-position vector (the paper's +7.95% mean Dice headline).
-     - *(notebook planned)*
+     - :doc:`walkthrough <tutorials/walkthrough-composite>`
    * - **Trainable component**
      -
      -

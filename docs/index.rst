@@ -63,6 +63,7 @@ for custom experiment orchestration.
 
    tutorials/walkthrough-slide-level
    tutorials/walkthrough-dense
+   tutorials/walkthrough-composite
 
 .. toctree::
    :maxdepth: 1

@@ -1,0 +1,278 @@
+"""Build ``walkthrough-composite.ipynb`` (multi-encoder concat) — empty outputs.
+
+Authoring tooling (not part of the tutorial). Mirrors ``_build_dense.py``: it
+assembles the multi-encoder *composite* walkthrough cell-by-cell and writes it
+next to this file.
+
+Outputs are populated **out-of-band on the HPC** (where ``soma`` is installed),
+not here. The local docs env cannot import ``soma``, and the build never
+re-executes notebooks (``nbsphinx_execute = "never"``), so this builder emits the
+notebook with **empty** cell outputs by default — which renders fine. Execution is
+gated behind the ``SOMA_EXECUTE_NOTEBOOKS`` env flag so the HPC follow-up
+(issue #200) is a one-flag flip:
+
+    SOMA_EXECUTE_NOTEBOOKS=1 python docs/tutorials/_build_composite.py
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import nbformat
+from nbformat.v4 import new_code_cell, new_markdown_cell, new_notebook
+
+HERE = Path(__file__).resolve().parent
+OUT = HERE / "walkthrough-composite.ipynb"
+
+md = new_markdown_cell
+code = new_code_cell
+
+
+def build() -> nbformat.NotebookNode:
+    cells = [
+        md(
+            "# Multi-encoder composite walkthrough\n"
+            "\n"
+            "This notebook walks through soma's **composite** encoder — concatenating the\n"
+            "dense outputs of several frozen foundation models into one richer per-position\n"
+            "vector before a single decoder consumes the stack:\n"
+            "\n"
+            "```\n"
+            "Dataset(+masks) -> [encoder A grid] ┐\n"
+            "                                    ├-> CompositeDenseFeatureStore -> train (decoder + head) -> evaluate\n"
+            "                   [encoder B grid] ┘\n"
+            "```\n"
+            "\n"
+            "It builds directly on the [dense-prediction walkthrough](walkthrough-dense.ipynb):\n"
+            "the flow is identical, but instead of one `DenseFeatureStore` from a single\n"
+            "encoder we extract **two** members independently and present a **load-time\n"
+            "channel-concat view** (`CompositeDenseFeatureStore`) to `train`. The decoder\n"
+            "sees a single wider grid and is otherwise unchanged — this is the\n"
+            "[`composite:`](../encoders/composite.rst) path the YAML config exposes, written\n"
+            "out as building blocks.\n"
+            "\n"
+            "> **Tiny synthetic data, runs on CPU, ungated encoders — the numbers are\n"
+            "> meaningless; the point is the API.** We concatenate two public 224 px /\n"
+            "> patch-16 encoders — [`phikon`](https://huggingface.co/owkin/phikon) and\n"
+            "> [`hibou-b`](https://huggingface.co/histai/hibou-b) — at their native window\n"
+            "> (a 14×14 token grid each), which avoids position-embedding interpolation."
+        ),
+        md(
+            "## ⚠️ Scaffolding (not soma API)\n"
+            "\n"
+            "As in the dense walkthrough, dense supervision lives in per-sample files, not a\n"
+            "scalar `label`: `dataset.csv` carries `sample_id, image_path, mask_path`, where\n"
+            "the mask is an integer-class raster the same size as the ROI.\n"
+            "\n"
+            "We fabricate small **224 px ROI tiles** (the dense flow consumes fixed-size\n"
+            "tiles/ROIs, not whole WSIs) plus their masks. Nothing here is part of soma — it\n"
+            "is just enough scaffolding to have something to feed the encoders."
+        ),
+        code(
+            "import logging, warnings\n"
+            "warnings.filterwarnings('ignore')\n"
+            "logging.getLogger().setLevel(logging.ERROR)\n"
+            "\n"
+            "import tempfile\n"
+            "from pathlib import Path\n"
+            "\n"
+            "import numpy as np\n"
+            "import pandas as pd\n"
+            "import tifffile\n"
+            "from PIL import Image\n"
+            "\n"
+            "WORK = Path(tempfile.mkdtemp(prefix='soma-composite-tutorial-'))\n"
+            "ROIS = WORK / 'rois'; MASKS = WORK / 'masks'\n"
+            "for d in (ROIS, MASKS): d.mkdir()\n"
+            "rng = np.random.default_rng(0)\n"
+            "\n"
+            "SIZE = 224          # phikon / hibou-b native window\n"
+            "SPACING = 0.5       # microns/pixel (both members read at the same spacing in v1)\n"
+            "NUM_CLASSES = 3     # 0 = background, 1, 2 = tissue classes\n"
+            "\n"
+            "def make_roi(path):\n"
+            "    img = np.clip(np.stack([np.full((SIZE, SIZE), 150),\n"
+            "                            np.full((SIZE, SIZE), 70),\n"
+            "                            np.full((SIZE, SIZE), 160)], -1).astype(np.int16)\n"
+            "                  + rng.integers(-30, 30, (SIZE, SIZE, 3)), 0, 255).astype(np.uint8)\n"
+            "    tifffile.imwrite(path, img, photometric='rgb', tile=(SIZE, SIZE),\n"
+            "                     resolution=(20000, 20000), resolutionunit='CENTIMETER')\n"
+            "\n"
+            "def make_mask(path):\n"
+            "    m = np.zeros((SIZE, SIZE), np.uint8)\n"
+            "    m[SIZE // 4:SIZE // 2, SIZE // 4:SIZE // 2] = 1\n"
+            "    m[SIZE // 2:3 * SIZE // 4, SIZE // 2:3 * SIZE // 4] = 2\n"
+            "    Image.fromarray(m).save(path)\n"
+            "\n"
+            "ids = [f'roi{i:02d}' for i in range(8)]\n"
+            "for sid in ids:\n"
+            "    make_roi(ROIS / f'{sid}.tif')\n"
+            "    make_mask(MASKS / f'{sid}.png')\n"
+            "\n"
+            "split = ['train'] * 4 + ['tune'] * 2 + ['test'] * 2\n"
+            "splits_csv = WORK / 'splits.csv'\n"
+            "pd.DataFrame({'sample_id': ids, 'split': split, 'fold': 0}).to_csv(splits_csv, index=False)\n"
+            "\n"
+            "img_paths = [str(ROIS / f'{s}.tif') for s in ids]\n"
+            "\n"
+            "# Feature extraction only needs the images; supervision lives in the mask manifest.\n"
+            "extract_csv = WORK / 'extract.csv'\n"
+            "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
+            "              'label': 0}).to_csv(extract_csv, index=False)\n"
+            "\n"
+            "seg_csv = WORK / 'seg.csv'\n"
+            "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
+            "              'mask_path': [str(MASKS / f'{s}.png') for s in ids]}).to_csv(seg_csv, index=False)\n"
+            "print('segmentation manifest:')\n"
+            "print(pd.read_csv(seg_csv).head(3).to_string(index=False))"
+        ),
+        md(
+            "## 1. Extract each member into its own dense store\n"
+            "\n"
+            "A composite has **no separate cache**: each member is extracted independently\n"
+            "with `DenseTileFeatureExtractor` (exactly as in the single-encoder dense flow)\n"
+            "and cached on its own. We run the same ROIs through `phikon` and `hibou-b`,\n"
+            "writing each member's grids to its own feature directory. Both emit a 14×14\n"
+            "token grid here, but they need not — members may differ freely in patch size /\n"
+            "grid; the composite reconciles them at load time."
+        ),
+        code(
+            "from soma import (\n"
+            "    Dataset, DenseTileFeatureExtractor, EncoderConfig, CacheConfig,\n"
+            ")\n"
+            "\n"
+            "MEMBERS = ['phikon', 'hibou-b']\n"
+            "member_stores = []\n"
+            "for name in MEMBERS:\n"
+            "    extractor = DenseTileFeatureExtractor(\n"
+            "        Dataset(extract_csv),\n"
+            "        EncoderConfig(name=name),\n"
+            "        target_size=SIZE,\n"
+            "        spacing_um=SPACING,\n"
+            "        backend='openslide',\n"
+            "        cache=CacheConfig(enabled=False),\n"
+            "    )\n"
+            "    store = extractor.run(str(WORK / 'dense' / name))\n"
+            "    member_stores.append(store)\n"
+            "    print(f'{name}: feature_dim={store.feature_dim}, samples={len(store.available_samples)}')"
+        ),
+        md(
+            "## 2. Concatenate into a `CompositeDenseFeatureStore`\n"
+            "\n"
+            "`CompositeDenseFeatureStore` is a thin **load-time** view over the per-member\n"
+            "stores — it does not re-extract or re-cache anything. For the **decoder /\n"
+            "detection** paths the natural choice is `concat_resolution='grid'`: each\n"
+            "member's native grid is resampled to a common token grid, then channels stack\n"
+            "into `(Σdᵢ, h, w)` for the decoder to consume. (The decoder-free pixel\n"
+            "classifier instead uses `'target'`, concatenating at full mask resolution.)\n"
+            "\n"
+            "`member_norms` per-member normalizes before concat so a large-magnitude encoder\n"
+            "cannot dominate. The concatenated feature dim is the **sum** of the members'."
+        ),
+        code(
+            "from soma.dense.composite import CompositeDenseFeatureStore\n"
+            "\n"
+            "composite_store = CompositeDenseFeatureStore(\n"
+            "    member_stores,\n"
+            "    concat_resolution='grid',     # auto for the decoder / detection paths\n"
+            "    member_norms=['none', 'l2'],  # one per member, aligned with MEMBERS\n"
+            ")\n"
+            "print('composite feature_dim:', composite_store.feature_dim,\n"
+            "      '=', ' + '.join(str(s.feature_dim) for s in member_stores))\n"
+            "print('shared samples:', len(composite_store.available_samples))"
+        ),
+        md(
+            "## 3. Train segmentation on the composite\n"
+            "\n"
+            "From here the flow is **identical to the single-encoder dense walkthrough**: the\n"
+            "composite store drops into `train` wherever a `DenseFeatureStore` would go. The\n"
+            "decoder simply sees a wider per-position vector; nothing else changes."
+        ),
+        code(
+            "from soma.dataset import SegmentationManifest\n"
+            "from soma import (\n"
+            "    Splits, DecoderConfig, TaskConfig, TrainingConfig, EvalConfig,\n"
+            "    PreprocessingConfig, train,\n"
+            ")\n"
+            "\n"
+            "seg_manifest = SegmentationManifest(seg_csv)\n"
+            "seg_splits = Splits(splits_csv, seg_manifest)\n"
+            "\n"
+            "seg_result = train(\n"
+            "    feature_store=composite_store,\n"
+            "    dataset=seg_manifest,\n"
+            "    splits=seg_splits,\n"
+            "    dataset_type='segmentation',\n"
+            "    decoder=DecoderConfig(name='lightweight_conv'),\n"
+            "    task=TaskConfig(name='segmentation', params={'num_classes': NUM_CLASSES}),\n"
+            "    training=TrainingConfig(epochs=3, batch_size=2, learning_rate=1e-3, seed=0),\n"
+            "    evaluation=EvalConfig(metrics=['mean_dice', 'mean_iou']),\n"
+            "    # our PNG masks carry no spacing metadata; declare the ROI spacing so they\n"
+            "    # register against the grids extracted at the same spacing.\n"
+            "    preprocessing=PreprocessingConfig(requested_spacing_um=SPACING),\n"
+            "    run_dir=str(WORK / 'runs' / 'composite-segmentation'),\n"
+            ")\n"
+            "print('composite segmentation run dir:', seg_result.run_dir)"
+        ),
+        md(
+            "## 4. The one-shot `Pipeline` equivalent\n"
+            "\n"
+            "The same composite, driven from a single config. The members live under a\n"
+            "`composite:` block (which is **XOR** the single `encoder:`); the pipeline\n"
+            "extracts each member and builds the concat view for you. `concat_resolution`\n"
+            "auto-resolves to `grid` on the decoder path, so it can be left unset.\n"
+            "\n"
+            "*(Shown for reference, not executed.)*\n"
+            "\n"
+            "```python\n"
+            "from soma import (\n"
+            "    Pipeline, PipelineConfig, PreprocessingConfig, CompositeConfig, EncoderMemberConfig,\n"
+            "    DecoderConfig, TaskConfig, TrainingConfig, EvalConfig, CacheConfig,\n"
+            ")\n"
+            "\n"
+            "config = PipelineConfig(\n"
+            "    dataset_csv=str(seg_csv),\n"
+            "    splits_csv=str(splits_csv),\n"
+            "    output_root='output/composite-segmentation',\n"
+            "    dataset_type='segmentation',\n"
+            "    preprocessing=PreprocessingConfig(\n"
+            "        backend='openslide', requested_tile_size_px=224, requested_spacing_um=0.5,\n"
+            "    ),\n"
+            "    composite=CompositeConfig(encoders=[          # XOR `encoder=`\n"
+            "        EncoderMemberConfig(name='phikon'),\n"
+            "        EncoderMemberConfig(name='hibou-b', member_norm='l2'),\n"
+            "    ]),\n"
+            "    decoder=DecoderConfig(name='lightweight_conv'),\n"
+            "    task=TaskConfig(name='segmentation', params={'num_classes': 3}),\n"
+            "    training=TrainingConfig(epochs=3, batch_size=2, learning_rate=1e-3),\n"
+            "    evaluation=EvalConfig(metrics=['mean_dice', 'mean_iou']),\n"
+            "    cache=CacheConfig(enabled=True),\n"
+            ")\n"
+            "results = Pipeline(config).run()\n"
+            "```"
+        ),
+    ]
+    nb = new_notebook(cells=cells)
+    nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
+    nb.metadata["language_info"] = {"name": "python"}
+    return nb
+
+
+def main() -> None:
+    nb = build()
+    # Outputs are populated out-of-band on the HPC (issue #200). Locally this stays
+    # OFF, so we emit the notebook with EMPTY cell outputs — which renders fine since
+    # the docs build never re-executes notebooks (nbsphinx_execute = "never").
+    if os.environ.get("SOMA_EXECUTE_NOTEBOOKS"):
+        from nbclient import NotebookClient
+
+        client = NotebookClient(nb, timeout=1800, kernel_name="python3",
+                                resources={"metadata": {"path": str(HERE)}})
+        client.execute()
+    nbformat.write(nb, OUT)
+    print(f"wrote {OUT}")
+
+
+if __name__ == "__main__":
+    main()

@@ -178,7 +178,7 @@ required component; the rows below are the alternatives, shared with the
      - ✓
      - Concatenate the dense outputs of several foundation models into one richer
        per-position vector; auto-concatenates at token-grid resolution before the decoder.
-     - *(notebook planned)*
+     - :doc:`walkthrough <tutorials/walkthrough-composite>`
    * - **Trainable component**
      -
      -
