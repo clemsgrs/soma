@@ -88,6 +88,9 @@ for custom experiment orchestration.
    :caption: Tasks
 
    tasks
+   classification
+   regression
+   survival
    detection
 
 .. toctree::
