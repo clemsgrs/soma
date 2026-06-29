@@ -32,7 +32,7 @@ def test_cli_generator_matches_checked_in_file() -> None:
     checked_in = (docs_dir / "cli.rst").read_text(encoding="utf-8").strip()
 
     assert generated == checked_in
-    assert "CLI Guide" in generated
+    assert generated.startswith("CLI\n===")
     assert "Available commands" in generated
     assert "What the CLI expects" in generated
 
