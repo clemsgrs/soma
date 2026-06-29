@@ -8,7 +8,9 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: docs
+  # Ref-scoped so parallel docs PRs don't cancel each other's build; main's
+  # deploy still serialises on its own ref.
+  group: docs-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:

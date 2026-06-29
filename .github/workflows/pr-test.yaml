@@ -25,10 +25,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The branch ruleset requires the `docker-test` status check, so this job
+      # must always run and report success — even on docs-only PRs. We keep the
+      # job (and its name) intact, but skip the costly Docker build + suite when
+      # the PR touches nothing but docs. Conservative default: run the suite
+      # unless the diff is purely under docs/.
+      - name: Determine whether code changed
+        id: scope
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "Non-PR event: running the full suite."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base='${{ github.event.pull_request.base.sha }}'
+          head='${{ github.event.pull_request.head.sha }}'
+          files="$(git diff --name-only "${base}...${head}")"
+          echo "Changed files:"
+          echo "$files"
+          if echo "$files" | grep -qvE '^docs/'; then
+            echo "Non-docs paths changed -> running the full suite."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Docs-only change -> skipping the Dockerized suite."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up Docker Buildx
+        if: steps.scope.outputs.run == 'true'
         uses: docker/setup-buildx-action@v3
 
       - name: Free disk space on runner
+        if: steps.scope.outputs.run == 'true'
         run: |
           set -euxo pipefail
           df -h
@@ -41,6 +70,7 @@ jobs:
           df -h
 
       - name: Build CI image
+        if: steps.scope.outputs.run == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -52,6 +82,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Run full test suite in container
+        if: steps.scope.outputs.run == 'true'
         run: |
           set -euo pipefail
           docker run --rm \
@@ -60,13 +91,13 @@ jobs:
             bash -lc "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt '/opt/app[dev]' pytest pytest-cov && python -m pytest -q tests -k 'not prism_slide_feature_matches_slide2vec_gt'"
 
       - name: Guard required secret
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ steps.scope.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
           set -euo pipefail
           test -n "${HF_TOKEN:-}" || { echo "HF_TOKEN is required but not set"; exit 1; }
 
       - name: Run PRISM regression in container
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if: ${{ steps.scope.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         env:
           SOMA_RUN_PRISM_REGRESSION: "1"
         run: |
