@@ -1,4 +1,4 @@
-Getting Started
+Getting started
 ===============
 
 `soma` is a modular framework to streamline computational pathology research.
