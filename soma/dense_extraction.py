@@ -34,6 +34,7 @@ from torch.utils.data import DataLoader
 from torch.utils.data import Dataset as TorchDataset
 
 from soma.cache import (
+    build_dense_cache_key,
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
@@ -336,6 +337,50 @@ class DenseTileFeatureExtractor:
     def _image_pad_value(self) -> float | None:
         # Only meaningful for constant/zero padding; None (N/A) for reflect/replicate.
         return 0.0 if self._pad_mode in ("constant", "zero") else None
+
+    def cache_dir(self, feature_dir: str | Path | None = None) -> Path | None:
+        """The dense cache dir (``cache_root/dense/<key>``) this run reads and writes.
+
+        Resolved with **no side effects**: it loads no encoder (the key needs only the
+        static ``patch_size`` slide2vec exposes as registry metadata — the #165
+        check-before-load constant), scans no dataset (the dense key is
+        dataset-independent), and creates no directories. Returns ``None`` when caching
+        is disabled.
+
+        Recomputes the *same* key ``run()`` resolves through ``resolve_dense_cache`` —
+        ``build_dense_cache_key`` is the single source of truth for both, and the
+        ``cache_root / "dense" / key`` layout mirrors ``_resolve_cache`` — so an offline
+        re-scorer can address the *exact* grids this run trained on rather than guessing
+        among sibling cache-key dirs (an empty orphan from a since-changed key looks just
+        like the real one to a blind glob). ``feature_dir`` is consulted only when
+        ``cache.root_dir`` is unset (then the root is its parent ``feature_cache/``);
+        the pipeline always sets ``root_dir`` for dense runs, so it is usually moot.
+        """
+        if not self._cache.enabled:
+            return None
+        patch_size = resolve_patch_size(self._encoder.name)
+        dense_dtype = resolve_output_dtype(
+            self._cache.dtype, self._execution.precision or self._encoder.precision
+        )
+        cache_root = resolve_cache_root(
+            self._cache, feature_dir=feature_dir if feature_dir is not None else Path.cwd()
+        )
+        key = build_dense_cache_key(
+            tile_encoder_name=self._encoder.name,
+            target_size=self._target_size,
+            patch_size=patch_size,
+            pad_mode=self._pad_mode,
+            execution=self._encoder,
+            preprocessing=self._preprocessing,
+            dense_input_mode=self._dense_input_mode,
+            window_size=self._window_size,
+            overlap=self._overlap,
+            feature_kind=self._feature_kind,
+            attention_blocks=self._attention_blocks,
+            attention_include_registers=self._attention_include_registers,
+            dtype=dense_dtype,
+        )
+        return cache_root / "dense" / key
 
     def run(self, feature_dir: str | Path) -> DenseFeatureStore:
         feature_dir = Path(feature_dir).resolve()
