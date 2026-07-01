@@ -31,6 +31,13 @@ A frozen probe at **0.70 mean_F1** lands in the OCELOT 2023 competitive band (to
 fully-trained methods ~0.70–0.73) — a strong frozen-probe baseline, not merely "plumbing
 works." The health-gate context is GitHub issue #151.
 
+> **This file is the single-seed (seed 0) anchor reference** that `reproduce.py` checks
+> against. The 3-seed **encoder × spacing campaign** (Virchow2/UNI2 × 0.25/0.5 + anchor,
+> tune-select → test-confirm; GitHub issue #152) lives in
+> `docs/ocelot-detection-benchmark.rst`. Its finding: Virchow2 @ 0.2 wins on tune, but on
+> test it ties UNI2 @ 0.25 within seed noise (both ~0.70 mF1); 0.5 µm/px is not competitive.
+> This seed-0 test greedy mF1 (0.6995) equals the campaign's Virchow2 @ 0.2 seed-0 value.
+
 ## Environment
 
 | component | version |
