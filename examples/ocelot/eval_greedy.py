@@ -6,11 +6,10 @@ cached dense grids + the saved ``best_model.pt`` and re-run just the back half o
 thresholds on the tune split, then score tune + test. Prints both so they can be
 compared to the Hungarian headline in the run's ``metrics.json``.
 
-For each test split this emits two numbers: the leakage-free **headline** (per-class
-thresholds frozen from the tune split — what a real submitter reports) and an
-**oracle** ceiling (thresholds re-swept directly on that test split — a diagnostic
-ceiling ONLY, never the reported result). The headline-to-oracle gap measures how well
-the tune-to-test operating point transferred.
+For each test split this emits the leakage-free **headline**: per-class thresholds
+frozen from the tune split and applied once to test — exactly what a real submitter
+reports. (No oracle ceiling: the test-side threshold sweep that #146 added for the
+health gate is gone now the gate has served its purpose — see #152.)
 
 Usage (from the soma repo; slide2vec>=5.0.0 must be importable):
     python examples/ocelot/eval_greedy.py \
@@ -26,7 +25,17 @@ import functools
 import inspect
 import json
 import math
+import sys
+from dataclasses import replace
 from pathlib import Path
+
+# Import the working-tree soma (this repo), not a stale site-packages copy. soma is not
+# editable-installed in this environment, and when this file runs as a script sys.path[0]
+# is examples/ocelot/, so `import soma` would otherwise resolve to the installed package.
+# `python -m soma` training already uses the working tree; the re-scorer must match it, or
+# it could recompute a dense cache key that disagrees with the grids training wrote. Prepend
+# the repo root (…/examples/ocelot/eval_greedy.py -> parents[2]) ahead of site-packages.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch
 
@@ -34,6 +43,8 @@ from soma.config import load_config
 from soma.dataset import DetectionManifest, Splits
 from soma.decoders.registry import decoder_registry
 from soma.dense import DenseFeatureStore
+from soma.dense_extraction import DenseTileFeatureExtractor
+from soma.encoders.validation import resolve_preprocessing_config
 from soma.pipeline import (
     _evaluate_detection,
     _make_loaders,
@@ -52,16 +63,19 @@ def build_greedy_report(
     dataset,
     matching: str,
 ) -> dict:
-    """Greedy (OCELOT-official) report: a leakage-free headline plus an oracle ceiling.
+    """Greedy (OCELOT-official) report: the leakage-free headline.
 
-    Headline: per-class score thresholds swept on the *tune* split, frozen, then applied
-    once to each test split — the leakage-free number a real submitter reports. Oracle:
-    the same per-class thresholds re-swept directly on each test split — a DIAGNOSTIC
-    CEILING ONLY, never the reported result. The headline-to-oracle gap measures how well
-    the tune-to-test operating point transferred (a large gap = a fragile threshold).
+    Per-class score thresholds are swept on the *tune* split, frozen, then applied once to
+    each test split — the leakage-free number a real submitter reports. No oracle ceiling:
+    the test-side re-sweep #146 added for the health gate is dropped now the gate has done
+    its job (#152), so test thresholds are never swept on test here.
 
-    The greedy matcher is whatever ``head.matching`` selects, so both sweeps and both
+    The greedy matcher is whatever ``head.matching`` selects, so the sweep and the
     evaluations stay greedy-consistent.
+
+    Pass an empty ``test_loaders`` for a tune-only report (model-selection sweeps under
+    ``evaluation.holdout_test``): the returned dict then carries just ``matching``,
+    ``score_threshold_per_class``, and ``tune``.
     """
     headline_thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
     head.score_threshold = headline_thresholds
@@ -75,25 +89,11 @@ def build_greedy_report(
         # Headline: the frozen tune thresholds applied once to this test split.
         head.score_threshold = headline_thresholds
         headline = _evaluate_detection(model, loader, name, device, head=head, dataset=dataset)
-        # Oracle: re-sweep on this very split — leaky by construction, a ceiling only.
-        oracle_thresholds = _sweep_detection_thresholds(model, loader, device, head)
-        head.score_threshold = oracle_thresholds
-        oracle = _evaluate_detection(model, loader, name, device, head=head, dataset=dataset)
-        head.score_threshold = headline_thresholds  # leave the head on the reported op-point
         out[name] = {
             "headline": {
                 "note": "reported result — per-class thresholds frozen from the tune split (leakage-free)",
                 "score_threshold_per_class": headline_thresholds,
                 "metrics": headline.metrics,
-            },
-            "oracle": {
-                "note": (
-                    "DIAGNOSTIC CEILING ONLY — per-class thresholds swept on this test split "
-                    "(leaky); never the reported result. The headline-to-oracle gap measures "
-                    "operating-point fragility."
-                ),
-                "score_threshold_per_class": oracle_thresholds,
-                "metrics": oracle.metrics,
             },
         }
     return out
@@ -111,6 +111,12 @@ def main() -> None:
         help="specific experiments/*/runs/<ts> dir holding best_model.pt; defaults to the "
         "newest run under --run-dir (disambiguates when several runs share an output_root)",
     )
+    ap.add_argument(
+        "--tune-only",
+        action="store_true",
+        help="score the tune split only (no test inference). Mirrors evaluation.holdout_test: "
+        "use for model-selection re-scoring of runs whose test grids were never cached.",
+    )
     args = ap.parse_args()
 
     from soma.training.model import SegmentationModel
@@ -119,10 +125,55 @@ def main() -> None:
     manifest = DetectionManifest(cfg.dataset_csv)
     splits = Splits(cfg.splits_csv, manifest)
     fold_split = splits.folds[0]
+    train_records = [manifest.samples[s] for s in fold_split.train]
+    probe_id = train_records[0].sample_id
 
-    # Locate the cached feature store + best_model.pt for this run.
-    store_dir = next((args.run_dir / "feature_cache" / "dense").glob("*"))
+    # Locate the dense grids this run trained on. A run dir can accumulate more than one
+    # dense cache-key subdir — e.g. an empty orphan left by a since-changed key (the
+    # 1024->410/819 target_size fix) sitting next to the populated one — so a blind
+    # next(glob("*")) can grab the wrong dir. Recompute the *exact* key from the config
+    # via the extractor's side-effect-free resolver (no encoder load, no dataset scan, no
+    # dir creation), built the same way the pipeline builds it for dataset_type='detection'
+    # (soma/pipeline.py::_build_dense_tile_context). That addresses the precise grids the
+    # run wrote, independent of what sibling dirs happen to exist.
+    # Resolve encoder-driven preprocessing defaults exactly as the pipeline does before
+    # extraction (soma/pipeline.py::_resolve_preprocessing → resolve_preprocessing_config):
+    # it fills derived fields (read_tile_size_px / ref_tile_size_px from
+    # requested_tile_size_px) that feed the dense cache key. Skipping it recomputes a
+    # *different*, wrong key — the raw config leaves those fields None.
+    pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
+    cache_cfg = cfg.cache
+    if cache_cfg.root_dir is None:
+        cache_cfg = replace(cache_cfg, root_dir=args.run_dir / "feature_cache")
+    extractor = DenseTileFeatureExtractor(
+        manifest,
+        cfg.encoder,
+        target_size=int(pre.requested_tile_size_px),
+        spacing_um=float(pre.requested_spacing_um),
+        backend=pre.backend,
+        tolerance=float(pre.tolerance),
+        window_size=pre.dense_window_size,
+        overlap=float(pre.dense_window_overlap),
+        execution=cfg.execution,
+        cache=cache_cfg,
+        preprocessing=pre,
+    )
+    store_dir = extractor.cache_dir()
+    if store_dir is None:
+        raise RuntimeError(
+            "caching is disabled in this config; eval_greedy needs the cached dense grids "
+            "the run trained on."
+        )
     store = DenseFeatureStore(store_dir)
+    # Fail loud if the recomputed key points where the grids aren't — a config that no
+    # longer matches what this run trained on, or an incomplete extraction — instead of
+    # silently re-scoring against the wrong (or an empty) store.
+    if probe_id not in store.available_samples:
+        raise FileNotFoundError(
+            f"recomputed dense cache dir {store_dir} does not contain sample '{probe_id}' "
+            f"({len(store.available_samples)} samples present). The config likely no longer "
+            f"matches the one this run was trained with, or extraction is incomplete."
+        )
     if args.run_subdir is not None:
         ckpt = args.run_subdir / "best_model.pt"
         if not ckpt.exists():
@@ -139,9 +190,14 @@ def main() -> None:
         ckpt = candidates[-1]
     print(f"feature store: {store_dir}\ncheckpoint:    {ckpt}")
 
-    train_records = [manifest.samples[s] for s in fold_split.train]
     tune_records = [manifest.samples[s] for s in fold_split.tune]
-    test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
+    # --tune-only drops the test splits before any loader/grid is touched, so a run trained
+    # under evaluation.holdout_test (test grids never extracted) can still be re-scored.
+    test_by_split = (
+        {}
+        if args.tune_only
+        else {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
+    )
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])
@@ -192,13 +248,10 @@ def main() -> None:
     )
     print(f"\nmatching = {args.matching}")
     print(f"tune-frozen per-class thresholds (headline): {out['score_threshold_per_class']}")
+    print(f"  [tune] mF1={out['tune'].get('mean_f1')}")
     for name in test_loaders:
         headline_f1 = out[name]["headline"]["metrics"].get("mean_f1")
-        oracle_f1 = out[name]["oracle"]["metrics"].get("mean_f1")
-        print(
-            f"  [{name}] headline mF1={headline_f1}  |  "
-            f"oracle mF1 (diagnostic ceiling, NOT reported)={oracle_f1}"
-        )
+        print(f"  [{name}] headline mF1={headline_f1}")
     print(json.dumps(out, indent=2))
 
 

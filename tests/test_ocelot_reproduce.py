@@ -31,13 +31,13 @@ checkpoint:    /x/runs/ts/best_model.pt
 
 matching = greedy
 tune-frozen per-class thresholds (headline): [0.5, 0.49]
-  [test] headline mF1=0.6995  |  oracle mF1 (diagnostic ceiling, NOT reported)=0.7062
+  [tune] mF1=0.7146
+  [test] headline mF1=0.6995
 {
   "matching": "greedy",
   "tune": {"mean_f1": 0.7146},
   "test": {
-    "headline": {"metrics": {"mean_f1": 0.6995}},
-    "oracle": {"metrics": {"mean_f1": 0.7062}}
+    "headline": {"metrics": {"mean_f1": 0.6995}}
   }
 }
 """

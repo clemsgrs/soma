@@ -24,7 +24,7 @@ preprocessing:
   # The 0.5 µm/px patches are flat JPEGs; the reader reads them at native resolution and
   # ignores requested_spacing_um (kept to pin the µm->px conversions and self-document the
   # cache key). The 448 window + 0.25 overlap blends window seams / border artifacts.
-  requested_tile_size_px: 1024
+  requested_tile_size_px: 410   # native px of the 0.5 µm/px render (1024 × 0.2/0.5); v1 needs target_size == tile size
   requested_spacing_um: 0.5
   dense_window_size: 448
   dense_window_overlap: 0.25

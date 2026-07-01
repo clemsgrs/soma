@@ -26,14 +26,17 @@ tolerance). Per-class score thresholds are swept on **tune**, frozen, and applie
   result is matcher-independent.
 - Frozen per-class thresholds (swept on tune): **BC 0.5317, TC 0.4913**.
 - tune→test mean_F1 drop is only −0.015 → the operating point transfers; not overfit to tune.
-- **Oracle ceiling** (test-side threshold sweep, *diagnostic only*): greedy mean_F1 0.7062,
-  i.e. only ~0.7 F1 points lie between the frozen result and the test-optimal thresholds →
-  the result is **signal-limited, not threshold-limited**. Gains come from the
-  representation (encoder × spacing × decoder), not from thresholding.
 
 A frozen probe at **0.70 mean_F1** lands in the OCELOT 2023 competitive band (top
 fully-trained methods ~0.70–0.73) — a strong frozen-probe baseline, not merely "plumbing
 works." The health-gate context is GitHub issue #151.
+
+> **This file is the single-seed (seed 0) anchor reference** that `reproduce.py` checks
+> against. The 3-seed **encoder × spacing campaign** (Virchow2/UNI2 × 0.25/0.5 + anchor,
+> tune-select → test-confirm; GitHub issue #152) lives in
+> `docs/ocelot-detection-benchmark.rst`. Its finding: Virchow2 @ 0.2 wins on tune, but on
+> test it ties UNI2 @ 0.25 within seed noise (both ~0.70 mF1); 0.5 µm/px is not competitive.
+> This seed-0 test greedy mF1 (0.6995) equals the campaign's Virchow2 @ 0.2 seed-0 value.
 
 ## Environment
 

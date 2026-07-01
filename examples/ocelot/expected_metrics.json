@@ -38,10 +38,6 @@
       "mean_f1_per_image": 0.6007
     }
   },
-  "oracle_ceiling_diagnostic": {
-    "_comment": "test-side threshold sweep; DIAGNOSTIC CEILING ONLY, never the reported result. The small headline->oracle gap shows the result is signal-limited, not threshold-limited.",
-    "test_greedy_mean_f1": 0.7062
-  },
   "tolerance": {
     "_comment": "Absolute band on mean_f1 for an independent reproduction. The dense grids are cache-identical at extraction_batch_size=8, so the only stochastic part is decoder training; cross-GPU/cuDNN nondeterminism moves mean_f1 by ~0.01-0.02. Reproductions outside this band signal a real plumbing/environment difference, not noise.",
     "mean_f1_abs": 0.02
