@@ -435,30 +435,49 @@ def format_confirmation_markdown(results: dict[str, dict], winner: str) -> str:
     return "\n".join(lines)
 
 
-def confirmation_cells(winner: str) -> list[Cell]:
-    """The winner plus the native anchor (deduped if the winner *is* the anchor)."""
+def confirmation_cells(winner: str, summaries: dict[str, dict] | None = None) -> list[Cell]:
+    """The winner plus the native anchor (deduped if the winner *is* the anchor).
+
+    When the winner *is* the anchor, ``winner + anchor`` collapses to a single cell, which
+    would make confirmation score one config against nothing. To keep confirmation a real
+    leakage-free test head-to-head, fall back to the runner-up (the best non-winner cell by
+    tune mF1) so the recommended config is still compared against its closest competitor.
+    """
     by_key = {c.key: c for c in CELLS}
     cells = [by_key[winner]]
     if ANCHOR.key != winner:
         cells.append(ANCHOR)
+    elif summaries:
+        contenders = {k: v for k, v in summaries.items() if k != winner and k in by_key}
+        if contenders:
+            runner_up = max(contenders, key=lambda k: contenders[k]["mean_f1_mean"])
+            cells.append(by_key[runner_up])
     return cells
 
 
 def run_confirmation(
     data_root: Path, seeds: list[int], winner: str | None, *, dry_run: bool
 ) -> dict:
-    """Score the tune-selected winner + anchor on test (greedy headline + Hungarian)."""
+    """Score the tune-selected winner + anchor on test (greedy headline + Hungarian).
+
+    When the winner is the anchor, the runner-up is pulled from the selection report's
+    ``summaries`` so confirmation still yields a real test head-to-head (see
+    ``confirmation_cells``); an explicit ``--winner`` with no report keeps the plain
+    winner+anchor behaviour.
+    """
+    sel = OUT_DIR / "selection_report.json"
+    sel_data = json.loads(sel.read_text()) if sel.exists() else None
     if winner is None:
-        sel = OUT_DIR / "selection_report.json"
-        if not sel.exists():
+        if sel_data is None:
             raise SystemExit(
                 f"no {sel}; run the selection phase first, or pass --winner <cell-key>"
             )
-        winner = json.loads(sel.read_text())["winner"]
+        winner = sel_data["winner"]
+    summaries = sel_data.get("summaries") if sel_data else None
     print(f"confirmation: winner={winner}, anchor={ANCHOR.key}")
 
     results: dict[str, dict] = {}
-    for cell in confirmation_cells(winner):
+    for cell in confirmation_cells(winner, summaries):
         if not test_grids_present(cell, data_root):
             if dry_run:
                 print(f"[{cell.key}] would backfill test grids (1-epoch holdout_test=false)")
