@@ -30,13 +30,12 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 from collections import Counter
 from pathlib import Path
 
 from PIL import Image
 
-from soma.curation.eva import CuratedManifest
+from soma.curation.manifest import CuratedManifest, write_manifest
 
 # OCELOT 1-based cell label -> Soma 0-based class id.
 OCELOT_LABEL_REMAP = {1: 0, 2: 1}  # 1=BC -> 0, 2=TC -> 1
@@ -100,7 +99,7 @@ def curate_ocelot_detection(
             and ignores any requested spacing, so magnification must be baked in here.
 
     Returns:
-        A :class:`~soma.curation.eva.CuratedManifest` pointing at the generated
+        A :class:`~soma.curation.manifest.CuratedManifest` pointing at the generated
         ``dataset.csv`` and ``splits.csv``.
     """
     raw_root = Path(raw_root)
@@ -129,8 +128,8 @@ def curate_ocelot_detection(
 
     # When rendering, the manifest gains a per-sample level0_spacing column; the native
     # path keeps the original three-column schema unchanged.
-    dataset_rows: list[tuple] = []  # sample_id, image_path, points_path[, level0_spacing]
-    split_rows: list[tuple[str, str, int]] = []  # sample_id, role, fold
+    dataset_rows: list[dict] = []  # sample_id, image_path, points_path[, level0_spacing]
+    split_rows: list[dict] = []  # sample_id, split, fold
     per_split: dict[str, dict] = {}
 
     for ocelot_split, role in OCELOT_SPLIT_ROLE.items():
@@ -164,11 +163,15 @@ def curate_ocelot_detection(
                 image_path = img_path
             n_samples += 1
             n_empty += int(len(pts) == 0)
-            row = [sample_id, str(image_path.resolve()), str(out_csv.resolve())]
+            row = {
+                "sample_id": sample_id,
+                "image_path": str(image_path.resolve()),
+                "points_path": str(out_csv.resolve()),
+            }
             if render_spacing_um is not None:
-                row.append(render_spacing_um)
-            dataset_rows.append(tuple(row))
-            split_rows.append((sample_id, role, 0))
+                row["level0_spacing"] = render_spacing_um
+            dataset_rows.append(row)
+            split_rows.append({"sample_id": sample_id, "split": role, "fold": 0})
         per_split[role] = {
             "ocelot_split": ocelot_split,
             "num_samples": n_samples,
@@ -181,23 +184,9 @@ def curate_ocelot_detection(
     if not dataset_rows:
         raise ValueError(f"No OCELOT cell patches found under {images_root}")
 
-    dataset_csv = output_dir / "dataset.csv"
-    header = ["sample_id", "image_path", "points_path"]
-    if render_spacing_um is not None:
-        header.append("level0_spacing")
-    with dataset_csv.open("w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(header)
-        w.writerows(dataset_rows)
-
-    splits_csv = output_dir / "splits.csv"
-    with splits_csv.open("w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["sample_id", "split", "fold"])
-        w.writerows(split_rows)
-
     summary = {
         "dataset": "OCELOT 2023 (cell detection)",
+        "dataset_type": "detection",
         "num_classes": OCELOT_NUM_CLASSES,
         "class_names": list(OCELOT_CELL_CLASS_NAMES),
         "label_remap": {str(k): v for k, v in OCELOT_LABEL_REMAP.items()},
@@ -205,11 +194,14 @@ def curate_ocelot_detection(
         "render_spacing_um": render_spacing_um,
         "total_samples": len(dataset_rows),
         "splits": per_split,
-        "dataset_csv": str(dataset_csv.resolve()),
-        "splits_csv": str(splits_csv.resolve()),
     }
-    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
-    return CuratedManifest(dataset_csv=dataset_csv, splits_csv=splits_csv)
+    return write_manifest(
+        output_dir,
+        dataset_type="detection",
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary=summary,
+    )
 
 
 def main() -> None:

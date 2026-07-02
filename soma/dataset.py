@@ -384,6 +384,23 @@ class DetectionManifest:
         return any(r.patient_id is not None for r in self._samples.values())
 
 
+def load_manifest(
+    dataset_csv: str | Path, dataset_type: str
+) -> "Dataset | SegmentationManifest | DetectionManifest":
+    """Load + validate a ``dataset.csv`` with the loader selected by ``dataset_type``.
+
+    This is the single load-time validator keyed on ``dataset_type``: each loader
+    fail-fast validates its required supervision column (``label`` for classification,
+    ``mask_path`` for segmentation, ``points_path`` for detection) at construction time,
+    so a malformed Manifest is rejected with a clear message before any expensive run.
+    """
+    if dataset_type == "segmentation":
+        return SegmentationManifest(dataset_csv)
+    if dataset_type == "detection":
+        return DetectionManifest(dataset_csv)
+    return Dataset(dataset_csv)
+
+
 @dataclass(frozen=True)
 class FoldSplit:
     """Sample IDs for each split within one fold.

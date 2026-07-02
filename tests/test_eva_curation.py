@@ -90,12 +90,12 @@ def test_curate_mhist_preserves_eva_binary_targets_and_reserves_test(tmp_path: P
         },
     ]
     assert splits_df.to_dict("records") == [
-        {"sample_id": "mhist_images_hp_test", "split": "test"},
-        {"sample_id": "mhist_images_hp_train_0", "split": "train"},
-        {"sample_id": "mhist_images_hp_train_1", "split": "tune"},
-        {"sample_id": "mhist_images_ssa_test", "split": "test"},
-        {"sample_id": "mhist_images_ssa_train_0", "split": "train"},
-        {"sample_id": "mhist_images_ssa_train_1", "split": "tune"},
+        {"sample_id": "mhist_images_hp_test", "split": "test", "fold": 0},
+        {"sample_id": "mhist_images_hp_train_0", "split": "train", "fold": 0},
+        {"sample_id": "mhist_images_hp_train_1", "split": "tune", "fold": 0},
+        {"sample_id": "mhist_images_ssa_test", "split": "test", "fold": 0},
+        {"sample_id": "mhist_images_ssa_train_0", "split": "train", "fold": 0},
+        {"sample_id": "mhist_images_ssa_train_1", "split": "tune", "fold": 0},
     ]
 
     dataset = Dataset(manifest.dataset_csv)
