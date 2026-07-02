@@ -54,6 +54,7 @@ from soma.dataset import (
     SampleRecord,
     SegmentationManifest,
     Splits,
+    load_manifest,
 )
 from soma.dense.live import LiveSegmentationSource
 from soma.evaluation.metrics import resolve_metrics
@@ -2175,16 +2176,11 @@ class Pipeline:
         feature_dir: str | Path | None = None,
     ) -> None:
         self._config = config
-        # Segmentation uses a mask-based manifest (image_path/mask_path, label
-        # optional); it exposes the same samples/sample_ids surface Splits needs.
-        if config.dataset_type == "segmentation":
-            self._dataset = SegmentationManifest(config.dataset_csv)
-        elif config.dataset_type == "detection":
-            # Detection uses a point-annotation manifest (image_path/points_path, label
-            # optional); same samples/sample_ids surface Splits needs.
-            self._dataset = DetectionManifest(config.dataset_csv)
-        else:
-            self._dataset = Dataset(config.dataset_csv)
+        # The load-time validator keyed on dataset_type selects the right manifest loader
+        # (segmentation -> mask_path, detection -> points_path, else -> label); each loader
+        # fail-fast validates its supervision column and exposes the samples/sample_ids
+        # surface Splits needs.
+        self._dataset = load_manifest(config.dataset_csv, config.dataset_type)
         self._splits = Splits(
             config.splits_csv,
             self._dataset,

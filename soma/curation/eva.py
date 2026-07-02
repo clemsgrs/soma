@@ -7,12 +7,18 @@ license and access requirements differ across the EVA benchmark.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from pathlib import Path
 import re
 from typing import Callable, Iterable
 
 import pandas as pd
+
+from soma.curation.manifest import CuratedManifest, write_manifest
+
+# EVA patch datasets are tile-level classification; their supervision column is ``label``.
+_EVA_DATASET_TYPE = "tile"
 
 
 BACH_CLASSES = {"Benign": 0, "InSitu": 1, "Invasive": 2, "Normal": 3}
@@ -86,14 +92,6 @@ EVA_PATCH_CLASSIFICATION_DATASETS = (
     "gleason_arvaniti",
     "patch_camelyon",
 )
-
-
-@dataclass(frozen=True)
-class CuratedManifest:
-    """Paths to a generated Soma manifest pair."""
-
-    dataset_csv: Path
-    splits_csv: Path
 
 
 @dataclass(frozen=True)
@@ -191,10 +189,6 @@ def _write_manifests(
     if not samples:
         raise ValueError(f"No samples found for EVA dataset '{dataset_name}'")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    dataset_csv = output_dir / "dataset.csv"
-    splits_csv = output_dir / "splits.csv"
-
     dataset_rows = [
         {
             "sample_id": sample.sample_id,
@@ -206,7 +200,6 @@ def _write_manifests(
         }
         for sample in sorted(samples, key=lambda s: s.sample_id)
     ]
-    pd.DataFrame(dataset_rows).to_csv(dataset_csv, index=False)
 
     train_ids = [sample.sample_id for sample in samples if sample.eva_split == "train"]
     has_eva_test = any(sample.eva_split == "test" for sample in samples)
@@ -219,18 +212,41 @@ def _write_manifests(
         tune_ids = _stratified_tune_ids(train_ids, labels_by_id, tune_fraction)
         test_ids = [sample.sample_id for sample in samples if sample.eva_split != "train"]
     tune_set = set(tune_ids)
+    # Single fold ⇒ fold=0 for every row (write_manifest fills the fold column).
     split_rows = [
-        {"sample_id": sample_id, "split": "tune" if sample_id in tune_set else "train"}
+        {"sample_id": sample_id, "split": "tune" if sample_id in tune_set else "train", "fold": 0}
         for sample_id in sorted(train_ids)
     ]
     split_rows.extend(
-        {"sample_id": sample_id, "split": "tune"}
+        {"sample_id": sample_id, "split": "tune", "fold": 0}
         for sample_id in sorted(tune_set - set(train_ids))
     )
-    split_rows.extend({"sample_id": sample_id, "split": "test"} for sample_id in sorted(test_ids))
-    pd.DataFrame(split_rows).to_csv(splits_csv, index=False)
+    split_rows.extend(
+        {"sample_id": sample_id, "split": "test", "fold": 0} for sample_id in sorted(test_ids)
+    )
 
-    return CuratedManifest(dataset_csv=dataset_csv, splits_csv=splits_csv)
+    class_names_by_label = {sample.label: sample.class_name for sample in samples}
+    summary = {
+        "dataset": dataset_name,
+        "dataset_type": _EVA_DATASET_TYPE,
+        "num_classes": len(class_names_by_label),
+        "class_names": [class_names_by_label[label] for label in sorted(class_names_by_label)],
+        "total_samples": len(samples),
+        "tune_fraction": tune_fraction,
+        "splits": {
+            "train": sum(1 for r in split_rows if r["split"] == "train"),
+            "tune": sum(1 for r in split_rows if r["split"] == "tune"),
+            "test": sum(1 for r in split_rows if r["split"] == "test"),
+        },
+    }
+
+    return write_manifest(
+        output_dir,
+        dataset_type=_EVA_DATASET_TYPE,
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary=summary,
+    )
 
 
 def _stratified_tune_ids(
@@ -572,3 +588,36 @@ def _normalize_dataset_name(name: str) -> str:
         "pcam": "patch_camelyon",
     }
     return aliases.get(normalized, normalized)
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        prog="python -m soma.curation.eva",
+        description="Curate an EVA patch-level classification dataset into a Soma Manifest.",
+    )
+    parser.add_argument(
+        "--name",
+        required=True,
+        help=f"dataset name, one of: {', '.join(EVA_PATCH_CLASSIFICATION_DATASETS)}",
+    )
+    parser.add_argument("--raw-root", type=Path, required=True, help="local raw dataset root")
+    parser.add_argument("--output-dir", type=Path, required=True, help="curated output dir")
+    parser.add_argument(
+        "--tune-fraction",
+        type=float,
+        default=0.2,
+        help="fraction of EVA train reserved as Soma tune (0.0 keeps all train for tune-is-test)",
+    )
+    args = parser.parse_args(argv)
+
+    manifest = curate_eva_patch_dataset(
+        args.name, args.raw_root, args.output_dir, tune_fraction=args.tune_fraction
+    )
+    print(f"curated: {manifest.dataset_csv}")
+    print(f"         {manifest.splits_csv}")
+    if manifest.summary_json is not None:
+        print(f"         {manifest.summary_json}")
+
+
+if __name__ == "__main__":
+    main()
