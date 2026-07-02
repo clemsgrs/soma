@@ -67,7 +67,7 @@ from soma.extraction.reporters import (
     _suppress_logger_noise_ctx,
 )
 from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
-from soma.features import FeatureStore
+from soma.features import PACKED_FILENAME, FeatureStore
 from soma.slide2vec_adapter import (
     LoadedTiling,
     build_execution_options,
@@ -154,7 +154,9 @@ def _feature_rank_from_artifact_type(artifact_type: str) -> int:
 
 
 def _feature_summary_from_sidecar(feature_dir: Path) -> tuple[int, int] | None:
-    sample_ids = sorted(path.stem for path in feature_dir.glob("*.pt"))
+    sample_ids = sorted(
+        path.stem for path in feature_dir.glob("*.pt") if path.name != PACKED_FILENAME
+    )
     if not sample_ids:
         return None
     meta_path = feature_dir / f"{sample_ids[0]}.meta.json"

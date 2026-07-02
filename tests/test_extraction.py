@@ -23,6 +23,8 @@ from soma.dataset import Dataset
 from soma.features import FeatureStore
 from slide2vec.encoders.registry import encoder_registry
 from soma.extraction import FeatureExtractor, _embed_tiles, _load_model, _run_with_coordinates, _validate_runtime
+from soma.extraction.extractor import _feature_summary_from_sidecar
+from soma.features import PACKED_FILENAME
 from soma.slide2vec_adapter import LoadedTiling, build_preprocessing_config, load_tilings
 from soma.tile_extraction import TileFeatureExtractor, _install_tile_embedding_summary_patch
 
@@ -4153,3 +4155,19 @@ def test_multispacing_encoder_requires_explicit_spacing(tmp_path: Path):
     extractor = FeatureExtractor(dataset, EncoderConfig(name=_TEST_MULTI))
     with pytest.raises(ValueError, match="supports multiple spacings"):
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
+
+
+def test_feature_summary_from_sidecar_ignores_packed_cache(tmp_path: Path):
+    # The 1-D packed feature cache (soma.features) writes packed_features.pt next
+    # to the per-sample files; it must not be mistaken for a sample when reading
+    # rank/dim from an artifact sidecar (its stem sorts before typical ids).
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.save(torch.randn(8), feature_dir / "s1.pt")
+    (feature_dir / "s1.meta.json").write_text(
+        json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8}),
+        encoding="utf-8",
+    )
+    torch.save({"sample_ids": ["s1"], "features": torch.randn(1, 8)}, feature_dir / PACKED_FILENAME)
+
+    assert _feature_summary_from_sidecar(feature_dir) == (1, 8)
