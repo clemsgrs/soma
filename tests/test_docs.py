@@ -37,6 +37,30 @@ def test_cli_generator_matches_checked_in_file() -> None:
     assert "What the CLI expects" in generated
 
 
+def test_ocelot_benchmark_page_matches_registry() -> None:
+    generator, docs_dir = _load_reference_generator()
+    generated = generator.build_ocelot_benchmark_rst().strip()
+    checked_in = (
+        docs_dir / "ocelot-detection-benchmark.rst"
+    ).read_text(encoding="utf-8").strip()
+
+    assert generated == checked_in
+    assert "TBD" not in generated
+    assert "soma reproduce ocelot" in generated
+
+
+def test_eva_benchmark_page_matches_registry() -> None:
+    generator, docs_dir = _load_reference_generator()
+    generated = generator.build_eva_benchmark_rst().strip()
+    checked_in = (
+        docs_dir / "eva-patch-classification-benchmark.rst"
+    ).read_text(encoding="utf-8").strip()
+
+    assert generated == checked_in
+    assert "TBD" not in generated
+    assert "soma reproduce eva/bach" in generated
+
+
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example_paths = (

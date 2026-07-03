@@ -45,9 +45,9 @@ Where to next? Pick the card that matches what you came to do.
          <h3>Pick a task →</h3>
          <p>Classification, regression, survival, segmentation, or detection — with the methods that fit each.</p>
        </a>
-       <a class="soma-card" href="eva-patch-classification-benchmark.html">
+       <a class="soma-card" href="benchmarking.html">
          <h3>Reproduce a benchmark →</h3>
-         <p>Refit the EVA patch-classification suite or the OCELOT detection benchmark.</p>
+         <p>Curate, run, and tolerance-check a registered benchmark — the EVA patch suite or the OCELOT detection challenge.</p>
        </a>
      </div>
    </section>
@@ -113,6 +113,7 @@ Where to next? Pick the card that matches what you came to do.
    :hidden:
    :caption: Benchmarks
 
+   benchmarking
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
 

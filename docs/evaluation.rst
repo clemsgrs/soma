@@ -35,6 +35,14 @@ The default metrics depend on the task family:
    * - ``regression``
      - ``mae``, ``r2``
      - Continuous targets
+   * - ``segmentation``
+     - ``mean_dice``, ``mean_iou``
+     - Dense per-pixel prediction
+   * - ``detection``
+     - ``mean_f1``
+     - Class-aware **F1 at matching distance δ** (``f1_per_class`` /
+       ``precision`` / ``recall`` / ``mean_f1_per_image`` also available); see
+       :doc:`detection`
 
 Use the smallest set of metrics that answers the scientific question, and
 keep it fixed when comparing runs.

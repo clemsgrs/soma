@@ -12,6 +12,11 @@ the stages implied by ``dataset_type``:
   plus prediction head. Slide-level encoders only require a prediction head.
 - ``patient``: aggregate slide-level outputs across multiple slides per
   patient (experimental).
+- ``segmentation`` / ``detection``: dense paths. A **frozen** encoder produces a
+  dense token grid and a trained decoder maps it to a per-pixel mask
+  (segmentation) or a per-class peak heatmap (detection). Detection supervision is
+  a per-sample ``points_path`` and the head scores class-aware **F1 at a matching
+  distance δ** (``mean_f1``); see :doc:`detection`.
 
 The main configuration object is :class:`soma.config.PipelineConfig`:
 
