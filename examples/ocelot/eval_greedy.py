@@ -45,58 +45,13 @@ from soma.decoders.registry import decoder_registry
 from soma.dense import DenseFeatureStore
 from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.encoders.validation import resolve_preprocessing_config
-from soma.pipeline import (
-    _evaluate_detection,
-    _make_loaders,
-    _resolve_detection_px,
-    _sweep_detection_thresholds,
-)
+from soma.pipeline import _make_loaders, _resolve_detection_px
 
-
-def build_greedy_report(
-    *,
-    model,
-    head,
-    device,
-    tune_loader,
-    test_loaders: dict,
-    dataset,
-    matching: str,
-) -> dict:
-    """Greedy (OCELOT-official) report: the leakage-free headline.
-
-    Per-class score thresholds are swept on the *tune* split, frozen, then applied once to
-    each test split — the leakage-free number a real submitter reports. No oracle ceiling:
-    the test-side re-sweep #146 added for the health gate is dropped now the gate has done
-    its job (#152), so test thresholds are never swept on test here.
-
-    The greedy matcher is whatever ``head.matching`` selects, so the sweep and the
-    evaluations stay greedy-consistent.
-
-    Pass an empty ``test_loaders`` for a tune-only report (model-selection sweeps under
-    ``evaluation.holdout_test``): the returned dict then carries just ``matching``,
-    ``score_threshold_per_class``, and ``tune``.
-    """
-    headline_thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
-    head.score_threshold = headline_thresholds
-    tune_report = _evaluate_detection(model, tune_loader, "tune", device, head=head, dataset=dataset)
-    out: dict = {
-        "matching": matching,
-        "score_threshold_per_class": headline_thresholds,
-        "tune": tune_report.metrics,
-    }
-    for name, loader in test_loaders.items():
-        # Headline: the frozen tune thresholds applied once to this test split.
-        head.score_threshold = headline_thresholds
-        headline = _evaluate_detection(model, loader, name, device, head=head, dataset=dataset)
-        out[name] = {
-            "headline": {
-                "note": "reported result — per-class thresholds frozen from the tune split (leakage-free)",
-                "score_threshold_per_class": headline_thresholds,
-                "metrics": headline.metrics,
-            },
-        }
-    return out
+# The greedy matcher is now first-class package code (soma/benchmarks/ocelot.py): it IS the
+# OCELOT benchmark's `score` override (ADR 0002). This script stays as the thin CLI that
+# examples/ocelot/campaign.py drives per (cell, seed); it re-uses that single definition
+# instead of keeping a duplicate. New reproductions should prefer `soma reproduce ocelot`.
+from soma.benchmarks.ocelot import build_greedy_report  # noqa: F401
 
 
 def main() -> None:

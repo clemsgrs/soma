@@ -180,8 +180,9 @@ Reproduce
 
 The full curate → train → greedy-score → check recipe lives at
 ``examples/ocelot/README.md``; the published anchor (frozen Virchow2 @ 0.2 µm/px)
-is reproduced end to end by ``examples/ocelot/reproduce.py``. The encoder × spacing
-grid is the set of ``examples/ocelot/ocelot_{virchow2,uni2}_*.yaml`` configs.
+is reproduced end to end by the registered benchmark: ``soma reproduce ocelot``. The
+encoder × spacing grid is the set of ``examples/ocelot/ocelot_{virchow2,uni2}_*.yaml``
+configs (mirrored as benchmark package data under ``soma/benchmarks/configs/ocelot/``).
 
 .. seealso::
 

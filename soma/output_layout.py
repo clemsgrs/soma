@@ -9,7 +9,7 @@ import os
 import socket
 import subprocess
 import sys
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from getpass import getuser
 from pathlib import Path
@@ -156,6 +156,9 @@ class RunMetadata:
     resolved_output_dir: Path
     summary_metrics: dict[str, float]
     error: str | None = None
+    # Bounded provenance: EXACTLY {soma, torch, cuda} (issue #213). Deeper env/GPU-model
+    # capture is deliberately out of scope; a benchmark may show its own reference env.
+    environment: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -173,11 +176,33 @@ class RunMetadata:
             "username": self.username or "",
             "resolved_output_dir": str(self.resolved_output_dir),
             "summary_metrics": self.summary_metrics,
+            "environment": dict(self.environment),
             "error": self.error or "",
         }
 
     def with_updates(self, **updates: Any) -> "RunMetadata":
         return replace(self, **updates)
+
+
+def capture_environment() -> dict[str, str]:
+    """Bounded provenance stamp: EXACTLY ``{soma, torch, cuda}`` (issue #213).
+
+    Nothing further is captured — no OS/GPU-model probing, no clean-tree gate — so the
+    stamp stays cheap and deterministic. ``torch``/``cuda`` fall back to empty strings when
+    torch is not importable (e.g. a curation-only environment).
+    """
+    import soma
+
+    environment = {"soma": str(getattr(soma, "__version__", ""))}
+    try:
+        import torch
+
+        environment["torch"] = str(torch.__version__)
+        environment["cuda"] = str(torch.version.cuda or "")
+    except Exception:  # torch optional at metadata time
+        environment["torch"] = ""
+        environment["cuda"] = ""
+    return environment
 
 
 def _git_sha(cwd: Path) -> str | None:
@@ -282,6 +307,7 @@ def create_run_metadata(
         resolved_output_dir=run_dir.resolve(),
         summary_metrics=summary_metrics or {},
         error=error,
+        environment=capture_environment(),
     )
 
 

@@ -1,8 +1,8 @@
 # OCELOT 2023 — reference results
 
 This is the recorded reference for the OCELOT cell-detection anchor: the exact recipe,
-environment, and metrics that `reproduce.py` checks an independent run against.
-Machine-readable mirror: [`expected_metrics.json`](expected_metrics.json).
+environment, and metrics that `soma reproduce ocelot` checks an independent run against.
+Machine-readable band + per-row tolerance: `soma/benchmarks/reference/ocelot.csv`.
 
 ## Recipe (the anchor)
 
@@ -31,8 +31,8 @@ A frozen probe at **0.70 mean_F1** lands in the OCELOT 2023 competitive band (to
 fully-trained methods ~0.70–0.73) — a strong frozen-probe baseline, not merely "plumbing
 works." The health-gate context is GitHub issue #151.
 
-> **This file is the single-seed (seed 0) anchor reference** that `reproduce.py` checks
-> against. The 3-seed **encoder × spacing campaign** (Virchow2/UNI2 × 0.25/0.5 + anchor,
+> **This file is the single-seed (seed 0) anchor reference** that `soma reproduce ocelot`
+> checks against. The 3-seed **encoder × spacing campaign** (Virchow2/UNI2 × 0.25/0.5 + anchor,
 > tune-select → test-confirm; GitHub issue #152) lives in
 > `docs/ocelot-detection-benchmark.rst`. Its finding: Virchow2 @ 0.2 wins on tune, but on
 > test it ties UNI2 @ 0.25 within seed noise (both ~0.70 mF1); 0.5 µm/px is not competitive.
@@ -58,10 +58,10 @@ the one-shot checker:
 
 ```bash
 # fast: re-score an existing run-dir against this reference (seconds, no training)
-python examples/ocelot/reproduce.py --from-run-dir <output_root>/ocelot_virchow2_0p20_lightconv
+soma reproduce ocelot --from-run-dir <output_root>/ocelot_virchow2_0p20_lightconv
 
 # full: curate (if needed) → train → score → check, from scratch (~3 h on one GPU)
-python examples/ocelot/reproduce.py --data-root <data_root>/ocelot --output-root output
+soma reproduce ocelot --raw-root <data_root>/ocelot --output-root output
 ```
 
 ## Reproducibility caveats
@@ -69,7 +69,7 @@ python examples/ocelot/reproduce.py --data-root <data_root>/ocelot --output-root
 - **Not bit-exact across GPUs/drivers.** The dense grids are cache-identical *only at
   extraction batch 8* (the dense cache key omits batch size; fp16 features differ at other
   batch sizes). The only stochastic stage is decoder training; cuDNN nondeterminism plus a
-  different GPU move mean_F1 by ~0.01–0.02. `reproduce.py` asserts |Δ mean_F1| ≤ 0.02
+  different GPU move mean_F1 by ~0.01–0.02. `soma reproduce ocelot` asserts |Δ mean_F1| ≤ 0.02
   against the greedy headline; a larger gap signals a real environment/plumbing difference,
   not noise.
 - **Pin the extraction batch size to 8** when reusing or resuming the dense cache.

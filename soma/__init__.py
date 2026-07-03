@@ -1,5 +1,12 @@
 """soma — Modular experimentation framework for computational pathology."""
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+try:
+    __version__ = _pkg_version("soma-pathology")
+except PackageNotFoundError:  # not installed (e.g. running from a source checkout)
+    __version__ = "0.0.0+unknown"
+
 from soma.config import (
     AggregatorConfig,
     AttentionConfig,
@@ -68,6 +75,7 @@ from soma.training.segmentation_dataset import (
 from soma.tasks import list_task_heads
 
 __all__ = [
+    "__version__",
     # Config
     "AggregatorConfig",
     "AttentionConfig",
