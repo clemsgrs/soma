@@ -17,6 +17,7 @@ from soma.curation.manifest import (
     Curator,
     write_manifest,
 )
+from soma.curation.midog import curate_midog_detection
 from soma.curation.monkey import curate_monkey_detection
 from soma.curation.ocelot import curate_ocelot_detection
 from soma.curation.segmentation_coverage import (
@@ -31,6 +32,7 @@ __all__ = [
     "curate_beetle_slide_manifest",
     "curate_eva_patch_dataset",
     "curate_eva_patch_datasets",
+    "curate_midog_detection",
     "curate_monkey_detection",
     "curate_ocelot_detection",
     "summarize_coverage",

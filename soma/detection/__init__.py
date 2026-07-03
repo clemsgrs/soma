@@ -14,6 +14,8 @@ kept free of the torch ``TaskHead`` so each piece unit-tests on tiny explicit in
   the per-class tune-split threshold sweep (design §7).
 * :mod:`soma.detection.froc` — FROC scoring (sensitivity vs false-positives/mm²), the
   Monkey challenge's native metric, of which F1@δ is the one-threshold special case.
+* :mod:`soma.detection.midog_f1` — the MIDOG-native single-class F1 scorer, a thin
+  dataset-global adapter over the matcher (7.5 µm tolerance, Hungarian).
 
 The head that wires these into the soma task contract is
 :class:`soma.tasks.detection.DetectionHead`.
@@ -21,6 +23,7 @@ The head that wires these into the soma task contract is
 
 from __future__ import annotations
 
+from soma.detection.attention import attention_to_detection_heatmap
 from soma.detection.encode import (
     render_peak_heatmap,
     transform_points_to_level0,
@@ -48,9 +51,15 @@ from soma.detection.matching import (
     reduce_f1,
     sweep_score_thresholds,
 )
+from soma.detection.midog_f1 import (
+    MIDOG_MATCH_DISTANCE_UM,
+    MidogF1Score,
+    midog_f1,
+)
 from soma.detection.peaks import extract_peaks
 
 __all__ = [
+    "attention_to_detection_heatmap",
     "transform_points_to_target",
     "transform_points_to_level0",
     "render_peak_heatmap",
@@ -73,4 +82,7 @@ __all__ = [
     "label_detections",
     "patch_area_mm2",
     "score_monkey_froc",
+    "MIDOG_MATCH_DISTANCE_UM",
+    "MidogF1Score",
+    "midog_f1",
 ]

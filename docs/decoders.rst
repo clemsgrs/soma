@@ -17,7 +17,13 @@ default trainable component; the decoder-free :doc:`pixel-classifier
 
 **Decoding methods**
 
+- **linear** — a single ``1x1`` conv at grid resolution (the minimal dense linear probe).
 - **lightweight_conv** — the default trainable neural decoder (documented below).
+- **heavy_conv** — a UPerNet/DPT-lite decoder: pyramid-pooling context fusion + learned
+  (transposed-conv) upsampling. Like ``lightweight_conv`` it opens with a ``1x1`` ``d->D``
+  projection, so its trainable capacity is independent of the encoder's embedding dim ``d``
+  (the same fairness invariant powers the multi-encoder :doc:`encoders/composite` ensemble,
+  where the projection absorbs the concatenated ``Σdᵢ`` width).
 - **Decoder-free pixel classifier** — classifies the encoder's own attention per
   pixel, no neural decoder: :doc:`Attention-based segmentation
   <decoders/pixel-classifier>` ·
