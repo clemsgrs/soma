@@ -183,7 +183,10 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
     cache_cfg = cfg.cache
     if cache_cfg.root_dir is None:
-        cache_cfg = replace(cache_cfg, root_dir=run_dir / "feature_cache")
+        # Mirror the pipeline's default (Pipeline resolves a null cache root to
+        # ``output_root/feature_cache``, not ``run_dir/feature_cache``); otherwise
+        # re-scoring a real run can never find the dense grids it trained on.
+        cache_cfg = replace(cache_cfg, root_dir=Path(cfg.output_root) / "feature_cache")
     extractor = DenseTileFeatureExtractor(
         manifest,
         cfg.encoder,
