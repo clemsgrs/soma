@@ -65,11 +65,9 @@ from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.output_layout import (
-    count_run_directories,
     create_run_metadata,
     has_successful_run,
     resolve_managed_output_paths,
-    update_experiment_index,
     update_latest_pointer,
     update_run_index,
     write_experiment_metadata,
@@ -2097,7 +2095,7 @@ def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Aggrega
 class _RunRecorder:
     """Context manager that tracks run metadata lifecycle (running → completed/failed).
 
-    On enter: writes initial "running" metadata and updates the run and experiment indexes.
+    On enter: writes initial "running" metadata and appends to the per-run index.
     On success: call ``complete(summary_metrics)`` then exit normally.
     On exception: writes "failed" metadata and (if no prior successful run exists)
     advances the latest pointer before re-raising.
@@ -2150,15 +2148,13 @@ class _RunRecorder:
         return False
 
     def _write_indexes(self, metadata) -> None:
+        # Each run touches ONLY its own dir + the append-friendly per-run index. The
+        # experiment-level projection is no longer written here: it was an unlocked
+        # read-modify-rewrite of a shared CSV that silently lost rows when concurrent
+        # sweep runs finished together (ADR 0003). The leaderboard now rebuilds that
+        # projection on demand by scanning the self-describing run dirs.
         layout = self._layout
         update_run_index(layout.index_dir / "runs.csv", metadata)
-        update_experiment_index(
-            layout.index_dir / "experiments.csv",
-            layout.experiment,
-            num_runs=count_run_directories(layout.experiment_dir),
-            latest_run_id=metadata.run_id,
-            latest_status=metadata.status,
-        )
 
 
 class Pipeline:
