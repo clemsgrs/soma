@@ -21,6 +21,7 @@ The head that wires these into the soma task contract is
 
 from __future__ import annotations
 
+from soma.detection.attention import attention_to_detection_heatmap
 from soma.detection.encode import (
     render_peak_heatmap,
     transform_points_to_level0,
@@ -42,6 +43,7 @@ from soma.detection.midog_f1 import (
 from soma.detection.peaks import extract_peaks
 
 __all__ = [
+    "attention_to_detection_heatmap",
     "transform_points_to_target",
     "transform_points_to_level0",
     "render_peak_heatmap",
