@@ -12,6 +12,8 @@ kept free of the torch ``TaskHead`` so each piece unit-tests on tiny explicit in
 * :mod:`soma.detection.matching` — class-aware F1@δ point matching (Hungarian /
   greedy), per-image TP/FP/FN accumulation, the global + per-image-macro reduce, and
   the per-class tune-split threshold sweep (design §7).
+* :mod:`soma.detection.midog_f1` — the MIDOG-native single-class F1 scorer, a thin
+  dataset-global adapter over the matcher (7.5 µm tolerance, Hungarian).
 
 The head that wires these into the soma task contract is
 :class:`soma.tasks.detection.DetectionHead`.
@@ -33,6 +35,11 @@ from soma.detection.matching import (
     reduce_f1,
     sweep_score_thresholds,
 )
+from soma.detection.midog_f1 import (
+    MIDOG_MATCH_DISTANCE_UM,
+    MidogF1Score,
+    midog_f1,
+)
 from soma.detection.peaks import extract_peaks
 
 __all__ = [
@@ -47,4 +54,7 @@ __all__ = [
     "detection_counts",
     "reduce_f1",
     "sweep_score_thresholds",
+    "MIDOG_MATCH_DISTANCE_UM",
+    "MidogF1Score",
+    "midog_f1",
 ]
