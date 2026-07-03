@@ -196,6 +196,35 @@ def _resolve_reproduce_targets(name: str) -> list[Any]:
         return [get_benchmark(n) for n in list_benchmarks() if n.startswith(f"{name}/")]
 
 
+def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
+    """The benchmark's varied axes (encoder/spacing/...) read from a run's OWN recorded spec.
+
+    ``reproduce --from-run-dir`` must tolerance-check against the reference row for the
+    encoder/spacing the run actually used — otherwise empty axes fall back to the benchmark
+    default and a ``uni`` run is silently compared against the ``uni2`` reference. Reads the
+    tolerant ``canonical_spec`` (the same source the leaderboard projects), so it still
+    resolves on runs whose full config no longer round-trips through ``load_config``.
+    Unresolved axes are skipped; a missing/unrankable run dir yields ``{}``.
+    """
+    from soma.leaderboard import _MISSING, axis_value, load_run_record
+
+    path = Path(from_run_dir)
+    if (path / "summary.json").is_file() or (path / "run.yaml").is_file():
+        run_dir = path
+    else:  # an output_root above the run(s): mirror score()'s newest-summary resolution.
+        summaries = sorted(path.glob("**/summary.json"), key=lambda p: p.stat().st_mtime)
+        run_dir = summaries[-1].parent if summaries else path
+    record = load_run_record(run_dir)
+    if record is None:
+        return {}
+    resolved: dict[str, Any] = {}
+    for axis in benchmark.facet.varied:
+        value = axis_value(record.canonical_spec, axis)
+        if value is not _MISSING:
+            resolved[axis] = value
+    return resolved
+
+
 def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | None = None) -> int:
     """Curate → run → score one benchmark and tolerance-check its primary metric.
 
@@ -208,6 +237,12 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         axes["encoder"] = args.encoder
     if args.spacing is not None:
         axes["spacing"] = args.spacing
+
+    if args.from_run_dir is not None:
+        # Constrain the reference lookup to the run's OWN axes; an explicit --encoder/--spacing
+        # still wins (setdefault only fills what the CLI left unset).
+        for axis, value in _from_run_dir_axes(benchmark, args.from_run_dir).items():
+            axes.setdefault(axis, value)
 
     seeds = _reproduce_seeds(benchmark, args.seeds)
     # ON START: surface the fast paths so a time-conscious user isn't surprised by the
