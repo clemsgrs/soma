@@ -181,15 +181,28 @@ def _report_tolerance(benchmark, measured: float, row) -> bool:
     return ok
 
 
-def _cmd_reproduce(args: argparse.Namespace) -> int:
-    from soma.benchmarks import get_benchmark
+def _resolve_reproduce_targets(name: str) -> list[Any]:
+    """Benchmarks a ``reproduce NAME`` drives: the single benchmark, or a whole family.
+
+    ``NAME`` may be a directly registered benchmark (``ocelot``, ``eva/bach``) or a family
+    prefix (``eva``) that fans out over every registered ``NAME/<member>``. Returns an empty
+    list when nothing matches (fail-fast handled by the caller).
+    """
+    from soma.benchmarks import get_benchmark, list_benchmarks
 
     try:
-        benchmark = get_benchmark(args.name)
-    except KeyError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 2
+        return [get_benchmark(name)]
+    except KeyError:
+        return [get_benchmark(n) for n in list_benchmarks() if n.startswith(f"{name}/")]
 
+
+def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | None = None) -> int:
+    """Curate → run → score one benchmark and tolerance-check its primary metric.
+
+    ``family_root`` is the family name when this benchmark is one member of a fanned-out
+    family (e.g. ``eva`` for ``eva/bach``); it nests the member's raw/curated/output paths
+    under a per-dataset subdirectory so sibling members do not collide.
+    """
     axes: dict[str, Any] = {}
     if args.encoder is not None:
         axes["encoder"] = args.encoder
@@ -225,10 +238,22 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
 
     import statistics
 
-    out_dir = args.out_dir or (Path(args.raw_root) / "curated")
-    manifest = benchmark.curate(args.raw_root, out_dir)
-    output_root = Path(args.output_root) if args.output_root else Path.cwd() / "soma_reproduce" / benchmark.name
-    overrides = {"cache": {"enabled": True, "root_dir": str(args.cache_root)}} if args.cache_root else None
+    # In a fanned-out family each member owns a per-dataset subdirectory so raw roots,
+    # curated manifests, and run outputs never collide.
+    sub = benchmark.name.split("/", 1)[1] if family_root else None
+    raw_root = Path(args.raw_root) / sub if sub else Path(args.raw_root)
+    if args.out_dir:
+        out_dir = Path(args.out_dir) / sub if sub else Path(args.out_dir)
+    else:
+        out_dir = raw_root / "curated"
+    manifest = benchmark.curate(raw_root, out_dir)
+    if args.output_root:
+        output_root = Path(args.output_root) / sub if sub else Path(args.output_root)
+    else:
+        output_root = Path.cwd() / "soma_reproduce" / benchmark.name
+    overrides = (
+        {"cache": {"enabled": True, "root_dir": str(args.cache_root)}} if args.cache_root else None
+    )
 
     measured_values: list[float] = []
     for seed in seeds:
@@ -247,6 +272,33 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
 
     measured = statistics.fmean(measured_values)
     return 0 if _report_tolerance(benchmark, measured, row) else 1
+
+
+def _cmd_reproduce(args: argparse.Namespace) -> int:
+    from soma.benchmarks import get_benchmark
+
+    targets = _resolve_reproduce_targets(args.name)
+    if not targets:
+        try:
+            get_benchmark(args.name)  # re-raise for the canonical "Unknown benchmark …" message
+        except KeyError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+        return 2
+
+    is_family = any(b.name != args.name for b in targets)
+    if is_family and args.from_run_dir is not None:
+        print(
+            f"Error: --from-run-dir re-scores one run, so it needs a single sub-benchmark "
+            f"(e.g. '{targets[0].name}'), not the '{args.name}' family.",
+            file=sys.stderr,
+        )
+        return 2
+
+    codes = [
+        _reproduce_one(bench, args, family_root=args.name if is_family else None)
+        for bench in targets
+    ]
+    return max(codes) if codes else 2
 
 
 def _build_reproduce_parser() -> argparse.ArgumentParser:
@@ -292,7 +344,9 @@ def _print_top_level_help() -> None:
         "  soma /path/to/config.yaml\n"
         "  python -m soma /path/to/config.yaml\n"
         "  soma list benchmarks\n"
-        "  soma reproduce ocelot --from-run-dir /runs/ocelot"
+        "  soma reproduce ocelot --from-run-dir /runs/ocelot\n"
+        "  soma reproduce eva/bach --encoder uni2 --raw-root /data/eva/bach\n"
+        "  soma reproduce eva --raw-root /data/eva   # fan out over the eva/<dataset> family"
     )
 
 
