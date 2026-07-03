@@ -45,6 +45,30 @@ Available commands
 ``soma list tasks``
    List all registered task-head presets.
 
+``soma list benchmarks``
+   List all registered foundation-model benchmarks — the names
+   ``soma reproduce`` and ``soma leaderboard`` accept.
+
+Benchmarking commands
+---------------------
+
+These drive the registered benchmarks (see :doc:`benchmarking` for the
+end-to-end curate → configure → run → leaderboard → reproduce story).
+
+``soma reproduce NAME [--raw-root DIR | --from-run-dir DIR] [--seeds N]``
+   Curate → run → score a registered benchmark and tolerance-check its
+   primary metric against the packaged reference band. ``NAME`` is a
+   registered benchmark (``ocelot``, ``eva/bach``) or a family prefix
+   (``eva``) that fans out over every ``eva/<dataset>``. Full mode needs
+   ``--raw-root``; ``--from-run-dir`` re-scores an existing run without
+   retraining, and ``--seeds 1`` is the quickest smoke.
+
+``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
+   Render a faceted leaderboard over the completed run dirs under an
+   output root. A benchmark ``NAME`` supplies the canonical facet and
+   reference band; ``--vary`` / ``--fix`` / ``--like`` shape the facet on
+   top of it.
+
 What the CLI expects
 --------------------
 

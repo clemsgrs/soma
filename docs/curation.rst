@@ -28,7 +28,10 @@ Use the curator from Python:
        "mhist",
        raw_root="/path/to/mhist",
        output_dir="data/eva/mhist",
-       tune_fraction=0.2,
+       # 0.0 reproduces the kaiko-ai/eva leaderboard (train-on-all-train, evaluate
+       # on EVA validation via tune_is_test). Use a positive fraction (e.g. 0.2)
+       # only if you want a separate carved-out tune split for model selection.
+       tune_fraction=0.0,
    )
 
    print(manifest.dataset_csv)
@@ -37,6 +40,13 @@ Use the curator from Python:
 The generated ``dataset.csv`` stores EVA numeric target indices in ``label`` and
 keeps the readable class in ``class_name`` metadata. This preserves EVA's class
 orientation for binary tasks.
+
+.. note::
+
+   The registered :doc:`EVA benchmark <eva-patch-classification-benchmark>`
+   curates with ``tune_fraction=0.0`` for you (its ``CURATION_TUNE_FRACTION``), so
+   ``soma reproduce eva/<dataset>`` follows the leaderboard protocol without any
+   manual split choice.
 
 Split policy
 ~~~~~~~~~~~~

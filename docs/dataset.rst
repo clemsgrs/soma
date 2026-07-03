@@ -18,6 +18,17 @@ Dataset format
   | Optional columns: ``mask_path`` (pre-computed tissue mask), ``patient_id`` (required for ``dataset_type="patient"``).
   | Any additional columns are carried along as per-sample metadata.
 
+Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)
+replace the scalar ``label`` with a per-sample supervision file:
+
+- **Segmentation** uses ``mask_path`` — a per-sample label mask.
+- **Detection** uses ``points_path`` — a per-sample point file
+  (:class:`soma.dataset.DetectionManifest`), a CSV of object centroids with
+  ``x, y, class`` columns (headerless ``x,y,class`` — OCELOT's format — or a
+  2-column ``x,y`` for a single class). Points are stored in **level-0** pixels;
+  an optional per-sample ``level0_spacing`` column records their frame. See
+  :doc:`detection` for the full column contract.
+
 Splits format
 -------------
 
