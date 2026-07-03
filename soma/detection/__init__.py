@@ -12,6 +12,8 @@ kept free of the torch ``TaskHead`` so each piece unit-tests on tiny explicit in
 * :mod:`soma.detection.matching` — class-aware F1@δ point matching (Hungarian /
   greedy), per-image TP/FP/FN accumulation, the global + per-image-macro reduce, and
   the per-class tune-split threshold sweep (design §7).
+* :mod:`soma.detection.froc` — FROC scoring (sensitivity vs false-positives/mm²), the
+  Monkey challenge's native metric, of which F1@δ is the one-threshold special case.
 
 The head that wires these into the soma task contract is
 :class:`soma.tasks.detection.DetectionHead`.
@@ -23,6 +25,20 @@ from soma.detection.encode import (
     render_peak_heatmap,
     transform_points_to_level0,
     transform_points_to_target,
+)
+from soma.detection.froc import (
+    DEFAULT_FP_THRESHOLDS,
+    MNL_CLASS_NAME,
+    MNL_MATCH_UM,
+    MONKEY_CLASS_NAMES,
+    MONKEY_MATCH_UM,
+    FrocResult,
+    compute_froc,
+    froc_curve,
+    froc_score_at_thresholds,
+    label_detections,
+    patch_area_mm2,
+    score_monkey_froc,
 )
 from soma.detection.matching import (
     ClassMatch,
@@ -45,4 +61,16 @@ __all__ = [
     "detection_counts",
     "reduce_f1",
     "sweep_score_thresholds",
+    "DEFAULT_FP_THRESHOLDS",
+    "MNL_CLASS_NAME",
+    "MNL_MATCH_UM",
+    "MONKEY_CLASS_NAMES",
+    "MONKEY_MATCH_UM",
+    "FrocResult",
+    "compute_froc",
+    "froc_curve",
+    "froc_score_at_thresholds",
+    "label_detections",
+    "patch_area_mm2",
+    "score_monkey_froc",
 ]
