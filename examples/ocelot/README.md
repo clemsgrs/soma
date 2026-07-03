@@ -11,7 +11,9 @@ spacing. The **published anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow
 µm/px, greedy test mean_F1 0.6995) — see [`RESULTS.md`](RESULTS.md).
 
 The dataset itself lives outside the repo (`data/` is git-ignored). Only the curation
-code (`soma/curation/ocelot.py`), these configs, and `eval_greedy.py` are tracked.
+code (`soma/curation/ocelot.py`), these configs, and `eval_greedy.py` are tracked. OCELOT
+is also a first-class registered benchmark — `soma reproduce ocelot` (see §4) supersedes
+the old `reproduce.py`.
 
 ## 1. Download (one-time, gated)
 
@@ -95,18 +97,26 @@ python examples/ocelot/eval_greedy.py \
 
 ## 4. Reproduce the published anchor
 
-The **Virchow2 @ 0.2 µm/px** anchor (frozen-probe greedy test mean_F1 **0.6995**) is
-recorded in [`RESULTS.md`](RESULTS.md) / [`expected_metrics.json`](expected_metrics.json).
-`reproduce.py` runs the whole curate → train → greedy-score → check loop and asserts the
-result is within tolerance of that reference:
+OCELOT is now a **first-class registered benchmark** (`soma list benchmarks` shows
+`ocelot`), so the whole curate → train → greedy-score → tolerance-check loop is one
+command — no bespoke script. The expected band + per-row tolerance ship as package data
+(`soma/benchmarks/reference/ocelot.csv`); the human-readable record stays in
+[`RESULTS.md`](RESULTS.md). The **Virchow2 @ 0.2 µm/px** anchor is frozen-probe greedy test
+mean_F1 **0.6995 ± 0.02**.
 
 ```bash
-# full: curate (if needed) → train → score → check   (~3 h on one GPU)
-python examples/ocelot/reproduce.py --data-root <data_root>/ocelot
+# full: curate → run canonical seed(s) → greedy-score → check   (~3 h on one GPU)
+soma reproduce ocelot --raw-root <data_root>/ocelot --output-root <output_root>
 
-# fast: re-score an already-trained run-dir and check (seconds, no training)
-python examples/ocelot/reproduce.py \
-  --from-run-dir <output_root>/ocelot_virchow2_0p20_lightconv
+# fast: re-score an already-trained run dir and check (seconds, no training)
+soma reproduce ocelot --from-run-dir <output_root>/ocelot_virchow2_0p20_lightconv
+
+# smoke: a single seed instead of the canonical set
+soma reproduce ocelot --raw-root <data_root>/ocelot --seeds 1
 ```
+
+The former `reproduce.py` / `expected_metrics.json` are absorbed into this benchmark;
+`eval_greedy.py` remains only as the thin CLI that `campaign.py` drives per (cell, seed)
+and now re-uses the benchmark's greedy scorer.
 
 Exit code 0 = within the ±0.02 mean_F1 band; 1 = a real environment/plumbing difference.

@@ -1,0 +1,69 @@
+# OCELOT 2023 cell-detection — encoder×spacing ablation: Virchow2 @ 0.5 µm/px.
+#
+# Frozen Virchow2 -> dense token grid -> conv decoder -> per-class peak heatmap, scored
+# with class-aware F1@δ (δ = 3 µm, OCELOT's official tolerance). Consumes the 0.5 µm/px
+# rendered manifest (materialized at curation time — the dense reader ignores
+# requested_spacing_um for flat JPEGs). See examples/ocelot/README.md for the workflow.
+#   python -m soma.curation.ocelot \
+#     --raw-root          /data/pathology/projects/clement/code/soma/data/ocelot \
+#     --output-dir        /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5 \
+#     --render-spacing-um 0.5
+# Then run:  python -m soma examples/ocelot/ocelot_virchow2_0.50.yaml
+#
+# slide2vec >= 5.0.1 is required to *run* Virchow2 (it loads without it).
+
+run:
+  output_root: output/ocelot_virchow2_0p50_lightconv
+  seed: 0
+  tags: [ocelot, detection, virchow2, lightweight_conv, spacing_0p50]
+
+data:
+  dataset_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5/dataset.csv
+  splits_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5/splits.csv
+  dataset_type: detection
+
+preprocessing:
+  # The 0.5 µm/px patches are flat JPEGs; the reader reads them at native resolution and
+  # ignores requested_spacing_um (kept to pin the µm->px conversions and self-document the
+  # cache key). The 448 window + 0.25 overlap blends window seams / border artifacts.
+  requested_tile_size_px: 410   # native px of the 0.5 µm/px render (1024 × 0.2/0.5); v1 needs target_size == tile size
+  requested_spacing_um: 0.5
+  dense_window_size: 448
+  dense_window_overlap: 0.25
+
+encoder:
+  name: virchow2
+  batch_size: 8
+  # 0.5 µm/px is a recommended Virchow2 spacing (slide2vec >= 5.0.1), so no flag needed.
+
+decoder:
+  name: lightweight_conv
+
+task:
+  name: detection
+  params:
+    num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
+    match_distance: 3.0       # δ in µm (OCELOT-official)
+    sigma: 1.0                # target Gaussian σ in µm (≈ δ/3)
+    matching: hungarian       # headline; greedy is OCELOT's official scorer
+    foreground_weight: 10.0
+    level0_spacing: 0.5       # rendered spacing of this manifest
+
+evaluation:
+  metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: adam
+  scheduler: cosine
+  patience: 10
+  monitor: mean_f1
+  monitor_mode: max
+  # Decoder upsamples the grid to a 1024x1024x2 heatmap; batch 1 on a 12 GB card
+  batch_size: 1
+  gradient_accumulation: 8
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true

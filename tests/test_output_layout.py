@@ -27,10 +27,12 @@ from soma.output_layout import (
     ExperimentSpec,
     build_experiment_spec,
     canonical_experiment_payload,
+    capture_environment,
     create_run_metadata,
     resolve_managed_output_paths,
     update_experiment_index,
     update_run_index,
+    write_run_metadata,
 )
 
 
@@ -89,6 +91,33 @@ def _make_segmentation_config(tmp_path: Path, **overrides) -> PipelineConfig:
     )
     defaults.update(overrides)
     return PipelineConfig(**defaults)
+
+
+def test_capture_environment_stamps_exactly_three_fields():
+    # Bounded provenance (issue #213): EXACTLY {soma, torch, cuda} — nothing further.
+    env = capture_environment()
+    assert set(env) == {"soma", "torch", "cuda"}
+    assert env["soma"]  # soma __version__ is always resolvable
+
+
+def test_run_yaml_stamps_bounded_environment(tmp_path: Path):
+    config = _make_pipeline_config(tmp_path)
+    experiment = build_experiment_spec(config)
+    run_dir = tmp_path / "run"
+    metadata = create_run_metadata(
+        config=config,
+        experiment=experiment,
+        run_dir=run_dir,
+        run_id="r0",
+        status="running",
+    )
+    assert set(metadata.environment) == {"soma", "torch", "cuda"}
+
+    write_run_metadata(run_dir, metadata)
+    payload = yaml.safe_load((run_dir / "run.yaml").read_text(encoding="utf-8"))
+    assert set(payload["environment"]) == {"soma", "torch", "cuda"}
+    # No deeper env / GPU-model / clean-tree fields leaked into the stamp.
+    assert "gpu" not in payload["environment"]
 
 
 def test_canonical_experiment_payload_omits_seed(tmp_path: Path):

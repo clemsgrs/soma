@@ -1,0 +1,2 @@
+dataset,encoder,spacing,metric,expected,tolerance,source
+,,,mean_f1,0.6995,0.02,"OCELOT 2023 cell detection; frozen Virchow2@0.2 dense-probe greedy test headline (seed 0). Config-agnostic official-challenge band: top fully-trained methods land ~0.70-0.73. Reproductions within +/-0.02 are cuDNN/GPU noise; a wider gap signals a plumbing/environment difference."
