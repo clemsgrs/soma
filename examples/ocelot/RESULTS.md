@@ -9,7 +9,8 @@ Machine-readable band + per-row tolerance: `soma/benchmarks/reference/ocelot.csv
 Frozen **Virchow2 @ 0.2 µm/px native** → dense token grid → `lightweight_conv` decoder →
 per-class peak heatmap, scored with class-aware **F1 @ δ = 3 µm** (OCELOT's official
 tolerance). Per-class score thresholds are swept on **tune**, frozen, and applied once to
-**test** (leakage-free). Config: [`ocelot_virchow2_0.20.yaml`](ocelot_virchow2_0.20.yaml),
+**test** (leakage-free). Config:
+[`ocelot_virchow2_0.20.yaml`](../../soma/benchmarks/configs/ocelot/ocelot_virchow2_0.20.yaml),
 **canonical seed 0**.
 
 ## Headline
