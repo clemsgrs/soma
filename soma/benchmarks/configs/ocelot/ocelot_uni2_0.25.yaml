@@ -8,7 +8,8 @@
 #     --raw-root          /data/pathology/projects/clement/code/soma/data/ocelot \
 #     --output-dir        /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p25 \
 #     --render-spacing-um 0.25
-# Then run:  python -m soma examples/ocelot/ocelot_uni2_0.25.yaml
+# Then run:  python -m soma soma/benchmarks/configs/ocelot/ocelot_uni2_0.25.yaml
+#   (or, preferred, drive the registered benchmark: soma reproduce ocelot)
 
 run:
   output_root: output/ocelot_uni2_0p25_lightconv

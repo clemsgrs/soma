@@ -28,7 +28,9 @@ Design decisions that make this cheap and resumable:
   test-grid backfill for a non-anchor winner), so the reported tune and test numbers come
   from identical models.
 
-Each cell's config (``examples/ocelot/ocelot_{encoder}_{spacing}.yaml``) supplies the
+Each cell's config is the committed benchmark YAML under
+``soma/benchmarks/configs/ocelot/`` — the same files the registered ``ocelot`` benchmark's
+``build_config`` loads — resolved here by ``(encoder, spacing)``. It supplies the
 output_root, encoder, decoder, and detection protocol; this driver only overrides the
 dataset paths (from ``--data-root``), the seed, and the holdout flag. Needs a GPU and an
 HF token (Virchow2 and UNI2 are gated). Run from the soma repo root.
@@ -63,23 +65,27 @@ class Cell:
     key: str
     encoder: str
     spacing: float
-    config: str  # filename under examples/ocelot/
     curated: str  # subdir under --data-root holding this spacing's manifest
     is_anchor: bool = False
 
     @property
     def config_path(self) -> Path:
-        return HERE / self.config
+        # Reuse the OCELOT benchmark's own (encoder, spacing) -> path resolver so the
+        # campaign and ``soma reproduce ocelot`` load byte-identical committed YAML from
+        # ``soma/benchmarks/configs/ocelot/`` — a single source of truth for the configs.
+        from soma.benchmarks.ocelot import _config_path_for
+
+        return _config_path_for(self.encoder, self.spacing)
 
 
 # The five cells. The anchor (Virchow2 @ 0.2 native) reuses the curated/ native manifest and
 # #151's cache + seed-0 decoder; the other four consume rendered-spacing manifests.
 CELLS: list[Cell] = [
-    Cell("virchow2_0.20", "virchow2", 0.2, "ocelot_virchow2_0.20.yaml", "curated", is_anchor=True),
-    Cell("virchow2_0.25", "virchow2", 0.25, "ocelot_virchow2_0.25.yaml", "curated_0p25"),
-    Cell("virchow2_0.50", "virchow2", 0.5, "ocelot_virchow2_0.50.yaml", "curated_0p5"),
-    Cell("uni2_0.25", "uni2", 0.25, "ocelot_uni2_0.25.yaml", "curated_0p25"),
-    Cell("uni2_0.50", "uni2", 0.5, "ocelot_uni2_0.50.yaml", "curated_0p5"),
+    Cell("virchow2_0.20", "virchow2", 0.2, "curated", is_anchor=True),
+    Cell("virchow2_0.25", "virchow2", 0.25, "curated_0p25"),
+    Cell("virchow2_0.50", "virchow2", 0.5, "curated_0p5"),
+    Cell("uni2_0.25", "uni2", 0.25, "curated_0p25"),
+    Cell("uni2_0.50", "uni2", 0.5, "curated_0p5"),
 ]
 ANCHOR = next(c for c in CELLS if c.is_anchor)
 

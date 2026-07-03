@@ -5,15 +5,19 @@ cell-detection benchmark on Soma's `dataset_type: detection` path: frozen encode
 dense token grid → `lightweight_conv` decoder → per-class peak heatmap, scored with
 class-aware **F1 @ δ = 3 µm (15 px @ 0.2 µm/px)**, OCELOT's official tolerance.
 
-The encoder is swappable (the configs cover an encoder × spacing ablation): `ocelot.yaml`
-is a CONCH example, and the `ocelot_{virchow2,uni2}_*.yaml` configs vary encoder and
-spacing. The **published anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow2 @ 0.2
-µm/px, greedy test mean_F1 0.6995) — see [`RESULTS.md`](RESULTS.md).
+The encoder is swappable (the configs cover an encoder × spacing ablation). `ocelot.yaml`
+here is a standalone CONCH example. The encoder × spacing configs
+(`ocelot_{virchow2,uni2}_*.yaml`) are **canonical under
+[`soma/benchmarks/configs/ocelot/`](../../soma/benchmarks/configs/ocelot)** — they are the
+committed YAML the registered `ocelot` benchmark loads (`build_config`), and `campaign.py`
+resolves them from there by `(encoder, spacing)` (no local copies). The **published
+anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow2 @ 0.2 µm/px, greedy test mean_F1
+0.6995) — see [`RESULTS.md`](RESULTS.md).
 
 The dataset itself lives outside the repo (`data/` is git-ignored). Only the curation
-code (`soma/curation/ocelot.py`), these configs, and `eval_greedy.py` are tracked. OCELOT
-is also a first-class registered benchmark — `soma reproduce ocelot` (see §4) supersedes
-the old `reproduce.py`.
+code (`soma/curation/ocelot.py`), the packaged benchmark configs, this `ocelot.yaml`, and
+`eval_greedy.py` are tracked. OCELOT is also a first-class registered benchmark —
+`soma reproduce ocelot` (see §4) supersedes the old `reproduce.py`.
 
 ## 1. Download (one-time, gated)
 

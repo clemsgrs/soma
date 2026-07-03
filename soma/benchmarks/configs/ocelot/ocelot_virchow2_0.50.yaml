@@ -8,7 +8,8 @@
 #     --raw-root          /data/pathology/projects/clement/code/soma/data/ocelot \
 #     --output-dir        /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5 \
 #     --render-spacing-um 0.5
-# Then run:  python -m soma examples/ocelot/ocelot_virchow2_0.50.yaml
+# Then run:  python -m soma soma/benchmarks/configs/ocelot/ocelot_virchow2_0.50.yaml
+#   (or, preferred, drive the registered benchmark: soma reproduce ocelot)
 #
 # slide2vec >= 5.0.1 is required to *run* Virchow2 (it loads without it).
 
