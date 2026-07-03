@@ -30,7 +30,6 @@ from soma.output_layout import (
     capture_environment,
     create_run_metadata,
     resolve_managed_output_paths,
-    update_experiment_index,
     update_run_index,
     write_run_metadata,
 )
@@ -392,7 +391,10 @@ def test_create_run_metadata_records_status_and_seed(tmp_path: Path):
     assert metadata.resolved_output_dir == layout.run_dir.resolve()
 
 
-def test_run_and_experiment_indexes_upsert_rows(tmp_path: Path):
+def test_run_index_upserts_rows(tmp_path: Path):
+    # The per-run index is append/upsert-safe and remains; the racy experiment-level
+    # index writer was removed (ADR 0003) — the leaderboard rebuilds that projection by
+    # scanning run dirs instead.
     config = _make_pipeline_config(tmp_path)
     layout = resolve_managed_output_paths(config, run_id="2026-04-09_16-22-10__local")
     run = create_run_metadata(
@@ -403,28 +405,22 @@ def test_run_and_experiment_indexes_upsert_rows(tmp_path: Path):
         status="running",
     )
 
-    update_experiment_index(layout.index_dir / "experiments.csv", layout.experiment, num_runs=1, latest_run_id=run.run_id, latest_status=run.status)
     update_run_index(layout.index_dir / "runs.csv", run)
-
     completed = run.with_updates(status="completed")
     update_run_index(layout.index_dir / "runs.csv", completed)
-    update_experiment_index(
-        layout.index_dir / "experiments.csv",
-        layout.experiment,
-        num_runs=1,
-        latest_run_id=completed.run_id,
-        latest_status=completed.status,
-    )
 
-    with (layout.index_dir / "experiments.csv").open(newline="", encoding="utf-8") as handle:
-        experiment_rows = list(csv.DictReader(handle))
     with (layout.index_dir / "runs.csv").open(newline="", encoding="utf-8") as handle:
         run_rows = list(csv.DictReader(handle))
 
-    assert len(experiment_rows) == 1
-    assert experiment_rows[0]["latest_status"] == "completed"
     assert len(run_rows) == 1
     assert run_rows[0]["status"] == "completed"
+
+
+def test_experiment_index_writer_is_removed():
+    # ADR 0003 decision 3b: the racy unlocked read-modify-rewrite writer is gone for good.
+    import soma.output_layout as output_layout
+
+    assert not hasattr(output_layout, "update_experiment_index")
 
 
 def test_read_csv_rows_handles_large_fields(tmp_path: Path):

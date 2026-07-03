@@ -360,53 +360,6 @@ def _write_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, str]
         writer.writerows(rows)
 
 
-def update_experiment_index(
-    path: Path,
-    experiment: ExperimentSpec,
-    *,
-    num_runs: int,
-    latest_run_id: str,
-    latest_status: str,
-) -> None:
-    fieldnames = [
-        "experiment_id",
-        "slug",
-        "dataset_path",
-        "dataset_checksum",
-        "splits_path",
-        "splits_checksum",
-        "encoder",
-        "aggregator",
-        "task",
-        "num_runs",
-        "latest_run_id",
-        "latest_status",
-        "experiment_dir",
-    ]
-    rows = _read_csv_rows(path)
-    encoded = experiment.canonical_spec["encoder"]
-    aggregator = experiment.canonical_spec["aggregator"]
-    row = {
-        "experiment_id": experiment.experiment_id,
-        "slug": experiment.slug,
-        "dataset_path": str(experiment.dataset_path),
-        "dataset_checksum": experiment.dataset_checksum,
-        "splits_path": str(experiment.splits_path),
-        "splits_checksum": experiment.splits_checksum,
-        "encoder": "" if encoded is None else str(encoded.get("name", "")),
-        "aggregator": "" if aggregator is None else str(aggregator.get("name", "")),
-        "task": str(experiment.canonical_spec["task"]["name"]),
-        "num_runs": str(num_runs),
-        "latest_run_id": latest_run_id,
-        "latest_status": latest_status,
-        "experiment_dir": experiment.experiment_dirname,
-    }
-    rows = [existing for existing in rows if existing.get("experiment_id") != experiment.experiment_id]
-    rows.append(row)
-    rows.sort(key=lambda item: item["slug"])
-    _write_csv_rows(path, fieldnames, rows)
-
-
 def update_run_index(path: Path, metadata: RunMetadata) -> None:
     fieldnames = [
         "run_id",
@@ -437,13 +390,6 @@ def update_run_index(path: Path, metadata: RunMetadata) -> None:
     rows.append(row)
     rows.sort(key=lambda item: item["run_id"])
     _write_csv_rows(path, fieldnames, rows)
-
-
-def count_run_directories(experiment_dir: Path) -> int:
-    runs_dir = experiment_dir / "runs"
-    if not runs_dir.exists():
-        return 0
-    return sum(1 for child in runs_dir.iterdir() if child.is_dir())
 
 
 def has_successful_run(experiment_dir: Path) -> bool:

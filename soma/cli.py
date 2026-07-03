@@ -301,6 +301,122 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
     return max(codes) if codes else 2
 
 
+def _cmd_leaderboard(args: argparse.Namespace) -> int:
+    """Render a faceted leaderboard over the run dirs under ``--root`` (ADR 0003).
+
+    Two entry points share one flat projection: a positional benchmark name supplies the
+    canonical facet + primary metric + reference rows, while a bare ``--root`` discovers
+    the ``(dataset, splits, task)`` triples under the root and requires disambiguation when
+    several exist. ``--vary``/``--fix``/``--like`` shape the facet on top of either.
+    """
+    from soma.leaderboard import (
+        LeaderboardFacet,
+        _AXIS_ALIASES,
+        _MISSING,
+        axis_value,
+        discover_triples,
+        format_table,
+        load_run_record,
+        project_leaderboard,
+        write_leaderboard,
+    )
+
+    benchmark = None
+    if args.name is not None:
+        from soma.benchmarks import get_benchmark
+
+        try:
+            benchmark = get_benchmark(args.name)
+        except KeyError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+
+    if args.root is None:
+        print("Error: leaderboard needs --root <output_root>.", file=sys.stderr)
+        return 2
+
+    triples = discover_triples(args.root)
+    if not triples:
+        print(f"Error: no completed runs found under {args.root}.", file=sys.stderr)
+        return 2
+
+    # Facet: benchmark canonical facet as the base, then CLI overrides.
+    vary: tuple[str, ...] = tuple(args.vary) if args.vary else (
+        tuple(benchmark.facet.varied) if benchmark is not None else ()
+    )
+    fixed: dict[str, object] = dict(benchmark.facet.fixed) if benchmark is not None else {}
+    for pair in args.fix or []:
+        if "=" not in pair:
+            print(f"Error: --fix expects axis=value, got {pair!r}", file=sys.stderr)
+            return 2
+        key, _, value = pair.partition("=")
+        fixed[key.strip()] = value.strip()
+
+    like_record = None
+    if args.like is not None:
+        like_record = load_run_record(args.like)
+        if like_record is None:
+            print(f"Error: --like run dir is not a completed run: {args.like}", file=sys.stderr)
+            return 2
+        # Fix every recognised axis except the varied one(s), by the example's value.
+        for axis in _AXIS_ALIASES:
+            if axis in vary:
+                continue
+            value = axis_value(like_record.canonical_spec, axis)
+            if value is not _MISSING and value is not None:
+                fixed.setdefault(axis, value)
+
+    # Resolve the triple to render.
+    if len(triples) == 1:
+        triple = next(iter(triples))
+    elif like_record is not None:
+        triple = like_record.triple
+    else:
+        candidates = triples
+        if "task" in fixed:
+            candidates = {t: d for t, d in triples.items() if t[2] == str(fixed["task"])}
+        if len(candidates) == 1:
+            triple = next(iter(candidates))
+        else:
+            print(
+                f"Error: {len(triples)} (dataset, splits, task) triples under {args.root}; "
+                "disambiguate with --like <run_dir> or narrower filters:",
+                file=sys.stderr,
+            )
+            for (dataset_ck, splits_ck, task), dirs in sorted(triples.items()):
+                print(
+                    f"  task={task} dataset={dataset_ck[:8]} splits={splits_ck[:8]} "
+                    f"({len(dirs)} runs)",
+                    file=sys.stderr,
+                )
+            return 2
+
+    facet = LeaderboardFacet(vary=vary, fixed=fixed)
+    table = project_leaderboard(
+        triples[triple], facet, metric=args.metric, benchmark=benchmark, split=args.split
+    )
+    paths = write_leaderboard(table, args.root, name=args.name)
+    print(format_table(table))
+    print(f"\nWrote: {paths['csv']}  {paths['json']}  {paths['html']}")
+    return 0
+
+
+def _build_leaderboard_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="soma leaderboard",
+        description="Render a faceted leaderboard over run dirs under an output root.",
+    )
+    parser.add_argument("name", nargs="?", default=None, help="Registered benchmark name (canonical facet).")
+    parser.add_argument("--root", type=Path, default=None, help="Output root whose run dirs to project.")
+    parser.add_argument("--vary", action="append", default=None, help="Axis to surface/rank across (repeatable).")
+    parser.add_argument("--fix", action="append", default=None, help="Hold an axis fixed: axis=value (repeatable).")
+    parser.add_argument("--like", type=Path, default=None, help="Fix all axes but --vary by this run dir's example.")
+    parser.add_argument("--metric", type=str, default=None, help="Override the ranking metric.")
+    parser.add_argument("--split", type=str, default=None, help="Override the split ranked on (default: test).")
+    parser.set_defaults(func=_cmd_leaderboard)
+    return parser
+
+
 def _build_reproduce_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soma reproduce",
@@ -334,11 +450,13 @@ def _print_top_level_help() -> None:
         "usage: soma CONFIG\n"
         "       soma list {encoders,aggregators,decoders,pixel-classifiers,tasks,benchmarks} [--level {tile,slide,patient}]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
+        "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
         "\n"
         "commands:\n"
-        "  CONFIG     run a pipeline from a YAML config file\n"
-        "  list       list public model/component/benchmark registries\n"
-        "  reproduce  curate → run → score a registered benchmark, check its tolerance band\n"
+        "  CONFIG       run a pipeline from a YAML config file\n"
+        "  list         list public model/component/benchmark registries\n"
+        "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
+        "  leaderboard  render a faceted view over the run dirs under an output root\n"
         "\n"
         "examples:\n"
         "  soma /path/to/config.yaml\n"
@@ -346,7 +464,8 @@ def _print_top_level_help() -> None:
         "  soma list benchmarks\n"
         "  soma reproduce ocelot --from-run-dir /runs/ocelot\n"
         "  soma reproduce eva/bach --encoder uni2 --raw-root /data/eva/bach\n"
-        "  soma reproduce eva --raw-root /data/eva   # fan out over the eva/<dataset> family"
+        "  soma reproduce eva --raw-root /data/eva   # fan out over the eva/<dataset> family\n"
+        "  soma leaderboard --root /runs/sweep --vary encoder"
     )
 
 
@@ -393,6 +512,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args[0] == "reproduce":
         parser = _build_reproduce_parser()
+        parsed = parser.parse_args(args[1:])
+        raise SystemExit(parsed.func(parsed))
+
+    if args[0] == "leaderboard":
+        parser = _build_leaderboard_parser()
         parsed = parser.parse_args(args[1:])
         raise SystemExit(parsed.func(parsed))
 
