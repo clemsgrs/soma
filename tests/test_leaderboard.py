@@ -334,6 +334,50 @@ def test_broad_reference_renders_as_banner(tmp_path: Path):
     assert table.rows[0].reference_expected is None  # broad band never joins per-row
 
 
+def _detection_table(tmp_path: Path):
+    """A one-row detection leaderboard projected with the real OCELOT benchmark."""
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    run = make_run_dir(
+        _cfg(root, ds, sp, encoder="virchow2", task="detection"), {"test/mean_f1": 0.70}
+    )
+    return project_leaderboard(
+        [run], LeaderboardFacet(vary=("encoder",)), benchmark=get_benchmark("ocelot")
+    )
+
+
+def test_external_anchors_collected_as_guidance_distinct_from_gate(tmp_path: Path):
+    table = _detection_table(tmp_path)
+    # The gate band stays the soma-reproduced anchor; external anchors land in `guidance`.
+    assert table.banner is not None and table.banner.expected == pytest.approx(0.6995, abs=1e-6)
+    assert len(table.guidance) >= 2  # official baseline + best-reported
+    assert any("best reported" in a.label for a in table.guidance)
+    for anchor in table.guidance:
+        assert anchor.label and anchor.url.startswith("http")
+    # Non-gating: an external anchor is never the gate value, and never joins per-row.
+    assert all(a.expected != table.banner.expected for a in table.guidance)
+    assert table.rows[0].reference_expected is None
+
+
+def test_format_table_renders_guidance_section_separate_from_gate(tmp_path: Path):
+    text = format_table(_detection_table(tmp_path))
+    assert "reference band" in text  # the gate band
+    assert "guidance" in text.lower()  # a distinct, labelled guidance section
+    assert "best reported" in text  # an anchor label
+    assert "https://wearewaiv.github.io/histoboard/" in text  # its linkable source
+
+
+def test_render_html_and_json_expose_clickable_guidance(tmp_path: Path):
+    table = _detection_table(tmp_path)
+    html = render_html(table)
+    assert 'href="https://wearewaiv.github.io/histoboard/"' in html  # clickable link
+    assert "guidance" in html.lower()
+    data = json.loads(render_json(table))
+    assert data["guidance"], "guidance anchors are serialised to JSON"
+    assert data["guidance"][0]["label"]
+    assert data["guidance"][0]["url"].startswith("http")
+
+
 class _KeyedBenchmark:
     """A fixture benchmark whose reference is KEYED per encoder (join-on-varied-axis)."""
 

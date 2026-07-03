@@ -151,18 +151,28 @@ def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
 
 
 def _reproduce_reference_row(benchmark, axes: dict[str, Any]):
-    """The single reference row for the benchmark's primary metric at these axes."""
-    rows = [r for r in benchmark.expected(**axes) if r.metric == benchmark.primary_metric]
+    """The single **gate** reference row for the benchmark's primary metric at these axes.
+
+    Only ``kind="gate"`` rows are tolerance-checkable. External guidance anchors (issue
+    #226) share the metric + a config-agnostic empty key, so they are filtered out here: a
+    metric with only external rows errors "no gate reference row" rather than silently
+    gating on guidance.
+    """
+    rows = [
+        r
+        for r in benchmark.expected(**axes)
+        if r.metric == benchmark.primary_metric and not r.is_external
+    ]
     if not rows:
         print(
-            f"Error: no reference row for metric {benchmark.primary_metric!r} "
+            f"Error: no gate reference row for metric {benchmark.primary_metric!r} "
             f"(axes={axes}) in benchmark {benchmark.name!r}.",
             file=sys.stderr,
         )
         sys.exit(2)
     if len(rows) > 1:
         print(
-            f"Error: {len(rows)} reference rows match metric {benchmark.primary_metric!r} "
+            f"Error: {len(rows)} gate reference rows match metric {benchmark.primary_metric!r} "
             f"(axes={axes}); refine the axes.",
             file=sys.stderr,
         )

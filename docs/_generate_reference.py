@@ -285,6 +285,32 @@ def _reference_csv_table(title: str, rel_path: str, widths: str) -> str:
     )
 
 
+def _ocelot_guidance_section(bench) -> str:
+    """The non-gating external/guidance anchors as a clickable, clearly-labelled section.
+
+    Generated from the registered benchmark's ``external`` reference rows (issue #226): each
+    renders as an anonymous RST hyperlink (``label <url>``__) so the docs page links the
+    snapshotted source, framed as context — never a target ``soma reproduce`` gates on.
+    """
+    external = [r for r in bench.expected() if r.is_external]
+    bullets = []
+    for row in external:
+        note = f" — {row.source}" if row.source else ""
+        bullets.append(
+            f"* `{row.label} <{row.url}>`__ — ``{row.metric}`` ≈ {row.expected:.2f}{note}"
+        )
+    return (
+        "Guidance anchors (non-gating)\n-----------------------------\n\n"
+        "External reference points shown for **context only** — the official challenge\n"
+        "baseline and best-reported numbers, snapshotted (not live-scraped) from\n"
+        "`histoboard <https://wearewaiv.github.io/histoboard/>`__. They measure a\n"
+        "*different* protocol than soma's frozen probe (fully-supervised, end-to-end, not\n"
+        "tied to any encoder), so ``soma reproduce`` **never gates** on them; they only show\n"
+        "how far the frozen-probe result stands from the best reported result:\n\n"
+        + "\n".join(bullets)
+    )
+
+
 def build_ocelot_benchmark_rst() -> str:
     """Generate the OCELOT benchmark page from the registered ``ocelot`` benchmark."""
     bench = get_benchmark("ocelot")
@@ -329,14 +355,17 @@ def build_ocelot_benchmark_rst() -> str:
         "2×2 magnification-alignment ablation plus the native anchor:\n\n"
         + _kv_table("Encoder", "Spacing (µm/px)", axes_rows, widths="50 50"),
         "Reference numbers\n-----------------\n\n"
-        "The tolerance band ``soma reproduce`` checks against — read verbatim from the\n"
-        "packaged reference CSV (config-agnostic banner; the ``source`` cell records\n"
-        "provenance and why the tolerance is what it is):\n\n"
+        "Read verbatim from the packaged reference CSV. The ``kind`` column marks each\n"
+        "row's role: a ``gate`` row is the tolerance band ``soma reproduce`` checks against\n"
+        "(config-agnostic banner); ``external`` rows are non-gating guidance anchors (also\n"
+        "surfaced with clickable links below). The ``source`` cell records provenance and\n"
+        "why the tolerance is what it is:\n\n"
         + _reference_csv_table(
             "``soma/benchmarks/reference/ocelot.csv``",
             "../soma/benchmarks/reference/ocelot.csv",
-            "8 8 8 12 10 10 46",
+            "5 5 5 8 6 6 5 14 14 32",
         ),
+        _ocelot_guidance_section(bench),
         "Reference environment\n---------------------\n\n"
         "The recorded anchor environment the reference number was produced in:\n\n"
         + _kv_table("Component", "Version", env_rows, widths="40 60"),
