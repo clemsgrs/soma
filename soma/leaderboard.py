@@ -253,6 +253,24 @@ class ReferenceBanner:
 
 
 @dataclass(frozen=True)
+class GuidanceAnchor:
+    """A non-gating external/official reference point rendered as context (issue #226).
+
+    An external anchor (an official-challenge baseline, a best-reported SOTA number, …)
+    measures a *different* protocol than the one soma runs, so it never gates a run's
+    PASS/FAIL — it is shown alongside the gate band purely as guidance ("what's
+    achievable"). ``label`` names it, ``url`` links the snapshotted source, and ``source``
+    keeps the protocol note + capture date.
+    """
+
+    label: str
+    metric: str
+    expected: float
+    url: str
+    source: str
+
+
+@dataclass(frozen=True)
 class LeaderboardRow:
     rank: int
     experiment_id: str
@@ -278,6 +296,7 @@ class LeaderboardTable:
     split: str
     rows: list[LeaderboardRow]
     banner: ReferenceBanner | None = None
+    guidance: tuple[GuidanceAnchor, ...] = ()
 
 
 def _passes_fixed(spec: dict[str, Any], fixed: dict[str, Any]) -> bool:
@@ -373,6 +392,7 @@ def project_leaderboard(
     )
 
     banner = _reference_banner(benchmark, metric_name)
+    guidance = _guidance_anchors(benchmark, metric_name)
     rows: list[LeaderboardRow] = []
     for index, entry in enumerate(prelim, start=1):
         ref = _keyed_reference(benchmark, metric_name, entry["vary_values"], entry["mean"])
@@ -399,6 +419,7 @@ def project_leaderboard(
         split=chosen_split,
         rows=rows,
         banner=banner,
+        guidance=guidance,
     )
 
 
@@ -408,15 +429,44 @@ def _clean(value: Any) -> Any:
 
 
 def _reference_banner(benchmark: "Benchmark | None", metric: str) -> ReferenceBanner | None:
-    """The broad (empty-key) reference row for ``metric``, rendered as a banner."""
+    """The broad (empty-key) **gate** reference row for ``metric``, rendered as a banner.
+
+    External guidance anchors also carry an empty key + this metric, so they are filtered
+    out here (they render in their own guidance section, never as the gate band).
+    """
     if benchmark is None:
         return None
-    broad = [r for r in benchmark.expected() if not r.key and r.metric == metric]
+    broad = [
+        r
+        for r in benchmark.expected()
+        if not r.key and r.metric == metric and not r.is_external
+    ]
     if not broad:
         return None
     row = broad[0]
     return ReferenceBanner(
         metric=row.metric, expected=row.expected, tolerance=row.tolerance, source=row.source
+    )
+
+
+def _guidance_anchors(benchmark: "Benchmark | None", metric: str) -> tuple[GuidanceAnchor, ...]:
+    """External (non-gating) guidance anchors for ``metric`` (issue #226).
+
+    Collected config-agnostically: an external anchor is typically not keyed to an encoder,
+    so ``benchmark.expected()`` (no axes) surfaces it for any facet.
+    """
+    if benchmark is None:
+        return ()
+    return tuple(
+        GuidanceAnchor(
+            label=row.label,
+            metric=row.metric,
+            expected=row.expected,
+            url=row.url,
+            source=row.source,
+        )
+        for row in benchmark.expected()
+        if row.is_external and row.metric == metric
     )
 
 
@@ -436,7 +486,11 @@ def _keyed_reference(
     if benchmark is None or not vary_values:
         return empty
     axes = {k: v for k, v in vary_values.items() if v is not None}
-    keyed = [r for r in benchmark.expected(**axes) if r.key and r.metric == metric]
+    keyed = [
+        r
+        for r in benchmark.expected(**axes)
+        if r.key and r.metric == metric and not r.is_external
+    ]
     if len(keyed) != 1:
         return empty
     row = keyed[0]
@@ -507,6 +561,16 @@ def to_dict(table: LeaderboardTable) -> dict[str, Any]:
                 "source": table.banner.source,
             }
         ),
+        "guidance": [
+            {
+                "label": anchor.label,
+                "metric": anchor.metric,
+                "expected": anchor.expected,
+                "url": anchor.url,
+                "source": anchor.source,
+            }
+            for anchor in table.guidance
+        ],
         "rows": [_row_dict(r) for r in table.rows],
     }
 
@@ -556,6 +620,13 @@ def format_table(table: LeaderboardTable) -> str:
             f"reference band: {b.metric} = {b.expected:.4f} ± {b.tolerance:.4f}"
             + (f"  [{b.source}]" if b.source else "")
         )
+    if table.guidance:
+        lines.append("guidance (external reference — context, not a gated target):")
+        for anchor in table.guidance:
+            link = f"  <{anchor.url}>" if anchor.url else ""
+            lines.append(
+                f"  · {anchor.label}: {anchor.metric} = {anchor.expected:.4f}{link}"
+            )
     has_reference = any(r.reference_expected is not None for r in table.rows)
     header = ["#", *table.vary, table.metric, "n"]
     if has_reference:
@@ -619,6 +690,23 @@ def render_html(table: LeaderboardTable) -> str:
             f'<p class="cfg-item"><strong>reference band:</strong> {esc(b.metric)} = '
             f"{b.expected:.4f} ± {b.tolerance:.4f} {esc(b.source)}</p>"
         )
+    guidance_html = ""
+    if table.guidance:
+        items = []
+        for anchor in table.guidance:
+            label = esc(anchor.label)
+            linked = (
+                f'<a href="{esc(anchor.url)}">{label}</a>' if anchor.url else label
+            )
+            items.append(
+                f"<li>{linked}: {esc(anchor.metric)} = {anchor.expected:.4f}"
+                + (f" <span class=\"muted\">{esc(anchor.source)}</span>" if anchor.source else "")
+                + "</li>"
+            )
+        guidance_html = (
+            '<div class="cfg-item"><strong>guidance</strong> (external reference — '
+            "context, not a gated target):<ul>" + "".join(items) + "</ul></div>"
+        )
     direction = "higher is better" if table.higher_is_better else "lower is better"
     title = f"SOMA leaderboard — {esc(table.triple[2])}"
     return f"""<!DOCTYPE html>
@@ -634,6 +722,7 @@ def render_html(table: LeaderboardTable) -> str:
   <p class="cfg-item">metric <strong>{esc(table.metric)}</strong> ({direction}) · split
      <strong>{esc(table.split)}</strong></p>
   {banner_html}
+  {guidance_html}
   <table class="results-table ranking-table">
     <thead><tr>{head}</tr></thead>
     <tbody>{''.join(body_rows)}</tbody>

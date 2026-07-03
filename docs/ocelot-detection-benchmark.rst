@@ -73,14 +73,29 @@ Axes
 Reference numbers
 -----------------
 
-The tolerance band ``soma reproduce`` checks against — read verbatim from the
-packaged reference CSV (config-agnostic banner; the ``source`` cell records
-provenance and why the tolerance is what it is):
+Read verbatim from the packaged reference CSV. The ``kind`` column marks each
+row's role: a ``gate`` row is the tolerance band ``soma reproduce`` checks against
+(config-agnostic banner); ``external`` rows are non-gating guidance anchors (also
+surfaced with clickable links below). The ``source`` cell records provenance and
+why the tolerance is what it is:
 
 .. csv-table:: ``soma/benchmarks/reference/ocelot.csv``
    :file: ../soma/benchmarks/reference/ocelot.csv
    :header-rows: 1
-   :widths: 8 8 8 12 10 10 46
+   :widths: 5 5 5 8 6 6 5 14 14 32
+
+Guidance anchors (non-gating)
+-----------------------------
+
+External reference points shown for **context only** — the official challenge
+baseline and best-reported numbers, snapshotted (not live-scraped) from
+`histoboard <https://wearewaiv.github.io/histoboard/>`__. They measure a
+*different* protocol than soma's frozen probe (fully-supervised, end-to-end, not
+tied to any encoder), so ``soma reproduce`` **never gates** on them; they only show
+how far the frozen-probe result stands from the best reported result:
+
+* `OCELOT official baseline (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.70 — Top fully-trained OCELOT cell-detection methods land ~0.70-0.73 mF1 (low end / official challenge baseline). A different protocol from soma's frozen probe (end-to-end supervised, encoder not frozen, not tied to any encoder), so non-gating guidance. Snapshotted from histoboard 2026-07-03.
+* `best reported (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.73 — Top fully-trained OCELOT cell-detection methods land ~0.70-0.73 mF1 (high end / best reported SOTA). A different protocol from soma's frozen probe, so non-gating guidance. Snapshotted from histoboard 2026-07-03.
 
 Reference environment
 ---------------------

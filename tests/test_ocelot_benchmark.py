@@ -84,12 +84,17 @@ def test_build_config_unknown_axes_is_keyerror():
 
 
 def test_expected_returns_broad_band():
-    rows = OCELOT.expected()
-    assert len(rows) == 1
-    assert rows[0].metric == "mean_f1"
-    assert rows[0].expected == pytest.approx(0.6995, abs=1e-6)
+    # `expected()` returns the gate band plus the non-gating external anchors (issue #226);
+    # the gate is the single config-agnostic tolerance row.
+    gate = [r for r in OCELOT.expected() if not r.is_external]
+    assert len(gate) == 1
+    assert gate[0].metric == "mean_f1"
+    assert gate[0].expected == pytest.approx(0.6995, abs=1e-6)
     # The broad banner also matches when axes are supplied.
-    assert OCELOT.expected(encoder="virchow2", spacing=0.2)[0].expected == pytest.approx(0.6995)
+    gate_axed = [
+        r for r in OCELOT.expected(encoder="virchow2", spacing=0.2) if not r.is_external
+    ]
+    assert gate_axed[0].expected == pytest.approx(0.6995)
 
 
 def test_extract_test_metrics_reads_test_headline():
@@ -121,11 +126,20 @@ def test_reference_csv_has_key_metric_expected_tolerance_source_columns():
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
-    # Columns: key… then the fixed value columns, per-row tolerance present.
-    assert columns[-4:] == ["metric", "expected", "tolerance", "source"]
-    key_columns = columns[:-4]
+    # The required value columns are present, plus the external-anchor markers (issue #226).
+    for col in ("metric", "expected", "tolerance", "source", "kind", "label", "url"):
+        assert col in columns
+    key_columns = columns[: columns.index("metric")]
     assert key_columns, "reference table declares key columns left of `metric`"
-    # The single OCELOT row is the broad banner: all key cells empty (config-agnostic).
-    assert len(rows) == 1
-    assert all(not (rows[0][c] or "").strip() for c in key_columns)
-    assert float(rows[0]["tolerance"]) == pytest.approx(0.02)
+    gate_rows = [r for r in rows if (r.get("kind") or "gate").strip() != "external"]
+    external_rows = [r for r in rows if (r.get("kind") or "").strip() == "external"]
+    # One gate row (the broad, config-agnostic banner) + the external guidance anchors.
+    assert len(gate_rows) == 1
+    assert external_rows, "the CSV carries non-gating external guidance anchors"
+    banner = gate_rows[0]
+    assert all(not (banner[c] or "").strip() for c in key_columns)
+    assert float(banner["tolerance"]) == pytest.approx(0.02)
+    # External anchors carry a label + linkable URL and are not tolerance-checked.
+    for row in external_rows:
+        assert (row["label"] or "").strip()
+        assert (row["url"] or "").strip().startswith("http")

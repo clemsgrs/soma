@@ -126,6 +126,28 @@ def test_load_reference_parses_ocelot_band():
     assert banner.source  # a non-empty provenance string
 
 
+def test_ocelot_carries_external_guidance_anchors():
+    # OCELOT ships ≥1 non-gating external anchor (official/best-reported, snapshotted from
+    # histoboard) with a human label + a clickable URL; the "~0.70-0.73" prose is promoted
+    # OUT of the gate row's source into these structured rows.
+    rows = load_reference("ocelot")
+    gate = [r for r in rows if r.metric == "mean_f1" and not r.is_external]
+    external = [r for r in rows if r.metric == "mean_f1" and r.is_external]
+
+    assert len(gate) == 1, "OCELOT keeps exactly one gate row for mean_f1"
+    assert len(external) >= 1, "OCELOT must carry at least one external guidance anchor"
+    # Multiple independently-labelled/linked anchors are supported (official + best-reported).
+    assert len(external) >= 2
+    for row in external:
+        assert row.label, "an external anchor carries a human label"
+        assert row.url.startswith("http"), "an external anchor carries a linkable URL"
+        assert row.tolerance == pytest.approx(0.0)  # never gates
+
+    # The promoted figure lives on the external rows, not the gate row's source.
+    assert "0.70-0.73" not in gate[0].source
+    assert any(0.70 <= r.expected <= 0.73 for r in external)
+
+
 def test_load_reference_requires_value_columns(tmp_path, monkeypatch):
     # A table missing the fixed value columns fails fast.
     import soma.benchmarks.registry as reg
@@ -144,10 +166,60 @@ def test_load_reference_requires_value_columns(tmp_path, monkeypatch):
         reg.load_reference("whatever")
 
 
+def _fake_reference_csv(monkeypatch, text: str) -> None:
+    """Point ``load_reference`` at an in-memory CSV (mirrors the missing-column test)."""
+    import soma.benchmarks.registry as reg
+
+    class _Fake:
+        def joinpath(self, _name):
+            return self
+
+        def open(self, newline=""):
+            import io
+
+            return io.StringIO(text)
+
+    monkeypatch.setattr(reg.resources, "files", lambda _pkg: _Fake())
+
+
+def test_load_reference_parses_kind_label_url_columns(monkeypatch):
+    # An external (non-gating) guidance row carries a kind marker, a human label, and a
+    # linkable URL; a gate row (or an absent/blank kind cell) defaults to kind="gate".
+    _fake_reference_csv(
+        monkeypatch,
+        "metric,expected,tolerance,kind,label,url,source\n"
+        "m,0.70,0.02,gate,,,soma reproduced anchor\n"
+        "m,0.73,,external,best reported,https://example.org/board,captured 2026-07-03\n",
+    )
+    rows = load_reference("whatever")
+    gate, external = rows[0], rows[1]
+    assert gate.kind == "gate"
+    assert external.kind == "external"
+    assert external.label == "best reported"
+    assert external.url == "https://example.org/board"
+    assert external.expected == pytest.approx(0.73)
+    # A blank tolerance on an external row is tolerated (it never gates).
+    assert external.tolerance == pytest.approx(0.0)
+
+
+def test_load_reference_defaults_kind_to_gate_when_column_absent(monkeypatch):
+    # A legacy CSV with no kind/label/url columns still parses; every row is a gate.
+    _fake_reference_csv(
+        monkeypatch,
+        "metric,expected,tolerance,source\nm,0.70,0.02,anchor\n",
+    )
+    (row,) = load_reference("whatever")
+    assert row.kind == "gate"
+    assert row.label == "" and row.url == ""
+
+
 def test_expected_rows_filters_by_axes_and_metric():
+    # The gate band is a single config-agnostic row; external guidance rows share the
+    # metric + empty key, so filter by kind to isolate the gate.
     rows = expected_rows("ocelot", metric="mean_f1", encoder="virchow2", spacing=0.2)
-    assert len(rows) == 1
-    assert rows[0].metric == "mean_f1"
+    gate = [r for r in rows if r.kind == "gate"]
+    assert len(gate) == 1
+    assert gate[0].metric == "mean_f1"
     # A metric that isn't tabulated yields nothing.
     assert expected_rows("ocelot", metric="dice") == []
 

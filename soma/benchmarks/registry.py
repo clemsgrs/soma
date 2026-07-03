@@ -30,8 +30,18 @@ from typing import Any, Protocol, runtime_checkable
 from soma.config import PipelineConfig
 from soma.curation.manifest import CuratedManifest
 
-# The fixed, non-key columns every reference table carries, in canonical order.
+# The fixed, non-key columns every reference table MUST carry, in canonical order.
 _REFERENCE_VALUE_COLUMNS = ("metric", "expected", "tolerance", "source")
+
+# Optional non-key columns that promote a row to a structured external/guidance anchor
+# (issue #226). They are recognised as value columns (never treated as axis keys) and
+# default when absent: ``kind`` defaults to ``"gate"``, ``label``/``url`` to ``""``.
+_OPTIONAL_VALUE_COLUMNS = ("kind", "label", "url")
+
+# The two row kinds: a ``gate`` row is tolerance-checked by ``soma reproduce``; an
+# ``external`` row is a non-gating guidance anchor rendered alongside (never as) the gate.
+GATE = "gate"
+EXTERNAL = "external"
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,12 @@ class ReferenceRow:
 
     ``key`` holds only the *populated* key columns (an empty dict is the broad,
     config-agnostic banner). ``tolerance`` is absolute on ``metric`` and is per-row.
+
+    ``kind`` splits rows into two roles (issue #226): a ``"gate"`` row is the
+    tolerance-checkable anchor ``soma reproduce`` verifies; a ``"external"`` row is a
+    non-gating guidance anchor (an official/best-reported number captured from an outside
+    leaderboard) rendered *alongside* — never *as* — the gate. External rows carry a human
+    ``label`` and a linkable ``url``; their ``tolerance`` is ignored (may be blank).
     """
 
     key: dict[str, str]
@@ -60,6 +76,14 @@ class ReferenceRow:
     expected: float
     tolerance: float
     source: str
+    kind: str = GATE
+    label: str = ""
+    url: str = ""
+
+    @property
+    def is_external(self) -> bool:
+        """True for a non-gating guidance anchor (never tolerance-checked)."""
+        return self.kind == EXTERNAL
 
     def matches(self, axes: dict[str, Any]) -> bool:
         """True if every populated key cell equals the matching axis (banner matches all)."""
@@ -142,17 +166,25 @@ def load_reference(name: str) -> list[ReferenceRow]:
                 f"reference/{name}.csv is missing required column(s) {missing}; "
                 f"got {fieldnames}."
             )
-        key_columns = [c for c in fieldnames if c not in _REFERENCE_VALUE_COLUMNS]
+        value_columns = set(_REFERENCE_VALUE_COLUMNS) | set(_OPTIONAL_VALUE_COLUMNS)
+        key_columns = [c for c in fieldnames if c not in value_columns]
         rows: list[ReferenceRow] = []
         for raw in reader:
             key = {col: raw[col] for col in key_columns if (raw.get(col) or "").strip()}
+            kind = (raw.get("kind") or "").strip() or GATE
+            tolerance_cell = (raw.get("tolerance") or "").strip()
+            # An external guidance anchor never gates, so a blank tolerance is fine.
+            tolerance = float(tolerance_cell) if tolerance_cell else 0.0
             rows.append(
                 ReferenceRow(
                     key=key,
                     metric=raw["metric"].strip(),
                     expected=float(raw["expected"]),
-                    tolerance=float(raw["tolerance"]),
+                    tolerance=tolerance,
                     source=(raw.get("source") or "").strip(),
+                    kind=kind,
+                    label=(raw.get("label") or "").strip(),
+                    url=(raw.get("url") or "").strip(),
                 )
             )
     return rows

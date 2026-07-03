@@ -14,6 +14,8 @@ import pytest
 
 import soma.cli as cli
 from soma.cli import main
+from soma.benchmarks import registry as registry_mod
+from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
 
 
 def _run_cli(argv: list[str]) -> int:
@@ -95,6 +97,79 @@ def test_reproduce_default_runs_canonical_seed_set(monkeypatch, capsys, tmp_path
     _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert "canonical seeds [0]" in out
+
+
+# --- external (non-gating) guidance anchors excluded from the gate (issue #226) --------
+
+
+class _ExternalOnlyBenchmark:
+    """A benchmark whose primary metric carries ONLY external guidance rows (no gate)."""
+
+    name = "ext_only_fixture"
+    facet = Facet(fixed={}, varied=())
+    canonical_seeds = (0,)
+    primary_metric = "mean_f1"
+    reference_environment: dict[str, str] = {}
+
+    def curate(self, raw_root, out_dir):  # pragma: no cover - unused
+        raise NotImplementedError
+
+    def build_config(self, **axes):  # pragma: no cover - unused
+        raise NotImplementedError
+
+    def expected(self, **axes):
+        return [
+            ReferenceRow(
+                key={},
+                metric="mean_f1",
+                expected=0.73,
+                tolerance=0.0,
+                source="captured 2026-07-03",
+                kind="external",
+                label="best reported",
+                url="https://example.org/board",
+            )
+        ]
+
+    def score(self, run_dir):  # pragma: no cover - must never run without a gate row
+        raise AssertionError("score() must not be called when there is no gate reference row")
+
+
+@pytest.fixture()
+def external_only_benchmark():
+    bench = _ExternalOnlyBenchmark()
+    register_benchmark(bench)
+    try:
+        yield bench
+    finally:
+        registry_mod._REGISTRY.pop(bench.name, None)
+
+
+def test_reproduce_external_only_metric_errors_no_gate_row(capsys, tmp_path, external_only_benchmark):
+    # A primary metric with only external guidance rows must NOT silently gate on guidance:
+    # it errors "no gate reference row" and never scores the run.
+    code = _run_cli(["reproduce", "ext_only_fixture", "--from-run-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "no gate reference row" in err
+
+
+def test_reproduce_external_anchors_never_flip_the_gate_verdict(monkeypatch, capsys, tmp_path):
+    # OCELOT's CSV carries external anchors (0.70, 0.73) OUTSIDE the gate band alongside the
+    # gate (0.6995 ± 0.02). A measured 0.70 passes the gate; the external anchors must not
+    # turn it into a FAIL or a "multiple rows" error.
+    monkeypatch.setattr(
+        "soma.benchmarks.ocelot._greedy_report_for_run",
+        lambda run_dir, matching="greedy": {
+            "matching": "greedy",
+            "tune": {"mean_f1": 0.71},
+            "test": {"headline": {"metrics": {"mean_f1": 0.70}}},
+        },
+    )
+    code = _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "PASS" in out
 
 
 def test_reproduce_unknown_benchmark_exits_nonzero(capsys):
@@ -205,7 +280,7 @@ def test_reproduce_from_run_dir_encoder_without_reference_row_errors_honestly(ca
     code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(run_dir)])
     err = capsys.readouterr().err
     assert code == 2
-    assert "no reference row" in err
+    assert "no gate reference row" in err
     assert "'encoder': 'uni'" in err
 
 

@@ -49,6 +49,18 @@ def test_ocelot_benchmark_page_matches_registry() -> None:
     assert "soma reproduce ocelot" in generated
 
 
+def test_ocelot_benchmark_page_renders_external_guidance_anchors() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_ocelot_benchmark_rst()
+    # A dedicated, clearly-labelled guidance section (not the gate/tolerance band).
+    assert "guidance" in generated.lower()
+    # Rendered from the registry's external rows with clickable RST links + labels.
+    assert "`best reported (fully-supervised end-to-end) " in generated
+    assert "<https://wearewaiv.github.io/histoboard/>`__" in generated
+    # Framed as context, never a target soma gates on.
+    assert "non-gating" in generated.lower()
+
+
 def test_eva_benchmark_page_matches_registry() -> None:
     generator, docs_dir = _load_reference_generator()
     generated = generator.build_eva_benchmark_rst().strip()
