@@ -62,6 +62,10 @@ Tile-level encoders
      - 768 / 1536
      - ``0.5``
      - Filiot et al. (2024)
+   * - ``dinov2-vitb14``
+     - 768
+     - ``0.5``
+     - Oquab et al. (2024); natural-image (non-pathology) control, spacing-agnostic
    * - ``phikonv2``
      - 1024
      - ``0.5``
@@ -78,6 +82,14 @@ Tile-level encoders
      - 1024 / 2048
      - ``0.25``, ``0.5``, ``1.0``
      - Xiang et al. (2024)
+   * - ``gpfm``
+     - 1024
+     - ``0.5``
+     - Ma et al. (2024)
+   * - ``mstar``
+     - 1024
+     - ``0.5``
+     - Wang et al. (2024)
    * - ``virchow``
      - 1280 / 2560
      - ``0.5``
@@ -106,6 +118,10 @@ Tile-level encoders
      - 3072
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
      - Karasikov et al. (2025)
+   * - ``genbio-pathfm``
+     - 4608
+     - ``0.5``
+     - GenBio AI (2024)
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~
