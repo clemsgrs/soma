@@ -62,10 +62,6 @@ Tile-level encoders
      - 768 / 1536
      - ``0.5``
      - Filiot et al. (2024)
-   * - ``dinov2-vitb14``
-     - 768
-     - ``0.5``
-     - Oquab et al. (2024); natural-image (non-pathology) control, spacing-agnostic
    * - ``phikonv2``
      - 1024
      - ``0.5``
@@ -122,6 +118,24 @@ Tile-level encoders
      - 4608
      - ``0.5``
      - GenBio AI (2024)
+
+Natural-image control
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A non-pathology baseline that shares the tile-encoder interface, for measuring
+how much pathology pretraining actually contributes.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Preset
+     - Output dim
+     - Spacing
+     - Notes
+   * - ``dinov2-vitb14``
+     - 768
+     - ``0.5``
+     - Oquab et al. (2024)
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~
