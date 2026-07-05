@@ -5,8 +5,9 @@ that ships *inside* the ``soma`` wheel — not a folder convention under ``examp
 Importing this package registers every bundled benchmark, so ``soma list benchmarks`` and
 ``soma reproduce <name>`` drive the registry directly.
 
-This package registers ``ocelot`` (OCELOT 2023 cell detection) and the ``eva/<dataset>``
-family (kaiko-ai/eva patch classification, one sub-benchmark per dataset).
+This package registers ``ocelot`` (OCELOT 2023 cell detection), the ``eva/<dataset>``
+family (kaiko-ai/eva patch classification, one sub-benchmark per dataset), and
+``detection-benchmark`` (the multi-dataset encoder-ranking harness, issue #246).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from soma.benchmarks.registry import (
 # family) into the registry.
 from soma.benchmarks import ocelot as _ocelot  # noqa: F401
 from soma.benchmarks import eva as _eva  # noqa: F401
+from soma.benchmarks import detection_benchmark as _detection_benchmark  # noqa: F401
 
 __all__ = [
     "Benchmark",

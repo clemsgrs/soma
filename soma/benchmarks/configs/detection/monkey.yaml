@@ -1,0 +1,61 @@
+# detection-benchmark — MONKEY inflammatory-cell detection, native spacing (0.242 µm/px).
+#
+# Per-dataset BASE config for the encoder-ranking sweep (#246). Recipe backbone fixed —
+# frozen encoder -> dense token grid -> lightweight_conv decoder -> per-class peak heatmap,
+# scored with the MONKEY-native FROC (mean of the per-class FROC scores; lymphocytes 4 µm /
+# monocytes 5 µm matching margins). Only ``encoder.name`` varies across the roster.
+#
+# Data paths are the curator's author-machine defaults; the driver repoints them per
+# replicate.
+
+run:
+  output_root: output/detection_benchmark/monkey
+  seed: 0
+  tags: [detection-benchmark, monkey, detection, lightweight_conv]
+
+preprocessing:
+  requested_tile_size_px: 512
+  requested_spacing_um: 0.242
+  dense_window_size: 512
+  dense_window_overlap: 0.25
+
+data:
+  dataset_csv: /data/pathology/projects/clement/code/soma/data/monkey/curated/dataset.csv
+  splits_csv: /data/pathology/projects/clement/code/soma/data/monkey/curated/splits.csv
+  dataset_type: detection
+
+encoder:
+  name: virchow2
+  batch_size: 8
+  allow_non_recommended_settings: true
+
+decoder:
+  name: lightweight_conv
+
+task:
+  name: detection
+  params:
+    num_classes: 2            # 0 = lymphocytes, 1 = monocytes (merged MNL pooled at score time)
+    match_distance: 5.0       # δ in µm — per-class margins (4/5 µm) are applied by the FROC scorer
+    sigma: 1.7                # target Gaussian σ in µm (≈ δ/3)
+    matching: greedy          # FROC uses greedy-by-confidence matching
+    foreground_weight: 10.0
+    level0_spacing: 0.242     # native spacing of this manifest
+
+evaluation:
+  metrics: [mean_f1, f1_per_class, precision, recall]
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: adam
+  scheduler: cosine
+  patience: 10
+  monitor: mean_f1
+  monitor_mode: max
+  batch_size: 1
+  gradient_accumulation: 8
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: false

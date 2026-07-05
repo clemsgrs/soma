@@ -1,0 +1,3 @@
+dataset,encoder,spacing,metric,expected,tolerance,kind,label,url,source
+,,,mean_froc,0.0,0.02,gate,,,"TODO(human): soma frozen-probe MONKEY-native mean FROC on the LOCAL held-out split (not the official hidden test). Placeholder — fill the measured seed-0 headline + snapshot date after the #234 GPU run. Reproductions within +/-0.02 are cuDNN/GPU noise."
+,,,mean_froc,0.0,,external,MONKEY challenge winner (official hidden test),https://monkey.grand-challenge.org/,"TODO(human): published MONKEY top inflammatory-cell detection mean FROC on the official hidden test. Different test set + protocol from soma's frozen-probe local held-out, so NON-GATING guidance only. Fill the number + snapshot date at run time."

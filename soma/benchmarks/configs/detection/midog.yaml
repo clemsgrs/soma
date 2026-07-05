@@ -1,0 +1,65 @@
+# detection-benchmark — MIDOG 2022 mitosis detection, native spacing (0.25 µm/px).
+#
+# Per-dataset BASE config for the encoder-ranking sweep (#246). Recipe backbone fixed —
+# frozen encoder -> dense token grid -> lightweight_conv decoder -> single-class peak
+# heatmap, scored with the MIDOG-native F1 (one-to-one/Hungarian match within 7.5 µm,
+# ~one nucleus). Only ``encoder.name`` varies across the roster.
+#
+# MIDOG scanners differ in physical resolution, so a slightly looser reader tolerance
+# (0.10) lets each region be read at the task spacing without a hard spacing-mismatch
+# failure. Data paths are the curator's author-machine defaults; the driver repoints them.
+
+run:
+  output_root: output/detection_benchmark/midog
+  seed: 0
+  tags: [detection-benchmark, midog, detection, lightweight_conv]
+
+preprocessing:
+  requested_tile_size_px: 512
+  requested_spacing_um: 0.25
+  # MIDOG mixes scanners/resolutions; a 0.10 tolerance admits each region at the task
+  # spacing (design: preprocessing.tolerance = 0.10 for MIDOG).
+  tolerance: 0.10
+  dense_window_size: 512
+  dense_window_overlap: 0.25
+
+data:
+  dataset_csv: /data/pathology/projects/clement/code/soma/data/midog/curated/dataset.csv
+  splits_csv: /data/pathology/projects/clement/code/soma/data/midog/curated/splits.csv
+  dataset_type: detection
+
+encoder:
+  name: virchow2
+  batch_size: 8
+  allow_non_recommended_settings: true
+
+decoder:
+  name: lightweight_conv
+
+task:
+  name: detection
+  params:
+    num_classes: 1            # single mitotic-figure class
+    match_distance: 7.5       # δ in µm (MIDOG-native, ~one nucleus)
+    sigma: 2.5                # target Gaussian σ in µm (≈ δ/3)
+    matching: hungarian       # MIDOG-native one-to-one matching
+    foreground_weight: 10.0
+    level0_spacing: 0.25      # native spacing of this manifest
+
+evaluation:
+  metrics: [mean_f1, f1_per_class, precision, recall]
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: adam
+  scheduler: cosine
+  patience: 10
+  monitor: mean_f1
+  monitor_mode: max
+  batch_size: 1
+  gradient_accumulation: 8
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: false
