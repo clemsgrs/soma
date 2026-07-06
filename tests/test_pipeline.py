@@ -29,7 +29,11 @@ from soma.config import (
 from soma.dataset import Dataset, FoldSplit, Splits
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.features import FeatureStore
-from soma.output_layout import build_experiment_spec
+from soma.output_layout import (
+    build_experiment_spec,
+    read_test_results,
+)
+from soma.output_layout import test_identity_digest as compute_test_digest
 from soma.pipeline import (
     FoldResult,
     Pipeline,
@@ -1356,6 +1360,90 @@ class TestPipeline:
         assert summary_path.exists()
         summary = json.loads(summary_path.read_text())
         assert "test/auroc" in summary
+
+    def test_test_invariant_identity_lets_test_sets_coexist_and_guards_rescore(
+        self, tmp_path: Path
+    ):
+        """Issue #247 end-to-end: same train/tune + different test sets → same experiment
+        dir (the checkpoint is reusable), results coexist keyed by test identity, and
+        re-scoring the same test set is refused unless overwrite_test."""
+        # dataset with a shared train/tune core (s0..s2) and two candidate test rows.
+        dataset_csv = tmp_path / "dataset.csv"
+        pd.DataFrame(
+            {
+                "sample_id": ["s0", "s1", "s2", "sA", "sB"],
+                "image_path": [f"/slides/{s}.svs" for s in ["s0", "s1", "s2", "sA", "sB"]],
+                "label": ["tumor", "normal", "tumor", "normal", "tumor"],
+            }
+        ).to_csv(dataset_csv, index=False)
+        feature_dir = tmp_path / "features"
+        feature_dir.mkdir()
+        torch.manual_seed(0)
+        for sid in ["s0", "s1", "s2", "sA", "sB"]:
+            torch.save(torch.randn(6, D), feature_dir / f"{sid}.pt")
+
+        def _splits(test_sample: str) -> Path:
+            path = tmp_path / f"splits_{test_sample}.csv"
+            pd.DataFrame(
+                {
+                    "fold": [0, 0, 0, 0],
+                    "sample_id": ["s0", "s1", "s2", test_sample],
+                    "split": ["train", "train", "tune", "test"],
+                }
+            ).to_csv(path, index=False)
+            return path
+
+        output_root = tmp_path / "output"
+
+        def _config(test_sample: str, **eval_kwargs) -> PipelineConfig:
+            return PipelineConfig(
+                dataset_csv=dataset_csv,
+                splits_csv=_splits(test_sample),
+                output_root=output_root,
+                dataset_type="slide",
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="binary_classification"),
+                evaluation=EvalConfig(**eval_kwargs),
+                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            )
+
+        config_a = _config("sA")
+        config_b = _config("sB")
+
+        # Same train/tune, different test set → identical experiment id (checkpoint reuse).
+        assert (
+            build_experiment_spec(config_a).experiment_id
+            == build_experiment_spec(config_b).experiment_id
+        )
+
+        run_a = "2026-04-09_16-22-10__local"
+        run_b = "2026-04-09_16-23-10__local"
+        with patch("soma.output_layout.make_run_id", return_value=run_a):
+            result_a = Pipeline(config_a, feature_dir=feature_dir).run()
+        with patch("soma.output_layout.make_run_id", return_value=run_b):
+            result_b = Pipeline(config_b, feature_dir=feature_dir).run()
+
+        # Both runs land under ONE experiment dir; each records its own test identity.
+        assert result_a.run_dir.parent == result_b.run_dir.parent
+        reg_a = read_test_results(result_a.run_dir)
+        reg_b = read_test_results(result_b.run_dir)
+        assert list(reg_a) == [compute_test_digest(config_a)]
+        assert list(reg_b) == [compute_test_digest(config_b)]
+        assert set(reg_a) != set(reg_b)  # distinct test sets coexist
+        assert "test" in result_a.fold_results[0].test_reports
+
+        # Re-scoring the SAME test set into the SAME run dir is refused (loud skip) — the
+        # test splits are held out so the prior result is not clobbered.
+        with patch("soma.output_layout.make_run_id", return_value=run_a):
+            result_a_again = Pipeline(config_a, feature_dir=feature_dir).run()
+        assert result_a_again.fold_results[0].test_reports == {}
+
+        # overwrite_test re-scores it.
+        with patch("soma.output_layout.make_run_id", return_value=run_a):
+            result_a_over = Pipeline(
+                _config("sA", overwrite_test=True), feature_dir=feature_dir
+            ).run()
+        assert "test" in result_a_over.fold_results[0].test_reports
 
     def test_run_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)

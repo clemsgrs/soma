@@ -29,10 +29,13 @@ from soma.output_layout import (
     canonical_experiment_payload,
     capture_environment,
     create_run_metadata,
+    read_test_results,
+    register_test_result,
     resolve_managed_output_paths,
     update_run_index,
     write_run_metadata,
 )
+from soma.output_layout import test_identity_digest as compute_test_digest
 
 
 def _write_csv(path: Path, text: str) -> Path:
@@ -437,6 +440,221 @@ def test_read_csv_rows_handles_large_fields(tmp_path: Path):
         csv.field_size_limit(old_limit)
 
     assert rows == [{"name": "row1", "notes": "x" * 200_000}]
+
+
+# --- test-invariant experiment identity (issue #247) --------------------------------
+
+
+def _make_config_with_manifests(
+    tmp_path: Path, *, dataset_csv_text: str, splits_csv_text: str, **overrides
+) -> PipelineConfig:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    dataset_csv = _write_csv(tmp_path / "dataset.csv", dataset_csv_text)
+    splits_csv = _write_csv(tmp_path / "splits.csv", splits_csv_text)
+    defaults = dict(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "outputs",
+        dataset_type="slide",
+        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(),
+        encoder=EncoderConfig(name="uni2"),
+        aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
+        task=TaskConfig(name="binary_classification"),
+        training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
+    )
+    defaults.update(overrides)
+    return PipelineConfig(**defaults)
+
+
+_TRAIN_TUNE_DATASET = (
+    "sample_id,image_path,label\n"
+    "s0,/slides/s0.svs,tumor\n"
+    "s1,/slides/s1.svs,normal\n"
+    "s2,/slides/s2.svs,tumor\n"
+)
+_TRAIN_TUNE_SPLITS = "fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,tune\n"
+
+
+def test_experiment_id_is_invariant_to_added_test_rows(tmp_path: Path):
+    # The headline acceptance criterion (#247): dropping in a new/official test set — extra
+    # dataset rows + extra `test` split rows — must NOT change experiment_id.
+    base = _make_config_with_manifests(
+        tmp_path / "a",
+        dataset_csv_text=_TRAIN_TUNE_DATASET,
+        splits_csv_text=_TRAIN_TUNE_SPLITS,
+    )
+    with_test = _make_config_with_manifests(
+        tmp_path / "b",
+        dataset_csv_text=_TRAIN_TUNE_DATASET
+        + "t0,/slides/t0.svs,tumor\nt1,/slides/t1.svs,normal\n",
+        splits_csv_text=_TRAIN_TUNE_SPLITS + "0,t0,test\n0,t1,test_official\n",
+    )
+
+    assert (
+        build_experiment_spec(base).experiment_id
+        == build_experiment_spec(with_test).experiment_id
+    )
+
+
+def test_experiment_id_is_invariant_to_altered_test_rows(tmp_path: Path):
+    # Swapping which samples make up the test set (same train/tune) leaves the id fixed.
+    local_test = _make_config_with_manifests(
+        tmp_path / "a",
+        dataset_csv_text=_TRAIN_TUNE_DATASET + "t0,/slides/t0.svs,tumor\n",
+        splits_csv_text=_TRAIN_TUNE_SPLITS + "0,t0,test\n",
+    )
+    official_test = _make_config_with_manifests(
+        tmp_path / "b",
+        dataset_csv_text=_TRAIN_TUNE_DATASET + "u9,/slides/u9.svs,normal\n",
+        splits_csv_text=_TRAIN_TUNE_SPLITS + "0,u9,test\n",
+    )
+
+    assert (
+        build_experiment_spec(local_test).experiment_id
+        == build_experiment_spec(official_test).experiment_id
+    )
+    # ...but the two test sets are distinguishable by their test-identity digest.
+    assert compute_test_digest(local_test) != compute_test_digest(official_test)
+
+
+def test_experiment_id_changes_when_a_train_row_changes(tmp_path: Path):
+    base = _make_config_with_manifests(
+        tmp_path / "a",
+        dataset_csv_text=_TRAIN_TUNE_DATASET,
+        splits_csv_text=_TRAIN_TUNE_SPLITS,
+    )
+    altered_label = _make_config_with_manifests(
+        tmp_path / "b",
+        dataset_csv_text=_TRAIN_TUNE_DATASET.replace(
+            "s0,/slides/s0.svs,tumor", "s0,/slides/s0.svs,normal"
+        ),
+        splits_csv_text=_TRAIN_TUNE_SPLITS,
+    )
+
+    assert (
+        build_experiment_spec(base).experiment_id
+        != build_experiment_spec(altered_label).experiment_id
+    )
+
+
+def test_experiment_id_changes_when_a_train_tune_assignment_changes(tmp_path: Path):
+    base = _make_config_with_manifests(
+        tmp_path / "a",
+        dataset_csv_text=_TRAIN_TUNE_DATASET,
+        splits_csv_text=_TRAIN_TUNE_SPLITS,
+    )
+    moved = _make_config_with_manifests(
+        tmp_path / "b",
+        dataset_csv_text=_TRAIN_TUNE_DATASET,
+        # s2 moves from tune to train.
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,train\n",
+    )
+
+    assert (
+        build_experiment_spec(base).experiment_id
+        != build_experiment_spec(moved).experiment_id
+    )
+
+
+def test_overwrite_test_flag_is_not_part_of_identity(tmp_path: Path):
+    # overwrite_test is an operational clobber-guard, never part of what the experiment is.
+    off = _make_config_with_manifests(
+        tmp_path / "a",
+        dataset_csv_text=_TRAIN_TUNE_DATASET,
+        splits_csv_text=_TRAIN_TUNE_SPLITS,
+        evaluation=EvalConfig(overwrite_test=False),
+    )
+    on = _make_config_with_manifests(
+        tmp_path / "b",
+        dataset_csv_text=_TRAIN_TUNE_DATASET,
+        splits_csv_text=_TRAIN_TUNE_SPLITS,
+        evaluation=EvalConfig(overwrite_test=True),
+    )
+
+    assert build_experiment_spec(off).experiment_id == build_experiment_spec(on).experiment_id
+
+
+def test_leaderboard_triple_is_test_invariant(tmp_path: Path):
+    # The stored checksums that drive the leaderboard triple must be test-invariant too, so
+    # the same model scored on two test sets stays in ONE comparable leaderboard group.
+    local_test = _make_config_with_manifests(
+        tmp_path / "a",
+        dataset_csv_text=_TRAIN_TUNE_DATASET + "t0,/slides/t0.svs,tumor\n",
+        splits_csv_text=_TRAIN_TUNE_SPLITS + "0,t0,test\n",
+    )
+    official_test = _make_config_with_manifests(
+        tmp_path / "b",
+        dataset_csv_text=_TRAIN_TUNE_DATASET + "u9,/slides/u9.svs,normal\n",
+        splits_csv_text=_TRAIN_TUNE_SPLITS + "0,u9,test\n",
+    )
+
+    local_spec = build_experiment_spec(local_test)
+    official_spec = build_experiment_spec(official_test)
+    assert local_spec.dataset_checksum == official_spec.dataset_checksum
+    assert local_spec.splits_checksum == official_spec.splits_checksum
+
+
+def test_run_metadata_records_test_and_file_provenance(tmp_path: Path):
+    config = _make_config_with_manifests(
+        tmp_path,
+        dataset_csv_text=_TRAIN_TUNE_DATASET + "t0,/slides/t0.svs,tumor\n",
+        splits_csv_text=_TRAIN_TUNE_SPLITS + "0,t0,test\n",
+    )
+    experiment = build_experiment_spec(config)
+    metadata = create_run_metadata(
+        config=config,
+        experiment=experiment,
+        run_dir=tmp_path / "run",
+        run_id="r0",
+        status="running",
+    )
+
+    assert metadata.test_checksum == compute_test_digest(config)
+    # Whole-file digests (which DO see test rows) are kept as provenance, distinct from the
+    # test-invariant training digests on the ExperimentSpec.
+    assert metadata.dataset_file_checksum
+    assert metadata.splits_file_checksum
+    assert metadata.dataset_file_checksum != experiment.dataset_checksum
+
+    write_run_metadata(tmp_path / "run", metadata)
+    payload = yaml.safe_load((tmp_path / "run" / "run.yaml").read_text(encoding="utf-8"))
+    assert payload["test_checksum"] == metadata.test_checksum
+
+
+# --- test-results registry / overwrite guard (issue #247) ---------------------------
+
+
+def test_register_test_result_records_fresh_and_coexists(tmp_path: Path):
+    run_dir = tmp_path / "run"
+
+    first = register_test_result(run_dir, "digest-a", split_names=["test"], run_id="r0")
+    assert first.skipped is False
+    second = register_test_result(
+        run_dir, "digest-b", split_names=["test_official"], run_id="r0"
+    )
+    assert second.skipped is False
+
+    registry = read_test_results(run_dir)
+    assert set(registry) == {"digest-a", "digest-b"}
+    assert registry["digest-b"]["split_names"] == ["test_official"]
+
+
+def test_register_test_result_refuses_rescore_unless_overwrite(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    register_test_result(run_dir, "digest-a", split_names=["test"], run_id="r0")
+    recorded_at = read_test_results(run_dir)["digest-a"]["recorded_at"]
+
+    refused = register_test_result(run_dir, "digest-a", split_names=["test"], run_id="r0")
+    assert refused.skipped is True
+    assert refused.prior is not None
+    # The prior result is untouched by a refused re-score.
+    assert read_test_results(run_dir)["digest-a"]["recorded_at"] == recorded_at
+
+    overwritten = register_test_result(
+        run_dir, "digest-a", split_names=["test"], run_id="r0", overwrite=True
+    )
+    assert overwritten.skipped is False
 
 
 def test_experiment_spec_roundtrips_through_yaml(tmp_path: Path):

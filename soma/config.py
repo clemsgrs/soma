@@ -708,6 +708,13 @@ class EvalConfig:
     in. The test split may still be declared in ``splits.csv``; it is simply not
     touched. Tune evaluation, threshold sweeps, checkpoint selection, and training
     are unaffected.
+
+    ``overwrite_test`` governs the test-results clobber guard (issue #247): because
+    experiment identity is test-invariant, one checkpoint may be scored against several
+    test sets over its life. Each test set's result is namespaced by its test identity;
+    re-scoring an already-scored test set is refused by default (a loud skip that leaves
+    the prior result intact) unless ``overwrite_test`` is set. It is an operational flag,
+    not part of the experiment identity.
     """
 
     metrics: list[str] = field(default_factory=list)
@@ -717,6 +724,7 @@ class EvalConfig:
     save_detection_overlays: bool = True
     save_detection_heatmaps: bool = False
     holdout_test: bool = False
+    overwrite_test: bool = False
 
 
 @dataclass(frozen=True)
@@ -1349,4 +1357,5 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
         save_detection_overlays=bool(evaluation_data.get("save_detection_overlays", True)),
         save_detection_heatmaps=bool(evaluation_data.get("save_detection_heatmaps", False)),
         holdout_test=bool(evaluation_data.get("holdout_test", False)),
+        overwrite_test=bool(evaluation_data.get("overwrite_test", False)),
     )

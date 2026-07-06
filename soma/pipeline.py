@@ -67,7 +67,9 @@ from soma.encoders.validation import resolve_preprocessing_config
 from soma.output_layout import (
     create_run_metadata,
     has_successful_run,
+    register_test_result,
     resolve_managed_output_paths,
+    test_identity_digest,
     update_latest_pointer,
     update_run_index,
     write_experiment_metadata,
@@ -1803,6 +1805,9 @@ def train(
     masks: "MasksConfig | None" = None,
     heatmaps: HeatmapConfig | None = None,
     dataset_type: str = "slide",
+    test_digest: str | None = None,
+    overwrite_test: bool = False,
+    run_id: str | None = None,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
 
@@ -1827,6 +1832,34 @@ def train(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     evaluation = evaluation or EvalConfig()
+
+    # Test-results clobber guard (issue #247). Experiment identity is test-invariant, so a
+    # run dir may be re-scored against several test sets. Reserve the test-identity slot
+    # under this run: a fresh identity records and proceeds (default single-test behavior
+    # unchanged); an already-scored identity is refused unless overwrite_test — the test
+    # splits are then held out so the prior result is left intact. Skipped when there is no
+    # test scoring to guard (holdout_test) or the caller opted out (test_digest is None).
+    if test_digest is not None and not evaluation.holdout_test:
+        test_split_names = sorted(
+            {name for fold in splits.folds for name in fold.test_split_names}
+        )
+        decision = register_test_result(
+            run_dir,
+            test_digest,
+            split_names=test_split_names,
+            run_id=run_id,
+            overwrite=overwrite_test,
+        )
+        if decision.skipped:
+            logger.warning(
+                "Test identity %s was ALREADY scored for this run (recorded %s, splits %s); "
+                "skipping test inference so the existing result is not clobbered. Set "
+                "evaluation.overwrite_test=True to re-score.",
+                test_digest[:12],
+                (decision.prior or {}).get("recorded_at", "?"),
+                (decision.prior or {}).get("split_names", []),
+            )
+            evaluation = replace(evaluation, holdout_test=True)
 
     if dataset_type == "patient" or dataset.has_patient_ids:
         splits.validate_no_patient_leakage(dataset)
@@ -2242,6 +2275,9 @@ class Pipeline:
                 preprocessing=preprocessing,
                 masks=self._config.preprocessing.masks,
                 heatmaps=self._config.heatmaps,
+                test_digest=test_identity_digest(self._config),
+                overwrite_test=self._config.evaluation.overwrite_test,
+                run_id=layout.run_id,
             )
 
             if self._config.heatmaps.enabled:

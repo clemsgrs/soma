@@ -87,6 +87,12 @@ evaluation:
   # model-selection sweeps: rank candidates by tune score, then re-run the winner
   # with this off. The test split may stay in splits.csv; it is simply not touched.
   holdout_test: false
+  # Allow re-scoring a test set that was already scored for a run, overwriting its
+  # prior result. Off by default: because experiment identity is test-invariant, a
+  # checkpoint may be scored against several test sets — each result is namespaced by
+  # test identity and a re-score of an already-scored test set is refused (loud skip)
+  # unless this is set.
+  overwrite_test: false
 
 training:
   epochs: 50

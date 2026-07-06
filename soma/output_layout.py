@@ -49,6 +49,14 @@ def _training_without_seed(config: PipelineConfig) -> dict[str, Any]:
     return training
 
 
+def _evaluation_identity(config: PipelineConfig) -> dict[str, Any]:
+    evaluation = asdict(config.evaluation)
+    # ``overwrite_test`` is an operational clobber-guard flag (issue #247), not part of
+    # what the experiment *is* — toggling it must never mint a new experiment_id.
+    evaluation.pop("overwrite_test", None)
+    return evaluation
+
+
 def _heatmap_identity(config: PipelineConfig) -> dict[str, Any]:
     heatmaps = asdict(config.heatmaps)
     if not config.heatmaps.enabled:
@@ -56,17 +64,96 @@ def _heatmap_identity(config: PipelineConfig) -> dict[str, Any]:
     return heatmaps
 
 
+def _split_assignments(splits_path: Path, keep) -> list[list[str]]:
+    """Sorted ``[fold, split, sample_id]`` rows of a splits.csv whose split ``keep(split)``.
+
+    The byte-stable, order-independent projection of a split manifest used by both the
+    training and test manifest digests (issue #247).
+    """
+    rows = _read_csv_rows(splits_path)
+    selected = [
+        [str(row.get("fold", "")), str(row.get("split", "")), str(row.get("sample_id", ""))]
+        for row in rows
+        if keep(str(row.get("split", "")))
+    ]
+    selected.sort()
+    return selected
+
+
+def _dataset_rows_digest(dataset_path: Path, sample_ids: set[str]) -> str:
+    """sha256 over the dataset.csv rows for ``sample_ids`` (sorted by id, byte-stable)."""
+    rows = [
+        {str(k): ("" if v is None else str(v)) for k, v in row.items()}
+        for row in _read_csv_rows(dataset_path)
+        if str(row.get("sample_id", "")) in sample_ids
+    ]
+    rows.sort(key=lambda row: row.get("sample_id", ""))
+    return hashlib.sha256(_stable_json({"rows": rows}).encode("utf-8")).hexdigest()
+
+
+def _manifest_slice_digests(dataset_path: Path, splits_path: Path, keep) -> tuple[str, str]:
+    """Return ``(dataset_digest, splits_digest)`` for the split rows selected by ``keep``.
+
+    The dataset digest covers only the dataset rows referenced by the selected split
+    assignments, so it is invariant to rows for samples outside the slice.
+    """
+    assignments = _split_assignments(splits_path, keep)
+    sample_ids = {row[2] for row in assignments}
+    dataset_digest = _dataset_rows_digest(dataset_path, sample_ids)
+    splits_digest = hashlib.sha256(
+        _stable_json({"assignments": assignments}).encode("utf-8")
+    ).hexdigest()
+    return dataset_digest, splits_digest
+
+
+def _is_training_split(name: str) -> bool:
+    return name in ("train", "tune")
+
+
+def _is_test_split(name: str) -> bool:
+    return name.startswith("test")
+
+
+def test_identity_digest(config: PipelineConfig) -> str:
+    """Digest identifying WHICH test set a run is scored against (issue #247).
+
+    The test-slice counterpart of the training digest: a byte-stable sha256 over the
+    ``test*`` split assignments and the dataset rows they reference. Two runs of the same
+    model (same ``experiment_id``) scored on different test sets share an experiment dir
+    but differ here, so their results can be namespaced and a re-score of an already-scored
+    test set refused rather than silently clobbered. Empty when a run has no ``test*`` rows.
+    """
+    dataset_path = Path(config.dataset_csv).resolve()
+    splits_path = Path(config.splits_csv).resolve()
+    dataset_digest, splits_digest = _manifest_slice_digests(
+        dataset_path, splits_path, _is_test_split
+    )
+    return hashlib.sha256(
+        _stable_json({"dataset": dataset_digest, "splits": splits_digest}).encode("utf-8")
+    ).hexdigest()
+
+
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_path = Path(config.dataset_csv).resolve()
     splits_path = Path(config.splits_csv).resolve()
+    # Experiment identity is invariant to the *test* set (issue #247): only the {train,
+    # tune} slice of the dataset + splits manifest enters the digest, so dropping in a
+    # new/official test set (which only adds test rows) leaves experiment_id — and the
+    # leaderboard triple — unchanged, letting a frozen checkpoint be re-scored rather than
+    # retrained. Full-file + test-slice provenance is recorded on the RunMetadata instead.
+    dataset_digest, splits_digest = _manifest_slice_digests(
+        dataset_path, splits_path, _is_training_split
+    )
     return {
+        # No manifest ``path`` here: identity is the {train,tune} content, not the machine-
+        # local file location, so a checkpoint is reused even when the official test set
+        # arrives as a *new* splits/dataset file rather than appended rows (issue #247).
+        # The resolved paths are still kept on ExperimentSpec + RunMetadata for provenance.
         "dataset": {
-            "path": str(dataset_path),
-            "checksum": _sha256_file(dataset_path),
+            "checksum": dataset_digest,
         },
         "splits": {
-            "path": str(splits_path),
-            "checksum": _sha256_file(splits_path),
+            "checksum": splits_digest,
         },
         "dataset_type": config.dataset_type,
         "feature_mode": config.feature_mode,
@@ -83,7 +170,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             asdict(config.pixel_classifier) if config.pixel_classifier is not None else None
         ),
         "task": asdict(config.task),
-        "evaluation": asdict(config.evaluation),
+        "evaluation": _evaluation_identity(config),
         "heatmaps": _heatmap_identity(config),
         "augmentation": asdict(config.augmentation),
         "training": _training_without_seed(config),
@@ -159,6 +246,13 @@ class RunMetadata:
     # Bounded provenance: EXACTLY {soma, torch, cuda} (issue #213). Deeper env/GPU-model
     # capture is deliberately out of scope; a benchmark may show its own reference env.
     environment: dict[str, str] = field(default_factory=dict)
+    # Test-set provenance (issue #247). The experiment_id / leaderboard triple are
+    # test-invariant, so which test set THIS run scored is recorded here, not in the
+    # shared experiment.json: ``test_checksum`` is the test-identity digest and the
+    # ``*_file_checksum`` are the whole-file digests (which DO see test rows).
+    test_checksum: str = ""
+    dataset_file_checksum: str = ""
+    splits_file_checksum: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +271,9 @@ class RunMetadata:
             "resolved_output_dir": str(self.resolved_output_dir),
             "summary_metrics": self.summary_metrics,
             "environment": dict(self.environment),
+            "test_checksum": self.test_checksum,
+            "dataset_file_checksum": self.dataset_file_checksum,
+            "splits_file_checksum": self.splits_file_checksum,
             "error": self.error or "",
         }
 
@@ -291,6 +388,8 @@ def create_run_metadata(
     wandb_url: str | None = None,
 ) -> RunMetadata:
     cwd = Path.cwd()
+    dataset_path = Path(config.dataset_csv)
+    splits_path = Path(config.splits_csv)
     return RunMetadata(
         run_id=run_id,
         experiment_id=experiment.experiment_id,
@@ -308,6 +407,9 @@ def create_run_metadata(
         summary_metrics=summary_metrics or {},
         error=error,
         environment=capture_environment(),
+        test_checksum=test_identity_digest(config),
+        dataset_file_checksum=_sha256_file(dataset_path) if dataset_path.is_file() else "",
+        splits_file_checksum=_sha256_file(splits_path) if splits_path.is_file() else "",
     )
 
 
@@ -417,3 +519,69 @@ def update_latest_pointer(experiment_dir: Path, run_dir: Path) -> None:
         latest_path.unlink()
     target = os.path.relpath(run_dir, experiment_dir)
     latest_path.symlink_to(target)
+
+
+# ---------------------------------------------------------------------------
+# Test-results registry (issue #247) — namespace results by test identity so a
+# checkpoint scored against several test sets does not silently clobber, and refuse a
+# re-score of an already-scored test set unless overwrite is requested.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TestResultDecision:
+    """Outcome of reserving a test-identity slot in a run's test-results registry."""
+
+    test_digest: str
+    skipped: bool  # True ⇒ a prior result exists and overwrite was not requested
+    prior: dict[str, Any] | None
+
+
+def test_results_path(run_dir: str | Path) -> Path:
+    return Path(run_dir) / "test_results.json"
+
+
+def read_test_results(run_dir: str | Path) -> dict[str, Any]:
+    """Load a run's ``test_results.json`` registry (``{test_digest: {...}}``), or ``{}``."""
+    path = test_results_path(run_dir)
+    if not path.is_file():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def register_test_result(
+    run_dir: str | Path,
+    test_digest: str,
+    *,
+    split_names: list[str] | tuple[str, ...] = (),
+    run_id: str | None = None,
+    overwrite: bool = False,
+) -> TestResultDecision:
+    """Reserve/record the ``test_digest`` slot for a run, guarding against clobber (#247).
+
+    A run dir may score several test sets over its life (same split *name* ``test`` but
+    different rows). Each is recorded under its ``test_digest`` so distinct test sets
+    coexist. Re-scoring an already-recorded test identity is refused (``skipped=True``,
+    the caller logs loudly and skips) unless ``overwrite`` is set, so a prior result is
+    never silently overwritten. A distinct ``test_digest`` is always recorded alongside
+    any existing ones.
+    """
+    run_dir = Path(run_dir)
+    registry = read_test_results(run_dir)
+    prior = registry.get(test_digest)
+    if prior is not None and not overwrite:
+        return TestResultDecision(test_digest=test_digest, skipped=True, prior=prior)
+    registry[test_digest] = {
+        "split_names": sorted(split_names),
+        "run_id": run_id or "",
+        "recorded_at": _timestamp_now(),
+    }
+    run_dir.mkdir(parents=True, exist_ok=True)
+    test_results_path(run_dir).write_text(
+        json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return TestResultDecision(test_digest=test_digest, skipped=False, prior=prior)
