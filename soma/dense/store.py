@@ -16,6 +16,8 @@ is used only by the cache *validator*, not here.
 from __future__ import annotations
 
 import json
+import logging
+import time
 from pathlib import Path
 
 import torch
@@ -23,6 +25,8 @@ from slide2vec.artifacts import load_array
 
 from soma.dataset import ensure_filename_safe_id
 from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "DENSE_SIDECAR_SUFFIX",
@@ -37,6 +41,44 @@ __all__ = [
 DENSE_SIDECAR_SUFFIX = ".meta.json"
 DENSE_ARTIFACT_TYPE = "dense_grid"
 DENSE_PAYLOAD_SUBDIR = "dense_embeddings"
+
+# Networked/pooled mounts (zfs/NFS/CIFS) intermittently raise OSError /
+# FileNotFoundError on a grid read that succeeds moments later. A bare
+# load_array turns one such blip into an aborted multi-fold dense run, so the
+# store retries a small bounded number of times with linear backoff.
+_LOAD_RETRIES = 5
+_LOAD_BACKOFF_SECONDS = 0.5
+
+
+def _load_array_resilient(path: Path):
+    """Load a cached array, retrying transient filesystem errors with backoff.
+
+    Retries up to ``_LOAD_RETRIES`` times on ``OSError`` (which includes
+    ``FileNotFoundError``), sleeping ``_LOAD_BACKOFF_SECONDS * attempt`` between
+    tries and logging each retry. The happy path — first read succeeds — adds no
+    latency and no sleep. A genuinely-permanent error still surfaces (unchanged
+    type) once the retries are exhausted.
+    """
+    last_error: OSError | None = None
+    for attempt in range(1, _LOAD_RETRIES + 1):
+        try:
+            return load_array(path)
+        except OSError as error:  # FileNotFoundError is a subclass of OSError
+            last_error = error
+            if attempt == _LOAD_RETRIES:
+                break
+            delay = _LOAD_BACKOFF_SECONDS * attempt
+            logger.warning(
+                "Transient error reading dense grid %s (attempt %d/%d): %s; retrying in %.1fs",
+                path,
+                attempt,
+                _LOAD_RETRIES,
+                error,
+                delay,
+            )
+            time.sleep(delay)
+    assert last_error is not None  # loop only exits via return or a caught error
+    raise last_error
 
 
 def resolve_dense_payload_dir(path: Path | str) -> Path:
@@ -261,7 +303,7 @@ class DenseFeatureStore:
                 f"Sample '{sample_id}' not found in dense feature store. "
                 f"Available: {sorted(self._index)}"
             )
-        tensor = load_array(self._index[sample_id])
+        tensor = _load_array_resilient(self._index[sample_id])
         if not torch.is_tensor(tensor):
             tensor = torch.as_tensor(tensor)
         meta = self.metadata(sample_id)
