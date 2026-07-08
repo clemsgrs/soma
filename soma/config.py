@@ -254,6 +254,8 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
+        resume=bool(run_data.get("resume", False)),
+        run_id=run_data.get("run_id"),
     )
 
 
@@ -878,6 +880,14 @@ class PipelineConfig:
         training: Training hyperparameters.
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
+        resume: When True, reuse the latest existing run dir for this experiment
+            instead of minting a fresh one, and skip folds that already wrote
+            ``metrics.json`` (issue #244). Ignored when ``run_id`` is set.
+        run_id: Pin the run to this exact run id (resume into it if it exists,
+            else create it under that name). Takes precedence over ``resume``.
+            Both are invocation-time directives: they are not part of the
+            experiment identity and are not written back into the saved
+            ``config.yaml``.
     """
 
     dataset_csv: str | Path
@@ -899,6 +909,9 @@ class PipelineConfig:
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
+    # Run-lifecycle directives (issue #244) — not part of experiment identity.
+    resume: bool = False
+    run_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.task is None:
@@ -1304,9 +1317,21 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     return data
 
 
+def config_yaml_dict(config: PipelineConfig) -> dict[str, Any]:
+    """Return the fully-resolved nested YAML dict that :func:`save_config` writes.
+
+    Exposed so callers can compare configs by their persisted form without
+    round-tripping through a file — e.g. the resume drift guard (issue #244).
+    The run-lifecycle directives ``resume`` / ``run_id`` are deliberately not part
+    of this dict, so a run's saved ``config.yaml`` is identical whether it was the
+    original launch or a resume of it.
+    """
+    return _deep_merge_dicts(_load_default_config_data(), _config_to_layout_dict(config))
+
+
 def save_config(config: PipelineConfig, path: Path | str) -> None:
     """Serialize a PipelineConfig to a fully resolved nested YAML file."""
-    data = _deep_merge_dicts(_load_default_config_data(), _config_to_layout_dict(config))
+    data = config_yaml_dict(config)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:

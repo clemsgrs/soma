@@ -340,6 +340,42 @@ def make_run_id(*, when: datetime | None = None, wandb_id: str | None = None) ->
     return f"{current:%Y-%m-%d_%H-%M-%S}__{suffix}"
 
 
+def latest_existing_run_id(experiment_dir: Path) -> str | None:
+    """Return the most recent run id under ``experiment_dir/runs``, or None.
+
+    Run ids are ``YYYY-MM-DD_HH-MM-SS__<suffix>`` so a lexical max is the newest
+    run — the one a bare ``resume`` reuses (issue #244).
+    """
+    runs_dir = experiment_dir / "runs"
+    if not runs_dir.is_dir():
+        return None
+    ids = sorted(child.name for child in runs_dir.iterdir() if child.is_dir())
+    return ids[-1] if ids else None
+
+
+def _resolve_run_id(
+    config: PipelineConfig, experiment_dir: Path, *, when: datetime | None = None
+) -> str:
+    """Pick the run id for this launch, honoring the resume directives (issue #244).
+
+    Precedence: an explicit ``run_id`` pins that run (resume into it if present,
+    else create it under that name); otherwise ``resume`` reuses the latest
+    existing run for this experiment (error if none); otherwise a fresh
+    timestamped id — the unchanged default.
+    """
+    if config.run_id:
+        return config.run_id
+    if config.resume:
+        latest = latest_existing_run_id(experiment_dir)
+        if latest is None:
+            raise FileNotFoundError(
+                f"resume=True but no prior run exists under {experiment_dir / 'runs'}; "
+                "nothing to resume. Launch without resume to start a fresh run."
+            )
+        return latest
+    return make_run_id(when=when)
+
+
 @dataclass(frozen=True)
 class ManagedOutputPaths:
     output_root: Path
@@ -360,7 +396,9 @@ def resolve_managed_output_paths(
     output_root = Path(config.output_root).resolve()
     experiment = build_experiment_spec(config)
     experiment_dir = output_root / "experiments" / experiment.experiment_dirname
-    resolved_run_id = run_id or make_run_id(when=when)
+    # An explicit run_id arg (e.g. tests, leaderboard replay) pins the run as-is;
+    # otherwise consult the config's resume directives (issue #244).
+    resolved_run_id = run_id or _resolve_run_id(config, experiment_dir, when=when)
     run_dir = experiment_dir / "runs" / resolved_run_id
     return ManagedOutputPaths(
         output_root=output_root,

@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 import numpy as np
 import torch
@@ -45,6 +46,7 @@ from soma.config import (
     SamplingConfig,
     TaskConfig,
     TrainingConfig,
+    config_yaml_dict,
     save_config,
 )
 from soma.dataset import (
@@ -1833,6 +1835,18 @@ def train(
     run_dir.mkdir(parents=True, exist_ok=True)
     evaluation = evaluation or EvalConfig()
 
+    single_fold = splits.num_folds == 1
+
+    def _fold_dir(fold_idx: int) -> Path:
+        # A single fold owns run_dir directly; multi-fold folds get fold_N/ subdirs.
+        return run_dir if single_fold else run_dir / f"fold_{fold_idx}"
+
+    # A fold with a metrics.json is complete; any without one is pending. A run with
+    # pending folds is a resume in progress (issue #244).
+    pending_folds = [
+        i for i in range(splits.num_folds) if not (_fold_dir(i) / "metrics.json").exists()
+    ]
+
     # Test-results clobber guard (issue #247). Experiment identity is test-invariant, so a
     # run dir may be re-scored against several test sets. Reserve the test-identity slot
     # under this run: a fresh identity records and proceeds (default single-test behavior
@@ -1850,7 +1864,17 @@ def train(
             run_id=run_id,
             overwrite=overwrite_test,
         )
-        if decision.skipped:
+        if decision.skipped and pending_folds:
+            # Resume (issue #244): the digest was recorded by the original run, but folds
+            # remain unscored. Scoring them is not a re-score — the fold-skip guard below
+            # skips every already-scored fold, so no completed result is clobbered.
+            logger.info(
+                "Test identity %s already recorded, but %d fold(s) are unscored; resuming "
+                "and scoring them (completed folds are skipped, not re-scored).",
+                test_digest[:12],
+                len(pending_folds),
+            )
+        elif decision.skipped:
             logger.warning(
                 "Test identity %s was ALREADY scored for this run (recorded %s, splits %s); "
                 "skipping test inference so the existing result is not clobbered. Set "
@@ -1864,10 +1888,21 @@ def train(
     if dataset_type == "patient" or dataset.has_patient_ids:
         splits.validate_no_patient_leakage(dataset)
 
-    single_fold = splits.num_folds == 1
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
-        fold_dir = run_dir if single_fold else run_dir / f"fold_{fold_idx}"
+        fold_dir = _fold_dir(fold_idx)
+        # Resume fold-skip guard (issue #244): a fold that already wrote metrics.json is
+        # complete, so on a relaunch into the same run dir we skip retraining it. The
+        # summary is rebuilt from every fold's metrics.json on disk below, so a skipped
+        # fold still counts. Gated to multi-fold: a single fold owns run_dir itself and
+        # has no partial-run to preserve.
+        if not single_fold and (fold_dir / "metrics.json").exists():
+            logger.info(
+                "Fold %d already complete (found %s); skipping (resume).",
+                fold_idx,
+                fold_dir / "metrics.json",
+            )
+            continue
         if dataset_type == "segmentation" and pixel_classifier is not None:
             # Decoder-free path: the cross-defaulted feature_kind=cls_attention grids
             # feed a per-pixel classifier (no Trainer). Mutually exclusive with decoder,
@@ -1933,7 +1968,12 @@ def train(
             )
         fold_results.append(result)
 
-    summary = _aggregate_fold_metrics(fold_results, include_tune=evaluation.holdout_test)
+    # Aggregate from every fold's metrics.json on disk, not just this session's
+    # fold_results — so a resumed run (some folds skipped above) still summarizes all
+    # folds. For a fresh run every fold is on disk, so this equals the in-memory path.
+    summary = _aggregate_fold_metrics_from_disk(
+        run_dir, single_fold=single_fold, include_tune=evaluation.holdout_test
+    )
     _save_summary(summary, run_dir / "summary.json")
 
     return PipelineResult(
@@ -2125,6 +2165,37 @@ def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Aggrega
     return params
 
 
+def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
+    """Refuse to resume into a run dir whose saved config differs from the current one.
+
+    Only a resume (``resume``/``run_id`` set) that lands on an existing ``config.yaml``
+    is checked — a fresh run, or a pinned run id naming a not-yet-created dir, has
+    nothing to compare against. The comparison is over the persisted YAML form
+    (:func:`config_yaml_dict`, which omits the ``resume``/``run_id`` directives), so an
+    otherwise-identical relaunch passes while a changed seed, split file, encoder, or
+    eval protocol is caught before it silently mixes incompatible folds (issue #244)."""
+    if not (config.resume or config.run_id):
+        return
+    saved_path = run_dir / "config.yaml"
+    if not saved_path.is_file():
+        return
+    saved = yaml.safe_load(saved_path.read_text(encoding="utf-8")) or {}
+    # Round-trip the current config through YAML so both sides are the same primitive
+    # shapes (tuples→lists, Paths→str) and compare cleanly.
+    current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
+    if saved == current:
+        return
+    differing = sorted(
+        key for key in set(saved) | set(current) if saved.get(key) != current.get(key)
+    )
+    raise ValueError(
+        f"Refusing to resume run '{run_dir.name}': its saved config.yaml differs from the "
+        f"current config (differing top-level sections: {differing}). Resuming would mix "
+        "folds trained under different recipes. Start a fresh run, or reconcile the config "
+        "to match the existing run."
+    )
+
+
 class _RunRecorder:
     """Context manager that tracks run metadata lifecycle (running → completed/failed).
 
@@ -2238,6 +2309,10 @@ class Pipeline:
         layout.run_dir.mkdir(parents=True, exist_ok=True)
         layout.index_dir.mkdir(parents=True, exist_ok=True)
         write_experiment_metadata(layout.experiment_dir, layout.experiment)
+        # Resume drift guard (issue #244): refuse to resume into a run dir whose saved
+        # config differs from the current one — mixing incompatible folds silently would
+        # corrupt the aggregate. Runs before save_config overwrites the record.
+        _guard_resume_config_drift(layout.run_dir, self._config)
         save_config(self._config, layout.run_dir / "config.yaml")
 
         with _RunRecorder(layout, self._config) as recorder:
@@ -3314,37 +3389,39 @@ def _save_predictions(
                 _write_row(writer, row, pred)
 
 
-def _aggregate_fold_metrics(
-    fold_results: list[FoldResult], *, include_tune: bool = False
+def _summarize_fold_metric_dicts(
+    per_fold: list[dict[str, dict[str, float]]], *, include_tune: bool
 ) -> dict[str, float]:
-    """Compute per-split metrics summary. For a single fold, emit values directly.
-    For multiple folds, emit mean and std.
+    """Core aggregation over per-fold ``{split_name: {metric: value}}`` dicts.
 
+    For a single fold, emit values directly; for multiple folds, emit mean and std.
     Normally the summary covers the test splits only. ``include_tune`` (set for
     ``evaluation.holdout_test`` runs, which have no test splits) additionally emits
-    the tune report under a ``tune/`` prefix so a tune-only selection sweep produces
-    a non-empty, rankable summary."""
-    if not fold_results:
+    the tune metrics under a ``tune/`` prefix so a tune-only selection sweep produces
+    a non-empty, rankable summary.
+
+    Shared by the in-memory and on-disk aggregators so a run assembled from mixed
+    this-session + previously-completed folds (a resume, issue #244) summarizes
+    identically to a single-shot run."""
+    if not per_fold:
         return {}
 
-    single_fold = len(fold_results) == 1
+    single_fold = len(per_fold) == 1
     summary: dict[str, float] = {}
-    # Map each reported split name to its per-fold reports. Tune leads (when
+    # Map each reported split name to its per-fold metric dicts. Tune leads (when
     # requested) so it heads the summary; test splits follow in sorted order.
-    reports_by_split: dict[str, list[EvaluationReport]] = {}
+    metrics_by_split: dict[str, list[dict[str, float]]] = {}
     if include_tune:
-        reports_by_split["tune"] = [fr.tune_report for fr in fold_results]
-    for split_name in sorted({s for fr in fold_results for s in fr.test_reports}):
-        reports_by_split[split_name] = [
-            fr.test_reports[split_name] for fr in fold_results if split_name in fr.test_reports
-        ]
+        metrics_by_split["tune"] = [f["tune"] for f in per_fold if "tune" in f]
+    for split_name in sorted({s for f in per_fold for s in f if s != "tune"}):
+        metrics_by_split[split_name] = [f[split_name] for f in per_fold if split_name in f]
 
-    for split_name, split_reports in reports_by_split.items():
-        if not split_reports:
+    for split_name, split_metrics in metrics_by_split.items():
+        if not split_metrics:
             continue
-        metric_keys = list(split_reports[0].metrics.keys())
+        metric_keys = list(split_metrics[0].keys())
         for key in metric_keys:
-            values = [report.metrics[key] for report in split_reports if key in report.metrics]
+            values = [m[key] for m in split_metrics if key in m]
             if not values:
                 continue
             if single_fold:
@@ -3354,6 +3431,43 @@ def _aggregate_fold_metrics(
                 summary[f"{split_name}/{key}_std"] = float(np.std(values))
 
     return summary
+
+
+def _fold_result_to_metric_dict(fr: FoldResult) -> dict[str, dict[str, float]]:
+    """Project a FoldResult onto the ``{split: metrics}`` shape ``metrics.json`` holds."""
+    out = {"tune": dict(fr.tune_report.metrics)}
+    for split_name, report in fr.test_reports.items():
+        out[split_name] = dict(report.metrics)
+    return out
+
+
+def _aggregate_fold_metrics(
+    fold_results: list[FoldResult], *, include_tune: bool = False
+) -> dict[str, float]:
+    """Aggregate in-memory fold results (see :func:`_summarize_fold_metric_dicts`)."""
+    return _summarize_fold_metric_dicts(
+        [_fold_result_to_metric_dict(fr) for fr in fold_results], include_tune=include_tune
+    )
+
+
+def _aggregate_fold_metrics_from_disk(
+    run_dir: Path, *, single_fold: bool, include_tune: bool
+) -> dict[str, float]:
+    """Aggregate every fold's persisted ``metrics.json`` under ``run_dir``.
+
+    Reading from disk rather than the in-memory ``fold_results`` is what makes a
+    resumed run's ``summary.json`` correct (issue #244): folds skipped this session
+    (already complete on disk) re-enter the summary, so a resumed 5-fold summary
+    equals the single-shot one. On a fresh run every fold is on disk too, so the
+    result is identical to the in-memory path."""
+    if single_fold:
+        metrics_paths = [run_dir / "metrics.json"]
+    else:
+        metrics_paths = sorted(run_dir.glob("fold_*/metrics.json"))
+    per_fold = [
+        json.loads(path.read_text()) for path in metrics_paths if path.is_file()
+    ]
+    return _summarize_fold_metric_dicts(per_fold, include_tune=include_tune)
 
 
 def _save_summary(summary: dict[str, float], path: Path) -> None:
