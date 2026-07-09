@@ -751,6 +751,11 @@ class TrainingConfig:
     optimizer: str = "adam"
     scheduler: str = "cosine"
     patience: int = 10
+    # Per-fold trainer selector within the shared training entry. ``"gradient"`` is the
+    # default torch-based head/decoder loop; ``"ridge_pca_probe"`` selects the closed-form
+    # Ridge+PCA probe (the HEST spatial_expression trainer — no gradient descent, no tune
+    # split). A method flag, not a fork of the entrypoint (design — HEST §6).
+    method: str = "gradient"
     monitor: str = "tune_loss"
     monitor_mode: str = "min"
     batch_size: int = 1
@@ -783,6 +788,11 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.monitor_mode must be 'min' or 'max'")
         if self.num_workers < 0:
             raise ValueError("TrainingConfig.num_workers must be >= 0")
+        if self.method not in {"gradient", "ridge_pca_probe"}:
+            raise ValueError(
+                "TrainingConfig.method must be 'gradient' (torch head/decoder loop) or "
+                f"'ridge_pca_probe' (closed-form probe), got {self.method!r}."
+            )
 
 
 @dataclass(frozen=True)
@@ -916,11 +926,51 @@ class PipelineConfig:
     def __post_init__(self) -> None:
         if self.task is None:
             raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
-        _valid_dataset_types = {"slide", "tile", "patient", "segmentation", "detection"}
+        _valid_dataset_types = {
+            "slide",
+            "tile",
+            "patient",
+            "segmentation",
+            "detection",
+            "spatial_expression",
+        }
         if self.dataset_type not in _valid_dataset_types:
             raise ValueError(
                 f"Invalid dataset_type {self.dataset_type!r}. "
                 f"Must be one of: {sorted(_valid_dataset_types)}"
+            )
+        # spatial_expression (HEST gene-expression-from-morphology): one spot = one tile
+        # with a vector target, trained by the closed-form Ridge+PCA probe. It reuses the
+        # tile extraction path but its supervision is a multi-target regression vector, so
+        # it is bound to task.name='regression' and the probe method (design — HEST §6).
+        if self.dataset_type == "spatial_expression":
+            if self.aggregator is not None:
+                raise ValueError(
+                    "aggregator must be None for dataset_type='spatial_expression' — the "
+                    "spatial-expression probe consumes per-spot tile features, not MIL bags."
+                )
+            if self.task.name != "regression":
+                raise ValueError(
+                    "dataset_type='spatial_expression' requires task.name='regression' "
+                    f"(the multi-target gene-expression head), got {self.task.name!r}."
+                )
+            if self.training.method != "ridge_pca_probe":
+                raise ValueError(
+                    "dataset_type='spatial_expression' requires "
+                    "training.method='ridge_pca_probe' (the closed-form probe); "
+                    f"got {self.training.method!r}."
+                )
+        # The closed-form probe only makes sense against a vector target, so bind it the
+        # other way too: a stray method flag on a scalar task is a config error, not a
+        # silent no-op.
+        if (
+            self.training.method == "ridge_pca_probe"
+            and self.dataset_type != "spatial_expression"
+        ):
+            raise ValueError(
+                "training.method='ridge_pca_probe' is the HEST closed-form probe and only "
+                "applies to dataset_type='spatial_expression'; "
+                f"got dataset_type={self.dataset_type!r}."
             )
         if self.dataset_type == "tile" and self.aggregator is not None:
             raise ValueError(

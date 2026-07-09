@@ -180,6 +180,9 @@ Full config reference
      overwrite_test: false
 
    training:
+     # Per-fold trainer: 'gradient' (torch head/decoder loop) or 'ridge_pca_probe'
+     # (closed-form Ridge+PCA probe for dataset_type='spatial_expression').
+     method: gradient
      epochs: 50
      learning_rate: 1.0e-4
      weight_decay: 1.0e-5
