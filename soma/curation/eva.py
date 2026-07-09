@@ -384,14 +384,18 @@ def _mhist_samples(root: Path) -> list[_Sample]:
 
 
 def _gleason_arvaniti_samples(root: Path) -> list[_Sample]:
-    image_paths = sorted(
-        list((root / "train_validation_patches_750").glob("**/*.jpg"))
-        + list((root / "test_patches_750" / "patho_1").glob("**/*.jpg"))
-    )
+    # EVA reports GleasonArvaniti on the validation cohort (TMA ``ZT76``) and trains on
+    # ``ZT111``/``ZT199``/``ZT204``. It deliberately does not use ``test_patches_750``:
+    # EVA's dataset card documents that its test split "leads to unstable evaluation
+    # results" and recommends the validation split, and the packaged reference band is the
+    # val number. So the reproduction reads only ``train_validation_patches_750``. Emitting
+    # ``test_patches_750`` as a soma ``test`` split would also collide with the benchmark's
+    # ``tune_is_test=True`` (it forbids a fold carrying both a tune and a test split).
+    image_paths = sorted((root / "train_validation_patches_750").glob("**/*.jpg"))
     if not image_paths:
         raise FileNotFoundError(
             "GleasonArvaniti images not found under "
-            f"{root}/train_validation_patches_750 or {root}/test_patches_750/patho_1"
+            f"{root}/train_validation_patches_750"
         )
 
     samples: list[_Sample] = []
@@ -403,8 +407,6 @@ def _gleason_arvaniti_samples(root: Path) -> list[_Sample]:
             eva_split = "val"
         elif array_id in GLEASON_ARVANITI_TRAIN_ARRAY_IDS:
             eva_split = "train"
-        elif "test_patches_750" in image_path.parts:
-            eva_split = "test"
         else:
             raise ValueError(f"Invalid GleasonArvaniti microarray ID for file: {image_path}")
         samples.append(

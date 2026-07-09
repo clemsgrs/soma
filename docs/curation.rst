@@ -87,10 +87,11 @@ Raw layout expectations
   ``test``.
 
 ``gleason_arvaniti``
-  ``train_validation_patches_750/**/*.jpg`` and
-  ``test_patches_750/patho_1/**/*.jpg``. Files from microarray ``ZT76`` are
-  assigned to EVA validation, files from ``ZT111``, ``ZT199``, and ``ZT204`` to
-  EVA train, and ``patho_1`` test patches to EVA test.
+  ``train_validation_patches_750/**/*.jpg``. Files from microarray ``ZT76`` are
+  assigned to EVA validation and files from ``ZT111``, ``ZT199``, and ``ZT204``
+  to EVA train. EVA reports GleasonArvaniti on the validation cohort and does not
+  use ``test_patches_750`` — its test split "leads to unstable evaluation
+  results" — so those patches are ignored even when present.
 
 ``patch_camelyon``
   Materialized image folders

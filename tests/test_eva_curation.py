@@ -273,7 +273,9 @@ def test_curate_crc_accepts_original_subdirectories(tmp_path: Path):
     assert dataset_df["image_path"].str.contains("/original/").all()
 
 
-def test_curate_gleason_arvaniti_uses_eva_microarray_splits(tmp_path: Path):
+def test_curate_gleason_arvaniti_reports_on_validation_and_ignores_test_patches(
+    tmp_path: Path,
+):
     raw_root = tmp_path / "gleason_raw"
     _touch(
         raw_root
@@ -293,19 +295,14 @@ def test_curate_gleason_arvaniti_uses_eva_microarray_splits(tmp_path: Path):
         / "ZT76_03_A_1_1"
         / "ZT76_03_A_1_1_patch_1_class_2.jpg"
     )
+    # test_patches_750 exists on disk, but EVA does not use it (its test split "leads to
+    # unstable evaluation results"); the curator must ignore it entirely.
     _touch(
         raw_root
         / "test_patches_750"
         / "patho_1"
         / "ZT80_04_A_1_1"
         / "ZT80_04_A_1_1_patch_1_class_3.jpg"
-    )
-    _touch(
-        raw_root
-        / "test_patches_750"
-        / "patho_2"
-        / "ZT80_04_A_1_1"
-        / "ZT80_04_A_1_1_patch_1_class_0.jpg"
     )
 
     manifest = curate_eva_patch_dataset(
@@ -316,24 +313,26 @@ def test_curate_gleason_arvaniti_uses_eva_microarray_splits(tmp_path: Path):
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv).sort_values("sample_id")
-    splits_df = pd.read_csv(manifest.splits_csv).sort_values("sample_id")
+    splits_df = pd.read_csv(manifest.splits_csv)
 
+    # Only ZT111/ZT199 (train) and ZT76 (val) are curated — no test_patches rows.
     assert dataset_df[["label", "class_name", "eva_split"]].to_dict("records") == [
-        {"label": 3, "class_name": "gleason_5", "eva_split": "test"},
         {"label": 0, "class_name": "benign", "eva_split": "train"},
         {"label": 1, "class_name": "gleason_3", "eva_split": "train"},
         {"label": 2, "class_name": "gleason_4", "eva_split": "val"},
     ]
-    assert splits_df["split"].value_counts().to_dict() == {
-        "train": 2,
-        "tune": 1,
-        "test": 1,
-    }
-    assert not dataset_df["image_path"].str.contains("/patho_2/").any()
+    assert not dataset_df["image_path"].str.contains("test_patches_750").any()
+
+    # tune_fraction=0.0 → EVA val (ZT76) becomes the soma test split with no tune split,
+    # so the benchmark's tune_is_test=True has a single held-out split (no collision).
+    assert splits_df["split"].value_counts().to_dict() == {"train": 2, "test": 1}
+    test_ids = splits_df.loc[splits_df["split"] == "test", "sample_id"].tolist()
+    assert len(test_ids) == 1 and "ZT76" in test_ids[0]
 
     dataset = Dataset(manifest.dataset_csv)
-    splits = Splits(manifest.splits_csv, dataset)
-    assert len(splits.folds[0].tune) == 1
+    # Previously raised "provides both a tune and a test split"; must now construct cleanly.
+    splits = Splits(manifest.splits_csv, dataset, tune_is_test=True)
+    assert len(splits.folds[0].train) == 2
 
 
 def test_curate_patch_camelyon_accepts_split_class_folders(tmp_path: Path):
