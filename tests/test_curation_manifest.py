@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from soma.curation import (
+    SUPERVISION_COLUMN,
     CuratedManifest,
     Curator,
     curate_beetle_slide_manifest,
@@ -16,7 +19,13 @@ from soma.curation import (
     curate_ocelot_detection,
     write_manifest,
 )
-from soma.dataset import Dataset, DetectionManifest, SegmentationManifest, load_manifest
+from soma.dataset import (
+    Dataset,
+    DetectionManifest,
+    SegmentationManifest,
+    SpatialExpressionManifest,
+    load_manifest,
+)
 
 
 # --------------------------------------------------------------------------- helpers
@@ -273,3 +282,214 @@ def test_recuration_is_byte_identical(tmp_path: Path):
         assert (a.dataset_csv.parent / name).read_bytes() == (
             b.dataset_csv.parent / name
         ).read_bytes(), f"{name} is not byte-identical across re-curation"
+
+
+# ------------------------------------------------ spatial_expression multi-target shape
+
+
+def _spatial_expression_inputs():
+    """A tiny hand-built spatial_expression Manifest: 3 spots, 4 genes."""
+    genes = ["GENE_C", "GENE_A", "GENE_B", "GENE_D"]  # deliberately non-alphabetical
+    matrix = np.array(
+        [
+            [0.0, 1.5, 2.25, 3.125],
+            [4.0, 5.0, 6.0, 7.0],
+            [0.125, 0.25, 0.5, 1.0],
+        ],
+        dtype=np.float64,
+    )
+    dataset_rows = [
+        {"sample_id": "spot0", "image_path": "/img/spot0.png", "target_index": 0},
+        {"sample_id": "spot1", "image_path": "/img/spot1.png", "target_index": 1},
+        {"sample_id": "spot2", "image_path": "/img/spot2.png", "target_index": 2},
+    ]
+    split_rows = [
+        {"sample_id": "spot0", "split": "train"},
+        {"sample_id": "spot1", "split": "train"},
+        {"sample_id": "spot2", "split": "test"},
+    ]
+    return genes, matrix, dataset_rows, split_rows
+
+
+def test_spatial_expression_supervision_column():
+    # The new dataset_type carries exactly one supervision column: target_index.
+    assert SUPERVISION_COLUMN["spatial_expression"] == "target_index"
+    # Existing dataset_types are unaffected.
+    assert SUPERVISION_COLUMN["tile"] == "label"
+    assert SUPERVISION_COLUMN["slide"] == "label"
+    assert SUPERVISION_COLUMN["patient"] == "label"
+    assert SUPERVISION_COLUMN["segmentation"] == "mask_path"
+    assert SUPERVISION_COLUMN["detection"] == "points_path"
+
+
+def test_write_manifest_spatial_expression_emits_sidecars(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    manifest = write_manifest(
+        tmp_path / "se",
+        dataset_type="spatial_expression",
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary={"task": "IDC"},
+        target_matrix=matrix,
+        genes=genes,
+    )
+    # dataset.csv carries the target_index supervision column in canonical order.
+    df = pd.read_csv(manifest.dataset_csv)
+    assert list(df.columns)[:3] == ["sample_id", "image_path", "target_index"]
+    # Sidecars are written beside dataset.csv and surfaced on the CuratedManifest.
+    out = manifest.dataset_csv.parent
+    assert (out / "targets.npy").exists()
+    assert (out / "genes.json").exists()
+    assert manifest.target_matrix_path == out / "targets.npy"
+    assert manifest.genes_path == out / "genes.json"
+    # Round-trip the sidecar artifacts.
+    np.testing.assert_array_equal(np.load(out / "targets.npy"), matrix)
+    assert json.loads((out / "genes.json").read_text()) == genes
+
+
+def test_write_manifest_spatial_expression_requires_sidecar_inputs(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    with pytest.raises(ValueError, match="target_matrix"):
+        write_manifest(
+            tmp_path / "no_matrix",
+            dataset_type="spatial_expression",
+            dataset_rows=dataset_rows,
+            split_rows=split_rows,
+            summary={},
+            genes=genes,
+        )
+    with pytest.raises(ValueError, match="genes"):
+        write_manifest(
+            tmp_path / "no_genes",
+            dataset_type="spatial_expression",
+            dataset_rows=dataset_rows,
+            split_rows=split_rows,
+            summary={},
+            target_matrix=matrix,
+        )
+
+
+def test_write_manifest_rejects_out_of_range_target_index(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    dataset_rows[2]["target_index"] = 99  # matrix only has 3 rows
+    with pytest.raises(ValueError, match="out of range"):
+        write_manifest(
+            tmp_path / "oob",
+            dataset_type="spatial_expression",
+            dataset_rows=dataset_rows,
+            split_rows=split_rows,
+            summary={},
+            target_matrix=matrix,
+            genes=genes,
+        )
+
+
+def test_write_manifest_rejects_gene_count_mismatch(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    with pytest.raises(ValueError, match="gene"):
+        write_manifest(
+            tmp_path / "mismatch",
+            dataset_type="spatial_expression",
+            dataset_rows=dataset_rows,
+            split_rows=split_rows,
+            summary={},
+            target_matrix=matrix,
+            genes=genes[:-1],  # one fewer gene than matrix columns
+        )
+
+
+def test_write_manifest_rejects_sidecars_for_non_spatial_dataset_type(tmp_path: Path):
+    genes, matrix, _, _ = _spatial_expression_inputs()
+    with pytest.raises(ValueError, match="spatial_expression"):
+        write_manifest(
+            tmp_path / "tile",
+            dataset_type="tile",
+            dataset_rows=[{"sample_id": "s0", "image_path": "/a.png", "label": 1}],
+            split_rows=[{"sample_id": "s0", "split": "test"}],
+            summary={},
+            target_matrix=matrix,
+            genes=genes,
+        )
+
+
+def test_load_manifest_selects_spatial_expression_loader(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    manifest = write_manifest(
+        tmp_path / "se",
+        dataset_type="spatial_expression",
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary={},
+        target_matrix=matrix,
+        genes=genes,
+    )
+    loaded = load_manifest(manifest.dataset_csv, "spatial_expression")
+    assert isinstance(loaded, SpatialExpressionManifest)
+
+
+def test_spatial_expression_targets_round_trip_exactly(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    manifest = write_manifest(
+        tmp_path / "se",
+        dataset_type="spatial_expression",
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary={},
+        target_matrix=matrix,
+        genes=genes,
+    )
+    loaded = SpatialExpressionManifest(manifest.dataset_csv)
+    # Gene order is preserved verbatim from the sidecar.
+    assert loaded.genes == genes
+    # Each sample record carries the resolved vector target for its target_index row.
+    for row in dataset_rows:
+        rec = loaded.samples[row["sample_id"]]
+        np.testing.assert_array_equal(rec.target, matrix[row["target_index"]])
+        assert rec.label is None
+    # The whole target matrix is exposed and byte-exact.
+    np.testing.assert_array_equal(loaded.target_matrix, matrix)
+
+
+def test_spatial_expression_loader_rejects_missing_sidecars(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    manifest = write_manifest(
+        tmp_path / "se",
+        dataset_type="spatial_expression",
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary={},
+        target_matrix=matrix,
+        genes=genes,
+    )
+    out = manifest.dataset_csv.parent
+    (out / "targets.npy").unlink()
+    with pytest.raises(ValueError, match="targets.npy"):
+        SpatialExpressionManifest(manifest.dataset_csv)
+
+
+def test_spatial_expression_loader_rejects_missing_column(tmp_path: Path):
+    # A dataset.csv without target_index cannot be loaded as spatial_expression.
+    bad = tmp_path / "dataset.csv"
+    bad.write_text("sample_id,image_path,label\nspot0,/a.png,1\n")
+    np.save(tmp_path / "targets.npy", np.zeros((1, 2)))
+    (tmp_path / "genes.json").write_text(json.dumps(["A", "B"]))
+    with pytest.raises(ValueError, match="target_index"):
+        SpatialExpressionManifest(bad)
+
+
+def test_spatial_expression_recuration_is_byte_identical(tmp_path: Path):
+    genes, matrix, dataset_rows, split_rows = _spatial_expression_inputs()
+    kwargs = dict(
+        dataset_type="spatial_expression",
+        dataset_rows=dataset_rows,
+        split_rows=split_rows,
+        summary={"task": "IDC"},
+        target_matrix=matrix,
+        genes=genes,
+    )
+    a = write_manifest(tmp_path / "a", **kwargs)
+    b = write_manifest(tmp_path / "b", **kwargs)
+    for name in ("dataset.csv", "splits.csv", "summary.json", "targets.npy", "genes.json"):
+        assert (a.dataset_csv.parent / name).read_bytes() == (
+            b.dataset_csv.parent / name
+        ).read_bytes(), f"{name} is not byte-identical across re-write"
