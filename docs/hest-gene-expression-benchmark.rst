@@ -9,9 +9,9 @@ HEST
 .. note::
 
    This page is generated from the registered benchmark definition — the protocol
-   summary from the ``Benchmark`` object, the reference table straight from the
-   packaged ``soma/benchmarks/reference/hest.csv`` (same bytes), and the command from the benchmark name. Edit the
-   registry (``soma/benchmarks/hest.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
+   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
+   (packaged ``soma/benchmarks/reference/hest.csv``), and the command from the benchmark name. Edit the registry
+   (``soma/benchmarks/hest.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
    re-emits it and ``tests/test_docs.py`` guards the two from drifting.
 
 HEST is registered as **one sub-benchmark per task** (``hest/<task>``), each sharing
@@ -88,26 +88,64 @@ The eight remaining HEST-Benchmark tasks — ``PRAD``, ``PAAD``, ``SKCM``,
 ``COAD``, ``READ``, ``CCRCC``, ``LUNG``, ``LYMPH_IDC`` — are provisioned in fan-out
 (*Adding a HEST task* below); the curator and probe already handle them.
 
-Reference numbers
------------------
+Published leaderboard
+---------------------
 
-``reference/hest.csv`` carries **external, non-gating** rows only — HEST's published
-Ridge+PCA Pearson per (task, encoder), captured from the official leaderboard. There
-is **no gate row**: nothing is tolerance-checked. ``soma reproduce hest/IDC`` renders
-soma's Measured row *beside* these, making the slide2vec↔TRIDENT extraction gap an
-explicit, non-gating delta:
+HEST's published **external, non-gating** Ridge+PCA Pearson on the IDC task, per
+encoder (best first). There is **no gate row**: nothing is tolerance-checked.
+``soma reproduce hest/IDC`` renders soma's Measured row *beside* these, making the
+slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. Source: `HEST-Benchmark leaderboard (mahmoodlab/HEST) <https://github.com/mahmoodlab/HEST#hest-benchmark>`__.
 
-.. csv-table:: ``soma/benchmarks/reference/hest.csv``
-   :file: ../soma/benchmarks/reference/hest.csv
+.. list-table::
    :header-rows: 1
-   :widths: 8 10 16 8 8 8 20 20 30
+   :widths: 60 40
+
+   * - Encoder
+     - Published ``pearson``
+   * - ``h-optimus-1``
+     - 0.6024
+   * - ``h-optimus-0``
+     - 0.5976
+   * - ``virchow2``
+     - 0.5971
+   * - ``uni2``
+     - 0.5898
+   * - ``uni``
+     - 0.5890
+   * - ``genbio-pathfm``
+     - 0.5872
+   * - ``h0-mini``
+     - 0.5862
+   * - ``virchow``
+     - 0.5846
+   * - ``midnight``
+     - 0.5823
+   * - ``hibou-l``
+     - 0.5701
+   * - ``gpfm``
+     - 0.5660
+   * - ``gigapath``
+     - 0.5515
+   * - ``lunit``
+     - 0.5449
+   * - ``conchv15``
+     - 0.5440
+   * - ``phikonv2``
+     - 0.5408
+   * - ``conch``
+     - 0.5363
+   * - ``phikon``
+     - 0.5327
+   * - ``musk``
+     - 0.5248
 
 Reproduced numbers
 ------------------
 
 What soma has actually measured, recorded by ``soma reproduce --record`` into
 ``soma/benchmarks/results/hest.csv``. HEST's references are external, so the
-Reference / Δ columns stay blank — compare against the reference table above:
+Reference / Δ columns stay blank — compare against the published leaderboard
+above:
 
 No reproductions have been recorded yet. Run ``soma reproduce <name> --record`` to append a measured number + provenance to the results ledger.
 

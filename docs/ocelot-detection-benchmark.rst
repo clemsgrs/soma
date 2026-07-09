@@ -8,9 +8,9 @@ cell-detection challenge.
 .. note::
 
    This page is generated from the registered benchmark definition — the protocol
-   summary from the ``Benchmark`` object, the reference table straight from the
-   packaged ``soma/benchmarks/reference/ocelot.csv`` (same bytes), and the command from the benchmark name. Edit the
-   registry (``soma/benchmarks/ocelot.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
+   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
+   (packaged ``soma/benchmarks/reference/ocelot.csv``), and the command from the benchmark name. Edit the registry
+   (``soma/benchmarks/ocelot.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
    re-emits it and ``tests/test_docs.py`` guards the two from drifting.
 
 OCELOT 2023 provides paired cell + tissue patches from TCGA. This benchmark is
@@ -70,19 +70,23 @@ Axes
    * - ``virchow2``
      - 0.5
 
-Reference numbers
------------------
+Reference band
+--------------
 
-Read verbatim from the packaged reference CSV. The ``kind`` column marks each
-row's role: a ``gate`` row is the tolerance band ``soma reproduce`` checks against
-(config-agnostic banner); ``external`` rows are non-gating guidance anchors (also
-surfaced with clickable links below). The ``source`` cell records provenance and
-why the tolerance is what it is:
+The tolerance band ``soma reproduce`` checks against — a **config-agnostic** banner
+(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression
+anchor, not an external leaderboard number). The non-gating external anchors —
+fully-supervised end-to-end baselines from a *different* protocol — are surfaced
+with clickable links under *Guidance anchors* below:
 
-.. csv-table:: ``soma/benchmarks/reference/ocelot.csv``
-   :file: ../soma/benchmarks/reference/ocelot.csv
+.. list-table::
    :header-rows: 1
-   :widths: 5 5 5 8 6 6 5 14 14 32
+   :widths: 40 60
+
+   * - Metric
+     - Reference band (expected ± tolerance)
+   * - ``mean_f1``
+     - 0.6995 ± 0.020
 
 Guidance anchors (non-gating)
 -----------------------------
