@@ -341,6 +341,43 @@ def _record_result(benchmark, row, measured: float, std: float | None, n_seeds: 
     print(f"  recorded → {path}")
 
 
+def _curated_manifest_from_dir(curated_dir: Path):
+    """Reconstruct a :class:`CuratedManifest` from an already-curated directory.
+
+    The ``--curated-dir`` fast path: curation is a deterministic ``raw -> manifest`` step
+    that can cost minutes (HEST-bench IDC explodes 35k spots to lossless PNGs). When the
+    caller already has a manifest, skip curation and point the pipeline straight at it. We
+    only require the two CSVs; the ``spatial_expression`` sidecars (``targets.npy`` /
+    ``genes.json``) are resolved by the Manifest loader relative to ``dataset.csv``, so we
+    just populate the paths that exist and let the loader fail-fast on a malformed dir.
+    """
+    from soma.curation.manifest import CuratedManifest
+    from soma.dataset import GENES_FILENAME, TARGET_MATRIX_FILENAME
+
+    curated_dir = Path(curated_dir)
+    dataset_csv = curated_dir / "dataset.csv"
+    splits_csv = curated_dir / "splits.csv"
+    missing = [p.name for p in (dataset_csv, splits_csv) if not p.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"--curated-dir {curated_dir} is not a curated manifest: missing {missing}. "
+            f"Point it at a directory holding dataset.csv + splits.csv (as written by a "
+            f"prior full-mode run under <raw-root>/curated), or use --raw-root to curate."
+        )
+
+    def _opt(name: str) -> Path | None:
+        p = curated_dir / name
+        return p if p.is_file() else None
+
+    return CuratedManifest(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        summary_json=_opt("summary.json"),
+        target_matrix_path=_opt(TARGET_MATRIX_FILENAME),
+        genes_path=_opt(GENES_FILENAME),
+    )
+
+
 def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | None = None) -> int:
     """Curate → run → score one benchmark and tolerance-check its primary metric.
 
@@ -391,10 +428,12 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
             _record_result(benchmark, row, measured, std=None, n_seeds=None)
         return _finish(measured)
 
-    if args.raw_root is None:
+    curated_dir = getattr(args, "curated_dir", None)
+    if curated_dir is None and args.raw_root is None:
         print(
-            "Error: reproduce needs --raw-root <dir> (full mode) or --from-run-dir <dir> "
-            "(re-score an existing run).",
+            "Error: reproduce needs --raw-root <dir> (curate from raw), "
+            "--curated-dir <dir> (reuse a pre-curated manifest, skip curation), or "
+            "--from-run-dir <dir> (re-score an existing run).",
             file=sys.stderr,
         )
         return 2
@@ -404,12 +443,19 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     # In a fanned-out family each member owns a per-dataset subdirectory so raw roots,
     # curated manifests, and run outputs never collide.
     sub = benchmark.name.split("/", 1)[1] if family_root else None
-    raw_root = Path(args.raw_root) / sub if sub else Path(args.raw_root)
-    if args.out_dir:
-        out_dir = Path(args.out_dir) / sub if sub else Path(args.out_dir)
+    if curated_dir is not None:
+        # Fast path: a manifest already exists (curation is deterministic and can cost
+        # minutes), so skip benchmark.curate() and point the pipeline straight at it.
+        curated = Path(curated_dir) / sub if sub else Path(curated_dir)
+        manifest = _curated_manifest_from_dir(curated)
+        print(f"Using pre-curated manifest (skipping curation): {curated}", flush=True)
     else:
-        out_dir = raw_root / "curated"
-    manifest = benchmark.curate(raw_root, out_dir)
+        raw_root = Path(args.raw_root) / sub if sub else Path(args.raw_root)
+        if args.out_dir:
+            out_dir = Path(args.out_dir) / sub if sub else Path(args.out_dir)
+        else:
+            out_dir = raw_root / "curated"
+        manifest = benchmark.curate(raw_root, out_dir)
     if args.output_root:
         output_root = Path(args.output_root) / sub if sub else Path(args.output_root)
     else:
@@ -607,6 +653,13 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         help="Run seeds 0..N-1 instead of the canonical set (--seeds 1 = fastest smoke).",
     )
     parser.add_argument("--raw-root", type=Path, default=None, help="Raw dataset root (full mode).")
+    parser.add_argument(
+        "--curated-dir",
+        type=Path,
+        default=None,
+        help="Reuse an already-curated manifest dir (dataset.csv + splits.csv); "
+        "skips curation. Alternative to --raw-root.",
+    )
     parser.add_argument("--out-dir", type=Path, default=None, help="Curated manifest dir (default <raw-root>/curated).")
     parser.add_argument("--output-root", type=Path, default=None, help="Where runs are written.")
     parser.add_argument("--cache-root", type=Path, default=None, help="Shared feature-cache root (reused across seeds).")
