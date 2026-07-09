@@ -21,6 +21,7 @@ import pytest
 
 from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
 from soma.benchmarks import eva
+from soma.dataset import Dataset, Splits
 
 
 EVA_DATASETS = ("bach", "breakhis", "crc", "mhist", "gleason_arvaniti", "patch_camelyon")
@@ -251,3 +252,35 @@ def test_curate_delegates_to_eva_curator(monkeypatch, tmp_path):
     # Delegates with the dataset name and the tune-is-test curation fraction (0.0).
     assert calls["args"] == ("bach", str(tmp_path / "raw"), str(tmp_path / "out"), 0.0)
     assert manifest.dataset_csv == tmp_path / "out" / "dataset.csv"
+
+
+def test_gleason_arvaniti_curation_is_compatible_with_its_tune_is_test_config(tmp_path):
+    """Regression: the gleason manifest must load under the benchmark's own tune_is_test.
+
+    Previously the curator emitted both a tune (ZT76 val) and a test (test_patches_750)
+    split, which ``Splits`` rejects under ``tune_is_test=True`` — so the never-run
+    ``eva/gleason_arvaniti`` reproduction would have failed at fold construction.
+    """
+    raw = tmp_path / "gleason_raw"
+    for array_id, class_idx in (("ZT111", 0), ("ZT199", 1), ("ZT76", 2)):
+        image = (
+            raw
+            / "train_validation_patches_750"
+            / f"{array_id}_01_A_1_1"
+            / f"{array_id}_01_A_1_1_patch_1_class_{class_idx}.jpg"
+        )
+        image.parent.mkdir(parents=True, exist_ok=True)
+        image.write_bytes(b"")
+
+    bench = get_benchmark("eva/gleason_arvaniti")
+    manifest = bench.curate(raw, tmp_path / "curated")
+    config = bench.build_config(
+        dataset_csv=manifest.dataset_csv,
+        splits_csv=manifest.splits_csv,
+        output_root=tmp_path / "runs",
+    )
+    assert config.training.tune_is_test is True
+
+    dataset = Dataset(manifest.dataset_csv)
+    # Must not raise: single held-out split (EVA val ZT76) under tune_is_test.
+    Splits(manifest.splits_csv, dataset, tune_is_test=config.training.tune_is_test)

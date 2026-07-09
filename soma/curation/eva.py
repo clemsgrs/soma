@@ -11,8 +11,11 @@ import argparse
 import logging
 import shutil
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import re
+import shutil
+import tarfile
 from typing import Callable, Iterable
 
 import pandas as pd
@@ -64,6 +67,15 @@ GLEASON_ARVANITI_CLASSES = {
 }
 GLEASON_ARVANITI_TRAIN_ARRAY_IDS = {"ZT111", "ZT199", "ZT204"}
 GLEASON_ARVANITI_VAL_ARRAY_ID = "ZT76"
+# Filename prefixes of the four train/validation TMAs on Harvard Dataverse (DOI
+# 10.7910/DVN/OCYCMP). The test cohort (ZT80) is intentionally excluded — EVA/Soma
+# report on the ZT76 validation cohort and ignore the unstable test split.
+GLEASON_ARVANITI_TMA_PREFIXES = ("ZT76_39", "ZT111_4", "ZT199_1", "ZT204_6")
+GLEASON_ARVANITI_PATCHES_DIRNAME = "train_validation_patches_750"
+GLEASON_ARVANITI_MASK_DIRNAME = "Gleason_masks_train"
+GLEASON_ARVANITI_PATCH_SIZE = 750
+# gleason_CNN drops patches whose mean pixel value exceeds this (mostly-background tissue).
+GLEASON_ARVANITI_WHITE_LIMIT = 180
 
 PATCH_CAMELYON_CLASSES = {"no_tumor": 0, "tumor": 1}
 PATCH_CAMELYON_FOLDER_CLASS_ALIASES = {"normal": "no_tumor", "no_tumor": "no_tumor", "tumor": "tumor"}
@@ -397,15 +409,31 @@ def _mhist_samples(root: Path) -> list[_Sample]:
 
 
 def _gleason_arvaniti_samples(root: Path) -> list[_Sample]:
-    image_paths = sorted(
-        list((root / "train_validation_patches_750").glob("**/*.jpg"))
-        + list((root / "test_patches_750" / "patho_1").glob("**/*.jpg"))
-    )
+    # EVA reports GleasonArvaniti on the validation cohort (TMA ``ZT76``) and trains on
+    # ``ZT111``/``ZT199``/``ZT204``. It deliberately does not use ``test_patches_750``:
+    # EVA's dataset card documents that its test split "leads to unstable evaluation
+    # results" and recommends the validation split, and the packaged reference band is the
+    # val number. So the reproduction reads only ``train_validation_patches_750``. Emitting
+    # ``test_patches_750`` as a soma ``test`` split would also collide with the benchmark's
+    # ``tune_is_test=True`` (it forbids a fold carrying both a tune and a test split).
+    patches_dir = root / GLEASON_ARVANITI_PATCHES_DIRNAME
+    if not patches_dir.is_dir():
+        if _gleason_arvaniti_raw_present(root):
+            _materialize_gleason_arvaniti_patches(root, patches_dir)
+        else:
+            raise FileNotFoundError(
+                "GleasonArvaniti raw data must contain either pre-made patches at "
+                f"{patches_dir} (produced by gleason_CNN's create_patches.py), or the "
+                "official Harvard Dataverse download so Soma can materialize them: the "
+                "train/validation TMA archives ZT{76,111,199,204}_*.tar.gz (or their "
+                "extracted folders, or a TMA_images/ dir) plus Gleason_masks_train.tar.gz "
+                "(or an extracted Gleason_masks_train/ dir). Source: "
+                "https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP"
+            )
+
+    image_paths = sorted(patches_dir.glob("**/*.jpg"))
     if not image_paths:
-        raise FileNotFoundError(
-            "GleasonArvaniti images not found under "
-            f"{root}/train_validation_patches_750 or {root}/test_patches_750/patho_1"
-        )
+        raise FileNotFoundError(f"GleasonArvaniti images not found under {patches_dir}")
 
     samples: list[_Sample] = []
     for image_path in image_paths:
@@ -416,8 +444,6 @@ def _gleason_arvaniti_samples(root: Path) -> list[_Sample]:
             eva_split = "val"
         elif array_id in GLEASON_ARVANITI_TRAIN_ARRAY_IDS:
             eva_split = "train"
-        elif "test_patches_750" in image_path.parts:
-            eva_split = "test"
         else:
             raise ValueError(f"Invalid GleasonArvaniti microarray ID for file: {image_path}")
         samples.append(
@@ -438,6 +464,178 @@ def _gleason_arvaniti_class_label(image_path: Path) -> int:
     if label not in GLEASON_ARVANITI_CLASSES.values():
         raise ValueError(f"Unsupported GleasonArvaniti class label '{label}' in {image_path}")
     return label
+
+
+def _gleason_arvaniti_core_archives(root: Path) -> list[Path]:
+    """Train/validation TMA core archives (``ZT{76,111,199,204}_*.tar.gz``) under ``root``."""
+    archives: list[Path] = []
+    for prefix in GLEASON_ARVANITI_TMA_PREFIXES:
+        archives.extend(sorted(root.glob(f"{prefix}*.tar.gz")))
+    return archives
+
+
+def _gleason_arvaniti_has_extracted_cores(root: Path) -> bool:
+    tma_images = root / "TMA_images"
+    if tma_images.is_dir() and next(tma_images.glob("**/*.jpg"), None) is not None:
+        return True
+    for prefix in GLEASON_ARVANITI_TMA_PREFIXES:
+        for section in root.glob(f"{prefix}*"):
+            if section.is_dir() and next(section.glob("*.jpg"), None) is not None:
+                return True
+    return False
+
+
+def _gleason_arvaniti_raw_present(root: Path) -> bool:
+    """True when ``root`` holds the raw ingredients to materialize the patch dataset."""
+    has_images = _gleason_arvaniti_has_extracted_cores(root) or bool(
+        _gleason_arvaniti_core_archives(root)
+    )
+    has_masks = (root / GLEASON_ARVANITI_MASK_DIRNAME).is_dir() or (
+        root / f"{GLEASON_ARVANITI_MASK_DIRNAME}.tar.gz"
+    ).is_file()
+    return has_images and has_masks
+
+
+def _extract_tar(archive: Path, dest: Path) -> None:
+    with tarfile.open(archive, "r:gz") as tar:
+        try:
+            tar.extractall(dest, filter="data")  # path-traversal guard (Python >= 3.12)
+        except TypeError:  # pragma: no cover - older Pythons lack the ``filter`` kwarg
+            tar.extractall(dest)
+
+
+def _gleason_arvaniti_core_paths(root: Path, staging_root: Path) -> list[Path]:
+    """Resolve the TMA core jpgs, extracting the archives into ``staging_root`` if needed."""
+    tma_images = root / "TMA_images"
+    if tma_images.is_dir():
+        paths = sorted(tma_images.glob("**/*.jpg"))
+        if paths:
+            return paths
+    section_paths: list[Path] = []
+    for prefix in GLEASON_ARVANITI_TMA_PREFIXES:
+        for section in sorted(root.glob(f"{prefix}*")):
+            if section.is_dir():
+                section_paths.extend(sorted(section.glob("**/*.jpg")))
+    if section_paths:
+        return section_paths
+    archives = _gleason_arvaniti_core_archives(root)
+    if not archives:
+        raise FileNotFoundError(f"No GleasonArvaniti TMA cores or archives found under {root}")
+    dest = staging_root / "tma_images"
+    dest.mkdir(parents=True, exist_ok=True)
+    for archive in archives:
+        logger.info("gleason_arvaniti: extracting %s", archive.name)
+        _extract_tar(archive, dest)
+    return sorted(dest.glob("**/*.jpg"))
+
+
+def _gleason_arvaniti_masks_dir(root: Path, staging_root: Path) -> Path:
+    """Resolve the train-mask dir, extracting ``Gleason_masks_train.tar.gz`` if needed."""
+    extracted = root / GLEASON_ARVANITI_MASK_DIRNAME
+    if extracted.is_dir():
+        return extracted
+    archive = root / f"{GLEASON_ARVANITI_MASK_DIRNAME}.tar.gz"
+    if not archive.is_file():
+        raise FileNotFoundError(
+            f"GleasonArvaniti train masks not found: expected {extracted} or {archive}"
+        )
+    dest = staging_root / "masks"
+    dest.mkdir(parents=True, exist_ok=True)
+    logger.info("gleason_arvaniti: extracting %s", archive.name)
+    _extract_tar(archive, dest)
+    inner = dest / GLEASON_ARVANITI_MASK_DIRNAME
+    return inner if inner.is_dir() else dest
+
+
+def _gleason_arvaniti_patch_coords(size_x: int, size_y: int, patch_size: int) -> list[tuple[int, int]]:
+    """Overlapping grid of top-left patch coords (verbatim from gleason_CNN)."""
+    step = patch_size // 2
+    coords: list[tuple[int, int]] = []
+    for y in range(0, size_y - patch_size, step):
+        for x in range(0, size_x - patch_size, step):
+            coords.append((x, y))
+    return coords
+
+
+def _gleason_arvaniti_patch_grade(i0, j0, patch_size, mask, n_class, np) -> int:
+    """Grade of a patch = the single Gleason class covering its central third, else ignore."""
+    window = patch_size // 3
+    central = mask[(i0 + window):(i0 + 2 * window), (j0 + window):(j0 + 2 * window)]
+    grades = np.unique(central)
+    grades = grades[grades < n_class]
+    return int(grades[0]) if len(grades) == 1 else n_class
+
+
+def _write_gleason_arvaniti_patches(core_paths, masks_dir, out_dir, np, Image) -> int:
+    patch_size = GLEASON_ARVANITI_PATCH_SIZE
+    n_class = len(GLEASON_ARVANITI_CLASSES)
+    written = 0
+    for core_path in core_paths:
+        name = core_path.stem
+        if not any(name.startswith(prefix) for prefix in GLEASON_ARVANITI_TMA_PREFIXES):
+            continue
+        mask_path = masks_dir / f"mask_{name}.png"
+        if not mask_path.is_file():
+            continue
+        image = np.asarray(Image.open(core_path).convert("RGB"))
+        mask = np.asarray(Image.open(mask_path))  # palette indices == class ids (0..4)
+        size_y, size_x = image.shape[0], image.shape[1]
+        subdir = out_dir / name
+        for index, (i0, j0) in enumerate(
+            _gleason_arvaniti_patch_coords(size_x, size_y, patch_size)
+        ):
+            patch = image[i0:i0 + patch_size, j0:j0 + patch_size]
+            grade = _gleason_arvaniti_patch_grade(i0, j0, patch_size, mask, n_class, np)
+            if grade < n_class and float(np.mean(patch)) <= GLEASON_ARVANITI_WHITE_LIMIT:
+                subdir.mkdir(parents=True, exist_ok=True)
+                Image.fromarray(patch).save(subdir / f"{name}_patch_{index}_class_{grade}.jpg")
+                written += 1
+    return written
+
+
+def _materialize_gleason_arvaniti_patches(root: Path, patches_dir: Path) -> None:
+    """Build ``train_validation_patches_750`` from the raw Harvard Dataverse download.
+
+    Faithful port of eiriniar/gleason_CNN ``utils/create_patches.py``
+    (``create_annotated_patches``) for the four train/validation TMAs. The upstream script
+    imports the long-removed ``scipy.misc.imread``; Soma vendors the ~40 lines of patch
+    geometry + labelling so the benchmark stays reproducible without that dependency. Only
+    ``train_validation_patches_750`` is produced — the ZT80 test cohort (joint
+    two-pathologist ``test_patches_750``) is intentionally skipped, matching what the
+    curator reads. Materialization is atomic: patches land in a ``.partial`` staging dir
+    that is renamed into place only once complete, so an interrupted run is retriable.
+    """
+    try:
+        import numpy as np  # noqa: PLC0415
+        from PIL import Image  # noqa: PLC0415
+    except ImportError as exc:  # pragma: no cover - NumPy/Pillow are core deps
+        raise ImportError(
+            "Materializing GleasonArvaniti patches requires NumPy and Pillow."
+        ) from exc
+
+    staging_root = root / ".gleason_arvaniti_staging"
+    partial_dir = patches_dir.with_name(f"{patches_dir.name}.partial")
+    if staging_root.exists():
+        shutil.rmtree(staging_root)
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir)
+    try:
+        core_paths = _gleason_arvaniti_core_paths(root, staging_root)
+        masks_dir = _gleason_arvaniti_masks_dir(root, staging_root)
+        partial_dir.mkdir(parents=True)
+        written = _write_gleason_arvaniti_patches(core_paths, masks_dir, partial_dir, np, Image)
+        if written == 0:
+            raise RuntimeError(
+                "GleasonArvaniti materialization produced no patches; check that the TMA "
+                f"cores and masks under {root} pair up (mask_<core>.png beside <core>.jpg)."
+            )
+        partial_dir.rename(patches_dir)
+        logger.info("gleason_arvaniti: materialized %d patches under %s", written, patches_dir)
+    finally:
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        if partial_dir.exists():
+            shutil.rmtree(partial_dir)
 
 
 def _patch_camelyon_samples(root: Path) -> list[_Sample]:

@@ -87,10 +87,22 @@ Raw layout expectations
   ``test``.
 
 ``gleason_arvaniti``
-  ``train_validation_patches_750/**/*.jpg`` and
-  ``test_patches_750/patho_1/**/*.jpg``. Files from microarray ``ZT76`` are
-  assigned to EVA validation, files from ``ZT111``, ``ZT199``, and ``ZT204`` to
-  EVA train, and ``patho_1`` test patches to EVA test.
+  ``train_validation_patches_750/**/*.jpg``. Files from microarray ``ZT76`` are
+  assigned to EVA validation and files from ``ZT111``, ``ZT199``, and ``ZT204``
+  to EVA train. EVA reports GleasonArvaniti on the validation cohort and does not
+  use ``test_patches_750`` — its test split "leads to unstable evaluation
+  results" — so those patches are ignored even when present.
+
+  If ``train_validation_patches_750`` is absent, Soma materializes it from the raw
+  `Harvard Dataverse download <https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP>`_:
+  drop the train/validation TMA archives (``ZT{76,111,199,204}_*.tar.gz``) and
+  ``Gleason_masks_train.tar.gz`` into ``<root>`` (already-extracted folders or a
+  ``TMA_images/`` dir are also accepted). Soma slices the 750×750 patches itself —
+  a vendored, dependency-free port of ``create_patches.py`` from the
+  `gleason_CNN <https://github.com/eiriniar/gleason_CNN>`_ repo — so you do not need
+  to run that (Python 2-era) script. Materialization is atomic and idempotent: a
+  completed ``train_validation_patches_750`` is reused as-is on later runs. Only the
+  train/validation patches are produced; the ZT80 test cohort is skipped.
 
 ``patch_camelyon``
   Either materialized image folders
