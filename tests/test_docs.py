@@ -73,6 +73,21 @@ def test_eva_benchmark_page_matches_registry() -> None:
     assert "soma reproduce eva/bach" in generated
 
 
+def test_eva_benchmark_page_renders_reproduced_ledger() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_eva_benchmark_rst()
+    # soma's OWN measured numbers, generated from results/eva.csv, next to the reference band.
+    assert "Reproduced numbers" in generated
+    assert "soma (mean ± std)" in generated
+    # A seeded historical cell renders with its provenance (commit) and delta column.
+    assert "0.914 ± 0.007" in generated
+    assert "7ef2d7c" in generated
+    # Never-run datasets have no measured row (honest: only recorded cells appear).
+    reproduced = generated.split("Reproduced numbers", 1)[1].split("Reproduce\n", 1)[0]
+    for never_run in ("mhist", "gleason_arvaniti", "patch_camelyon"):
+        assert never_run not in reproduced
+
+
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example_paths = (

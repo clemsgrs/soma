@@ -235,6 +235,78 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     return resolved
 
 
+def _results_table_name(benchmark) -> str:
+    """The results/reference table a benchmark records under (its family prefix).
+
+    Family members share one keyed table: ``eva/bach`` records under ``eva`` (keyed by
+    ``dataset``), matching ``reference/eva.csv``. A standalone benchmark (``ocelot``) maps
+    to itself.
+    """
+    return benchmark.name.split("/", 1)[0]
+
+
+def _git_commit() -> str:
+    """Short ``HEAD`` SHA of the soma checkout (``-dirty`` if the tree has changes).
+
+    Resolved from the installed package location, not the CWD, so it pins the code that
+    actually produced the number. Returns ``"unknown"`` outside a git checkout.
+    """
+    import subprocess
+
+    import soma
+
+    repo = Path(soma.__file__).resolve().parents[1]
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain"],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        return f"{sha}-dirty" if dirty else sha
+    except (subprocess.SubprocessError, OSError):
+        return "unknown"
+
+
+def _provenance() -> tuple[str, str, str]:
+    """``(date, soma_commit, slide2vec_version)`` pinning the environment of a recorded row."""
+    import datetime
+    from importlib import metadata
+
+    date = datetime.date.today().isoformat()
+    try:
+        slide2vec_version = metadata.version("slide2vec")
+    except metadata.PackageNotFoundError:
+        slide2vec_version = "unknown"
+    return date, _git_commit(), slide2vec_version
+
+
+def _record_result(benchmark, row, measured: float, std: float | None, n_seeds: int | None) -> None:
+    """Append a reproduced-measurement row to the benchmark's results ledger (``--record``).
+
+    Keys and metric are copied from the matched **gate** reference ``row`` so the recorded
+    measurement joins its band exactly; provenance is captured at run time.
+    """
+    from soma.benchmarks import MeasuredRow, append_result
+
+    date, commit, slide2vec_version = _provenance()
+    measured_row = MeasuredRow(
+        key=dict(row.key),
+        metric=row.metric,
+        measured=measured,
+        std=std,
+        n_seeds=n_seeds,
+        date=date,
+        soma_commit=commit,
+        slide2vec_version=slide2vec_version,
+        source="soma reproduce --record",
+    )
+    path = append_result(_results_table_name(benchmark), measured_row, key_order=list(row.key))
+    print(f"  recorded → {path}")
+
+
 def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | None = None) -> int:
     """Curate → run → score one benchmark and tolerance-check its primary metric.
 
@@ -271,7 +343,11 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     if args.from_run_dir is not None:
         metrics = benchmark.score(args.from_run_dir)
         measured = float(metrics[benchmark.primary_metric])
-        return 0 if _report_tolerance(benchmark, measured, row) else 1
+        ok = _report_tolerance(benchmark, measured, row)
+        if getattr(args, "record", False):
+            # A re-scored single run has no seed spread.
+            _record_result(benchmark, row, measured, std=None, n_seeds=None)
+        return 0 if ok else 1
 
     if args.raw_root is None:
         print(
@@ -316,7 +392,11 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         measured_values.append(float(metrics[benchmark.primary_metric]))
 
     measured = statistics.fmean(measured_values)
-    return 0 if _report_tolerance(benchmark, measured, row) else 1
+    ok = _report_tolerance(benchmark, measured, row)
+    if getattr(args, "record", False):
+        std = statistics.stdev(measured_values) if len(measured_values) > 1 else 0.0
+        _record_result(benchmark, row, measured, std=std, n_seeds=len(seeds))
+    return 0 if ok else 1
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> int:
@@ -486,6 +566,12 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-root", type=Path, default=None, help="Shared feature-cache root (reused across seeds).")
     parser.add_argument("--encoder", type=str, default=None, help="Encoder axis (benchmark default if omitted).")
     parser.add_argument("--spacing", type=float, default=None, help="Spacing axis in µm/px (benchmark default if omitted).")
+    parser.add_argument(
+        "--record",
+        action="store_true",
+        help="Append the measured number + provenance to the results ledger "
+        "(soma/benchmarks/results/<name>.csv) so 'reproduced' becomes a committed fact.",
+    )
     parser.set_defaults(func=_cmd_reproduce)
     return parser
 

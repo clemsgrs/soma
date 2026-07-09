@@ -107,6 +107,67 @@ read verbatim from the packaged reference CSV (``patch_camelyon`` carries both a
    :header-rows: 1
    :widths: 12 10 20 10 10 38
 
+Reproduced numbers
+------------------
+
+What soma has actually measured, recorded by ``soma reproduce --record`` into the
+packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit
+and slide2vec version that produced each number. Only cells that have been run
+appear; each is shown next to its reference band above, with the delta:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Dataset
+     - Encoder
+     - soma (mean ± std)
+     - Seeds
+     - Reference
+     - Δ
+     - Recorded (date @ commit)
+   * - bach
+     - uni2
+     - 0.914 ± 0.007
+     - 5
+     - 0.915
+     - -0.001
+     - 2026-06-19 @ ``7ef2d7c``
+   * - bach
+     - virchow2
+     - 0.870 ± 0.010
+     - 5
+     - 0.883
+     - -0.013
+     - 2026-06-19 @ ``7ef2d7c``
+   * - breakhis
+     - uni2
+     - 0.855 ± 0.006
+     - 5
+     - 0.859
+     - -0.004
+     - 2026-06-19 @ ``7ef2d7c``
+   * - breakhis
+     - virchow2
+     - 0.812 ± 0.008
+     - 5
+     - 0.821
+     - -0.009
+     - 2026-06-19 @ ``7ef2d7c``
+   * - crc
+     - uni2
+     - 0.966 ± 0.001
+     - 5
+     - 0.965
+     - +0.001
+     - 2026-06-19 @ ``7ef2d7c``
+   * - crc
+     - virchow2
+     - 0.966 ± 0.001
+     - 5
+     - 0.967
+     - -0.001
+     - 2026-06-19 @ ``7ef2d7c``
+
 Reproduce
 ---------
 

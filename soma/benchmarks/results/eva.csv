@@ -1,0 +1,7 @@
+dataset,encoder,metric,measured,std,n_seeds,date,soma_commit,slide2vec_version,source
+bach,uni2,test/balanced_accuracy,0.914,0.007,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); 5 seeds; slide2vec version not recorded."
+bach,virchow2,test/balanced_accuracy,0.870,0.010,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); paige_virchow2 CLS-only (1280-d); 5 seeds; slide2vec version not recorded."
+breakhis,uni2,test/balanced_accuracy,0.855,0.006,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); 5 seeds; slide2vec version not recorded."
+breakhis,virchow2,test/balanced_accuracy,0.812,0.008,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); paige_virchow2 CLS-only (1280-d); 5 seeds; slide2vec version not recorded."
+crc,uni2,test/balanced_accuracy,0.966,0.001,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); 5 seeds; slide2vec version not recorded."
+crc,virchow2,test/balanced_accuracy,0.966,0.001,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); paige_virchow2 CLS-only (1280-d); 5 seeds; slide2vec version not recorded."

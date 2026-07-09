@@ -16,7 +16,7 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
         sys.path.insert(0, str(sibling))
 
 from soma.aggregators import aggregator_registry
-from soma.benchmarks import get_benchmark, list_benchmarks
+from soma.benchmarks import expected_rows, get_benchmark, list_benchmarks, load_results
 from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import ocelot as ocelot_bench
 from soma.config import (
@@ -285,6 +285,53 @@ def _reference_csv_table(title: str, rel_path: str, widths: str) -> str:
     )
 
 
+def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
+    """A ``list-table`` of soma's recorded measurements joined against the reference band.
+
+    Built from the packaged results ledger (``results/<name>.csv``) via ``load_results`` — so
+    only cells that have actually been run appear, each next to its reference number, the
+    delta, and the provenance (seeds, date, commit) that produced it. Returns a plain
+    "nothing recorded yet" note when the ledger is empty (or absent), so a benchmark with no
+    reproductions still renders.
+    """
+    rows = load_results(name)
+    if not rows:
+        return (
+            "No reproductions have been recorded yet. Run ``soma reproduce <name> --record`` "
+            "to append a measured number + provenance to the results ledger."
+        )
+    header = [c.capitalize() for c in key_columns] + [
+        "soma (mean ± std)",
+        "Seeds",
+        "Reference",
+        "Δ",
+        "Recorded (date @ commit)",
+    ]
+    lines = [".. list-table::", "   :header-rows: 1", ""]
+    lines.extend([f"   * - {header[0]}"] + [f"     - {col}" for col in header[1:]])
+    for row in rows:
+        measured = f"{row.measured:.3f}" + (f" ± {row.std:.3f}" if row.std is not None else "")
+        seeds = "" if row.n_seeds is None else str(row.n_seeds)
+        gates = [
+            g
+            for g in expected_rows(name, metric=row.metric, **row.key)
+            if not g.is_external
+        ]
+        reference = f"{gates[0].expected:.3f}" if gates else "—"
+        delta = f"{row.measured - gates[0].expected:+.3f}" if gates else "—"
+        commit = f"``{row.soma_commit}``" if row.soma_commit else "—"
+        recorded = f"{row.date} @ {commit}" if row.date else commit
+        cells = [row.key.get(c, "") for c in key_columns] + [
+            measured,
+            seeds,
+            reference,
+            delta,
+            recorded,
+        ]
+        lines.extend([f"   * - {cells[0]}"] + [f"     - {cell}" for cell in cells[1:]])
+    return "\n".join(lines)
+
+
 def _ocelot_guidance_section(bench) -> str:
     """The non-gating external/guidance anchors as a clickable, clearly-labelled section.
 
@@ -473,6 +520,12 @@ def build_eva_benchmark_rst() -> str:
             "../soma/benchmarks/reference/eva.csv",
             "12 10 20 10 10 38",
         ),
+        "Reproduced numbers\n------------------\n\n"
+        "What soma has actually measured, recorded by ``soma reproduce --record`` into the\n"
+        "packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit\n"
+        "and slide2vec version that produced each number. Only cells that have been run\n"
+        "appear; each is shown next to its reference band above, with the delta:\n\n"
+        + _reproduced_table("eva", ("dataset", "encoder")),
         "Reproduce\n---------\n\n"
         "``soma reproduce`` curates the raw layout, trains the linear probe over the\n"
         "canonical seeds, reads ``test/balanced_accuracy`` from ``summary.json``, and\n"

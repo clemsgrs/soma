@@ -15,12 +15,16 @@ from __future__ import annotations
 from soma.benchmarks.registry import (
     Benchmark,
     Facet,
+    MeasuredRow,
     ReferenceRow,
+    append_result,
     expected_rows,
     get_benchmark,
     list_benchmarks,
     load_reference,
+    load_results,
     register_benchmark,
+    reproduced_rows,
     score_from_summary,
 )
 
@@ -33,11 +37,15 @@ from soma.benchmarks import detection_benchmark as _detection_benchmark  # noqa:
 __all__ = [
     "Benchmark",
     "Facet",
+    "MeasuredRow",
     "ReferenceRow",
+    "append_result",
     "expected_rows",
     "get_benchmark",
     "list_benchmarks",
     "load_reference",
+    "load_results",
     "register_benchmark",
+    "reproduced_rows",
     "score_from_summary",
 ]
