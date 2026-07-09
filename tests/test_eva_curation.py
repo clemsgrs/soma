@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import os
+import tarfile
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import pytest
+from PIL import Image
 
-from soma.curation.eva import curate_eva_patch_dataset
+from soma.curation.eva import (
+    _gleason_arvaniti_core_archives,
+    _gleason_arvaniti_raw_present,
+    curate_eva_patch_dataset,
+)
 from soma.dataset import Dataset, Splits
 
 
@@ -14,10 +23,38 @@ CRC_CLASS_NAMES = ("ADI", "BACK", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TU
 BREAKHIS_CLASS_NAMES = ("TA", "MC", "F", "DC")
 GLEASON_ARVANITI_CLASS_NAMES = ("benign", "gleason_3", "gleason_4", "gleason_5")
 
+# The raw Harvard Dataverse download (DOI 10.7910/DVN/OCYCMP), if present on this host.
+GLEASON_REAL_ROOT = Path(
+    "/data/pathology/projects/vlfm/data/vision/tile_level_datasets/datasets/GleasonArvaniti"
+)
+
 
 def _touch(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"")
+
+
+def _make_gleason_core(directory: Path, name: str, value: int = 100) -> None:
+    """An 800x800 RGB TMA core (mean well under the white cutoff so its one patch is kept)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.full((800, 800, 3), value, np.uint8)).save(directory / f"{name}.jpg")
+
+
+def _make_gleason_mask(directory: Path, name: str, class_id: int) -> None:
+    """A single-grade mask; real masks are palette PNGs, but asarray yields the same ids."""
+    directory.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(np.full((800, 800), class_id, np.uint8), mode="L").save(
+        directory / f"mask_{name}.png"
+    )
+
+
+def _build_gleason_extracted_raw(raw_root: Path) -> None:
+    """Raw layout as left by unpacking the tarballs: per-section core dirs + a masks dir."""
+    _make_gleason_core(raw_root / "ZT76_39_A", "ZT76_39_A_1_1")  # -> val cohort
+    _make_gleason_core(raw_root / "ZT111_4_A", "ZT111_4_A_1_1")  # -> train cohort
+    masks = raw_root / "Gleason_masks_train"
+    _make_gleason_mask(masks, "ZT76_39_A_1_1", 2)  # gleason_4
+    _make_gleason_mask(masks, "ZT111_4_A_1_1", 0)  # benign
 
 
 def test_curate_mhist_preserves_eva_binary_targets_and_reserves_test(tmp_path: Path):
@@ -333,6 +370,156 @@ def test_curate_gleason_arvaniti_reports_on_validation_and_ignores_test_patches(
     # Previously raised "provides both a tune and a test split"; must now construct cleanly.
     splits = Splits(manifest.splits_csv, dataset, tune_is_test=True)
     assert len(splits.folds[0].train) == 2
+
+
+def test_gleason_materializes_from_extracted_section_dirs(tmp_path: Path):
+    raw_root = tmp_path / "gleason_raw"
+    _build_gleason_extracted_raw(raw_root)
+    assert not (raw_root / "train_validation_patches_750").exists()
+
+    manifest = curate_eva_patch_dataset(
+        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+    )
+
+    # Patches were materialized in place, one per synthetic core, with the mask's grade.
+    patches = sorted((raw_root / "train_validation_patches_750").glob("**/*.jpg"))
+    assert [p.name for p in patches] == [
+        "ZT111_4_A_1_1_patch_0_class_0.jpg",
+        "ZT76_39_A_1_1_patch_0_class_2.jpg",
+    ]
+    # No transient extraction staging is left behind.
+    assert not (raw_root / ".gleason_arvaniti_staging").exists()
+
+    dataset_df = pd.read_csv(manifest.dataset_csv).sort_values("sample_id")
+    assert dataset_df[["label", "class_name", "eva_split"]].to_dict("records") == [
+        {"label": 0, "class_name": "benign", "eva_split": "train"},
+        {"label": 2, "class_name": "gleason_4", "eva_split": "val"},
+    ]
+    dataset = Dataset(manifest.dataset_csv)
+    Splits(manifest.splits_csv, dataset, tune_is_test=True)
+
+
+def test_gleason_materializes_from_tarball_archives(tmp_path: Path):
+    src = tmp_path / "src"
+    _build_gleason_extracted_raw(src)
+    raw_root = tmp_path / "gleason_raw"
+    raw_root.mkdir()
+    # Repack the way Harvard Dataverse ships the download: per-section + mask tarballs only.
+    for section in ("ZT76_39_A", "ZT111_4_A"):
+        with tarfile.open(raw_root / f"{section}.tar.gz", "w:gz") as tar:
+            tar.add(src / section, arcname=section)
+    with tarfile.open(raw_root / "Gleason_masks_train.tar.gz", "w:gz") as tar:
+        tar.add(src / "Gleason_masks_train", arcname="Gleason_masks_train")
+
+    manifest = curate_eva_patch_dataset(
+        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+    )
+
+    patches = sorted((raw_root / "train_validation_patches_750").glob("**/*.jpg"))
+    assert [p.name for p in patches] == [
+        "ZT111_4_A_1_1_patch_0_class_0.jpg",
+        "ZT76_39_A_1_1_patch_0_class_2.jpg",
+    ]
+    assert not (raw_root / ".gleason_arvaniti_staging").exists()
+    assert len(pd.read_csv(manifest.dataset_csv)) == 2
+
+
+def test_gleason_prefers_existing_patches_over_raw_materialization(tmp_path: Path):
+    raw_root = tmp_path / "gleason_raw"
+    _build_gleason_extracted_raw(raw_root)  # raw ingredients are present...
+    # ...but a pre-made patch dir already exists and must be used verbatim (cores untouched).
+    _touch(
+        raw_root
+        / "train_validation_patches_750"
+        / "ZT76_09_A_1_1"
+        / "ZT76_09_A_1_1_patch_1_class_3.jpg"
+    )
+
+    manifest = curate_eva_patch_dataset(
+        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+    )
+
+    dataset_df = pd.read_csv(manifest.dataset_csv)
+    # Exactly the one pre-existing patch — no cores were re-materialized over it.
+    assert len(dataset_df) == 1
+    assert dataset_df.iloc[0]["label"] == 3
+    assert dataset_df.iloc[0]["eva_split"] == "val"
+
+
+def test_gleason_materialization_clears_stale_partial(tmp_path: Path):
+    raw_root = tmp_path / "gleason_raw"
+    _build_gleason_extracted_raw(raw_root)
+    stale = raw_root / "train_validation_patches_750.partial"
+    (stale / "leftover").mkdir(parents=True)
+    (stale / "leftover" / "junk_patch_0_class_9.jpg").write_bytes(b"")
+
+    curate_eva_patch_dataset(
+        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+    )
+
+    # A crashed run's staging is discarded; only freshly materialized patches remain.
+    assert not stale.exists()
+    names = sorted(
+        p.name for p in (raw_root / "train_validation_patches_750").glob("**/*.jpg")
+    )
+    assert names == [
+        "ZT111_4_A_1_1_patch_0_class_0.jpg",
+        "ZT76_39_A_1_1_patch_0_class_2.jpg",
+    ]
+
+
+def test_gleason_raises_without_patches_or_raw(tmp_path: Path):
+    raw_root = tmp_path / "empty"
+    raw_root.mkdir()
+    with pytest.raises(FileNotFoundError, match="Harvard Dataverse"):
+        curate_eva_patch_dataset(
+            "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        )
+
+
+def test_gleason_raises_when_masks_missing(tmp_path: Path):
+    raw_root = tmp_path / "gleason_raw"
+    _make_gleason_core(raw_root / "ZT76_39_A", "ZT76_39_A_1_1")  # cores present, masks absent
+    with pytest.raises(FileNotFoundError, match="Harvard Dataverse"):
+        curate_eva_patch_dataset(
+            "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        )
+
+
+@pytest.mark.skipif(
+    not _gleason_arvaniti_core_archives(GLEASON_REAL_ROOT),
+    reason="raw GleasonArvaniti Dataverse download not present on this host",
+)
+def test_gleason_real_download_is_detected():
+    assert _gleason_arvaniti_raw_present(GLEASON_REAL_ROOT)
+    # The four train/validation TMAs ship as 9 core archives: ZT76 x2, ZT111 x3, ZT199 x2, ZT204 x2.
+    assert len(_gleason_arvaniti_core_archives(GLEASON_REAL_ROOT)) == 9
+    assert (GLEASON_REAL_ROOT / "Gleason_masks_train.tar.gz").is_file()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("SOMA_RUN_SLOW_DATA_TESTS")
+    or not (GLEASON_REAL_ROOT / "ZT76_39_A.tar.gz").is_file(),
+    reason="slow real-data check; set SOMA_RUN_SLOW_DATA_TESTS=1 with the Dataverse download present",
+)
+def test_gleason_materializes_zt76_to_eva_validation_count(tmp_path: Path):
+    # Materialize only the ZT76 sections against the real tarballs and confirm the patch
+    # count matches EVA's validation cohort (2482) — the byte-for-byte reproduction check.
+    raw_root = tmp_path / "gleason_raw"
+    raw_root.mkdir()
+    for section in ("ZT76_39_A", "ZT76_39_B"):
+        (raw_root / f"{section}.tar.gz").symlink_to(GLEASON_REAL_ROOT / f"{section}.tar.gz")
+    (raw_root / "Gleason_masks_train.tar.gz").symlink_to(
+        GLEASON_REAL_ROOT / "Gleason_masks_train.tar.gz"
+    )
+
+    manifest = curate_eva_patch_dataset(
+        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+    )
+
+    dataset_df = pd.read_csv(manifest.dataset_csv)
+    assert set(dataset_df["eva_split"]) == {"val"}
+    assert len(dataset_df) == 2482
 
 
 def test_curate_patch_camelyon_accepts_split_class_folders(tmp_path: Path):
