@@ -13,11 +13,11 @@ would be a footgun (design §7). ``encoder`` is the varied ``build_config`` axis
 (``DEFAULT_ENCODER = "uni2"``); the spatial-expression probe recipe + task are fixed.
 
 Reference numbers: ``reference/hest.csv`` carries **external** Reference rows only — HEST's
-published Pearson per (task, encoder), ``kind=external`` with a ``label`` + ``url``. There
-is **no gate row** yet (the external rows arrive in a later issue), so nothing is
-tolerance-checked; ``soma reproduce`` renders soma's Measured row next to HEST's Reference,
-making the slide2vec↔TRIDENT gap an explicit delta. ``expected()`` therefore may return no
-rows today.
+published Pearson per (task, encoder), ``kind=external`` with a ``label`` + ``url`` (issue
+#260 populates IDC × the ~18 overlapping encoders from the official HEST leaderboard). There
+is **no gate row**, so nothing is tolerance-checked; ``soma reproduce hest/IDC`` renders
+soma's Measured row next to HEST's Reference, making the slide2vec↔TRIDENT gap an explicit,
+non-gating delta rather than hiding it in a loose tolerance.
 """
 
 from __future__ import annotations
@@ -159,12 +159,14 @@ class HestBenchmark:
         )
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:
-        """External reference row(s) for this task × the resolved encoder axis (maybe none).
+        """External reference row(s) for this task × the resolved encoder axis.
 
         Injects the sub-benchmark's own ``dataset`` (the HEST task) and defaults the
-        ``encoder`` axis to :data:`DEFAULT_ENCODER`. ``reference/hest.csv`` carries external
-        rows only and none are populated yet, so this returns ``[]`` until a later issue
-        adds them.
+        ``encoder`` axis to :data:`DEFAULT_ENCODER`, so ``expected()`` resolves the uni2
+        row and ``expected(encoder="virchow2")`` the virchow2 row. ``reference/hest.csv``
+        carries external (``kind=external``, non-gating) rows only — HEST's published IDC
+        Pearson per encoder — so these are rendered *beside* the Measured row, never gated.
+        Returns ``[]`` for an encoder with no published HEST number.
         """
         merged: dict[str, Any] = {"dataset": self.task, "encoder": DEFAULT_ENCODER}
         merged.update({k: v for k, v in axes.items() if v is not None})

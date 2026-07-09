@@ -109,7 +109,7 @@ def test_build_config_rejects_unknown_encoder(tmp_path):
         )
 
 
-# --- external-only reference table ----------------------------------------------------
+# --- external-only reference table (issue #260) ---------------------------------------
 
 
 def test_reference_csv_has_external_schema_header():
@@ -117,18 +117,52 @@ def test_reference_csv_has_external_schema_header():
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
-    # The header carries the external-anchor schema so a later issue can append rows.
     assert columns == [
         "dataset", "encoder", "metric", "expected", "tolerance", "kind", "label", "url", "source",
     ]
-    # No reference rows are populated yet (external rows arrive in a later issue).
-    assert rows == []
+    # Every populated row is an external (non-gating) IDC anchor with a label + url; no gate
+    # row exists (the point of #260: render Measured beside Reference, never tolerance-check).
+    assert rows, "reference/hest.csv must carry the published external IDC rows"
+    for row in rows:
+        assert row["dataset"] == "IDC"
+        assert row["metric"] == "test/mean_pearson_mean"
+        assert row["kind"] == "external"
+        assert row["tolerance"].strip() == ""  # external rows never gate
+        assert row["label"] and row["url"].startswith("http")
 
 
-def test_expected_returns_no_rows_yet():
-    # expected() may return no rows: the external Reference rows arrive in a later issue.
-    assert get_benchmark("hest/IDC").expected() == []
-    assert get_benchmark("hest/IDC").expected(encoder="uni2") == []
+def test_reference_csv_carries_vertical_slice_encoder_numbers():
+    by_encoder = {}
+    with resources.files("soma.benchmarks.reference").joinpath("hest.csv").open(newline="") as fh:
+        for row in csv.DictReader(fh):
+            by_encoder[row["encoder"]] = row
+    # The two vertical-slice encoders carry their confirmed HEST-leaderboard IDC Pearson.
+    assert float(by_encoder["uni2"]["expected"]) == pytest.approx(0.5898)
+    assert float(by_encoder["virchow2"]["expected"]) == pytest.approx(0.5971)
+
+
+def test_expected_returns_external_rows_for_resolved_encoder():
+    bench = get_benchmark("hest/IDC")
+    # Default axis resolves to uni2; --encoder narrows to that encoder's own row.
+    uni2_rows = bench.expected(encoder="uni2")
+    virchow2_rows = bench.expected(encoder="virchow2")
+    assert len(uni2_rows) == 1 and len(virchow2_rows) == 1
+    assert bench.expected() == uni2_rows  # DEFAULT_ENCODER == uni2
+    (uni2,) = uni2_rows
+    (virchow2,) = virchow2_rows
+    assert uni2.expected == pytest.approx(0.5898)
+    assert virchow2.expected == pytest.approx(0.5971)
+    # External (non-gating) anchors with a human label + linkable url; never a gate.
+    for row in (uni2, virchow2):
+        assert row.is_external and row.kind == "external"
+        assert row.metric == "test/mean_pearson_mean"
+        assert row.label and row.url.startswith("http")
+        assert row.tolerance == 0.0  # blank tolerance -> non-gating
+
+
+def test_expected_unknown_encoder_returns_no_rows():
+    # An encoder with no published HEST number yields no reference row (accuracy over coverage).
+    assert get_benchmark("hest/IDC").expected(encoder="prism") == []
 
 
 # --- default scorer + curation delegation ---------------------------------------------
@@ -158,21 +192,44 @@ def test_curate_delegates_to_curate_hest(monkeypatch, tmp_path):
     assert manifest.dataset_csv == tmp_path / "out" / "dataset.csv"
 
 
-# --- reproduce CLI is external-only: no gate row, so it does not silently gate ----------
+# --- reproduce CLI: external-only renders Measured beside Reference, never gates (#260) --
 
 
-def test_reproduce_hest_errors_no_gate_row(capsys):
-    # Consistent with issue #226: a benchmark with only external (or no) rows must NOT
-    # silently gate on guidance; `soma reproduce hest/IDC` errors until a gate row exists.
-    # The manual reproduction runs the Pipeline directly (see the PR body).
+def _run_cli(argv: list[str]) -> int:
+    """Invoke the CLI, returning the exit code (reproduce raises SystemExit)."""
     from soma.cli import main
 
     try:
-        main(["reproduce", "hest/IDC", "--from-run-dir", "/nonexistent"])
+        main(argv)
     except SystemExit as exc:
-        code = int(exc.code or 0)
-    else:
-        code = 0
-    err = capsys.readouterr().err
-    assert code == 2
-    assert "no gate reference row" in err
+        return int(exc.code or 0)
+    return 0
+
+
+def test_reproduce_hest_renders_measured_beside_external_reference(capsys, tmp_path):
+    # `soma reproduce hest/IDC --from-run-dir` re-scores the run's summary and renders the
+    # Measured row next to HEST's published external Reference (default encoder uni2). It
+    # must COMPLETE (exit 0) and tolerance-check NOTHING — the delta is guidance, not a gate.
+    (tmp_path / "summary.json").write_text(json.dumps({"test/mean_pearson_mean": 0.51}))
+    code = _run_cli(["reproduce", "hest/IDC", "--from-run-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "MEASURED" in out
+    assert "0.5100" in out  # soma's Measured value
+    assert "0.5898" in out  # HEST's published uni2 Reference, rendered beside it
+    assert "not gated" in out  # explicitly non-gating
+    assert "PASS" not in out and "FAIL" not in out  # nothing is tolerance-checked
+
+
+def test_reproduce_hest_keeps_encoder_reference_beside_measured(capsys, tmp_path):
+    # --encoder virchow2 renders the Measured value beside virchow2's own HEST number (0.5971),
+    # not uni2's — still non-gating, still exit 0.
+    (tmp_path / "summary.json").write_text(json.dumps({"test/mean_pearson_mean": 0.55}))
+    code = _run_cli(
+        ["reproduce", "hest/IDC", "--encoder", "virchow2", "--from-run-dir", str(tmp_path)]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "0.5971" in out  # virchow2's HEST Reference
+    assert "0.5898" not in out  # NOT uni2's
+    assert "PASS" not in out and "FAIL" not in out

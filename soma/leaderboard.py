@@ -223,9 +223,16 @@ def run_primary_metric(summary: dict[str, float], split: str) -> str | None:
 
 
 def _metric_value(summary: dict[str, float], metric: str, split: str) -> float | None:
-    """The value of ``metric`` on ``split`` (single-fold or ``_mean`` seed-aggregate)."""
-    for suffix in ("", "_mean"):
-        key = f"{split}/{metric}{suffix}"
+    """The value of ``metric`` on ``split`` (single-fold or ``_mean`` seed-aggregate).
+
+    ``metric`` is normally a bare name the split is prepended to (``mean_f1`` ->
+    ``test/mean_f1``). A benchmark whose ``primary_metric`` already carries a split prefix —
+    HEST's multi-fold headline ``test/mean_pearson_mean`` — is looked up as a full key first
+    so it isn't double-prefixed into ``test/test/...``.
+    """
+    candidates = [metric, f"{metric}_mean"] if "/" in metric else []
+    candidates += [f"{split}/{metric}", f"{split}/{metric}_mean"]
+    for key in candidates:
         if key in summary:
             return float(summary[key])
     return None
