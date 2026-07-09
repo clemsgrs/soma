@@ -13,9 +13,11 @@ a benchmark just delegates (load a committed YAML, read ``summary.json``); where
 computes or scores specially it overrides (OCELOT's greedy matcher).
 
 Expected numbers ship as package data at ``soma/benchmarks/reference/<name>.csv`` with
-columns ``key…, metric, expected, tolerance, source`` and a **per-row** tolerance (absolute
-on the primary metric). The ``key…`` columns are everything left of ``metric``; an empty
-key cell means the row is a broad, config-agnostic banner that matches any axes.
+columns ``key…, metric, expected, tolerance, source`` and a **per-row** tolerance. The
+tolerance is absolute by default; an optional ``tolerance_mode=relative`` cell reinterprets
+it as a fraction of ``expected`` (so ``tolerance=0.02, tolerance_mode=relative`` is a ±2 %
+band that scales with the dataset). The ``key…`` columns are everything left of ``metric``;
+an empty key cell means the row is a broad, config-agnostic banner that matches any axes.
 """
 
 from __future__ import annotations
@@ -34,9 +36,14 @@ from soma.curation.manifest import CuratedManifest
 _REFERENCE_VALUE_COLUMNS = ("metric", "expected", "tolerance", "source")
 
 # Optional non-key columns that promote a row to a structured external/guidance anchor
-# (issue #226). They are recognised as value columns (never treated as axis keys) and
-# default when absent: ``kind`` defaults to ``"gate"``, ``label``/``url`` to ``""``.
-_OPTIONAL_VALUE_COLUMNS = ("kind", "label", "url")
+# (issue #226) or relabel its tolerance. They are recognised as value columns (never treated
+# as axis keys) and default when absent: ``kind`` defaults to ``"gate"``, ``label``/``url``
+# to ``""``, and ``tolerance_mode`` to ``"absolute"`` (``"relative"`` = fraction of expected).
+_OPTIONAL_VALUE_COLUMNS = ("kind", "label", "url", "tolerance_mode")
+
+# ``tolerance_mode`` values: an absolute band on ``metric`` vs. a fraction of ``expected``.
+TOLERANCE_ABSOLUTE = "absolute"
+TOLERANCE_RELATIVE = "relative"
 
 # The two row kinds: a ``gate`` row is tolerance-checked by ``soma reproduce``; an
 # ``external`` row is a non-gating guidance anchor rendered alongside (never as) the gate.
@@ -69,6 +76,10 @@ class ReferenceRow:
     non-gating guidance anchor (an official/best-reported number captured from an outside
     leaderboard) rendered *alongside* — never *as* — the gate. External rows carry a human
     ``label`` and a linkable ``url``; their ``tolerance`` is ignored (may be blank).
+
+    ``relative`` reinterprets ``tolerance`` as a fraction of ``expected`` (a ±2 % band that
+    scales with the dataset) rather than an absolute band; :meth:`tolerance_band` resolves
+    the effective absolute band either way, so every renderer shows a real number.
     """
 
     key: dict[str, str]
@@ -79,18 +90,23 @@ class ReferenceRow:
     kind: str = GATE
     label: str = ""
     url: str = ""
+    relative: bool = False
 
     @property
     def is_external(self) -> bool:
         """True for a non-gating guidance anchor (never tolerance-checked)."""
         return self.kind == EXTERNAL
 
+    def tolerance_band(self) -> float:
+        """The effective absolute tolerance band — ``tolerance·expected`` when relative."""
+        return self.tolerance * self.expected if self.relative else self.tolerance
+
     def matches(self, axes: dict[str, Any]) -> bool:
         """True if every populated key cell equals the matching axis (banner matches all)."""
         return all(str(axes.get(col)) == val for col, val in self.key.items())
 
     def within_tolerance(self, measured: float) -> bool:
-        return abs(measured - self.expected) <= self.tolerance
+        return abs(measured - self.expected) <= self.tolerance_band()
 
 
 @runtime_checkable
@@ -175,6 +191,12 @@ def load_reference(name: str) -> list[ReferenceRow]:
             tolerance_cell = (raw.get("tolerance") or "").strip()
             # An external guidance anchor never gates, so a blank tolerance is fine.
             tolerance = float(tolerance_cell) if tolerance_cell else 0.0
+            mode = (raw.get("tolerance_mode") or "").strip().lower() or TOLERANCE_ABSOLUTE
+            if mode not in (TOLERANCE_ABSOLUTE, TOLERANCE_RELATIVE):
+                raise ValueError(
+                    f"reference/{name}.csv has unknown tolerance_mode {mode!r}; "
+                    f"expected {TOLERANCE_ABSOLUTE!r} or {TOLERANCE_RELATIVE!r}."
+                )
             rows.append(
                 ReferenceRow(
                     key=key,
@@ -185,6 +207,7 @@ def load_reference(name: str) -> list[ReferenceRow]:
                     kind=kind,
                     label=(raw.get("label") or "").strip(),
                     url=(raw.get("url") or "").strip(),
+                    relative=(mode == TOLERANCE_RELATIVE),
                 )
             )
     return rows

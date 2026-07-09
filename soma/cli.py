@@ -187,9 +187,13 @@ def _report_tolerance(benchmark, measured: float, row) -> bool:
     ok = row.within_tolerance(measured)
     verdict = "PASS" if ok else "FAIL"
     delta = measured - row.expected
+    # Show the effective absolute band; annotate the fraction when the row is relative.
+    band = f"±{row.tolerance_band():.4f}" + (
+        f" ({row.tolerance:.0%} relative)" if row.relative else ""
+    )
     print(
         f"[{verdict}] {benchmark.name} {row.metric} = {measured:.4f}  "
-        f"(reference {row.expected:.4f}, Δ {delta:+.4f}, tolerance ±{row.tolerance:.4f})"
+        f"(reference {row.expected:.4f}, Δ {delta:+.4f}, tolerance {band})"
     )
     return ok
 

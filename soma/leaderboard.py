@@ -452,7 +452,10 @@ def _reference_banner(benchmark: "Benchmark | None", metric: str) -> ReferenceBa
         return None
     row = broad[0]
     return ReferenceBanner(
-        metric=row.metric, expected=row.expected, tolerance=row.tolerance, source=row.source
+        metric=row.metric,
+        expected=row.expected,
+        tolerance=row.tolerance_band(),
+        source=row.source,
     )
 
 
@@ -503,7 +506,7 @@ def _keyed_reference(
     row = keyed[0]
     return {
         "reference_expected": row.expected,
-        "reference_tolerance": row.tolerance,
+        "reference_tolerance": row.tolerance_band(),
         "reference_pass": row.within_tolerance(measured),
         "reference_source": row.source,
     }
