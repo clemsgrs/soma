@@ -18,6 +18,7 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
 from soma.aggregators import aggregator_registry
 from soma.benchmarks import expected_rows, get_benchmark, list_benchmarks, load_results
 from soma.benchmarks import eva as eva_bench
+from soma.benchmarks import hest as hest_bench
 from soma.benchmarks import ocelot as ocelot_bench
 from soma.config import (
     AggregatorConfig,
@@ -38,6 +39,7 @@ from soma.features import FeatureStore
 from soma.pipeline import Pipeline, train
 from soma.tasks import task_registry
 from soma.tile_extraction import TileFeatureExtractor
+from soma.training.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 
 
 def _field_names(cls: type, *, exclude: set[str] | None = None) -> str:
@@ -546,6 +548,178 @@ def build_eva_benchmark_rst() -> str:
     return "\n\n".join(sections).rstrip() + "\n"
 
 
+def build_hest_benchmark_rst() -> str:
+    """Generate the HEST benchmark page from the registered ``hest/<task>`` family.
+
+    Family-aware (like EVA): renders every registered ``hest/<task>`` sub-benchmark, so a
+    fanned-out task appears automatically once ``HestBenchmark(task)`` is registered. The
+    page also documents the scoped data download and the "adding a task" fan-out recipe —
+    the point being that a new task is data + one registration line + reference rows, never
+    a change to the curator or the probe.
+    """
+    family = [get_benchmark(n) for n in list_benchmarks() if n.startswith("hest/")]
+    head = family[0]  # protocol constants are shared across the family
+    seeds = ", ".join(str(s) for s in head.canonical_seeds)
+    alpha = ridge_alpha(50)  # 50 highly-variable genes per HEST task
+
+    def _section(title: str, body: str) -> str:
+        return f"{title}\n{'-' * len(title)}\n\n{body}"
+
+    protocol_rows = [
+        ("head", "closed-form Ridge probe — no trained head, no gradient loop"),
+        (
+            "features",
+            "``StandardScaler`` → ``PCA(n_components="
+            + f"{DEFAULT_PCA_COMPONENTS})`` fit on the fold's train spots (X only)",
+        ),
+        (
+            "estimator",
+            "``Ridge(solver='lsqr', fit_intercept=False)``, penalty "
+            + f"``alpha = {alpha:g}`` = 100 / ({DEFAULT_PCA_COMPONENTS}·50)",
+        ),
+        ("targets", "50-gene ``log1p(counts)`` vector per 112 µm spot (baked by the curator)"),
+        (
+            "metric",
+            "``pearson`` — per gene, pooled over test spots → mean over 50 genes → mean over folds",
+        ),
+        ("task family", f"``{head.facet.fixed['task']}``"),
+        ("varied axis", "``encoder``"),
+        ("primary metric", f"``{head.primary_metric}`` (from ``summary.json``)"),
+        ("canonical seeds", f"``{seeds}`` (the probe is closed-form — one seed suffices)"),
+    ]
+
+    encoder_rows = [
+        (
+            f"``{hest_bench.DEFAULT_ENCODER}`` (default)",
+            "HEST-Benchmark UNI2-h; slide2vec default output",
+        ),
+        (
+            "``virchow2``",
+            "HEST-Benchmark Virchow2; slide2vec ``"
+            + hest_bench.OUTPUT_VARIANTS["virchow2"]
+            + "`` output (CLS-only, 1280-d)",
+        ),
+    ]
+
+    task_rows = [(f"``{b.name}``", f"``{b.facet.fixed['dataset']}``") for b in family]
+
+    reproduce_lines = "\n".join(
+        f"    soma reproduce {b.name} --raw-root /path/to/hest-bench/{b.facet.fixed['dataset']}"
+        for b in family
+    )
+
+    download_cmd = (
+        "    hf download MahmoodLab/hest-bench --include 'IDC/*' --exclude 'fm_v1/*' \\\n"
+        "        --repo-type dataset --local-dir /path/to/hest-bench"
+    )
+
+    fanout_body = (
+        "Fanning out to another task is **data + one registration line + reference rows** —\n"
+        "never new machinery. ``curate_hest`` and the closed-form probe are task-agnostic, so\n"
+        "adding a task **never touches the curator or the probe**:\n\n"
+        "**1. Download the task** (scoped; swap ``IDC`` for e.g. ``PRAD``)::\n\n"
+        "    hf download MahmoodLab/hest-bench --include 'PRAD/*' --exclude 'fm_v1/*' \\\n"
+        "        --repo-type dataset --local-dir /path/to/hest-bench\n\n"
+        "**2. Curate** it into a ``spatial_expression`` Manifest with the *same* curator::\n\n"
+        "    python -m soma.curation.hest --raw-root /path/to/hest-bench/PRAD \\\n"
+        "        --output-dir /path/to/curated/PRAD --task PRAD\n\n"
+        "**3. Register** the sub-benchmark with a single line in ``soma/benchmarks/hest.py`` —\n"
+        "instantiate the *existing* class, no new curator/probe code::\n\n"
+        '    register_benchmark(HestBenchmark("PRAD"))\n\n'
+        "**4. Add external reference rows** for the task to ``soma/benchmarks/reference/hest.csv``\n"
+        "— one ``kind=external`` row per encoder (the published Pearson, a ``label``, a ``url``).\n\n"
+        "Then ``python docs/_generate_reference.py`` re-emits this page with the new task,\n"
+        "``soma list benchmarks`` shows ``hest/PRAD``, and ``soma reproduce hest/PRAD`` runs —\n"
+        "all from the same curator and the same probe."
+    )
+
+    sections = [
+        "HEST\n====",
+        "*Maps to task:* :doc:`regression` — a **frozen** patch encoder scored on\n"
+        "**gene-expression-from-morphology**: predict a 50-gene expression vector from a\n"
+        "112 µm tile, reproducing the\n"
+        "`HEST-Benchmark <https://github.com/mahmoodlab/HEST>`_ (Jaume et al., NeurIPS 2024).",
+        _GENERATED_PAGE_NOTE.format(
+            csv="soma/benchmarks/reference/hest.csv", module="soma/benchmarks/hest.py"
+        ),
+        "HEST is registered as **one sub-benchmark per task** (``hest/<task>``), each sharing\n"
+        "the same closed-form spatial-expression probe recipe and varying only the ``encoder``\n"
+        "axis. soma reproduces it **natively** — its own slide2vec encoder → its per-spot\n"
+        "feature cache → a closed-form Ridge+PCA probe — with **no dependency on the** ``hest``\n"
+        "**library or TRIDENT**. The vertical slice lands ``hest/IDC``; the eight remaining\n"
+        "tasks follow by data-provisioning plus a registration line (see *Adding a HEST task*\n"
+        "below).",
+        _section(
+            "Protocol",
+            "Stated once, shared by every task; the ``encoder`` axis is the only variable:\n\n"
+            + _kv_table("Setting", "Value", protocol_rows),
+        ),
+        _section(
+            "Encoders",
+            "The ``encoder`` axis maps a soma encoder onto a HEST leaderboard backbone. Any\n"
+            "slide2vec-registered encoder works (slide2vec validates the name); the variant is\n"
+            "pinned only where the leaderboard used a non-default one:\n\n"
+            + _kv_table("Encoder", "HEST backbone", encoder_rows, widths="30 70"),
+        ),
+        _section(
+            "Tasks",
+            "The registered sub-benchmark family (only ``hest/IDC`` now — the vertical slice):\n\n"
+            + _kv_table("Benchmark", "HEST task", task_rows, widths="50 50")
+            + "\n\nThe eight remaining HEST-Benchmark tasks — ``PRAD``, ``PAAD``, ``SKCM``,\n"
+            "``COAD``, ``READ``, ``CCRCC``, ``LUNG``, ``LYMPH_IDC`` — are provisioned in fan-out\n"
+            "(*Adding a HEST task* below); the curator and probe already handle them.",
+        ),
+        _section(
+            "Reference numbers",
+            "``reference/hest.csv`` carries **external, non-gating** rows only — HEST's published\n"
+            "Ridge+PCA Pearson per (task, encoder), captured from the official leaderboard. There\n"
+            "is **no gate row**: nothing is tolerance-checked. ``soma reproduce hest/IDC`` renders\n"
+            "soma's Measured row *beside* these, making the slide2vec↔TRIDENT extraction gap an\n"
+            "explicit, non-gating delta:\n\n"
+            + _reference_csv_table(
+                "``soma/benchmarks/reference/hest.csv``",
+                "../soma/benchmarks/reference/hest.csv",
+                "8 10 16 8 8 8 20 20 30",
+            ),
+        ),
+        _section(
+            "Reproduced numbers",
+            "What soma has actually measured, recorded by ``soma reproduce --record`` into\n"
+            "``soma/benchmarks/results/hest.csv``. HEST's references are external, so the\n"
+            "Reference / Δ columns stay blank — compare against the reference table above:\n\n"
+            + _reproduced_table("hest", ("dataset", "encoder")),
+        ),
+        _section(
+            "Download one task",
+            "The curator is hermetic and offline (ADR 0004): provision the raw task tree once,\n"
+            "out of band. Pull **only the needed task** and **exclude the** ``fm_v1/``\n"
+            "**precomputed foundation-model features** (soma re-extracts them natively via\n"
+            "slide2vec) — a few-GB task subtree, never the full multi-task / >1 TB HEST corpus::\n\n"
+            + download_cmd
+            + "\n\nThe scoped ``--include 'IDC/*'`` pulls just that task's ``patches/``, ``adata/``,\n"
+            "``splits/`` and ``var_50genes.json``; ``--exclude 'fm_v1/*'`` drops the precomputed\n"
+            "features. ``curate_hest`` then runs fully offline over the result.",
+        ),
+        _section(
+            "Reproduce",
+            "``soma reproduce`` curates the raw task tree, fits the closed-form probe over the\n"
+            "canonical seed, reads ``" + head.primary_metric + "`` from ``summary.json``, and\n"
+            "renders it beside the external reference::\n\n"
+            + reproduce_lines
+            + "\n\nPick the encoder axis with ``--encoder`` (default ``"
+            + hest_bench.DEFAULT_ENCODER
+            + "``; e.g. ``--encoder virchow2``).",
+        ),
+        _section("Adding a HEST task", fanout_body),
+        ".. seealso::\n\n"
+        "   * :doc:`regression` — the task family, the ``pearson`` metric, and the closed-form\n"
+        "     Ridge+PCA probe this benchmark drives.\n"
+        "   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.\n"
+        "   * :doc:`curation` — the HEST curator (``curate_hest``) and its split policy.",
+    ]
+    return "\n\n".join(sections).rstrip() + "\n"
+
+
 def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
     """Write the generated per-benchmark pages to disk."""
     base = Path(directory) if directory is not None else Path(__file__).parent
@@ -553,6 +727,7 @@ def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
     for filename, builder in (
         ("ocelot-detection-benchmark.rst", build_ocelot_benchmark_rst),
         ("eva-patch-classification-benchmark.rst", build_eva_benchmark_rst),
+        ("hest-gene-expression-benchmark.rst", build_hest_benchmark_rst),
     ):
         target = base / filename
         target.write_text(builder(), encoding="utf-8")

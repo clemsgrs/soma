@@ -88,6 +88,33 @@ def test_eva_benchmark_page_renders_reproduced_ledger() -> None:
         assert never_run not in reproduced
 
 
+def test_hest_benchmark_page_matches_registry() -> None:
+    generator, docs_dir = _load_reference_generator()
+    generated = generator.build_hest_benchmark_rst().strip()
+    checked_in = (
+        docs_dir / "hest-gene-expression-benchmark.rst"
+    ).read_text(encoding="utf-8").strip()
+
+    assert generated == checked_in
+    assert "TBD" not in generated
+    assert "soma reproduce hest/IDC" in generated
+
+
+def test_hest_benchmark_page_documents_scoped_download_and_fanout() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_hest_benchmark_rst()
+    # A scoped download of one task that excludes the precomputed foundation-model features.
+    assert "hf download MahmoodLab/hest-bench" in generated
+    assert "--include 'IDC/*'" in generated
+    assert "--exclude 'fm_v1/*'" in generated
+    assert "precomputed" in generated.lower()
+    # A fan-out guide whose whole point is: adding a task never changes the curator or probe.
+    assert "fan-out" in generated.lower()
+    assert "curate_hest" in generated
+    assert "never touches the curator or the probe" in generated
+    assert 'register_benchmark(HestBenchmark("PRAD"))' in generated
+
+
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example_paths = (
