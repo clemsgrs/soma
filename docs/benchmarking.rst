@@ -102,6 +102,9 @@ reference table (verbatim from its CSV), and the exact ``soma reproduce`` comman
   OCELOT 2023 cell-detection challenge, with the encoder × spacing ablation.
 * :doc:`EVA <eva-patch-classification-benchmark>` — the :doc:`classification` path
   on the kaiko-ai/eva patch suite (``eva/<dataset>``), varying the encoder.
+* :doc:`HEST <hest-gene-expression-benchmark>` — the :doc:`regression` path on the
+  HEST-Benchmark gene-expression tasks (``hest/<task>``), a closed-form Ridge+PCA
+  probe, varying the encoder.
 
 .. seealso::
 

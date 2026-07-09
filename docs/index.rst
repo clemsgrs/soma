@@ -116,6 +116,7 @@ Where to next? Pick the card that matches what you came to do.
    benchmarking
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
+   hest-gene-expression-benchmark
 
 .. toctree::
    :maxdepth: 1
