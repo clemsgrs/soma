@@ -25,6 +25,7 @@ dependencies = [
     "numpy",
     "pandas",
     "Pillow",
+    "h5py",
     "torch",
     "scikit-learn",
     "scikit-survival",
