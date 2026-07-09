@@ -12,16 +12,21 @@ Unified schema:
 
 * ``dataset.csv`` — ``sample_id``, ``image_path``, then **exactly one** supervision
   column selected by ``dataset_type`` (:data:`SUPERVISION_COLUMN`): ``label`` for
-  classification, ``mask_path`` for segmentation, ``points_path`` for detection. Optional
-  recognized columns ``patient_id`` and ``level0_spacing`` follow; any further columns are
-  preserved verbatim as per-sample metadata.
+  classification, ``mask_path`` for segmentation, ``points_path`` for detection,
+  ``target_index`` for spatial_expression. Optional recognized columns ``patient_id`` and
+  ``level0_spacing`` follow; any further columns are preserved verbatim as per-sample
+  metadata.
 * ``splits.csv`` — ``sample_id``, ``split``, ``fold`` (single-fold curators emit
   ``fold=0`` for every row).
 * ``summary.json`` — a free-form, curator-authored summary; always written.
+* ``targets.npy`` + ``genes.json`` — spatial_expression **only**: the multi-target
+  regression sidecars. ``target_index`` is an integer row-key into ``targets.npy`` (shape
+  ``[n_rows, n_genes]``); ``genes.json`` is the ordered gene list. The loaded sample
+  record carries its resolved vector (see :class:`soma.dataset.SpatialExpressionManifest`).
 
 Re-curating the same raw data yields **byte-identical** files: rows are written in the
-order the curator supplies them, columns follow a fixed canonical order, and the summary
-is serialized with sorted keys.
+order the curator supplies them, columns follow a fixed canonical order, the summary is
+serialized with sorted keys, and the sidecars use uncompressed ``.npy`` / plain ``.json``.
 """
 
 from __future__ import annotations
@@ -31,17 +36,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 
+import numpy as np
 import pandas as pd
 
-# dataset_type -> the single supervision column its Manifest carries. The three task
-# families are mutually exclusive: classification is a scalar ``label``, segmentation a
-# per-pixel ``mask_path`` raster, detection a per-sample ``points_path`` file.
+from soma.dataset import GENES_FILENAME, TARGET_MATRIX_FILENAME
+
+# dataset_type -> the single supervision column its Manifest carries. The task families
+# are mutually exclusive: classification is a scalar ``label``, segmentation a per-pixel
+# ``mask_path`` raster, detection a per-sample ``points_path`` file, and
+# spatial_expression a ``target_index`` row-key into a sidecar target matrix (a vector).
 SUPERVISION_COLUMN: dict[str, str] = {
     "tile": "label",
     "slide": "label",
     "patient": "label",
     "segmentation": "mask_path",
     "detection": "points_path",
+    "spatial_expression": "target_index",
 }
 
 # Every supervision column, used to enforce "exactly one" per Manifest.
@@ -55,11 +65,18 @@ _SPLITS_COLUMNS = ("sample_id", "split", "fold")
 
 @dataclass(frozen=True)
 class CuratedManifest:
-    """Paths to a generated Soma Manifest (``dataset.csv`` + ``splits.csv`` + summary)."""
+    """Paths to a generated Soma Manifest (``dataset.csv`` + ``splits.csv`` + summary).
+
+    ``target_matrix_path`` / ``genes_path`` are set only for a ``spatial_expression``
+    Manifest, pointing at the two sidecars written beside ``dataset.csv``; they are
+    ``None`` for every other dataset_type.
+    """
 
     dataset_csv: Path
     splits_csv: Path
     summary_json: Path | None = None
+    target_matrix_path: Path | None = None
+    genes_path: Path | None = None
 
 
 @runtime_checkable
@@ -102,6 +119,8 @@ def write_manifest(
     dataset_rows: Sequence[Mapping[str, Any]],
     split_rows: Sequence[Mapping[str, Any]],
     summary: Mapping[str, Any],
+    target_matrix: "np.ndarray | Sequence[Sequence[float]] | None" = None,
+    genes: Sequence[str] | None = None,
 ) -> CuratedManifest:
     """Write the unified Manifest (``dataset.csv`` + ``splits.csv`` + ``summary.json``).
 
@@ -109,7 +128,7 @@ def write_manifest(
     hand-rolled CSV writers so the emitted schema is identical everywhere.
 
     Args:
-        output_dir: Directory to write the three files into (created if absent).
+        output_dir: Directory to write the files into (created if absent).
         dataset_type: Selects the required supervision column via
             :data:`SUPERVISION_COLUMN`.
         dataset_rows: One mapping per sample. Each must contain ``sample_id``,
@@ -119,15 +138,29 @@ def write_manifest(
         split_rows: One mapping per (sample, fold) with ``sample_id`` + ``split`` and an
             optional ``fold`` (defaults to ``0`` when omitted, per the single-fold rule).
         summary: A JSON-serializable summary, written verbatim (with sorted keys).
+        target_matrix: Required for ``dataset_type='spatial_expression'`` (forbidden
+            otherwise): a ``[n_rows, n_genes]`` array written verbatim to the
+            ``targets.npy`` sidecar. Row ``i`` is the ``target_index==i`` sample's vector.
+        genes: Required for ``dataset_type='spatial_expression'`` (forbidden otherwise):
+            the ordered gene list written to the ``genes.json`` sidecar; its length must
+            equal the target matrix width.
 
     Returns:
-        A :class:`CuratedManifest` pointing at the three written files.
+        A :class:`CuratedManifest` pointing at the written files (with the sidecar paths
+        populated for a ``spatial_expression`` Manifest).
     """
     if not dataset_rows:
         raise ValueError("write_manifest requires at least one dataset row.")
 
     supervision = supervision_column_for(dataset_type)
     forbidden = _ALL_SUPERVISION_COLUMNS - {supervision}
+
+    is_spatial = dataset_type == "spatial_expression"
+    if not is_spatial and (target_matrix is not None or genes is not None):
+        raise ValueError(
+            "target_matrix / genes sidecars are only valid for "
+            f"dataset_type='spatial_expression', not {dataset_type!r}."
+        )
 
     dataset_df = pd.DataFrame(list(dataset_rows))
     required = {*_LEADING_COLUMNS, supervision}
@@ -143,6 +176,11 @@ def write_manifest(
             f"dataset rows for dataset_type={dataset_type!r} must carry exactly one "
             f"supervision column ({supervision!r}), but also contain {present_forbidden}."
         )
+
+    matrix: np.ndarray | None = None
+    if is_spatial:
+        matrix = _validate_spatial_expression(dataset_df, target_matrix, genes)
+
     dataset_df = dataset_df[_ordered_dataset_columns(list(dataset_df.columns), supervision)]
 
     split_df = pd.DataFrame(list(split_rows))
@@ -176,6 +214,68 @@ def write_manifest(
     split_df.to_csv(splits_csv, index=False)
     summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
+    target_matrix_path: Path | None = None
+    genes_path: Path | None = None
+    if is_spatial:
+        assert matrix is not None and genes is not None  # guaranteed by _validate_...
+        target_matrix_path = output_dir / TARGET_MATRIX_FILENAME
+        genes_path = output_dir / GENES_FILENAME
+        # Uncompressed .npy + plain .json keep re-writes byte-identical (ADR 0004).
+        with open(target_matrix_path, "wb") as fh:
+            np.save(fh, matrix, allow_pickle=False)
+        genes_path.write_text(json.dumps(list(genes), indent=2) + "\n")
+
     return CuratedManifest(
-        dataset_csv=dataset_csv, splits_csv=splits_csv, summary_json=summary_json
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        summary_json=summary_json,
+        target_matrix_path=target_matrix_path,
+        genes_path=genes_path,
     )
+
+
+def _validate_spatial_expression(
+    dataset_df: pd.DataFrame,
+    target_matrix: "np.ndarray | Sequence[Sequence[float]] | None",
+    genes: Sequence[str] | None,
+) -> np.ndarray:
+    """Validate the spatial_expression sidecars and return the canonical target matrix.
+
+    Fail-fast on: a missing sidecar input, a non-2D matrix, a gene/column-count mismatch,
+    or a ``target_index`` value out of range. Returns the C-contiguous ``np.ndarray`` to
+    write to ``targets.npy`` (a fixed memory order keeps re-writes byte-identical).
+    """
+    if target_matrix is None:
+        raise ValueError(
+            "dataset_type='spatial_expression' requires a target_matrix "
+            "([n_rows, n_genes]) written to the targets.npy sidecar."
+        )
+    if genes is None:
+        raise ValueError(
+            "dataset_type='spatial_expression' requires an ordered genes list "
+            "written to the genes.json sidecar."
+        )
+    matrix = np.ascontiguousarray(target_matrix)
+    if matrix.ndim != 2:
+        raise ValueError(
+            f"target_matrix must be 2D [n_rows, n_genes]; got shape {matrix.shape}."
+        )
+    if matrix.shape[1] != len(genes):
+        raise ValueError(
+            f"gene list has {len(genes)} genes but the target_matrix has "
+            f"{matrix.shape[1]} columns; they must match."
+        )
+    n_rows = matrix.shape[0]
+    try:
+        indices = [int(v) for v in dataset_df["target_index"]]
+    except (TypeError, ValueError):
+        raise ValueError(
+            "target_index must be integer row-keys into the target matrix."
+        ) from None
+    oob = sorted({v for v in indices if v < 0 or v >= n_rows})
+    if oob:
+        raise ValueError(
+            f"target_index value(s) {oob} out of range for target matrix with "
+            f"{n_rows} rows."
+        )
+    return matrix

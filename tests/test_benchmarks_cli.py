@@ -186,6 +186,102 @@ def test_reproduce_full_mode_requires_raw_root(capsys):
     assert "raw-root" in err
 
 
+# --- full-mode shared feature cache across seeds --------------------------------------
+
+
+class _CaptureCacheBenchmark:
+    """Fake benchmark that records the overrides ``_reproduce_one`` passes per seed."""
+
+    name = "cache_share_fixture"
+    facet = Facet(fixed={}, varied=())
+    canonical_seeds = (0, 1, 2)
+    primary_metric = "score"
+    reference_environment: dict = {}
+
+    def __init__(self):
+        self.captured: list[dict] = []
+
+    def expected(self, **axes):
+        return [
+            ReferenceRow(
+                key={},
+                metric="score",
+                expected=0.5,
+                tolerance=1.0,
+                source="fixture",
+                kind="gate",
+                label=None,
+                url=None,
+            )
+        ]
+
+    def curate(self, raw_root, out_dir):
+        from pathlib import Path
+
+        from soma.curation.manifest import CuratedManifest
+
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        return CuratedManifest(
+            dataset_csv=Path(out_dir) / "dataset.csv",
+            splits_csv=Path(out_dir) / "splits.csv",
+        )
+
+    def build_config(self, **kwargs):
+        self.captured.append(kwargs)
+        return object()
+
+    def score(self, run_dir):
+        return {"score": 0.5}
+
+
+def _reproduce_full(monkeypatch, tmp_path, *, cache_root):
+    import argparse
+    import types
+
+    monkeypatch.setattr(cli, "Pipeline", lambda config: types.SimpleNamespace(run=lambda: None))
+    bench = _CaptureCacheBenchmark()
+    args = argparse.Namespace(
+        encoder=None,
+        spacing=None,
+        from_run_dir=None,
+        seeds=None,
+        raw_root=str(tmp_path / "raw"),
+        out_dir=None,
+        output_root=str(tmp_path / "out"),
+        cache_root=cache_root,
+    )
+    code = cli._reproduce_one(bench, args)
+    roots = [kw["overrides"]["cache"]["root_dir"] for kw in bench.captured]
+    return code, bench, roots
+
+
+def test_reproduce_full_mode_shares_one_feature_cache_across_seeds(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    code, bench, roots = _reproduce_full(monkeypatch, tmp_path, cache_root=None)
+
+    assert code == 0
+    # One config built per canonical seed, all pointing at ONE cache root (extraction once).
+    assert len(roots) == len(bench.canonical_seeds)
+    assert len(set(roots)) == 1
+    # Default root lives beside the run outputs, NOT under a per-seed dir.
+    assert roots[0] == str(Path(tmp_path / "out" / "feature_cache"))
+    assert "seed_" not in roots[0]
+    assert all(kw["overrides"]["cache"]["enabled"] is True for kw in bench.captured)
+    # Each seed still gets its own run output dir under the shared root's parent.
+    seed_outputs = [str(kw["output_root"]) for kw in bench.captured]
+    assert len(set(seed_outputs)) == len(bench.canonical_seeds)
+
+
+def test_reproduce_full_mode_cache_root_flag_relocates_shared_cache(monkeypatch, tmp_path):
+    custom = str(tmp_path / "fast" / "cache")
+    code, _bench, roots = _reproduce_full(monkeypatch, tmp_path, cache_root=custom)
+
+    assert code == 0
+    # --cache-root overrides the location but keeps the single-shared-root guarantee.
+    assert set(roots) == {custom}
+
+
 # --- EVA family (issue #219) ----------------------------------------------------------
 
 
@@ -231,6 +327,29 @@ def test_reproduce_eva_from_run_dir_exits_nonzero_on_failure(capsys, tmp_path):
     out = capsys.readouterr().out
     assert code != 0
     assert "FAIL" in out
+
+
+def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path, monkeypatch):
+    # --record writes to the results ledger; route it to a temp file, not the shipped CSV.
+    ledger = tmp_path / "ledger" / "eva.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    _write_summary(tmp_path, 0.914)
+
+    code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path), "--record"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "recorded" in out
+
+    from soma.benchmarks import reproduced_rows
+
+    rows = reproduced_rows("eva", dataset="bach", encoder="uni2")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.key == {"dataset": "bach", "encoder": "uni2"}
+    assert row.measured == pytest.approx(0.914)
+    assert row.n_seeds is None  # a re-scored single run has no seed spread
+    assert row.date and row.soma_commit  # provenance captured at run time
+    assert row.source == "soma reproduce --record"
 
 
 def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):

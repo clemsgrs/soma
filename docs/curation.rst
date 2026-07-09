@@ -105,10 +105,13 @@ Raw layout expectations
   train/validation patches are produced; the ZT80 test cohort is skipped.
 
 ``patch_camelyon``
-  Materialized image folders
-  ``{train,val,test}/{normal|no_tumor,tumor}/*.{png,jpg,jpeg,tif,tiff}``.
-  EVA's official HDF5 files must first be materialized as image files before
-  they can be represented by Soma's current ``image_path`` manifest format.
+  Either materialized image folders
+  ``{train,val,test}/{normal|no_tumor,tumor}/*.{png,jpg,jpeg,tif,tiff}``, or
+  EVA's six official HDF5 files
+  (``camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5``) under the raw
+  root. When only the HDF5 files are present the curator materializes them to
+  the class-folder layout above on first use (writing PNGs under a writable raw
+  root; idempotent, so an interrupted pass resumes on the next run).
 
 Segmentation datasets from EVA, such as MoNuSAC, CoNSeP, and BCSS, are not
 covered by this tile-classification curation path.

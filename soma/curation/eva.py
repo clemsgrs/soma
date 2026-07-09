@@ -8,6 +8,8 @@ license and access requirements differ across the EVA benchmark.
 from __future__ import annotations
 
 import argparse
+import logging
+import shutil
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -77,6 +79,15 @@ GLEASON_ARVANITI_WHITE_LIMIT = 180
 
 PATCH_CAMELYON_CLASSES = {"no_tumor": 0, "tumor": 1}
 PATCH_CAMELYON_FOLDER_CLASS_ALIASES = {"normal": "no_tumor", "no_tumor": "no_tumor", "tumor": "tumor"}
+# EVA / the official PatchCamelyon release ships six HDF5 files named
+# ``camelyonpatch_level_2_split_<split>_<x|y>.h5``. When the class folders are absent we
+# materialize those to the layout above on first use. EVA names the validation split
+# "valid"; soma uses "val".
+PATCH_CAMELYON_HDF5_SPLITS = {"train": "train", "valid": "val", "test": "test"}
+PATCH_CAMELYON_HDF5_LABEL_DIRS = {0: "normal", 1: "tumor"}
+# Decode the HDF5 in chunks so peak RAM stays flat over the 262k-image train split.
+_PATCH_CAMELYON_MATERIALIZE_CHUNK = 1024
+_PATCH_CAMELYON_PROGRESS_EVERY = 20000
 
 BREAKHIS_CLASSES = {"TA": 0, "MC": 1, "F": 2, "DC": 3}
 BREAKHIS_VAL_PATIENT_IDS = {
@@ -631,12 +642,107 @@ def _patch_camelyon_samples(root: Path) -> list[_Sample]:
     split_dirs = {split: root / split for split in ("train", "val", "test")}
     if all(path.is_dir() for path in split_dirs.values()):
         return _patch_camelyon_folder_samples(root, split_dirs)
+    if _patch_camelyon_hdf5_present(root):
+        _materialize_patch_camelyon_hdf5(root, split_dirs)
+        return _patch_camelyon_folder_samples(root, split_dirs)
     raise FileNotFoundError(
-        "PatchCamelyon raw data must contain class-folder splits at "
-        "<root>/{train,val,test}/{normal|no_tumor,tumor}. "
-        "EVA's official HDF5 files are not directly usable as Soma image_path "
-        "manifests without first materializing images."
+        "PatchCamelyon raw data must contain either class-folder splits at "
+        "<root>/{train,val,test}/{normal|no_tumor,tumor}/*.png, or EVA's six official "
+        "HDF5 files (camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5) under "
+        "<root> — those are materialized to the class-folder layout on first use "
+        "(<root> must be writable)."
     )
+
+
+def _patch_camelyon_hdf5_paths(root: Path) -> dict[str, tuple[Path, Path]]:
+    """Map each EVA split to its ``(x.h5, y.h5)`` official-download file pair."""
+    return {
+        eva_split: (
+            root / f"camelyonpatch_level_2_split_{eva_split}_x.h5",
+            root / f"camelyonpatch_level_2_split_{eva_split}_y.h5",
+        )
+        for eva_split in PATCH_CAMELYON_HDF5_SPLITS
+    }
+
+
+def _patch_camelyon_hdf5_present(root: Path) -> bool:
+    """True when all six official PatchCamelyon HDF5 files are present under ``root``."""
+    return all(
+        x_path.is_file() and y_path.is_file()
+        for x_path, y_path in _patch_camelyon_hdf5_paths(root).values()
+    )
+
+
+def _materialize_patch_camelyon_hdf5(root: Path, split_dirs: dict[str, Path]) -> None:
+    """Decode EVA's official PatchCamelyon HDF5 into the class-folder layout.
+
+    Writes ``<root>/<soma_split>/<normal|tumor>/image_<i>.png`` (label 0 → ``normal``,
+    1 → ``tumor``). Each split is decoded into a ``<split>.partial`` staging directory and
+    atomically renamed into place only once complete, so the pass is crash-safe and
+    idempotent: a split whose final directory already exists is trusted and skipped, and an
+    interrupted split is re-decoded on the next call (never read half-materialized). The
+    HDF5 is read in chunks to keep peak RAM flat over the 262k-image train split. ``root``
+    must be writable.
+    """
+    try:
+        import h5py  # noqa: PLC0415 - optional dep, only needed for the HDF5 path
+        import numpy as np
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - exercised only without h5py installed
+        raise ImportError(
+            "Materializing PatchCamelyon from HDF5 requires h5py. Install it "
+            "(`pip install h5py`) or provide pre-materialized class folders at "
+            "<root>/{train,val,test}/{normal,tumor}/."
+        ) from exc
+
+    hdf5_paths = _patch_camelyon_hdf5_paths(root)
+    for eva_split, soma_split in PATCH_CAMELYON_HDF5_SPLITS.items():
+        split_dir = split_dirs[soma_split]
+        if split_dir.is_dir():
+            logger.info("patch_camelyon: %s already present, skipping", soma_split)
+            continue
+        x_path, y_path = hdf5_paths[eva_split]
+        staging_dir = split_dir.with_name(f"{split_dir.name}.partial")
+        if staging_dir.exists():
+            shutil.rmtree(staging_dir)  # discard an interrupted previous attempt
+        class_dirs = _prepare_patch_camelyon_split_dirs(staging_dir)
+        with h5py.File(x_path, "r") as x_file, h5py.File(y_path, "r") as y_file:
+            images = x_file["x"]
+            labels = y_file["y"]
+            total = int(images.shape[0])
+            width = max(len(str(total - 1)), 1)
+            logger.info(
+                "patch_camelyon: materializing %s (%d images) from %s",
+                soma_split,
+                total,
+                x_path.name,
+            )
+            next_log = _PATCH_CAMELYON_PROGRESS_EVERY
+            for start in range(0, total, _PATCH_CAMELYON_MATERIALIZE_CHUNK):
+                stop = min(start + _PATCH_CAMELYON_MATERIALIZE_CHUNK, total)
+                x_chunk = np.asarray(images[start:stop])
+                y_chunk = np.asarray(labels[start:stop]).reshape(stop - start, -1)[:, 0]
+                for offset in range(stop - start):
+                    index = start + offset
+                    class_dir = class_dirs[int(y_chunk[offset])]
+                    Image.fromarray(x_chunk[offset]).save(
+                        class_dir / f"image_{index:0{width}d}.png"
+                    )
+                if stop >= next_log:
+                    logger.info("patch_camelyon: %s %d/%d images", soma_split, stop, total)
+                    next_log += _PATCH_CAMELYON_PROGRESS_EVERY
+        # Atomic completion marker: the split is visible at its final path only now.
+        staging_dir.rename(split_dir)
+
+
+def _prepare_patch_camelyon_split_dirs(split_dir: Path) -> dict[int, Path]:
+    """Create the ``normal``/``tumor`` folders for a split and return them keyed by label."""
+    class_dirs: dict[int, Path] = {}
+    for label, class_name in PATCH_CAMELYON_HDF5_LABEL_DIRS.items():
+        class_dir = split_dir / class_name
+        class_dir.mkdir(parents=True, exist_ok=True)
+        class_dirs[label] = class_dir
+    return class_dirs
 
 
 def _patch_camelyon_folder_samples(root: Path, split_dirs: dict[str, Path]) -> list[_Sample]:

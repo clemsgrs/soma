@@ -6,8 +6,9 @@ Importing this package registers every bundled benchmark, so ``soma list benchma
 ``soma reproduce <name>`` drive the registry directly.
 
 This package registers ``ocelot`` (OCELOT 2023 cell detection), the ``eva/<dataset>``
-family (kaiko-ai/eva patch classification, one sub-benchmark per dataset), and
-``detection-benchmark`` (the multi-dataset encoder-ranking harness, issue #246).
+family (kaiko-ai/eva patch classification, one sub-benchmark per dataset),
+``detection-benchmark`` (the multi-dataset encoder-ranking harness, issue #246), and
+``hest/IDC`` (HEST-Benchmark gene-expression-from-morphology, issue #259).
 """
 
 from __future__ import annotations
@@ -15,12 +16,16 @@ from __future__ import annotations
 from soma.benchmarks.registry import (
     Benchmark,
     Facet,
+    MeasuredRow,
     ReferenceRow,
+    append_result,
     expected_rows,
     get_benchmark,
     list_benchmarks,
     load_reference,
+    load_results,
     register_benchmark,
+    reproduced_rows,
     score_from_summary,
 )
 
@@ -29,15 +34,20 @@ from soma.benchmarks.registry import (
 from soma.benchmarks import ocelot as _ocelot  # noqa: F401
 from soma.benchmarks import eva as _eva  # noqa: F401
 from soma.benchmarks import detection_benchmark as _detection_benchmark  # noqa: F401
+from soma.benchmarks import hest as _hest  # noqa: F401
 
 __all__ = [
     "Benchmark",
     "Facet",
+    "MeasuredRow",
     "ReferenceRow",
+    "append_result",
     "expected_rows",
     "get_benchmark",
     "list_benchmarks",
     "load_reference",
+    "load_results",
     "register_benchmark",
+    "reproduced_rows",
     "score_from_summary",
 ]

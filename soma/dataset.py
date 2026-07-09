@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+# Sidecar artifacts written beside a ``spatial_expression`` ``dataset.csv`` (the shared
+# writer emits them, this loader reads them back): a ``[n_rows, n_genes]`` target matrix
+# and the ordered gene list. Uncompressed ``.npy`` / plain ``.json`` keep re-writes
+# byte-identical (ADR 0004); compressed formats are not bit-deterministic.
+TARGET_MATRIX_FILENAME = "targets.npy"
+GENES_FILENAME = "genes.json"
 
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
@@ -24,6 +34,9 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "mask_path",
     "patient_id",
     "points_path",
+    # spatial_expression: integer row-key into the sidecar target matrix; resolved to a
+    # vector on SampleRecord.target, so it is a typed column (not free metadata).
+    "target_index",
     # Slide-manifest segmentation ROI origin (level-0 px); typed onto SampleRecord.region.
     "region_x",
     "region_y",
@@ -78,6 +91,11 @@ class SampleRecord:
     # image_path/mask_path then point at the parent *slide* (+ annotation slide), and
     # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
     region: tuple[int, int] | None = None
+    # spatial_expression: the resolved multi-target regression vector for this spot,
+    # attached from the sidecar target matrix (row ``target_index``). None for every
+    # other dataset_type. Excluded from equality/hash — it is derived supervision data,
+    # not sample identity, and array-valued fields have no scalar truth value.
+    target: "np.ndarray | None" = field(default=None, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -384,20 +402,168 @@ class DetectionManifest:
         return any(r.patient_id is not None for r in self._samples.values())
 
 
+REQUIRED_SPATIAL_EXPRESSION_COLUMNS = {"sample_id", "image_path", "target_index"}
+
+
+class SpatialExpressionManifest:
+    """Loads a spatial_expression dataset CSV: sample_id, image_path, target_index.
+
+    The multi-target-regression counterpart of :class:`SegmentationManifest` /
+    :class:`DetectionManifest` (HEST-benchmark design §4): supervision is a **vector**,
+    not a scalar ``label``. Each row's ``target_index`` is an integer row-key into a
+    sidecar target matrix written beside ``dataset.csv``:
+
+    * ``targets.npy`` — shape ``[n_rows, n_genes]``; row ``i`` is the ``target_index==i``
+      sample's expression vector.
+    * ``genes.json`` — the ordered gene list (``len == n_genes``).
+
+    Both sidecars are required and fail-fast validated at construction: missing files, a
+    missing ``target_index`` column, out-of-range indices, or a gene/column-count mismatch
+    all raise before any expensive run. Each loaded :class:`SampleRecord` carries its
+    resolved vector on ``target``; the ordered gene list is exposed via :attr:`genes` and
+    the whole matrix via :attr:`target_matrix`. Exposes the same
+    ``samples`` / ``sample_ids`` / ``has_patient_ids`` surface as :class:`Dataset`, so
+    :class:`Splits` works against it unchanged.
+    """
+
+    def __init__(self, dataset_csv: str | Path) -> None:
+        self._path = Path(dataset_csv)
+        df = pd.read_csv(self._path)
+        self._validate_columns(df)
+        self._genes, self._target_matrix = self._load_sidecars()
+        self._validate_targets(df)
+        self._samples = self._build_samples(df)
+
+    def _validate_columns(self, df: pd.DataFrame) -> None:
+        for col in REQUIRED_SPATIAL_EXPRESSION_COLUMNS:
+            if col not in df.columns:
+                raise ValueError(
+                    f"Required column '{col}' not found. Available: {list(df.columns)}"
+                )
+        if df["sample_id"].duplicated().any():
+            dupes = df["sample_id"][df["sample_id"].duplicated()].tolist()
+            raise ValueError(f"Duplicate sample_id values: {dupes}")
+        unsafe_ids = sorted({str(s) for s in df["sample_id"] if not is_filename_safe_id(s)})
+        if unsafe_ids:
+            raise ValueError(
+                "Unsafe sample_id value(s) (used as cache filenames; no path "
+                f"separators, '..', or absolute paths allowed): {unsafe_ids}"
+            )
+        if "patient_id" in df.columns:
+            unsafe_patients = sorted(
+                {str(p) for p in df["patient_id"].dropna() if not is_filename_safe_id(p)}
+            )
+            if unsafe_patients:
+                raise ValueError(
+                    "Unsafe patient_id value(s) (used as cache filenames; no path "
+                    f"separators, '..', or absolute paths allowed): {unsafe_patients}"
+                )
+
+    def _load_sidecars(self) -> tuple[list[str], np.ndarray]:
+        sidecar_dir = self._path.parent
+        targets_path = sidecar_dir / TARGET_MATRIX_FILENAME
+        genes_path = sidecar_dir / GENES_FILENAME
+        if not targets_path.exists():
+            raise ValueError(
+                f"spatial_expression Manifest is missing its target-matrix sidecar "
+                f"'{TARGET_MATRIX_FILENAME}' (expected beside dataset.csv at {targets_path})."
+            )
+        if not genes_path.exists():
+            raise ValueError(
+                f"spatial_expression Manifest is missing its gene-list sidecar "
+                f"'{GENES_FILENAME}' (expected beside dataset.csv at {genes_path})."
+            )
+        matrix = np.load(targets_path)
+        genes = json.loads(genes_path.read_text())
+        if matrix.ndim != 2:
+            raise ValueError(
+                f"target matrix '{TARGET_MATRIX_FILENAME}' must be 2D [n_rows, n_genes]; "
+                f"got shape {matrix.shape}."
+            )
+        if not isinstance(genes, list) or matrix.shape[1] != len(genes):
+            raise ValueError(
+                f"gene list '{GENES_FILENAME}' ({len(genes)} genes) does not match the "
+                f"target matrix width ({matrix.shape[1]} columns)."
+            )
+        return genes, matrix
+
+    def _validate_targets(self, df: pd.DataFrame) -> None:
+        n_rows = self._target_matrix.shape[0]
+        try:
+            indices = [int(v) for v in df["target_index"]]
+        except (TypeError, ValueError):
+            raise ValueError(
+                "target_index must be integer row-keys into the target matrix."
+            ) from None
+        oob = sorted({v for v in indices if v < 0 or v >= n_rows})
+        if oob:
+            raise ValueError(
+                f"target_index value(s) {oob} out of range for target matrix with "
+                f"{n_rows} rows."
+            )
+
+    def _build_samples(self, df: pd.DataFrame) -> dict[str, SampleRecord]:
+        meta_columns = [c for c in df.columns if c not in KNOWN_DATASET_COLUMNS]
+        samples: dict[str, SampleRecord] = {}
+        for _, row in df.iterrows():
+            sid = str(row["sample_id"])
+            patient_id = (
+                str(row["patient_id"])
+                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
+                else None
+            )
+            metadata = {c: row[c] for c in meta_columns}
+            target_index = int(row["target_index"])
+            samples[sid] = SampleRecord(
+                sample_id=sid,
+                image_path=Path(str(row["image_path"])),
+                label=None,  # supervision is the vector target, not a scalar label
+                patient_id=patient_id,
+                target=self._target_matrix[target_index],
+                metadata=metadata,
+            )
+        return samples
+
+    @property
+    def samples(self) -> dict[str, SampleRecord]:
+        return self._samples
+
+    @property
+    def sample_ids(self) -> list[str]:
+        return list(self._samples.keys())
+
+    @property
+    def has_patient_ids(self) -> bool:
+        return any(r.patient_id is not None for r in self._samples.values())
+
+    @property
+    def genes(self) -> list[str]:
+        """Ordered gene list backing the target-vector columns."""
+        return list(self._genes)
+
+    @property
+    def target_matrix(self) -> np.ndarray:
+        """The full ``[n_rows, n_genes]`` sidecar target matrix."""
+        return self._target_matrix
+
+
 def load_manifest(
     dataset_csv: str | Path, dataset_type: str
-) -> "Dataset | SegmentationManifest | DetectionManifest":
+) -> "Dataset | SegmentationManifest | DetectionManifest | SpatialExpressionManifest":
     """Load + validate a ``dataset.csv`` with the loader selected by ``dataset_type``.
 
     This is the single load-time validator keyed on ``dataset_type``: each loader
     fail-fast validates its required supervision column (``label`` for classification,
-    ``mask_path`` for segmentation, ``points_path`` for detection) at construction time,
-    so a malformed Manifest is rejected with a clear message before any expensive run.
+    ``mask_path`` for segmentation, ``points_path`` for detection, ``target_index`` for
+    spatial_expression) at construction time, so a malformed Manifest is rejected with a
+    clear message before any expensive run.
     """
     if dataset_type == "segmentation":
         return SegmentationManifest(dataset_csv)
     if dataset_type == "detection":
         return DetectionManifest(dataset_csv)
+    if dataset_type == "spatial_expression":
+        return SpatialExpressionManifest(dataset_csv)
     return Dataset(dataset_csv)
 
 

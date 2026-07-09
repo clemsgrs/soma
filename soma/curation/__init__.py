@@ -11,6 +11,7 @@ from soma.curation.eva import (
     curate_eva_patch_dataset,
     curate_eva_patch_datasets,
 )
+from soma.curation.hest import curate_hest
 from soma.curation.manifest import (
     SUPERVISION_COLUMN,
     CuratedManifest,
@@ -32,6 +33,7 @@ __all__ = [
     "curate_beetle_slide_manifest",
     "curate_eva_patch_dataset",
     "curate_eva_patch_datasets",
+    "curate_hest",
     "curate_midog_detection",
     "curate_monkey_detection",
     "curate_ocelot_detection",
