@@ -233,6 +233,29 @@ def test_reproduce_eva_from_run_dir_exits_nonzero_on_failure(capsys, tmp_path):
     assert "FAIL" in out
 
 
+def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path, monkeypatch):
+    # --record writes to the results ledger; route it to a temp file, not the shipped CSV.
+    ledger = tmp_path / "ledger" / "eva.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    _write_summary(tmp_path, 0.914)
+
+    code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path), "--record"])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "recorded" in out
+
+    from soma.benchmarks import reproduced_rows
+
+    rows = reproduced_rows("eva", dataset="bach", encoder="uni2")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.key == {"dataset": "bach", "encoder": "uni2"}
+    assert row.measured == pytest.approx(0.914)
+    assert row.n_seeds is None  # a re-scored single run has no seed spread
+    assert row.date and row.soma_commit  # provenance captured at run time
+    assert row.source == "soma reproduce --record"
+
+
 def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):
     """A minimal self-describing run dir (experiment.json + run.yaml + summary.json).
 

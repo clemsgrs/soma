@@ -198,6 +198,156 @@ def expected_rows(name: str, *, metric: str | None = None, **axes: Any) -> list[
     return rows
 
 
+# --- results tables (reproduced measurements) ----------------------------------------
+
+# The fixed, non-key columns every results table carries, in canonical order. Everything
+# LEFT of ``metric`` is a key column — the SAME keys as the benchmark's reference table, so
+# a results row joins its reference row at ``key`` + ``metric``. Unlike a reference row a
+# results row records no expected/tolerance: it is *what soma got*, not the target.
+_RESULT_VALUE_COLUMNS = (
+    "metric",
+    "measured",
+    "std",
+    "n_seeds",
+    "date",
+    "soma_commit",
+    "slide2vec_version",
+    "source",
+)
+# The minimum a results row must carry to be meaningful (a measurement for a metric).
+_RESULT_REQUIRED_COLUMNS = ("metric", "measured")
+
+
+@dataclass(frozen=True)
+class MeasuredRow:
+    """One reproduced measurement — soma's OWN produced number, with provenance.
+
+    Mirrors :class:`ReferenceRow`'s key convention (``key`` holds only the *populated* key
+    cells) so a measured row joins the reference row at the same ``key`` + ``metric``.
+    ``std``/``n_seeds`` are ``None`` for a single re-scored run (``--from-run-dir``). The
+    provenance trio (``date``, ``soma_commit``, ``slide2vec_version``) pins the environment
+    that produced the number — a reproduced value is only meaningful with the code and
+    feature-extractor that made it. ``source`` is a free-text note (mirrors ``reference``'s
+    ``source`` column).
+    """
+
+    key: dict[str, str]
+    metric: str
+    measured: float
+    std: float | None = None
+    n_seeds: int | None = None
+    date: str = ""
+    soma_commit: str = ""
+    slide2vec_version: str = ""
+    source: str = ""
+
+    def matches(self, axes: dict[str, Any]) -> bool:
+        """True if every populated key cell equals the matching axis (banner matches all)."""
+        return all(str(axes.get(col)) == val for col, val in self.key.items())
+
+
+def _results_file(name: str) -> Path:
+    """Filesystem path to ``results/<name>.csv`` (may not exist yet — writable in a checkout)."""
+    return Path(str(resources.files("soma.benchmarks.results").joinpath(f"{name}.csv")))
+
+
+def load_results(name: str) -> list[MeasuredRow]:
+    """Load ``results/<name>.csv`` into :class:`MeasuredRow` objects (``[]`` if absent).
+
+    Unlike :func:`load_reference`, a missing file is **not** an error: a benchmark may carry
+    a reference band with no reproduced measurement recorded yet. Every column left of
+    ``metric`` is a key column (same convention as the reference table); blank ``std`` /
+    ``n_seeds`` cells become ``None``.
+    """
+    path = _results_file(name)
+    if not path.is_file():
+        return []
+    with path.open(newline="") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames or []
+        missing = [c for c in _RESULT_REQUIRED_COLUMNS if c not in fieldnames]
+        if missing:
+            raise ValueError(
+                f"results/{name}.csv is missing required column(s) {missing}; got {fieldnames}."
+            )
+        value_columns = set(_RESULT_VALUE_COLUMNS)
+        key_columns = [c for c in fieldnames if c not in value_columns]
+        rows: list[MeasuredRow] = []
+        for raw in reader:
+            key = {col: raw[col] for col in key_columns if (raw.get(col) or "").strip()}
+            std_cell = (raw.get("std") or "").strip()
+            n_cell = (raw.get("n_seeds") or "").strip()
+            rows.append(
+                MeasuredRow(
+                    key=key,
+                    metric=raw["metric"].strip(),
+                    measured=float(raw["measured"]),
+                    std=float(std_cell) if std_cell else None,
+                    n_seeds=int(n_cell) if n_cell else None,
+                    date=(raw.get("date") or "").strip(),
+                    soma_commit=(raw.get("soma_commit") or "").strip(),
+                    slide2vec_version=(raw.get("slide2vec_version") or "").strip(),
+                    source=(raw.get("source") or "").strip(),
+                )
+            )
+    return rows
+
+
+def reproduced_rows(name: str, *, metric: str | None = None, **axes: Any) -> list[MeasuredRow]:
+    """Measured rows for ``name`` matching ``axes`` (and ``metric`` if given), in file order.
+
+    The results table is an append-only ledger, so several rows may share a key (the same
+    cell reproduced at different commits). Rows keep file order — callers wanting the latest
+    reproduction of a cell take the last match.
+    """
+    rows = [r for r in load_results(name) if r.matches(axes)]
+    if metric is not None:
+        rows = [r for r in rows if r.metric == metric]
+    return rows
+
+
+def _format_measure(value: float | None) -> str:
+    """Serialise a measurement/std for the ledger (``""`` for ``None``, else 4 decimals)."""
+    return "" if value is None else f"{value:.4f}"
+
+
+def append_result(name: str, row: MeasuredRow, *, key_order: list[str] | None = None) -> Path:
+    """Append ``row`` to ``results/<name>.csv`` (created with a header if absent). Returns path.
+
+    Append-only: existing rows are never rewritten, so a cell reproduced at a new commit
+    adds a row rather than overwriting history. On a fresh file the header is the row's key
+    columns (``key_order`` if given, else the row's key insertion order) followed by the
+    canonical value columns; an existing file reuses its own header verbatim.
+    """
+    path = _results_file(name)
+    columns = list(key_order) if key_order is not None else list(row.key)
+    header = columns + list(_RESULT_VALUE_COLUMNS)
+    exists = path.is_file()
+    if exists:
+        with path.open(newline="") as handle:
+            existing = next(csv.reader(handle), None)
+        if existing:
+            header = existing
+    record = {
+        **row.key,
+        "metric": row.metric,
+        "measured": _format_measure(row.measured),
+        "std": _format_measure(row.std),
+        "n_seeds": "" if row.n_seeds is None else str(row.n_seeds),
+        "date": row.date,
+        "soma_commit": row.soma_commit,
+        "slide2vec_version": row.slide2vec_version,
+        "source": row.source,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=header, extrasaction="ignore")
+        if not exists:
+            writer.writeheader()
+        writer.writerow({col: record.get(col, "") for col in header})
+    return path
+
+
 # --- default scorer ------------------------------------------------------------------
 
 
