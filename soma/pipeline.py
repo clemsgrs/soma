@@ -1792,6 +1792,133 @@ def train_one_pixel_classifier_fold(
     )
 
 
+def _probe_gene_metric_key(index: int, gene: str) -> str:
+    """Stable, order-preserving per-gene Pearson metric key (``pearson_gene00_<sym>``)."""
+    return f"pearson_gene{index:02d}_{gene}"
+
+
+def _write_probe_predictions(
+    path: Path, sample_ids: list[str], predictions: "np.ndarray", genes: list[str]
+) -> None:
+    """Write per-spot predicted gene vectors as ``sample_id`` + one column per gene."""
+    frame = pd.DataFrame(predictions, columns=list(genes))
+    frame.insert(0, "sample_id", sample_ids)
+    frame.to_csv(path, index=False)
+
+
+def train_one_probe_fold(
+    feature_store: FeatureStore,
+    dataset: "SpatialExpressionManifest",
+    fold_split: FoldSplit,
+    task: TaskConfig,
+    training: TrainingConfig,
+    fold_dir: str | Path,
+    *,
+    evaluation: EvalConfig | None = None,
+    fold: int = 0,
+    num_folds: int = 1,
+) -> FoldResult:
+    """Train + evaluate one **closed-form probe** fold (HEST spatial_expression, design §6).
+
+    The ``regression`` family's non-gradient sibling: no torch ``Trainer``, no head, no
+    tune split. It pulls the fold's cached per-spot embeddings, fits StandardScaler → PCA →
+    multi-output Ridge on the train spots (see :func:`soma.training.probe.score_probe_fold`),
+    predicts each test split's spots, and scores every gene by Pearson correlation pooled
+    over that split's spots. The per-fold ``mean_pearson`` (mean over genes) plus the
+    per-gene detail land in ``metrics.json``; the shared summary writer then averages over
+    folds into the headline. Cached features only — embeddings are extracted once and
+    reused across folds by the shared feature cache.
+    """
+    from soma.training.probe import DEFAULT_PCA_COMPONENTS, score_probe_fold
+
+    evaluation = evaluation or EvalConfig()
+    fold_dir = Path(fold_dir)
+    fold_dir.mkdir(parents=True, exist_ok=True)
+    seed_everything(training.seed, fold=fold)
+    _fp = f"Fold {fold}" if num_folds > 1 else "Run"
+
+    train_ids = [str(sid) for sid in fold_split.train]
+    if not train_ids:
+        raise ValueError(f"{_fp}: the closed-form probe needs a non-empty train split.")
+    # HEST folds carry no tune split; the closed-form probe needs none (fixed Ridge alpha,
+    # no early stopping) so tune is ignored entirely.
+    test_ids_by_split = {
+        name: [str(sid) for sid in ids] for name, ids in fold_split.tests.items()
+    }
+    all_ids = train_ids + [sid for ids in test_ids_by_split.values() for sid in ids]
+    feature_store.validate_coverage(all_ids)
+
+    genes = list(dataset.genes)
+    n_genes = len(genes)
+    pca_components = int(task.params.get("pca_components", DEFAULT_PCA_COMPONENTS))
+
+    def _stack_features(ids: list[str]) -> np.ndarray:
+        return np.stack(
+            [feature_store.load(sid).reshape(-1).to(torch.float64).numpy() for sid in ids]
+        )
+
+    def _stack_targets(ids: list[str]) -> np.ndarray:
+        return np.stack(
+            [np.asarray(dataset.samples[sid].target, dtype=np.float64) for sid in ids]
+        )
+
+    x_train = _stack_features(train_ids)
+    y_train = _stack_targets(train_ids)
+    feature_dim = x_train.shape[1]
+    max_components = min(len(train_ids), feature_dim)
+    if pca_components > max_components:
+        raise ValueError(
+            f"{_fp}: PCA n_components={pca_components} exceeds the fold's rank "
+            f"min(n_train={len(train_ids)}, feature_dim={feature_dim})={max_components}. "
+            "Lower task.params.pca_components or provide more train spots."
+        )
+
+    logger.info(
+        "%s: closed-form Ridge+PCA probe — %d train spots, %d genes, PCA=%d, feature_dim=%d",
+        _fp, len(train_ids), n_genes, pca_components, feature_dim,
+    )
+
+    test_reports: dict[str, EvaluationReport] = {}
+    for split_name, ids in test_ids_by_split.items():
+        if not ids:
+            test_reports[split_name] = EvaluationReport(
+                split=split_name, metrics={}, predictions=[]
+            )
+            continue
+        x_test = _stack_features(ids)
+        y_test = _stack_targets(ids)
+        score = score_probe_fold(
+            x_train, y_train, x_test, y_test,
+            pca_components=pca_components, seed=training.seed,
+        )
+        # Headline (mean over genes) + per-gene Pearson detail, all flat floats so the
+        # shared summary writer averages each over folds.
+        metrics = {"mean_pearson": float(score.mean_pearson)}
+        for index, gene in enumerate(genes):
+            metrics[_probe_gene_metric_key(index, gene)] = float(score.per_gene_pearson[index])
+        test_reports[split_name] = EvaluationReport(
+            split=split_name, metrics=metrics, predictions=[]
+        )
+        _write_probe_predictions(
+            fold_dir / f"predictions_{split_name}.csv", ids, score.predictions, genes
+        )
+        logger.info(
+            "%s [%s]: mean Pearson = %.4f over %d genes (%d spots)",
+            _fp, split_name, score.mean_pearson, n_genes, len(ids),
+        )
+
+    # The probe has no tune split; report an empty tune (ignored by the summary writer).
+    tune_report = EvaluationReport(split="tune", metrics={}, predictions=[])
+    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+
+    return FoldResult(
+        fold=fold,
+        train_result=None,
+        tune_report=tune_report,
+        test_reports=test_reports,
+    )
+
+
 def train(
     feature_store: FeatureStore,
     dataset: Dataset,
@@ -1903,7 +2030,23 @@ def train(
                 fold_dir / "metrics.json",
             )
             continue
-        if dataset_type == "segmentation" and pixel_classifier is not None:
+        if training.method == "ridge_pca_probe":
+            # Closed-form Ridge+PCA probe (HEST spatial_expression): a sibling per-fold
+            # trainer under the regression family, selected by the method flag rather than
+            # forking the entrypoint. Reuses this fold loop, resumable CV, the feature
+            # cache, and the summary writer.
+            result = train_one_probe_fold(
+                feature_store=feature_store,
+                dataset=dataset,
+                fold_split=fold_split,
+                task=task,
+                training=training,
+                evaluation=evaluation,
+                fold_dir=fold_dir,
+                fold=fold_idx,
+                num_folds=splits.num_folds,
+            )
+        elif dataset_type == "segmentation" and pixel_classifier is not None:
             # Decoder-free path: the cross-defaulted feature_kind=cls_attention grids
             # feed a per-pixel classifier (no Trainer). Mutually exclusive with decoder,
             # enforced in PipelineConfig.
@@ -2394,11 +2537,14 @@ class Pipeline:
         if self._feature_dir is not None:
             return FeatureStore(self._feature_dir)
 
-        if self._config.dataset_type == "tile":
+        if self._config.dataset_type in ("tile", "spatial_expression"):
+            # spatial_expression (HEST) reuses the tile path: each spot is one PNG tile
+            # encoded to a 1-D feature vector, cached once and reused across folds.
             if self._config.encoder is None:
                 raise ValueError(
-                    "PipelineConfig.encoder is required for dataset_type='tile' "
-                    "when feature_dir is not provided."
+                    f"PipelineConfig.encoder is required for "
+                    f"dataset_type={self._config.dataset_type!r} when feature_dir is not "
+                    "provided."
                 )
             from soma.tile_extraction import TileFeatureExtractor
 
