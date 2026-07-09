@@ -109,9 +109,27 @@ def test_reference_row_axis_matching():
 
 def test_reference_row_within_tolerance():
     row = ReferenceRow(key={}, metric="m", expected=0.70, tolerance=0.02, source="")
+    assert not row.relative  # absolute by default
+    assert row.tolerance_band() == pytest.approx(0.02)
     assert row.within_tolerance(0.685)
     assert row.within_tolerance(0.715)
     assert not row.within_tolerance(0.75)
+
+
+def test_reference_row_relative_tolerance_scales_with_expected():
+    # relative=True reinterprets tolerance as a fraction of expected: a ±2% band on 0.90 is
+    # ±0.018, so 0.883 (Δ -0.017) passes but 0.870 (Δ -0.030) fails.
+    row = ReferenceRow(
+        key={}, metric="m", expected=0.90, tolerance=0.02, source="", relative=True
+    )
+    assert row.tolerance_band() == pytest.approx(0.018)
+    assert row.within_tolerance(0.883)
+    assert not row.within_tolerance(0.870)
+    # The SAME 0.02 tolerance is a different absolute band at a different expected value.
+    low = ReferenceRow(
+        key={}, metric="m", expected=0.50, tolerance=0.02, source="", relative=True
+    )
+    assert low.tolerance_band() == pytest.approx(0.010)
 
 
 def test_load_reference_parses_ocelot_band():
@@ -200,6 +218,29 @@ def test_load_reference_parses_kind_label_url_columns(monkeypatch):
     assert external.expected == pytest.approx(0.73)
     # A blank tolerance on an external row is tolerated (it never gates).
     assert external.tolerance == pytest.approx(0.0)
+
+
+def test_load_reference_parses_relative_tolerance_mode(monkeypatch):
+    # tolerance_mode=relative reinterprets the tolerance as a fraction of expected; an
+    # absent/blank cell defaults to absolute.
+    _fake_reference_csv(
+        monkeypatch,
+        "metric,expected,tolerance,tolerance_mode,source\n"
+        "m,0.80,0.02,relative,two percent band\n"
+        "m,0.80,0.02,,absolute default\n",
+    )
+    rel, absolute = load_reference("whatever")
+    assert rel.relative and rel.tolerance_band() == pytest.approx(0.016)
+    assert not absolute.relative and absolute.tolerance_band() == pytest.approx(0.02)
+
+
+def test_load_reference_rejects_unknown_tolerance_mode(monkeypatch):
+    _fake_reference_csv(
+        monkeypatch,
+        "metric,expected,tolerance,tolerance_mode,source\nm,0.80,0.02,percent,bad\n",
+    )
+    with pytest.raises(ValueError, match="tolerance_mode"):
+        load_reference("whatever")
 
 
 def test_load_reference_defaults_kind_to_gate_when_column_absent(monkeypatch):

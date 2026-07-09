@@ -188,12 +188,21 @@ def test_reference_csv_is_keyed_schema():
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
-    assert columns == ["dataset", "encoder", "metric", "expected", "tolerance", "source"]
-    # Every row is keyed (dataset + encoder populated) with a per-row tolerance.
+    assert columns == [
+        "dataset",
+        "encoder",
+        "metric",
+        "expected",
+        "tolerance",
+        "tolerance_mode",
+        "source",
+    ]
+    # Every row is keyed (dataset + encoder populated) with a per-row ±2% relative band.
     for row in rows:
         assert row["dataset"].strip()
         assert row["encoder"].strip()
         assert float(row["tolerance"]) > 0
+        assert row["tolerance_mode"] == "relative"
     # Spot-check the known bach numbers (validated live in PR #87).
     by_key = {(r["dataset"], r["encoder"], r["metric"]): float(r["expected"]) for r in rows}
     assert by_key[("bach", "uni2", "test/balanced_accuracy")] == pytest.approx(0.915)
