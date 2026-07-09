@@ -16,7 +16,13 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
         sys.path.insert(0, str(sibling))
 
 from soma.aggregators import aggregator_registry
-from soma.benchmarks import expected_rows, get_benchmark, list_benchmarks, load_results
+from soma.benchmarks import (
+    expected_rows,
+    get_benchmark,
+    list_benchmarks,
+    load_reference,
+    load_results,
+)
 from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import hest as hest_bench
 from soma.benchmarks import ocelot as ocelot_bench
@@ -250,20 +256,36 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # Each per-benchmark page is generated from its registered ``Benchmark`` object: the
 # protocol summary comes from ``facet`` / ``primary_metric`` / ``canonical_seeds`` /
 # ``reference_environment``, the reproduce command from ``benchmark.name``, and the
-# reference table is embedded with a ``.. csv-table:: :file:`` directive pointing straight
-# at the packaged ``soma/benchmarks/reference/<name>.csv`` — so the numbers Sphinx renders
-# are the SAME BYTES as the CSV the registry scores against (no hand-typed numbers, no
-# drift, no ``TBD``). A generator + a checked-in file kept in sync by ``tests/test_docs.py``
-# mirrors the ``cli.rst`` mechanism.
+# reference numbers are read from the benchmark's ``expected()`` reference rows (packaged
+# ``soma/benchmarks/reference/<name>.csv``) and rendered as a readable ``list-table`` — the
+# gate band beside the measured cells, a linked source instead of dumping the CSV's verbose
+# ``source`` column (no hand-typed numbers, no drift, no ``TBD``). A generator + a
+# checked-in file kept in sync by ``tests/test_docs.py`` mirrors the ``cli.rst`` mechanism.
 
 _GENERATED_PAGE_NOTE = (
     ".. note::\n\n"
     "   This page is generated from the registered benchmark definition — the protocol\n"
-    "   summary from the ``Benchmark`` object, the reference table straight from the\n"
-    "   packaged ``{csv}`` (same bytes), and the command from the benchmark name. Edit the\n"
-    "   registry (``{module}``) and the CSV, not this page; ``python docs/_generate_reference.py``\n"
+    "   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows\n"
+    "   (packaged ``{csv}``), and the command from the benchmark name. Edit the registry\n"
+    "   (``{module}``) and the CSV, not this page; ``python docs/_generate_reference.py``\n"
     "   re-emits it and ``tests/test_docs.py`` guards the two from drifting."
 )
+
+# Upstream provenance for each benchmark family's published reference band — the leaderboard
+# the numbers were captured from, rendered as one clickable link next to the reference
+# (replaces dumping the CSV's verbose ``source`` column on the page). A family absent here
+# has a self-referential reference (e.g. a soma seed-0 regression gate), so there is no
+# external source to link.
+_REFERENCE_SOURCE = {
+    "eva": (
+        "kaiko-ai/eva pathology leaderboard",
+        "https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv",
+    ),
+    "hest": (
+        "HEST-Benchmark leaderboard (mahmoodlab/HEST)",
+        "https://github.com/mahmoodlab/HEST#hest-benchmark",
+    ),
+}
 
 
 def _kv_table(col_a: str, col_b: str, rows: list[tuple[str, str]], *, widths: str = "30 70") -> str:
@@ -275,16 +297,10 @@ def _kv_table(col_a: str, col_b: str, rows: list[tuple[str, str]], *, widths: st
     return "\n".join(lines)
 
 
-def _reference_csv_table(title: str, rel_path: str, widths: str) -> str:
-    """A ``csv-table`` reading the packaged reference CSV verbatim at build time."""
-    return "\n".join(
-        [
-            f".. csv-table:: {title}",
-            f"   :file: {rel_path}",
-            "   :header-rows: 1",
-            f"   :widths: {widths}",
-        ]
-    )
+def _reference_source_link(family: str) -> str:
+    """A single clickable ``label <url>`` for where a benchmark's reference band came from."""
+    label, url = _REFERENCE_SOURCE[family]
+    return f"`{label} <{url}>`__"
 
 
 def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
@@ -380,6 +396,11 @@ def build_ocelot_benchmark_rst() -> str:
         for enc, spacing in sorted(ocelot_bench._CONFIG_FILES)
     ]
     env_rows = [(f"``{key}``", f"``{value}``") for key, value in bench.reference_environment.items()]
+    gate_rows = [
+        (f"``{row.metric}``", f"{row.expected:.4f} ± {row.tolerance:.3f}")
+        for row in bench.expected()
+        if not row.is_external
+    ]
 
     sections = [
         "OCELOT\n======",
@@ -403,17 +424,13 @@ def build_ocelot_benchmark_rst() -> str:
         "``build_config`` resolves a committed config per ``(encoder, spacing)`` — the\n"
         "2×2 magnification-alignment ablation plus the native anchor:\n\n"
         + _kv_table("Encoder", "Spacing (µm/px)", axes_rows, widths="50 50"),
-        "Reference numbers\n-----------------\n\n"
-        "Read verbatim from the packaged reference CSV. The ``kind`` column marks each\n"
-        "row's role: a ``gate`` row is the tolerance band ``soma reproduce`` checks against\n"
-        "(config-agnostic banner); ``external`` rows are non-gating guidance anchors (also\n"
-        "surfaced with clickable links below). The ``source`` cell records provenance and\n"
-        "why the tolerance is what it is:\n\n"
-        + _reference_csv_table(
-            "``soma/benchmarks/reference/ocelot.csv``",
-            "../soma/benchmarks/reference/ocelot.csv",
-            "5 5 5 8 6 6 5 14 14 32",
-        ),
+        "Reference band\n--------------\n\n"
+        "The tolerance band ``soma reproduce`` checks against — a **config-agnostic** banner\n"
+        "(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression\n"
+        "anchor, not an external leaderboard number). The non-gating external anchors —\n"
+        "fully-supervised end-to-end baselines from a *different* protocol — are surfaced\n"
+        "with clickable links under *Guidance anchors* below:\n\n"
+        + _kv_table("Metric", "Reference band (expected ± tolerance)", gate_rows, widths="40 60"),
         _ocelot_guidance_section(bench),
         "Reference environment\n---------------------\n\n"
         "The recorded anchor environment the reference number was produced in:\n\n"
@@ -513,20 +530,13 @@ def build_eva_benchmark_rst() -> str:
         "``test`` and the run sets ``tune_is_test: true`` (train-on-all-train /\n"
         "evaluate-on-validation); ``patch_camelyon`` has a real held-out test split:\n\n"
         + _dataset_table(),
-        "Reference numbers\n-----------------\n\n"
-        "The published EVA balanced-accuracy band, keyed by ``dataset`` × ``encoder`` —\n"
-        "read verbatim from the packaged reference CSV (``patch_camelyon`` carries both a\n"
-        "``test`` and a ``tune`` row):\n\n"
-        + _reference_csv_table(
-            "``soma/benchmarks/reference/eva.csv``",
-            "../soma/benchmarks/reference/eva.csv",
-            "12 10 20 10 10 38",
-        ),
         "Reproduced numbers\n------------------\n\n"
         "What soma has actually measured, recorded by ``soma reproduce --record`` into the\n"
         "packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit\n"
-        "and slide2vec version that produced each number. Only cells that have been run\n"
-        "appear; each is shown next to its reference band above, with the delta:\n\n"
+        "and slide2vec version that produced each number. The ``Reference`` column is the\n"
+        "published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from "
+        + _reference_source_link("eva")
+        + "); only cells that have been run appear, each with its delta to that band:\n\n"
         + _reproduced_table("eva", ("dataset", "encoder")),
         "Reproduce\n---------\n\n"
         "``soma reproduce`` curates the raw layout, trains the linear probe over the\n"
@@ -633,6 +643,22 @@ def build_hest_benchmark_rst() -> str:
         "all from the same curator and the same probe."
     )
 
+    # The published HEST leaderboard for this task, rendered readably (best first) instead of
+    # dumping the reference CSV. ``load_reference`` returns every row unfiltered (the
+    # benchmark's own ``expected()`` defaults the encoder axis, so it would show only one).
+    leaderboard_rows = [
+        (f"``{row.key['encoder']}``", f"{row.expected:.4f}")
+        for row in sorted(
+            (
+                r
+                for r in load_reference("hest")
+                if r.is_external and r.metric == head.primary_metric
+            ),
+            key=lambda r: r.expected,
+            reverse=True,
+        )
+    ]
+
     sections = [
         "HEST\n====",
         "*Maps to task:* :doc:`regression` — a **frozen** patch encoder scored on\n"
@@ -670,23 +696,21 @@ def build_hest_benchmark_rst() -> str:
             "(*Adding a HEST task* below); the curator and probe already handle them.",
         ),
         _section(
-            "Reference numbers",
-            "``reference/hest.csv`` carries **external, non-gating** rows only — HEST's published\n"
-            "Ridge+PCA Pearson per (task, encoder), captured from the official leaderboard. There\n"
-            "is **no gate row**: nothing is tolerance-checked. ``soma reproduce hest/IDC`` renders\n"
-            "soma's Measured row *beside* these, making the slide2vec↔TRIDENT extraction gap an\n"
-            "explicit, non-gating delta:\n\n"
-            + _reference_csv_table(
-                "``soma/benchmarks/reference/hest.csv``",
-                "../soma/benchmarks/reference/hest.csv",
-                "8 10 16 8 8 8 20 20 30",
-            ),
+            "Published leaderboard",
+            "HEST's published **external, non-gating** Ridge+PCA Pearson on the IDC task, per\n"
+            "encoder (best first). There is **no gate row**: nothing is tolerance-checked.\n"
+            "``soma reproduce hest/IDC`` renders soma's Measured row *beside* these, making the\n"
+            "slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. Source: "
+            + _reference_source_link("hest")
+            + ".\n\n"
+            + _kv_table("Encoder", "Published ``pearson``", leaderboard_rows, widths="60 40"),
         ),
         _section(
             "Reproduced numbers",
             "What soma has actually measured, recorded by ``soma reproduce --record`` into\n"
             "``soma/benchmarks/results/hest.csv``. HEST's references are external, so the\n"
-            "Reference / Δ columns stay blank — compare against the reference table above:\n\n"
+            "Reference / Δ columns stay blank — compare against the published leaderboard\n"
+            "above:\n\n"
             + _reproduced_table("hest", ("dataset", "encoder")),
         ),
         _section(

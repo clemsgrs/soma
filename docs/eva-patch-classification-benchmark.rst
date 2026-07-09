@@ -8,9 +8,9 @@ binary / multiclass classification heads reproducing the
 .. note::
 
    This page is generated from the registered benchmark definition — the protocol
-   summary from the ``Benchmark`` object, the reference table straight from the
-   packaged ``soma/benchmarks/reference/eva.csv`` (same bytes), and the command from the benchmark name. Edit the
-   registry (``soma/benchmarks/eva.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
+   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
+   (packaged ``soma/benchmarks/reference/eva.csv``), and the command from the benchmark name. Edit the registry
+   (``soma/benchmarks/eva.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
    re-emits it and ``tests/test_docs.py`` guards the two from drifting.
 
 EVA is registered as **one sub-benchmark per dataset** (``eva/<dataset>``), each
@@ -95,25 +95,13 @@ evaluate-on-validation); ``patch_camelyon`` has a real held-out test split:
      - ``binary_classification``
      - EVA test (real val + test)
 
-Reference numbers
------------------
-
-The published EVA balanced-accuracy band, keyed by ``dataset`` × ``encoder`` —
-read verbatim from the packaged reference CSV (``patch_camelyon`` carries both a
-``test`` and a ``tune`` row):
-
-.. csv-table:: ``soma/benchmarks/reference/eva.csv``
-   :file: ../soma/benchmarks/reference/eva.csv
-   :header-rows: 1
-   :widths: 12 10 20 10 10 38
-
 Reproduced numbers
 ------------------
 
 What soma has actually measured, recorded by ``soma reproduce --record`` into the
 packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit
-and slide2vec version that produced each number. Only cells that have been run
-appear; each is shown next to its reference band above, with the delta:
+and slide2vec version that produced each number. The ``Reference`` column is the
+published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__); only cells that have been run appear, each with its delta to that band:
 
 .. list-table::
    :header-rows: 1
