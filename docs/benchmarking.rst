@@ -82,11 +82,14 @@ printing ``PASS`` / ``FAIL`` with the delta::
     soma reproduce ocelot --raw-root /path/to/ocelot
     soma reproduce eva/bach --raw-root /path/to/eva/bach
 
-``--from-run-dir <dir>`` re-scores an existing run without re-training; ``--seeds 1``
-is the quickest smoke; a family prefix (``soma reproduce eva``) fans out over every
-member. Because the band lives in ``reference/<name>.csv`` and the check reads it
-directly, a green ``reproduce`` is evidence the environment matches, not that a
-number was typed correctly.
+``--curated-dir <dir>`` reuses an already-curated manifest (``dataset.csv`` +
+``splits.csv``) and skips curation — handy when curation is expensive (HEST-bench
+explodes tens of thousands of spots to lossless PNGs) or you are sweeping encoders over
+one fixed manifest; ``--from-run-dir <dir>`` re-scores an existing run without
+re-training; ``--seeds 1`` is the quickest smoke; a family prefix (``soma reproduce
+eva``) fans out over every member. Because the band lives in ``reference/<name>.csv``
+and the check reads it directly, a green ``reproduce`` is evidence the environment
+matches, not that a number was typed correctly.
 
 Registered benchmarks
 ---------------------

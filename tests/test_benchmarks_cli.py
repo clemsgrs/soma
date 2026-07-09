@@ -206,6 +206,7 @@ class _CaptureCacheBenchmark:
 
     def __init__(self):
         self.captured: list[dict] = []
+        self.curate_calls = 0
 
     def expected(self, **axes):
         return [
@@ -226,6 +227,7 @@ class _CaptureCacheBenchmark:
 
         from soma.curation.manifest import CuratedManifest
 
+        self.curate_calls += 1
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         return CuratedManifest(
             dataset_csv=Path(out_dir) / "dataset.csv",
@@ -286,6 +288,63 @@ def test_reproduce_full_mode_cache_root_flag_relocates_shared_cache(monkeypatch,
     assert code == 0
     # --cache-root overrides the location but keeps the single-shared-root guarantee.
     assert set(roots) == {custom}
+
+
+# --- --curated-dir fast path (skip re-curation) --------------------------------------
+
+
+def _reproduce_curated(monkeypatch, curated_dir, *, raw_root=None):
+    import argparse
+    import types
+
+    monkeypatch.setattr(cli, "Pipeline", lambda config: types.SimpleNamespace(run=lambda: None))
+    bench = _CaptureCacheBenchmark()
+    args = argparse.Namespace(
+        encoder=None,
+        spacing=None,
+        from_run_dir=None,
+        seeds=None,
+        raw_root=raw_root,
+        curated_dir=str(curated_dir),
+        out_dir=None,
+        output_root=None,
+        cache_root=None,
+    )
+    code = cli._reproduce_one(bench, args)
+    return code, bench
+
+
+def test_reproduce_curated_dir_skips_curation(monkeypatch, capsys, tmp_path):
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    (curated / "dataset.csv").write_text("sample_id,image_path\n")
+    (curated / "splits.csv").write_text("sample_id,split,fold\n")
+
+    code, bench = _reproduce_curated(monkeypatch, curated)
+    out = capsys.readouterr().out
+
+    assert code == 0
+    # curate() is never called; the pipeline is pointed straight at the provided manifest.
+    assert bench.curate_calls == 0
+    assert "skipping curation" in out
+    built = bench.captured[0]
+    assert str(built["dataset_csv"]) == str(curated / "dataset.csv")
+    assert str(built["splits_csv"]) == str(curated / "splits.csv")
+
+
+def test_reproduce_curated_dir_missing_manifest_errors(monkeypatch, tmp_path):
+    empty = tmp_path / "not_a_manifest"
+    empty.mkdir()
+    with pytest.raises(FileNotFoundError, match="dataset.csv"):
+        _reproduce_curated(monkeypatch, empty)
+
+
+def test_reproduce_needs_a_manifest_source(capsys):
+    # Neither --raw-root, --curated-dir, nor --from-run-dir: error lists all three modes.
+    code = _run_cli(["reproduce", "ocelot"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "--curated-dir" in err
 
 
 # --- EVA family (issue #219) ----------------------------------------------------------
