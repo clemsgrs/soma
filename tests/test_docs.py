@@ -82,9 +82,13 @@ def test_eva_benchmark_page_renders_reproduced_ledger() -> None:
     # A seeded historical cell renders with its provenance (commit) and delta column.
     assert "0.914 ± 0.007" in generated
     assert "7ef2d7c" in generated
-    # Never-run datasets have no measured row (honest: only recorded cells appear).
     reproduced = generated.split("Reproduced numbers", 1)[1].split("Reproduce\n", 1)[0]
-    for never_run in ("mhist", "gleason_arvaniti", "patch_camelyon"):
+    # A newly reproduced cell (gleason_arvaniti/virchow2) renders with its own provenance.
+    assert "gleason_arvaniti" in reproduced
+    assert "0.778 ± 0.010" in reproduced
+    assert "c8b320d" in reproduced
+    # Still-never-run datasets have no measured row (honest: only recorded cells appear).
+    for never_run in ("mhist", "patch_camelyon"):
         assert never_run not in reproduced
 
 

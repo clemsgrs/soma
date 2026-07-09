@@ -167,6 +167,13 @@ appear; each is shown next to its reference band above, with the delta:
      - 0.967
      - -0.001
      - 2026-06-19 @ ``7ef2d7c``
+   * - gleason_arvaniti
+     - virchow2
+     - 0.778 ± 0.010
+     - 5
+     - 0.783
+     - -0.005
+     - 2026-07-09 @ ``c8b320d``
 
 Reproduce
 ---------

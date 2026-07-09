@@ -352,6 +352,45 @@ def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path,
     assert row.source == "soma reproduce --record"
 
 
+def test_git_commit_dirty_ignores_untracked_scratch(tmp_path, monkeypatch):
+    """Provenance pins *code* state: untracked run outputs/notes must not mark it dirty.
+
+    ``soma reproduce`` leaves scratch (``soma_reproduce/``, design notes) in the checkout, so
+    a bare ``git status --porcelain`` would spuriously tag every ``--record`` row ``-dirty``.
+    Only tracked modifications should.
+    """
+    import subprocess
+
+    repo = tmp_path / "repo"
+    pkg = repo / "soma"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+
+    import soma
+    monkeypatch.setattr(soma, "__file__", str(pkg / "__init__.py"))
+
+    clean = cli._git_commit()
+    assert clean != "unknown" and not clean.endswith("-dirty")
+
+    # Untracked scratch (like the run's own output dir) must NOT taint provenance.
+    (repo / "soma_reproduce").mkdir()
+    (repo / "soma_reproduce" / "out.json").write_text("{}")
+    assert cli._git_commit() == clean
+
+    # A tracked code modification DOES mark it dirty.
+    (pkg / "__init__.py").write_text("# edited\n")
+    assert cli._git_commit() == f"{clean}-dirty"
+
+
 def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):
     """A minimal self-describing run dir (experiment.json + run.yaml + summary.json).
 
