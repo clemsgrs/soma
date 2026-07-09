@@ -77,14 +77,35 @@ def test_build_config_defaults_to_uni2(tmp_path):
 
 
 def test_build_config_pins_virchow2_cls_variant(tmp_path):
+    # Issue #261: virchow2 is the second encoder of the vertical slice. build_config must
+    # pin the CLS-only output variant (leaderboard-relevant; 1280-d, not slide2vec's 2560-d
+    # CLS+mean concat default) and otherwise emit the same valid spatial-expression probe
+    # recipe as uni2. "cls" is the exact token slide2vec's virchow2 encoder accepts for the
+    # CLS-only variant (slide2vec.encoders.models.virchow: output_variants={"cls": 1280, ...}).
     config = get_benchmark("hest/IDC").build_config(
         encoder="virchow2",
         dataset_csv=tmp_path / "dataset.csv",
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
+        seed=3,
     )
+    assert config.encoder.name == "virchow2"
     # HEST's virchow2 is CLS-only (1280-d); the 2560-d concat default would not match.
     assert config.encoder.output_variant == "cls"
+    # Everything else stays the fixed HEST probe recipe (identical to the uni2 build).
+    assert config.dataset_type == "spatial_expression"
+    assert config.task.name == "regression"
+    assert config.training.method == "ridge_pca_probe"
+    assert config.task.params["pca_components"] == 256  # PCA latent dim
+    assert config.evaluation.metrics == ["pearson"]
+    assert config.training.seed == 3
+
+
+def test_output_variants_maps_only_virchow2_to_cls():
+    # The variant map is a targeted override: only virchow2 needs a non-default variant
+    # (CLS-only); every other encoder (uni2, ...) falls through to slide2vec's default.
+    assert hest.OUTPUT_VARIANTS == {"virchow2": "cls"}
+    assert hest.OUTPUT_VARIANTS.get("uni2") is None
 
 
 def test_build_config_applies_cache_overrides(tmp_path):

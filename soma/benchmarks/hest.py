@@ -54,7 +54,13 @@ TASK = "IDC"
 # `encoder` is the varied axis; uni2 is the headline backbone. slide2vec validates the name,
 # so any registered encoder works — OUTPUT_VARIANTS only pins the feature variant for
 # backbones where the leaderboard used a non-default one (virchow2 is CLS-only 1280-d, not
-# slide2vec's 2560-d CLS+mean concat; design §11).
+# slide2vec's 2560-d CLS+mean concat; design §11). "cls" is the exact token slide2vec's
+# virchow2 encoder accepts for the CLS-only variant (slide2vec.encoders.models.virchow:
+# output_variants={"cls": 1280, "cls_patch_mean": 2560}, default "cls_patch_mean").
+# TODO(#261): confirm slide2vec<->TRIDENT virchow2 parity (transforms + CLS-only variant).
+# HEST extracts virchow2 features via TRIDENT; soma re-extracts natively via slide2vec, so
+# the Measured-minus-Reference delta (Reference = 0.5971, reference/hest.csv) is the accepted,
+# non-gating parity gap for the vertical slice — read it off the manual reproduction.
 DEFAULT_ENCODER = "uni2"
 OUTPUT_VARIANTS: dict[str, str] = {"virchow2": "cls"}
 
