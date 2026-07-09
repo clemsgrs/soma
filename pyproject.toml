@@ -53,6 +53,14 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
 ]
+# Curation-only dependencies for the HEST-Benchmark spatial_expression curator
+# (soma.curation.hest). Lazy-imported inside curate_hest so `import soma` and core CI
+# never require them: anndata reads the per-slide gene-expression .h5ad, h5py the patch
+# HDF5. log1p targets are computed with numpy (already a core dep).
+hest = [
+    "anndata",
+    "h5py",
+]
 docs = [
     "sphinx>=8.1",
     "furo",
