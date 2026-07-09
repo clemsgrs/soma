@@ -162,6 +162,13 @@ published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from 
      - 0.783
      - -0.005
      - 2026-07-09 @ ``c8b320d``
+   * - gleason_arvaniti
+     - uni2
+     - 0.779 ± 0.005
+     - 5
+     - 0.775
+     - +0.004
+     - 2026-07-09 @ ``9663253``
 
 Reproduce
 ---------

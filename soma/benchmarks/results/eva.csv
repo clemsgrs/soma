@@ -6,3 +6,4 @@ breakhis,virchow2,test/balanced_accuracy,0.812,0.008,5,2026-06-19,7ef2d7c,,"Hist
 crc,uni2,test/balanced_accuracy,0.966,0.001,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); 5 seeds; slide2vec version not recorded."
 crc,virchow2,test/balanced_accuracy,0.966,0.001,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); paige_virchow2 CLS-only (1280-d); 5 seeds; slide2vec version not recorded."
 gleason_arvaniti,virchow2,test/balanced_accuracy,0.7778,0.0101,5,2026-07-09,c8b320d,5.3.0,soma reproduce --record
+gleason_arvaniti,uni2,test/balanced_accuracy,0.7788,0.0048,5,2026-07-09,9663253,5.3.0,soma reproduce --record
