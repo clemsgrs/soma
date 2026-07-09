@@ -131,8 +131,10 @@ class _ExternalOnlyBenchmark:
             )
         ]
 
-    def score(self, run_dir):  # pragma: no cover - must never run without a gate row
-        raise AssertionError("score() must not be called when there is no gate reference row")
+    def score(self, run_dir):
+        # External-only benchmarks ARE scored so the Measured value can be rendered beside
+        # the external Reference (#260) — they are just never tolerance-checked.
+        return {"mean_f1": 0.60}
 
 
 @pytest.fixture()
@@ -145,13 +147,17 @@ def external_only_benchmark():
         registry_mod._REGISTRY.pop(bench.name, None)
 
 
-def test_reproduce_external_only_metric_errors_no_gate_row(capsys, tmp_path, external_only_benchmark):
-    # A primary metric with only external guidance rows must NOT silently gate on guidance:
-    # it errors "no gate reference row" and never scores the run.
+def test_reproduce_external_only_renders_measured_beside_reference(capsys, tmp_path, external_only_benchmark):
+    # A primary metric with only external guidance rows must NOT silently gate on guidance,
+    # but it is no longer an error (#260): reproduce renders the Measured value beside the
+    # external Reference (0.73), tolerance-checks NOTHING, and exits 0.
     code = _run_cli(["reproduce", "ext_only_fixture", "--from-run-dir", str(tmp_path)])
-    err = capsys.readouterr().err
-    assert code == 2
-    assert "no gate reference row" in err
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "MEASURED" in out
+    assert "0.7300" in out  # the external Reference rendered beside Measured
+    assert "not gated" in out
+    assert "PASS" not in out and "FAIL" not in out  # never gated on the external anchor
 
 
 def test_reproduce_external_anchors_never_flip_the_gate_verdict(monkeypatch, capsys, tmp_path):

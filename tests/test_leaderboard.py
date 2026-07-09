@@ -378,6 +378,48 @@ def test_render_html_and_json_expose_clickable_guidance(tmp_path: Path):
     assert data["guidance"][0]["url"].startswith("http")
 
 
+# --- HEST: external-only benchmark renders Measured + external Reference together (#260) --
+
+
+def _hest_run_dir(tmp_path: Path, *, encoder: str, mean_pearson: float) -> Path:
+    """A completed spatial_expression run dir built from the real hest/IDC config."""
+    ds = _dataset_csv(tmp_path, name=f"ds_{encoder}")
+    sp = _splits_csv(tmp_path, name=f"sp_{encoder}")
+    config = get_benchmark("hest/IDC").build_config(
+        encoder=encoder,
+        dataset_csv=ds,
+        splits_csv=sp,
+        output_root=tmp_path / "out",
+    )
+    return make_run_dir(config, {"test/mean_pearson_mean": mean_pearson})
+
+
+def test_hest_leaderboard_shows_measured_rows_and_external_reference(tmp_path: Path):
+    # An external-only benchmark: soma's Measured rows rank normally AND HEST's published
+    # external Reference renders as a non-gating guidance anchor beside them (never a gate).
+    bench = get_benchmark("hest/IDC")
+    uni2 = _hest_run_dir(tmp_path, encoder="uni2", mean_pearson=0.51)
+    table = project_leaderboard([uni2], LeaderboardFacet(vary=("encoder",)), benchmark=bench)
+
+    # The Measured row resolves (HEST's primary_metric already carries the test/ prefix).
+    assert table.metric == "test/mean_pearson_mean"
+    assert len(table.rows) == 1
+    assert table.rows[0].mean == pytest.approx(0.51)
+    assert table.rows[0].reference_expected is None  # external rows never gate per-row
+    assert table.banner is None  # no gate band exists
+
+    # HEST's published external Reference is surfaced as guidance beside the Measured table.
+    assert table.guidance, "the external HEST Reference must render as a guidance anchor"
+    anchor = table.guidance[0]
+    assert anchor.expected == pytest.approx(0.5898)  # uni2's HEST IDC Pearson
+    assert anchor.url.startswith("http") and anchor.label
+    text = format_table(table)
+    assert "guidance" in text.lower()
+    assert "0.5898" in text  # Reference rendered
+    assert "0.5100" in text  # Measured rendered beside it
+    assert "PASS" not in text and "FAIL" not in text  # nothing is gated
+
+
 class _KeyedBenchmark:
     """A fixture benchmark whose reference is KEYED per encoder (join-on-varied-axis)."""
 
