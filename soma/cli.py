@@ -262,7 +262,8 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         f"{list(benchmark.canonical_seeds)}, running {list(seeds)}.\n"
         "  Fast paths: --seeds 1 (single-seed smoke) | "
         "--from-run-dir <dir> (re-score an existing run, no training).\n"
-        "  Cache-aware: a repeat run reuses soma's feature cache (extraction is skipped).",
+        "  Cache-aware: feature extraction is cached and shared across seeds and repeat "
+        "runs, so it runs once per encoder.",
         flush=True,
     )
 
@@ -296,9 +297,14 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         output_root = Path(args.output_root) / sub if sub else Path(args.output_root)
     else:
         output_root = Path.cwd() / "soma_reproduce" / benchmark.name
-    overrides = (
-        {"cache": {"enabled": True, "root_dir": str(args.cache_root)}} if args.cache_root else None
-    )
+    # Feature extraction is seed-independent (the encoder is frozen and the cache key is
+    # derived from encoder + tile content, not the seed), so every seed shares one cache
+    # root and extraction runs once. --cache-root relocates it (e.g. to fast local storage);
+    # by default it sits beside the run outputs, shared across seeds. Without a shared root
+    # each seed's per-seed output_root would get its own empty cache and re-extract.
+    cache_root = Path(args.cache_root) if args.cache_root else output_root / "feature_cache"
+    overrides = {"cache": {"enabled": True, "root_dir": str(cache_root)}}
+    print(f"Feature cache (shared across seeds): {cache_root}", flush=True)
 
     measured_values: list[float] = []
     for seed in seeds:
