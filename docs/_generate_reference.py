@@ -570,8 +570,6 @@ def _hest_reproduction_section() -> str:
     ``results/hest.csv`` ⋈ ``reference/hest.csv``, so it grows as ``--record`` fills the ledger
     and renders an honest "nothing yet" note while empty.
     """
-    from soma.benchmarks.reproduction import RESOLVABLE_EPS
-
     report = reproduction_report("hest")
     intro = (
         "soma reproduces HEST **natively** — its own slide2vec features, not HEST's TRIDENT\n"
