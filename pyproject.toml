@@ -59,7 +59,10 @@ dev = [
 # never require them: anndata reads the per-slide gene-expression .h5ad, h5py the patch
 # HDF5. log1p targets are computed with numpy (already a core dep).
 hest = [
-    "anndata",
+    # >=0.11 for `anndata.settings`, which the curation tests need to silence the pandas>=3
+    # nullable-string write guard when building fixtures. An unpinned resolve that lands on
+    # 0.10.x satisfies this extra but then fails test collection outright.
+    "anndata>=0.11",
     "h5py",
 ]
 docs = [

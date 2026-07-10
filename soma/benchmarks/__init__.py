@@ -36,11 +36,25 @@ from soma.benchmarks import eva as _eva  # noqa: F401
 from soma.benchmarks import detection_benchmark as _detection_benchmark  # noqa: F401
 from soma.benchmarks import hest as _hest  # noqa: F401
 
+# Reproduction report (joins results/<name>.csv to reference/<name>.csv; imported after the
+# benchmarks register so it can read their primary metrics).
+from soma.benchmarks.reproduction import (  # noqa: E402
+    RESOLVABLE_EPS,
+    Cell,
+    PairOutcome,
+    ReproductionReport,
+    reproduction_report,
+)
+
 __all__ = [
+    "RESOLVABLE_EPS",
     "Benchmark",
+    "Cell",
     "Facet",
     "MeasuredRow",
+    "PairOutcome",
     "ReferenceRow",
+    "ReproductionReport",
     "append_result",
     "expected_rows",
     "get_benchmark",
@@ -49,5 +63,6 @@ __all__ = [
     "load_results",
     "register_benchmark",
     "reproduced_rows",
+    "reproduction_report",
     "score_from_summary",
 ]

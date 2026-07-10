@@ -18,9 +18,9 @@ HEST is registered as **one sub-benchmark per task** (``hest/<task>``), each sha
 the same closed-form spatial-expression probe recipe and varying only the ``encoder``
 axis. soma reproduces it **natively** — its own slide2vec encoder → its per-spot
 feature cache → a closed-form Ridge+PCA probe — with **no dependency on the** ``hest``
-**library or TRIDENT**. The vertical slice lands ``hest/IDC``; the eight remaining
-tasks follow by data-provisioning plus a registration line (see *Adding a HEST task*
-below).
+**library or TRIDENT**. All **9 HEST-Benchmark tasks** are registered (see *Tasks*);
+reproduction soundness is proven by **rank agreement** across them, not by matching the
+extraction stack (see *Reproduction — is it sound?*).
 
 Protocol
 --------
@@ -66,14 +66,17 @@ pinned only where the leaderboard used a non-default one:
    * - Encoder
      - HEST backbone
    * - ``uni2`` (default)
-     - HEST-Benchmark UNI2-h; slide2vec default output
+     - HEST-Benchmark UNI2-h; slide2vec default output (CLS, 1536-d)
    * - ``virchow2``
      - HEST-Benchmark Virchow2; slide2vec ``cls`` output (CLS-only, 1280-d)
+   * - ``h-optimus-1``
+     - HEST-Benchmark H-Optimus-1; slide2vec default output (CLS, 1536-d)
 
 Tasks
 -----
 
-The registered sub-benchmark family (only ``hest/IDC`` now — the vertical slice):
+The registered sub-benchmark family — all 9 HEST-Benchmark tasks, spanning organs
+(breast, prostate, pancreas, colon, rectum, kidney, lung, skin):
 
 .. list-table::
    :header-rows: 1
@@ -81,20 +84,39 @@ The registered sub-benchmark family (only ``hest/IDC`` now — the vertical slic
 
    * - Benchmark
      - HEST task
+   * - ``hest/CCRCC``
+     - ``CCRCC``
+   * - ``hest/COAD``
+     - ``COAD``
    * - ``hest/IDC``
      - ``IDC``
+   * - ``hest/LUNG``
+     - ``LUNG``
+   * - ``hest/LYMPH_IDC``
+     - ``LYMPH_IDC``
+   * - ``hest/PAAD``
+     - ``PAAD``
+   * - ``hest/PRAD``
+     - ``PRAD``
+   * - ``hest/READ``
+     - ``READ``
+   * - ``hest/SKCM``
+     - ``SKCM``
 
-The eight remaining HEST-Benchmark tasks — ``PRAD``, ``PAAD``, ``SKCM``,
-``COAD``, ``READ``, ``CCRCC``, ``LUNG``, ``LYMPH_IDC`` — are provisioned in fan-out
-(*Adding a HEST task* below); the curator and probe already handle them.
+Each shares the *same* curator and closed-form probe; a task is data + a
+registration line + reference rows (*Adding a HEST task* below). The hest-bench HF
+dataset also ships an ``HCC`` (liver) tree, but HCC is **not** one of the 9 scored
+tasks (no published leaderboard number), so it is deliberately not registered.
 
-Published leaderboard
----------------------
+Published leaderboard (IDC)
+---------------------------
 
 HEST's published **external, non-gating** Ridge+PCA Pearson on the IDC task, per
 encoder (best first). There is **no gate row**: nothing is tolerance-checked.
 ``soma reproduce hest/IDC`` renders soma's Measured row *beside* these, making the
-slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. Source: `HEST-Benchmark leaderboard (mahmoodlab/HEST) <https://github.com/mahmoodlab/HEST#hest-benchmark>`__.
+slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. The other 8 tasks'
+references (our reproduction encoders × task) drive the reproduction proof below.
+Source: `HEST-Benchmark leaderboard (mahmoodlab/HEST) <https://github.com/mahmoodlab/HEST#hest-benchmark>`__.
 
 .. list-table::
    :header-rows: 1
@@ -139,15 +161,130 @@ slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. Source: `HEST-
    * - ``musk``
      - 0.5248
 
-Reproduced numbers
-------------------
+Reproduction — is it sound?
+---------------------------
 
-What soma has actually measured, recorded by ``soma reproduce --record`` into
-``soma/benchmarks/results/hest.csv``. HEST's references are external, so the
-Reference / Δ columns stay blank — compare against the published leaderboard
-above:
+soma reproduces HEST **natively** — its own slide2vec features, not HEST's TRIDENT
+extraction. HEST's published numbers are therefore rendered as ``kind=external``
+references: soma prints its Measured value beside them with the signed delta and lets
+you compare. Nothing here is a PASS/FAIL against HEST — a gate should flag a *real*
+regression, and a cross-stack delta is not one (ADR 0005). Three views, computed from
+the results ledger joined to the published reference:
 
-No reproductions have been recorded yet. Run ``soma reproduce <name> --record`` to append a measured number + provenance to the results ledger.
+* **A — absolute agreement** (what is published): soma's Pearson beside HEST's, and the
+  signed delta. The delta is the slide2vec↔TRIDENT parity gap; judge it yourself.
+* **B — rank agreement** (a bonus): **pooled pairwise concordance** — over every
+  (task, encoder-pair), the fraction soma orders the same way HEST does. A pair is
+  *resolvable* when HEST separates it by more than 0.005 on the metric;
+  concordance is computed over resolvable pairs, so soma is not graded on within-noise
+  coin-flips. Per-task Spearman ρ is shown alongside (coarse at few encoders).
+* **C — drift guard** (the only axis that gates, and it compares soma to soma): the
+  ledger is append-only and provenance-pinned (commit, slide2vec version), so a re-run
+  at a new commit adds a row and drift is a visible diff.
+
+**A — per-cell agreement (published, not gated)**
+
+.. list-table::
+   :header-rows: 1
+
+   * - Task
+     - Encoder
+     - soma
+     - HEST
+     - Δ
+     - Δ %
+     - Recorded
+   * - PAAD
+     - ``uni2``
+     - 0.5007
+     - 0.5001
+     - +0.0006
+     - +0.12%
+     - 2026-07-10 @ ``e9fb89c``
+   * - PAAD
+     - ``virchow2``
+     - 0.4769
+     - 0.4779
+     - -0.0010
+     - -0.21%
+     - 2026-07-10 @ ``e9fb89c``
+   * - PAAD
+     - ``h-optimus-1``
+     - 0.4916
+     - 0.4964
+     - -0.0048
+     - -0.97%
+     - 2026-07-10 @ ``e9fb89c``
+   * - COAD
+     - ``uni2``
+     - 0.3105
+     - 0.3015
+     - +0.0090
+     - +2.99%
+     - 2026-07-10 @ ``e9fb89c``
+   * - COAD
+     - ``virchow2``
+     - 0.2615
+     - 0.2581
+     - +0.0034
+     - +1.32%
+     - 2026-07-10 @ ``e9fb89c``
+   * - COAD
+     - ``h-optimus-1``
+     - 0.3190
+     - 0.3195
+     - -0.0005
+     - -0.16%
+     - 2026-07-10 @ ``e9fb89c``
+   * - LUNG
+     - ``uni2``
+     - 0.5593
+     - 0.5587
+     - +0.0006
+     - +0.11%
+     - 2026-07-10 @ ``e9fb89c``
+   * - LUNG
+     - ``virchow2``
+     - 0.5520
+     - 0.5685
+     - -0.0165
+     - -2.90%
+     - 2026-07-10 @ ``e9fb89c``
+   * - LUNG
+     - ``h-optimus-1``
+     - 0.5768
+     - 0.5779
+     - -0.0011
+     - -0.19%
+     - 2026-07-10 @ ``e9fb89c``
+
+Across 9 cell(s) the parity gap is a median **0.21%** relative, worst **2.99%** (COAD/``uni2``). Stated, not gated: see ADR 0005.
+
+**B — rank concordance (bonus)**
+
+**Pooled pairwise rank concordance: 7/8 (88%)** on resolvable pairs (HEST separates them by more than 0.005); 1 within-noise pair(s) excluded.
+Over *all* pairs (resolvable + within-noise): 8/9 (89%).
+
+Resolvable pairs soma orders *differently* from HEST (reported, not gated):
+
+* LUNG: HEST ``virchow2`` > ``uni2`` (Δref +0.0098) but soma reverses it (Δsoma -0.0073)
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - Task
+     - Spearman ρ (soma vs HEST)
+   * - PAAD
+     - +1.000
+   * - COAD
+     - +1.000
+   * - LUNG
+     - +0.500
+
+**C — drift guard**
+
+Recorded at soma commit(s) ``e9fb89c``, slide2vec 5.3.0. The ledger (``soma/benchmarks/results/hest.csv``) is append-only, so re-running a cell at a new commit adds a row — drift never overwrites history.
 
 Download one task
 -----------------
@@ -171,37 +308,49 @@ Reproduce
 canonical seed, reads ``test/mean_pearson_mean`` from ``summary.json``, and
 renders it beside the external reference::
 
+    soma reproduce hest/CCRCC --raw-root /path/to/hest-bench/CCRCC
+    soma reproduce hest/COAD --raw-root /path/to/hest-bench/COAD
     soma reproduce hest/IDC --raw-root /path/to/hest-bench/IDC
+    soma reproduce hest/LUNG --raw-root /path/to/hest-bench/LUNG
+    soma reproduce hest/LYMPH_IDC --raw-root /path/to/hest-bench/LYMPH_IDC
+    soma reproduce hest/PAAD --raw-root /path/to/hest-bench/PAAD
+    soma reproduce hest/PRAD --raw-root /path/to/hest-bench/PRAD
+    soma reproduce hest/READ --raw-root /path/to/hest-bench/READ
+    soma reproduce hest/SKCM --raw-root /path/to/hest-bench/SKCM
 
 Pick the encoder axis with ``--encoder`` (default ``uni2``; e.g. ``--encoder virchow2``).
 
 Adding a HEST task
 ------------------
 
-Fanning out to another task is **data + one registration line + reference rows** —
-never new machinery. ``curate_hest`` and the closed-form probe are task-agnostic, so
-adding a task **never touches the curator or the probe**:
+All 9 scored tasks are already registered. The one hest-bench task *not* registered
+is ``HCC`` (liver): the HF hub ships its data tree, but HCC is **unscored** — no
+published leaderboard number — so it carries no reference row. Adding it (or any future
+task) is a **fan-out**: **data + one ``HEST_TASKS`` entry + reference rows** — never new
+machinery. ``curate_hest`` and the closed-form probe are task-agnostic, so a new task
+**never touches the curator or the probe**:
 
-**1. Download the task** (scoped; swap ``IDC`` for e.g. ``PRAD``)::
+**1. Download the task** (scoped; e.g. ``HCC``)::
 
-    hf download MahmoodLab/hest-bench --include 'PRAD/*' --exclude 'fm_v1/*' \
+    hf download MahmoodLab/hest-bench --include 'HCC/*' --exclude 'fm_v1/*' \
         --repo-type dataset --local-dir /path/to/hest-bench
 
 **2. Curate** it into a ``spatial_expression`` Manifest with the *same* curator::
 
-    python -m soma.curation.hest --raw-root /path/to/hest-bench/PRAD \
-        --output-dir /path/to/curated/PRAD --task PRAD
+    python -m soma.curation.hest --raw-root /path/to/hest-bench/HCC \
+        --output-dir /path/to/curated/HCC --task HCC
 
-**3. Register** the sub-benchmark with a single line in ``soma/benchmarks/hest.py`` —
-instantiate the *existing* class, no new curator/probe code::
+**3. Register** it by adding the task id to ``HEST_TASKS`` in ``soma/benchmarks/hest.py``
+— the module loop-registers ``HestBenchmark(task)`` for each, no new curator/probe code::
 
-    register_benchmark(HestBenchmark("PRAD"))
+    HEST_TASKS = (..., "HCC")  # loop-registers hest/HCC
 
 **4. Add external reference rows** for the task to ``soma/benchmarks/reference/hest.csv``
 — one ``kind=external`` row per encoder (the published Pearson, a ``label``, a ``url``).
+Without a published number a task can still run, but it has nothing to reproduce against.
 
 Then ``python docs/_generate_reference.py`` re-emits this page with the new task,
-``soma list benchmarks`` shows ``hest/PRAD``, and ``soma reproduce hest/PRAD`` runs —
+``soma list benchmarks`` shows ``hest/HCC``, and ``soma reproduce hest/HCC`` runs —
 all from the same curator and the same probe.
 
 .. seealso::
