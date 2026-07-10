@@ -23,7 +23,10 @@ from PIL import Image
 # The curator's readers (anndata for .h5ad, h5py for the patch HDF5) live in the
 # soma[hest] extra; the fixture builder needs them too. Skip the whole module when the
 # extra is absent so core CI (which does not install it) stays green.
-anndata = pytest.importorskip("anndata")
+# minversion 0.11: `anndata.settings` (used just below) landed there. Without it an older
+# anndata satisfies the import but raises AttributeError at collection, which aborts the whole
+# suite rather than skipping this module.
+anndata = pytest.importorskip("anndata", minversion="0.11")
 h5py = pytest.importorskip("h5py")
 
 from soma.curation.hest import curate_hest  # noqa: E402
