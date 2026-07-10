@@ -39,6 +39,7 @@ from soma.benchmarks import hest as _hest  # noqa: F401
 # Reproduction report (joins results/<name>.csv to reference/<name>.csv; imported after the
 # benchmarks register so it can read their primary metrics).
 from soma.benchmarks.reproduction import (  # noqa: E402
+    RESOLVABLE_EPS,
     Cell,
     PairOutcome,
     ReproductionReport,
@@ -46,6 +47,7 @@ from soma.benchmarks.reproduction import (  # noqa: E402
 )
 
 __all__ = [
+    "RESOLVABLE_EPS",
     "Benchmark",
     "Cell",
     "Facet",

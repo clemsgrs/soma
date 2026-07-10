@@ -180,12 +180,97 @@ reference:
 * **C — drift guard**: the ledger is append-only and provenance-pinned (commit,
   slide2vec version), so a re-run at a new commit adds a row and drift is a visible diff.
 
-No cells reproduced yet. Run, e.g.::
+**A — per-cell agreement**
 
-    soma reproduce hest/IDC --encoder uni2 --raw-root /path/to/hest-bench --record
+.. list-table::
+   :header-rows: 1
 
-to append a measured Pearson + provenance to ``soma/benchmarks/results/hest.csv``;
-this section then renders the A/B/C proof automatically.
+   * - Task
+     - Encoder
+     - soma
+     - HEST
+     - Δ
+     - Recorded
+   * - PAAD
+     - ``uni2``
+     - 0.5007
+     - 0.5001
+     - +0.0006
+     - 2026-07-10 @ ``e9fb89c``
+   * - PAAD
+     - ``virchow2``
+     - 0.4769
+     - 0.4779
+     - -0.0010
+     - 2026-07-10 @ ``e9fb89c``
+   * - PAAD
+     - ``h-optimus-1``
+     - 0.4916
+     - 0.4964
+     - -0.0048
+     - 2026-07-10 @ ``e9fb89c``
+   * - COAD
+     - ``uni2``
+     - 0.3105
+     - 0.3015
+     - +0.0090
+     - 2026-07-10 @ ``e9fb89c``
+   * - COAD
+     - ``virchow2``
+     - 0.2615
+     - 0.2581
+     - +0.0034
+     - 2026-07-10 @ ``e9fb89c``
+   * - COAD
+     - ``h-optimus-1``
+     - 0.3190
+     - 0.3195
+     - -0.0005
+     - 2026-07-10 @ ``e9fb89c``
+   * - LUNG
+     - ``uni2``
+     - 0.5593
+     - 0.5587
+     - +0.0006
+     - 2026-07-10 @ ``e9fb89c``
+   * - LUNG
+     - ``virchow2``
+     - 0.5520
+     - 0.5685
+     - -0.0165
+     - 2026-07-10 @ ``e9fb89c``
+   * - LUNG
+     - ``h-optimus-1``
+     - 0.5768
+     - 0.5779
+     - -0.0011
+     - 2026-07-10 @ ``e9fb89c``
+
+**B — rank concordance (headline)**
+
+**Pooled pairwise rank concordance: 7/8 (88%)** on resolvable pairs (HEST separates them by more than 0.005); 1 within-noise pair(s) excluded.
+Over *all* pairs (resolvable + within-noise): 8/9 (89%).
+
+Resolvable pairs soma orders *differently* from HEST (honest failures):
+
+* LUNG: HEST ``virchow2`` > ``uni2`` (Δref +0.0098) but soma reverses it (Δsoma -0.0073)
+
+.. list-table::
+   :header-rows: 1
+   :widths: 50 50
+
+   * - Task
+     - Spearman ρ (soma vs HEST)
+   * - PAAD
+     - +1.000
+   * - COAD
+     - +1.000
+   * - LUNG
+     - +0.500
+
+**C — drift guard**
+
+Recorded at soma commit(s) ``e9fb89c``, slide2vec 5.3.0. The ledger (``soma/benchmarks/results/hest.csv``) is append-only, so re-running a cell at a new commit adds a row — drift never overwrites history.
 
 Download one task
 -----------------

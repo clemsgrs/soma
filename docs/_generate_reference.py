@@ -17,6 +17,7 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
 
 from soma.aggregators import aggregator_registry
 from soma.benchmarks import (
+    RESOLVABLE_EPS,
     expected_rows,
     get_benchmark,
     list_benchmarks,
@@ -619,11 +620,12 @@ def _hest_reproduction_section() -> str:
     def _frac(n: int, d: int) -> str:
         return f"{n}/{d} ({n / d:.0%})" if d else "—"
 
-    cr, ca = report.concordance_resolvable, report.concordance_all
+    ca = report.concordance_all
+    n_within_noise = len(report.pairs) - report.n_resolvable
     headline = (
         f"**Pooled pairwise rank concordance: {_frac(report.n_resolvable_concordant, report.n_resolvable)}**"
-        " on resolvable pairs"
-        + (f" — ρ-headline {cr:.0%}" if cr is not None else "")
+        f" on resolvable pairs (HEST separates them by more than {RESOLVABLE_EPS})"
+        + (f"; {n_within_noise} within-noise pair(s) excluded" if n_within_noise else "")
         + ".\n"
         f"Over *all* pairs (resolvable + within-noise): "
         f"{sum(1 for p in report.pairs if p.concordant)}/{len(report.pairs)}"
