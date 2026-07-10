@@ -88,9 +88,12 @@ TASK = "IDC"
 #     output_variants={"cls": 1280, "cls_patch_mean": 2560}, default "cls_patch_mean").
 #   * uni2, h-optimus-1 → no override: slide2vec's default for each is the plain CLS token
 #     (uni2 1536-d; h-optimus-1's only variant is the 1536-d "default" CLS), matching TRIDENT.
-# TODO(#261): confirm slide2vec<->TRIDENT virchow2 parity (transforms + CLS-only variant).
 # HEST extracts features via TRIDENT; soma re-extracts natively via slide2vec, so the
 # Measured-minus-Reference delta is the accepted, non-gating slide2vec<->TRIDENT parity gap.
+# TODO(#276): that gap is a median 0.21% relative over the first 9 cells, but LUNG/virchow2
+# (-2.90%) and COAD/uni2 (+2.99%) sit an order of magnitude off the family. virchow2 is the
+# only encoder here on a non-default output variant, so its transform path is the first
+# suspect. Explain them; do not widen a tolerance to hide them (ADR 0005).
 DEFAULT_ENCODER = "uni2"
 OUTPUT_VARIANTS: dict[str, str] = {"virchow2": "cls"}
 
