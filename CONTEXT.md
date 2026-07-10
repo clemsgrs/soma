@@ -27,7 +27,14 @@ _Avoid_: "results table", "comparison" (a comparison is the on-demand N-run `com
 A Leaderboard row backed by an actual Run — its metric comes from that run's `summary.json`.
 
 **Reference row**:
-A Leaderboard row backed by no run — a published number a Benchmark carries (e.g. the kaiko-ai/eva leaderboard values in `soma/benchmarks/reference/eva.csv`). A Reproduction is a Measured row landing next to its Reference row, with the tolerance check reading both. Two shapes: a **broad** reference (one config-agnostic scalar, e.g. OCELOT's official-challenge band) renders as a threshold banner the whole Leaderboard is read against; a **keyed** reference (indexed by config axes, e.g. EVA's per-encoder numbers) renders as aligned rows, one per matching config.
+A Leaderboard row backed by no run — a published number a Benchmark carries (e.g. the kaiko-ai/eva leaderboard values in `soma/benchmarks/reference/eva.csv`). A Reproduction is a Measured row landing next to its Reference row, with the tolerance check reading both. Two shapes: a **broad** reference (one config-agnostic scalar, e.g. OCELOT's official-challenge band) renders as a threshold banner the whole Leaderboard is read against; a **keyed** reference (indexed by config axes, e.g. EVA's per-encoder numbers) renders as aligned rows, one per matching config. Comes in two **kinds** (below).
+
+**Gate row**:
+A Reference row `soma reproduce` **tolerance-checks** — the checkable target, printed `PASS`/`FAIL` with the delta. The default kind.
+
+**External row**:
+A non-gating Reference row: a published third-party number (e.g. HEST's leaderboard Pearson) rendered *beside* the Measured value with the signed delta, but **never** tolerance-checked. Used when soma measures the same quantity through a *different* stack than the source, so the delta is expected guidance, not a target. Carries a human `label` and a linkable `url`.
+_Avoid_: turning an External row into a Gate row by giving it a loose tolerance — that hides the delta the External row exists to show.
 
 **Facet**:
 The query that defines a Leaderboard: a set of config axes to *hold fixed* plus one axis to *vary and rank by*, over a fixed (dataset + splits + task). A "cross-encoder" Leaderboard holds the downstream recipe fixed and varies `encoder`; an "encoder-specific" one holds `encoder` fixed and varies the rest. One flat registry, many Facets — a Benchmark declares its canonical Facet (what the published comparison varied). `--like <run_dir>` pins a Facet by example (hold everything fixed except the vary-axis).
@@ -36,6 +43,21 @@ _Avoid_: treating a Leaderboard as a single fixed keying; "grouping" (a Facet al
 **Sweep**:
 A launcher that fires many configs at once (e.g. an encoder grid) over one dataset. Its runs land in that dataset's Leaderboard; a Sweep does not own its own ranking.
 _Avoid_: "campaign" (the OCELOT-specific name for the first hand-built sweep), "grid".
+
+### Reproduction soundness
+
+**Native reproduction**:
+Reproducing a Benchmark with soma's *own* extraction stack — its slide2vec encoder → its feature cache → its head/probe — rather than the benchmark's original tooling (HEST uses TRIDENT). The extraction-stack difference is an accepted, non-gating delta, so a native reproduction is validated by rank agreement, not by matching the original numbers to the decimal.
+_Avoid_: "exact reproduction" for a native one; the point is *equivalent conclusions*, not identical digits.
+
+**Reproduction soundness**:
+The claim that a native reproduction is trustworthy, evidenced along three axes: **A — absolute agreement** (per-cell Measured vs Reference delta, shown not gated); **B — rank agreement** (the headline — soma re-derives the benchmark's *ordering* of encoders); **C — drift guard** (the append-only, provenance-pinned results ledger makes any change across code/extractor versions an explicit diff).
+
+**Pairwise concordance**:
+The B statistic: over every `(dataset, encoder-pair)`, the fraction soma orders the same way the Reference does, pooled across datasets. Interpretable where per-dataset rank correlation is degenerate (few encoders). The headline is concordance over **resolvable** pairs only; per-dataset Spearman ρ is reported alongside.
+
+**Resolvable pair**:
+An encoder pair the Reference separates by more than a small ε (0.005 on the metric). Below ε the benchmark itself cannot call the ordering, so a soma flip is a within-noise coin-flip, not a defect — excluded from the headline concordance.
 
 ### Data preparation
 

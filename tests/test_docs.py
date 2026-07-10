@@ -113,10 +113,23 @@ def test_hest_benchmark_page_documents_scoped_download_and_fanout() -> None:
     assert "--exclude 'fm_v1/*'" in generated
     assert "precomputed" in generated.lower()
     # A fan-out guide whose whole point is: adding a task never changes the curator or probe.
+    # The family loop-registers over HEST_TASKS, so "add a task" = add a HEST_TASKS entry (the
+    # illustrative task is HCC — the one hest-bench tree with data but no scored/published number).
     assert "fan-out" in generated.lower()
     assert "curate_hest" in generated
     assert "never touches the curator or the probe" in generated
-    assert 'register_benchmark(HestBenchmark("PRAD"))' in generated
+    assert "HEST_TASKS" in generated
+    assert "loop-registers hest/HCC" in generated
+
+
+def test_hest_benchmark_page_renders_reproduction_soundness() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_hest_benchmark_rst()
+    # The A/B/C reproduction proof is generated from results ⋈ reference (empty ledger renders
+    # an honest "nothing yet" note, so this holds whether or not cells have been recorded).
+    assert "Reproduction — is it sound?" in generated
+    assert "rank agreement" in generated.lower()
+    assert "concordance" in generated.lower()
 
 
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:

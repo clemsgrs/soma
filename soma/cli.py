@@ -317,11 +317,32 @@ def _provenance() -> tuple[str, str, str]:
     return date, _git_commit(), slide2vec_version
 
 
+def _record_reference_row(benchmark, axes: dict[str, Any], gate_row):
+    """The reference row whose key + metric key a ``--record`` ledger entry.
+
+    A recorded measurement must join its reference table, so the ledger entry copies a
+    reference row's key. Prefer the tolerance-checked **gate** row; for an **external-only**
+    benchmark (no gate row — e.g. ``hest/<task>``) fall back to the single external row that
+    matches the primary metric, so reproduced numbers are still recorded (they join the HEST
+    reference for the per-cell delta + rank concordance the docs render). Returns ``None`` when
+    neither resolves — nothing to key on, so ``--record`` is a no-op for that cell.
+    """
+    if gate_row is not None:
+        return gate_row
+    external = [
+        r
+        for r in benchmark.expected(**axes)
+        if r.metric == benchmark.primary_metric and r.is_external
+    ]
+    return external[0] if len(external) == 1 else None
+
+
 def _record_result(benchmark, row, measured: float, std: float | None, n_seeds: int | None) -> None:
     """Append a reproduced-measurement row to the benchmark's results ledger (``--record``).
 
-    Keys and metric are copied from the matched **gate** reference ``row`` so the recorded
-    measurement joins its band exactly; provenance is captured at run time.
+    Keys and metric are copied from the matched reference ``row`` (a **gate** row, or an
+    **external** row for an external-only benchmark) so the recorded measurement joins its
+    reference at ``key`` + ``metric``; provenance is captured at run time.
     """
     from soma.benchmarks import MeasuredRow, append_result
 
@@ -422,10 +443,14 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     if args.from_run_dir is not None:
         metrics = benchmark.score(args.from_run_dir)
         measured = float(metrics[benchmark.primary_metric])
-        if getattr(args, "record", False) and row is not None:
-            # A re-scored single run has no seed spread; an external-only benchmark has no
-            # gate row to key the ledger entry on, so --record is a no-op there.
-            _record_result(benchmark, row, measured, std=None, n_seeds=None)
+        if getattr(args, "record", False):
+            # A re-scored single run has no seed spread (std/n_seeds are None). Key the ledger
+            # entry off the gate row, or the external row for an external-only benchmark.
+            record_row = _record_reference_row(benchmark, axes, row)
+            if record_row is not None:
+                _record_result(benchmark, record_row, measured, std=None, n_seeds=None)
+            else:
+                print("  (no reference row to key --record on; nothing recorded)")
         return _finish(measured)
 
     curated_dir = getattr(args, "curated_dir", None)
@@ -485,9 +510,14 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         measured_values.append(float(metrics[benchmark.primary_metric]))
 
     measured = statistics.fmean(measured_values)
-    if getattr(args, "record", False) and row is not None:
-        std = statistics.stdev(measured_values) if len(measured_values) > 1 else 0.0
-        _record_result(benchmark, row, measured, std=std, n_seeds=len(seeds))
+    if getattr(args, "record", False):
+        # Key off the gate row, or the external row for an external-only benchmark (hest).
+        record_row = _record_reference_row(benchmark, axes, row)
+        if record_row is not None:
+            std = statistics.stdev(measured_values) if len(measured_values) > 1 else 0.0
+            _record_result(benchmark, record_row, measured, std=std, n_seeds=len(seeds))
+        else:
+            print("  (no reference row to key --record on; nothing recorded)")
     return _finish(measured)
 
 

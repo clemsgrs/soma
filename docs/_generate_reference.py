@@ -22,6 +22,7 @@ from soma.benchmarks import (
     list_benchmarks,
     load_reference,
     load_results,
+    reproduction_report,
 )
 from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import hest as hest_bench
@@ -560,13 +561,120 @@ def build_eva_benchmark_rst() -> str:
     return "\n\n".join(sections).rstrip() + "\n"
 
 
+def _hest_reproduction_section() -> str:
+    """Render the A/B/C reproduction proof from ``reproduction_report("hest")``.
+
+    A (per-cell delta), B (pooled pairwise rank concordance — the headline — plus per-task
+    Spearman), C (the provenance-pinned append-only ledger as drift guard). Built purely from
+    ``results/hest.csv`` ⋈ ``reference/hest.csv``, so it grows as ``--record`` fills the ledger
+    and renders an honest "nothing yet" note while empty.
+    """
+    from soma.benchmarks.reproduction import RESOLVABLE_EPS
+
+    report = reproduction_report("hest")
+    intro = (
+        "soma reproduces HEST **natively** — its own slide2vec features, not HEST's TRIDENT\n"
+        "extraction — so the proof of soundness is **not** that the numbers match to the\n"
+        "decimal (the extraction stacks differ), but that soma re-derives HEST's **ranking**\n"
+        "of encoders. Three views, computed from the results ledger joined to the published\n"
+        "reference:\n\n"
+        "* **A — absolute agreement** (per cell): soma's Pearson beside HEST's, and the signed\n"
+        "  delta. Shown, never gated — the delta is the accepted slide2vec↔TRIDENT parity gap.\n"
+        "* **B — rank agreement** (the headline): **pooled pairwise concordance** — over every\n"
+        "  (task, encoder-pair), the fraction soma orders the same way HEST does. A pair is\n"
+        f"  *resolvable* when HEST separates it by more than {RESOLVABLE_EPS} on the metric; the\n"
+        "  headline is concordance over resolvable pairs, so soma is not graded on within-noise\n"
+        "  coin-flips. Per-task Spearman ρ is shown alongside (coarse at few encoders).\n"
+        "* **C — drift guard**: the ledger is append-only and provenance-pinned (commit,\n"
+        "  slide2vec version), so a re-run at a new commit adds a row and drift is a visible diff."
+    )
+
+    if not report.cells:
+        return (
+            intro
+            + "\n\nNo cells reproduced yet. Run, e.g.::\n\n"
+            "    soma reproduce hest/IDC --encoder uni2 --raw-root /path/to/hest-bench --record\n\n"
+            "to append a measured Pearson + provenance to ``soma/benchmarks/results/hest.csv``;\n"
+            "this section then renders the A/B/C proof automatically."
+        )
+
+    # A — per-cell table.
+    a_header = ["Task", "Encoder", "soma", "HEST", "Δ", "Recorded"]
+    a_lines = [".. list-table::", "   :header-rows: 1", ""]
+    a_lines.extend([f"   * - {a_header[0]}"] + [f"     - {c}" for c in a_header[1:]])
+    for cell in report.cells:
+        commit = f"``{cell.soma_commit}``" if cell.soma_commit else "—"
+        recorded = f"{cell.date} @ {commit}" if cell.date else commit
+        vals = [
+            cell.dataset,
+            f"``{cell.encoder}``",
+            f"{cell.measured:.4f}",
+            f"{cell.reference:.4f}",
+            f"{cell.delta:+.4f}",
+            recorded,
+        ]
+        a_lines.extend([f"   * - {vals[0]}"] + [f"     - {v}" for v in vals[1:]])
+
+    # B — concordance headline + Spearman.
+    def _frac(n: int, d: int) -> str:
+        return f"{n}/{d} ({n / d:.0%})" if d else "—"
+
+    cr, ca = report.concordance_resolvable, report.concordance_all
+    headline = (
+        f"**Pooled pairwise rank concordance: {_frac(report.n_resolvable_concordant, report.n_resolvable)}**"
+        " on resolvable pairs"
+        + (f" — ρ-headline {cr:.0%}" if cr is not None else "")
+        + ".\n"
+        f"Over *all* pairs (resolvable + within-noise): "
+        f"{sum(1 for p in report.pairs if p.concordant)}/{len(report.pairs)}"
+        + (f" ({ca:.0%})" if ca is not None else "")
+        + "."
+    )
+    discordant = [p for p in report.pairs if p.resolvable and not p.concordant]
+    if discordant:
+        disagree = "\n\nResolvable pairs soma orders *differently* from HEST (honest failures):\n\n" + "\n".join(
+            f"* {p.dataset}: HEST ``{p.encoder_high}`` > ``{p.encoder_low}`` "
+            f"(Δref {p.reference_gap:+.4f}) but soma reverses it (Δsoma {p.measured_gap:+.4f})"
+            for p in discordant
+        )
+    else:
+        disagree = "\n\nEvery resolvable pair is concordant — soma reproduces HEST's ordering wherever HEST resolves it."
+    spearman_rows = [
+        (task, "—" if rho is None else f"{rho:+.3f}")
+        for task, rho in report.spearman_by_dataset.items()
+    ]
+    spearman_table = _kv_table("Task", "Spearman ρ (soma vs HEST)", spearman_rows, widths="50 50")
+
+    # C — provenance.
+    commits = ", ".join(f"``{c}``" for c in report.soma_commits) or "—"
+    versions = ", ".join(report.slide2vec_versions) or "—"
+    provenance = (
+        f"Recorded at soma commit(s) {commits}, slide2vec {versions}. The ledger "
+        "(``soma/benchmarks/results/hest.csv``) is append-only, so re-running a cell at a new "
+        "commit adds a row — drift never overwrites history."
+    )
+
+    return (
+        intro
+        + "\n\n**A — per-cell agreement**\n\n"
+        + "\n".join(a_lines)
+        + "\n\n**B — rank concordance (headline)**\n\n"
+        + headline
+        + disagree
+        + "\n\n"
+        + spearman_table
+        + "\n\n**C — drift guard**\n\n"
+        + provenance
+    )
+
+
 def build_hest_benchmark_rst() -> str:
     """Generate the HEST benchmark page from the registered ``hest/<task>`` family.
 
     Family-aware (like EVA): renders every registered ``hest/<task>`` sub-benchmark, so a
     fanned-out task appears automatically once ``HestBenchmark(task)`` is registered. The
     page also documents the scoped data download and the "adding a task" fan-out recipe —
-    the point being that a new task is data + one registration line + reference rows, never
+    the point being that a new task is data + one ``HEST_TASKS`` entry + reference rows, never
     a change to the curator or the probe.
     """
     family = [get_benchmark(n) for n in list_benchmarks() if n.startswith("hest/")]
@@ -603,13 +711,17 @@ def build_hest_benchmark_rst() -> str:
     encoder_rows = [
         (
             f"``{hest_bench.DEFAULT_ENCODER}`` (default)",
-            "HEST-Benchmark UNI2-h; slide2vec default output",
+            "HEST-Benchmark UNI2-h; slide2vec default output (CLS, 1536-d)",
         ),
         (
             "``virchow2``",
             "HEST-Benchmark Virchow2; slide2vec ``"
             + hest_bench.OUTPUT_VARIANTS["virchow2"]
             + "`` output (CLS-only, 1280-d)",
+        ),
+        (
+            "``h-optimus-1``",
+            "HEST-Benchmark H-Optimus-1; slide2vec default output (CLS, 1536-d)",
         ),
     ]
 
@@ -626,35 +738,43 @@ def build_hest_benchmark_rst() -> str:
     )
 
     fanout_body = (
-        "Fanning out to another task is **data + one registration line + reference rows** —\n"
-        "never new machinery. ``curate_hest`` and the closed-form probe are task-agnostic, so\n"
-        "adding a task **never touches the curator or the probe**:\n\n"
-        "**1. Download the task** (scoped; swap ``IDC`` for e.g. ``PRAD``)::\n\n"
-        "    hf download MahmoodLab/hest-bench --include 'PRAD/*' --exclude 'fm_v1/*' \\\n"
+        "All 9 scored tasks are already registered. The one hest-bench task *not* registered\n"
+        "is ``HCC`` (liver): the HF hub ships its data tree, but HCC is **unscored** — no\n"
+        "published leaderboard number — so it carries no reference row. Adding it (or any future\n"
+        "task) is a **fan-out**: **data + one ``HEST_TASKS`` entry + reference rows** — never new\n"
+        "machinery. ``curate_hest`` and the closed-form probe are task-agnostic, so a new task\n"
+        "**never touches the curator or the probe**:\n\n"
+        "**1. Download the task** (scoped; e.g. ``HCC``)::\n\n"
+        "    hf download MahmoodLab/hest-bench --include 'HCC/*' --exclude 'fm_v1/*' \\\n"
         "        --repo-type dataset --local-dir /path/to/hest-bench\n\n"
         "**2. Curate** it into a ``spatial_expression`` Manifest with the *same* curator::\n\n"
-        "    python -m soma.curation.hest --raw-root /path/to/hest-bench/PRAD \\\n"
-        "        --output-dir /path/to/curated/PRAD --task PRAD\n\n"
-        "**3. Register** the sub-benchmark with a single line in ``soma/benchmarks/hest.py`` —\n"
-        "instantiate the *existing* class, no new curator/probe code::\n\n"
-        '    register_benchmark(HestBenchmark("PRAD"))\n\n'
+        "    python -m soma.curation.hest --raw-root /path/to/hest-bench/HCC \\\n"
+        "        --output-dir /path/to/curated/HCC --task HCC\n\n"
+        "**3. Register** it by adding the task id to ``HEST_TASKS`` in ``soma/benchmarks/hest.py``\n"
+        "— the module loop-registers ``HestBenchmark(task)`` for each, no new curator/probe code::\n\n"
+        '    HEST_TASKS = (..., "HCC")  # loop-registers hest/HCC\n\n'
         "**4. Add external reference rows** for the task to ``soma/benchmarks/reference/hest.csv``\n"
-        "— one ``kind=external`` row per encoder (the published Pearson, a ``label``, a ``url``).\n\n"
+        "— one ``kind=external`` row per encoder (the published Pearson, a ``label``, a ``url``).\n"
+        "Without a published number a task can still run, but it has nothing to reproduce against.\n\n"
         "Then ``python docs/_generate_reference.py`` re-emits this page with the new task,\n"
-        "``soma list benchmarks`` shows ``hest/PRAD``, and ``soma reproduce hest/PRAD`` runs —\n"
+        "``soma list benchmarks`` shows ``hest/HCC``, and ``soma reproduce hest/HCC`` runs —\n"
         "all from the same curator and the same probe."
     )
 
     # The published HEST leaderboard for this task, rendered readably (best first) instead of
     # dumping the reference CSV. ``load_reference`` returns every row unfiltered (the
     # benchmark's own ``expected()`` defaults the encoder axis, so it would show only one).
+    # The full published IDC leaderboard (all ~18 encoders) is the illustrative one; the other
+    # tasks' references (our 3 campaign encoders × 8 tasks) drive the Reproduction section below.
     leaderboard_rows = [
         (f"``{row.key['encoder']}``", f"{row.expected:.4f}")
         for row in sorted(
             (
                 r
                 for r in load_reference("hest")
-                if r.is_external and r.metric == head.primary_metric
+                if r.is_external
+                and r.metric == head.primary_metric
+                and r.key.get("dataset") == "IDC"
             ),
             key=lambda r: r.expected,
             reverse=True,
@@ -674,9 +794,9 @@ def build_hest_benchmark_rst() -> str:
         "the same closed-form spatial-expression probe recipe and varying only the ``encoder``\n"
         "axis. soma reproduces it **natively** — its own slide2vec encoder → its per-spot\n"
         "feature cache → a closed-form Ridge+PCA probe — with **no dependency on the** ``hest``\n"
-        "**library or TRIDENT**. The vertical slice lands ``hest/IDC``; the eight remaining\n"
-        "tasks follow by data-provisioning plus a registration line (see *Adding a HEST task*\n"
-        "below).",
+        "**library or TRIDENT**. All **9 HEST-Benchmark tasks** are registered (see *Tasks*);\n"
+        "reproduction soundness is proven by **rank agreement** across them, not by matching the\n"
+        "extraction stack (see *Reproduction — is it sound?*).",
         _section(
             "Protocol",
             "Stated once, shared by every task; the ``encoder`` axis is the only variable:\n\n"
@@ -691,29 +811,29 @@ def build_hest_benchmark_rst() -> str:
         ),
         _section(
             "Tasks",
-            "The registered sub-benchmark family (only ``hest/IDC`` now — the vertical slice):\n\n"
+            "The registered sub-benchmark family — all 9 HEST-Benchmark tasks, spanning organs\n"
+            "(breast, prostate, pancreas, colon, rectum, kidney, lung, skin):\n\n"
             + _kv_table("Benchmark", "HEST task", task_rows, widths="50 50")
-            + "\n\nThe eight remaining HEST-Benchmark tasks — ``PRAD``, ``PAAD``, ``SKCM``,\n"
-            "``COAD``, ``READ``, ``CCRCC``, ``LUNG``, ``LYMPH_IDC`` — are provisioned in fan-out\n"
-            "(*Adding a HEST task* below); the curator and probe already handle them.",
+            + "\n\nEach shares the *same* curator and closed-form probe; a task is data + a\n"
+            "registration line + reference rows (*Adding a HEST task* below). The hest-bench HF\n"
+            "dataset also ships an ``HCC`` (liver) tree, but HCC is **not** one of the 9 scored\n"
+            "tasks (no published leaderboard number), so it is deliberately not registered.",
         ),
         _section(
-            "Published leaderboard",
+            "Published leaderboard (IDC)",
             "HEST's published **external, non-gating** Ridge+PCA Pearson on the IDC task, per\n"
             "encoder (best first). There is **no gate row**: nothing is tolerance-checked.\n"
             "``soma reproduce hest/IDC`` renders soma's Measured row *beside* these, making the\n"
-            "slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. Source: "
+            "slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. The other 8 tasks'\n"
+            "references (our reproduction encoders × task) drive the reproduction proof below.\n"
+            "Source: "
             + _reference_source_link("hest")
             + ".\n\n"
             + _kv_table("Encoder", "Published ``pearson``", leaderboard_rows, widths="60 40"),
         ),
         _section(
-            "Reproduced numbers",
-            "What soma has actually measured, recorded by ``soma reproduce --record`` into\n"
-            "``soma/benchmarks/results/hest.csv``. HEST's references are external, so the\n"
-            "Reference / Δ columns stay blank — compare against the published leaderboard\n"
-            "above:\n\n"
-            + _reproduced_table("hest", ("dataset", "encoder")),
+            "Reproduction — is it sound?",
+            _hest_reproduction_section(),
         ),
         _section(
             "Download one task",

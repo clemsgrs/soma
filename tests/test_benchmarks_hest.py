@@ -1,11 +1,12 @@
-"""HestBenchmark registered as ``hest/IDC`` (issue #259) — offline conformance + wiring.
+"""HestBenchmark family ``hest/<task>`` (all 9 HEST-Benchmark tasks) — offline conformance.
 
-No HEST data or GPU here: the registry lookup, the Benchmark-Protocol conformance, the
-``build_config`` recipe (dataset_type=spatial_expression, probe method, PCA latent dim 256,
-encoder axis defaulting to uni2), the external-only ``reference/hest.csv`` parse, the
-default ``summary.json`` scorer, and ``curate`` delegation are all verifiable offline. The
-live curate→probe→score reproduction (HEST download + slide2vec weights + GPU) is a manual
-vertical-slice reproduction, not a CI unit test.
+No HEST data or GPU here: the registry lookup (all 9 tasks), the Benchmark-Protocol
+conformance, the ``build_config`` recipe (dataset_type=spatial_expression, probe method, PCA
+latent dim 256, encoder axis defaulting to uni2, the virchow2 CLS variant / h-optimus-1
+default), the external-only ``reference/hest.csv`` parse (9 tasks × the reproduction encoders),
+the default ``summary.json`` scorer, ``curate`` delegation, and the external-only ``--record``
+path are all verifiable offline. The live curate→probe→score reproduction (HEST download +
+slide2vec weights + GPU) is a manual campaign, not a CI unit test.
 """
 
 from __future__ import annotations
@@ -34,15 +35,20 @@ def test_hest_idc_is_registered_and_conforms_to_protocol():
     assert isinstance(bench, Benchmark)  # structural protocol conformance
 
 
-def test_only_hest_idc_is_registered_no_other_hest_name():
-    hest_names = [n for n in list_benchmarks() if n.split("/", 1)[0] == "hest"]
-    assert hest_names == ["hest/IDC"]
+def test_all_nine_hest_benchmark_tasks_are_registered():
+    # HEST-Benchmark has 9 scored tasks; each is registered as hest/<task> (like eva/<dataset>).
+    hest_names = sorted(n for n in list_benchmarks() if n.split("/", 1)[0] == "hest")
+    assert hest_names == sorted(f"hest/{t}" for t in hest.HEST_TASKS)
+    assert len(hest.HEST_TASKS) == 9
+    # HCC ships data on the HF hub but is NOT a scored HEST-Benchmark task -> never registered.
+    assert "HCC" not in hest.HEST_TASKS
+    assert "hest/HCC" not in list_benchmarks()
 
 
 def test_hest_facet_fixes_task_and_varies_encoder():
-    facet = get_benchmark("hest/IDC").facet
+    facet = get_benchmark("hest/PAAD").facet
     assert facet.varied == ("encoder",)
-    assert facet.fixed["dataset"] == "IDC"
+    assert facet.fixed["dataset"] == "PAAD"
     assert facet.fixed["task"] == "regression"
 
 
@@ -101,11 +107,29 @@ def test_build_config_pins_virchow2_cls_variant(tmp_path):
     assert config.training.seed == 3
 
 
+def test_build_config_h_optimus_1_uses_slide2vec_default_variant(tmp_path):
+    # h-optimus-1 is the third reproduction encoder. Its only slide2vec output is the 1536-d
+    # "default" CLS token — exactly what TRIDENT extracts — so it needs NO variant override
+    # (unlike virchow2). build_config must leave output_variant=None and otherwise emit the
+    # same spatial-expression probe recipe.
+    config = get_benchmark("hest/IDC").build_config(
+        encoder="h-optimus-1",
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "runs",
+    )
+    assert config.encoder.name == "h-optimus-1"
+    assert config.encoder.output_variant is None  # slide2vec default (CLS, 1536-d)
+    assert config.dataset_type == "spatial_expression"
+    assert config.training.method == "ridge_pca_probe"
+
+
 def test_output_variants_maps_only_virchow2_to_cls():
     # The variant map is a targeted override: only virchow2 needs a non-default variant
-    # (CLS-only); every other encoder (uni2, ...) falls through to slide2vec's default.
+    # (CLS-only); uni2 and h-optimus-1 fall through to slide2vec's default (plain CLS token).
     assert hest.OUTPUT_VARIANTS == {"virchow2": "cls"}
     assert hest.OUTPUT_VARIANTS.get("uni2") is None
+    assert hest.OUTPUT_VARIANTS.get("h-optimus-1") is None
 
 
 def test_build_config_applies_cache_overrides(tmp_path):
@@ -141,25 +165,44 @@ def test_reference_csv_has_external_schema_header():
     assert columns == [
         "dataset", "encoder", "metric", "expected", "tolerance", "kind", "label", "url", "source",
     ]
-    # Every populated row is an external (non-gating) IDC anchor with a label + url; no gate
-    # row exists (the point of #260: render Measured beside Reference, never tolerance-check).
-    assert rows, "reference/hest.csv must carry the published external IDC rows"
+    # Every populated row is an external (non-gating) anchor with a label + url; no gate row
+    # exists (#260: render Measured beside Reference, never tolerance-check). Datasets are the
+    # 9 HEST-Benchmark tasks (IDC carries the full ~18-encoder leaderboard; the other tasks
+    # carry the reproduction encoders).
+    assert rows, "reference/hest.csv must carry the published external rows"
     for row in rows:
-        assert row["dataset"] == "IDC"
+        assert row["dataset"] in hest.HEST_TASKS
         assert row["metric"] == "test/mean_pearson_mean"
         assert row["kind"] == "external"
         assert row["tolerance"].strip() == ""  # external rows never gate
         assert row["label"] and row["url"].startswith("http")
 
 
-def test_reference_csv_carries_vertical_slice_encoder_numbers():
-    by_encoder = {}
+def test_reference_csv_carries_reproduction_encoder_numbers_across_tasks():
+    by_cell = {}
     with resources.files("soma.benchmarks.reference").joinpath("hest.csv").open(newline="") as fh:
         for row in csv.DictReader(fh):
-            by_encoder[row["encoder"]] = row
-    # The two vertical-slice encoders carry their confirmed HEST-leaderboard IDC Pearson.
-    assert float(by_encoder["uni2"]["expected"]) == pytest.approx(0.5898)
-    assert float(by_encoder["virchow2"]["expected"]) == pytest.approx(0.5971)
+            by_cell[(row["dataset"], row["encoder"])] = float(row["expected"])
+    # The three reproduction encoders carry their confirmed HEST-leaderboard IDC Pearson ...
+    assert by_cell[("IDC", "uni2")] == pytest.approx(0.5898)
+    assert by_cell[("IDC", "virchow2")] == pytest.approx(0.5971)
+    assert by_cell[("IDC", "h-optimus-1")] == pytest.approx(0.6024)
+    # ... and a sample of the per-task numbers that drive the reproduction proof (PAAD reorders
+    # the encoders vs IDC: uni2 > h-optimus-1 > virchow2 — a genuine rank test, not a foregone one).
+    assert by_cell[("PAAD", "uni2")] == pytest.approx(0.5001)
+    assert by_cell[("PAAD", "h-optimus-1")] == pytest.approx(0.4964)
+    assert by_cell[("PAAD", "virchow2")] == pytest.approx(0.4779)
+    # All 9 tasks × 3 reproduction encoders are present (27 cells).
+    repro = {c for c in by_cell if c[1] in ("uni2", "virchow2", "h-optimus-1")}
+    assert len({d for d, _ in repro}) == 9 and len(repro) == 27
+
+
+def test_expected_returns_external_row_for_non_idc_task():
+    # A non-IDC task resolves its own external reference row (proves the family, not just IDC).
+    (row,) = get_benchmark("hest/PAAD").expected(encoder="h-optimus-1")
+    assert row.key == {"dataset": "PAAD", "encoder": "h-optimus-1"}
+    assert row.expected == pytest.approx(0.4964)
+    assert row.is_external and row.tolerance == 0.0
 
 
 def test_expected_returns_external_rows_for_resolved_encoder():
@@ -254,3 +297,44 @@ def test_reproduce_hest_keeps_encoder_reference_beside_measured(capsys, tmp_path
     assert "0.5971" in out  # virchow2's HEST Reference
     assert "0.5898" not in out  # NOT uni2's
     assert "PASS" not in out and "FAIL" not in out
+
+
+def test_reproduce_record_appends_external_only_cell_to_ledger(tmp_path, monkeypatch, capsys):
+    # The external-only --record fix: HEST has no gate row, so before the fix --record was a
+    # silent no-op (it keyed off a gate row that never exists). Now it falls back to the single
+    # matching EXTERNAL row, so a reproduced Pearson still lands in results/hest.csv keyed to
+    # join the HEST reference — which is what the docs' A/B/C reproduction proof reads.
+    from soma.benchmarks import load_results, registry
+
+    ledger = tmp_path / "hest_results.csv"
+    monkeypatch.setattr(registry, "_results_file", lambda name: ledger)
+
+    (tmp_path / "summary.json").write_text(json.dumps({"test/mean_pearson_mean": 0.5914}))
+    code = _run_cli(
+        ["reproduce", "hest/IDC", "--encoder", "uni2", "--from-run-dir", str(tmp_path), "--record"]
+    )
+    assert code == 0
+    assert "recorded" in capsys.readouterr().out.lower()
+
+    (row,) = load_results("hest")  # reads the redirected ledger
+    assert row.key == {"dataset": "IDC", "encoder": "uni2"}  # keyed off the external row
+    assert row.metric == "test/mean_pearson_mean"
+    assert row.measured == pytest.approx(0.5914)
+    assert row.std is None and row.n_seeds is None  # a single re-scored run has no spread
+
+
+def test_reproduce_record_noop_when_no_reference_row(tmp_path, monkeypatch, capsys):
+    # An encoder with no published HEST number has no external row to key on, so --record is a
+    # loud no-op (nothing to join to) rather than writing an orphan ledger row.
+    from soma.benchmarks import load_results, registry
+
+    ledger = tmp_path / "hest_results.csv"
+    monkeypatch.setattr(registry, "_results_file", lambda name: ledger)
+
+    (tmp_path / "summary.json").write_text(json.dumps({"test/mean_pearson_mean": 0.40}))
+    code = _run_cli(
+        ["reproduce", "hest/IDC", "--encoder", "prism", "--from-run-dir", str(tmp_path), "--record"]
+    )
+    assert code == 0
+    assert "nothing recorded" in capsys.readouterr().out.lower()
+    assert load_results("hest") == []  # no orphan row written

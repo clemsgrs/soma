@@ -7,17 +7,24 @@ its own slide2vec encoder → soma's tile feature cache → the closed-form Ridg
 the curated ``spatial_expression`` Manifest; it does not depend on the ``hest`` library or
 TRIDENT.
 
-This lands the vertical slice — ``hest/IDC`` only. The eight remaining tasks
-(``PRAD … LYMPH_IDC``) follow in fan-out; registering a name whose ``curate()`` cannot run
-would be a footgun (design §7). ``encoder`` is the varied ``build_config`` axis
-(``DEFAULT_ENCODER = "uni2"``); the spatial-expression probe recipe + task are fixed.
+All 9 HEST-Benchmark tasks are registered as ``hest/<task>`` (:data:`HEST_TASKS`), mirroring
+the ``eva/<dataset>`` family: each shares the closed-form spatial-expression probe recipe and
+varies the ``encoder`` axis (``DEFAULT_ENCODER = "uni2"``). ``curate_hest`` is task-generic, so
+an unprovisioned task errors cleanly ("provide --raw-root") exactly like an unprovisioned
+``eva/<dataset>`` — registering it is not a footgun.
 
 Reference numbers: ``reference/hest.csv`` carries **external** Reference rows only — HEST's
-published Pearson per (task, encoder), ``kind=external`` with a ``label`` + ``url`` (issue
-#260 populates IDC × the ~18 overlapping encoders from the official HEST leaderboard). There
-is **no gate row**, so nothing is tolerance-checked; ``soma reproduce hest/IDC`` renders
-soma's Measured row next to HEST's Reference, making the slide2vec↔TRIDENT gap an explicit,
-non-gating delta rather than hiding it in a loose tolerance.
+published Pearson per (task, encoder), ``kind=external`` with a ``label`` + ``url``. There is
+**no gate row**, so nothing is tolerance-checked: ``soma reproduce hest/<task>`` renders soma's
+Measured row next to HEST's Reference, making the slide2vec↔TRIDENT gap an explicit, non-gating
+delta rather than hiding it in a loose tolerance (issue #260).
+
+Reproduction soundness is proven not by absolute agreement (the extraction stack differs) but
+by **rank agreement**: soma re-derives HEST's *ordering* of encoders across tasks. ``soma
+reproduce hest/<task> --record`` logs each Measured value to ``results/hest.csv``; the generated
+HEST doc page joins that ledger to the reference and reports the per-cell delta (A), pooled
+pairwise rank concordance (B, the headline), and the provenance-pinned ledger as the drift
+guard (C). See :func:`soma.benchmarks.reproduction.reproduction_report`.
 """
 
 from __future__ import annotations
@@ -48,19 +55,39 @@ from soma.training.probe import DEFAULT_PCA_COMPONENTS, PROBE_METHOD
 
 REFERENCE_NAME = "hest"
 
-# The only HEST task landed now (design §7 / §10 — vertical slice first).
+# The 9 HEST-Benchmark tasks (mahmoodlab/HEST leaderboard, results 03.04.26), spanning organ
+# types: IDC/LYMPH_IDC breast, PRAD prostate, PAAD pancreas, COAD colon, READ rectum, CCRCC
+# kidney, LUNG lung, SKCM skin. Every task is registered as hest/<task>. NOTE: the hest-bench
+# HF dataset also ships an HCC/ (liver) data tree, but HCC is NOT one of the benchmark's 9
+# scored tasks — it has no published leaderboard number — so it is deliberately not registered
+# (a name with no reference row would be the footgun the family is designed to avoid).
+HEST_TASKS: tuple[str, ...] = (
+    "IDC",
+    "PRAD",
+    "PAAD",
+    "COAD",
+    "READ",
+    "CCRCC",
+    "LUNG",
+    "LYMPH_IDC",
+    "SKCM",
+)
+# Default task backing the class default arg (IDC is the vertical slice landed first).
 TASK = "IDC"
 
 # `encoder` is the varied axis; uni2 is the headline backbone. slide2vec validates the name,
-# so any registered encoder works — OUTPUT_VARIANTS only pins the feature variant for
-# backbones where the leaderboard used a non-default one (virchow2 is CLS-only 1280-d, not
-# slide2vec's 2560-d CLS+mean concat; design §11). "cls" is the exact token slide2vec's
-# virchow2 encoder accepts for the CLS-only variant (slide2vec.encoders.models.virchow:
-# output_variants={"cls": 1280, "cls_patch_mean": 2560}, default "cls_patch_mean").
+# so any registered encoder works. The three-model reproduction campaign benchmarks
+# {uni2, virchow2, h-optimus-1} — the top HEST cluster (published IDC 0.5898 / 0.5971 / 0.6024),
+# a deliberately fine-grained rank test. OUTPUT_VARIANTS only pins the feature variant for
+# backbones where the leaderboard used a non-default one:
+#   * virchow2 → "cls" (CLS-only 1280-d; slide2vec defaults to the 2560-d CLS+mean concat,
+#     which would NOT match TRIDENT). "cls" is the exact slide2vec token (virchow.py
+#     output_variants={"cls": 1280, "cls_patch_mean": 2560}, default "cls_patch_mean").
+#   * uni2, h-optimus-1 → no override: slide2vec's default for each is the plain CLS token
+#     (uni2 1536-d; h-optimus-1's only variant is the 1536-d "default" CLS), matching TRIDENT.
 # TODO(#261): confirm slide2vec<->TRIDENT virchow2 parity (transforms + CLS-only variant).
-# HEST extracts virchow2 features via TRIDENT; soma re-extracts natively via slide2vec, so
-# the Measured-minus-Reference delta (Reference = 0.5971, reference/hest.csv) is the accepted,
-# non-gating parity gap for the vertical slice — read it off the manual reproduction.
+# HEST extracts features via TRIDENT; soma re-extracts natively via slide2vec, so the
+# Measured-minus-Reference delta is the accepted, non-gating slide2vec<->TRIDENT parity gap.
 DEFAULT_ENCODER = "uni2"
 OUTPUT_VARIANTS: dict[str, str] = {"virchow2": "cls"}
 
@@ -183,6 +210,14 @@ class HestBenchmark:
         return score_from_summary(run_dir)
 
 
-# Register only hest/IDC (the vertical slice). No other HEST name is registered.
-HEST_BENCHMARK = HestBenchmark(TASK)
-register_benchmark(HEST_BENCHMARK)
+# Register one sub-benchmark per HEST-Benchmark task (name == "hest/<task>"), mirroring the
+# eva/<dataset> family. Every task shares the closed-form spatial-expression probe recipe and
+# varies only the encoder axis. curate_hest is task-generic (it just needs the <task>/ subtree
+# under --raw-root), and reference/hest.csv carries the external HEST numbers per task, so a
+# task whose data is not provisioned locally still errors cleanly ("provide --raw-root") the
+# same way an unprovisioned eva/<dataset> does — registering it is not a footgun.
+HEST_BENCHMARKS: dict[str, HestBenchmark] = {}
+for _task in HEST_TASKS:
+    _bench = HestBenchmark(_task)
+    HEST_BENCHMARKS[_bench.name] = _bench
+    register_benchmark(_bench)
