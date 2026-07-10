@@ -47,17 +47,17 @@ _Avoid_: "campaign" (the OCELOT-specific name for the first hand-built sweep), "
 ### Reproduction soundness
 
 **Native reproduction**:
-Reproducing a Benchmark with soma's *own* extraction stack — its slide2vec encoder → its feature cache → its head/probe — rather than the benchmark's original tooling (HEST uses TRIDENT). The extraction-stack difference is an accepted, non-gating delta, so a native reproduction is validated by rank agreement, not by matching the original numbers to the decimal.
-_Avoid_: "exact reproduction" for a native one; the point is *equivalent conclusions*, not identical digits.
+Reproducing a Benchmark with soma's *own* extraction stack — its slide2vec encoder → its feature cache → its head/probe — rather than the benchmark's original tooling (HEST uses TRIDENT). The extraction-stack difference is an accepted, non-gating delta: soma publishes Measured beside Reference and lets the reader compare, rather than issuing a PASS/FAIL against another lab's extractor.
+_Avoid_: "exact reproduction" for a native one; and do not gate a native reproduction on the published number — **gate against yourself, publish against them**.
 
 **Reproduction soundness**:
-The claim that a native reproduction is trustworthy, evidenced along three axes: **A — absolute agreement** (per-cell Measured vs Reference delta, shown not gated); **B — rank agreement** (the headline — soma re-derives the benchmark's *ordering* of encoders); **C — drift guard** (the append-only, provenance-pinned results ledger makes any change across code/extractor versions an explicit diff).
+The evidence that a native reproduction is trustworthy, along three axes: **A — absolute agreement** (per-cell Measured vs Reference delta — what is *published*, never gated); **B — rank agreement** (a *bonus* — soma re-derives the benchmark's *ordering* of encoders); **C — drift guard** (the append-only, provenance-pinned results ledger makes any change across code/extractor versions an explicit diff). C is the only axis that ever gates, and it compares soma to soma.
 
 **Pairwise concordance**:
-The B statistic: over every `(dataset, encoder-pair)`, the fraction soma orders the same way the Reference does, pooled across datasets. Interpretable where per-dataset rank correlation is degenerate (few encoders). The headline is concordance over **resolvable** pairs only; per-dataset Spearman ρ is reported alongside.
+The B statistic: over every `(dataset, encoder-pair)`, the fraction soma orders the same way the Reference does, pooled across datasets. Interpretable where per-dataset rank correlation is degenerate (few encoders). Computed over **resolvable** pairs only; per-dataset Spearman ρ is reported alongside. Corroborates A; it does not replace it.
 
 **Resolvable pair**:
-An encoder pair the Reference separates by more than a small ε (0.005 on the metric). Below ε the benchmark itself cannot call the ordering, so a soma flip is a within-noise coin-flip, not a defect — excluded from the headline concordance.
+An encoder pair the Reference separates by more than a small ε (`RESOLVABLE_EPS` = 0.005 on the metric). Below ε the benchmark itself cannot call the ordering, so a soma flip is a within-noise coin-flip, not a defect — excluded from the concordance.
 
 ### Data preparation
 

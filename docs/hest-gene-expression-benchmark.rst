@@ -165,22 +165,24 @@ Reproduction — is it sound?
 ---------------------------
 
 soma reproduces HEST **natively** — its own slide2vec features, not HEST's TRIDENT
-extraction — so the proof of soundness is **not** that the numbers match to the
-decimal (the extraction stacks differ), but that soma re-derives HEST's **ranking**
-of encoders. Three views, computed from the results ledger joined to the published
-reference:
+extraction. HEST's published numbers are therefore rendered as ``kind=external``
+references: soma prints its Measured value beside them with the signed delta and lets
+you compare. Nothing here is a PASS/FAIL against HEST — a gate should flag a *real*
+regression, and a cross-stack delta is not one (ADR 0005). Three views, computed from
+the results ledger joined to the published reference:
 
-* **A — absolute agreement** (per cell): soma's Pearson beside HEST's, and the signed
-  delta. Shown, never gated — the delta is the accepted slide2vec↔TRIDENT parity gap.
-* **B — rank agreement** (the headline): **pooled pairwise concordance** — over every
+* **A — absolute agreement** (what is published): soma's Pearson beside HEST's, and the
+  signed delta. The delta is the slide2vec↔TRIDENT parity gap; judge it yourself.
+* **B — rank agreement** (a bonus): **pooled pairwise concordance** — over every
   (task, encoder-pair), the fraction soma orders the same way HEST does. A pair is
-  *resolvable* when HEST separates it by more than 0.005 on the metric; the
-  headline is concordance over resolvable pairs, so soma is not graded on within-noise
+  *resolvable* when HEST separates it by more than 0.005 on the metric;
+  concordance is computed over resolvable pairs, so soma is not graded on within-noise
   coin-flips. Per-task Spearman ρ is shown alongside (coarse at few encoders).
-* **C — drift guard**: the ledger is append-only and provenance-pinned (commit,
-  slide2vec version), so a re-run at a new commit adds a row and drift is a visible diff.
+* **C — drift guard** (the only axis that gates, and it compares soma to soma): the
+  ledger is append-only and provenance-pinned (commit, slide2vec version), so a re-run
+  at a new commit adds a row and drift is a visible diff.
 
-**A — per-cell agreement**
+**A — per-cell agreement (published, not gated)**
 
 .. list-table::
    :header-rows: 1
@@ -190,68 +192,80 @@ reference:
      - soma
      - HEST
      - Δ
+     - Δ %
      - Recorded
    * - PAAD
      - ``uni2``
      - 0.5007
      - 0.5001
      - +0.0006
+     - +0.12%
      - 2026-07-10 @ ``e9fb89c``
    * - PAAD
      - ``virchow2``
      - 0.4769
      - 0.4779
      - -0.0010
+     - -0.21%
      - 2026-07-10 @ ``e9fb89c``
    * - PAAD
      - ``h-optimus-1``
      - 0.4916
      - 0.4964
      - -0.0048
+     - -0.97%
      - 2026-07-10 @ ``e9fb89c``
    * - COAD
      - ``uni2``
      - 0.3105
      - 0.3015
      - +0.0090
+     - +2.99%
      - 2026-07-10 @ ``e9fb89c``
    * - COAD
      - ``virchow2``
      - 0.2615
      - 0.2581
      - +0.0034
+     - +1.32%
      - 2026-07-10 @ ``e9fb89c``
    * - COAD
      - ``h-optimus-1``
      - 0.3190
      - 0.3195
      - -0.0005
+     - -0.16%
      - 2026-07-10 @ ``e9fb89c``
    * - LUNG
      - ``uni2``
      - 0.5593
      - 0.5587
      - +0.0006
+     - +0.11%
      - 2026-07-10 @ ``e9fb89c``
    * - LUNG
      - ``virchow2``
      - 0.5520
      - 0.5685
      - -0.0165
+     - -2.90%
      - 2026-07-10 @ ``e9fb89c``
    * - LUNG
      - ``h-optimus-1``
      - 0.5768
      - 0.5779
      - -0.0011
+     - -0.19%
      - 2026-07-10 @ ``e9fb89c``
 
-**B — rank concordance (headline)**
+Across 9 cell(s) the parity gap is a median **0.21%** relative, worst **2.99%** (COAD/``uni2``). Stated, not gated: see ADR 0005.
+
+**B — rank concordance (bonus)**
 
 **Pooled pairwise rank concordance: 7/8 (88%)** on resolvable pairs (HEST separates them by more than 0.005); 1 within-noise pair(s) excluded.
 Over *all* pairs (resolvable + within-noise): 8/9 (89%).
 
-Resolvable pairs soma orders *differently* from HEST (honest failures):
+Resolvable pairs soma orders *differently* from HEST (reported, not gated):
 
 * LUNG: HEST ``virchow2`` > ``uni2`` (Δref +0.0098) but soma reverses it (Δsoma -0.0073)
 

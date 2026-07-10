@@ -19,12 +19,14 @@ published Pearson per (task, encoder), ``kind=external`` with a ``label`` + ``ur
 Measured row next to HEST's Reference, making the slide2vec↔TRIDENT gap an explicit, non-gating
 delta rather than hiding it in a loose tolerance (issue #260).
 
-Reproduction soundness is proven not by absolute agreement (the extraction stack differs) but
-by **rank agreement**: soma re-derives HEST's *ordering* of encoders across tasks. ``soma
-reproduce hest/<task> --record`` logs each Measured value to ``results/hest.csv``; the generated
-HEST doc page joins that ledger to the reference and reports the per-cell delta (A), pooled
-pairwise rank concordance (B, the headline), and the provenance-pinned ledger as the drift
-guard (C). See :func:`soma.benchmarks.reproduction.reproduction_report`.
+HEST's numbers are ``kind=external``: soma **publishes** its Measured value beside them with
+the signed delta and never gates on it — a gate against another lab's extraction stack would
+fire on the cross-stack parity gap, not on a real regression (ADR 0005). ``soma reproduce
+hest/<task> --record`` logs each Measured value to ``results/hest.csv``; the generated HEST doc
+page joins that ledger to the reference and reports the per-cell delta (A, published), pooled
+pairwise rank concordance (B, a bonus), and the provenance-pinned ledger as the drift guard
+(C, the only axis that gates — soma against soma). See
+:func:`soma.benchmarks.reproduction.reproduction_report`.
 """
 
 from __future__ import annotations

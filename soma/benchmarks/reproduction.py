@@ -4,19 +4,21 @@ Joins soma's recorded measurements (``results/<name>.csv``) to the benchmark's e
 reference (``reference/<name>.csv``) and quantifies reproduction **soundness** along three
 axes (agreed in the HEST reproduction design grill):
 
-* **A — absolute agreement.** Per ``(dataset, encoder)`` cell: soma's Measured value, the
-  published Reference, and the signed delta. Shown per cell, never gated — soma re-extracts
-  features with its own stack (slide2vec) rather than the benchmark's original tooling
-  (HEST uses TRIDENT), so the delta is an expected parity gap, not an error.
+* **A — absolute agreement (what is published).** Per ``(dataset, encoder)`` cell: soma's
+  Measured value, the published Reference, and the signed delta. Rendered, never gated —
+  soma re-extracts features with its own stack (slide2vec) rather than the benchmark's
+  original tooling (HEST uses TRIDENT), so the delta is a cross-stack parity gap and a gate
+  against another lab's extractor would fire on that rather than on a real regression
+  (ADR 0005). Publish it and let the reader compare.
 
-* **B — rank agreement (the headline).** A foundation-model benchmark exists to *rank*
-  encoders, and a ranking survives an extraction-stack change even when absolute values
-  shift. We measure **pooled pairwise concordance**: over every ``(dataset, encoder-pair)``,
-  the fraction where soma orders the pair the same way the reference does. A pair is
-  **resolvable** when the reference gap exceeds :data:`RESOLVABLE_EPS`; the headline
-  concordance is over resolvable pairs only, so soma is not graded on within-noise
-  coin-flips (a pair the benchmark itself cannot separate). Per-dataset Spearman ρ is
-  reported alongside for completeness (coarse at few encoders, hence not the headline).
+* **B — rank agreement (a bonus).** A foundation-model benchmark exists to *rank* encoders,
+  and a ranking survives an extraction-stack change even when absolute values shift. We
+  measure **pooled pairwise concordance**: over every ``(dataset, encoder-pair)``, the
+  fraction where soma orders the pair the same way the reference does. A pair is
+  **resolvable** when the reference gap exceeds :data:`RESOLVABLE_EPS`; concordance is over
+  resolvable pairs only, so soma is not graded on within-noise coin-flips (a pair the
+  benchmark itself cannot separate). Per-dataset Spearman ρ is reported alongside (coarse
+  at few encoders). Corroborates A rather than replacing it.
 
 * **C — drift guard.** ``results/<name>.csv`` is an append-only, provenance-pinned ledger
   (``soma_commit`` / ``slide2vec_version`` / ``date`` per row), so re-running a cell at a
@@ -42,7 +44,7 @@ from soma.benchmarks.registry import (
 
 # An encoder pair is "resolvable" when the published reference separates it by more than this
 # (absolute, on the primary metric). Below it, the benchmark itself cannot call the ordering,
-# so a soma flip is a coin-flip, not a defect — excluded from the headline concordance.
+# so a soma flip is a coin-flip, not a defect — excluded from the concordance.
 RESOLVABLE_EPS = 0.005
 
 # The two key columns every family in scope keys on (dataset × encoder grid).

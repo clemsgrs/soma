@@ -573,19 +573,21 @@ def _hest_reproduction_section() -> str:
     report = reproduction_report("hest")
     intro = (
         "soma reproduces HEST **natively** — its own slide2vec features, not HEST's TRIDENT\n"
-        "extraction — so the proof of soundness is **not** that the numbers match to the\n"
-        "decimal (the extraction stacks differ), but that soma re-derives HEST's **ranking**\n"
-        "of encoders. Three views, computed from the results ledger joined to the published\n"
-        "reference:\n\n"
-        "* **A — absolute agreement** (per cell): soma's Pearson beside HEST's, and the signed\n"
-        "  delta. Shown, never gated — the delta is the accepted slide2vec↔TRIDENT parity gap.\n"
-        "* **B — rank agreement** (the headline): **pooled pairwise concordance** — over every\n"
+        "extraction. HEST's published numbers are therefore rendered as ``kind=external``\n"
+        "references: soma prints its Measured value beside them with the signed delta and lets\n"
+        "you compare. Nothing here is a PASS/FAIL against HEST — a gate should flag a *real*\n"
+        "regression, and a cross-stack delta is not one (ADR 0005). Three views, computed from\n"
+        "the results ledger joined to the published reference:\n\n"
+        "* **A — absolute agreement** (what is published): soma's Pearson beside HEST's, and the\n"
+        "  signed delta. The delta is the slide2vec↔TRIDENT parity gap; judge it yourself.\n"
+        "* **B — rank agreement** (a bonus): **pooled pairwise concordance** — over every\n"
         "  (task, encoder-pair), the fraction soma orders the same way HEST does. A pair is\n"
-        f"  *resolvable* when HEST separates it by more than {RESOLVABLE_EPS} on the metric; the\n"
-        "  headline is concordance over resolvable pairs, so soma is not graded on within-noise\n"
+        f"  *resolvable* when HEST separates it by more than {RESOLVABLE_EPS} on the metric;\n"
+        "  concordance is computed over resolvable pairs, so soma is not graded on within-noise\n"
         "  coin-flips. Per-task Spearman ρ is shown alongside (coarse at few encoders).\n"
-        "* **C — drift guard**: the ledger is append-only and provenance-pinned (commit,\n"
-        "  slide2vec version), so a re-run at a new commit adds a row and drift is a visible diff."
+        "* **C — drift guard** (the only axis that gates, and it compares soma to soma): the\n"
+        "  ledger is append-only and provenance-pinned (commit, slide2vec version), so a re-run\n"
+        "  at a new commit adds a row and drift is a visible diff."
     )
 
     if not report.cells:
@@ -597,30 +599,47 @@ def _hest_reproduction_section() -> str:
             "this section then renders the A/B/C proof automatically."
         )
 
-    # A — per-cell table.
-    a_header = ["Task", "Encoder", "soma", "HEST", "Δ", "Recorded"]
+    # A — per-cell table. The relative delta is shown next to the absolute one because the same
+    # absolute gap means different things at Pearson 0.30 (COAD) and 0.57 (LUNG).
+    a_header = ["Task", "Encoder", "soma", "HEST", "Δ", "Δ %", "Recorded"]
     a_lines = [".. list-table::", "   :header-rows: 1", ""]
     a_lines.extend([f"   * - {a_header[0]}"] + [f"     - {c}" for c in a_header[1:]])
     for cell in report.cells:
         commit = f"``{cell.soma_commit}``" if cell.soma_commit else "—"
         recorded = f"{cell.date} @ {commit}" if cell.date else commit
+        rel = 100 * cell.delta / cell.reference if cell.reference else 0.0
         vals = [
             cell.dataset,
             f"``{cell.encoder}``",
             f"{cell.measured:.4f}",
             f"{cell.reference:.4f}",
             f"{cell.delta:+.4f}",
+            f"{rel:+.2f}%",
             recorded,
         ]
         a_lines.extend([f"   * - {vals[0]}"] + [f"     - {v}" for v in vals[1:]])
 
-    # B — concordance headline + Spearman.
+    # Spread of the parity gap, stated rather than gated — the reader judges it.
+    rels = sorted(abs(100 * c.delta / c.reference) for c in report.cells if c.reference)
+    if rels:
+        mid = len(rels) // 2
+        median_rel = rels[mid] if len(rels) % 2 else (rels[mid - 1] + rels[mid]) / 2
+        worst = max(report.cells, key=lambda c: abs(c.delta / c.reference) if c.reference else 0)
+        a_spread = (
+            f"\n\nAcross {len(report.cells)} cell(s) the parity gap is a median "
+            f"**{median_rel:.2f}%** relative, worst **{abs(100 * worst.delta / worst.reference):.2f}%** "
+            f"({worst.dataset}/``{worst.encoder}``). Stated, not gated: see ADR 0005."
+        )
+    else:
+        a_spread = ""
+
+    # B — concordance (a bonus) + Spearman.
     def _frac(n: int, d: int) -> str:
         return f"{n}/{d} ({n / d:.0%})" if d else "—"
 
     ca = report.concordance_all
     n_within_noise = len(report.pairs) - report.n_resolvable
-    headline = (
+    concordance_line = (
         f"**Pooled pairwise rank concordance: {_frac(report.n_resolvable_concordant, report.n_resolvable)}**"
         f" on resolvable pairs (HEST separates them by more than {RESOLVABLE_EPS})"
         + (f"; {n_within_noise} within-noise pair(s) excluded" if n_within_noise else "")
@@ -632,7 +651,7 @@ def _hest_reproduction_section() -> str:
     )
     discordant = [p for p in report.pairs if p.resolvable and not p.concordant]
     if discordant:
-        disagree = "\n\nResolvable pairs soma orders *differently* from HEST (honest failures):\n\n" + "\n".join(
+        disagree = "\n\nResolvable pairs soma orders *differently* from HEST (reported, not gated):\n\n" + "\n".join(
             f"* {p.dataset}: HEST ``{p.encoder_high}`` > ``{p.encoder_low}`` "
             f"(Δref {p.reference_gap:+.4f}) but soma reverses it (Δsoma {p.measured_gap:+.4f})"
             for p in discordant
@@ -656,10 +675,11 @@ def _hest_reproduction_section() -> str:
 
     return (
         intro
-        + "\n\n**A — per-cell agreement**\n\n"
+        + "\n\n**A — per-cell agreement (published, not gated)**\n\n"
         + "\n".join(a_lines)
-        + "\n\n**B — rank concordance (headline)**\n\n"
-        + headline
+        + a_spread
+        + "\n\n**B — rank concordance (bonus)**\n\n"
+        + concordance_line
         + disagree
         + "\n\n"
         + spearman_table
