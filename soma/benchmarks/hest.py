@@ -46,6 +46,7 @@ from soma.config import (
     EvalConfig,
     ExecutionConfig,
     PipelineConfig,
+    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -101,6 +102,17 @@ PRIMARY_METRIC = "test/mean_pearson_mean"
 
 # Pearson correlation is the HEST score; the closed-form probe writes it into summary.json.
 EVAL_METRIC = "pearson"
+
+# HEST's protocol fixes the tile geometry: a 112x112 µm tile rendered at 224x224 px, i.e.
+# 112/224 = 0.5 µm/px. Pin both explicitly rather than letting each encoder's own recommended
+# scale decide, because the tile scale is a property of the *benchmark*, not of the encoder:
+# a reproduction that fed one encoder 0.5 µm/px and another 1.0 µm/px would not be comparing
+# encoders, it would be comparing magnifications. Pinning is also what makes the family
+# encoder-agnostic — uni2 and h-optimus-1 declare a scalar supported_spacing_um of 0.5 (so
+# they auto-resolve to exactly these values), but virchow2 declares [0.25, 0.5, 1.0, 2.0] and
+# soma rightly refuses to guess among them, which used to make hest/<task> unrunnable on it.
+TILE_SIZE_PX = 224
+SPACING_UM = 0.5
 
 REFERENCE_ENVIRONMENT: dict[str, str] = {
     "leaderboard": "mahmoodlab/HEST-Benchmark (captured for reference; external rows only)",
@@ -167,6 +179,9 @@ class HestBenchmark:
         Pearson metric, and ``encoder`` (default ``uni2``). ``dataset_csv`` / ``splits_csv``
         / ``output_root`` come from the curated Manifest; ``overrides`` carries the CLI's
         shared feature-cache block (``{"cache": {...}}``).
+
+        Preprocessing pins HEST's tile geometry (:data:`TILE_SIZE_PX` px @ :data:`SPACING_UM`
+        µm/px) for every encoder, so the encoder axis varies the encoder and nothing else.
         """
         return PipelineConfig(
             dataset_csv=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
@@ -175,6 +190,10 @@ class HestBenchmark:
             dataset_type="spatial_expression",
             execution=execution or ExecutionConfig(),
             cache=_cache_from_overrides(overrides) or CacheConfig(enabled=True),
+            preprocessing=PreprocessingConfig(
+                requested_tile_size_px=TILE_SIZE_PX,
+                requested_spacing_um=SPACING_UM,
+            ),
             encoder=EncoderConfig(
                 name=encoder,
                 output_variant=OUTPUT_VARIANTS.get(encoder),

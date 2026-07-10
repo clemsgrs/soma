@@ -132,6 +132,44 @@ def test_output_variants_maps_only_virchow2_to_cls():
     assert hest.OUTPUT_VARIANTS.get("h-optimus-1") is None
 
 
+def test_build_config_pins_hest_tile_geometry(tmp_path):
+    # The tile scale is a property of the BENCHMARK, not of the encoder: HEST predicts from a
+    # 112x112 µm tile rendered at 224x224 px, i.e. 112/224 = 0.5 µm/px. build_config must pin
+    # both so the encoder axis varies the encoder and nothing else — an encoder-chosen scale
+    # would silently turn the comparison into one of magnifications.
+    assert hest.TILE_SIZE_PX == 224
+    assert hest.SPACING_UM == pytest.approx(112 / 224)
+    config = get_benchmark("hest/IDC").build_config(
+        encoder="uni2",
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "runs",
+    )
+    assert config.preprocessing.requested_tile_size_px == 224
+    assert config.preprocessing.requested_spacing_um == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("encoder", ["uni2", "virchow2", "h-optimus-1"])
+def test_build_config_resolves_preprocessing_for_every_reproduction_encoder(encoder, tmp_path):
+    # Regression: virchow2 declares supported_spacing_um=[0.25, 0.5, 1.0, 2.0], so soma's
+    # validator (rightly) refuses to pick one and raised, making hest/<task> unrunnable on it.
+    # uni2 / h-optimus-1 declare a scalar 0.5 and so auto-resolved, which hid the gap behind
+    # the uni2-only vertical slice. With the geometry pinned, all three resolve to the SAME
+    # 0.5 µm/px @ 224 px — and the pin is a no-op for the two that already worked, so numbers
+    # recorded before it stay comparable.
+    from soma.encoders.validation import resolve_preprocessing_config
+
+    config = get_benchmark("hest/PAAD").build_config(
+        encoder=encoder,
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "runs",
+    )
+    resolved = resolve_preprocessing_config(config.encoder, config.preprocessing)
+    assert resolved.requested_spacing_um == pytest.approx(0.5)
+    assert resolved.requested_tile_size_px == 224
+
+
 def test_build_config_applies_cache_overrides(tmp_path):
     config = get_benchmark("hest/IDC").build_config(
         encoder="uni2",
@@ -323,9 +361,13 @@ def test_reproduce_record_appends_external_only_cell_to_ledger(tmp_path, monkeyp
     assert row.std is None and row.n_seeds is None  # a single re-scored run has no spread
 
 
-def test_reproduce_record_noop_when_no_reference_row(tmp_path, monkeypatch, capsys):
-    # An encoder with no published HEST number has no external row to key on, so --record is a
-    # loud no-op (nothing to join to) rather than writing an orphan ledger row.
+def test_reproduce_record_writes_no_orphan_row_when_encoder_has_no_reference(
+    tmp_path, monkeypatch, capsys
+):
+    # An encoder with no published HEST number matches NO reference row at all (neither gate
+    # nor external), which reproduce treats as a genuine missing reference and exits 2 on —
+    # before --record is ever consulted. The property that matters for the ledger: a cell that
+    # could never join the reference must not leave an orphan row behind.
     from soma.benchmarks import load_results, registry
 
     ledger = tmp_path / "hest_results.csv"
@@ -335,6 +377,41 @@ def test_reproduce_record_noop_when_no_reference_row(tmp_path, monkeypatch, caps
     code = _run_cli(
         ["reproduce", "hest/IDC", "--encoder", "prism", "--from-run-dir", str(tmp_path), "--record"]
     )
-    assert code == 0
-    assert "nothing recorded" in capsys.readouterr().out.lower()
+    assert code == 2
+    assert "no gate reference row" in capsys.readouterr().err.lower()
     assert load_results("hest") == []  # no orphan row written
+    assert not ledger.exists()
+
+
+def test_record_reference_row_declines_when_external_rows_are_ambiguous():
+    # _record_reference_row keys a --record entry on the gate row, falling back to the single
+    # matching external row for an external-only benchmark. If the axes leave MORE than one
+    # external row matching the primary metric there is no unambiguous cell to key on, so it
+    # declines (returns None) rather than silently picking the first — that is the branch the
+    # CLI turns into "nothing recorded".
+    from soma.benchmarks.registry import ReferenceRow
+    from soma.cli import _record_reference_row
+
+    def _ext(encoder: str) -> ReferenceRow:
+        return ReferenceRow(
+            key={"dataset": "IDC", "encoder": encoder},
+            metric="test/mean_pearson_mean",
+            expected=0.59,
+            tolerance=None,
+            source="test fixture",
+            kind="external",
+        )
+
+    class _Stub:
+        primary_metric = "test/mean_pearson_mean"
+
+        def __init__(self, rows):
+            self._rows = rows
+
+        def expected(self, **_axes):
+            return self._rows
+
+    one, two = _ext("uni2"), _ext("virchow2")
+    assert _record_reference_row(_Stub([one]), {}, None) is one  # unambiguous → key on it
+    assert _record_reference_row(_Stub([one, two]), {}, None) is None  # ambiguous → decline
+    assert _record_reference_row(_Stub([]), {}, None) is None  # nothing → decline
