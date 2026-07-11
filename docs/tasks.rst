@@ -1,37 +1,22 @@
 Tasks
 =====
 
-Task heads map a representation to predictions and define the loss and metric
-contract. This page is the task-layer index: it lists the task zoo, documents
-the :class:`soma.tasks.base.TaskHead` base abstraction, and links to the
-per-task pages.
+Task heads turn model representations into predictions and own their loss and
+default metrics. Swap the task head without changing compatible upstream
+features.
 
-.. seealso::
+Task substrates
+---------------
 
-   The :doc:`slide-level walkthrough <tutorials/walkthrough-slide-level>` runs
-   classification, regression, and survival end to end on the **same** extracted
-   features — the clearest way to see how swapping a task head works in practice.
-
-Substrate cleavage
-------------------
-
-Tasks split by the representation substrate they consume:
-
-* **Slide-level** tasks consume a bag of tile features, which an
-  :doc:`aggregator <aggregators>` pools into a single slide- or patient-level
-  vector before the head: :doc:`classification`, :doc:`regression`, and
-  :doc:`survival`.
-* **Dense** tasks consume a token grid, which a decoder turns into a per-pixel
-  map before the head: :doc:`segmentation` and
-  :doc:`detection`.
-
-The base abstraction is :class:`soma.tasks.base.TaskHead`.
+- Slide-level heads consume a vector produced by an :doc:`aggregator
+  <aggregators>`: :doc:`classification`, :doc:`regression`, and :doc:`survival`.
+- Dense heads consume a decoder map: :doc:`segmentation` and :doc:`detection`.
 
 .. autoclass:: soma.tasks.base.TaskHead
    :members:
 
-Task Zoo
---------
+Task catalog
+------------
 
 .. list-table::
    :header-rows: 1
@@ -39,53 +24,36 @@ Task Zoo
    * - Config name
      - Loss
      - Default metrics
-     - When to use
    * - ``binary_classification``
      - Cross-entropy
      - ``auroc``, ``balanced_accuracy``, ``auprc``, ``f1``
-     - Two-class labels
    * - ``multiclass_classification``
      - Cross-entropy
      - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
-     - | Two or more classes
-       | Use ``binary_classification`` when the problem is strictly binary
    * - ``ordinal_classification``
      - MSE
      - ``qwk``, ``balanced_accuracy``
-     - Ordered integer grades
    * - ``regression``
      - MSE
      - ``mae``, ``r2``
-     - Continuous targets
    * - ``survival``
      - Discrete-time NLL
      - ``c_index``
-     - Time-to-event with right censoring
    * - ``segmentation``
-     - CE + soft-Dice
+     - Cross-entropy + soft Dice
      - ``mean_dice``, ``mean_iou``
-     - Dense per-pixel classification (``dataset_type: segmentation``); see :doc:`segmentation`
    * - ``detection``
      - Foreground-weighted MSE
      - ``mean_f1``
-     - Cell / nucleus point detection (``dataset_type: detection``); see :doc:`detection`
 
-Task pages
-----------
+Use ``binary_classification`` for exactly two classes and
+``multiclass_classification`` for two or more classes under a multiclass
+contract. Regression also supports ``pearson``. Spatial-expression probes
+report per-gene coefficients and ``mean_pearson``.
 
-Slide-level tasks (bag → :doc:`aggregator <aggregators>` → head):
+Configure an explicit metric subset under ``evaluation.metrics``; see
+:doc:`evaluation` for model selection and subgroup analysis. Use
+``soma.list_task_heads()`` to discover registered config names.
 
-* :doc:`classification` — binary, multiclass, and ordinal heads.
-* :doc:`regression` — continuous targets.
-* :doc:`survival` — time-to-event with the ``nll`` and ``cox`` losses.
-
-Dense tasks (token grid → decoder → head):
-
-* :doc:`segmentation` — the dense contract + neural-decoder default path.
-* :doc:`detection` — point detection with the F1@δ metric.
-
-Discovery helper
-----------------
-
-Use ``soma.list_task_heads()`` to inspect the registered task heads from code
-when you need to populate a selector or validate a config name.
+The :doc:`slide-level walkthrough <tutorials/walkthrough-slide-level>` applies
+classification, regression, and survival heads to the same feature store.

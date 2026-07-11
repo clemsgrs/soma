@@ -1,30 +1,19 @@
 OCELOT
 ======
 
-*Maps to task:* :doc:`detection` — soma's :doc:`detection path <detection>`
-reproduced on the `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_
-cell-detection challenge.
+Purpose
+-------
 
-.. note::
-
-   This page is generated from the registered benchmark definition — the protocol
-   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
-   (packaged ``soma/benchmarks/reference/ocelot.csv``), and the command from the benchmark name. Edit the registry
-   (``soma/benchmarks/ocelot.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
-   re-emits it and ``tests/test_docs.py`` guards the two from drifting.
-
-OCELOT 2023 provides paired cell + tissue patches from TCGA. This benchmark is
-**cell-only**: a **frozen** foundation-model encoder produces a dense token grid,
-a ``lightweight_conv`` decoder regresses a per-class peak heatmap, and the
-:class:`~soma.tasks.detection.DetectionHead` scores it with OCELOT's class-aware
-**mean F1 @ δ = 3 µm**, greedy-matched — the leaderboard-comparable operating
-point (per-class score thresholds swept on ``tune``, frozen, applied once to
-``test``). See :doc:`detection` for the canonical matcher and px↔µm definitions.
+Evaluate Soma's :doc:`cell-detection path <detection>` on the
+`OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ TCGA patches. A frozen
+encoder produces a dense token grid; ``lightweight_conv`` predicts class peak
+heatmaps. OCELOT's greedy matcher reports class-aware **mean F1 @ δ = 3 µm**.
+Thresholds are selected on ``tune`` and applied once to ``test``.
 
 Protocol
 --------
 
-The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.
+The fixed recipe varies ``encoder`` × ``spacing``:
 
 .. list-table::
    :header-rows: 1
@@ -47,11 +36,7 @@ The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.
    * - anchor
      - ``virchow2`` @ 0.2 µm/px (seed 0)
 
-Axes
-----
-
-``build_config`` resolves a committed config per ``(encoder, spacing)`` — the
-2×2 magnification-alignment ablation plus the native anchor:
+Available committed configurations:
 
 .. list-table::
    :header-rows: 1
@@ -70,41 +55,43 @@ Axes
    * - ``virchow2``
      - 0.5
 
-Reference band
---------------
+Prepare and run
+---------------
 
-The tolerance band ``soma reproduce`` checks against — a **config-agnostic** banner
-(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression
-anchor, not an external leaderboard number). The non-gating external anchors —
-fully-supervised end-to-end baselines from a *different* protocol — are surfaced
-with clickable links under *Guidance anchors* below:
+Curate, train the canonical seed, score, and check the gate::
+
+    soma reproduce ocelot --raw-root /path/to/ocelot
+
+Use ``--encoder`` and ``--spacing`` for an ablation, ``--seeds 1`` for a smoke
+test, or ``--from-run-dir <dir>`` to rescore an existing run.
+
+Results
+-------
+
+This **gate reference** is Soma's Virchow2 @ 0.2 µm/px, seed-0 frozen-probe
+regression anchor. It is not an external leaderboard result:
 
 .. list-table::
    :header-rows: 1
    :widths: 40 60
 
    * - Metric
-     - Reference band (expected ± tolerance)
+     - Expected ± tolerance
    * - ``mean_f1``
      - 0.6995 ± 0.020
 
 Guidance anchors (non-gating)
 -----------------------------
 
-External reference points shown for **context only** — the official challenge
-baseline and best-reported numbers, snapshotted (not live-scraped) from
-`histoboard <https://wearewaiv.github.io/histoboard/>`__. They measure a
-*different* protocol than soma's frozen probe (fully-supervised, end-to-end, not
-tied to any encoder), so ``soma reproduce`` **never gates** on them; they only show
-how far the frozen-probe result stands from the best reported result:
+These snapshotted `histoboard <https://wearewaiv.github.io/histoboard/>`__
+values come from fully supervised, end-to-end systems, not Soma's frozen probe.
+They provide context only; ``soma reproduce`` never gates on them:
 
 * `OCELOT official baseline (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.70 — Top fully-trained OCELOT cell-detection methods land ~0.70-0.73 mF1 (low end / official challenge baseline). A different protocol from soma's frozen probe (end-to-end supervised, encoder not frozen, not tied to any encoder), so non-gating guidance. Snapshotted from histoboard 2026-07-03.
 * `best reported (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.73 — Top fully-trained OCELOT cell-detection methods land ~0.70-0.73 mF1 (high end / best reported SOTA). A different protocol from soma's frozen probe, so non-gating guidance. Snapshotted from histoboard 2026-07-03.
 
 Reference environment
----------------------
-
-The recorded anchor environment the reference number was produced in:
+~~~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
    :header-rows: 1
@@ -123,22 +110,5 @@ The recorded anchor environment the reference number was produced in:
    * - ``gpu``
      - ``NVIDIA GeForce RTX 2080 Ti``
 
-Reproduce
----------
-
-One command curates the raw data, trains the anchor for the canonical seed,
-greedy-scores it, and tolerance-checks ``mean_f1`` against the band above::
-
-    soma reproduce ocelot --raw-root /path/to/ocelot
-
-Fast paths: ``--from-run-dir <dir>`` re-scores an existing run with the greedy
-matcher (no training); ``--seeds 1`` is the quickest smoke. Sweep the ablation
-with ``--encoder`` / ``--spacing`` (e.g. ``soma reproduce ocelot --encoder uni2
---spacing 0.25 --raw-root ...``).
-
-.. seealso::
-
-   * :doc:`detection` — the detection modeling substrate (head, target encoding,
-     loss, F1@δ evaluator).
-   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.
-   * :doc:`curation` — the OCELOT curator and split policy.
+See :doc:`benchmarking` for reference semantics, :doc:`curation` for the raw-data
+layout, and :doc:`detection` for targets, loss, and matching.

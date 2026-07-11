@@ -1,56 +1,44 @@
 Preprocessing
 =============
 
-Preprocessing covers tissue segmentation, tile extraction, and geometry
-resolution. In practice, spacing is the primary scale-selection knob because
-it controls the biological context seen by the encoder.
-
-The main configuration object is :class:`soma.config.PreprocessingConfig`.
+Preprocessing selects tissue, extracts tiles, and resolves image geometry.
+Spacing controls biological scale; tile size should match the encoder's
+expected input.
 
 .. autoclass:: soma.config.PreprocessingConfig
    :members:
 
-Key knobs
----------
+Core settings
+-------------
 
 .. list-table::
    :header-rows: 1
 
    * - Field
-     - Meaning
-     - Typical use
+     - Purpose
    * - ``requested_tile_size_px``
-     - Tile size requested from the tiler
-     - Match encoder expectations
+     - Output tile size in pixels.
    * - ``requested_spacing_um``
-     - Microns per pixel for tiling
-     - Coarse vs fine biological context
-   * - ``requested_region_size_px``
-     - Region size for hierarchical pipelines
-     - HIPT-style runs
-   * - ``region_tile_multiple``
-     - Tile count per hierarchical region
-     - Alternative to ``requested_region_size_px``
+     - Tiling resolution in microns per pixel.
+   * - ``requested_region_size_px`` / ``region_tile_multiple``
+     - Region geometry for hierarchical encoders.
    * - ``tissue_method``
-     - Tissue segmentation method: ``sam2``, ``hsv``, ``otsu``, or ``threshold``
-     - Leave empty/unused when dataset rows provide pre-computed tissue masks
-   * - ``sam2_device``
-     - Device used for SAM2 tissue segmentation
-     - Set explicitly when running SAM2 on GPU
-   * - ``sam2_num_workers``
-     - Cap on concurrent SAM2 tissue-segmentation workers
-     - Reduce GPU memory pressure on smaller cards
+     - Tissue segmentation with ``sam2``, ``hsv``, ``otsu``, or ``threshold``.
    * - ``min_coverage.tissue``
-     - Minimum tissue fraction to keep a tile (masks-shaped map; ``min_coverage.tissue``)
-     - Adjust only if tissue masks are too loose or too strict
+     - Minimum tissue fraction required to retain a tile.
+   * - ``dense_window_size`` / ``dense_window_overlap``
+     - Frozen-encoder windowing for dense tasks; see :doc:`decoders`.
+   * - ``feature_kind`` / ``attention``
+     - Dense feature substrate; see :doc:`decoders`.
 
-Segmentation slide-manifest sampling
-------------------------------------
+For SAM2, ``sam2_device`` selects the device and ``sam2_num_workers`` limits
+concurrent segmentation workers.
 
-For the segmentation slide-manifest path (whole slides + annotation masks), the
-annotation ``masks`` and ROI ``sampling`` blocks nest **under** ``preprocessing``
-because annotation-based tile selection is a preprocessing/tiling concern (this
-mirrors slide2vec's own ``PreprocessingConfig``):
+Annotation sampling
+-------------------
+
+Place ``masks`` and ``sampling`` under ``preprocessing`` when tiles should be
+selected from annotation rasters:
 
 .. code-block:: yaml
 
@@ -61,140 +49,68 @@ mirrors slide2vec's own ``PreprocessingConfig``):
        pixel_mapping: {background: 0, tumor: 1}
        min_coverage: {tumor: 0.5}
      sampling:
-       output_mode: merged
        strategy: joint
+       output_mode: merged
 
-The presence of ``preprocessing.masks`` selects the slide-manifest input mode
-(slides + annotation masks → soma-sampled ROIs → dense grids → segmentation head).
-See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
+``pixel_mapping`` maps class names to exact raw mask values. Values must be
+unique; ``min_coverage`` and optional ``colors`` may reference only mapped
+classes. Coverage fractions must lie in ``[0, 1]``.
 
-Annotation vocabulary: background-present vs background-absent
---------------------------------------------------------------
+For ``dataset_type: segmentation``, this configuration selects the
+slide-manifest path: each row provides a whole slide and annotation mask, from
+which soma samples dense-prediction ROIs. See
+:class:`soma.config.MasksConfig`, :class:`soma.config.SamplingConfig`, and
+:doc:`segmentation`.
 
-``pixel_mapping`` is the dataset's own raw-pixel vocabulary. **No reserved label name is
-required** — soma keeps only structural validation (non-empty mapping, unique pixel values,
-``min_coverage``/``colors`` keys ⊆ ``pixel_mapping``, fractions in ``[0, 1]``, RGB shape).
-``background`` is an *opt-in* name that only changes how the segmentation-head label remap
-(:func:`soma.dense.reader.build_label_remap`) treats unannotated regions.
+Label remapping
+---------------
 
-**Background present** — ``background`` names the unannotated/ignore label. With a class
-count one less than the mapping size, ``background`` maps to ``ignore_index`` and the other
-labels take class index = their order. (If the class count *equals* the mapping size,
-``background`` is instead a real class at index 0.) For example, the BEETLE exact-value
-vocabulary ``{background: 1, tumor: 2}`` with one task class:
+Class indices follow ``pixel_mapping`` insertion order, not raw pixel value.
+Unmapped values become ``ignore_index``.
 
-.. code-block:: yaml
+The name ``background`` is optional. When present, it can represent either an
+ignored unannotated region or a real class:
 
-   preprocessing:
-     masks:
-       pixel_mapping: {background: 1, tumor: 2}   # raw value 1 -> ignore, 2 -> class 0
-       min_coverage: {tumor: 0.5}
+- With ``num_classes == len(pixel_mapping) - 1``, ``background`` maps to
+  ``ignore_index`` and every other entry becomes a class.
+- With ``num_classes == len(pixel_mapping)``, ``background`` is a real class.
+- Without ``background``, every mapped entry is a class and ``num_classes``
+  must equal the mapping size.
 
-**Background absent** — every named label is a real class (index = order) and the task's
-class count must equal the mapping size. Any raw pixel value *not* in the mapping collapses
-to ``ignore_index`` — that is how unannotated regions are expressed without naming them. A
-background-free vocabulary like ``{tumor: 2}`` is accepted:
+For example, ``{background: 1, tumor: 2}`` with one task class ignores raw
+value ``1`` and maps raw value ``2`` to class ``0``. The same rules are
+implemented by :func:`soma.dense.reader.build_label_remap`.
 
-.. code-block:: yaml
+Annotation-restricted bags
+--------------------------
 
-   preprocessing:
-     masks:
-       pixel_mapping: {tumor: 2}   # raw value 2 -> class 0; every other value -> ignore
-       min_coverage: {tumor: 0.5}
+On ``dataset_type: slide`` or ``patient``, the same block restricts each
+whole-slide bag to tiles meeting a class coverage threshold. The ordinary
+slide label, encoder, aggregator, and task remain unchanged; only tile
+selection differs. Patient encoders consume the restricted bags produced for
+each constituent slide.
 
-The "exactly one *named* label is the ignore label" mode (class count == mapping size − 1)
-still requires a name: ``background`` stays the opt-in reserved name for that mode only.
+Use ``output_mode: merged`` to produce one bag per slide. ``strategy: joint``
+samples the union of qualifying classes; ``independent`` samples each class
+separately before merging. ``per_annotation`` output is not accepted by the
+feature-extraction path, and annotation sampling is not available for
+``dataset_type: tile`` or ``detection``.
 
-.. note::
+Annotation selection participates in cache identity, including the mapping,
+coverage thresholds, strategy, and output mode. Display colors do not. A
+runnable configuration is available at
+``examples/slide_tumor_restricted_bag.yaml``.
 
-   **Migration (soma #109):** ``masks:`` and ``sampling:`` were previously
-   top-level config sections. They now live under ``preprocessing:``. A top-level
-   ``masks:`` / ``sampling:`` block is no longer accepted — move them under
-   ``preprocessing:`` as shown above.
+Scale guidance
+--------------
 
-Annotation-restricted bags (``dataset_type: slide`` or ``patient``)
--------------------------------------------------------------------
+- Use smaller spacing for local morphology and larger spacing for broader
+  tissue context.
+- Compare a small set of biologically meaningful scales.
+- Treat resolved read sizes as internal geometry; configure requested sizes
+  and spacing instead.
 
-The same ``preprocessing.masks`` block also restricts a **whole-slide MIL bag** to a
-chosen compartment. On a ``dataset_type: slide`` dataset, declaring a ``masks`` block
-produces **one merged bag per slide containing only the tiles that meet the per-class
-coverage threshold** — e.g. a tumor-only bag that excludes the surrounding tissue. The
-restricted bag then flows through the ordinary featurizer → aggregator → predictor with
-its **ordinary slide-level label** (the dataset's ``label`` column); nothing in the MIL
-path changes, only *which* tiles enter the bag.
-
-The same block is also accepted on a ``dataset_type: patient`` dataset (#111): every
-slide is tiled to its annotation-restricted merged bag (tiling and selection identical to
-the slide path), and patient-level aggregation then consumes those restricted slide bags
-to produce **compartment-restricted patient features**. A patient pipeline uses a
-pretrained patient encoder rather than a trainable aggregator, so the masks block again
-changes only *which* tiles enter each slide's bag.
-
-.. code-block:: yaml
-
-   data:
-     dataset_type: slide          # whole-slide MIL, not segmentation
-   preprocessing:
-     requested_tile_size_px: 224
-     requested_spacing_um: 0.5
-     tissue_method: otsu
-     masks:
-       pixel_mapping: {background: 0, tumor: 1}
-       min_coverage: {tumor: 0.5}   # keep tiles ≥ 50% tumor; tissue-only tiles are excluded
-     sampling:
-       output_mode: merged          # one merged bag per slide (required; see below)
-       strategy: joint              # joint across classes; 'independent' tiles each class separately
-   aggregation:
-     name: abmil                    # any existing MIL aggregator
-   task:
-     name: binary_classification
-
-How it works:
-
-- Each dataset row's ``mask_path`` is the multi-class annotation raster; ``pixel_mapping``
-  names the classes (it must include ``background``). Tiles are kept by **per-class**
-  ``min_coverage`` over the annotation mask — binary tissue filtering is bypassed, so the
-  tissue threshold (``preprocessing.min_coverage.tissue``) does not gate annotation bags.
-- The full ``masks`` block — ``pixel_mapping``, per-class ``min_coverage``, ``colors``, an
-  explicit ``output_mode``, and ``independent_sampling`` (derived from ``sampling.strategy``)
-  — is forwarded into slide2vec's annotation sampling. The default
-  ``{background: 0, tissue: 1}`` vocabulary stays byte-for-byte plain tissue tiling; any
-  customization opts into annotation sampling.
-- A relabeled vocabulary is honored as-is: ``pixel_mapping: {background: 1, tumor: 2}``
-  routes to annotation sampling with those exact mask values (there is no reserved
-  ``tissue == 1`` value under a ``masks`` block — ``pixel_mapping`` is the single source of
-  truth).
-- The selection (active ``pixel_mapping`` entries, per-class ``min_coverage``,
-  ``strategy``, ``output_mode``) folds into the **cache key**, so a tumor-restricted bag
-  never reuses a full-tissue bag's cached tiles/features. ``colors`` is cosmetic and is
-  excluded from cache identity.
-
-.. note::
-
-   ``output_mode`` **must be** ``merged`` for ``dataset_type: slide`` and ``patient`` (the
-   default). ``output_mode: per_annotation`` (one bag per ``(slide, class)``) is deferred —
-   see soma issue #86 — and raises at config load on both. A ``masks`` block is rejected on
-   ``dataset_type: tile`` (patch manifests have no annotation-sampling step).
-
-A ready-to-run example lives at ``examples/slide_tumor_restricted_bag.yaml``.
-
-Guidance
---------
-
-- Use smaller spacing when local morphology matters.
-- Use larger spacing when the label depends on broader structure.
-- Prefer a small set of meaningful spacing values instead of arbitrary
-  near-duplicates.
-
-Tissue mask preview
--------------------
-
-Preview rendering is inherited from :mod:`hs2p`:
-
-- :func:`soma.preprocessing.overlay_mask_on_slide` for tissue-mask overlays
-- :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
-- :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
-
-Read-size fields such as ``read_tile_size_px`` are resolved internally from the
-requested tile/region size and spacing, so they are not shown in the
-user-facing reference config.
+Preview tissue masks and tile grids with
+:func:`soma.preprocessing.overlay_mask_on_slide`,
+:func:`soma.preprocessing.save_overlay_preview`, and
+:func:`soma.preprocessing.write_coordinate_preview`.

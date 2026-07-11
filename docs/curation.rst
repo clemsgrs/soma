@@ -150,3 +150,36 @@ Split policy
 OCELOT's own train/val/test split is emitted verbatim as a single fold, with
 train → ``train``, val → ``tune`` (threshold sweep / monitor), and test →
 ``test``. Soma never partitions the data itself.
+
+HEST spatial expression
+-----------------------
+
+``curate_hest`` converts one locally provisioned HEST-Benchmark task into the
+spatial-expression manifest described in :doc:`dataset`. Install the optional
+readers with ``pip install 'soma-pathology[hest]'``; the curator does not
+download raw data.
+
+Use the public Python entry point:
+
+.. code-block:: python
+
+   from soma.curation import curate_hest
+
+   manifest = curate_hest(
+       raw_root="/path/to/hest-bench",
+       output_dir="data/hest/IDC",
+       task="IDC",
+   )
+
+Or run the equivalent command:
+
+.. code-block:: console
+
+   python -m soma.curation.hest \
+       --raw-root /path/to/hest-bench \
+       --output-dir data/hest/IDC \
+       --task IDC
+
+The curator writes one lossless PNG tile per spot, ``dataset.csv``,
+``splits.csv``, and the spatial-expression sidecars. It preserves the supplied
+fold assignments and does not create a tune split.

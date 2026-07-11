@@ -1,10 +1,10 @@
 Evaluation
 ==========
 
-Evaluation defines the metric contract for a run and the optional subgroup
-breakdowns that appear in the saved outputs and reports.
-
-The main configuration object is :class:`soma.config.EvalConfig`.
+Evaluation chooses reported metrics, protects held-out test sets, and adds
+subgroup breakdowns to saved results. Task heads own the default metric set;
+see :doc:`tasks`. Regression runs may add ``pearson``; spatial-expression
+probes report per-gene coefficients and ``mean_pearson``.
 
 .. autoclass:: soma.config.EvalConfig
    :members:
@@ -12,46 +12,30 @@ The main configuration object is :class:`soma.config.EvalConfig`.
 .. autoclass:: soma.config.SubgroupConfig
    :members:
 
-Metric families
----------------
+Selection and test handling
+---------------------------
 
-The default metrics depend on the task family:
+Keep ``evaluation.metrics`` fixed when comparing candidates. Use
+``holdout_test: true`` during model selection to skip all test inference and
+artifacts, then evaluate only the selected configuration with the test set
+enabled. Tune evaluation, threshold selection, and checkpoint selection still
+run.
 
-.. list-table::
-   :header-rows: 1
+By default, soma refuses to replace results for a test identity that has
+already been scored. Set ``overwrite_test: true`` only for an intentional
+re-score. This operational flag does not change experiment identity.
 
-   * - Task family
-     - Default metrics
-     - Notes
-   * - ``binary_classification``
-     - ``auroc``, ``balanced_accuracy``, ``auprc``, ``f1``
-     - Standard binary classification reporting
-   * - ``multiclass_classification``
-     - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
-     - Multi-class classification
-   * - ``ordinal_classification``
-     - ``qwk``, ``balanced_accuracy``
-     - Ordered labels
-   * - ``regression``
-     - ``mae``, ``r2``
-     - Continuous targets
-   * - ``segmentation``
-     - ``mean_dice``, ``mean_iou``
-     - Dense per-pixel prediction
-   * - ``detection``
-     - ``mean_f1``
-     - Class-aware **F1 at matching distance δ** (``f1_per_class`` /
-       ``precision`` / ``recall`` / ``mean_f1_per_image`` also available); see
-       :doc:`detection`
+.. code-block:: yaml
 
-Use the smallest set of metrics that answers the scientific question, and
-keep it fixed when comparing runs.
+   evaluation:
+     metrics: [auroc, balanced_accuracy]
+     holdout_test: true
 
-Subgroup metrics
-----------------
+Subgroups
+---------
 
-Subgroup columns are read from ``dataset.csv`` and used to break down metrics
-for each distinct value in the selected columns.
+Subgroup columns come from ``dataset.csv``. Each distinct value receives the
+same metric calculation as the overall cohort:
 
 .. code-block:: yaml
 
@@ -60,15 +44,19 @@ for each distinct value in the selected columns.
      subgroups:
        columns: [center, grade]
 
-The run outputs write subgroup tables to ``subgroup_metrics_<split>.json`` and
-the HTML report includes the same breakdowns. The detailed statistical tests
-used for subgroup comparisons are described in :doc:`reporting`.
+Results are written to ``subgroup_metrics_<split>.json`` and included in the
+HTML report. Comparison statistics are described in :doc:`reporting`.
 
-Evaluation results
-------------------
+Dense artifacts
+---------------
 
-The per-split evaluation output is represented by
-:class:`soma.evaluation.report.EvaluationReport`.
+Dense tasks save lightweight visual overlays by default. Probability tensors
+for segmentation and heatmap arrays for detection are opt-in through
+``save_segmentation_probabilities`` and ``save_detection_heatmaps``. Disable
+the corresponding overlay flag for a metrics-only run.
+
+Result objects
+--------------
 
 .. autoclass:: soma.evaluation.report.EvaluationReport
    :members:

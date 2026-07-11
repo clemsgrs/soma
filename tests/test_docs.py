@@ -1,18 +1,111 @@
 from __future__ import annotations
 
+import ast
+import builtins
 import importlib.util
 import json
+import symtable
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
 import yaml
 
+import soma
 from soma.config import PipelineConfig, load_config
 
 TUTORIALS = [
     "walkthrough-slide-level.ipynb",
     "walkthrough-dense.ipynb",
 ]
+
+
+@pytest.fixture(scope="module")
+def built_docs(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    pytest.importorskip("sphinx")
+    from sphinx.cmd.build import build_main
+
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    out_dir = tmp_path_factory.mktemp("docs") / "html"
+    status = build_main(["-W", "-b", "html", str(docs_dir), str(out_dir)])
+
+    assert status == 0
+    return out_dir
+
+
+class _NavigationCaptionParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.captions: list[str] = []
+        self.level_one_hrefs: list[str] = []
+        self._caption_parts: list[str] | None = None
+        self._level_one_link_pending = False
+        self._sidebar_depth = 0
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        classes = dict(attrs).get("class", "") or ""
+        if tag == "div":
+            if self._sidebar_depth:
+                self._sidebar_depth += 1
+            elif "sidebar-tree" in classes.split():
+                self._sidebar_depth = 1
+        if (
+            self._sidebar_depth
+            and tag == "span"
+            and "caption-text" in classes.split()
+        ):
+            self._caption_parts = []
+        if self._sidebar_depth and tag == "li" and "toctree-l1" in classes.split():
+            self._level_one_link_pending = True
+        if self._sidebar_depth and tag == "a" and self._level_one_link_pending:
+            href = dict(attrs).get("href")
+            if href is not None:
+                self.level_one_hrefs.append(href)
+                self._level_one_link_pending = False
+
+    def handle_data(self, data: str) -> None:
+        if self._caption_parts is not None:
+            self._caption_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "span" and self._caption_parts is not None:
+            self.captions.append("".join(self._caption_parts).strip())
+            self._caption_parts = None
+        if tag == "div" and self._sidebar_depth:
+            self._sidebar_depth -= 1
+
+
+class _NestedAnchorParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.nested_anchor_hrefs: list[tuple[str | None, str | None]] = []
+        self._open_anchor_hrefs: list[str | None] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        if tag != "a":
+            return
+
+        href = dict(attrs).get("href")
+        if self._open_anchor_hrefs:
+            self.nested_anchor_hrefs.append((self._open_anchor_hrefs[-1], href))
+        self._open_anchor_hrefs.append(href)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self._open_anchor_hrefs:
+            self._open_anchor_hrefs.pop()
+
+
+class _RenderedTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
 
 
 def _load_reference_generator():
@@ -35,6 +128,25 @@ def test_cli_generator_matches_checked_in_file() -> None:
     assert generated.startswith("CLI\n===")
     assert "Available commands" in generated
     assert "What the CLI expects" in generated
+
+
+def test_configuration_generator_matches_checked_in_file() -> None:
+    generator, docs_dir = _load_reference_generator()
+    generated = generator.build_configuration_rst().strip()
+    checked_in = (docs_dir / "configuration.rst").read_text(encoding="utf-8").strip()
+
+    assert generated == checked_in
+    assert generated.startswith("Configuration\n=============")
+    assert "Canonical YAML schema" in generated
+    assert ":doc:`cli`" in generated
+
+
+def test_cli_links_to_configuration_instead_of_embedding_full_schema() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_cli_rst()
+
+    assert ":doc:`configuration`" in generated
+    assert "dense_window_size:" not in generated
 
 
 def test_ocelot_benchmark_page_matches_registry() -> None:
@@ -104,7 +216,39 @@ def test_hest_benchmark_page_matches_registry() -> None:
     assert "soma reproduce hest/IDC" in generated
 
 
-def test_hest_benchmark_page_documents_scoped_download_and_fanout() -> None:
+def test_generated_benchmark_pages_exclude_maintainer_instructions() -> None:
+    generator, _ = _load_reference_generator()
+    pages = {
+        "OCELOT": generator.build_ocelot_benchmark_rst(),
+        "EVA": generator.build_eva_benchmark_rst(),
+        "HEST": generator.build_hest_benchmark_rst(),
+    }
+    maintainer_instructions = (
+        "This page is generated",
+        "python docs/_generate_reference.py",
+    )
+
+    violations = {
+        name: [text for text in maintainer_instructions if text in page]
+        for name, page in pages.items()
+        if any(text in page for text in maintainer_instructions)
+    }
+
+    assert violations == {}
+
+
+def test_hest_benchmark_page_excludes_contributor_instructions() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_hest_benchmark_rst()
+    contributor_instructions = (
+        "Adding a HEST task",
+        "HEST_TASKS",
+    )
+
+    assert [text for text in contributor_instructions if text in generated] == []
+
+
+def test_hest_benchmark_page_documents_scoped_download() -> None:
     generator, _ = _load_reference_generator()
     generated = generator.build_hest_benchmark_rst()
     # A scoped download of one task that excludes the precomputed foundation-model features.
@@ -112,14 +256,17 @@ def test_hest_benchmark_page_documents_scoped_download_and_fanout() -> None:
     assert "--include 'IDC/*'" in generated
     assert "--exclude 'fm_v1/*'" in generated
     assert "precomputed" in generated.lower()
-    # A fan-out guide whose whole point is: adding a task never changes the curator or probe.
-    # The family loop-registers over HEST_TASKS, so "add a task" = add a HEST_TASKS entry (the
-    # illustrative task is HCC — the one hest-bench tree with data but no scored/published number).
-    assert "fan-out" in generated.lower()
-    assert "curate_hest" in generated
-    assert "never touches the curator or the probe" in generated
-    assert "HEST_TASKS" in generated
-    assert "loop-registers hest/HCC" in generated
+
+
+def test_hest_contributor_guide_documents_task_extension_contract() -> None:
+    guide = (
+        Path(__file__).resolve().parents[1] / "docs" / "development" / "benchmarks.rst"
+    ).read_text(encoding="utf-8")
+    normalized = " ".join(guide.split())
+
+    assert guide.startswith(":orphan:")
+    assert "HEST_TASKS" in guide
+    assert "no new curator or probe code" in normalized
 
 
 def test_hest_benchmark_page_renders_reproduction_soundness() -> None:
@@ -145,9 +292,9 @@ def test_documented_yaml_examples_load_through_public_config_interface() -> None
         load_config(path)
 
 
-def test_generated_cli_reference_yaml_matches_bundled_defaults() -> None:
+def test_generated_configuration_yaml_matches_bundled_defaults() -> None:
     generator, docs_dir = _load_reference_generator()
-    generated = generator.build_cli_rst()
+    generated = generator.build_configuration_rst()
     reference_yaml = _extract_first_yaml_block(generated)
 
     documented = yaml.safe_load(reference_yaml)
@@ -188,6 +335,26 @@ def test_representative_python_docs_examples_construct_public_configs(name: str)
         namespace: dict[str, object] = {}
         exec(_without_pipeline_run(block), namespace)
         assert isinstance(namespace["config"], PipelineConfig)
+
+
+def test_api_python_examples_reference_only_defined_module_names() -> None:
+    path = Path(__file__).resolve().parents[1] / "docs" / "api.rst"
+    source = "\n\n".join(
+        _extract_code_blocks(path.read_text(encoding="utf-8"), "python")
+    )
+
+    ast.parse(source, filename=str(path))
+    module = symtable.symtable(source, str(path), "exec")
+    undefined = sorted(
+        symbol.get_name()
+        for symbol in module.get_symbols()
+        if symbol.is_referenced()
+        and not symbol.is_imported()
+        and not symbol.is_assigned()
+        and symbol.get_name() not in vars(builtins)
+    )
+
+    assert undefined == []
 
 
 def _without_pipeline_run(code: str) -> str:
@@ -242,20 +409,131 @@ def _extract_first_yaml_block(rst: str) -> str:
     return "\n".join(block)
 
 
-def test_sphinx_docs_build(tmp_path: Path) -> None:
-    pytest.importorskip("sphinx")
-    from sphinx.cmd.build import build_main
-
-    docs_dir = Path(__file__).resolve().parents[1] / "docs"
-    out_dir = tmp_path / "html"
-    status = build_main(["-W", "-b", "html", str(docs_dir), str(out_dir)])
-
-    assert status == 0
-    index_html = (out_dir / "index.html").read_text(encoding="utf-8")
+def test_sphinx_docs_build(built_docs: Path) -> None:
+    index_html = (built_docs / "index.html").read_text(encoding="utf-8")
     assert "Made with" not in index_html
     assert "@pradyunsg" not in index_html
-    assert (out_dir / "index.html").exists()
-    assert (out_dir / "cli.html").exists()
+    assert (built_docs / "index.html").exists()
+    assert (built_docs / "cli.html").exists()
+
+
+def test_root_sidebar_has_compact_hierarchical_navigation(built_docs: Path) -> None:
+    parser = _NavigationCaptionParser()
+    parser.feed((built_docs / "index.html").read_text(encoding="utf-8"))
+
+    assert parser.captions == ["Start", "Workflows", "Reference", "Benchmarks"]
+    assert parser.level_one_hrefs == [
+        "getting-started.html",
+        "pipeline.html",
+        "tutorials/index.html",
+        "reference.html",
+        "benchmarking.html",
+    ]
+
+
+def test_root_page_has_no_nested_anchors(built_docs: Path) -> None:
+    parser = _NestedAnchorParser()
+    parser.feed((built_docs / "index.html").read_text(encoding="utf-8"))
+
+    assert parser.nested_anchor_hrefs == []
+
+
+def test_getting_started_renders_a_self_contained_first_run_path(
+    built_docs: Path,
+) -> None:
+    parser = _RenderedTextParser()
+    parser.feed((built_docs / "getting-started.html").read_text(encoding="utf-8"))
+    rendered_text = "".join(parser.parts)
+    required_text = (
+        "Python 3.11",
+        "sample_id,image_path,label",
+        "sample_id,fold,split",
+        (
+            "data:\n"
+            "  dataset_csv: dataset.csv\n"
+            "  splits_csv: splits.csv"
+        ),
+        "soma config.yaml",
+        "summary.json",
+    )
+    forbidden_text = ("YAML mirrors PipelineConfig field for field",)
+    findings = {
+        "missing": [text for text in required_text if text not in rendered_text],
+        "forbidden": [text for text in forbidden_text if text in rendered_text],
+    }
+
+    assert findings == {"missing": [], "forbidden": []}
+
+
+def test_benchmarking_page_distinguishes_reference_semantics(
+    built_docs: Path,
+) -> None:
+    parser = _RenderedTextParser()
+    parser.feed((built_docs / "benchmarking.html").read_text(encoding="utf-8"))
+    rendered_text = " ".join(" ".join(parser.parts).split())
+    expected_text = (
+        "Gate references",
+        "External references",
+        "Only gate references produce PASS/FAIL.",
+    )
+
+    assert [text for text in expected_text if text not in rendered_text] == []
+
+
+def test_central_references_make_spatial_expression_discoverable(
+    built_docs: Path,
+) -> None:
+    expected_by_page = {
+        "pipeline.html": ("spatial_expression",),
+        "dataset.html": ("targets.npy", "genes.json"),
+        "regression.html": ("vector targets", "pearson", "ridge_pca_probe"),
+        "evaluation.html": ("pearson",),
+        "curation.html": ("curate_hest",),
+    }
+    missing_by_page: dict[str, list[str]] = {}
+
+    for page, expected_terms in expected_by_page.items():
+        parser = _RenderedTextParser()
+        parser.feed((built_docs / page).read_text(encoding="utf-8"))
+        rendered_text = " ".join(" ".join(parser.parts).split())
+        missing_terms = [
+            term for term in expected_terms if term not in rendered_text
+        ]
+        if missing_terms:
+            missing_by_page[page] = missing_terms
+
+    assert missing_by_page == {}
+
+
+def test_sphinx_release_matches_package_version() -> None:
+    conf_path = Path(__file__).resolve().parents[1] / "docs" / "conf.py"
+    spec = importlib.util.spec_from_file_location("soma_docs_conf", conf_path)
+    assert spec is not None and spec.loader is not None
+
+    conf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conf)
+
+    assert conf.release == soma.__version__
+
+
+def test_sphinx_html_context_has_offline_release_metadata() -> None:
+    conf_path = Path(__file__).resolve().parents[1] / "docs" / "conf.py"
+    spec = importlib.util.spec_from_file_location("soma_docs_conf", conf_path)
+    assert spec is not None and spec.loader is not None
+
+    conf = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conf)
+
+    html_context = getattr(conf, "html_context", {})
+    assert {
+        "github_latest_release_tag": html_context.get("github_latest_release_tag"),
+        "github_latest_release_url": html_context.get("github_latest_release_url"),
+    } == {
+        "github_latest_release_tag": soma.__version__,
+        "github_latest_release_url": (
+            f"https://github.com/clemsgrs/soma/releases/tag/{soma.__version__}"
+        ),
+    }
 
 
 @pytest.mark.parametrize("name", TUTORIALS)

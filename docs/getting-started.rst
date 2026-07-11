@@ -1,94 +1,123 @@
 Getting started
 ===============
 
-`soma` takes a dataset of slides and labels to a reproducible result report
-through a single, coherent API.
+This first run trains a binary classifier from six image tiles and writes a
+reproducible result bundle.
 
-.. figure:: /_static/figures/run-flow.svg
-   :figclass: soma-figure
-   :alt: Three input files flow into one soma command that schedules tiling, feature extraction, training, and metrics.
+Prerequisites
+-------------
 
-   You provide three files — a dataset, splits, and a config. ``soma`` then
-   schedules every step: tiling, feature extraction, training, and metrics.
+- Python 3.11 or later.
+- Internet access on the first run to download the public
+  ``dinov2-vitb14`` model weights. A GPU is recommended but not required.
 
-Install
--------
+Install ``soma`` in your environment:
 
 .. code-block:: bash
 
    pip install soma-pathology
 
-Three ways to use soma
-----------------------
+1. Create the manifests
+-----------------------
 
-The same components, cache, and run outputs back all three workflows, so you can
-move between them freely. Pick the one that matches how much control you want.
+``dataset.csv`` identifies each RGB tile and its binary label. Paths are
+resolved from the directory where you launch ``soma``.
 
-Pipeline API — one config, one call
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+.. code-block:: text
 
-The quickest path: describe the whole run in one
-:class:`~soma.config.PipelineConfig` and call ``.run()``.
+   sample_id,image_path,label
+   train_0,tiles/train_0.png,0
+   train_1,tiles/train_1.png,1
+   tune_0,tiles/tune_0.png,0
+   tune_1,tiles/tune_1.png,1
+   test_0,tiles/test_0.png,0
+   test_1,tiles/test_1.png,1
 
-.. code-block:: python
+``splits.csv`` assigns the same samples to one fold:
 
-   from soma import (
-       AggregatorConfig,
-       EncoderConfig,
-       EvalConfig,
-       Pipeline,
-       PipelineConfig,
-       TaskConfig,
-       TrainingConfig,
-   )
+.. code-block:: text
 
-   config = PipelineConfig(
-       dataset_csv="dataset.csv",
-       splits_csv="splits.csv",
-       output_root="output",
-       dataset_type="slide",
-       encoder=EncoderConfig(name="uni2"),
-       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-       task=TaskConfig(name="binary_classification"),
-       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-   )
+   sample_id,fold,split
+   train_0,0,train
+   train_1,0,train
+   tune_0,0,tune
+   tune_1,0,tune
+   test_0,0,test
+   test_1,0,test
 
-   result = Pipeline(config).run()
+See :doc:`dataset` for slide, patient, dense-prediction, and cross-validation
+manifest contracts.
 
-The returned ``result`` is a :class:`~soma.pipeline.PipelineResult` — a handle on
-the run you just completed: ``result.run_dir`` (the run directory on disk),
-``result.summary`` (aggregated metrics, mirroring ``summary.json``), and
-``result.fold_results`` (one :class:`~soma.pipeline.FoldResult` per fold, each
-carrying the training result, the tune report, and per-split test reports). The
-same experiment is also persisted on disk; see :doc:`outputs`.
+2. Write the configuration
+--------------------------
 
-Under the hood, ``soma`` turns the config into one run directory and runs a fixed
-sequence: read the manifests, resolve settings, extract or load features, train one
-model per fold (tune split for checkpoint selection), evaluate on the tune and test
-splits, then write metrics, predictions, checkpoints, and an HTML report. A shared
-:doc:`cache <caching>` reuses preprocessing and features across runs whenever
-upstream settings match, so sweeps skip work already done.
+Save this as ``config.yaml`` beside the two manifests:
 
-The full configuration reference, plus the tile- and patient-level variants, is in
-:doc:`pipeline`.
+.. code-block:: yaml
 
-Step-by-step API — compose the building blocks
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   run:
+     output_root: runs
 
-For finer control, drive the individual :doc:`building blocks <api>` yourself —
-preprocessing, feature extraction, training, evaluation, reporting, or heatmaps as
-separate steps instead of one call. The :doc:`slide-level tutorial
-<tutorials/walkthrough-slide-level>` builds a run this way, end to end.
+   data:
+     dataset_csv: dataset.csv
+     splits_csv: splits.csv
+     dataset_type: tile
 
-CLI — run from the shell
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+   encoder:
+     name: dinov2-vitb14
 
-Prefer the terminal? Point ``soma`` at a YAML config:
+   task:
+     name: binary_classification
+
+   evaluation:
+     metrics: [auroc, balanced_accuracy]
+
+   training:
+     epochs: 5
+     batch_size: 16
+
+The YAML groups settings by concern; ``soma`` validates and translates these
+sections into a :class:`~soma.config.PipelineConfig`. See :doc:`configuration`
+for every option and :doc:`cli` for the command reference.
+
+3. Run
+------
 
 .. code-block:: bash
 
    soma config.yaml
 
-The YAML mirrors ``PipelineConfig`` field for field. See :doc:`cli` for the full
-command set and the canonical config schema.
+The command prints the run directory. Inside it, expect:
+
+- ``config.yaml`` -- the resolved configuration
+- ``best_model.pt`` and ``training_history.json`` -- training state
+- ``predictions_tune.csv`` and ``predictions_test.csv`` -- sample predictions
+- ``metrics.json`` and ``summary.json`` -- fold and run metrics
+- ``report.html`` -- the rendered evaluation report
+
+See :doc:`outputs` for the complete artifact contract.
+
+Python equivalent
+-----------------
+
+The same run can be launched through the public API:
+
+.. code-block:: python
+
+   from soma import EncoderConfig, EvalConfig, Pipeline, PipelineConfig, TaskConfig, TrainingConfig
+
+   config = PipelineConfig(
+       dataset_csv="dataset.csv",
+       splits_csv="splits.csv",
+       output_root="runs",
+       dataset_type="tile",
+       encoder=EncoderConfig(name="dinov2-vitb14"),
+       task=TaskConfig(name="binary_classification"),
+       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
+       training=TrainingConfig(epochs=5, batch_size=16),
+   )
+
+   result = Pipeline(config).run()
+
+Continue with :doc:`pipeline` to choose a pipeline mode or with the runnable
+:doc:`workflow tutorials <tutorials/index>` for larger experiments.

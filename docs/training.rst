@@ -1,77 +1,63 @@
 Training
 ========
 
-Training takes the selected feature representation and fits the task head.
-The main knobs are learning rate, epochs, patience, optimizer, scheduler, and
-batch behavior. If a benchmark only exposes train/test splits, set
-``tune_is_test=True`` to use the single test split for checkpoint selection and
-final reporting. If a dataset has no tune split and you want a train-as-tune
-fallback instead, set ``allow_missing_tune=True``.
-
-The main configuration object is :class:`soma.config.TrainingConfig`.
+Training fits the task head, aggregator, or dense component while monitoring a
+tune loss or metric for checkpoint selection and early stopping.
 
 .. autoclass:: soma.config.TrainingConfig
    :members:
 
-Practical defaults
-------------------
+Core settings
+-------------
 
 .. list-table::
    :header-rows: 1
 
    * - Field
      - Default
-     - Notes
-   * - ``seed``
-     - ``0``
-     - Reproducibility
+     - Purpose
    * - ``epochs``
      - ``50``
-     - Maximum training epochs
-   * - ``learning_rate``
-     - ``1e-4``
-     - Primary optimization knob
-   * - ``weight_decay``
-     - ``1e-5``
-     - Regularization
-   * - ``optimizer``
-     - ``adam``
-     - Also supports ``adamw`` and ``sgd``
-   * - ``scheduler``
-     - ``cosine``
-     - Or ``none``
+     - Maximum epochs.
+   * - ``learning_rate`` / ``weight_decay``
+     - ``1e-4`` / ``1e-5``
+     - Optimization and regularization.
+   * - ``optimizer`` / ``scheduler``
+     - ``adam`` / ``cosine``
+     - Optimization schedule.
    * - ``patience``
      - ``10``
-     - Early stopping on tune loss
+     - Early-stopping patience.
    * - ``batch_size``
      - ``1``
-     - Good for MIL; raise for tile runs
+     - Samples per step; increase for tile datasets.
    * - ``gradient_accumulation``
      - ``1``
-     - Effective batch size multiplier
-   * - ``tune_is_test``
-     - ``False``
-     - Use the only test split as tune; intended for reproducing benchmark protocols without an internal validation set
-   * - ``allow_missing_tune``
-     - ``False``
-     - Reuse train as tune when a fold has no tune split; emits a warning
+     - Steps contributing to the effective batch.
+   * - ``seed``
+     - ``0``
+     - Run-level reproducibility seed.
 
-When tuning, keep the task and evaluation contract stable before sweeping
-optimizer details.
+Selection protocol
+------------------
 
-Live training summary
----------------------
+``monitor`` and ``monitor_mode`` select the tune loss or metric used for early
+stopping and the best checkpoint.
 
-During training, the live summary panel reports the current epoch, loss,
-learning rate, tune metrics, patience, status, trainable parameter count, and
-epoch timing. For cross-validation runs, it also shows the active fold as
-``Fold: x/N``. The estimated time remaining is shown only in the live display.
+Normally, provide distinct train, tune, and test samples. For a published
+protocol with only one held-out split, set ``tune_is_test: true`` and declare
+either tune or test, not both; soma uses that split for checkpoint selection
+and final reporting. This reproduces the protocol but does not provide an
+independent test estimate.
 
-Saved timing artifacts
-----------------------
+Set ``allow_missing_tune: true`` only when intentionally reusing train samples
+as tune data. For unbiased candidate selection with a declared test set, use
+``evaluation.holdout_test`` as described in :doc:`evaluation`.
 
-The training history is saved as ``training_history.json`` (directly in the
-run directory for single-fold runs, inside ``fold_N/`` for cross-validation).
-It records the elapsed time and average epoch time for each epoch. Those values
-also appear in the HTML report so completed runs can be compared without
-reopening the live console.
+Artifacts
+---------
+
+Iterative trainers write ``training_history.json`` with per-epoch losses,
+metrics, learning rate, and timing. During a run, the live panel also shows the
+active fold, patience, trainable parameters, and ETA. See :doc:`outputs` for
+single-fold and cross-validation paths.

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import importlib.util
-import urllib.request
 from pathlib import Path
 import sys
 
@@ -17,37 +15,24 @@ def _optional_extension(module_name: str) -> list[str]:
     return [module_name]
 
 
-def _fetch_latest_release(repo: str) -> tuple[str, str]:
-    """Return (tag_name, html_url) for the latest GitHub release, or ('', '') on failure."""
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "sphinx-build"})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            return data.get("tag_name", ""), data.get("html_url", "")
-    except Exception:
-        return "", ""
-
-
-def _inject_github_release(app):
-    tag, url = _fetch_latest_release("clemsgrs/soma")
-    app.config.html_context["github_latest_release_tag"] = tag
-    app.config.html_context["github_latest_release_url"] = url
-
-
-def setup(app):
-    app.connect("builder-inited", _inject_github_release)
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
     if sibling.exists():
         sys.path.insert(0, str(sibling))
 
+import soma
+
 project = "soma"
 author = "Clément Grisi"
 copyright = "2026, Clément Grisi"
-release = "0.1.0"
+release = soma.__version__
+html_context = {
+    "github_latest_release_tag": release,
+    "github_latest_release_url": (
+        f"https://github.com/clemsgrs/soma/releases/tag/{release}"
+    ),
+}
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -104,6 +89,7 @@ if importlib.util.find_spec("furo") is not None:
         "source_repository": "https://github.com/clemsgrs/soma",
         "source_branch": "main",
         "source_directory": "docs/",
+        "top_of_page_buttons": ["view"],
     }
 else:
     html_theme = "alabaster"

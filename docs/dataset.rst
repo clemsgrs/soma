@@ -29,6 +29,12 @@ replace the scalar ``label`` with a per-sample supervision file:
   an optional per-sample ``level0_spacing`` column records their frame. See
   :doc:`detection` for the full column contract.
 
+Spatial-expression manifests (``dataset_type="spatial_expression"``) use
+``sample_id``, ``image_path``, and ``target_index`` instead of a scalar
+``label``. Each index selects a row from the adjacent ``targets.npy`` matrix;
+``genes.json`` gives the ordered gene name for each matrix column. Both
+sidecars are required and validated when the manifest is loaded.
+
 Splits format
 -------------
 

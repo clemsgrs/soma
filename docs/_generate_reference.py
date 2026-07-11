@@ -138,113 +138,80 @@ def _default_config_yaml_block() -> str:
 
 
 def build_cli_rst() -> str:
-    config_reference = _default_config_yaml_block()
-    body = (
-        dedent(
+    return dedent(
         """\
         CLI
         ===
 
-        ``soma`` exposes a compact command-line interface for running
-        experiments from YAML config files and for listing the available model
-        presets.
-
-        .. figure:: /_static/figures/run-flow.svg
-           :figclass: soma-figure
-           :alt: Three input files flow into one soma command that schedules tiling, feature extraction, training, and metrics.
-
-           You provide three files — a dataset, splits, and a config. ``soma`` then
-           schedules every step: tiling, feature extraction, training, and metrics.
+        Use ``soma`` to run YAML experiments, inspect registered components, and
+        reproduce benchmarks.
 
         Basic usage
         -----------
 
-        The main entrypoint takes a config path directly::
+        Run a configuration::
 
             soma /path/to/config.yaml
 
-        You can also invoke it through Python if you prefer::
-
-            python -m soma /path/to/config.yaml
+        ``python -m soma /path/to/config.yaml`` is equivalent.
 
         Available commands
         ------------------
 
-        ``soma CONFIG``
-           Run a full pipeline from the given YAML config file.
+        .. list-table::
+           :header-rows: 1
+           :widths: 42 58
 
-        ``soma list encoders [--level {tile,slide,patient}]``
-           List all registered encoder presets. ``--level`` narrows results to
-           ``tile``, ``slide``, or ``patient`` encoders.
+           * - Command
+             - Purpose
+           * - ``soma CONFIG``
+             - Run a pipeline from YAML.
+           * - ``soma list encoders [--level LEVEL]``
+             - List encoders, optionally filtered to ``tile``, ``slide``, or ``patient``.
+           * - ``soma list aggregators``
+             - List MIL aggregators.
+           * - ``soma list decoders``
+             - List dense neural decoders.
+           * - ``soma list pixel-classifiers``
+             - List decoder-free pixel classifiers.
+           * - ``soma list tasks``
+             - List task heads.
+           * - ``soma list benchmarks``
+             - List names accepted by ``reproduce`` and ``leaderboard``.
 
-        ``soma list aggregators``
-           List all registered MIL aggregator presets.
+        Benchmark commands
+        ------------------
 
-        ``soma list decoders``
-           List all registered dense decoder presets.
+        Reproduce one registered benchmark::
 
-        ``soma list pixel-classifiers``
-           List all registered per-pixel classifier presets.
+            soma reproduce NAME --raw-root /path/to/data
 
-        ``soma list tasks``
-           List all registered task-head presets.
+        Use ``--curated-dir`` to reuse manifests, ``--from-run-dir`` to score an
+        existing run, and ``--seeds 1`` for a smoke run. ``--encoder`` and
+        ``--spacing`` select registered benchmark axes. A family name such as
+        ``eva`` runs every ``eva/<dataset>`` member. ``--record`` appends the
+        measured value and provenance to the packaged results ledger.
 
-        ``soma list benchmarks``
-           List all registered foundation-model benchmarks — the names
-           ``soma reproduce`` and ``soma leaderboard`` accept.
+        Gate references produce ``PASS`` or ``FAIL``; external references are
+        reported as non-gating deltas. See :doc:`benchmarking` for the distinction.
 
-        Benchmarking commands
-        ---------------------
+        Build a faceted view over completed run directories::
 
-        These drive the registered benchmarks (see :doc:`benchmarking` for the
-        end-to-end curate → configure → run → leaderboard → reproduce story).
+            soma leaderboard [NAME] --root OUTPUT_ROOT --vary encoder
 
-        ``soma reproduce NAME [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
-           Curate → run → score a registered benchmark and tolerance-check its
-           primary metric against the packaged reference band. ``NAME`` is a
-           registered benchmark (``ocelot``, ``eva/bach``) or a family prefix
-           (``eva``) that fans out over every ``eva/<dataset>``. Three manifest
-           sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
-           already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
-           curation; ``--from-run-dir`` re-scores an existing run without retraining.
-           ``--seeds 1`` is the quickest smoke.
-
-        ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
-           Render a faceted leaderboard over the completed run dirs under an
-           output root. A benchmark ``NAME`` supplies the canonical facet and
-           reference band; ``--vary`` / ``--fix`` / ``--like`` shape the facet on
-           top of it.
+        ``--fix AXIS=VALUE`` holds an axis constant. ``--like RUN_DIR`` inherits
+        fixed axes from an existing run. ``--metric`` and ``--split`` override the
+        ranked value.
 
         What the CLI expects
         --------------------
 
-        The config file follows the canonical nested schema below. This block
-        is generated from ``soma/configs/default.yaml``, the bundled defaults
-        merged by :func:`soma.config.load_config`. Copy it when you want the
-        baseline public YAML shape, then replace neutral defaults such as
-        ``encoder: null`` and ``aggregation: null`` for your run.
-
-        Full config reference
-        ---------------------
-
-        .. code-block:: yaml
-
+        YAML is nested by concern and loaded through
+        :func:`soma.config.load_config`. Start with :doc:`getting-started`; consult
+        :doc:`configuration` for the generated canonical schema and :doc:`pipeline`
+        for the corresponding Python API.
         """
-        )
-        + config_reference
-        + "\n\n"
-        + dedent(
-            """\
-        See also
-        --------
-
-        * :doc:`pipeline` – Python API equivalent of each config section
-        * :doc:`getting-started` – end-to-end walkthrough
-
-        """
-        )
-    )
-    return body.rstrip() + "\n"
+    ).rstrip() + "\n"
 
 
 def write_cli_rst(path: str | Path | None = None) -> Path:
@@ -252,6 +219,43 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 
     target = Path(path) if path is not None else Path(__file__).with_name("cli.rst")
     target.write_text(build_cli_rst(), encoding="utf-8")
+    return target
+
+
+def build_configuration_rst() -> str:
+    """Generate the exhaustive YAML configuration reference."""
+
+    config_reference = _default_config_yaml_block()
+    introduction = dedent(
+        """\
+        Configuration
+        =============
+
+        Soma configuration is nested by concern. ``run`` names the output,
+        ``data`` selects the pipeline mode and manifests, and the remaining sections
+        configure preprocessing, components, training, evaluation, and reports.
+        Start with the smaller example in :doc:`getting-started`; use this page when
+        you need an uncommon option. The :doc:`cli` accepts the same YAML through
+        ``soma CONFIG``.
+
+        Canonical YAML schema
+        ---------------------
+
+        This block is generated from ``soma/configs/default.yaml``. Copy only the
+        sections you need and replace neutral values such as ``encoder: null`` and
+        ``aggregation: null`` for your experiment.
+        """
+    )
+    return introduction + "\n.. code-block:: yaml\n\n" + config_reference + "\n"
+
+
+def write_configuration_rst(path: str | Path | None = None) -> Path:
+    """Write the generated configuration reference to disk."""
+
+    target = Path(path) if path is not None else Path(__file__).with_name(
+        "configuration.rst"
+    )
+    target.write_text(build_configuration_rst(), encoding="utf-8")
     return target
 
 
@@ -265,15 +269,6 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # gate band beside the measured cells, a linked source instead of dumping the CSV's verbose
 # ``source`` column (no hand-typed numbers, no drift, no ``TBD``). A generator + a
 # checked-in file kept in sync by ``tests/test_docs.py`` mirrors the ``cli.rst`` mechanism.
-
-_GENERATED_PAGE_NOTE = (
-    ".. note::\n\n"
-    "   This page is generated from the registered benchmark definition — the protocol\n"
-    "   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows\n"
-    "   (packaged ``{csv}``), and the command from the benchmark name. Edit the registry\n"
-    "   (``{module}``) and the CSV, not this page; ``python docs/_generate_reference.py``\n"
-    "   re-emits it and ``tests/test_docs.py`` guards the two from drifting."
-)
 
 # Upstream provenance for each benchmark family's published reference band — the leaderboard
 # the numbers were captured from, rendered as one clickable link next to the reference
@@ -370,12 +365,9 @@ def _ocelot_guidance_section(bench) -> str:
         )
     return (
         "Guidance anchors (non-gating)\n-----------------------------\n\n"
-        "External reference points shown for **context only** — the official challenge\n"
-        "baseline and best-reported numbers, snapshotted (not live-scraped) from\n"
-        "`histoboard <https://wearewaiv.github.io/histoboard/>`__. They measure a\n"
-        "*different* protocol than soma's frozen probe (fully-supervised, end-to-end, not\n"
-        "tied to any encoder), so ``soma reproduce`` **never gates** on them; they only show\n"
-        "how far the frozen-probe result stands from the best reported result:\n\n"
+        "These snapshotted `histoboard <https://wearewaiv.github.io/histoboard/>`__\n"
+        "values come from fully supervised, end-to-end systems, not Soma's frozen probe.\n"
+        "They provide context only; ``soma reproduce`` never gates on them:\n\n"
         + "\n".join(bullets)
     )
 
@@ -408,50 +400,32 @@ def build_ocelot_benchmark_rst() -> str:
 
     sections = [
         "OCELOT\n======",
-        "*Maps to task:* :doc:`detection` — soma's :doc:`detection path <detection>`\n"
-        "reproduced on the `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_\n"
-        "cell-detection challenge.",
-        _GENERATED_PAGE_NOTE.format(
-            csv="soma/benchmarks/reference/ocelot.csv", module="soma/benchmarks/ocelot.py"
-        ),
-        "OCELOT 2023 provides paired cell + tissue patches from TCGA. This benchmark is\n"
-        "**cell-only**: a **frozen** foundation-model encoder produces a dense token grid,\n"
-        "a ``lightweight_conv`` decoder regresses a per-class peak heatmap, and the\n"
-        ":class:`~soma.tasks.detection.DetectionHead` scores it with OCELOT's class-aware\n"
-        "**mean F1 @ δ = 3 µm**, greedy-matched — the leaderboard-comparable operating\n"
-        "point (per-class score thresholds swept on ``tune``, frozen, applied once to\n"
-        "``test``). See :doc:`detection` for the canonical matcher and px↔µm definitions.",
+        "Purpose\n-------\n\n"
+        "Evaluate Soma's :doc:`cell-detection path <detection>` on the\n"
+        "`OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ TCGA patches. A frozen\n"
+        "encoder produces a dense token grid; ``lightweight_conv`` predicts class peak\n"
+        "heatmaps. OCELOT's greedy matcher reports class-aware **mean F1 @ δ = 3 µm**.\n"
+        "Thresholds are selected on ``tune`` and applied once to ``test``.",
         "Protocol\n--------\n\n"
-        "The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.\n\n"
-        + _kv_table("Axis / setting", "Value", protocol_rows),
-        "Axes\n----\n\n"
-        "``build_config`` resolves a committed config per ``(encoder, spacing)`` — the\n"
-        "2×2 magnification-alignment ablation plus the native anchor:\n\n"
+        "The fixed recipe varies ``encoder`` × ``spacing``:\n\n"
+        + _kv_table("Axis / setting", "Value", protocol_rows)
+        + "\n\nAvailable committed configurations:\n\n"
         + _kv_table("Encoder", "Spacing (µm/px)", axes_rows, widths="50 50"),
-        "Reference band\n--------------\n\n"
-        "The tolerance band ``soma reproduce`` checks against — a **config-agnostic** banner\n"
-        "(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression\n"
-        "anchor, not an external leaderboard number). The non-gating external anchors —\n"
-        "fully-supervised end-to-end baselines from a *different* protocol — are surfaced\n"
-        "with clickable links under *Guidance anchors* below:\n\n"
-        + _kv_table("Metric", "Reference band (expected ± tolerance)", gate_rows, widths="40 60"),
-        _ocelot_guidance_section(bench),
-        "Reference environment\n---------------------\n\n"
-        "The recorded anchor environment the reference number was produced in:\n\n"
-        + _kv_table("Component", "Version", env_rows, widths="40 60"),
-        "Reproduce\n---------\n\n"
-        "One command curates the raw data, trains the anchor for the canonical seed,\n"
-        "greedy-scores it, and tolerance-checks ``mean_f1`` against the band above::\n\n"
+        "Prepare and run\n---------------\n\n"
+        "Curate, train the canonical seed, score, and check the gate::\n\n"
         "    soma reproduce ocelot --raw-root /path/to/ocelot\n\n"
-        "Fast paths: ``--from-run-dir <dir>`` re-scores an existing run with the greedy\n"
-        "matcher (no training); ``--seeds 1`` is the quickest smoke. Sweep the ablation\n"
-        "with ``--encoder`` / ``--spacing`` (e.g. ``soma reproduce ocelot --encoder uni2\n"
-        "--spacing 0.25 --raw-root ...``).",
-        ".. seealso::\n\n"
-        "   * :doc:`detection` — the detection modeling substrate (head, target encoding,\n"
-        "     loss, F1@δ evaluator).\n"
-        "   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.\n"
-        "   * :doc:`curation` — the OCELOT curator and split policy.",
+        "Use ``--encoder`` and ``--spacing`` for an ablation, ``--seeds 1`` for a smoke\n"
+        "test, or ``--from-run-dir <dir>`` to rescore an existing run.",
+        "Results\n-------\n\n"
+        "This **gate reference** is Soma's Virchow2 @ 0.2 µm/px, seed-0 frozen-probe\n"
+        "regression anchor. It is not an external leaderboard result:\n\n"
+        + _kv_table("Metric", "Expected ± tolerance", gate_rows, widths="40 60")
+        + "\n\n"
+        + _ocelot_guidance_section(bench)
+        + "\n\nReference environment\n~~~~~~~~~~~~~~~~~~~~~\n\n"
+        + _kv_table("Component", "Version", env_rows, widths="40 60"),
+        "See :doc:`benchmarking` for reference semantics, :doc:`curation` for the raw-data\n"
+        "layout, and :doc:`detection` for targets, loss, and matching.",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 
@@ -492,11 +466,6 @@ def build_eva_benchmark_rst() -> str:
         )
         dataset_rows.append((f"``{bench.name}``", f"``{spec.task}``", eval_split))
 
-    reproduce_lines = "\n".join(
-        f"    soma reproduce {bench.name} --raw-root /path/to/eva/{bench.facet.fixed['dataset']}"
-        for bench in family
-    )
-
     def _dataset_table() -> str:
         lines = [
             ".. list-table::",
@@ -513,51 +482,36 @@ def build_eva_benchmark_rst() -> str:
 
     sections = [
         "EVA\n===",
-        "*Maps to task:* :doc:`classification` — frozen-tile linear-probe runs of the\n"
-        "binary / multiclass classification heads reproducing the\n"
-        "`kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_ patch-classification leaderboard.",
-        _GENERATED_PAGE_NOTE.format(
-            csv="soma/benchmarks/reference/eva.csv", module="soma/benchmarks/eva.py"
-        ),
-        "EVA is registered as **one sub-benchmark per dataset** (``eva/<dataset>``), each\n"
-        "sharing the same offline linear-probe recipe and varying only the ``encoder`` axis.\n"
-        "``soma reproduce eva`` fans out over the whole family; a single ``eva/<dataset>``\n"
-        "reproduces one dataset.",
-        "The frozen-tile-probe protocol\n------------------------------\n\n"
-        "Stated once, shared by every dataset:\n\n"
-        + _kv_table("Setting", "Value", protocol_rows),
-        "Encoders\n--------\n\n"
-        "The ``encoder`` axis maps a soma encoder onto an EVA leaderboard backbone:\n\n"
-        + _kv_table("Encoder", "EVA backbone", encoder_rows, widths="30 70"),
-        "Datasets\n--------\n\n"
-        "Where EVA ships only train/validation, the EVA validation split becomes soma\n"
-        "``test`` and the run sets ``tune_is_test: true`` (train-on-all-train /\n"
-        "evaluate-on-validation); ``patch_camelyon`` has a real held-out test split:\n\n"
-        + _dataset_table(),
-        "Reproduced numbers\n------------------\n\n"
-        "What soma has actually measured, recorded by ``soma reproduce --record`` into the\n"
-        "packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit\n"
-        "and slide2vec version that produced each number. The ``Reference`` column is the\n"
-        "published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from "
-        + _reference_source_link("eva")
-        + "); only cells that have been run appear, each with its delta to that band:\n\n"
-        + _reproduced_table("eva", ("dataset", "encoder")),
-        "Reproduce\n---------\n\n"
-        "``soma reproduce`` curates the raw layout, trains the linear probe over the\n"
-        "canonical seeds, reads ``test/balanced_accuracy`` from ``summary.json``, and\n"
-        "tolerance-checks it against the band above. Reproduce one dataset::\n\n"
-        + reproduce_lines
-        + "\n\n"
-        "…or fan out over the whole family in one go (each member owns a per-dataset\n"
-        "subdirectory)::\n\n"
+        "Purpose\n-------\n\n"
+        "Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_ patch-classification\n"
+        "leaderboard with Soma's :doc:`classification` heads. Each ``eva/<dataset>`` entry\n"
+        "uses the same frozen-tile linear probe and varies only ``encoder``.",
+        "Protocol\n--------\n\n"
+        + _kv_table("Setting", "Value", protocol_rows)
+        + "\n\nEncoder mappings:\n\n"
+        + _kv_table("Encoder", "EVA backbone", encoder_rows, widths="30 70")
+        + "\n\nDataset tasks and evaluation splits:\n\n"
+        + _dataset_table()
+        + "\n\nTrain/validation-only datasets use validation as Soma ``test``; ``patch_camelyon``\n"
+        "retains its held-out test split.",
+        "Prepare and run\n---------------\n\n"
+        "Reproduce one dataset::\n\n"
+        "    soma reproduce eva/bach --raw-root /path/to/eva/bach\n\n"
+        "Or run the family::\n\n"
         "    soma reproduce eva --raw-root /path/to/eva\n\n"
-        "Pick the encoder axis with ``--encoder`` (default ``"
+        "Select an encoder with ``--encoder`` (default ``"
         + eva_bench.DEFAULT_ENCODER
-        + "``); ``--seeds 1`` runs a single-seed smoke.",
-        ".. seealso::\n\n"
-        "   * :doc:`classification` — the task heads the probe trains (binary, multiclass).\n"
-        "   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.\n"
-        "   * :doc:`curation` — the EVA curators and split policy.",
+        + "``).",
+        "Results\n-------\n\n"
+        "Reproduced numbers\n~~~~~~~~~~~~~~~~~~\n\n"
+        "Recorded cells from ``soma/benchmarks/results/eva.csv`` appear below with seed,\n"
+        "commit, and delta provenance. References are published EVA balanced accuracies\n"
+        "keyed by dataset × encoder from "
+        + _reference_source_link("eva")
+        + ". Unrecorded cells are omitted:\n\n"
+        + _reproduced_table("eva", ("dataset", "encoder")),
+        "See :doc:`benchmarking` for gate semantics, :doc:`curation` for raw layouts, and\n"
+        ":doc:`classification` for task-head details.",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 
@@ -572,22 +526,14 @@ def _hest_reproduction_section() -> str:
     """
     report = reproduction_report("hest")
     intro = (
-        "soma reproduces HEST **natively** — its own slide2vec features, not HEST's TRIDENT\n"
-        "extraction. HEST's published numbers are therefore rendered as ``kind=external``\n"
-        "references: soma prints its Measured value beside them with the signed delta and lets\n"
-        "you compare. Nothing here is a PASS/FAIL against HEST — a gate should flag a *real*\n"
-        "regression, and a cross-stack delta is not one (ADR 0005). Three views, computed from\n"
-        "the results ledger joined to the published reference:\n\n"
-        "* **A — absolute agreement** (what is published): soma's Pearson beside HEST's, and the\n"
-        "  signed delta. The delta is the slide2vec↔TRIDENT parity gap; judge it yourself.\n"
-        "* **B — rank agreement** (a bonus): **pooled pairwise concordance** — over every\n"
-        "  (task, encoder-pair), the fraction soma orders the same way HEST does. A pair is\n"
-        f"  *resolvable* when HEST separates it by more than {RESOLVABLE_EPS} on the metric;\n"
-        "  concordance is computed over resolvable pairs, so soma is not graded on within-noise\n"
-        "  coin-flips. Per-task Spearman ρ is shown alongside (coarse at few encoders).\n"
-        "* **C — drift guard** (the only axis that gates, and it compares soma to soma): the\n"
-        "  ledger is append-only and provenance-pinned (commit, slide2vec version), so a re-run\n"
-        "  at a new commit adds a row and drift is a visible diff."
+        "Soma extracts native slide2vec features rather than HEST's TRIDENT features. Published\n"
+        "HEST values are therefore **external, non-gating** references: no cross-stack delta\n"
+        "produces PASS/FAIL (ADR 0005). The joined results and reference ledgers show:\n\n"
+        "* **A — absolute agreement:** Pearson and signed slide2vec↔TRIDENT delta per cell.\n"
+        "* **B — rank agreement:** pooled encoder-pair concordance where HEST's separation is\n"
+        f"  greater than {RESOLVABLE_EPS}, plus per-task Spearman ρ.\n"
+        "* **C — drift guard:** append-only commit and slide2vec provenance for Soma-to-Soma\n"
+        "  comparisons. This is the only comparison suitable for regression gating."
     )
 
     if not report.cells:
@@ -692,10 +638,8 @@ def build_hest_benchmark_rst() -> str:
     """Generate the HEST benchmark page from the registered ``hest/<task>`` family.
 
     Family-aware (like EVA): renders every registered ``hest/<task>`` sub-benchmark, so a
-    fanned-out task appears automatically once ``HestBenchmark(task)`` is registered. The
-    page also documents the scoped data download and the "adding a task" fan-out recipe —
-    the point being that a new task is data + one ``HEST_TASKS`` entry + reference rows, never
-    a change to the curator or the probe.
+    registered task appears automatically. The page documents the shared protocol, scoped
+    data download, reproduction commands, and recorded results.
     """
     family = [get_benchmark(n) for n in list_benchmarks() if n.startswith("hest/")]
     head = family[0]  # protocol constants are shared across the family
@@ -747,45 +691,14 @@ def build_hest_benchmark_rst() -> str:
 
     task_rows = [(f"``{b.name}``", f"``{b.facet.fixed['dataset']}``") for b in family]
 
-    reproduce_lines = "\n".join(
-        f"    soma reproduce {b.name} --raw-root /path/to/hest-bench/{b.facet.fixed['dataset']}"
-        for b in family
-    )
-
     download_cmd = (
         "    hf download MahmoodLab/hest-bench --include 'IDC/*' --exclude 'fm_v1/*' \\\n"
         "        --repo-type dataset --local-dir /path/to/hest-bench"
     )
 
-    fanout_body = (
-        "All 9 scored tasks are already registered. The one hest-bench task *not* registered\n"
-        "is ``HCC`` (liver): the HF hub ships its data tree, but HCC is **unscored** — no\n"
-        "published leaderboard number — so it carries no reference row. Adding it (or any future\n"
-        "task) is a **fan-out**: **data + one ``HEST_TASKS`` entry + reference rows** — never new\n"
-        "machinery. ``curate_hest`` and the closed-form probe are task-agnostic, so a new task\n"
-        "**never touches the curator or the probe**:\n\n"
-        "**1. Download the task** (scoped; e.g. ``HCC``)::\n\n"
-        "    hf download MahmoodLab/hest-bench --include 'HCC/*' --exclude 'fm_v1/*' \\\n"
-        "        --repo-type dataset --local-dir /path/to/hest-bench\n\n"
-        "**2. Curate** it into a ``spatial_expression`` Manifest with the *same* curator::\n\n"
-        "    python -m soma.curation.hest --raw-root /path/to/hest-bench/HCC \\\n"
-        "        --output-dir /path/to/curated/HCC --task HCC\n\n"
-        "**3. Register** it by adding the task id to ``HEST_TASKS`` in ``soma/benchmarks/hest.py``\n"
-        "— the module loop-registers ``HestBenchmark(task)`` for each, no new curator/probe code::\n\n"
-        '    HEST_TASKS = (..., "HCC")  # loop-registers hest/HCC\n\n'
-        "**4. Add external reference rows** for the task to ``soma/benchmarks/reference/hest.csv``\n"
-        "— one ``kind=external`` row per encoder (the published Pearson, a ``label``, a ``url``).\n"
-        "Without a published number a task can still run, but it has nothing to reproduce against.\n\n"
-        "Then ``python docs/_generate_reference.py`` re-emits this page with the new task,\n"
-        "``soma list benchmarks`` shows ``hest/HCC``, and ``soma reproduce hest/HCC`` runs —\n"
-        "all from the same curator and the same probe."
-    )
-
-    # The published HEST leaderboard for this task, rendered readably (best first) instead of
-    # dumping the reference CSV. ``load_reference`` returns every row unfiltered (the
-    # benchmark's own ``expected()`` defaults the encoder axis, so it would show only one).
-    # The full published IDC leaderboard (all ~18 encoders) is the illustrative one; the other
-    # tasks' references (our 3 campaign encoders × 8 tasks) drive the Reproduction section below.
+    # Keep the inline IDC summary aligned with the three supported campaign encoders. The
+    # authoritative leaderboard and packaged CSV linked below retain the exhaustive evidence.
+    campaign_encoders = {"uni2", "virchow2", "h-optimus-1"}
     leaderboard_rows = [
         (f"``{row.key['encoder']}``", f"{row.expected:.4f}")
         for row in sorted(
@@ -795,6 +708,7 @@ def build_hest_benchmark_rst() -> str:
                 if r.is_external
                 and r.metric == head.primary_metric
                 and r.key.get("dataset") == "IDC"
+                and r.key.get("encoder") in campaign_encoders
             ),
             key=lambda r: r.expected,
             reverse=True,
@@ -803,85 +717,52 @@ def build_hest_benchmark_rst() -> str:
 
     sections = [
         "HEST\n====",
-        "*Maps to task:* :doc:`regression` — a **frozen** patch encoder scored on\n"
-        "**gene-expression-from-morphology**: predict a 50-gene expression vector from a\n"
-        "112 µm tile, reproducing the\n"
-        "`HEST-Benchmark <https://github.com/mahmoodlab/HEST>`_ (Jaume et al., NeurIPS 2024).",
-        _GENERATED_PAGE_NOTE.format(
-            csv="soma/benchmarks/reference/hest.csv", module="soma/benchmarks/hest.py"
+        _section(
+            "Purpose",
+            "Predict a 50-gene expression vector from each 112 µm tile with a frozen encoder,\n"
+            "reproducing `HEST-Benchmark <https://github.com/mahmoodlab/HEST>`_ (Jaume et al.,\n"
+            "NeurIPS 2024). Each ``hest/<task>`` uses Soma's native slide2vec cache and the\n"
+            "same closed-form :doc:`spatial-expression probe <regression>`; only ``encoder``\n"
+            "varies. No ``hest`` or TRIDENT runtime is required.",
         ),
-        "HEST is registered as **one sub-benchmark per task** (``hest/<task>``), each sharing\n"
-        "the same closed-form spatial-expression probe recipe and varying only the ``encoder``\n"
-        "axis. soma reproduces it **natively** — its own slide2vec encoder → its per-spot\n"
-        "feature cache → a closed-form Ridge+PCA probe — with **no dependency on the** ``hest``\n"
-        "**library or TRIDENT**. All **9 HEST-Benchmark tasks** are registered (see *Tasks*);\n"
-        "reproduction soundness is proven by **rank agreement** across them, not by matching the\n"
-        "extraction stack (see *Reproduction — is it sound?*).",
         _section(
             "Protocol",
-            "Stated once, shared by every task; the ``encoder`` axis is the only variable:\n\n"
-            + _kv_table("Setting", "Value", protocol_rows),
-        ),
-        _section(
-            "Encoders",
-            "The ``encoder`` axis maps a soma encoder onto a HEST leaderboard backbone. Any\n"
-            "slide2vec-registered encoder works (slide2vec validates the name); the variant is\n"
-            "pinned only where the leaderboard used a non-default one:\n\n"
-            + _kv_table("Encoder", "HEST backbone", encoder_rows, widths="30 70"),
-        ),
-        _section(
-            "Tasks",
-            "The registered sub-benchmark family — all 9 HEST-Benchmark tasks, spanning organs\n"
-            "(breast, prostate, pancreas, colon, rectum, kidney, lung, skin):\n\n"
+            _kv_table("Setting", "Value", protocol_rows)
+            + "\n\nSupported campaign encoders:\n\n"
+            + _kv_table("Encoder", "HEST backbone", encoder_rows, widths="30 70")
+            + "\n\nRegistered tasks:\n\n"
             + _kv_table("Benchmark", "HEST task", task_rows, widths="50 50")
-            + "\n\nEach shares the *same* curator and closed-form probe; a task is data + a\n"
-            "registration line + reference rows (*Adding a HEST task* below). The hest-bench HF\n"
-            "dataset also ships an ``HCC`` (liver) tree, but HCC is **not** one of the 9 scored\n"
-            "tasks (no published leaderboard number), so it is deliberately not registered.",
+            + "\n\nAll nine scored tasks share this protocol. HCC has no published score and is not\n"
+            "registered.",
         ),
         _section(
-            "Published leaderboard (IDC)",
-            "HEST's published **external, non-gating** Ridge+PCA Pearson on the IDC task, per\n"
-            "encoder (best first). There is **no gate row**: nothing is tolerance-checked.\n"
-            "``soma reproduce hest/IDC`` renders soma's Measured row *beside* these, making the\n"
-            "slide2vec↔TRIDENT extraction gap an explicit, non-gating delta. The other 8 tasks'\n"
-            "references (our reproduction encoders × task) drive the reproduction proof below.\n"
-            "Source: "
-            + _reference_source_link("hest")
-            + ".\n\n"
-            + _kv_table("Encoder", "Published ``pearson``", leaderboard_rows, widths="60 40"),
-        ),
-        _section(
-            "Reproduction — is it sound?",
-            _hest_reproduction_section(),
-        ),
-        _section(
-            "Download one task",
-            "The curator is hermetic and offline (ADR 0004): provision the raw task tree once,\n"
-            "out of band. Pull **only the needed task** and **exclude the** ``fm_v1/``\n"
-            "**precomputed foundation-model features** (soma re-extracts them natively via\n"
-            "slide2vec) — a few-GB task subtree, never the full multi-task / >1 TB HEST corpus::\n\n"
+            "Prepare and run",
+            "Download one task while excluding HEST's precomputed ``fm_v1`` features; Soma\n"
+            "re-extracts features and curates the downloaded tree offline (ADR 0004)::\n\n"
             + download_cmd
-            + "\n\nThe scoped ``--include 'IDC/*'`` pulls just that task's ``patches/``, ``adata/``,\n"
-            "``splits/`` and ``var_50genes.json``; ``--exclude 'fm_v1/*'`` drops the precomputed\n"
-            "features. ``curate_hest`` then runs fully offline over the result.",
+            + "\n\nReproduce IDC::\n\n"
+            "    soma reproduce hest/IDC --raw-root /path/to/hest-bench/IDC\n\n"
+            "Or run every downloaded task::\n\n"
+            "    soma reproduce hest --raw-root /path/to/hest-bench\n\n"
+            "Select an encoder with ``--encoder`` (default ``"
+            + hest_bench.DEFAULT_ENCODER
+            + "``).",
         ),
         _section(
-            "Reproduce",
-            "``soma reproduce`` curates the raw task tree, fits the closed-form probe over the\n"
-            "canonical seed, reads ``" + head.primary_metric + "`` from ``summary.json``, and\n"
-            "renders it beside the external reference::\n\n"
-            + reproduce_lines
-            + "\n\nPick the encoder axis with ``--encoder`` (default ``"
-            + hest_bench.DEFAULT_ENCODER
-            + "``; e.g. ``--encoder virchow2``).",
+            "Results",
+            "Published IDC references\n~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+            "HEST's Ridge+PCA Pearson values are **external and non-gating**. The inline table\n"
+            "shows the supported campaign encoders; see the "
+            + _reference_source_link("hest")
+            + " and `packaged reference CSV\n"
+            "<https://github.com/clemsgrs/soma/blob/main/soma/benchmarks/reference/hest.csv>`__\n"
+            "for the complete leaderboard and task × encoder evidence.\n\n"
+            + _kv_table("Encoder", "Published ``pearson``", leaderboard_rows, widths="60 40")
+            + "\n\nReproduction — is it sound?\n~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\n"
+            + _hest_reproduction_section(),
         ),
-        _section("Adding a HEST task", fanout_body),
-        ".. seealso::\n\n"
-        "   * :doc:`regression` — the task family, the ``pearson`` metric, and the closed-form\n"
-        "     Ridge+PCA probe this benchmark drives.\n"
-        "   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.\n"
-        "   * :doc:`curation` — the HEST curator (``curate_hest``) and its split policy.",
+        "See :doc:`benchmarking` for reference semantics, :doc:`curation` for HEST input\n"
+        "contracts, and :doc:`regression` for the probe and metric.",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 
@@ -903,6 +784,7 @@ def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
 
 def main() -> None:
     write_cli_rst()
+    write_configuration_rst()
     write_benchmark_rst()
 
 

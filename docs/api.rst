@@ -1,165 +1,66 @@
 API
 ===
 
-`soma` exposes a modular public API that can be used either end to end or one
-piece at a time.
+Use the public ``soma`` package to compose experiments in Python; use the
+focused reference pages for component-specific contracts.
 
-Main building blocks
---------------------
+Entry points
+------------
 
 .. list-table::
    :header-rows: 1
 
-   * - Page
-     - Focus
-   * - :doc:`Dataset and splits <dataset>`
-     - CSV manifest schema and fold assignment rules
-   * - :doc:`Pipeline <pipeline>`
-     - End-to-end orchestration from manifests to reports
-   * - :doc:`Preprocessing <preprocessing>`
-     - Tissue segmentation and slide tiling at a given spacing
-   * - :doc:`Encoders <encoders>`
-     - Feature extraction backends
-   * - :doc:`Aggregators <aggregators>`
-     - MIL pooling and bag-level aggregation
-   * - :doc:`Tasks <tasks>`
-     - Prediction heads and metric contracts
-   * - :doc:`Evaluation <evaluation>`
-     - Metric contracts, subgroup analysis, and evaluation results
-   * - :doc:`Training <training>`
-     - Optimization behavior and training defaults
-   * - :doc:`Reporting <reporting>`
-     - Report contents, subgroup analysis, and comparison statistics
+   * - Entry point
+     - Purpose
+   * - :class:`soma.pipeline.Pipeline`
+     - Run a validated :class:`soma.config.PipelineConfig` end to end.
+   * - :class:`soma.extraction.FeatureExtractor`
+     - Extract and cache reusable features.
+   * - :func:`soma.pipeline.train`
+     - Train from an existing feature store.
+   * - :mod:`soma.reporting`
+     - Regenerate a run report or compare completed runs.
 
-Examples
---------
+The :doc:`pipeline` guide explains when to use each level. Configuration,
+dataset, and output contracts live in :doc:`configuration`, :doc:`dataset`,
+and :doc:`outputs`.
 
-The examples below show the most common entry points.
+Composition example
+-------------------
 
-Extract once, cache, and reuse features across experiments
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-This is the most common modular workflow when you want to compare several task
-heads or aggregators against the same encoder output:
+This example constructs one tile-classification run entirely through the
+public API:
 
 .. code-block:: python
 
    from soma import (
-       AggregatorConfig,
-       CacheConfig,
        EncoderConfig,
-       FeatureExtractor,
+       EvalConfig,
+       Pipeline,
+       PipelineConfig,
        TaskConfig,
        TrainingConfig,
-       Dataset,
-       Splits,
-       train,
    )
 
-   dataset = Dataset("dataset.csv")
-   splits = Splits("splits.csv", dataset)
-   encoder = EncoderConfig(name="uni2")
-   cache = CacheConfig(enabled=True, root_dir="shared/feature_cache")
-
-   extractor = FeatureExtractor(
-       dataset=dataset,
-       encoder=encoder,
-       cache=cache,
-       output_root="output",
+   config = PipelineConfig(
+       dataset_csv="dataset.csv",
+       splits_csv="splits.csv",
+       output_root="runs",
+       dataset_type="tile",
+       encoder=EncoderConfig(name="dinov2-vitb14"),
+       task=TaskConfig(name="binary_classification"),
+       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
+       training=TrainingConfig(epochs=5, batch_size=16),
    )
-   store = extractor.extract(feature_dir="output/features/uni2")
-   task = TaskConfig(name="binary_classification")
-   training = TrainingConfig(epochs=50, learning_rate=1e-4)
-   abmil_aggregator = AggregatorConfig(name="abmil", params={"hidden_dim": 256})
-   clam_aggregator = AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128})
+   result = Pipeline(config).run()
 
-   abmil_result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
-       task=task,
-       training=training,
-       aggregator=abmil_aggregator,
-       run_dir="output/abmil/uni2",
-   )
+See :doc:`getting-started` for the matching manifests and CLI workflow.
 
-   clam_result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
-       task=task,
-       training=training,
-       aggregator=clam_aggregator,
-       run_dir="output/clam_sb/uni2",
-   )
+Discovery
+---------
 
-The returned ``FeatureStore`` can be reused across experiments as long as the
-upstream preprocessing and encoder settings do not change.
-
-Train with explicit evaluation settings
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If you want a more explicit :doc:`evaluation contract <evaluation>`, define the evaluation
-config up front and pass it through the pipeline or the lower-level training API.
-Subgroup columns are included in the run outputs and summarized in the report:
-
-.. code-block:: python
-
-   from soma import EvalConfig, SubgroupConfig
-
-   evaluation = EvalConfig(
-       metrics=["auroc", "balanced_accuracy", "f1"],
-       subgroups=SubgroupConfig(columns=["center", "grade"]),
-   )
-
-   result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
-       task=task,
-       training=training,
-       aggregator=aggregator,
-       evaluation=evaluation,
-       run_dir="output/abmil/uni2",
-   )
-
-Generate a report for one run
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Use ``generate_report`` to generate a :doc:`report <reporting>` from saved artifacts,
-rendering key results (e.g., loss curves and evaluation metrics) in an HTML view:
-
-.. code-block:: python
-
-   from soma.reporting import generate_report, generate_report_from_result
-
-   report_dir = "output/abmil/uni2"
-   report_path = generate_report(report_dir)
-
-Compare multiple runs
-~~~~~~~~~~~~~~~~~~~~~
-
-Use ``compare_runs`` to generate a cross-run comparison report:
-
-.. code-block:: python
-
-   from soma.reporting import compare_runs
-
-   abmil_run_dir = "output/abmil/uni2"
-   transmil_run_dir = "output/transmil/uni2"
-
-   comparison_path = compare_runs(
-       [abmil_run_dir, transmil_run_dir],
-       labels=["ABMIL", "TransMIL"],
-   )
-
-The report is written to ``<shared output_root>/comparisons/<comparison-id>/index.html``
-unless you pass ``output_dir`` explicitly.
-
-Discover available presets programmatically
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Use the public discovery helpers to list currently registered presets:
+Registry helpers expose the available component names without importing
+implementation modules:
 
 .. code-block:: python
 
@@ -177,35 +78,8 @@ Use the public discovery helpers to list currently registered presets:
    pixel_classifiers = list_pixel_classifiers()
    task_heads = list_task_heads()
 
-For more detail on what the generated HTML report contains, how subgroup
-analysis is summarized, and how comparison statistics are computed, see the
-:doc:`reporting guide <reporting>`.
+Component guides
+----------------
 
-Enable heatmaps when you want attention overlays
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Attention heatmaps are controlled through ``HeatmapConfig`` and passed through
-``train(...)``. This is most useful for attention-based aggregators that
-expose per-tile scores. The saved overlays and raw attention scores are
-documented in :doc:`outputs`:
-
-.. code-block:: python
-
-   from soma import HeatmapConfig
-
-   heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
-
-   result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
-       task=task,
-       training=training,
-       aggregator=aggregator,
-       evaluation=evaluation,
-       heatmaps=heatmaps,
-       run_dir="output/abmil/uni2",
-   )
-
-   # attention scores land in fold_N/attention/
-   # rendered attention overlays in fold_N/heatmaps/
+Continue with :doc:`preprocessing`, :doc:`encoders`, :doc:`aggregators`,
+:doc:`decoders`, :doc:`tasks`, :doc:`training`, and :doc:`evaluation`.

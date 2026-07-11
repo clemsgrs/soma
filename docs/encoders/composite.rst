@@ -1,5 +1,3 @@
-:orphan:
-
 Composite
 =========
 
@@ -20,12 +18,12 @@ is a thin **load-time** concat view
      encoders:
        - { name: uni,    feature_kind: cls_attention }
        - { name: phikon, feature_kind: cls_attention }
-       - { name: cellvit, feature_kind: patch_features, member_norm: l2 }  # embedding, not attention
+       - { name: dinov2-vitb14, feature_kind: patch_features, member_norm: l2 }
 
 ``member_norm`` (``{none, l2, layernorm}``) per-member normalizes before concat so a
 large-magnitude encoder cannot dominate; it auto-defaults to ``l2`` for ``patch_features``
-members and ``none`` for ``cls_attention``. v1 reads every member at the same spacing and
-supervision size; per-member native spacing is deferred.
+members and ``none`` for ``cls_attention``. All members currently use the same
+spacing and supervision size.
 
 Concat resolution
 -----------------
@@ -40,13 +38,6 @@ auto-resolves from the trainable component:
   common target, no feature-space resampling.
 * ``grid`` *(auto for the decoder / detection paths)* — members auto-concatenate at
   token-grid resolution before the decoder consumes the stacked ``(Σd_i, grid)`` grid.
-
-Multi-resolution concat (planned)
----------------------------------
-
-Reading each member at its own **native spacing** — so a composite can mix encoders
-operating at different physical resolutions — is a planned increment. v1 reads every
-member at the same spacing and supervision size; per-member native spacing is deferred.
 
 Tutorial
 --------

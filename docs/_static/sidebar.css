@@ -1,165 +1,155 @@
 .soma-sidebar-github {
-  margin: 1rem 1rem 1.25rem 0;
+  margin: 0.75rem 1rem 0.9rem 0;
 }
 
 .soma-sidebar-github__main {
   display: flex;
   align-items: center;
-  gap: 0.7rem;
-  padding: 0.75rem 0.85rem;
+  gap: 0.5rem;
+  padding: 0.6rem 0.7rem;
   border: 1px solid var(--color-background-border);
-  border-radius: 0.65rem;
-  text-decoration: none;
+  border-radius: 6px;
   color: var(--color-foreground-primary);
   background: var(--color-background-primary);
-  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .soma-sidebar-github__main:hover {
   border-color: var(--color-brand-primary);
   background: var(--color-background-hover);
+}
+
+.soma-sidebar-github__repo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+
+.soma-sidebar-github__repo:hover,
+.soma-sidebar-github__release:hover {
   text-decoration: none;
 }
 
 .soma-sidebar-github__icon {
-  width: 1.1rem;
-  height: 1.1rem;
+  width: 1rem;
+  height: 1rem;
   flex: 0 0 auto;
-  opacity: 0.7;
+  opacity: 0.72;
 }
 
 .soma-sidebar-github__text {
   display: flex;
-  flex-direction: column;
-  gap: 0.08rem;
   flex: 1;
   min-width: 0;
+  flex-direction: column;
+  gap: 0.05rem;
 }
 
 .soma-sidebar-github__repo-name {
-  font-size: 0.84rem;
-  font-weight: 700;
-  line-height: 1.25;
-  white-space: nowrap;
   overflow: hidden;
+  font-size: 0.82rem;
+  font-weight: 650;
+  line-height: 1.2;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .soma-sidebar-github__cta {
-  font-size: 0.71rem;
-  font-weight: 400;
   color: var(--color-foreground-muted);
-  line-height: 1.25;
+  font-size: 0.7rem;
+  line-height: 1.2;
 }
 
 .soma-sidebar-github__arrow {
   width: 0.65rem;
   height: 0.65rem;
   flex: 0 0 auto;
-  opacity: 0.3;
-  transition: opacity 0.15s ease, transform 0.15s ease;
-}
-
-.soma-sidebar-github__main:hover .soma-sidebar-github__arrow {
-  opacity: 0.8;
-  color: var(--color-brand-primary);
-  transform: translate(1px, -1px);
+  opacity: 0.45;
 }
 
 .soma-sidebar-github__release {
+  flex: 0 0 auto;
+  padding: 0.14rem 0.38rem;
+  border: 1px solid var(--color-brand-primary);
+  border-radius: 4px;
+  color: var(--color-brand-content);
   font-size: 0.68rem;
   font-weight: 600;
-  padding: 0.15rem 0.45rem;
-  border-radius: 2rem;
-  border: 1px solid var(--color-brand-primary);
-  color: var(--color-brand-content);
-  background: rgba(61, 148, 255, 0.08);
+  line-height: 1.2;
   text-decoration: none;
   white-space: nowrap;
-  flex: 0 0 auto;
 }
 
 .soma-sidebar-github__release:hover {
-  background: rgba(61, 148, 255, 0.18);
-  text-decoration: none;
+  background: var(--color-background-hover);
 }
 
-@media (max-width: 63em) {
-  .soma-sidebar-github {
-    margin-top: 0.75rem;
-  }
-}
+/* Landing routes */
 
-/* ─── Landing page cards ──────────────────────────── */
-
-:root {
-  --soma-card-bg: color-mix(in srgb, var(--color-background-primary) 88%, var(--color-brand-primary) 12%);
-  --soma-card-border: var(--color-background-border);
-  --soma-card-shadow: 0 12px 35px rgba(15, 23, 42, 0.08);
-}
-
-.soma-section {
-  margin: 2rem 0 1rem;
-}
-
-.soma-card-grid {
+.soma-route-list {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 1.5rem 0 1rem;
+  border-block: 1px solid var(--color-background-border);
 }
 
-.soma-card {
-  display: block;
-  padding: 1.15rem 1.15rem 1.25rem;
-  border: 1px solid var(--soma-card-border);
-  border-radius: 1rem;
-  background: var(--soma-card-bg);
-  box-shadow: var(--soma-card-shadow);
+.soma-route {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.75rem;
+  min-width: 0;
+  padding: 0.85rem 1rem;
   color: inherit;
   text-decoration: none;
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
-.soma-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--color-brand-primary);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.12);
+.soma-route + .soma-route {
+  border-left: 1px solid var(--color-background-border);
+}
+
+.soma-route::after {
+  grid-row: 1 / 3;
+  grid-column: 2;
+  align-self: center;
+  color: var(--color-foreground-muted);
+  content: "\2192";
+}
+
+.soma-route:hover {
+  background: var(--color-background-hover);
   text-decoration: none;
 }
 
-.soma-card h3 {
-  margin: 0 0 0.5rem;
-  padding: 0;
-  font-size: 1.05rem;
+.soma-route strong,
+.soma-route span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  letter-spacing: 0;
 }
 
-.soma-card p {
-  margin: 0;
+.soma-route strong {
+  font-size: 0.94rem;
+  line-height: 1.3;
+}
+
+.soma-route span {
+  grid-column: 1;
   color: var(--color-foreground-muted);
-  line-height: 1.55;
+  font-size: 0.8rem;
+  line-height: 1.4;
 }
 
-@media (max-width: 63em) {
-  .soma-card-grid {
-    grid-template-columns: 1fr;
-  }
-}
+/* Figures */
 
-/* ─── Diagram figures ──────────────────────────────── */
-
-/*
- * The reused talk diagrams are drawn on white. Wrap them in a light card so they
- * stay legible in both light and dark themes (a transparent SVG on the dark
- * content background would float washed-out gray boxes). `figclass: soma-figure`
- * on a `.. figure::` directive lands this class on the <figure> element.
- */
 figure.soma-figure {
-  margin: 1.75rem auto;
-  padding: 1.25rem 1.25rem 1rem;
-  background: #ffffff;
+  margin: 1.5rem auto;
+  padding: 1rem 1rem 0.85rem;
   border: 1px solid var(--color-background-border);
-  border-radius: 0.9rem;
-  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+  border-radius: 8px;
+  background: #ffffff;
   text-align: center;
 }
 
@@ -170,18 +160,17 @@ figure.soma-figure img {
   margin: 0 auto;
 }
 
-/* Hero on the landing page: a touch more presence, capped so it never sprawls. */
 figure.soma-figure.soma-hero {
   max-width: 620px;
-  margin-top: 1.25rem;
+  margin-top: 1rem;
 }
 
 figure.soma-figure > figcaption {
-  margin-top: 0.85rem;
+  margin-top: 0.65rem;
   padding: 0;
   color: var(--color-foreground-muted);
-  font-size: 0.82rem;
-  line-height: 1.5;
+  font-size: 0.8rem;
+  line-height: 1.4;
   text-align: center;
 }
 
@@ -189,59 +178,68 @@ figure.soma-figure > figcaption p {
   margin: 0;
 }
 
-/* ─── API class / function blocks ──────────────────── */
+/* API definitions */
 
-/*
- * Furo sets text-indent: -35px on dt.sig, so the "class" / "def" keyword
- * hangs left relative to the content box by (padding-left - 35px).
- * We set padding-left: 2.5rem (40px) → keyword lands 5 px inside dt, 8 px
- * inside the card border-box, so overflow:hidden no longer clips it and we
- * get properly clipped rounded corners on the header strip for free.
- */
 dl.py.class,
 dl.py.function {
-  border: 1px solid var(--color-background-border);
-  border-left: 3px solid var(--color-brand-primary);
-  border-radius: 0.5rem;
-  background: var(--color-background-secondary);
-  margin: 1.75rem 0;
+  margin: 1.5rem 0;
   padding: 0;
-  overflow: hidden;
+  border: 0;
+  border-left: 2px solid var(--color-background-border);
+  border-radius: 0;
+  background: transparent;
 }
 
-/* Signature header: tinted strip clipped by card's overflow:hidden */
 dl.py.class > dt.sig,
 dl.py.function > dt.sig {
-  background: var(--color-background-hover);
-  border-bottom: 1px solid var(--color-background-border);
-  padding: 0.6rem 1rem 0.6rem 2.5rem;
   margin: 0;
+  padding: 0.45rem 0.75rem 0.45rem 2.5rem;
+  border-bottom: 1px solid var(--color-background-border);
+  background: transparent;
 }
 
-/* Docstring body */
 dl.py.class > dd,
 dl.py.function > dd {
-  padding: 0.75rem 1.25rem;
   margin: 0;
+  padding: 0.6rem 0 0.2rem 1rem;
 }
 
-/* Nested methods / attributes: left-rule, no card */
 dl.py.class > dd > dl.py {
-  border: none;
-  border-left: 2px solid var(--color-background-border);
-  background: transparent;
   margin: 0.75rem 0;
-  padding: 0 0 0 0.875rem;
+  padding: 0 0 0 0.75rem;
+  border: 0;
+  border-left: 1px solid var(--color-background-border);
+  border-radius: 0;
+  background: transparent;
 }
 
 dl.py.class > dd > dl.py > dt.sig {
-  background: transparent;
-  border-bottom: none;
-  padding: 0.2rem 0;
   margin: 0;
+  padding: 0.2rem 0;
+  border: 0;
+  background: transparent;
 }
 
 dl.py.class > dd > dl.py > dd {
-  padding: 0.25rem 0;
   margin: 0;
+  padding: 0.25rem 0;
+}
+
+@media (max-width: 44em) {
+  .soma-sidebar-github {
+    margin-top: 0.6rem;
+  }
+
+  .soma-route-list {
+    grid-template-columns: 1fr;
+  }
+
+  .soma-route + .soma-route {
+    border-top: 1px solid var(--color-background-border);
+    border-left: 0;
+  }
+
+  figure.soma-figure {
+    padding: 0.75rem;
+  }
 }

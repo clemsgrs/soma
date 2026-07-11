@@ -1,27 +1,15 @@
 EVA
 ===
 
-*Maps to task:* :doc:`classification` — frozen-tile linear-probe runs of the
-binary / multiclass classification heads reproducing the
-`kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_ patch-classification leaderboard.
+Purpose
+-------
 
-.. note::
+Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_ patch-classification
+leaderboard with Soma's :doc:`classification` heads. Each ``eva/<dataset>`` entry
+uses the same frozen-tile linear probe and varies only ``encoder``.
 
-   This page is generated from the registered benchmark definition — the protocol
-   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
-   (packaged ``soma/benchmarks/reference/eva.csv``), and the command from the benchmark name. Edit the registry
-   (``soma/benchmarks/eva.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
-   re-emits it and ``tests/test_docs.py`` guards the two from drifting.
-
-EVA is registered as **one sub-benchmark per dataset** (``eva/<dataset>``), each
-sharing the same offline linear-probe recipe and varying only the ``encoder`` axis.
-``soma reproduce eva`` fans out over the whole family; a single ``eva/<dataset>``
-reproduces one dataset.
-
-The frozen-tile-probe protocol
-------------------------------
-
-Stated once, shared by every dataset:
+Protocol
+--------
 
 .. list-table::
    :header-rows: 1
@@ -46,10 +34,7 @@ Stated once, shared by every dataset:
    * - canonical seeds
      - ``0, 1, 2, 3, 4`` (averaged)
 
-Encoders
---------
-
-The ``encoder`` axis maps a soma encoder onto an EVA leaderboard backbone:
+Encoder mappings:
 
 .. list-table::
    :header-rows: 1
@@ -62,12 +47,7 @@ The ``encoder`` axis maps a soma encoder onto an EVA leaderboard backbone:
    * - ``virchow2``
      - eva ``paige_virchow2``, slide2vec ``cls`` output
 
-Datasets
---------
-
-Where EVA ships only train/validation, the EVA validation split becomes soma
-``test`` and the run sets ``tune_is_test: true`` (train-on-all-train /
-evaluate-on-validation); ``patch_camelyon`` has a real held-out test split:
+Dataset tasks and evaluation splits:
 
 .. list-table::
    :header-rows: 1
@@ -95,13 +75,31 @@ evaluate-on-validation); ``patch_camelyon`` has a real held-out test split:
      - ``binary_classification``
      - EVA test (real val + test)
 
-Reproduced numbers
-------------------
+Train/validation-only datasets use validation as Soma ``test``; ``patch_camelyon``
+retains its held-out test split.
 
-What soma has actually measured, recorded by ``soma reproduce --record`` into the
-packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit
-and slide2vec version that produced each number. The ``Reference`` column is the
-published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__); only cells that have been run appear, each with its delta to that band:
+Prepare and run
+---------------
+
+Reproduce one dataset::
+
+    soma reproduce eva/bach --raw-root /path/to/eva/bach
+
+Or run the family::
+
+    soma reproduce eva --raw-root /path/to/eva
+
+Select an encoder with ``--encoder`` (default ``uni2``).
+
+Results
+-------
+
+Reproduced numbers
+~~~~~~~~~~~~~~~~~~
+
+Recorded cells from ``soma/benchmarks/results/eva.csv`` appear below with seed,
+commit, and delta provenance. References are published EVA balanced accuracies
+keyed by dataset × encoder from `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__. Unrecorded cells are omitted:
 
 .. list-table::
    :header-rows: 1
@@ -170,29 +168,5 @@ published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from 
      - +0.004
      - 2026-07-09 @ ``9663253``
 
-Reproduce
----------
-
-``soma reproduce`` curates the raw layout, trains the linear probe over the
-canonical seeds, reads ``test/balanced_accuracy`` from ``summary.json``, and
-tolerance-checks it against the band above. Reproduce one dataset::
-
-    soma reproduce eva/bach --raw-root /path/to/eva/bach
-    soma reproduce eva/breakhis --raw-root /path/to/eva/breakhis
-    soma reproduce eva/crc --raw-root /path/to/eva/crc
-    soma reproduce eva/gleason_arvaniti --raw-root /path/to/eva/gleason_arvaniti
-    soma reproduce eva/mhist --raw-root /path/to/eva/mhist
-    soma reproduce eva/patch_camelyon --raw-root /path/to/eva/patch_camelyon
-
-…or fan out over the whole family in one go (each member owns a per-dataset
-subdirectory)::
-
-    soma reproduce eva --raw-root /path/to/eva
-
-Pick the encoder axis with ``--encoder`` (default ``uni2``); ``--seeds 1`` runs a single-seed smoke.
-
-.. seealso::
-
-   * :doc:`classification` — the task heads the probe trains (binary, multiclass).
-   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.
-   * :doc:`curation` — the EVA curators and split policy.
+See :doc:`benchmarking` for gate semantics, :doc:`curation` for raw layouts, and
+:doc:`classification` for task-head details.

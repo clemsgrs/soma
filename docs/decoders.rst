@@ -1,51 +1,71 @@
 Decoders
 ========
 
-Decoders are the **dense trainable component**: the dense-grid analogue of
-:doc:`aggregators`. Where an aggregator collapses a bag of tile features into a
-single slide- or patient-level vector, a decoder consumes the dense
-``(d, grid_h, grid_w)`` token grid a **frozen** foundation-model encoder emits and
-produces a dense per-position output (a per-pixel segmentation map or a per-class
-detection heatmap). No gradients flow through the backbone; only the decoder is
-trained.
+Decoders are the trainable component for dense prediction. They transform a
+cached grid from a frozen encoder into the map consumed by a
+:doc:`segmentation` or :doc:`detection` head.
 
-The dense paths share the same front half — a frozen encoder produces a dense
-``(d, grid)`` grid (cached as ``feature_type="dense_grid"``) — and differ only in the
-trainable component on that grid and its output representation. The decoder is the
-default trainable component; the decoder-free :doc:`pixel-classifier
-<decoders/pixel-classifier>` method is the alternative.
+Shared dense substrate
+----------------------
 
-**Decoding methods**
+Dense tasks share this contract:
 
-- **linear** — a single ``1x1`` conv at grid resolution (the minimal dense linear probe).
-- **lightweight_conv** — the default trainable neural decoder (documented below).
-- **heavy_conv** — a UPerNet/DPT-lite decoder: pyramid-pooling context fusion + learned
-  (transposed-conv) upsampling. Like ``lightweight_conv`` it opens with a ``1x1`` ``d->D``
-  projection, so its trainable capacity is independent of the encoder's embedding dim ``d``
-  (the same fairness invariant powers the multi-encoder :doc:`encoders/composite` ensemble,
-  where the projection absorbs the concatenated ``Σdᵢ`` width).
-- **Decoder-free pixel classifier** — classifies the encoder's own attention per
-  pixel, no neural decoder: :doc:`Attention-based segmentation
-  <decoders/pixel-classifier>` ·
-  :doc:`tutorial <tutorials/walkthrough-attention-segmentation>`.
+1. A frozen foundation-model encoder emits a ``(d, grid_h, grid_w)`` grid.
+2. The grid is cached as ``feature_type="dense_grid"`` and reused across
+   decoder runs; gradients do not flow through the encoder.
+3. A decoder produces ``C`` channels at grid resolution.
+4. The task head interpolates to ``target_size``, applies ``crop_box``, and
+   owns activation, loss, postprocessing, metrics, and prediction artifacts.
 
-lightweight_conv
-----------------
+``preprocessing.feature_kind`` selects the encoder output:
 
-``lightweight_conv`` is the default decoder. It regresses a ``(C, grid)`` map from the
-dense token grid; the task head then interpolates it to the supervision ``target_size``,
-crops via ``crop_box``, and applies the task-specific activation (a **sigmoid** per-class
-heatmap for detection; per-pixel class logits for segmentation).
+- ``patch_features`` uses the ViT patch-token grid and is the default for a
+  neural decoder.
+- ``cls_attention`` uses prefix-token self-attention, with channels selected
+  by ``preprocessing.attention``.
+
+Both substrates have token-grid resolution. Switching substrate changes the
+decoder's inferred ``input_dim`` but not the task contract. Composite encoders
+are concatenated at grid resolution with ``concat_resolution: grid``.
+
+Encoder windowing
+-----------------
+
+``preprocessing.dense_window_size`` controls how the supervision tile reaches
+the frozen encoder. ``null`` runs one padded forward pass; a positive value
+slides patch-aligned windows and blends their grids using
+``dense_window_overlap``. Read windows at the encoder's native spacing to keep
+pixel scale consistent. The :doc:`pixel-classifier
+<decoders/pixel-classifier>` guide provides the full mode table; extraction is
+identical for neural decoders.
+
+Decoder choices
+---------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Name
+     - Use
+   * - ``linear``
+     - A single ``1x1`` convolution; the minimal dense linear probe.
+   * - ``lightweight_conv``
+     - The default convolutional decoder.
+   * - ``heavy_conv``
+     - Pyramid-pooling context fusion with learned upsampling.
+
+``lightweight_conv`` and ``heavy_conv`` begin with a ``1x1`` projection from
+encoder width ``d`` to decoder width ``D``. Decoder capacity therefore remains
+comparable across encoders with different embedding dimensions.
 
 .. code-block:: yaml
 
-   decoder:                               # the dense trainable component
+   preprocessing:
+     feature_kind: patch_features
+   decoder:
      name: lightweight_conv
 
-The decoder is **input-agnostic**: it consumes whatever dense ``(d, grid)`` grid the
-encoder emits, set by ``preprocessing.feature_kind`` — ``patch_features`` (the ViT
-patch-token grid, ``d`` = the encoder's feature dim) or ``cls_attention`` (per-head
-prefix-token self-attention as a ``(K, grid)`` grid). Switching between them is a **pure
-config flip** — the decoder is simply built with ``input_dim`` set to the emitted channel
-count (``d`` or ``K``). Multi-encoder :doc:`encoders/composite` runs are supported and
-auto-concatenate at token-grid resolution (``concat_resolution: grid``).
+For decoder-free segmentation, use a registered pixel classifier over
+``cls_attention`` instead. See :doc:`decoders/pixel-classifier` and the
+:doc:`attention-segmentation walkthrough
+<tutorials/walkthrough-attention-segmentation>`.
