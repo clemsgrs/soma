@@ -5,6 +5,7 @@ import builtins
 import importlib.util
 import json
 import symtable
+import tomllib
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -161,16 +162,27 @@ def test_ocelot_benchmark_page_matches_registry() -> None:
     assert "soma reproduce ocelot" in generated
 
 
-def test_ocelot_benchmark_page_renders_external_guidance_anchors() -> None:
+def test_ocelot_benchmark_page_keeps_external_guidance_concise() -> None:
     generator, _ = _load_reference_generator()
     generated = generator.build_ocelot_benchmark_rst()
-    # A dedicated, clearly-labelled guidance section (not the gate/tolerance band).
-    assert "guidance" in generated.lower()
-    # Rendered from the registry's external rows with clickable RST links + labels.
-    assert "`best reported (fully-supervised end-to-end) " in generated
+
+    assert "fully supervised" in generated.lower()
+    assert "0.70–0.73" in generated
     assert "<https://wearewaiv.github.io/histoboard/>`__" in generated
-    # Framed as context, never a target soma gates on.
     assert "non-gating" in generated.lower()
+    assert "Reference environment" not in generated
+    assert "NVIDIA GeForce" not in generated
+
+
+def test_ocelot_benchmark_page_contains_its_own_data_preparation_contract() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_ocelot_benchmark_rst()
+    normalized = " ".join(generated.split())
+
+    assert "ocelot2023_v1.0.1" in generated
+    assert "cell patches" in generated
+    assert "preserves OCELOT's train/validation/test split" in normalized
+    assert ":doc:`curation`" not in generated
 
 
 def test_eva_benchmark_page_matches_registry() -> None:
@@ -185,23 +197,35 @@ def test_eva_benchmark_page_matches_registry() -> None:
     assert "soma reproduce eva/bach" in generated
 
 
-def test_eva_benchmark_page_renders_reproduced_ledger() -> None:
+def test_eva_benchmark_page_renders_a_public_reproduced_reference_comparison() -> None:
     generator, _ = _load_reference_generator()
     generated = generator.build_eva_benchmark_rst()
-    # soma's OWN measured numbers, generated from results/eva.csv, next to the reference band.
+    results = generated.split("Results\n-------", 1)[1].split(
+        "Protocol details", 1
+    )[0]
+
     assert "Reproduced numbers" in generated
-    assert "soma (mean ± std)" in generated
-    # A seeded historical cell renders with its provenance (commit) and delta column.
-    assert "0.914 ± 0.007" in generated
-    assert "7ef2d7c" in generated
-    reproduced = generated.split("Reproduced numbers", 1)[1].split("Reproduce\n", 1)[0]
-    # A newly reproduced cell (gleason_arvaniti/virchow2) renders with its own provenance.
-    assert "gleason_arvaniti" in reproduced
-    assert "0.778 ± 0.010" in reproduced
-    assert "c8b320d" in reproduced
-    # Still-never-run datasets have no measured row (honest: only recorded cells appear).
+    assert "Soma (mean ± std)" in results
+    assert "EVA reference" in results
+    assert "0.914 ± 0.007" in results
+    assert "gleason_arvaniti" in results
+    assert "0.778 ± 0.010" in results
+    assert "Recorded (date @ commit)" not in results
+    assert "Seeds" not in results
+    assert "Δ" not in results
     for never_run in ("mhist", "patch_camelyon"):
-        assert never_run not in reproduced
+        assert never_run not in results
+
+
+def test_eva_benchmark_page_contains_its_own_data_preparation_contract() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_eva_benchmark_rst()
+
+    assert "Raw-root contents" in generated
+    assert "annotations.csv" in generated
+    assert "CRC-VAL-HE-7K" in generated
+    assert "tune_is_test" in generated
+    assert ":doc:`curation`" not in generated
 
 
 def test_hest_benchmark_page_matches_registry() -> None:
@@ -258,6 +282,17 @@ def test_hest_benchmark_page_documents_scoped_download() -> None:
     assert "precomputed" in generated.lower()
 
 
+def test_hest_benchmark_page_contains_its_own_data_preparation_contract() -> None:
+    generator, _ = _load_reference_generator()
+    generated = generator.build_hest_benchmark_rst()
+
+    assert "pip install 'soma-pathology[hest]'" in generated
+    assert "hf auth login" in generated
+    assert "Omit ``--include`` to download every registered task" in generated
+    assert "preserves HEST's supplied fold assignments" in generated
+    assert ":doc:`curation`" not in generated
+
+
 def test_hest_contributor_guide_documents_task_extension_contract() -> None:
     guide = (
         Path(__file__).resolve().parents[1] / "docs" / "development" / "benchmarks.rst"
@@ -269,14 +304,39 @@ def test_hest_contributor_guide_documents_task_extension_contract() -> None:
     assert "no new curator or probe code" in normalized
 
 
-def test_hest_benchmark_page_renders_reproduction_soundness() -> None:
+def test_public_benchmark_authoring_guide_documents_the_complete_contract() -> None:
+    guide = (
+        Path(__file__).resolve().parents[1] / "docs" / "add-a-benchmark.rst"
+    ).read_text(encoding="utf-8")
+
+    expected_text = (
+        "curate",
+        "build_config",
+        "expected",
+        "score",
+        "Facet",
+        "canonical_seeds",
+        "primary_metric",
+        "register_benchmark",
+        "soma list benchmarks",
+        "soma reproduce",
+    )
+
+    assert [text for text in expected_text if text not in guide] == []
+
+
+def test_hest_benchmark_page_keeps_results_focused_on_per_cell_agreement() -> None:
     generator, _ = _load_reference_generator()
     generated = generator.build_hest_benchmark_rst()
-    # The A/B/C reproduction proof is generated from results ⋈ reference (empty ledger renders
-    # an honest "nothing yet" note, so this holds whether or not cells have been recorded).
-    assert "Reproduction — is it sound?" in generated
-    assert "rank agreement" in generated.lower()
-    assert "concordance" in generated.lower()
+    results = generated.split("Results\n-------", 1)[1]
+
+    assert "Soma" in results
+    assert "HEST reference" in results
+    assert "median relative difference" in results
+    assert "Reproduction — is it sound?" not in results
+    assert "rank concordance" not in results.lower()
+    assert "drift guard" not in results.lower()
+    assert "Spearman" not in results
 
 
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
@@ -417,17 +477,26 @@ def test_sphinx_docs_build(built_docs: Path) -> None:
     assert (built_docs / "cli.html").exists()
 
 
-def test_root_sidebar_has_compact_hierarchical_navigation(built_docs: Path) -> None:
+def test_root_sidebar_follows_the_two_primary_user_journeys(built_docs: Path) -> None:
     parser = _NavigationCaptionParser()
     parser.feed((built_docs / "index.html").read_text(encoding="utf-8"))
 
-    assert parser.captions == ["Start", "Workflows", "Reference", "Benchmarks"]
+    assert parser.captions == [
+        "Start",
+        "Build workflows",
+        "Benchmark foundation models",
+        "Reference",
+    ]
     assert parser.level_one_hrefs == [
         "getting-started.html",
         "pipeline.html",
         "tutorials/index.html",
-        "reference.html",
         "benchmarking.html",
+        "eva-patch-classification-benchmark.html",
+        "ocelot-detection-benchmark.html",
+        "hest-gene-expression-benchmark.html",
+        "add-a-benchmark.html",
+        "reference.html",
     ]
 
 
@@ -480,6 +549,17 @@ def test_benchmarking_page_distinguishes_reference_semantics(
     assert [text for text in expected_text if text not in rendered_text] == []
 
 
+def test_benchmarking_page_presents_reproduction_and_authoring_routes() -> None:
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "benchmarking.rst"
+    ).read_text(encoding="utf-8")
+
+    assert "Reproduce an included benchmark" in page
+    assert "Add your own benchmark" in page
+    assert ":doc:`add-a-benchmark`" in page
+    assert "curation" not in page.lower()
+
+
 def test_central_references_make_spatial_expression_discoverable(
     built_docs: Path,
 ) -> None:
@@ -488,7 +568,10 @@ def test_central_references_make_spatial_expression_discoverable(
         "dataset.html": ("targets.npy", "genes.json"),
         "regression.html": ("vector targets", "pearson", "ridge_pca_probe"),
         "evaluation.html": ("pearson",),
-        "curation.html": ("curate_hest",),
+        "hest-gene-expression-benchmark.html": (
+            "soma-pathology[hest]",
+            "supplied fold assignments",
+        ),
     }
     missing_by_page: dict[str, list[str]] = {}
 
@@ -505,7 +588,51 @@ def test_central_references_make_spatial_expression_discoverable(
     assert missing_by_page == {}
 
 
-def test_sphinx_release_matches_package_version() -> None:
+def test_pipeline_page_explains_the_swappable_end_to_end_workflow() -> None:
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "pipeline.rst"
+    ).read_text(encoding="utf-8")
+
+    expected_stages = (
+        "Prepare images",
+        "Encode",
+        "Aggregate or decode",
+        "Predict",
+        "Evaluate",
+    )
+
+    assert [stage for stage in expected_stages if stage not in page] == []
+    assert "swap or sweep" in page.lower()
+    assert "aggregation:\n     name: mean_pool" in page
+
+
+def test_reference_navigation_separates_interfaces_components_tasks_and_outputs() -> None:
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "reference.rst"
+    ).read_text(encoding="utf-8")
+
+    expected_captions = (
+        ":caption: Configure and run",
+        ":caption: Data and components",
+        ":caption: Prediction tasks",
+        ":caption: Results and operations",
+    )
+
+    assert [caption for caption in expected_captions if caption not in page] == []
+
+
+def test_slide_level_guide_has_a_complete_first_run_path() -> None:
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "tutorials" / "slide-level.rst"
+    ).read_text(encoding="utf-8")
+
+    assert "sample_id,image_path,label" in page
+    assert "sample_id,split" in page
+    assert "examples/slide_binary_classification.yaml" in page
+    assert "soma slide_binary_classification.yaml" in page
+
+
+def test_sphinx_release_matches_the_project_version_in_a_source_checkout() -> None:
     conf_path = Path(__file__).resolve().parents[1] / "docs" / "conf.py"
     spec = importlib.util.spec_from_file_location("soma_docs_conf", conf_path)
     assert spec is not None and spec.loader is not None
@@ -513,7 +640,14 @@ def test_sphinx_release_matches_package_version() -> None:
     conf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(conf)
 
-    assert conf.release == soma.__version__
+    expected = soma.__version__
+    if expected == "0.0.0+unknown":
+        pyproject = conf_path.parent.parent / "pyproject.toml"
+        expected = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+            "version"
+        ]
+
+    assert conf.release == expected
 
 
 def test_sphinx_html_context_has_offline_release_metadata() -> None:
@@ -524,14 +658,21 @@ def test_sphinx_html_context_has_offline_release_metadata() -> None:
     conf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(conf)
 
+    expected = soma.__version__
+    if expected == "0.0.0+unknown":
+        pyproject = conf_path.parent.parent / "pyproject.toml"
+        expected = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"][
+            "version"
+        ]
+
     html_context = getattr(conf, "html_context", {})
     assert {
         "github_latest_release_tag": html_context.get("github_latest_release_tag"),
         "github_latest_release_url": html_context.get("github_latest_release_url"),
     } == {
-        "github_latest_release_tag": soma.__version__,
+        "github_latest_release_tag": expected,
         "github_latest_release_url": (
-            f"https://github.com/clemsgrs/soma/releases/tag/{soma.__version__}"
+            f"https://github.com/clemsgrs/soma/releases/tag/{expected}"
         ),
     }
 

@@ -1,8 +1,9 @@
 soma
 ===================
 
-Modular, reproducible computational pathology experiments from slides to
-evaluated models.
+Work with pathology foundation models from images and labels to performance
+metrics. Compose a modular workflow, swap individual components, or reproduce a
+published benchmark with a single command.
 
 .. figure:: /_static/figures/pipeline-overview.svg
    :figclass: soma-figure soma-hero
@@ -12,16 +13,20 @@ evaluated models.
 
    <nav class="soma-route-list" aria-label="Documentation routes">
        <a class="soma-route" href="getting-started.html">
-         <strong>Quickstart</strong>
-         <span>Install soma and run a first experiment.</span>
+         <strong>Get started</strong>
+         <span>Install Soma and run a first tiles-to-metrics experiment.</span>
        </a>
-       <a class="soma-route" href="tutorials/index.html">
-         <strong>Choose workflow</strong>
-         <span>Follow a slide-level or dense prediction guide.</span>
+       <a class="soma-route" href="pipeline.html">
+         <strong>Build a workflow</strong>
+         <span>Compose and swap preprocessing, encoders, aggregators, task heads, and metrics.</span>
        </a>
        <a class="soma-route" href="benchmarking.html">
          <strong>Reproduce benchmark</strong>
-         <span>Run a registered protocol against its references.</span>
+         <span>Run EVA, OCELOT, or HEST against published references.</span>
+       </a>
+       <a class="soma-route" href="add-a-benchmark.html">
+         <strong>Add a benchmark</strong>
+         <span>Package your dataset preparation, protocol, metrics, and references.</span>
        </a>
    </nav>
 
@@ -31,14 +36,25 @@ evaluated models.
    :caption: Start
 
    getting-started
-   pipeline
+   How Soma works <pipeline>
 
 .. toctree::
    :maxdepth: 1
    :hidden:
-   :caption: Workflows
+   :caption: Build workflows
 
-   tutorials/index
+   Workflow guides <tutorials/index>
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Benchmark foundation models
+
+   benchmarking
+   EVA patch classification <eva-patch-classification-benchmark>
+   OCELOT cell detection <ocelot-detection-benchmark>
+   HEST gene expression <hest-gene-expression-benchmark>
+   add-a-benchmark
 
 .. toctree::
    :maxdepth: 1
@@ -46,10 +62,3 @@ evaluated models.
    :caption: Reference
 
    reference
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Benchmarks
-
-   benchmarking

@@ -18,6 +18,21 @@ The main configuration object is :class:`soma.config.EncoderConfig`.
 .. autoclass:: soma.config.EncoderConfig
    :members:
 
+Access model weights
+--------------------
+
+Several pathology foundation models are gated on Hugging Face. Before the first
+run, open the model page, accept its license or access terms, then authenticate
+the machine that will perform feature extraction:
+
+.. code-block:: console
+
+   hf auth login
+
+The token is used only to download weights; cached weights are reused afterward.
+The :doc:`quickstart <getting-started>` uses ungated DINOv2 weights when you want
+to validate the pipeline before requesting pathology-model access.
+
 Model Zoo
 ---------
 

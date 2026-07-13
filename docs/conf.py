@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+import tomllib
 
 
 def _optional_extension(module_name: str) -> list[str]:
@@ -27,6 +28,10 @@ project = "soma"
 author = "Clément Grisi"
 copyright = "2026, Clément Grisi"
 release = soma.__version__
+if release == "0.0.0+unknown":
+    release = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
 html_context = {
     "github_latest_release_tag": release,
     "github_latest_release_url": (

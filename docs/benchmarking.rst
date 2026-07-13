@@ -1,86 +1,91 @@
-Benchmarking
-============
+Benchmark foundation models
+===========================
 
-Soma benchmarks are named, versioned protocols for comparing foundation models.
-Each registry entry binds a curator, config builder, scorer, canonical seeds, and
-packaged references. Use this page for the shared workflow and the generated
-benchmark pages for protocol details.
+Soma packages pathology foundation-model evaluations as named, versioned
+protocols. A benchmark fixes the data preparation, prediction task, training
+recipe, metric, and seeds while exposing meaningful comparison axes such as the
+encoder or image spacing.
 
-.. toctree::
-   :maxdepth: 1
-   :hidden:
+There are two ways to use the facility:
 
-   curation
-   eva-patch-classification-benchmark
-   ocelot-detection-benchmark
-   hest-gene-expression-benchmark
+* **Reproduce an included benchmark.** Point Soma at the downloaded data and run
+  the published protocol with one command.
+* **Add your own benchmark.** Package an existing Soma workflow with its data
+  preparation, comparison axes, scorer, and reference values.
 
-Reference semantics
--------------------
+Reproduce an included benchmark
+-------------------------------
 
-Reference rows have two distinct roles:
+List the protocols available in your installed version:
+
+.. code-block:: console
+
+   soma list benchmarks
+
+Then run the complete data preparation → configuration → training → scoring →
+comparison workflow:
+
+.. code-block:: console
+
+   soma reproduce ocelot --raw-root /path/to/ocelot
+
+By default, runs are written under
+``soma_reproduce/<benchmark-name>/seed_<seed>``. Soma may create a managed run
+subdirectory beneath that root; it contains the resolved config, predictions,
+metrics, summary, and HTML report described in :doc:`outputs`.
+
+Useful shortcuts:
+
+* ``--seeds N`` runs seeds ``0`` through ``N-1`` instead of the benchmark's
+  canonical seed set; ``--seeds 1`` is the quickest smoke test.
+* ``--curated-dir <dir>`` reuses existing Soma manifests.
+* ``--from-run-dir <dir>`` scores an existing run without training.
+* A family name such as ``soma reproduce eva --raw-root /path/to/eva`` runs every
+  downloaded member.
+
+Each benchmark page contains its own download, raw-layout, split, command, and
+result guidance:
+
+* :doc:`EVA <eva-patch-classification-benchmark>` — compare frozen encoders on
+  patch-classification datasets.
+* :doc:`OCELOT <ocelot-detection-benchmark>` — compare dense encoders and image
+  spacing for cell detection.
+* :doc:`HEST <hest-gene-expression-benchmark>` — compare frozen encoders for
+  spatial gene-expression prediction.
+
+Compare completed runs
+----------------------
+
+``soma leaderboard`` reads resolved configs and metrics from completed run
+directories, so comparisons do not depend on manually maintained spreadsheets:
+
+.. code-block:: console
+
+   soma leaderboard ocelot --root soma_reproduce --vary encoder
+
+Use ``--fix AXIS=VALUE`` to hold an axis constant and ``--like RUN_DIR`` to copy
+the fixed axes from an existing run. See :doc:`cli` for the full command surface.
+
+Add your own benchmark
+----------------------
+
+If you already have a modular Soma workflow, the benchmark layer is deliberately
+thin: define how raw data becomes manifests, how the canonical config is built,
+which axes vary, how the primary metric is read, and which values provide the
+comparison. Follow :doc:`add-a-benchmark` for the complete contract and a minimal
+implementation shape.
+
+How reference values are interpreted
+------------------------------------
+
+Reference rows have two public roles:
 
 * **Gate references** are Soma regression anchors with tolerance bands.
   ``soma reproduce`` compares the measured primary metric with the band and
   reports PASS or FAIL.
 * **External references** are published values from another implementation or
-  protocol. Soma reports the measured value and delta for comparison, without a
-  verdict.
+  protocol. Soma shows the measured value and difference for comparison, without
+  a verdict.
 
-Only gate references produce PASS/FAIL. HEST, for example, contains external
-references only.
-
-Workflow
---------
-
-**Curate.** Convert the benchmark's raw public layout into the standard
-``dataset.csv`` and ``splits.csv`` manifests. Reproduction preserves the source
-benchmark's splits; it does not invent new ones.
-
-**Configure.** The registry's ``build_config`` method fixes the task, training
-recipe, metric, and model settings. You choose only declared axes such as
-``encoder`` or ``spacing``.
-
-**Run and score.** Soma runs every canonical seed and reads the primary metric
-from the resulting :doc:`run bundle <outputs>`. Most scorers read
-``summary.json``; OCELOT uses its challenge-specific greedy matcher.
-
-**Compare.** ``soma leaderboard`` reads completed run directories and groups
-them by the benchmark facet. ``--vary``, ``--fix``, and ``--like`` refine that
-view without retraining.
-
-Reproduce
----------
-
-Run the complete curate → configure → run → score workflow with one command::
-
-    soma reproduce ocelot --raw-root /path/to/ocelot
-
-Useful variants:
-
-* ``--curated-dir <dir>`` reuses existing manifests.
-* ``--from-run-dir <dir>`` scores an existing run without training.
-* ``--seeds 1`` provides a quick smoke test.
-* A family name such as ``soma reproduce eva --raw-root /path/to/eva`` runs
-  every registered member.
-
-Reference roles and values come directly from packaged
-``reference/<name>.csv`` files. A PASS therefore confirms that the measured run
-matches a Soma gate, not an external publication.
-
-Benchmarks
-----------
-
-List the registry in your installed version::
-
-    soma list benchmarks
-
-* :doc:`OCELOT <ocelot-detection-benchmark>` — cell detection with an encoder ×
-  spacing ablation.
-* :doc:`EVA <eva-patch-classification-benchmark>` — patch classification across
-  the ``eva/<dataset>`` family.
-* :doc:`HEST <hest-gene-expression-benchmark>` — spatial gene-expression
-  regression across the ``hest/<task>`` family.
-
-See :doc:`cli` for the full command surface and :doc:`curation` for raw-data
-layouts.
+Only gate references produce PASS/FAIL. A close external comparison demonstrates
+agreement with a publication; it is not a software regression gate.

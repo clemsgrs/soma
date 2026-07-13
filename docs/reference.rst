@@ -1,21 +1,39 @@
 Reference
 =========
 
-Look up configuration, pipeline components, task contracts, and run artifacts.
+Use this section when you already know what you are building and need an exact
+configuration field, component contract, task behavior, or run artifact. For a
+first experiment, start with :doc:`getting-started`; for the architecture and
+available paths, start with :doc:`pipeline`.
 
-* :doc:`configuration`, :doc:`api`, and :doc:`cli` cover experiment setup.
-* :doc:`dataset`, :doc:`encoders`, :doc:`aggregators`, and :doc:`decoders`
-  define the pipeline stages.
-* :doc:`tasks`, :doc:`training`, and :doc:`evaluation` define model behavior.
-* :doc:`outputs`, :doc:`reporting`, and :doc:`caching` define run artifacts.
+Configure and run
+-----------------
+
+* :doc:`configuration` — canonical YAML and typed Python configuration.
+* :doc:`api` — public Python entry points.
+* :doc:`cli` — commands for experiments, discovery, benchmarks, and leaderboards.
 
 .. toctree::
    :maxdepth: 1
    :hidden:
+   :caption: Configure and run
 
+   configuration
    api
    cli
-   configuration
+
+Data and components
+-------------------
+
+* :doc:`dataset` and :doc:`preprocessing` define inputs and image preparation.
+* :doc:`encoders`, :doc:`aggregators`, and :doc:`decoders` define the swappable
+  model stages.
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Data and components
+
    dataset
    preprocessing
    encoders
@@ -23,14 +41,40 @@ Look up configuration, pipeline components, task contracts, and run artifacts.
    aggregators
    decoders
    decoders/pixel-classifier
+
+Prediction tasks
+----------------
+
+* :doc:`tasks` gives the task-head catalog.
+* The individual pages define labels, losses, predictions, and metrics for each
+  output type.
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Prediction tasks
+
    tasks
    classification
    regression
    survival
    segmentation
    detection
+
+Results and operations
+----------------------
+
+* :doc:`training` and :doc:`evaluation` cover fitting and metric computation.
+* :doc:`outputs`, :doc:`reporting`, and :doc:`caching` cover reproducibility and
+  repeated experimentation.
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+   :caption: Results and operations
+
    training
    evaluation
-   caching
    outputs
    reporting
+   caching

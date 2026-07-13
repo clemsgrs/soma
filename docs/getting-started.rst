@@ -1,8 +1,11 @@
 Getting started
 ===============
 
-This first run trains a binary classifier from six image tiles and writes a
-reproducible result bundle.
+This first run takes six labelled image tiles through encoding, prediction, and
+evaluation, then writes a reproducible result bundle. It uses public DINOv2
+weights so the example needs no model access token; afterward, changing
+``encoder.name`` is enough to run the same workflow with a registered pathology
+foundation model such as UNI2 or Virchow2.
 
 Prerequisites
 -------------
