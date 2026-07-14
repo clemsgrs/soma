@@ -104,6 +104,19 @@ def cell_dir(out_root: str | Path, dataset: str, encoder: str, replicate: int) -
     return Path(out_root) / dataset / encoder / f"replicate_{replicate}"
 
 
+def feature_cache_dir(out_root: str | Path, dataset: str) -> Path:
+    """The dense-grid cache shared by every ``(encoder, replicate)`` cell of a dataset.
+
+    ``CacheConfig.root_dir`` defaults to ``None`` ⇒ ``<run.output_root>/feature_cache``, and
+    ``run.output_root`` is per-replicate — so without this the identical grids would be
+    re-extracted and re-stored once per seed (3x the disk, 3x the extraction). The dense key
+    (``build_dense_cache_key``) folds in encoder / geometry / preprocessing / dtype but *not*
+    the seed or the output root, so one root per dataset is exactly right: replicates of an
+    encoder collide (intended — that is the reuse) and distinct encoders never do.
+    """
+    return Path(out_root) / dataset / "feature_cache"
+
+
 def checkpoint_exists(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
     """Skip guard for phase 2: a trained cell already has a checkpoint."""
     return (cell_dir(out_root, dataset, encoder, replicate) / "best_model.pt").is_file()
@@ -301,6 +314,10 @@ def train_cell(
     cmd += _data_overrides(data_root, dataset)
     cmd += ["--set", f"encoder.name={encoder}"]
     cmd += ["--set", f"run.output_root={cell_dir(out_root, dataset, encoder, replicate)}"]
+    # Point every cell at the dataset-wide grid cache, else each replicate builds its own
+    # private copy under its run dir. score_cell reloads the run's persisted config, so it
+    # inherits this root too and reads the same grids it trained on.
+    cmd += ["--set", f"cache.root_dir={feature_cache_dir(out_root, dataset)}"]
     if axis == "seeds":
         cmd += ["--set", f"run.seed={replicate}"]
     _run(cmd, cwd=REPO_ROOT)

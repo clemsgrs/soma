@@ -12,8 +12,11 @@ does one final single-process aggregation to emit the complete ``ranking_report.
 Three barrier-synchronised phases:
 
   1. extract — G parallel processes (encoder-sharded), each pinned to one GPU, populate the
-     shared dense cache. Cheap, but sharded anyway so it overlaps and any encoder that OOMs
-     (e.g. genbio-pathfm at 4608-dim) fails here in minutes, before any GPU-hours are spent.
+     dataset-wide dense cache. Note this runs campaign.py's ``extract``, which invokes a full
+     ``python -m soma`` run for replicate 0 — so it *extracts and then trains* that replicate
+     (~2h/encoder), it is not a minutes-long extraction-only pass. Nothing is wasted (phase 2
+     skips the cell it already trained), and an encoder that OOMs (e.g. genbio-pathfm at
+     4608-dim) still fails within the first minutes, before any real GPU-hours are spent.
   2. rank    — same sharding; each shard trains + freezes-on-tune + scores its cells. The long
      one. Wall-clock ~= the slowest shard, so speedup is near-linear up to #encoders GPUs.
   3. report  — one process over the *full* roster. Every cell's metrics are cached by now, so
@@ -195,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     log_dir = args.out_root / "logs"
 
     if not args.skip_extract:
-        print("\n=== phase 1/3: extract  (sharded, ~minutes; fails fast on OOM) ===")
+        print("\n=== phase 1/3: extract + train replicate 0  (sharded; OOM fails fast) ===")
         run_phase("extract", gpus, buckets, args.datasets, args.out_root, args.seeds,
                   token, log_dir, dry_run=args.dry_run)
 
