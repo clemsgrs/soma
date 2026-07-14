@@ -104,12 +104,13 @@ def resolve_hf_token() -> str | None:
 
 def _campaign_cmd(
     phase: str, encoders: Sequence[str], datasets: Sequence[str],
-    out_root: Path, seeds: Sequence[int],
+    out_root: Path, seeds: Sequence[int], data_root: Path,
 ) -> list[str]:
     return [
         sys.executable, str(CAMPAIGN), phase,
         "--datasets", *datasets,
         "--encoders", *encoders,
+        "--data-root", str(data_root),
         "--out-root", str(out_root),
         "--seeds", *[str(s) for s in seeds],
     ]
@@ -126,14 +127,14 @@ def _shard_env(gpu: int | None, token: str | None) -> dict[str, str]:
 
 def run_phase(
     phase: str, gpus: Sequence[int], buckets: Sequence[Sequence[str]],
-    datasets: Sequence[str], out_root: Path, seeds: Sequence[int],
+    datasets: Sequence[str], out_root: Path, seeds: Sequence[int], data_root: Path,
     token: str | None, log_dir: Path, *, dry_run: bool,
 ) -> None:
     """Launch one campaign phase as G pinned shards; wait for all; abort if any shard fails."""
     log_dir.mkdir(parents=True, exist_ok=True)
     procs = []
     for gpu, bucket in zip(gpus, buckets):
-        cmd = _campaign_cmd(phase, bucket, datasets, out_root, seeds)
+        cmd = _campaign_cmd(phase, bucket, datasets, out_root, seeds, data_root)
         log = log_dir / f"{phase}.gpu{gpu}.log"
         print(f"[gpu {gpu}] {phase}: {' '.join(bucket)}  ->  {log}")
         if dry_run:
@@ -169,6 +170,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="seed replicates for single-fold datasets (folds datasets ignore this)")
     ap.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT,
                     help=f"sweep output + dense cache root (default: {DEFAULT_OUT_ROOT})")
+    ap.add_argument("--data-root", type=Path, default=REPO_ROOT / "data",
+                    help="curated dataset root (<root>/<dataset>/curated/{dataset,splits}.csv). "
+                         "Must be set explicitly when running from a snapshot outside the repo, "
+                         "since the curated data is gitignored and absent from the snapshot.")
     ap.add_argument("--gpus", default=None,
                     help="comma-separated GPU indices (default: all visible via nvidia-smi)")
     ap.add_argument("--skip-extract", action="store_true",
@@ -194,20 +199,20 @@ def main(argv: list[str] | None = None) -> int:
     print(f"GPUs ({len(gpus)}): {gpus}")
     for gpu, bucket in zip(gpus, buckets):
         print(f"  gpu {gpu}  <-  {' '.join(bucket)}")
-    print(f"datasets={args.datasets}  seeds={args.seeds}  out-root={args.out_root}")
+    print(f"datasets={args.datasets}  seeds={args.seeds}  data-root={args.data_root}  out-root={args.out_root}")
     log_dir = args.out_root / "logs"
 
     if not args.skip_extract:
         print("\n=== phase 1/3: extract + train replicate 0  (sharded; OOM fails fast) ===")
         run_phase("extract", gpus, buckets, args.datasets, args.out_root, args.seeds,
-                  token, log_dir, dry_run=args.dry_run)
+                  args.data_root, token, log_dir, dry_run=args.dry_run)
 
     print("\n=== phase 2/3: rank — train + freeze-on-tune + score  (sharded, the long one) ===")
     run_phase("rank", gpus, buckets, args.datasets, args.out_root, args.seeds,
-              token, log_dir, dry_run=args.dry_run)
+              args.data_root, token, log_dir, dry_run=args.dry_run)
 
     print("\n=== phase 3/3: aggregate the complete ranking_report.json  (full roster, GPU-free) ===")
-    report_cmd = _campaign_cmd("rank", names, args.datasets, args.out_root, args.seeds)
+    report_cmd = _campaign_cmd("rank", names, args.datasets, args.out_root, args.seeds, args.data_root)
     if args.dry_run:
         print("    $", " ".join(report_cmd))
         return 0
