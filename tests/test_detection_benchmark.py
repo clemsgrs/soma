@@ -485,14 +485,26 @@ def test_driver_plan_cells_is_roster_size_agnostic(tmp_path: Path):
 def test_driver_skip_guards(tmp_path: Path):
     m = _load_driver()
     out = tmp_path / "out"
-    assert not m.checkpoint_exists(out, "ocelot", "uni2", 0)
+    assert not m.training_done(out, "ocelot", "uni2", 0)
     assert not m.metrics_exists(out, "ocelot", "uni2", 0)
     cd = m.cell_dir(out, "ocelot", "uni2", 0)
     cd.mkdir(parents=True)
-    (cd / "best_model.pt").write_text("x")
     (cd / "metrics.json").write_text("{}")
-    assert m.checkpoint_exists(out, "ocelot", "uni2", 0)
     assert m.metrics_exists(out, "ocelot", "uni2", 0)
+
+    # soma writes runs to <output_root>/experiments/<key>/runs/<ts>/ — NOT to output_root
+    # itself. A guard that probes cell_dir/best_model.pt never fires against the real layout.
+    run = cd / "experiments" / "dataset-uni2-slide-detection_abc123" / "runs" / "2026-01-01__local"
+    run.mkdir(parents=True)
+    run.joinpath("best_model.pt").write_text("x")
+    # best_model.pt is rewritten on every epoch improvement, so it is present mid-training:
+    # a half-trained (e.g. crashed) cell must NOT count as done, or phase 2 skips training it
+    # and scores a partial model.
+    assert not m.training_done(out, "ocelot", "uni2", 0)
+
+    # summary.json is written once, at the end of the run — the honest completion marker.
+    run.joinpath("summary.json").write_text("{}")
+    assert m.training_done(out, "ocelot", "uni2", 0)
 
 
 def _fabricate_scored_cell(m, out, dataset, encoder, replicate, axis, test_val):

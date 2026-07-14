@@ -117,9 +117,26 @@ def feature_cache_dir(out_root: str | Path, dataset: str) -> Path:
     return Path(out_root) / dataset / "feature_cache"
 
 
-def checkpoint_exists(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
-    """Skip guard for phase 2: a trained cell already has a checkpoint."""
-    return (cell_dir(out_root, dataset, encoder, replicate) / "best_model.pt").is_file()
+def training_done(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
+    """Skip guard for phase 2: this cell already trained *to completion*.
+
+    Two traps here, both of which the old ``best_model.pt``-at-``cell_dir`` probe fell into:
+
+    * **Layout.** soma does not drop artifacts at ``run.output_root``; it writes the run under
+      ``<output_root>/experiments/<experiment_key>/runs/<timestamp>/``. Probing the direct path
+      meant the guard never fired, so phase 2 retrained every replicate-0 cell phase 1 had
+      already trained (~2h x one per encoder).
+    * **Completion.** ``best_model.pt`` is rewritten on every epoch improvement, so it exists
+      mid-training. Keying on it would let a crashed, half-trained cell be skipped and then
+      scored as if it were final. ``summary.json`` is written once, at the end of a run, so it
+      is the honest "this finished" marker.
+
+    ``score_cell`` locates the weights with ``_locate_checkpoint``, which globs the same layout.
+    """
+    directory = cell_dir(out_root, dataset, encoder, replicate)
+    if (directory / "summary.json").is_file():
+        return True
+    return any(directory.glob("experiments/*/runs/*/summary.json"))
 
 
 def metrics_exists(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
@@ -353,7 +370,7 @@ def run_rank(
         if dry_run:
             print(f"[{ds}/{enc}/r{rid}] would train+score ({axis})")
             continue
-        if not checkpoint_exists(out_root, ds, enc, rid):
+        if not training_done(out_root, ds, enc, rid):
             train_cell(enc, ds, rid, axis, data_root, out_root)
         score_cell(enc, ds, rid, axis, data_root, out_root)
     return aggregate_and_report(
