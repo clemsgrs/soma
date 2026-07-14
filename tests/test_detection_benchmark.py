@@ -507,6 +507,43 @@ def test_driver_skip_guards(tmp_path: Path):
     assert m.training_done(out, "ocelot", "uni2", 0)
 
 
+def test_rank_scores_out_of_process(tmp_path: Path, monkeypatch):
+    """``run_rank`` must score in a child process, and be able to parse its own command back.
+
+    Scoring loads the decoder + dense grids onto the GPU. Run in-process it strands those GiB
+    in the driver for its whole life (PyTorch's allocator does not hand them back), and since
+    the launcher pins the driver and every cell it trains to one GPU, the *next* ``train_cell``
+    starts several GiB down and OOMs on a 12 GB card. Scoring must therefore shell out, exactly
+    as training does. The round-trip half matters too: the parent builds the argv and the child
+    parses it, so a drift between the two only shows up as a crash mid-sweep.
+    """
+    m = _load_driver()
+    cmds: list[list[str]] = []
+    data_root, out_root = tmp_path / "data", tmp_path / "out"
+    monkeypatch.setattr(m, "plan_cells", lambda *a, **k: [
+        {"encoder": "uni2", "dataset": "ocelot", "replicate": 1, "replicate_axis": "seeds"}
+    ])
+    monkeypatch.setattr(m, "metrics_exists", lambda *a: False)
+    monkeypatch.setattr(m, "training_done", lambda *a: True)  # trained already -> score only
+    monkeypatch.setattr(m, "aggregate_and_report", lambda *a, **k: {})
+    monkeypatch.setattr(m, "train_cell", lambda *a: pytest.fail("must not retrain a done cell"))
+    monkeypatch.setattr(m, "score_cell", lambda *a: pytest.fail("scoring must not run in-process"))
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
+
+    m.run_rank(data_root, out_root, DEFAULT_ROSTER[:1], ["ocelot"], [1],
+               dry_run=False, git_sha=None)
+
+    assert len(cmds) == 1, "the one cell must be scored by exactly one subprocess"
+    cmd = cmds[0]
+    assert cmd[1].endswith("campaign.py") and cmd[2] == "score"
+
+    # Now feed that argv back through the script's own parser: it must reconstitute the cell.
+    scored: list[tuple] = []
+    monkeypatch.setattr(m, "score_cell", lambda *a: scored.append(a))
+    assert m.main(cmd[2:]) == 0
+    assert scored == [("uni2", "ocelot", 1, "seeds", data_root, out_root)]
+
+
 def _fabricate_scored_cell(m, out, dataset, encoder, replicate, axis, test_val):
     cd = m.cell_dir(out, dataset, encoder, replicate)
     cd.mkdir(parents=True)

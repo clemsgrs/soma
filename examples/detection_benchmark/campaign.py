@@ -66,6 +66,7 @@ from soma.benchmarks.detection_benchmark import (  # noqa: E402
 )
 
 HERE = Path(__file__).resolve().parent
+SCRIPT = Path(__file__).resolve()
 REPO_ROOT = HERE.parents[1]
 OUT_DIR = REPO_ROOT / "output" / "detection_benchmark"  # reports land here (git-ignored)
 
@@ -340,6 +341,30 @@ def train_cell(
     _run(cmd, cwd=REPO_ROOT)
 
 
+def score_cell_isolated(
+    encoder: str, dataset: str, replicate: int, axis: str, data_root: Path, out_root: Path
+) -> None:
+    """Run :func:`score_cell` in a child process, so its GPU memory dies with it.
+
+    Scoring loads the decoder + the dense grids onto the GPU. Done in-process, PyTorch's
+    caching allocator keeps those GiB reserved for the lifetime of this driver — and the
+    launcher pins the driver and every cell it trains to the *same* GPU, so the next
+    ``train_cell`` starts with several GiB already gone and OOMs (training needs nearly the
+    whole 12 GB card). A child process hands it all back on exit. Same reason ``train_cell``
+    shells out; scoring only got away with it while nothing trained after it.
+    """
+    cmd = [
+        sys.executable, str(SCRIPT), "score",
+        "--datasets", dataset,
+        "--encoders", encoder,
+        "--replicate", str(replicate),
+        "--axis", axis,
+        "--data-root", str(data_root),
+        "--out-root", str(out_root),
+    ]
+    _run(cmd, cwd=REPO_ROOT)
+
+
 def run_extract(data_root: Path, out_root: Path, roster, datasets, *, dry_run: bool) -> None:
     """Phase 1: populate the dense cache for every ``(encoder, dataset)`` pair (skip if done)."""
     for dataset in datasets:
@@ -372,7 +397,7 @@ def run_rank(
             continue
         if not training_done(out_root, ds, enc, rid):
             train_cell(enc, ds, rid, axis, data_root, out_root)
-        score_cell(enc, ds, rid, axis, data_root, out_root)
+        score_cell_isolated(enc, ds, rid, axis, data_root, out_root)
     return aggregate_and_report(
         out_root, roster=roster, datasets=datasets, seeds=seeds, git_sha=git_sha
     )
@@ -598,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("phase", choices=["extract", "rank"])
+    ap.add_argument("phase", choices=["extract", "rank", "score"])
     ap.add_argument("--data-root", type=Path, default=REPO_ROOT / "data",
                     help="root holding <dataset>/curated/{dataset,splits}.csv per dataset")
     ap.add_argument("--out-root", type=Path, default=OUT_DIR)
@@ -607,10 +632,26 @@ def main(argv: list[str] | None = None) -> int:
                     help="roster subset by name (default: the full DEFAULT_ROSTER)")
     ap.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS),
                     help="seed replicates for single-fold datasets (folds datasets ignore this)")
+    ap.add_argument("--replicate", type=int, default=0,
+                    help="score phase only: which replicate of the cell to score")
+    ap.add_argument("--axis", choices=["seeds", "folds"], default="seeds",
+                    help="score phase only: the cell's replicate axis")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
     roster = _resolve_roster(args.encoders)
+    if args.phase == "score":
+        # The out-of-process half of score_cell_isolated: exactly one cell, then exit so the
+        # GPU memory is returned before the caller trains the next one.
+        if len(args.datasets) != 1 or not args.encoders or len(args.encoders) != 1:
+            raise SystemExit(
+                "score scores a single cell: pass one --datasets and one --encoders"
+            )
+        score_cell(
+            args.encoders[0], args.datasets[0], args.replicate, args.axis,
+            args.data_root, args.out_root,
+        )
+        return 0
     if args.phase == "extract":
         run_extract(args.data_root, args.out_root, roster, args.datasets, dry_run=args.dry_run)
         return 0
