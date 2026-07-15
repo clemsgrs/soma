@@ -88,6 +88,70 @@ with clickable links under *Guidance anchors* below:
    * - ``mean_f1``
      - 0.6995 ± 0.020
 
+Encoder results
+---------------
+
+Frozen-probe ``mean_f1`` on OCELOT test across foundation-model encoders — each a
+**frozen** encoder feeding the same ``lightweight_conv`` decoder at 0.2 µm/px, with
+per-class score thresholds swept on ``tune`` and applied once to ``test``, averaged
+over 3 seeds. ``Δ`` is against the Virchow2 anchor band above.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Encoder
+     - soma (mean ± std)
+     - Seeds
+     - Reference
+     - Δ
+     - Recorded (date @ commit)
+   * - genbio-pathfm
+     - 0.733 ± 0.004
+     - 3
+     - 0.700
+     - +0.034
+     - 2026-07-15 @ ``54601e4``
+   * - h-optimus-1
+     - 0.720 ± 0.002
+     - 3
+     - 0.700
+     - +0.021
+     - 2026-07-15 @ ``54601e4``
+   * - h0-mini
+     - 0.719 ± 0.003
+     - 3
+     - 0.700
+     - +0.019
+     - 2026-07-15 @ ``54601e4``
+   * - conchv15
+     - 0.711 ± 0.001
+     - 3
+     - 0.700
+     - +0.011
+     - 2026-07-15 @ ``54601e4``
+   * - virchow2
+     - 0.699 ± 0.004
+     - 3
+     - 0.700
+     - -0.001
+     - 2026-07-15 @ ``54601e4``
+   * - midnight
+     - 0.658 ± 0.002
+     - 3
+     - 0.700
+     - -0.042
+     - 2026-07-15 @ ``54601e4``
+   * - dinov2-vitb14
+     - 0.656 ± 0.002
+     - 3
+     - 0.700
+     - -0.043
+     - 2026-07-15 @ ``54601e4``
+
+These frozen-probe encoder results accompany an upcoming publication — Grisi
+*et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;
+provisional citation).
+
 Guidance anchors (non-gating)
 -----------------------------
 
