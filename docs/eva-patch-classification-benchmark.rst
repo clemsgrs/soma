@@ -47,7 +47,7 @@ Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the
 downloaded dataset directory as ``--raw-root``. ``soma reproduce`` runs the
 built-in EVA curator automatically, writes the manifests under
 ``<raw-root>/curated``, extracts features, trains the linear probe, and reports
-balanced accuracy. No separate curation command is required. For example::
+balanced accuracy. For example::
 
     soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach
 
@@ -93,13 +93,13 @@ EVA's published balanced accuracy scores.
      - 0.966 ± 0.001
      - 0.967
    * - gleason_arvaniti
-     - virchow2
-     - 0.778 ± 0.010
-     - 0.783
-   * - gleason_arvaniti
      - uni2
      - 0.779 ± 0.005
      - 0.775
+   * - gleason_arvaniti
+     - virchow2
+     - 0.778 ± 0.010
+     - 0.783
 
 Across these 8 recorded dataset–encoder comparisons, the median relative difference is **0.48%**.
 

@@ -32,9 +32,8 @@ Run the benchmark
 Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the
 downloaded task directory as ``--raw-root``. ``soma reproduce`` runs the
 built-in HEST curator automatically, writes the manifests under
-``<raw-root>/curated``, preserves HEST's fold assignments, extracts features,
-runs the Ridge probe, and reports the mean Pearson score. No separate curation
-command is required. Some model weights require ``hf auth login``. For example::
+``<raw-root>/curated``, preserving HEST's fold assignments. It then extracts features,
+runs the Ridge probe, and reports the mean Pearson score. For example::
 
     soma reproduce hest/IDC --encoder virchow2 --raw-root /path/to/hest-bench/IDC
 
