@@ -7,7 +7,16 @@
 #
 # MIDOG scanners differ in physical resolution, so a slightly looser reader tolerance
 # (0.10) lets each region be read at the task spacing without a hard spacing-mismatch
-# failure. Data paths are the curator's author-machine defaults; the driver repoints them.
+# failure.
+#
+# MIDOG ships large, variable-size ROIs (soma's dense detection path needs fixed-size
+# tiles), so the manifest the sweep consumes (``curated``) is the TILED one
+# (soma.curation.tile_detection): fixed 1024² tiles at 128 px overlap, produced from the
+# ROI-level curator output (kept alongside as ``midog/roi/``). This reuses OCELOT's proven
+# fixed-tile geometry — requested_tile_size_px 1024 (the supervision unit) with a 448 px
+# encoder sliding window — and the score path stitches per-tile detections back to the
+# native per-ROI F1. Data paths are the curator's author-machine defaults; the driver
+# repoints them.
 
 run:
   output_root: output/detection_benchmark/midog
@@ -15,12 +24,12 @@ run:
   tags: [detection-benchmark, midog, detection, lightweight_conv]
 
 preprocessing:
-  requested_tile_size_px: 512
+  requested_tile_size_px: 1024      # tile/supervision size (OCELOT geometry; tiled ROIs)
   requested_spacing_um: 0.25
   # MIDOG mixes scanners/resolutions; a 0.10 tolerance admits each region at the task
   # spacing (design: preprocessing.tolerance = 0.10 for MIDOG).
   tolerance: 0.10
-  dense_window_size: 512
+  dense_window_size: 448            # encoder sliding window within each 1024 tile
   dense_window_overlap: 0.25
 
 data:
