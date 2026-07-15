@@ -2582,11 +2582,12 @@ class Pipeline:
             self._dataset,
             self._config.encoder,
             preprocessing,
+            output_root=run_dir,
             execution=self._config.execution,
             cache=cache_config,
         )
         try:
-            return extractor.run(feature_dir=run_dir / "features")
+            return extractor.run(feature_dir="features")
         finally:
             _release_parent_cuda_state()
 

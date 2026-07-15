@@ -225,5 +225,5 @@ Full config reference
 See also
 --------
 
-* :doc:`pipeline` – Python API equivalent of each config section
+* :doc:`getting-started` – Python API equivalent of each config section
 * :doc:`getting-started` – end-to-end walkthrough

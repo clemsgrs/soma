@@ -14,7 +14,7 @@ Main building blocks
      - Focus
    * - :doc:`Dataset and splits <dataset>`
      - CSV manifest schema and fold assignment rules
-   * - :doc:`Pipeline <pipeline>`
+   * - :doc:`How soma works <how-soma-works>`
      - End-to-end orchestration from manifests to reports
    * - :doc:`Preprocessing <preprocessing>`
      - Tissue segmentation and slide tiling at a given spacing
@@ -67,7 +67,7 @@ heads or aggregators against the same encoder output:
        cache=cache,
        output_root="output",
    )
-   store = extractor.extract(feature_dir="output/features/uni2")
+   store = extractor.extract()
    task = TaskConfig(name="binary_classification")
    training = TrainingConfig(epochs=50, learning_rate=1e-4)
    abmil_aggregator = AggregatorConfig(name="abmil", params={"hidden_dim": 256})
@@ -94,7 +94,9 @@ heads or aggregators against the same encoder output:
    )
 
 The returned ``FeatureStore`` can be reused across experiments as long as the
-upstream preprocessing and encoder settings do not change.
+upstream preprocessing and encoder settings do not change. ``extract()``
+defaults to ``<output_root>/features/<encoder>``; a supplied ``feature_dir``
+must be relative to ``output_root``.
 
 Train with explicit evaluation settings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

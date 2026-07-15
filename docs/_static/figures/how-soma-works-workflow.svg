@@ -1,0 +1,60 @@
+<svg viewBox="0 0 680 118" role="img" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'Helvetica Neue', Inter, Arial, sans-serif">
+<title>The soma workflow: five modular blocks from data to evaluation</title>
+<desc>A left-to-right sequence of five modular blocks: Data, Preprocess, Encode, Train, and Evaluate. Data and Evaluate are the fixed scaffolding either side of the experiment. Preprocess prepares the images. Encode applies a frozen pathology foundation model. Train fits the trained downstream model that maps features to the task output.</desc>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+<path d="M0 0 L10 5 L0 10 z" fill="#888780"/>
+</marker>
+</defs>
+<style>
+text { stroke: none; }
+.th { font-size: 14px; font-weight: 500; }
+.lg { font-size: 11px; font-weight: 400; fill: #73726c; }
+.box  { fill: #f7f6f1; stroke: rgba(60,60,55,0.20); }
+.box  > .th { fill: #3d3d3a; }
+.c-green { fill: #EAF3DE; stroke: #3B6D11; }
+.c-green > .th { fill: #27500A; }
+.c-blue  { fill: #E6F1FB; stroke: #185FA5; }
+.c-blue  > .th { fill: #0C447C; }
+.c-coral { fill: #FAECE7; stroke: #F0997B; }
+.c-coral > .th { fill: #712B13; }
+.ln { stroke: #888780; stroke-width: 1.5; fill: none; }
+</style>
+
+<g class="box">
+<rect x="21" y="28" width="110" height="48" rx="8"/>
+<text class="th" x="76" y="52" text-anchor="middle" dominant-baseline="central">Data</text>
+</g>
+
+<g class="c-green">
+<rect x="153" y="28" width="110" height="48" rx="8"/>
+<text class="th" x="208" y="52" text-anchor="middle" dominant-baseline="central">Preprocess</text>
+</g>
+
+<g class="c-blue">
+<rect x="285" y="28" width="110" height="48" rx="8"/>
+<text class="th" x="340" y="52" text-anchor="middle" dominant-baseline="central">Encode</text>
+</g>
+
+<g class="c-coral">
+<rect x="417" y="28" width="110" height="48" rx="8"/>
+<text class="th" x="472" y="52" text-anchor="middle" dominant-baseline="central">Train</text>
+</g>
+
+<g class="box">
+<rect x="549" y="28" width="110" height="48" rx="8"/>
+<text class="th" x="604" y="52" text-anchor="middle" dominant-baseline="central">Evaluate</text>
+</g>
+
+<line class="ln" x1="133" y1="52" x2="151" y2="52" marker-end="url(#ah)"/>
+<line class="ln" x1="265" y1="52" x2="283" y2="52" marker-end="url(#ah)"/>
+<line class="ln" x1="397" y1="52" x2="415" y2="52" marker-end="url(#ah)"/>
+<line class="ln" x1="529" y1="52" x2="547" y2="52" marker-end="url(#ah)"/>
+
+<g class="box"><rect x="198" y="92" width="14" height="14" rx="3"/></g>
+<text class="lg" x="218" y="99" dominant-baseline="central">fixed scaffolding</text>
+<g class="c-blue"><rect x="335" y="92" width="14" height="14" rx="3"/></g>
+<text class="lg" x="355" y="99" dominant-baseline="central">frozen</text>
+<g class="c-coral"><rect x="422" y="92" width="14" height="14" rx="3"/></g>
+<text class="lg" x="442" y="99" dominant-baseline="central">trained</text>
+</svg>

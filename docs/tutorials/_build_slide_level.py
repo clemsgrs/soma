@@ -169,7 +169,7 @@ def build() -> nbformat.NotebookNode:
             "    output_root=str(WORK / 'output'),\n"
             ")\n"
             "\n"
-            "extractor.extract(feature_dir=str(feature_dir))\n"
+            "extractor.extract(feature_dir='features')\n"
             "store = FeatureStore(str(feature_dir))   # the embeddings written above\n"
             "print('extracted feature bags for', len(store.available_samples), 'slides')"
         ),
@@ -222,7 +222,7 @@ def build() -> nbformat.NotebookNode:
             "    cache=CacheConfig(enabled=True, root_dir=str(WORK / 'cache')),\n"
             "    output_root=str(WORK / 'output'),\n"
             ")\n"
-            "slide_extractor.extract(feature_dir=str(slide_feature_dir))\n"
+            "slide_extractor.extract(feature_dir='features_slide')\n"
             "slide_store = FeatureStore(str(slide_feature_dir))\n"
             "print('slide-level features:', slide_store.is_slide_level,\n"
             "      '| one vector per slide of dim',\n"

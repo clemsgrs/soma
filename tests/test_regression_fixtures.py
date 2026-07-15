@@ -89,6 +89,7 @@ def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
         EncoderConfig(name="prism"),
         preprocessing=_regression_preprocessing(),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
 
     extractor.preprocess(output_dir)
@@ -141,10 +142,11 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
         EncoderConfig(name="prism"),
         preprocessing=_regression_preprocessing(),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
 
     try:
-        extractor.run(output_dir)
+        extractor.run("features")
     except (ImportError, OSError) as exc:
         pytest.skip(f"PRISM regression unavailable in this environment: {exc}")
 
