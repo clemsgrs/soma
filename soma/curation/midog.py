@@ -90,6 +90,39 @@ def _resolve_mitotic_category_id(categories: list[dict]) -> int:
     return positives[0]
 
 
+def _validate_bbox_sizes(
+    annotations: list[dict], mitotic_id: int, bbox_format: str, *, max_median_side: float = 400.0
+) -> None:
+    """Guard against a wrong ``bbox_format`` silently mis-placing every point.
+
+    MIDOG annotates each mitosis with a fixed ~50 px box encoded as **corner**
+    coordinates ``[x1, y1, x2, y2]``. Reading those as COCO ``[x, y, w, h]`` makes the
+    "width" the far corner (~thousands of px), so the computed centre lands ~2x out —
+    past the image edge — and the error is otherwise silent. This raises loudly if the
+    resolved boxes are implausible for a mitosis (median side ``<= 0`` or very large).
+    """
+    import statistics
+
+    sides: list[float] = []
+    for ann in annotations:
+        if int(ann["category_id"]) != mitotic_id:
+            continue
+        x0, y0, a, b = (float(v) for v in ann["bbox"][:4])
+        w, h = (a, b) if bbox_format == "xywh" else (a - x0, b - y0)
+        sides.extend((w, h))
+    if not sides:
+        return
+    med = statistics.median(sides)
+    if med <= 0 or med > max_median_side:
+        raise ValueError(
+            f"MIDOG mitosis boxes have an implausible median side {med:.0f}px under "
+            f"bbox_format={bbox_format!r} (expected ~50px). The MIDOG COCO uses corner "
+            f"boxes [x1,y1,x2,y2] — pass bbox_format='xyxy'. A wrong format silently "
+            f"mis-places every point past the image edge. (Raise max_median_side if your "
+            f"data genuinely has large boxes.)"
+        )
+
+
 def _bbox_center(bbox: list[float], bbox_format: str) -> tuple[float, float]:
     """Centre of a COCO ``[x, y, w, h]`` (``xywh``) or corner ``[x1, y1, x2, y2]`` box."""
     x0, y0, a, b = (float(v) for v in bbox[:4])
@@ -184,6 +217,7 @@ def curate_midog_detection(
 
     coco = json.loads(ann_path.read_text())
     mitotic_id = _resolve_mitotic_category_id(coco["categories"])
+    _validate_bbox_sizes(coco["annotations"], mitotic_id, bbox_format)
 
     # image_id -> list of mitotic-figure centre points (and a hard-negative tally).
     mitoses_by_image: dict[int, list[tuple[float, float]]] = defaultdict(list)

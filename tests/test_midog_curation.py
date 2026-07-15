@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from soma.curation import Curator, curate_midog_detection
 from soma.curation.midog import (
@@ -281,3 +282,18 @@ def test_recuration_is_byte_identical(tmp_path: Path):
     curate_midog_detection(raw, other, level0_spacing_um=0.5)
     for name in ("splits.csv", "summary.json"):
         assert (other / name).read_bytes() == before[name], f"{name} differs across dirs"
+
+
+def test_bbox_format_guard_rejects_corner_boxes_read_as_xywh(tmp_path: Path):
+    # MIDOG ships corner boxes [x1,y1,x2,y2]; the 3rd/4th values are far corners (~thousands),
+    # so reading them as COCO xywh yields absurd box sizes and mis-places every centre.
+    raw = _write_midog_raw(
+        tmp_path / "raw",
+        [{"file_name": "001.png", "patient_id": "p1", "boxes": [
+            (4000, 300, 4050, 350, 1), (100, 100, 150, 150, 1), (2000, 2000, 2050, 2050, 1)]}],
+    )
+    with pytest.raises(ValueError, match="implausible median side"):
+        curate_midog_detection(raw, tmp_path / "bad", bbox_format="xywh")
+    # Read as corner boxes the same annotations are ~50 px and curation proceeds.
+    curate_midog_detection(raw, tmp_path / "ok", bbox_format="xyxy")
+    assert (tmp_path / "ok" / "dataset.csv").is_file()
