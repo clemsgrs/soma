@@ -503,7 +503,12 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
                         area_mm2=patch_area_mm2(int(crop_w), int(crop_h), l0),
                     )
                 )
-    return samples
+    # Tiled datasets (MIDOG/MONKEY) carry source_wsi/tile_x/tile_y -> fold the per-tile
+    # detections back to one per-ROI SamplePrediction for the native per-ROI metric; untiled
+    # datasets (OCELOT) pass through unchanged.
+    from soma.benchmarks.detection_benchmark import stitch_tiles_to_rois
+
+    return stitch_tiles_to_rois(samples, manifest, head)
 
 
 def _decode_cell_points(

@@ -52,8 +52,8 @@ from soma.benchmarks.registry import (
 )
 from soma.config import PipelineConfig, load_config
 from soma.curation.manifest import CuratedManifest
-from soma.detection.froc import score_monkey_froc
-from soma.detection.matching import detection_counts, reduce_f1
+from soma.detection.froc import patch_area_mm2, score_monkey_froc
+from soma.detection.matching import detection_counts, match_assignment, reduce_f1
 from soma.detection.midog_f1 import midog_f1
 
 __all__ = [
@@ -352,6 +352,96 @@ def _per_image_arrays(
         gt_class.append(np.asarray(s.gt_class, dtype=np.int64).reshape(-1))
         area.append(0.0 if s.area_mm2 is None else float(s.area_mm2))
     return pred_xy, pred_score, pred_class, gt_xy, gt_class, area
+
+
+def _greedy_point_nms(
+    xy: np.ndarray, scores: np.ndarray, classes: np.ndarray, min_distance: float
+) -> np.ndarray:
+    """Per-class greedy NMS over a point list — the same rule as the within-tile peak NMS
+    (:func:`soma.detection.peaks.extract_peaks`): keep the highest score first, drop any
+    later same-class point within ``min_distance``. Returns the kept row indices (ascending).
+    """
+    if xy.shape[0] == 0:
+        return np.zeros((0,), dtype=np.int64)
+    md_sq = float(min_distance) ** 2
+    kept: list[int] = []
+    kept_by_cls: dict[int, list[tuple[float, float]]] = {}
+    for i in np.argsort(-scores, kind="stable"):
+        c = int(classes[i])
+        x, y = float(xy[i, 0]), float(xy[i, 1])
+        prev = kept_by_cls.setdefault(c, [])
+        if all((x - kx) ** 2 + (y - ky) ** 2 >= md_sq for kx, ky in prev):
+            kept.append(int(i))
+            prev.append((x, y))
+    return np.sort(np.asarray(kept, dtype=np.int64))
+
+
+def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) -> list[SamplePrediction]:
+    """Fold per-tile detections back to their parent ROI for the native per-ROI metric.
+
+    A tiled dataset (MIDOG/MONKEY) carries ``source_wsi`` / ``tile_x`` / ``tile_y`` per
+    sample (:class:`~soma.dataset.DetectionManifest` reserves these). Each tile's points are
+    already in the tile's level-0 (pixel) frame, so adding the tile origin lifts them into
+    ROI coordinates; we then **dedup GT overlap copies** (exact coordinate — the same
+    annotation in two overlapping tiles lands at the same ROI coordinate) and **NMS the
+    prediction overlap duplicates** (the head's radius, per class), re-match at the ROI level
+    to set honest ``matched`` flags, and emit one :class:`SamplePrediction` per ROI. Datasets
+    with no tile origins (e.g. OCELOT ships fixed patches) pass through unchanged, so the
+    scorers see per-ROI samples for tiled datasets and per-image samples otherwise.
+    """
+    records = manifest.samples
+    if not any("source_wsi" in records[s.sample_id].metadata for s in samples):
+        return list(samples)
+
+    groups: dict[str, dict] = {}
+    for s in samples:
+        md = records[s.sample_id].metadata
+        roi = str(md["source_wsi"])
+        x0, y0 = float(md["tile_x"]), float(md["tile_y"])
+        g = groups.setdefault(roi, {"pxy": [], "psc": [], "pcl": [], "gt": {}, "meta": md})
+        for (x, y), sc, cl in zip(s.pred_xy, s.pred_score, s.pred_class):
+            g["pxy"].append((x + x0, y + y0))
+            g["psc"].append(float(sc))
+            g["pcl"].append(int(cl))
+        for (x, y), cl in zip(s.gt_xy, s.gt_class):
+            g["gt"][(round(x + x0, 3), round(y + y0, 3), int(cl))] = None
+
+    out: list[SamplePrediction] = []
+    for roi, g in groups.items():
+        pxy = np.asarray(g["pxy"], dtype=np.float64).reshape(-1, 2)
+        psc = np.asarray(g["psc"], dtype=np.float64).reshape(-1)
+        pcl = np.asarray(g["pcl"], dtype=np.int64).reshape(-1)
+        keep = _greedy_point_nms(pxy, psc, pcl, head.nms_distance_px)
+        pxy, psc, pcl = pxy[keep], psc[keep], pcl[keep]
+
+        gt = list(g["gt"].keys())
+        gxy = np.asarray([(x, y) for x, y, _ in gt], dtype=np.float64).reshape(-1, 2)
+        gcl = np.asarray([c for _, _, c in gt], dtype=np.int64).reshape(-1)
+
+        matched = np.zeros(pxy.shape[0], dtype=bool)
+        for m in match_assignment(
+            pxy, pcl, psc, gxy, gcl,
+            num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
+        ):
+            if m.pairs.shape[0]:
+                matched[m.pairs[:, 0]] = True
+
+        roi_w, roi_h = g["meta"].get("roi_width"), g["meta"].get("roi_height")
+        area = (
+            patch_area_mm2(int(roi_w), int(roi_h), float(head.level0_spacing))
+            if roi_w is not None and roi_h is not None and head.level0_spacing is not None
+            else None
+        )
+        out.append(
+            SamplePrediction(
+                sample_id=roi,
+                pred_xy=pxy.tolist(), pred_score=psc.tolist(), pred_class=pcl.tolist(),
+                gt_xy=gxy.tolist(), gt_class=gcl.tolist(),
+                matched=matched.tolist(), area_mm2=area,
+            )
+        )
+    out.sort(key=lambda s: s.sample_id)
+    return out
 
 
 def _score_ocelot_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:

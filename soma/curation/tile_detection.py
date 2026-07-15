@@ -168,6 +168,8 @@ def tile_detection_manifest(
                     "source_wsi": roi_id,   # parent ROI (DetectionManifest stitching column)
                     "tile_x": x0,
                     "tile_y": y0,
+                    "roi_width": width,     # parent ROI dims -> stitched-ROI area (FROC per-mm²)
+                    "roi_height": height,
                 }
                 for c in carry_cols:
                     row[c] = roi[c]
