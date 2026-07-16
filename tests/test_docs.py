@@ -380,6 +380,7 @@ def test_modeling_hub_routes_readers_through_supported_downstream_paths() -> Non
     docs_dir = Path(__file__).resolve().parents[1] / "docs"
     page = (docs_dir / "modeling.rst").read_text(encoding="utf-8")
     index = (docs_dir / "index.rst").read_text(encoding="utf-8")
+    components = (docs_dir / "components.rst").read_text(encoding="utf-8")
 
     expected = (
         "Modeling",
@@ -401,7 +402,8 @@ def test_modeling_hub_routes_readers_through_supported_downstream_paths() -> Non
     assert [
         text for text in expected if " ".join(text.split()) not in normalized_page
     ] == []
-    assert "\n   modeling\n" in index
+    assert "\n   components\n" in index
+    assert "\n   modeling\n" in components
     assert ".. code-block::" not in page
 
 
@@ -502,28 +504,117 @@ def test_home_page_exposes_four_primary_routes_in_order() -> None:
     )
 
 
-def test_sidebar_groups_api_and_cli_under_reference() -> None:
-    page = (
-        Path(__file__).resolve().parents[1] / "docs" / "index.rst"
-    ).read_text(encoding="utf-8")
-    toctrees = page.split(".. toctree::")[1:]
+def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None:
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    index = (docs_dir / "index.rst").read_text(encoding="utf-8")
+    toctrees = index.split(".. toctree::")[1:]
 
-    start = toctrees[0]
-    reference = next(block for block in toctrees if ":caption: Reference" in block)
-
-    assert [line.strip() for line in start.splitlines() if line.startswith("   ")] == [
-        ":maxdepth: 1",
+    assert len(toctrees) == 1
+    assert [line.strip() for line in toctrees[0].splitlines() if line.startswith("   ")] == [
+        ":maxdepth: 2",
         ":hidden:",
         "how-soma-works",
         "getting-started",
+        "data",
+        "components",
+        "tasks",
+        "training-evaluation",
+        "tutorials/index",
+        "benchmarking",
+        "reference",
+        "system",
     ]
-    assert [line.strip() for line in reference.splitlines() if line.startswith("   ")] == [
-        ":maxdepth: 1",
-        ":hidden:",
-        ":caption: Reference",
-        "api",
-        "cli",
-    ]
+
+    expected_children = {
+        "data.rst": ("dataset", "curation", "preprocessing"),
+        "components.rst": ("encoders", "modeling", "aggregators", "decoders"),
+        "tasks.rst": (
+            "classification",
+            "regression",
+            "survival",
+            "segmentation",
+            "detection",
+        ),
+        "training-evaluation.rst": ("training", "evaluation"),
+        "tutorials/index.rst": ("slide-level", "detection", "segmentation"),
+        "benchmarking.rst": (
+            "eva-patch-classification-benchmark",
+            "ocelot-detection-benchmark",
+            "hest-gene-expression-benchmark",
+        ),
+        "reference.rst": ("api", "cli"),
+        "system.rst": ("caching", "outputs", "reporting"),
+    }
+    for filename, children in expected_children.items():
+        page = (docs_dir / filename).read_text(encoding="utf-8")
+        tree = page.split(".. toctree::", 1)[1]
+        entries = [
+            line.strip()
+            for line in tree.splitlines()
+            if line.startswith("   ") and not line.strip().startswith(":")
+        ]
+        assert entries == list(children), filename
+
+
+def test_benchmarking_parent_page_is_a_concise_reader_facing_overview() -> None:
+    page = (
+        Path(__file__).resolve().parents[1] / "docs" / "benchmarking.rst"
+    ).read_text(encoding="utf-8")
+    normalized = " ".join(page.split())
+    normalized_lower = normalized.lower()
+
+    # The page is organised around the reproduce vs leaderboard split.
+    for expected in (
+        "registered, reproducible protocols",
+        "soma reproduce",
+        "soma leaderboard",
+    ):
+        assert expected in normalized_lower
+    for benchmark in ("EVA", "OCELOT", "HEST"):
+        assert benchmark in normalized
+
+    # reproduce: any encoder, compared to the packaged reference when one exists,
+    # and usable beyond the models the reference covered.
+    assert "--encoder uni2" in page
+    assert "--encoder phikon" in page
+    assert "packaged reference" in normalized_lower
+    assert "published reference" not in normalized_lower
+    assert "highlights potential drift" in normalized_lower
+    assert "the reference never covered" in normalized_lower
+
+    # leaderboard: compares completed runs along any --vary axis, without retraining.
+    assert "--encoder virchow2" in page
+    assert "--vary encoder" in page
+    assert "--vary aggregator" in page
+    assert "without retraining" in normalized_lower
+    # non-encoder axes (incl. spacing, now that reproduce no longer exposes --spacing) are
+    # produced with ordinary `soma <config>` runs, then compared on a leaderboard.
+    assert "--spacing" not in page
+    assert "aggregator, decoder, spacing" in normalized
+    assert "soma <config>" in page
+    assert "runs/agg-sweep" in page
+    assert "(dataset, splits, task)" in normalized
+
+    assert len(page.split()) <= 560
+
+
+def test_parent_pages_keep_modeling_and_result_boundaries_precise() -> None:
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    components = (docs_dir / "components.rst").read_text(encoding="utf-8")
+    tasks = (docs_dir / "tasks.rst").read_text(encoding="utf-8")
+    train_eval = (docs_dir / "training-evaluation.rst").read_text(encoding="utf-8")
+    system = (docs_dir / "system.rst").read_text(encoding="utf-8")
+
+    assert "overview" in components.lower()
+    assert "Modeling paths" in tasks
+    assert "single feature vector" in tasks
+    assert "bag of features" in tasks
+    assert "dense feature grid" in tasks
+    assert "NLL or CoxPH" in tasks
+    assert "Substrate cleavage" not in tasks
+    assert "metric configuration and computation" in train_eval
+    assert "run-directory artifact schema" in system
+    assert "single-run reports and multi-run comparisons" in system
 
 
 def test_getting_started_shows_one_workflow_through_all_public_interfaces() -> None:

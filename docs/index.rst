@@ -49,83 +49,16 @@ for custom experiment orchestration.
    </nav>
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :hidden:
 
    how-soma-works
    getting-started
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Data
-
-   dataset
-   curation
-   preprocessing
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Components
-
-   encoders
-   modeling
-   aggregators
-   decoders
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Tasks
-
+   data
+   components
    tasks
-   classification
-   regression
-   survival
-   segmentation
-   detection
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Training & Evaluation
-
-   training
-   evaluation
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Tutorials
-
-   tutorials/slide-level
-   tutorials/detection
-   tutorials/segmentation
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Benchmarks
-
+   training-evaluation
+   tutorials/index
    benchmarking
-   eva-patch-classification-benchmark
-   ocelot-detection-benchmark
-   hest-gene-expression-benchmark
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Reference
-
-   api
-   cli
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: System
-
-   caching
-   outputs
-   reporting
+   reference
+   system

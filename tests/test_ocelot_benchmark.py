@@ -49,8 +49,9 @@ def test_ocelot_registered_under_name():
 
 def test_ocelot_declares_canonical_facet():
     facet = OCELOT.facet
-    # Recipe backbone fixed; the campaign varies encoder x spacing.
-    assert facet.varied == ("encoder", "spacing")
+    # Reproduce fixes the whole protocol except the encoder; spacing is a plain config
+    # field, swept (if wanted) via custom configs + a leaderboard, not a reproduce axis.
+    assert facet.varied == ("encoder",)
     assert facet.fixed["decoder"] == "lightweight_conv"
     assert facet.fixed["task"] == "detection"
 
@@ -67,6 +68,8 @@ def test_build_config_loads_committed_anchor_yaml():
     assert cfg.dataset_type == "detection"
     assert cfg.encoder.name == "virchow2"
     assert cfg.decoder.name == "lightweight_conv"
+    # No spacing given (as reproduce now calls it): the protocol fixes it at the anchor.
+    assert cfg.preprocessing.requested_spacing_um == pytest.approx(0.2)
     assert str(cfg.dataset_csv) == "/x/dataset.csv"
     assert str(cfg.splits_csv) == "/x/splits.csv"
     assert str(cfg.output_root) == "/out"
@@ -78,9 +81,11 @@ def test_build_config_selects_config_by_axes():
     assert cfg.encoder.name == "uni2"
 
 
-def test_build_config_unknown_axes_is_keyerror():
-    with pytest.raises(KeyError):
-        OCELOT.build_config(encoder="phikon", spacing=0.2)
+def test_build_config_accepts_unreferenced_encoder_at_packaged_spacing():
+    cfg = OCELOT.build_config(encoder="phikon", spacing=0.2)
+    assert cfg.encoder.name == "phikon"
+    assert cfg.preprocessing.requested_spacing_um == pytest.approx(0.2)
+    assert cfg.encoder.allow_non_recommended_settings is True
 
 
 def test_expected_returns_broad_band():

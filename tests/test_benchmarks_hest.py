@@ -319,7 +319,7 @@ def test_reproduce_hest_renders_measured_beside_external_reference(capsys, tmp_p
     assert "MEASURED" in out
     assert "0.5100" in out  # soma's Measured value
     assert "0.5898" in out  # HEST's published uni2 Reference, rendered beside it
-    assert "not gated" in out  # explicitly non-gating
+    assert "context only" in out
     assert "PASS" not in out and "FAIL" not in out  # nothing is tolerance-checked
 
 
@@ -364,10 +364,8 @@ def test_reproduce_record_appends_external_only_cell_to_ledger(tmp_path, monkeyp
 def test_reproduce_record_writes_no_orphan_row_when_encoder_has_no_reference(
     tmp_path, monkeypatch, capsys
 ):
-    # An encoder with no published HEST number matches NO reference row at all (neither gate
-    # nor external), which reproduce treats as a genuine missing reference and exits 2 on —
-    # before --record is ever consulted. The property that matters for the ledger: a cell that
-    # could never join the reference must not leave an orphan row behind.
+    # An encoder with no published HEST number still runs and scores. It cannot be keyed into
+    # the reference-indexed ledger, so --record explains the skip and leaves no orphan row.
     from soma.benchmarks import load_results, registry
 
     ledger = tmp_path / "hest_results.csv"
@@ -377,8 +375,10 @@ def test_reproduce_record_writes_no_orphan_row_when_encoder_has_no_reference(
     code = _run_cli(
         ["reproduce", "hest/IDC", "--encoder", "prism", "--from-run-dir", str(tmp_path), "--record"]
     )
-    assert code == 2
-    assert "no gate reference row" in capsys.readouterr().err.lower()
+    assert code == 0
+    out = capsys.readouterr().out.lower()
+    assert "[reference skipped]" in out
+    assert "no reference row to key --record on" in out
     assert load_results("hest") == []  # no orphan row written
     assert not ledger.exists()
 

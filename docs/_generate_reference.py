@@ -197,8 +197,10 @@ def build_cli_rst() -> str:
         end-to-end curate → configure → run → leaderboard → reproduce story).
 
         ``soma reproduce NAME [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
-           Curate → run → score a registered benchmark and tolerance-check its
-           primary metric against the packaged reference band. ``NAME`` is a
+           Curate → run → score a registered benchmark. When a matching packaged
+           reference exists, report its delta and highlight potential drift;
+           otherwise, explicitly skip the comparison. Reference comparisons are
+           informational and never determine command success. ``NAME`` is a
            registered benchmark (``ocelot``, ``eva/bach``) or a family prefix
            (``eva``) that fans out over every ``eva/<dataset>``. Three manifest
            sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
@@ -433,14 +435,18 @@ def build_ocelot_benchmark_rst() -> str:
         "point (per-class score thresholds swept on ``tune``, frozen, applied once to\n"
         "``test``). See :doc:`detection` for the canonical matcher and px↔µm definitions.",
         "Protocol\n--------\n\n"
-        "The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.\n\n"
+        "The recipe backbone is held fixed; ``soma reproduce`` varies only the ``encoder``\n"
+        "and fixes image spacing at the anchor.\n\n"
         + _kv_table("Axis / setting", "Value", protocol_rows),
-        "Axes\n----\n\n"
-        "``build_config`` resolves a committed config per ``(encoder, spacing)`` — the\n"
-        "2×2 magnification-alignment ablation plus the native anchor:\n\n"
+        "Packaged spacing protocols\n--------------------------\n\n"
+        "Reproduce fixes spacing at the anchor, but ``build_config`` still resolves a\n"
+        "committed protocol per ``(encoder, spacing)`` — the 2×2 magnification-alignment\n"
+        "ablation plus the native anchor. Use these for a custom spacing sweep compared on a\n"
+        ":doc:`leaderboard <benchmarking>`, like any other non-encoder axis:\n\n"
         + _kv_table("Encoder", "Spacing (µm/px)", axes_rows, widths="50 50"),
         "Reference band\n--------------\n\n"
-        "The tolerance band ``soma reproduce`` checks against — a **config-agnostic** banner\n"
+        "The tolerance band ``soma reproduce`` uses to highlight potential drift — a\n"
+        "**config-agnostic** banner\n"
         "(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression\n"
         "anchor, not an external leaderboard number). The non-gating external anchors —\n"
         "fully-supervised end-to-end baselines from a *different* protocol — are surfaced\n"
@@ -452,12 +458,12 @@ def build_ocelot_benchmark_rst() -> str:
         + _kv_table("Component", "Version", env_rows, widths="40 60"),
         "Reproduce\n---------\n\n"
         "One command curates the raw data, trains the anchor for the canonical seed,\n"
-        "greedy-scores it, and tolerance-checks ``mean_f1`` against the band above::\n\n"
+        "greedy-scores it, and reports ``mean_f1`` beside the band above::\n\n"
         "    soma reproduce ocelot --raw-root /path/to/ocelot\n\n"
         "Fast paths: ``--from-run-dir <dir>`` re-scores an existing run with the greedy\n"
-        "matcher (no training); ``--seeds 1`` is the quickest smoke. Sweep the ablation\n"
-        "with ``--encoder`` / ``--spacing`` (e.g. ``soma reproduce ocelot --encoder uni2\n"
-        "--spacing 0.25 --raw-root ...``).",
+        "matcher (no training); ``--seeds 1`` is the quickest smoke. Compare encoders with\n"
+        "``--encoder`` (e.g. ``soma reproduce ocelot --encoder uni2 --raw-root ...``); to\n"
+        "compare spacings, run per-spacing configs and a :doc:`leaderboard <benchmarking>`.",
         ".. seealso::\n\n"
         "   * :doc:`detection` — the detection modeling substrate (head, target encoding,\n"
         "     loss, F1@δ evaluator).\n"

@@ -144,15 +144,6 @@ def _require_dataset(dataset: str) -> DatasetSpec:
         ) from exc
 
 
-def _require_encoder(encoder: str) -> EncoderSpec:
-    try:
-        return ENCODERS[encoder]
-    except KeyError as exc:
-        raise ValueError(
-            f"Unknown EVA encoder {encoder!r}. Supported: {', '.join(ENCODERS)}"
-        ) from exc
-
-
 def _build_eva_config(
     *,
     dataset: str,
@@ -174,7 +165,9 @@ def _build_eva_config(
     ``patience`` defaults to the dataset's eva value. Pass overrides for smoke runs.
     """
     spec = _require_dataset(dataset)
-    enc = _require_encoder(encoder)
+    # Known EVA reference encoders may need a protocol-specific output variant. Any other
+    # registered soma encoder uses its own default variant and can extend the benchmark.
+    enc = ENCODERS.get(encoder)
 
     if epochs is None:
         epochs = epochs_for_train_size(count_train_samples(splits_csv))
@@ -190,7 +183,7 @@ def _build_eva_config(
         cache=cache or CacheConfig(enabled=True),
         encoder=EncoderConfig(
             name=encoder,
-            output_variant=enc.output_variant,
+            output_variant=enc.output_variant if enc is not None else None,
             batch_size=encoder_batch_size,
         ),
         task=TaskConfig(name=spec.task),

@@ -12,18 +12,18 @@ per-task pages.
    classification, regression, and survival end to end on the **same** extracted
    features — the clearest way to see how swapping a task head works in practice.
 
-Substrate cleavage
-------------------
+Modeling paths
+--------------
 
-Tasks split by the representation substrate they consume:
+Task heads receive representations through three modeling paths:
 
-* **Slide-level** tasks consume a bag of tile features, which an
-  :doc:`aggregator <aggregators>` pools into a single slide- or patient-level
-  vector before the head: :doc:`classification`, :doc:`regression`, and
-  :doc:`survival`.
-* **Dense** tasks consume a token grid, which a decoder turns into a per-pixel
-  map before the head: :doc:`segmentation` and
-  :doc:`detection`.
+* A **single feature vector** can feed :doc:`classification` or :doc:`regression`
+  directly for a tile, region, slide, or patient. :doc:`survival` supports
+  slide- and patient-level vectors.
+* A **bag of features** can first pass through an :doc:`aggregator <aggregators>`,
+  then feed the same classification, regression, or survival heads.
+* A **dense feature grid** passes through a :doc:`decoder <decoders>` before a
+  :doc:`segmentation` or :doc:`detection` head.
 
 The base abstraction is :class:`soma.tasks.base.TaskHead`.
 
@@ -58,7 +58,7 @@ Task Zoo
      - ``mae``, ``r2``
      - Continuous targets
    * - ``survival``
-     - Discrete-time NLL
+     - NLL or CoxPH
      - ``c_index``
      - Time-to-event with right censoring
    * - ``segmentation``
@@ -73,7 +73,7 @@ Task Zoo
 Task pages
 ----------
 
-Slide-level tasks (bag → :doc:`aggregator <aggregators>` → head):
+Scalar and vector tasks (single vector, or bag → :doc:`aggregator <aggregators>` → head):
 
 * :doc:`classification` — binary, multiclass, and ordinal heads.
 * :doc:`regression` — continuous targets.
@@ -89,3 +89,13 @@ Discovery helper
 
 Use ``soma.list_task_heads()`` to inspect the registered task heads from code
 when you need to populate a selector or validate a config name.
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   classification
+   regression
+   survival
+   segmentation
+   detection

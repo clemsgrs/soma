@@ -151,15 +151,11 @@ def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
 
 
 def _reproduce_reference_row(benchmark, axes: dict[str, Any]):
-    """The single **gate** reference row for the primary metric, or ``None`` if external-only.
+    """The single comparable reference row for the primary metric, if one exists.
 
-    Only ``kind="gate"`` rows are tolerance-checkable. When no gate row matches but at least
-    one **external** guidance row does, the benchmark is external-only at these axes (e.g.
-    ``hest/IDC``): reproduce renders the Measured row *beside* the external Reference without
-    gating on it, so this returns ``None`` (issue #260) instead of erroring — an external
-    number never silently becomes a gate (issue #226). It errors (exit 2) only when *nothing*
-    matches the primary metric (a genuine missing reference, mirroring ``--from-run-dir``
-    against an encoder with no row).
+    ``kind="gate"`` rows carry a tolerance band that can highlight potential drift. External
+    rows remain contextual comparisons without a tolerance. No matching row is valid: the
+    benchmark protocol still runs and the reference comparison is explicitly skipped.
     """
     matching = [r for r in benchmark.expected(**axes) if r.metric == benchmark.primary_metric]
     gate_rows = [r for r in matching if not r.is_external]
@@ -173,38 +169,32 @@ def _reproduce_reference_row(benchmark, axes: dict[str, Any]):
     if gate_rows:
         return gate_rows[0]
     if any(r.is_external for r in matching):
-        # External-only: render Measured beside the Reference, no PASS/FAIL gate (#260).
+        # External-only: render Measured beside the Reference without a drift status (#260).
         return None
-    print(
-        f"Error: no gate reference row for metric {benchmark.primary_metric!r} "
-        f"(axes={axes}) in benchmark {benchmark.name!r}.",
-        file=sys.stderr,
-    )
-    sys.exit(2)
+    return None
 
 
 def _report_tolerance(benchmark, measured: float, row) -> bool:
     ok = row.within_tolerance(measured)
-    verdict = "PASS" if ok else "FAIL"
+    status = "REFERENCE OK" if ok else "POTENTIAL DRIFT"
     delta = measured - row.expected
     # Show the effective absolute band; annotate the fraction when the row is relative.
     band = f"±{row.tolerance_band():.4f}" + (
         f" ({row.tolerance:.0%} relative)" if row.relative else ""
     )
     print(
-        f"[{verdict}] {benchmark.name} {row.metric} = {measured:.4f}  "
+        f"[{status}] {benchmark.name} {row.metric} = {measured:.4f}  "
         f"(reference {row.expected:.4f}, Δ {delta:+.4f}, tolerance {band})"
     )
     return ok
 
 
 def _report_external(benchmark, measured: float, axes: dict[str, Any]) -> int:
-    """Render the Measured value beside the external (non-gating) Reference row(s) (#260).
+    """Render the Measured value beside external contextual Reference row(s) (#260).
 
-    An external-only benchmark has no tolerance band, so nothing is PASS/FAIL-checked:
-    reproduce prints the Measured value and, for each external Reference row at these axes,
-    the published number + the signed delta (labelled non-gating). Always succeeds (exit 0)
-    — the delta is guidance (e.g. HEST's slide2vec↔TRIDENT gap), not a gate.
+    An external-only benchmark has no tolerance band. Reproduce prints the Measured value
+    and, for each external Reference row at these axes, the published number and signed
+    delta. The comparison is context only (e.g. HEST's slide2vec↔TRIDENT gap).
     """
     print(f"[MEASURED] {benchmark.name} {benchmark.primary_metric} = {measured:.4f}")
     external = [
@@ -212,13 +202,19 @@ def _report_external(benchmark, measured: float, axes: dict[str, Any]) -> int:
         for r in benchmark.expected(**axes)
         if r.metric == benchmark.primary_metric and r.is_external
     ]
+    if not external:
+        print(
+            f"[REFERENCE SKIPPED] {benchmark.name} {benchmark.primary_metric} — "
+            f"no packaged reference matches axes={axes}."
+        )
+        return 0
     for row in external:
         delta = measured - row.expected
         label = row.label or "external reference"
         link = f"  <{row.url}>" if row.url else ""
         print(
             f"  reference [{label}]: {row.metric} = {row.expected:.4f}  "
-            f"(Δ {delta:+.4f}, external — not gated){link}"
+            f"(Δ {delta:+.4f}, external — context only){link}"
         )
     return 0
 
@@ -239,10 +235,10 @@ def _resolve_reproduce_targets(name: str) -> list[Any]:
 
 
 def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
-    """The benchmark's varied axes (encoder/spacing/...) read from a run's OWN recorded spec.
+    """The benchmark's varied axes (encoder) read from a run's OWN recorded spec.
 
-    ``reproduce --from-run-dir`` must tolerance-check against the reference row for the
-    encoder/spacing the run actually used — otherwise empty axes fall back to the benchmark
+    ``reproduce --from-run-dir`` must compare against the reference row for the
+    encoder the run actually used — otherwise empty axes fall back to the benchmark
     default and a ``uni`` run is silently compared against the ``uni2`` reference. Reads the
     tolerant ``canonical_spec`` (the same source the leaderboard projects), so it still
     resolves on runs whose full config no longer round-trips through ``load_config``.
@@ -321,7 +317,7 @@ def _record_reference_row(benchmark, axes: dict[str, Any], gate_row):
     """The reference row whose key + metric key a ``--record`` ledger entry.
 
     A recorded measurement must join its reference table, so the ledger entry copies a
-    reference row's key. Prefer the tolerance-checked **gate** row; for an **external-only**
+    reference row's key. Prefer the tolerance-bearing **gate** row; for an **external-only**
     benchmark (no gate row — e.g. ``hest/<task>``) fall back to the single external row that
     matches the primary metric, so reproduced numbers are still recorded (they join the HEST
     reference for the per-cell delta + rank concordance the docs render). Returns ``None`` when
@@ -400,7 +396,7 @@ def _curated_manifest_from_dir(curated_dir: Path):
 
 
 def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | None = None) -> int:
-    """Curate → run → score one benchmark and tolerance-check its primary metric.
+    """Curate → run → score one benchmark and report any reference comparison.
 
     ``family_root`` is the family name when this benchmark is one member of a fanned-out
     family (e.g. ``eva`` for ``eva/bach``); it nests the member's raw/curated/output paths
@@ -409,11 +405,9 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     axes: dict[str, Any] = {}
     if args.encoder is not None:
         axes["encoder"] = args.encoder
-    if args.spacing is not None:
-        axes["spacing"] = args.spacing
 
     if args.from_run_dir is not None:
-        # Constrain the reference lookup to the run's OWN axes; an explicit --encoder/--spacing
+        # Constrain the reference lookup to the run's OWN axes; an explicit --encoder
         # still wins (setdefault only fills what the CLI left unset).
         for axis, value in _from_run_dir_axes(benchmark, args.from_run_dir).items():
             axes.setdefault(axis, value)
@@ -434,11 +428,12 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     row = _reproduce_reference_row(benchmark, axes)
 
     def _finish(measured: float) -> int:
-        # A gate row is tolerance-checked PASS/FAIL; an external-only benchmark (no gate
-        # row) renders Measured beside the Reference and never gates (#260).
+        # A tolerance-bearing row highlights potential drift; an external-only benchmark
+        # renders Measured beside the Reference. Neither informational comparison gates a run.
         if row is None:
             return _report_external(benchmark, measured, axes)
-        return 0 if _report_tolerance(benchmark, measured, row) else 1
+        _report_tolerance(benchmark, measured, row)
+        return 0
 
     if args.from_run_dir is not None:
         metrics = benchmark.score(args.from_run_dir)
@@ -694,7 +689,6 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-root", type=Path, default=None, help="Where runs are written.")
     parser.add_argument("--cache-root", type=Path, default=None, help="Shared feature-cache root (reused across seeds).")
     parser.add_argument("--encoder", type=str, default=None, help="Encoder axis (benchmark default if omitted).")
-    parser.add_argument("--spacing", type=float, default=None, help="Spacing axis in µm/px (benchmark default if omitted).")
     parser.add_argument(
         "--record",
         action="store_true",

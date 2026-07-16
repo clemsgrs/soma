@@ -3,45 +3,73 @@ Benchmarking
 
 soma packages foundation model benchmarks as registered, reproducible
 protocols. Each benchmark fixes data preparation, splits, downstream training,
-metrics, and seeds while exposing the components that are meaningful to compare.
+metrics, and seeds, leaving the encoder as the component you choose.
 
-This supports two complementary uses:
+Two commands drive them:
 
-* **Reproduce a benchmark.** Run a bundled protocol and, when available,
-  compare soma's measurement with the official reference.
-* **Measure a component.** Hold the protocol fixed, vary one component (e.g. the encoder)
-and measure its effect on downstream performance.
+* ``soma reproduce`` runs a benchmark end to end for the encoder you pick —
+  curation, execution, and scoring — and, when the benchmark ships a packaged
+  reference, reports the delta against it.
+* ``soma leaderboard`` reads completed runs — from reproduce or from your own
+  configs — and renders a ranked comparison, without retraining.
 
-Run two encoders under the same protocol, then compare the completed runs::
+See :doc:`cli` for every command option and :doc:`outputs` for the artifacts each
+run writes.
+
+Reproduce a benchmark
+---------------------
+
+``soma reproduce NAME`` curates the data, runs the fixed protocol, and scores the
+result for a single encoder — your choice of any supported
+:doc:`encoder <encoders>`::
 
    soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
-   soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
-   soma leaderboard eva/bach --root runs/eva-bach/seed_0 --vary encoder
 
-``soma reproduce`` handles curation, execution, and scoring. Completed runs
-remain ordinary soma experiments. ``soma leaderboard`` reads their resolved
-configurations and metrics without retraining or maintaining a separate results
-table. See :doc:`cli` for command options and :doc:`outputs` for run artifacts.
+``NAME`` is a registered benchmark (e.g. ``ocelot``, ``eva/bach``) or a family prefix
+(``eva``) that fans out over every member. ``--seeds 1`` is the quickest smoke; the
+benchmark's canonical seed set runs by default. Completed runs remain ordinary soma
+experiments.
 
-Extend a benchmark
-------------------
-
-You can pass any supported :doc:`encoder <encoders>` to ``soma reproduce``, allowing you
-to go beyond the curated references. For example, to evaluate a new encoder on the EVA/BACH
-benchmark, you can run::
+When the benchmark ships a packaged reference for the encoder you ran, soma reports
+the measured value beside it and highlights potential drift. Because the encoder is a free choice, you
+can also benchmark models the reference never covered — passing an encoder with no
+matching reference simply skips the comparison::
 
    soma reproduce eva/bach --encoder phikon --raw-root /path/to/eva/bach --output-root runs/eva-bach
 
-When a matching reference exists, soma reports the delta and highlights
-potential drift.
+Compare runs on a leaderboard
+-----------------------------
+
+``soma leaderboard`` projects a set of completed runs into a single
+ranked table, comparing them along the axis you pass to ``--vary``. It writes the table as CSV, JSON, and
+HTML, with any packaged reference shown alongside. Every run sharing one
+``(dataset, splits, task)`` triple joins the table.
+
+The encoder is the axis ``soma reproduce`` varies, so comparing encoders is one
+reproduce run per encoder under the same output root, then a leaderboard::
+
+   soma reproduce eva/bach --encoder uni2     --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+   soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+   soma leaderboard eva/bach --root runs/eva-bach/seed_0 --vary encoder
+
+Any other axis — aggregator, decoder, spacing, feature mode — works the same way, but
+you produce the runs yourself with ordinary ``soma <config>`` runs. To compare
+aggregators for a fixed encoder:
+
+#. Take one cohort — a shared ``dataset.csv`` + ``splits.csv`` + task
+#. Write N configs identical except the ``aggregation:`` key
+#. Run each ordinary pipeline: ``soma abmil.yaml``, ``soma transmil.yaml``, …
+#. ``soma leaderboard --root runs/agg-sweep --vary aggregator`` — every run sharing that
+   ``(dataset, splits, task)`` triple joins the table, ranked by the metric inferred
+   from the runs
 
 Included benchmarks
 -------------------
 
 * :doc:`EVA <eva-patch-classification-benchmark>` evaluates frozen encoders on
   patch-classification datasets.
-* :doc:`OCELOT <ocelot-detection-benchmark>` evaluates dense encoders and image
-  spacing for cell detection.
+* :doc:`OCELOT <ocelot-detection-benchmark>` evaluates dense encoders for cell
+  detection.
 * :doc:`HEST <hest-gene-expression-benchmark>` evaluates frozen encoders for
   spatial gene-expression prediction.
 
