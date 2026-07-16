@@ -184,3 +184,51 @@ def test_stitch_handles_empty_prediction_roi():
     assert len(out) == 1 and out[0].sample_id == "roi_B"
     assert out[0].pred_xy == [] and out[0].gt_xy == [[10.0, 10.0]]
     assert out[0].area_mm2 is None  # no roi_width/height in metadata
+
+
+def test_stitch_drops_predictions_in_padded_region_before_matching():
+    meta = {
+        "roi_t0": {
+            "source_wsi": "roi",
+            "tile_x": 0,
+            "tile_y": 0,
+            "roi_width": 300,
+            "roi_height": 250,
+        }
+    }
+    sample = SamplePrediction(
+        sample_id="roi_t0",
+        # The invalid padding peak is higher-scored and within the NMS radius of the valid
+        # edge peak, so clipping after NMS would incorrectly remove both.
+        pred_xy=[[299.0, 100.0], [305.0, 100.0]],
+        pred_score=[0.8, 0.9],
+        pred_class=[0, 0],
+        gt_xy=[[299.0, 100.0]],
+        gt_class=[0],
+        matched=[True, False],
+    )
+
+    (roi,) = stitch_tiles_to_rois([sample], _manifest(meta), _head())
+
+    assert roi.pred_xy == [[299.0, 100.0]]
+    assert roi.pred_score == [0.8]
+    assert roi.matched == [True]
+
+
+def test_stitch_rejects_inconsistent_roi_dimensions():
+    meta = {
+        "roi_t0": {
+            "source_wsi": "roi", "tile_x": 0, "tile_y": 0,
+            "roi_width": 300, "roi_height": 250,
+        },
+        "roi_t1": {
+            "source_wsi": "roi", "tile_x": 100, "tile_y": 0,
+            "roi_width": 301, "roi_height": 250,
+        },
+    }
+    samples = [
+        SamplePrediction(sid, [], [], [], [], [], []) for sid in ("roi_t0", "roi_t1")
+    ]
+
+    with pytest.raises(ValueError, match="inconsistent ROI dimensions"):
+        stitch_tiles_to_rois(samples, _manifest(meta), _head())

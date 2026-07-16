@@ -22,7 +22,9 @@ alongside hard-negative "not-mitotic-figure" imposters. The raw annotations are 
 
 Each mitosis box is a fixed ~50 px **corner** box ``[x1, y1, x2, y2]`` (``bbox_format="xyxy"``,
 the curator default) — *not* COCO ``[x, y, w, h]``. Every resolved centre is checked against
-its image bounds, so a wrong format fails loudly instead of mis-placing points off-image.
+its image bounds. The size and bounds checks catch common wrong-format cases, but cannot
+infer the convention when both interpretations happen to be geometrically plausible; the
+canonical MIDOG path therefore fixes ``xyxy`` rather than relying on inference.
 
 Soma's detection path wants **0-based** class ids and a per-sample ``x,y,class`` point CSV,
 so each mitotic-figure box is reduced to its **centre** and written as class ``0`` under
@@ -40,7 +42,9 @@ set) — render the leaderboard as a reference band only.
 ``level0_spacing`` (µm/px of the stored point frame) is emitted per sample when known —
 either from a per-image ``spacing`` in the JSON (MIDOG scanners differ) or from the
 ``level0_spacing_um`` argument — so the detection head can resolve the µm match distance
-(:data:`~soma.detection.midog_f1.MIDOG_MATCH_DISTANCE_UM`) to target-frame pixels.
+(:data:`~soma.detection.midog_f1.MIDOG_MATCH_DISTANCE_UM`) to target-frame pixels. The
+detection benchmark instead passes ``force_level0_spacing_um=0.25`` to express its explicit
+single-nominal-spacing approximation while retaining every ROI in its native pixel grid.
 """
 
 from __future__ import annotations
@@ -67,8 +71,8 @@ MIDOG_MITOTIC_CATEGORY_ID = 1
 # ``bbox_format`` -> centres land ~2x out, thousands of px past the edge; or a small-image
 # xyxy-as-xywh read -> tens of px out). MIDOG 2022's genuine annotations sit at most ~2 px
 # past an edge (a single edge mitosis in the labeled set), so an 8 px tolerance clamps that
-# real sub-pixel overhang while still catching every misplacement. Beyond it the curator
-# raises rather than silently mis-placing points the median-side guard can miss.
+# real sub-pixel overhang while still catching gross misplacements. Beyond it the curator
+# raises rather than silently accepting points the median-side guard can miss.
 _MAX_CENTER_OVERSHOOT_PX = 8.0
 
 # Default local held-out split fractions (patient/domain-stratified). Train = the rest.
@@ -107,7 +111,7 @@ def _resolve_mitotic_category_id(categories: list[dict]) -> int:
 def _validate_bbox_sizes(
     annotations: list[dict], mitotic_id: int, bbox_format: str, *, max_median_side: float = 400.0
 ) -> None:
-    """Guard against a wrong ``bbox_format`` silently mis-placing every point.
+    """Guard against common wrong-``bbox_format`` failures and implausible boxes.
 
     MIDOG annotates each mitosis with a fixed ~50 px box encoded as **corner**
     coordinates ``[x1, y1, x2, y2]``. Reading those as COCO ``[x, y, w, h]`` makes the
@@ -197,6 +201,7 @@ def curate_midog_detection(
     *,
     annotations_json: str | Path | None = None,
     level0_spacing_um: float | None = None,
+    force_level0_spacing_um: float | None = None,
     bbox_format: str = "xyxy",
     test_fraction: float = DEFAULT_TEST_FRACTION,
     tune_fraction: float = DEFAULT_TUNE_FRACTION,
@@ -209,21 +214,29 @@ def curate_midog_detection(
             ``points/<sample_id>.csv`` files, and ``summary.json`` are written.
         annotations_json: Path to the COCO annotations file (default
             ``raw_root/MIDOG2022_training.json``).
-        level0_spacing_um: Optional µm/px of the point frame, stamped per sample so the
-            detection head resolves the match distance; a per-image ``spacing`` in the JSON
-            overrides it (MIDOG scanners differ). When neither is given, no
-            ``level0_spacing`` column is emitted (wiring it is a run-time step).
+        level0_spacing_um: Optional fallback µm/px of the point frame; a per-image
+            ``spacing`` in the JSON overrides it. When neither spacing argument is given,
+            no ``level0_spacing`` column is emitted.
+        force_level0_spacing_um: Optional nominal µm/px applied to every image, overriding
+            per-image JSON metadata. The detection benchmark uses ``0.25`` here because it
+            deliberately evaluates MIDOG in its native pixel grid under one nominal frame.
         bbox_format: Box convention in the JSON. MIDOG 2022 encodes each mitosis as a fixed
             ~50 px **corner** box ``[x1, y1, x2, y2]`` (``"xyxy"``, the default); pass
-            ``"xywh"`` only for a genuine COCO ``[x, y, w, h]`` export. A wrong value is
-            caught by :func:`_validate_bbox_sizes` (implausible box side) and by the
-            per-centre in-image-bounds check below, not silently mis-placed.
+            ``"xywh"`` only for a genuine COCO ``[x, y, w, h]`` export. The size and
+            per-centre bounds guards catch common wrong values, but no geometric check can
+            distinguish every plausible input; the canonical MIDOG benchmark keeps the
+            default ``"xyxy"``.
         test_fraction / tune_fraction: Local held-out split fractions per domain.
 
     Returns:
         A :class:`~soma.curation.manifest.CuratedManifest` for the generated files.
     """
     raw_root = Path(raw_root)
+    if level0_spacing_um is not None and force_level0_spacing_um is not None:
+        raise ValueError(
+            "level0_spacing_um is a per-image fallback while force_level0_spacing_um is an "
+            "override; pass only one."
+        )
     images_root = raw_root / "images"
     ann_path = Path(annotations_json) if annotations_json is not None else raw_root / _DEFAULT_ANNOTATIONS_NAME
     if not images_root.is_dir():
@@ -302,7 +315,11 @@ def curate_midog_detection(
         scanner = img.get("scanner")
         patient_id = str(img.get("patient_id", sample_id))
         domain = str(tumor_type or scanner or "unknown")
-        spacing = img.get("spacing", level0_spacing_um)
+        spacing = (
+            force_level0_spacing_um
+            if force_level0_spacing_um is not None
+            else img.get("spacing", level0_spacing_um)
+        )
 
         centers = sorted(mitoses_by_image.get(int(img["id"]), []))
         out_csv = points_dir / f"{sample_id}.csv"
@@ -362,6 +379,7 @@ def curate_midog_detection(
         "num_empty": num_empty,
         "domains": dict(per_domain_samples),
         "level0_spacing_um": level0_spacing_um,
+        "forced_level0_spacing_um": force_level0_spacing_um,
         "bbox_format": bbox_format,
         "split_fractions": {
             "test": test_fraction,

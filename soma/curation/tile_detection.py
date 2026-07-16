@@ -37,6 +37,11 @@ be **uniform** across ROIs (a heterogeneous flat-image manifest can't share one 
 carries that single value onto every tile; ``target_spacing`` optionally asserts it equals an
 expected value (``0.25`` for MIDOG).
 
+MIDOG deliberately uses one **nominal** 0.25 µm/px frame for all native-resolution ROIs
+(scanner deviations are treated as an accepted approximation). That policy is applied by
+its benchmark curator before this generic tiler runs; the important registration invariant
+here is that the nominal point-frame value and run value remain equal.
+
 **Stitching hooks.** Each tile row carries ``source_wsi`` (the parent ROI ``sample_id``),
 ``tile_x`` and ``tile_y`` (the window origin in ROI pixels) — the columns
 :class:`~soma.dataset.DetectionManifest` already reserves for WSI stitching — so the
@@ -74,6 +79,10 @@ def cover_origins(extent: int, size: int, stride: int) -> list[int]:
         raise ValueError(f"ROI extent {extent} smaller than tile size {size}")
     if stride < 1:
         raise ValueError(f"stride must be >= 1, got {stride}")
+    if stride > size:
+        raise ValueError(
+            f"stride must be <= tile size to guarantee coverage, got {stride} > {size}"
+        )
     starts = list(range(0, extent - size + 1, stride))
     if starts[-1] + size < extent:
         starts.append(extent - size)
@@ -166,11 +175,23 @@ def tile_detection_manifest(
     uniform_spacing = _resolve_uniform_spacing(roi_df, target_spacing)
 
     split_df = pd.read_csv(curated_dir / "splits.csv")
-    split_of = {str(r["sample_id"]): (str(r["split"]), int(r["fold"])) for _, r in split_df.iterrows()}
+    for col in ("sample_id", "split", "fold"):
+        if col not in split_df.columns:
+            raise ValueError(f"curated splits.csv missing required column {col!r}")
+    duplicate_split = split_df.duplicated(subset=["sample_id", "fold"], keep=False)
+    if duplicate_split.any():
+        rows = split_df.loc[duplicate_split, ["sample_id", "split", "fold"]]
+        raise ValueError(
+            "splits.csv has duplicate sample_id/fold assignment(s): "
+            f"{rows.head(5).to_dict(orient='records')}"
+        )
+    splits_of: dict[str, list[tuple[str, int]]] = {}
+    for _, r in split_df.iterrows():
+        splits_of.setdefault(str(r["sample_id"]), []).append((str(r["split"]), int(r["fold"])))
     # F4: require exact, unique sample-id coverage between dataset.csv and splits.csv. A
     # missing split row must NOT silently default a held-out ROI into training.
     roi_ids = [str(s) for s in roi_df["sample_id"]]
-    roi_id_set, split_id_set = set(roi_ids), set(split_of)
+    roi_id_set, split_id_set = set(roi_ids), set(splits_of)
     if len(roi_ids) != len(roi_id_set):
         dupes = sorted({s for s in roi_ids if roi_ids.count(s) > 1})
         raise ValueError(f"dataset.csv has duplicate sample_id(s): {dupes[:5]}")
@@ -263,9 +284,9 @@ def tile_detection_manifest(
                     row[c] = roi[c]
                 tile_rows.append(row)
 
-                split, fold = split_of[roi_id]
-                split_rows.append({"sample_id": tile_id, "split": split, "fold": fold})
-                per_split_tiles[split] += 1
+                for split, fold in splits_of[roi_id]:
+                    split_rows.append({"sample_id": tile_id, "split": split, "fold": fold})
+                    per_split_tiles[split] += 1
 
             # F3b: every (in-bounds) source point must land in ≥1 tile. cover_origins covers
             # [0, extent) with no gap, so a point that reaches no tile is a coverage bug.

@@ -446,6 +446,31 @@ def test_head_level0_spacing_defaults_to_run_spacing(tmp_path):
     assert head.resolve_spacings(record_override) == (0.4, 0.2)
 
 
+def test_head_rejects_tiled_flat_image_spacing_mismatch(tmp_path):
+    from soma.dataset import SampleRecord
+
+    pts = tmp_path / "points.csv"
+    pts.write_text("x,y,class\n10,10,0\n")
+    record = SampleRecord(
+        sample_id="roi_t0",
+        image_path=tmp_path / "tile.png",
+        label=None,
+        points_path=pts,
+        metadata={
+            "source_wsi": "roi",
+            "tile_x": 0,
+            "tile_y": 0,
+            "roi_width": 32,
+            "roi_height": 32,
+            "level0_spacing": 0.23,
+        },
+    )
+    head = _make_head(run_spacing=0.25)
+
+    with pytest.raises(ValueError, match="flat detection tile.*level0_spacing"):
+        head.resolve_spacings(record)
+
+
 def test_head_eval_roundtrip_perfect_on_gt_heatmap():
     """Feeding the GT heatmap as the prediction yields perfect F1."""
     head = _make_head(score_threshold=0.5, metrics=["mean_f1"])

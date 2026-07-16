@@ -411,17 +411,22 @@ def score_cell(
     Loads the trained decoder + the cached dense grids, decodes per-image points at the
     tune-frozen per-class thresholds, records each predicted point's matched/unmatched flag,
     then computes the dataset's native metric off those points. Writes ``predictions.json``
-    (the per-sample cache) and ``metrics.json`` (``test`` + ``tune`` native-metric blocks).
-    This is GPU/data-bound and not exercised in CI; the pure re-aggregation it feeds is.
+    (the per-sample cache) and ``metrics.json`` (native-metric blocks, the score threshold,
+    and both selection frames). This is GPU/data-bound and not exercised in CI; the pure
+    re-aggregation it feeds is.
     """
     from soma.benchmarks.detection_benchmark import score_dataset_points, write_cell_predictions
 
     directory = cell_dir(out_root, dataset, encoder, replicate)
     fold_index = replicate if axis == "folds" else 0
-    tune_preds, test_preds = _decode_cell_points(dataset, replicate, directory, fold_index=fold_index)
+    tune_preds, test_preds, score_thresholds = _decode_cell_points(
+        dataset, replicate, directory, fold_index=fold_index
+    )
     spec = dataset_spec(dataset)
     test_metrics = score_dataset_points(dataset, test_preds.samples)
     tune_metrics = score_dataset_points(dataset, tune_preds.samples) if tune_preds.samples else {}
+    selection_frame = "stitched_roi" if spec.stitch_to_roi else "sample_native"
+    checkpoint_frame = "tile_proxy" if spec.stitch_to_roi else "sample_native"
     write_cell_predictions(directory / "predictions.json", test_preds)
     (directory / "metrics.json").write_text(
         json.dumps(
@@ -431,6 +436,9 @@ def score_cell(
                 "replicate_axis": axis,
                 "test_source": spec.test_source,
                 "metric_name": spec.metric_name,
+                "score_threshold_per_class": score_thresholds,
+                "score_threshold_selection_frame": selection_frame,
+                "checkpoint_selection_frame": checkpoint_frame,
             },
             indent=2,
         ),
@@ -521,9 +529,11 @@ def _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest) -> lis
     them to per-ROI via the same stitch the scorer uses, and sweep there, so the frozen knob
     matches the reported objective.
 
-    Checkpoint / early-stopping still monitor the per-tile tune metric *during* training —
-    a negligible, highly-correlated proxy (the tune curve's peak epoch is flat); only this
-    final operating-point selection is made per-ROI.
+    Checkpoint and early-stopping still monitor per-tile tune F1 during training. Because
+    overlap copies weight some ROI objects more than once, that monitor is only a proxy for
+    stitched per-ROI F1 and can select a different epoch. ``metrics.json`` records this as
+    ``checkpoint_selection_frame='tile_proxy'``; final operating-point selection is stitched
+    per ROI.
     """
     from soma.benchmarks.detection_benchmark import _per_image_arrays
     from soma.detection.matching import sweep_score_thresholds
@@ -543,7 +553,7 @@ def _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest) -> lis
 
 def _decode_cell_points(
     dataset: str, replicate: int, run_dir: Path, *, fold_index: int = 0
-) -> tuple[CellPredictions, CellPredictions]:
+) -> tuple[CellPredictions, CellPredictions, list[float]]:
     """Reload a trained cell and decode its tune + test per-sample points (live GPU path).
 
     Rebuilds the model + dense grids + loaders from the run's saved config (the reload is
@@ -631,7 +641,8 @@ def _decode_cell_points(
     )
     # Freeze per-class detection thresholds on the stitched per-ROI tune metric (not the
     # per-tile surrogate), then decode both splits at those knobs.
-    head.score_threshold = _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest)
+    score_thresholds = _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest)
+    head.score_threshold = score_thresholds
     tune_samples = _decode_split_points(model, tune_loader, head, device, manifest)
     test_samples: list = []
     for loader in test_loaders.values():
@@ -641,7 +652,7 @@ def _decode_cell_points(
         encoder=cfg.encoder.name, dataset=dataset, replicate=replicate,
         metric_name=spec.metric_name, spacing_um=spec.spacing_um, samples=samples,
     )
-    return make(tune_samples), make(test_samples)
+    return make(tune_samples), make(test_samples), score_thresholds
 
 
 def _resolve_roster(names: Sequence[str] | None) -> tuple[RosterEntry, ...]:

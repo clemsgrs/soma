@@ -23,6 +23,11 @@ def test_cover_origins_edge_flush():
         cover_origins(100, 128, 96)  # ROI smaller than a tile
 
 
+def test_cover_origins_rejects_stride_larger_than_tile():
+    with pytest.raises(ValueError, match="stride must be <= tile size"):
+        cover_origins(300, 100, 150)
+
+
 def _write_curated(root: Path, *, points: list[tuple[float, float, int]], size=(300, 250)) -> Path:
     """A one-ROI curated detection manifest with a synthetic image + point CSV."""
     curated = root / "curated"
@@ -155,6 +160,19 @@ def test_duplicate_sample_id_raises(tmp_path):
     ds = pd.read_csv(curated / "dataset.csv")
     pd.concat([ds, ds]).to_csv(curated / "dataset.csv", index=False)  # roi_A twice
     with pytest.raises(ValueError, match="duplicate sample_id"):
+        tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+
+
+def test_duplicate_split_sample_id_raises(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "points": [(10.0, 10.0, 0)]}],
+        [
+            {"sample_id": "roi_A", "split": "train", "fold": 0},
+            {"sample_id": "roi_A", "split": "test", "fold": 0},
+        ],
+    )
+    with pytest.raises(ValueError, match="splits.csv has duplicate sample_id"):
         tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
 
 

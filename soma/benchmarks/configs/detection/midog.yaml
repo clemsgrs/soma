@@ -5,12 +5,12 @@
 # heatmap, scored with the MIDOG-native F1 (one-to-one/Hungarian match within 7.5 µm,
 # ~one nucleus). Only ``encoder.name`` varies across the roster.
 #
-# Spacing note: the MIDOG 2022 bundle ships NO per-image µm/px (neither the Zenodo COCO nor
-# MIDOG++ carries it), so every ROI is treated at a uniform 0.25 µm/px. The true per-scanner
-# resolution deviates from that by at most ~10%, which is absorbed into the pixel-space match
-# tolerance; it is identical across encoders (so it does not affect the ranking) and these
-# numbers are already declared non-leaderboard-comparable (local held-out split). The tiles
-# are flat PNGs read at NATIVE resolution (spacing is a label, not a resample), so
+# Spacing note: every ROI stays in its native pixel grid and is evaluated in one nominal
+# 0.25 µm/px frame. This intentionally approximates scanner-level spacing variation (the
+# protocol would accept native spacings within 10% of 0.25 if multi-resolution reads were
+# available). It is identical across encoders, and these numbers are already declared
+# non-leaderboard-comparable (local held-out split). The tiles are flat PNGs read at NATIVE
+# resolution (spacing is a label, not a resample), so
 # level0_spacing MUST equal requested_spacing_um — the tiler enforces a uniform level0_spacing
 # and `--target-spacing 0.25` pins it. The 0.10 reader tolerance only relaxes the hard
 # spacing-mismatch check for the (unused, flat-read) tolerance path.
@@ -59,7 +59,7 @@ task:
     sigma: 2.5                # target Gaussian σ in µm (≈ δ/3)
     matching: hungarian       # MIDOG-native one-to-one matching
     foreground_weight: 10.0
-    level0_spacing: 0.25      # native spacing of this manifest
+    level0_spacing: 0.25      # nominal spacing of this native-pixel manifest
 
 evaluation:
   metrics: [mean_f1, f1_per_class, precision, recall]

@@ -22,6 +22,7 @@ target-frame pixels (the pipeline converts from µm/px via the run spacing).
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -148,6 +149,18 @@ class DetectionHead(TaskHead):
         else:
             level0_spacing = 1.0
         run_spacing = self.run_spacing if self.run_spacing is not None else level0_spacing
+        if (
+            record.metadata
+            and {"source_wsi", "tile_x", "tile_y", "roi_width", "roi_height"}.issubset(
+                record.metadata
+            )
+            and not math.isclose(level0_spacing, run_spacing, rel_tol=0.0, abs_tol=1e-6)
+        ):
+            raise ValueError(
+                f"flat detection tile {record.sample_id!r} has level0_spacing "
+                f"{level0_spacing} but the run uses {run_spacing}; flat tile pixels are read "
+                "at native resolution, so differing values would misregister point labels."
+            )
         return level0_spacing, run_spacing
 
     def _sample_target_points(self, record: "SampleRecord") -> tuple[np.ndarray, np.ndarray]:

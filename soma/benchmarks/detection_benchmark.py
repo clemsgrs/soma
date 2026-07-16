@@ -9,7 +9,10 @@ It generalizes ``examples/ocelot/campaign.py``'s resumable driver from one datas
 three-dataset sweep, but replaces the tune-select -> test-confirm flow with a **full-ranking
 protocol**: for every ``(encoder, dataset, replicate)`` the decoder trains on ``train``,
 every per-encoder knob (detection threshold, matching radius, val-best checkpoint) is frozen
-on ``tune``, then the cell is scored on ``test`` with those frozen knobs. There is **no
+on ``tune``, then the cell is scored on ``test`` with those frozen knobs. For tiled datasets,
+the final detection threshold is selected on stitched ROIs; checkpoint selection remains a
+per-tile tune proxy which can choose a different epoch because overlap copies reweight some
+objects, and this approximation is disclosed in each cell's metrics. There is **no
 winner pick** — all encoders are ranked by their mean test metric, and the tune ranks are
 reported alongside as a stability signal.
 
@@ -147,7 +150,8 @@ class DatasetSpec:
     (Hungarian one-to-one for MIDOG, greedy-by-confidence for OCELOT/MONKEY). ``tolerance``
     is the reader's spacing tolerance surfaced in the committed config (MIDOG relaxes it to
     0.10 for its mixed scanners). ``test_source`` records whether the reported test split is
-    a local held-out carve or the official test set.
+    a local held-out carve or the official test set. ``stitch_to_roi`` marks datasets whose
+    fixed tiles are folded back to parent ROIs before operating-point selection and scoring.
     """
 
     name: str
@@ -159,6 +163,7 @@ class DatasetSpec:
     tolerance: float | None
     test_source: str
     config_file: str
+    stitch_to_roi: bool = False
 
 
 DATASETS: dict[str, DatasetSpec] = {
@@ -183,6 +188,7 @@ DATASETS: dict[str, DatasetSpec] = {
         tolerance=0.10,
         test_source="local_holdout",
         config_file="midog.yaml",
+        stitch_to_roi=True,
     ),
     "monkey": DatasetSpec(
         name="monkey",
@@ -194,6 +200,7 @@ DATASETS: dict[str, DatasetSpec] = {
         tolerance=None,
         test_source="local_holdout",
         config_file="monkey.yaml",
+        stitch_to_roi=True,
     ),
 }
 
@@ -424,9 +431,27 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
         md = records[s.sample_id].metadata
         roi = str(md["source_wsi"])
         x0, y0 = float(md["tile_x"]), float(md["tile_y"])
-        g = groups.setdefault(roi, {"pxy": [], "psc": [], "pcl": [], "gt": {}, "meta": md})
+        roi_w, roi_h = md.get("roi_width"), md.get("roi_height")
+        if (roi_w is None) != (roi_h is None):
+            raise ValueError(
+                f"ROI {roi!r} must provide both roi_width and roi_height, or neither."
+            )
+        dims = None if roi_w is None else (int(roi_w), int(roi_h))
+        if dims is not None and (dims[0] <= 0 or dims[1] <= 0):
+            raise ValueError(f"ROI {roi!r} has invalid dimensions {dims}.")
+        g = groups.setdefault(
+            roi, {"pxy": [], "psc": [], "pcl": [], "gt": {}, "meta": md, "dims": dims}
+        )
+        if g["dims"] != dims:
+            raise ValueError(
+                f"ROI {roi!r} has inconsistent ROI dimensions across tiles: "
+                f"{g['dims']} vs {dims}."
+            )
         for (x, y), sc, cl in zip(s.pred_xy, s.pred_score, s.pred_class):
-            g["pxy"].append((x + x0, y + y0))
+            lifted = (x + x0, y + y0)
+            if dims is not None and not (0 <= lifted[0] < dims[0] and 0 <= lifted[1] < dims[1]):
+                continue
+            g["pxy"].append(lifted)
             g["psc"].append(float(sc))
             g["pcl"].append(int(cl))
         for (x, y), cl in zip(s.gt_xy, s.gt_class):
@@ -975,15 +1000,34 @@ class DetectionBenchmark:
     def curate(
         self, raw_root: str | Path, out_dir: str | Path, *, dataset: str
     ) -> CuratedManifest:
-        """Curate one of the three raw datasets into a soma detection Manifest (delegates)."""
+        """Curate one raw dataset into the run-ready soma detection Manifest."""
         if dataset == "ocelot":
             from soma.curation.ocelot import curate_ocelot_detection
 
             return curate_ocelot_detection(raw_root, out_dir)
         if dataset == "midog":
             from soma.curation.midog import curate_midog_detection
+            from soma.curation.tile_detection import tile_detection_manifest
 
-            return curate_midog_detection(raw_root, out_dir)
+            out = Path(out_dir)
+            nominal_spacing = dataset_spec("midog").spacing_um
+            roi_manifest = curate_midog_detection(
+                raw_root,
+                out / "roi",
+                force_level0_spacing_um=nominal_spacing,
+            )
+            tile_detection_manifest(
+                roi_manifest.dataset_csv.parent,
+                out,
+                tile_size=1024,
+                overlap=128,
+                target_spacing=nominal_spacing,
+            )
+            return CuratedManifest(
+                dataset_csv=out / "dataset.csv",
+                splits_csv=out / "splits.csv",
+                summary_json=out / "summary.json",
+            )
         if dataset == "monkey":
             from soma.curation.monkey import curate_monkey_detection
 
