@@ -328,7 +328,11 @@ def _eva_results_section() -> str:
         "     - EVA reference",
     ]
     relative_differences = []
-    for row in rows:
+    # Order the table by (dataset, encoder) so it never depends on the ledger's insertion
+    # order — otherwise a row recorded encoder-last (e.g. gleason_arvaniti) renders out of
+    # step with every other dataset's uni2-then-virchow2 layout.
+    ordered = sorted(rows, key=lambda r: (r.key.get("dataset", ""), r.key.get("encoder", "")))
+    for row in ordered:
         measured = f"{row.measured:.3f}" + (
             f" ± {row.std:.3f}" if row.std is not None else ""
         )
@@ -549,7 +553,7 @@ def build_eva_benchmark_rst() -> str:
         "downloaded dataset directory as ``--raw-root``. ``soma reproduce`` runs the\n"
         "built-in EVA curator automatically, writes the manifests under\n"
         "``<raw-root>/curated``, extracts features, trains the linear probe, and reports\n"
-        "balanced accuracy. No separate curation command is required. For example::\n\n"
+        "balanced accuracy. For example::\n\n"
         "    soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach\n\n"
         "Or run EVA's 6 datasets in one go::\n\n"
         "    soma reproduce eva --encoder virchow2 --raw-root /path/to/eva",
@@ -687,9 +691,8 @@ def build_hest_benchmark_rst() -> str:
             "Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the\n"
             "downloaded task directory as ``--raw-root``. ``soma reproduce`` runs the\n"
             "built-in HEST curator automatically, writes the manifests under\n"
-            "``<raw-root>/curated``, preserves HEST's fold assignments, extracts features,\n"
-            "runs the Ridge probe, and reports the mean Pearson score. No separate curation\n"
-            "command is required. Some model weights require ``hf auth login``. For example::\n\n"
+            "``<raw-root>/curated``, preserving HEST's fold assignments. It then extracts features,\n"
+            "runs the Ridge probe, and reports the mean Pearson score. For example::\n\n"
             "    soma reproduce hest/IDC --encoder virchow2 "
             "--raw-root /path/to/hest-bench/IDC\n\n"
             "Or run HEST's 9 datasets in one go::\n\n"

@@ -247,7 +247,6 @@ def test_eva_benchmark_page_documents_acquisition_then_automatic_curation() -> N
     assert "curl -L" in generated
     assert "soma does not download benchmark data" in generated
     assert "soma reproduce`` runs the built-in EVA curator automatically" in normalized
-    assert "No separate curation command is required" in normalized
     for expected_raw_input in (
         "BreaKHis_v1/histology_slides/",
         "Gleason_masks_train.tar.gz",
@@ -274,7 +273,6 @@ def test_hest_benchmark_page_documents_reader_facing_data_preparation() -> None:
     normalized = " ".join(generated.split())
 
     assert "pip install 'soma-pathology[hest]'" in generated
-    assert "hf auth login" in generated
     assert "hf download MahmoodLab/hest-bench" in generated
     assert "--include 'IDC/*'" in generated
     assert "--exclude 'fm_v1/*'" in generated
@@ -282,8 +280,7 @@ def test_hest_benchmark_page_documents_reader_facing_data_preparation() -> None:
     assert "Omit ``--include`` to download every registered task" in normalized
     assert "The ``hf`` CLI downloads the data" in normalized
     assert "soma reproduce`` runs the built-in HEST curator automatically" in normalized
-    assert "preserves HEST's fold assignments" in normalized
-    assert "No separate curation command is required" in normalized
+    assert "HEST's fold assignments" in normalized
     assert "Adding a HEST task" not in generated
     assert "curate_hest" not in generated
     assert "HEST_TASKS" not in generated
