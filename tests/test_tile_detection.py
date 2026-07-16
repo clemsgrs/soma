@@ -106,3 +106,128 @@ def _read_local(points_path) -> list[tuple[float, float, int]]:
         reader = csv.reader(fh)
         next(reader, None)
         return [(float(r[0]), float(r[1]), int(r[2])) for r in reader if r]
+
+
+def _write_manifest(root: Path, rois: list[dict], splits: list[dict], *, size=(300, 250)) -> Path:
+    """Multi-ROI curated manifest. Each ROI dict: sample_id + optional level0_spacing + points."""
+    curated = root / "curated"
+    (curated / "points").mkdir(parents=True, exist_ok=True)
+    ds_rows = []
+    for roi in rois:
+        sid = roi["sample_id"]
+        img = curated / f"{sid}.png"
+        Image.new("RGB", roi.get("size", size), (127, 127, 127)).save(img)
+        pts = curated / "points" / f"{sid}.csv"
+        with pts.open("w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["x", "y", "class"])
+            for x, y, c in roi.get("points", []):
+                w.writerow([x, y, c])
+        row = {"sample_id": sid, "image_path": str(img), "points_path": str(pts), "domain": "d1"}
+        if "level0_spacing" in roi:
+            row["level0_spacing"] = roi["level0_spacing"]
+        ds_rows.append(row)
+    pd.DataFrame(ds_rows).to_csv(curated / "dataset.csv", index=False)
+    pd.DataFrame(splits).to_csv(curated / "splits.csv", index=False)
+    return curated
+
+
+# --- F4: exact split coverage --------------------------------------------------------
+
+
+def test_missing_split_row_raises(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "points": [(10.0, 10.0, 0)]},
+         {"sample_id": "roi_B", "points": [(10.0, 10.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "train", "fold": 0}],  # roi_B has no split row
+    )
+    with pytest.raises(ValueError, match="missing a split row"):
+        tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+
+
+def test_duplicate_sample_id_raises(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "points": [(10.0, 10.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "train", "fold": 0}],
+    )
+    ds = pd.read_csv(curated / "dataset.csv")
+    pd.concat([ds, ds]).to_csv(curated / "dataset.csv", index=False)  # roi_A twice
+    with pytest.raises(ValueError, match="duplicate sample_id"):
+        tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+
+
+# --- F2: uniform spacing -------------------------------------------------------------
+
+
+def test_heterogeneous_spacing_raises(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "level0_spacing": 0.25, "points": [(10.0, 10.0, 0)]},
+         {"sample_id": "roi_B", "level0_spacing": 0.50, "points": [(10.0, 10.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "train", "fold": 0},
+         {"sample_id": "roi_B", "split": "train", "fold": 0}],
+    )
+    with pytest.raises(ValueError, match="uniform level0_spacing"):
+        tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+
+
+def test_target_spacing_mismatch_raises_and_match_recorded(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "level0_spacing": 0.25, "points": [(10.0, 10.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "train", "fold": 0}],
+    )
+    with pytest.raises(ValueError, match="target-spacing"):
+        tile_detection_manifest(curated, tmp_path / "bad", tile_size=128, overlap=32, target_spacing=0.5)
+    summary = tile_detection_manifest(
+        curated, tmp_path / "ok", tile_size=128, overlap=32, target_spacing=0.25
+    )
+    assert summary["level0_spacing"] == 0.25
+
+
+# --- #5 padding + F3b out-of-bounds --------------------------------------------------
+
+
+def test_roi_smaller_than_tile_is_padded(tmp_path):
+    # 300x250 ROI, tile 512 -> padded to one 512² tile; original dims kept, point preserved.
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "size": (300, 250), "points": [(120.0, 90.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "test", "fold": 0}],
+    )
+    out = tmp_path / "tiled"
+    summary = tile_detection_manifest(curated, out, tile_size=512, overlap=128)
+    assert summary["num_tiles"] == 1
+    ds = pd.read_csv(out / "dataset.csv")
+    assert Image.open(ds.iloc[0]["image_path"]).size == (512, 512)
+    assert int(ds.iloc[0]["roi_width"]) == 300 and int(ds.iloc[0]["roi_height"]) == 250
+    assert _read_local(ds.iloc[0]["points_path"]) == [(120.0, 90.0, 0)]
+
+
+def test_out_of_bounds_point_dropped_not_written_on_padding(tmp_path):
+    # (400,10) is outside the 300-wide ROI: it must be dropped/counted, never written onto
+    # the padded canvas; the in-bounds point survives.
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "size": (300, 250), "points": [(10.0, 10.0, 0), (400.0, 10.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "test", "fold": 0}],
+    )
+    out = tmp_path / "tiled"
+    summary = tile_detection_manifest(curated, out, tile_size=512, overlap=128)
+    assert summary["dropped_out_of_bounds"] == 1
+    ds = pd.read_csv(out / "dataset.csv")
+    all_local = [p for path in ds["points_path"] for p in _read_local(path)]
+    assert all_local == [(10.0, 10.0, 0)]  # only the in-bounds point, in tile-local coords
+
+
+def test_max_image_pixels_not_disabled_globally(tmp_path):
+    # Importing/using the tiler must not leave PIL's decompression-bomb guard disabled.
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "roi_A", "points": [(10.0, 10.0, 0)]}],
+        [{"sample_id": "roi_A", "split": "train", "fold": 0}],
+    )
+    tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+    assert Image.MAX_IMAGE_PIXELS is not None  # restored, not left at None

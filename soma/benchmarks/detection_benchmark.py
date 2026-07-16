@@ -38,6 +38,7 @@ Design axioms this module enforces *structurally*:
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -360,19 +361,38 @@ def _greedy_point_nms(
     """Per-class greedy NMS over a point list — the same rule as the within-tile peak NMS
     (:func:`soma.detection.peaks.extract_peaks`): keep the highest score first, drop any
     later same-class point within ``min_distance``. Returns the kept row indices (ascending).
+
+    A uniform spatial hash (cell size ``min_distance``) keeps this O(n): a point can only
+    conflict with kept points in its own or an adjacent cell, and kept points within a cell
+    are ≥ ``min_distance`` apart so each cell holds O(1) of them. This matters for the
+    per-ROI threshold sweep, which stitches every tune candidate peak (threshold 0) at once —
+    a naive pairwise loop there is quadratic in tens of thousands of points.
     """
     if xy.shape[0] == 0:
         return np.zeros((0,), dtype=np.int64)
-    md_sq = float(min_distance) ** 2
+    md = float(min_distance)
+    md_sq = md * md
+    inv = 1.0 / md
     kept: list[int] = []
-    kept_by_cls: dict[int, list[tuple[float, float]]] = {}
+    cells: dict[tuple[int, int, int], list[int]] = {}  # (class, cell_x, cell_y) -> kept indices
     for i in np.argsort(-scores, kind="stable"):
         c = int(classes[i])
         x, y = float(xy[i, 0]), float(xy[i, 1])
-        prev = kept_by_cls.setdefault(c, [])
-        if all((x - kx) ** 2 + (y - ky) ** 2 >= md_sq for kx, ky in prev):
+        cx, cy = math.floor(x * inv), math.floor(y * inv)
+        conflict = False
+        for gx in (cx - 1, cx, cx + 1):
+            for gy in (cy - 1, cy, cy + 1):
+                for j in cells.get((c, gx, gy), ()):
+                    if (x - float(xy[j, 0])) ** 2 + (y - float(xy[j, 1])) ** 2 < md_sq:
+                        conflict = True
+                        break
+                if conflict:
+                    break
+            if conflict:
+                break
+        if not conflict:
             kept.append(int(i))
-            prev.append((x, y))
+            cells.setdefault((c, cx, cy), []).append(int(i))
     return np.sort(np.asarray(kept, dtype=np.int64))
 
 
@@ -390,8 +410,14 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
     scorers see per-ROI samples for tiled datasets and per-image samples otherwise.
     """
     records = manifest.samples
-    if not any("source_wsi" in records[s.sample_id].metadata for s in samples):
+    has_origin = [("source_wsi" in records[s.sample_id].metadata) for s in samples]
+    if not any(has_origin):
         return list(samples)
+    if not all(has_origin):
+        raise ValueError(
+            "mixed manifest: some samples carry a source_wsi tile origin and some do not; "
+            "a tiled detection manifest must be uniformly tiled."
+        )
 
     groups: dict[str, dict] = {}
     for s in samples:
@@ -426,6 +452,9 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
             if m.pairs.shape[0]:
                 matched[m.pairs[:, 0]] = True
 
+        # ROI area for the FROC per-mm² axis. head.level0_spacing is the dataset's single
+        # spacing — sound because the tiler enforces a uniform level0_spacing (flat tiles are
+        # read at native resolution; MIDOG's F1 ignores area, MONKEY's FROC uses it).
         roi_w, roi_h = g["meta"].get("roi_width"), g["meta"].get("roi_height")
         area = (
             patch_area_mm2(int(roi_w), int(roi_h), float(head.level0_spacing))

@@ -5,9 +5,15 @@
 # heatmap, scored with the MIDOG-native F1 (one-to-one/Hungarian match within 7.5 µm,
 # ~one nucleus). Only ``encoder.name`` varies across the roster.
 #
-# MIDOG scanners differ in physical resolution, so a slightly looser reader tolerance
-# (0.10) lets each region be read at the task spacing without a hard spacing-mismatch
-# failure.
+# Spacing note: the MIDOG 2022 bundle ships NO per-image µm/px (neither the Zenodo COCO nor
+# MIDOG++ carries it), so every ROI is treated at a uniform 0.25 µm/px. The true per-scanner
+# resolution deviates from that by at most ~10%, which is absorbed into the pixel-space match
+# tolerance; it is identical across encoders (so it does not affect the ranking) and these
+# numbers are already declared non-leaderboard-comparable (local held-out split). The tiles
+# are flat PNGs read at NATIVE resolution (spacing is a label, not a resample), so
+# level0_spacing MUST equal requested_spacing_um — the tiler enforces a uniform level0_spacing
+# and `--target-spacing 0.25` pins it. The 0.10 reader tolerance only relaxes the hard
+# spacing-mismatch check for the (unused, flat-read) tolerance path.
 #
 # MIDOG ships large, variable-size ROIs (soma's dense detection path needs fixed-size
 # tiles), so the manifest the sweep consumes (``curated``) is the TILED one

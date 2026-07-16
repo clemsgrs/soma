@@ -511,6 +511,36 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
     return stitch_tiles_to_rois(samples, manifest, head)
 
 
+def _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest) -> list[float]:
+    """Freeze per-class detection thresholds on the STITCHED per-ROI tune predictions.
+
+    The tune loader yields per-*tile* batches, and tile overlaps double-count both GT and
+    predictions — so sweeping the threshold on them optimizes a per-tile surrogate, not the
+    per-ROI F1 the cell is actually scored by (a threshold that wins on duplicated tiles can
+    lose after stitching). We instead decode every tune candidate peak (threshold 0), fold
+    them to per-ROI via the same stitch the scorer uses, and sweep there, so the frozen knob
+    matches the reported objective.
+
+    Checkpoint / early-stopping still monitor the per-tile tune metric *during* training —
+    a negligible, highly-correlated proxy (the tune curve's peak epoch is flat); only this
+    final operating-point selection is made per-ROI.
+    """
+    from soma.benchmarks.detection_benchmark import _per_image_arrays
+    from soma.detection.matching import sweep_score_thresholds
+
+    saved = head.score_threshold
+    head.score_threshold = 0.0  # keep every candidate peak so the sweep sees the full set
+    try:
+        roi_samples = _decode_split_points(model, tune_loader, head, device, manifest)
+    finally:
+        head.score_threshold = saved
+    pred_xy, pred_score, pred_class, gt_xy, gt_class, _area = _per_image_arrays(roi_samples)
+    return sweep_score_thresholds(
+        pred_xy, pred_class, pred_score, gt_xy, gt_class,
+        num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
+    )
+
+
 def _decode_cell_points(
     dataset: str, replicate: int, run_dir: Path, *, fold_index: int = 0
 ) -> tuple[CellPredictions, CellPredictions]:
@@ -536,11 +566,7 @@ def _decode_cell_points(
     from soma.dense import DenseFeatureStore
     from soma.dense_extraction import DenseTileFeatureExtractor
     from soma.encoders.validation import resolve_preprocessing_config
-    from soma.pipeline import (
-        _make_loaders,
-        _resolve_detection_px,
-        _sweep_detection_thresholds,
-    )
+    from soma.pipeline import _make_loaders, _resolve_detection_px
     from soma.tasks.detection import DetectionHead
     from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
     from soma.training.model import SegmentationModel
@@ -603,8 +629,9 @@ def _decode_cell_points(
         DetectionDataset, collate, train_records, tune_records, test_by_split,
         cfg.training, store, head.extract_targets,
     )
-    # Freeze per-class detection thresholds on tune, then decode both splits at those knobs.
-    head.score_threshold = _sweep_detection_thresholds(model, tune_loader, device, head)
+    # Freeze per-class detection thresholds on the stitched per-ROI tune metric (not the
+    # per-tile surrogate), then decode both splits at those knobs.
+    head.score_threshold = _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest)
     tune_samples = _decode_split_points(model, tune_loader, head, device, manifest)
     test_samples: list = []
     for loader in test_loaders.values():
