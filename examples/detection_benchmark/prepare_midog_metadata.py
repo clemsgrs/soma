@@ -211,7 +211,9 @@ def main(argv=None):
                     help="MIDOG++.json (DeepMicroscopy/MIDOGpp databases/, pinned bd26c81)")
     ap.add_argument("--midogpp-xval-csv", type=Path, required=True,
                     help="datasets_xvalidation.csv (DeepMicroscopy/MIDOGpp, pinned c2726b1)")
-    ap.add_argument("--out", type=Path, required=True, help="enriched COCO JSON to write")
+    ap.add_argument("--out", type=Path, required=True,
+                    help="enriched COCO JSON to write; `soma-benchmark curate midog` reads it "
+                         "as <raw_root>/MIDOG2022_training_enriched.json, so write it there")
     ap.add_argument("--keep-melanoma", action="store_true",
                     help="retain the 51 unlabeled melanoma images (default: drop)")
     ap.add_argument("--spacing", type=float, default=None,
