@@ -109,7 +109,7 @@ def test_midog_benchmark_curate_emits_nominal_tiled_manifest(tmp_path: Path):
     images = raw / "images"
     images.mkdir(parents=True)
     Image.new("RGB", (1920, 1024), (127, 127, 127)).save(images / "001.png")
-    (raw / "MIDOG2022_training.json").write_text(
+    (raw / "MIDOG2022_training_enriched.json").write_text(
         json.dumps(
             {
                 "categories": [{"id": 1, "name": "mitotic figure"}],

@@ -1014,6 +1014,7 @@ class DetectionBenchmark:
             roi_manifest = curate_midog_detection(
                 raw_root,
                 out / "roi",
+                annotations_json=Path(raw_root) / "MIDOG2022_training_enriched.json",
                 force_level0_spacing_um=nominal_spacing,
             )
             tile_detection_manifest(
