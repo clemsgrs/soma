@@ -1,5 +1,12 @@
 # Project Documentation Notes
 
+- 2026-07-20: Added `TrainingConfig.checkpoint_selection` (`best` | `last`). `last`
+  evaluates the final-epoch weights, takes model selection off the tune metric and
+  disables early stopping (it requires `patience: null`), while still computing and
+  logging per-epoch tune metrics as diagnostics. `patience` is now `int | None`, with
+  `None` meaning "no early stopping". The default `best` keeps every existing run —
+  and every `experiment_id` — unchanged: the setting folds into experiment identity
+  only when non-default, though the saved run config always serializes it.
 - 2026-05-31: Added `TrainingConfig.tune_is_test` for benchmark protocols that
   use the single test split as the checkpoint-selection split. This keeps
   train/test-only split files explicit while warning that tune and test share

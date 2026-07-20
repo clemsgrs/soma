@@ -742,6 +742,16 @@ class TrainingConfig:
     may provide either a tune split or a test split (not both), and that split
     is used for both checkpoint selection and test reporting. ``allow_missing_tune``
     enables a deliberate train-as-tune fallback when a fold has no tune split.
+
+    ``checkpoint_selection`` governs *which* epoch's weights are evaluated. ``best``
+    (default) is the historical behavior: select by the monitored tune metric, with
+    early stopping. ``last`` evaluates the **final-epoch** weights — model selection
+    comes off the tune metric entirely and early stopping is disabled (so ``patience``
+    must be ``None``), while per-epoch tune metrics are still computed and logged as
+    diagnostics. It is the protocol for benchmarks that predeclare a fixed epoch budget
+    and forbid per-encoder tuning. It is orthogonal to ``allow_missing_tune``: one
+    says which checkpoint is evaluated, the other where the diagnostic tune split
+    comes from, and neither implies the other.
     """
 
     seed: int = 0
@@ -750,7 +760,9 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     optimizer: str = "adam"
     scheduler: str = "cosine"
-    patience: int = 10
+    # Early-stopping patience in epochs, or ``None`` to disable early stopping and always
+    # train the full ``epochs`` budget. ``checkpoint_selection='last'`` *requires* ``None``.
+    patience: int | None = 10
     # Per-fold trainer selector within the shared training entry. ``"gradient"`` is the
     # default torch-based head/decoder loop; ``"ridge_pca_probe"`` selects the closed-form
     # Ridge+PCA probe (the HEST spatial_expression trainer — no gradient descent, no tune
@@ -762,6 +774,7 @@ class TrainingConfig:
     gradient_accumulation: int = 1
     tune_is_test: bool = False
     allow_missing_tune: bool = False
+    checkpoint_selection: str = "best"
     num_workers: int = 0
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -780,18 +793,30 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.batch_size must be >= 1")
         if self.gradient_accumulation < 1:
             raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
-        if self.patience < 1:
-            raise ValueError("TrainingConfig.patience must be >= 1")
+        if self.patience is not None and self.patience < 1:
+            raise ValueError("TrainingConfig.patience must be >= 1 (or null to disable)")
         if not self.monitor:
             raise ValueError("TrainingConfig.monitor must be non-empty")
         if self.monitor_mode not in {"min", "max"}:
             raise ValueError("TrainingConfig.monitor_mode must be 'min' or 'max'")
+        if self.checkpoint_selection not in {"best", "last"}:
+            raise ValueError(
+                "TrainingConfig.checkpoint_selection must be 'best' (select the checkpoint "
+                "by the monitored tune metric, with early stopping) or 'last' (evaluate the "
+                f"final-epoch weights), got {self.checkpoint_selection!r}."
+            )
         if self.num_workers < 0:
             raise ValueError("TrainingConfig.num_workers must be >= 0")
         if self.method not in {"gradient", "ridge_pca_probe"}:
             raise ValueError(
                 "TrainingConfig.method must be 'gradient' (torch head/decoder loop) or "
                 f"'ridge_pca_probe' (closed-form probe), got {self.method!r}."
+            )
+        if self.checkpoint_selection == "last" and self.patience is not None:
+            raise ValueError(
+                "TrainingConfig.checkpoint_selection='last' evaluates the final-epoch "
+                "weights and never early-stops, so a finite TrainingConfig.patience "
+                f"({self.patience}) would be silently ignored. Set patience: null."
             )
 
 

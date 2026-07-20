@@ -121,6 +121,7 @@ def test_training_config_defaults():
     assert cfg.batch_size == 1
     assert cfg.gradient_accumulation == 1
     assert cfg.tune_is_test is False
+    assert cfg.checkpoint_selection == "best"
     # DataLoader knobs (Phase 2.2). num_workers defaults to 0 so the suite stays
     # fast on test fixtures; users should raise it for real WSI runs.
     assert cfg.num_workers == 0
@@ -138,11 +139,62 @@ def test_training_config_defaults():
         ({"monitor": ""}, "monitor"),
         ({"monitor_mode": "largest"}, "monitor_mode"),
         ({"num_workers": -1}, "num_workers"),
+        ({"checkpoint_selection": "final"}, "checkpoint_selection"),
     ],
 )
 def test_training_config_rejects_non_positive_counts(kwargs, message):
     with pytest.raises(ValueError, match=message):
         TrainingConfig(**kwargs)
+
+
+def test_checkpoint_selection_last_rejects_finite_patience():
+    """`last` disables early stopping, so a finite patience is a silent lie."""
+    with pytest.raises(ValueError, match="patience"):
+        TrainingConfig(checkpoint_selection="last", patience=10)
+
+
+def test_checkpoint_selection_last_accepts_monitor_as_validated_noop():
+    """Under `last` the monitor still governs the logged diagnostics, so it is
+    validated as usual — it simply no longer selects the checkpoint."""
+    cfg = TrainingConfig(
+        checkpoint_selection="last", patience=None, monitor="auroc", monitor_mode="max"
+    )
+
+    assert cfg.monitor == "auroc"
+    assert cfg.monitor_mode == "max"
+    with pytest.raises(ValueError, match="monitor_mode"):
+        TrainingConfig(checkpoint_selection="last", patience=None, monitor_mode="largest")
+
+
+def test_checkpoint_selection_survives_config_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        training=TrainingConfig(checkpoint_selection="last", patience=None)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["training"]["checkpoint_selection"] == "last"
+    assert saved["training"]["patience"] is None
+    assert loaded.training.checkpoint_selection == "last"
+    assert loaded.training.patience is None
+
+
+def test_checkpoint_selection_composes_with_allow_missing_tune():
+    """Orthogonal knobs: which checkpoint is evaluated vs where tune comes from."""
+    cfg = TrainingConfig(
+        checkpoint_selection="last", patience=None, allow_missing_tune=True
+    )
+
+    assert cfg.checkpoint_selection == "last"
+    assert cfg.allow_missing_tune is True
+    assert TrainingConfig(allow_missing_tune=True).checkpoint_selection == "best"
+    assert (
+        TrainingConfig(checkpoint_selection="last", patience=None).allow_missing_tune
+        is False
+    )
 
 
 def test_aggregator_config_explicit_name():

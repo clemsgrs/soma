@@ -8,6 +8,17 @@ batch behavior. If a benchmark only exposes train/test splits, set
 final reporting. If a dataset has no tune split and you want a train-as-tune
 fallback instead, set ``allow_missing_tune=True``.
 
+``checkpoint_selection`` decides *which* epoch's weights are evaluated. The
+default ``best`` selects the checkpoint by the monitored tune metric and stops
+early once it stops improving. ``checkpoint_selection='last'`` instead evaluates
+the final-epoch weights: model selection comes off the tune metric entirely and
+early stopping is disabled, so it requires ``patience=None``. Per-epoch tune
+metrics are still computed and written to ``training_history.json`` — as
+diagnostics only. This is the protocol for benchmarks that predeclare a fixed
+epoch budget and forbid per-encoder tuning. It is orthogonal to
+``allow_missing_tune``: one governs which checkpoint is evaluated, the other
+where the diagnostic tune split comes from, and neither implies the other.
+
 The main configuration object is :class:`soma.config.TrainingConfig`.
 
 .. autoclass:: soma.config.TrainingConfig
@@ -40,9 +51,12 @@ Practical defaults
    * - ``scheduler``
      - ``cosine``
      - Or ``none``
+   * - ``checkpoint_selection``
+     - ``best``
+     - ``last`` evaluates the final-epoch weights (no early stopping, no metric-based selection); requires ``patience=None``
    * - ``patience``
      - ``10``
-     - Early stopping on tune loss
+     - Early stopping on tune loss; ``None`` disables early stopping
    * - ``batch_size``
      - ``1``
      - Good for MIL; raise for tile runs
