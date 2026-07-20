@@ -43,9 +43,15 @@ def _stable_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _training_without_seed(config: PipelineConfig) -> dict[str, Any]:
+def _training_identity(config: PipelineConfig) -> dict[str, Any]:
     training = asdict(config.training)
     training.pop("seed", None)
+    # ``checkpoint_selection`` folds in only when non-default (issue #282), the same
+    # guard the dtype/annotation-sampling knobs use: the evaluation protocol *is* part
+    # of what the experiment is, but every pre-existing run was implicitly ``best``, so
+    # emitting the key unconditionally would re-mint every legacy experiment_id.
+    if config.training.checkpoint_selection == "best":
+        training.pop("checkpoint_selection", None)
     return training
 
 
@@ -173,7 +179,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "evaluation": _evaluation_identity(config),
         "heatmaps": _heatmap_identity(config),
         "augmentation": asdict(config.augmentation),
-        "training": _training_without_seed(config),
+        "training": _training_identity(config),
         "tags": list(config.tags),
     }
 

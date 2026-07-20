@@ -134,6 +134,27 @@ def test_canonical_experiment_payload_omits_seed(tmp_path: Path):
     assert "seed" not in payload_a["training"]
 
 
+def test_canonical_experiment_payload_omits_default_checkpoint_selection(tmp_path: Path):
+    """Guarded identity: the default `best` must not perturb legacy experiment ids."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "checkpoint_selection" not in payload["training"]
+
+
+def test_build_experiment_spec_distinguishes_checkpoint_selection(tmp_path: Path):
+    best = _make_pipeline_config(tmp_path)
+    last = _make_pipeline_config(
+        tmp_path,
+        training=TrainingConfig(
+            seed=7, epochs=10, learning_rate=1e-4, checkpoint_selection="last", patience=None
+        ),
+    )
+
+    last_payload = canonical_experiment_payload(last)
+    assert last_payload["training"]["checkpoint_selection"] == "last"
+    assert build_experiment_spec(best).experiment_id != build_experiment_spec(last).experiment_id
+
+
 def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
     config = _make_pipeline_config(tmp_path)
 

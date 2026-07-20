@@ -190,6 +190,12 @@ Full config reference
      weight_decay: 1.0e-5
      optimizer: adam
      scheduler: cosine
+     # Which epoch's weights are evaluated: 'best' selects by the monitored tune metric
+     # (with early stopping); 'last' evaluates the final-epoch weights, takes model
+     # selection off the tune metric, and requires `patience: null`.
+     checkpoint_selection: best
+     # Early-stopping patience in epochs; null disables early stopping (required by
+     # checkpoint_selection: last).
      patience: 10
      monitor: tune_loss
      monitor_mode: min

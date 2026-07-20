@@ -270,6 +270,14 @@ def _overview_results_panel(run_data: RunData) -> str:
     return f'<div class="overview-metrics">{cards}</div>' if cards else '<p class="muted">No summary metrics available.</p>'
 
 
+def _format_patience(training_config: dict) -> str:
+    """Render the early-stopping budget; a null patience means early stopping is off."""
+    if "patience" not in training_config:
+        return "—"
+    patience = training_config["patience"]
+    return "off" if patience is None else str(patience)
+
+
 def _training_summary_panel(run_data: RunData) -> str:
     cfg = run_data.config.get("training", {})
     items = [
@@ -278,7 +286,8 @@ def _training_summary_panel(run_data: RunData) -> str:
         ("Learning rate", str(cfg.get("learning_rate", "—"))),
         ("Optimizer", str(cfg.get("optimizer", "—"))),
         ("Scheduler", str(cfg.get("scheduler", "—"))),
-        ("Patience", str(cfg.get("patience", "—"))),
+        ("Patience", _format_patience(cfg)),
+        ("Checkpoint", str(cfg.get("checkpoint_selection", "—"))),
     ]
     grad_accum = cfg.get("gradient_accumulation")
     if grad_accum not in (None, "", 1, "1"):
