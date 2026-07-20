@@ -69,6 +69,7 @@ def save_attention(
     from soma.aggregators.registry import aggregator_registry
     from soma.tasks.classification import BranchAwareClassificationHead
     from soma.tasks.registry import task_registry
+    from soma.training.feature_adaptor import build_feature_adaptor
     from soma.training.model import MILModel
 
     run_dir = Path(run_dir)
@@ -115,7 +116,16 @@ def save_attention(
             head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
         else:
             head = task_cls(input_dim=agg.output_dim, **task_params)
-        model = MILModel(aggregator=agg, task_head=head)
+        # Rebuild the (unfitted) adaptor so the checkpoint's fitted buffers have
+        # somewhere to load into — attention must be scored on the same transformed
+        # features the model was trained on (issue #283).
+        model = MILModel(
+            aggregator=agg,
+            task_head=head,
+            feature_adaptor=build_feature_adaptor(
+                config.normalization, num_features=feature_dim
+            ),
+        )
 
         checkpoint = torch.load(checkpoint_path, weights_only=True, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])

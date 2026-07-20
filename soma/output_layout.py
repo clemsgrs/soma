@@ -150,7 +150,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_digest, splits_digest = _manifest_slice_digests(
         dataset_path, splits_path, _is_training_split
     )
-    return {
+    payload: dict[str, Any] = {
         # No manifest ``path`` here: identity is the {train,tune} content, not the machine-
         # local file location, so a checkpoint is reused even when the official test set
         # arrives as a *new* splits/dataset file rather than appended rows (issue #247).
@@ -182,6 +182,14 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "training": _training_identity(config),
         "tags": list(config.tags),
     }
+    # ``normalization`` folds in only when non-default (issue #283), the same guard the
+    # dtype / annotation-sampling / checkpoint_selection knobs use: the transform applied
+    # to the features *is* part of what the experiment is, but every pre-existing run was
+    # implicitly ``none``, so emitting the key unconditionally would re-mint every legacy
+    # experiment_id. The saved config.yaml records the block regardless.
+    if not config.normalization.is_default:
+        payload["normalization"] = asdict(config.normalization)
+    return payload
 
 
 @dataclass(frozen=True)

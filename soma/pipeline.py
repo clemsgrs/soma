@@ -40,6 +40,7 @@ from soma.config import (
     EvalConfig,
     HeatmapConfig,
     MasksConfig,
+    NormalizationConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
@@ -83,6 +84,10 @@ from soma.tasks.registry import task_registry
 from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
+from soma.training.feature_adaptor import (
+    build_feature_adaptor,
+    write_feature_adapter_sidecar,
+)
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
 from soma.training.model import (
     EmbeddingModel,
@@ -432,6 +437,7 @@ def train_one_fold(
     num_folds: int = 1,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
+    normalization: NormalizationConfig | None = None,
 ) -> FoldResult:
     """Train and evaluate a single fold.
 
@@ -450,6 +456,10 @@ def train_one_fold(
         fold: Fold index (for FoldResult metadata).
         heatmaps: When provided and enabled, attention scores are saved during
             the test evaluation pass (no separate inference pass needed).
+        normalization: Feature-adaptor normalization. When it asks for a transform,
+            a :class:`~soma.training.feature_adaptor.FeatureAdaptor` is fit on this
+            fold's Support (train) features and inserted ahead of the aggregator.
+            ``None``/``none`` means no adaptor at all.
 
     Returns:
         FoldResult with training result + tune/test evaluation reports.
@@ -726,6 +736,21 @@ def train_one_fold(
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
 
+    # Feature adaptor (issue #283). Only the tile-encoder MIL path fits one today; the
+    # embedding (slide/patient/tile) and hierarchical paths are separate slices, so a
+    # normalization request they cannot honor is refused rather than silently ignored.
+    wants_adaptor = normalization is not None and normalization.method != "none"
+    if wants_adaptor and (
+        dataset_type in ("patient", "tile")
+        or feature_store.is_slide_level
+        or feature_store.is_hierarchical
+    ):
+        raise ValueError(
+            f"normalization.method={normalization.method!r} is not yet supported on this "
+            "path — the feature adaptor currently fits on the tile-encoder MIL path only. "
+            "Use normalization: {method: none} here."
+        )
+
     # The task head owns its target contract. Build the head first, then derive
     # the per-sample target_fn and per-key collation from it.
     if dataset_type == "patient":
@@ -882,7 +907,26 @@ def train_one_fold(
                     training=training,
                     min_events_per_window=head.min_events_per_window,
                 )
-        model = MILModel(aggregator=agg, task_head=head)
+        # Fit the adaptor BEFORE constructing the model, from the Support split's tiles
+        # and nothing else — "K means K". Streaming one bag at a time keeps a whole
+        # cohort's tiles off the heap. Held-out rows only ever pass through forward(),
+        # which never touches the buffers, so the transform is leak-free by construction.
+        feature_adaptor = build_feature_adaptor(normalization, num_features=feature_dim)
+        if feature_adaptor is not None:
+            feature_adaptor.fit(
+                feature_store.load(record.sample_id) for record in train_records
+            )
+            logger.info(
+                "Fitted %s feature adaptor on %d Support sample(s); %d channel(s) hit the "
+                "eps floor",
+                normalization.method,
+                len(train_records),
+                feature_adaptor.num_eps_floored,
+            )
+            write_feature_adapter_sidecar(feature_adaptor, fold_dir)
+        model = MILModel(
+            aggregator=agg, task_head=head, feature_adaptor=feature_adaptor
+        )
 
     deterministic_baseline = _build_deterministic_baseline(
         train_records,
@@ -1933,6 +1977,7 @@ def train(
     preprocessing: PreprocessingConfig | None = None,
     masks: "MasksConfig | None" = None,
     heatmaps: HeatmapConfig | None = None,
+    normalization: NormalizationConfig | None = None,
     dataset_type: str = "slide",
     test_digest: str | None = None,
     overwrite_test: bool = False,
@@ -1954,10 +1999,23 @@ def train(
         run_dir: Root directory — each fold gets a fold_N/ subdirectory.
         heatmaps: When provided and enabled, attention scores are captured
             during the test evaluation pass and saved to fold_N/attention/.
+        normalization: Feature-adaptor normalization, fit per fold on that fold's
+            Support (train) split. Defaults to no adaptor.
 
     Returns:
         PipelineResult with per-fold results and aggregated summary.
     """
+    # The feature adaptor is fit on the tile-encoder MIL path only for now (issue #283);
+    # the dense fold dispatchers below never reach train_one_fold, so guard here too
+    # rather than let a requested transform be silently dropped.
+    if normalization is not None and normalization.method != "none":
+        if dataset_type in ("segmentation", "detection", "spatial_expression"):
+            raise ValueError(
+                f"normalization.method={normalization.method!r} is not yet supported for "
+                f"dataset_type={dataset_type!r} — the feature adaptor currently fits on "
+                "the tile-encoder MIL path only. Use normalization: {method: none} here."
+            )
+
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     evaluation = evaluation or EvalConfig()
@@ -2108,6 +2166,7 @@ def train(
                 num_folds=splits.num_folds,
                 preprocessing=preprocessing,
                 heatmaps=heatmaps,
+                normalization=normalization,
             )
         fold_results.append(result)
 
@@ -2493,6 +2552,7 @@ class Pipeline:
                 preprocessing=preprocessing,
                 masks=self._config.preprocessing.masks,
                 heatmaps=self._config.heatmaps,
+                normalization=self._config.normalization,
                 test_digest=test_identity_digest(self._config),
                 overwrite_test=self._config.evaluation.overwrite_test,
                 run_id=layout.run_id,

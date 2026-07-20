@@ -16,6 +16,7 @@ from soma.config import (
     EncoderMemberConfig,
     HeatmapConfig,
     MasksConfig,
+    NormalizationConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
@@ -153,6 +154,30 @@ def test_build_experiment_spec_distinguishes_checkpoint_selection(tmp_path: Path
     last_payload = canonical_experiment_payload(last)
     assert last_payload["training"]["checkpoint_selection"] == "last"
     assert build_experiment_spec(best).experiment_id != build_experiment_spec(last).experiment_id
+
+
+def test_canonical_experiment_payload_omits_default_normalization(tmp_path: Path):
+    """Guarded identity: `normalization: none` must not re-mint legacy experiment ids."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "normalization" not in payload
+
+
+def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
+    off = _make_pipeline_config(tmp_path)
+    zscore = _make_pipeline_config(
+        tmp_path, normalization=NormalizationConfig(method="zscore")
+    )
+    l2 = _make_pipeline_config(tmp_path, normalization=NormalizationConfig(method="l2"))
+
+    assert canonical_experiment_payload(zscore)["normalization"] == {
+        "method": "zscore",
+        "eps": 1e-6,
+    }
+    ids = {
+        build_experiment_spec(cfg).experiment_id for cfg in (off, zscore, l2)
+    }
+    assert len(ids) == 3
 
 
 def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
