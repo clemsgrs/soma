@@ -86,6 +86,7 @@ from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.feature_adaptor import (
+    FeatureAdaptor,
     build_feature_adaptor,
     feature_adaptor_output_dim,
     write_feature_adapter_sidecar,
@@ -441,6 +442,52 @@ class _SupportFeatures:
         return (self._feature_store.load(sample_id) for sample_id in self._sample_ids)
 
 
+def _fit_feature_adaptor(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+    *,
+    feature_store: FeatureStore,
+    train_records,
+    feature_dim: int,
+    encoder_identity: str,
+    fold_dir: Path,
+) -> FeatureAdaptor | None:
+    """Build and fit the fold's feature adaptor, or return ``None`` when it has no stage.
+
+    Shared by every path that carries an adaptor (the tile-encoder MIL path, issue #283;
+    the slide-encoder embedding path, issue #285), because the contract they share is the
+    load-bearing part: the fit is over the **Support split alone** — "K means K" — and it
+    happens *before* anything trainable is constructed, so the aggregator/head can be
+    built against the adaptor's (possibly rewired) output width.
+
+    Streaming one sample at a time keeps a whole cohort's tiles off the heap; the stream
+    is re-iterable because a fitted projection needs a second pass over already-normalized
+    rows. Held-out rows only ever pass through ``forward()``, which never touches the
+    buffers, so the transform is leak-free by construction.
+    """
+    feature_adaptor = build_feature_adaptor(
+        normalization,
+        projection,
+        num_features=feature_dim,
+        encoder_identity=encoder_identity,
+    )
+    if feature_adaptor is None:
+        return None
+    feature_adaptor.fit(_SupportFeatures(feature_store, train_records))
+    logger.info(
+        "Fitted feature adaptor on %d Support sample(s): normalization=%s "
+        "(%d channel(s) at the eps floor), projection=%s (%d → %d dims)",
+        len(train_records),
+        feature_adaptor.method,
+        feature_adaptor.num_eps_floored,
+        feature_adaptor.projection_method,
+        feature_dim,
+        feature_adaptor.output_dim,
+    )
+    write_feature_adapter_sidecar(feature_adaptor, fold_dir)
+    return feature_adaptor
+
+
 def train_one_fold(
     feature_store: FeatureStore,
     dataset: Dataset,
@@ -763,24 +810,23 @@ def train_one_fold(
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
 
-    # Feature adaptor (issues #283, #284). Only the tile-encoder MIL path fits one today;
-    # the embedding (slide/patient/tile) and hierarchical paths are separate slices, so a
-    # normalization or projection request they cannot honor is refused rather than
-    # silently ignored — a silently-dropped transform is a false result.
+    # Feature adaptor (issues #283, #284, #285). The tile-encoder MIL path and the
+    # slide-encoder embedding path both fit one; the patient, tile-dataset and
+    # hierarchical paths are separate slices, so a normalization or projection request
+    # they cannot honor is refused rather than silently ignored — a silently-dropped
+    # transform is a false result.
     requested_stages = []
     if normalization is not None and normalization.method != "none":
         requested_stages.append(f"normalization.method={normalization.method!r}")
     if projection is not None and projection.method != "none":
         requested_stages.append(f"projection.method={projection.method!r}")
     if requested_stages and (
-        dataset_type in ("patient", "tile")
-        or feature_store.is_slide_level
-        or feature_store.is_hierarchical
+        dataset_type in ("patient", "tile") or feature_store.is_hierarchical
     ):
         raise ValueError(
             f"{' and '.join(requested_stages)} is not yet supported on this path — the "
-            "feature adaptor currently fits on the tile-encoder MIL path only. Use "
-            "{method: none} here."
+            "feature adaptor currently fits on the tile-encoder MIL path and the "
+            "slide-encoder embedding path only. Use {method: none} here."
         )
 
     # The task head owns its target contract. Build the head first, then derive
@@ -831,10 +877,29 @@ def train_one_fold(
             )
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif dataset_type == "tile" or feature_store.is_slide_level:
-        # Single-embedding path: one pre-computed vector per sample, no aggregation
+        # Single-embedding path: one pre-computed vector per sample, no aggregation.
+        # Fit the adaptor BEFORE the head is constructed, from the Support split's
+        # embeddings and nothing else — "K means K", and here K rows is literally all
+        # there is, which is why the PCA preflight is load-bearing on this path.
         if feature_store.is_slide_level and aggregator is not None:
             raise ValueError("aggregator must be None for slide-level features")
-        head = task_cls(input_dim=feature_dim, **task_params)
+        feature_adaptor = _fit_feature_adaptor(
+            normalization,
+            projection,
+            feature_store=feature_store,
+            train_records=train_records,
+            feature_dim=feature_dim,
+            encoder_identity=encoder_identity,
+            fold_dir=fold_dir,
+        )
+        # The dim rewire (issue #284): with a projection active the head is built against
+        # `target_dim`, not the encoder's native dim.
+        head = task_cls(
+            input_dim=feature_adaptor_output_dim(
+                feature_adaptor, num_features=feature_dim
+            ),
+            **task_params,
+        )
         target_fn = head.extract_targets
         _sample_collate = functools.partial(sample_collate_fn, target_dtypes=head.target_dtypes)
         train_loader, tune_loader, test_loaders = _make_loaders(
@@ -850,7 +915,9 @@ def train_one_fold(
                 training=training,
                 min_events_per_window=head.min_events_per_window,
             )
-        model: torch.nn.Module = EmbeddingModel(task_head=head)
+        model: torch.nn.Module = EmbeddingModel(
+            task_head=head, feature_adaptor=feature_adaptor
+        )
     elif feature_store.is_hierarchical:
         if aggregator is None:
             raise ValueError("aggregator must be provided for hierarchical features")
@@ -898,30 +965,16 @@ def train_one_fold(
         if aggregator is None:
             raise ValueError("aggregator must be provided for tile-level features")
         # Fit the adaptor BEFORE anything trainable is constructed, from the Support
-        # split's tiles and nothing else — "K means K". Streaming one bag at a time keeps
-        # a whole cohort's tiles off the heap; the stream is re-iterable because a fitted
-        # projection needs a second pass over already-normalized rows. Held-out rows only
-        # ever pass through forward(), which never touches the buffers, so the transform
-        # is leak-free by construction.
-        feature_adaptor = build_feature_adaptor(
+        # split's tiles and nothing else — "K means K".
+        feature_adaptor = _fit_feature_adaptor(
             normalization,
             projection,
-            num_features=feature_dim,
+            feature_store=feature_store,
+            train_records=train_records,
+            feature_dim=feature_dim,
             encoder_identity=encoder_identity,
+            fold_dir=fold_dir,
         )
-        if feature_adaptor is not None:
-            feature_adaptor.fit(_SupportFeatures(feature_store, train_records))
-            logger.info(
-                "Fitted feature adaptor on %d Support sample(s): normalization=%s "
-                "(%d channel(s) at the eps floor), projection=%s (%d → %d dims)",
-                len(train_records),
-                feature_adaptor.method,
-                feature_adaptor.num_eps_floored,
-                feature_adaptor.projection_method,
-                feature_dim,
-                feature_adaptor.output_dim,
-            )
-            write_feature_adapter_sidecar(feature_adaptor, fold_dir)
         # The dim rewire (issue #284): with a projection active the aggregator is built
         # against `target_dim`, not the encoder's native dim, so the trainable capacity
         # below is identical across a roster of encoders of differing width.
@@ -2057,9 +2110,10 @@ def train(
     Returns:
         PipelineResult with per-fold results and aggregated summary.
     """
-    # The feature adaptor is fit on the tile-encoder MIL path only for now (issues #283,
-    # #284); the dense fold dispatchers below never reach train_one_fold, so guard here
-    # too rather than let a requested transform be silently dropped.
+    # The feature adaptor is fit on the tile-encoder MIL path and the slide-encoder
+    # embedding path for now (issues #283, #284, #285); the dense fold dispatchers below
+    # never reach train_one_fold, so guard here too rather than let a requested transform
+    # be silently dropped.
     if dataset_type in ("segmentation", "detection", "spatial_expression"):
         requested = []
         if normalization is not None and normalization.method != "none":
@@ -2070,7 +2124,8 @@ def train(
             raise ValueError(
                 f"{' and '.join(requested)} is not yet supported for "
                 f"dataset_type={dataset_type!r} — the feature adaptor currently fits on "
-                "the tile-encoder MIL path only. Use {method: none} here."
+                "the tile-encoder MIL path and the slide-encoder embedding path only. "
+                "Use {method: none} here."
             )
 
     run_dir = Path(run_dir)

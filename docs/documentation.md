@@ -1,5 +1,17 @@
 # Project Documentation Notes
 
+- 2026-07-20: Extended the feature adaptor (`normalization` + `projection`) to the
+  **slide-encoder embedding path**, so the same protocol now covers both the tile-encoder
+  MIL path and the embedding path. There the fit is over the Support split's *embeddings*
+  — one vector per slide — so the fit sample count is exactly `K`, which makes the PCA
+  preflight load-bearing: at `K = 12` no PCA wider than 12 components exists, and the
+  request raises rather than producing a degenerate basis. `EmbeddingModel` now carries an
+  optional adaptor as a front module, the task head is built against the adaptor's
+  `output_dim` under an active projection (the dim rewire), and everything else is
+  unchanged from the MIL path — leak-free Support-only fit, buffers not parameters riding
+  in the checkpoint, cache key untouched, identity folded only when non-default, config
+  always serialized, `feature_adapter.json` written. With both blocks off no adaptor is
+  built, so existing slide-encoder runs stay byte-identical.
 - 2026-07-20: Added the top-level `projection` section (`none` | `pca` | `random`, plus
   `target_dim` and `seed`) as the feature adaptor's second stage, applied after
   `normalization` (order: normalize → project). It is the dim-matched ablation for the

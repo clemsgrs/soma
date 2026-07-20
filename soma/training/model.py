@@ -29,13 +29,34 @@ class EmbeddingModel(nn.Module):
 
     Used for slide-level, patient-level, and tile-level pipelines where each
     sample is already represented by a single feature vector — no aggregation.
+
+    An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
+    the task head and transforms the frozen embeddings before anything trainable sees
+    them (issue #285 on the slide-encoder path). It is ``None`` unless the run asks for
+    one, and ``None`` is not registered as a submodule, so a run without one has exactly
+    the ``state_dict``/``parameters`` of a model built before the adaptor existed.
+
+    When the adaptor projects it also *changes the width*: ``task_head`` must already
+    have been constructed against the adaptor's ``output_dim`` rather than the encoder's
+    native dim. The caller owns that wiring (see
+    :func:`~soma.training.feature_adaptor.feature_adaptor_output_dim`).
+
+    Args:
+        task_head: Task head (e.g. ClassificationHead), built against the adaptor's
+            output width.
+        feature_adaptor: Optional front module applied to ``X`` before the head.
     """
 
-    def __init__(self, task_head: TaskHead) -> None:
+    def __init__(
+        self, task_head: TaskHead, feature_adaptor: nn.Module | None = None
+    ) -> None:
         super().__init__()
         self.task_head = task_head
+        self.feature_adaptor = feature_adaptor
 
     def forward(self, X: Tensor) -> EmbeddingModelOutput:
+        if self.feature_adaptor is not None:
+            X = self.feature_adaptor(X)
         return EmbeddingModelOutput(logits=self.task_head(X))
 
 
