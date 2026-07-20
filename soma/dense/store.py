@@ -196,6 +196,14 @@ def write_dense_grid(
     out_dir.mkdir(parents=True, exist_ok=True)
     feature_path = out_dir / f"{sample_id}.pt"
     sidecar_path = out_dir / f"{sample_id}{DENSE_SIDECAR_SUFFIX}"
+    # torch.save serialises a tensor's whole underlying STORAGE, not just its view. Dense
+    # grids arrive as ``batch[i]`` slices of a ``(B, d, h, w)`` batch, so saving one
+    # directly writes ALL B tiles' bytes into every tile's file — a silent
+    # ``encoder.batch_size``-fold bloat (at B=8: 134 MB files holding 16.8 MB of grid).
+    # ``.contiguous()`` does NOT help: a batch slice is already contiguous, so it no-ops.
+    # An fp16 cache only escaped this because the dtype cast allocated a fresh tensor.
+    if grid.untyped_storage().nbytes() != grid.numel() * grid.element_size():
+        grid = grid.clone()
     torch.save(grid, feature_path)
     sidecar_path.write_text(json.dumps(metadata, sort_keys=True, indent=2), encoding="utf-8")
     return feature_path
