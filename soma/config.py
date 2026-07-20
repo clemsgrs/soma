@@ -79,6 +79,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "cache",
         "augmentation",
         "normalization",
+        "projection",
         "reports",
     }
     unknown_keys = [key for key in data if key not in allowed_sections]
@@ -112,6 +113,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "cache",
         "augmentation",
         "normalization",
+        "projection",
     ):
         if section in data:
             value = data[section]
@@ -254,6 +256,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
         normalization=NormalizationConfig(**data.get("normalization", {})),
+        projection=ProjectionConfig(**data.get("projection", {})),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
@@ -582,6 +585,66 @@ class NormalizationConfig:
     def is_default(self) -> bool:
         """True when this section asks for nothing — the guard for identity folding."""
         return self == NormalizationConfig()
+
+
+_PROJECTION_METHODS = ("none", "pca", "random")
+
+
+@dataclass(frozen=True)
+class ProjectionConfig:
+    """Label-free projection of frozen encoder features to a common width.
+
+    A wider embedding means a larger aggregator, so "smaller encoders are more
+    label-efficient" can be manufactured from dimensionality alone. This section is the
+    dim-matched ablation that tests whether a ranking survives when that confound is
+    removed: every encoder is projected to ``target_dim`` by a **label-free** map, so the
+    downstream trainable capacity is equal across the roster (issue #284).
+
+    It is the *second* stage of the feature adaptor, applied **after** ``normalization``
+    (order: normalize → project). The two sections are independently configurable.
+
+    ``method``:
+
+    * ``none`` (default) — no projection stage; the aggregator is built against the
+      encoder's native dim, exactly as before this section existed.
+    * ``pca`` — **fitted**: principal components estimated per fold from the Support
+      (train) split only, so the map is leak-free. Centers intrinsically (it stores its
+      own mean) and pins a sign convention so repeated fits are byte-identical. No
+      whitening. Requires ``n_fit_samples >= target_dim`` and ``target_dim <= D``.
+    * ``random`` — a fixed Gaussian matrix, scaled by ``1/sqrt(target_dim)`` to
+      approximately preserve inner products. Seeded from ``seed`` combined with the
+      encoder identity and the in/out dims, so it is reproducible and constant across
+      training trajectories. Unconstrained in ``target_dim``.
+
+    The projection is **frozen** — a buffer, not a learned layer — so it cannot
+    reintroduce or relocate the capacity confound it exists to remove.
+    """
+
+    method: str = "none"
+    target_dim: int | None = None
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.method not in _PROJECTION_METHODS:
+            raise ValueError(
+                "ProjectionConfig.method must be one of "
+                f"{list(_PROJECTION_METHODS)}, got {self.method!r}."
+            )
+        if self.method != "none":
+            if self.target_dim is None:
+                raise ValueError(
+                    f"ProjectionConfig.method={self.method!r} requires target_dim — the "
+                    "common width every encoder is projected to."
+                )
+            if int(self.target_dim) < 1:
+                raise ValueError(
+                    f"ProjectionConfig.target_dim must be >= 1, got {self.target_dim}."
+                )
+
+    @property
+    def is_default(self) -> bool:
+        """True when this section asks for nothing — the guard for identity folding."""
+        return self == ProjectionConfig()
 
 
 @dataclass(frozen=True)
@@ -967,6 +1030,8 @@ class PipelineConfig:
         normalization: Feature-adaptor normalization applied to frozen encoder
             features ahead of the aggregator/head. Defaults to ``none`` (no
             adaptor at all).
+        projection: Feature-adaptor label-free projection to a common width,
+            applied after ``normalization``. Defaults to ``none``.
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
         resume: When True, reuse the latest existing run dir for this experiment
@@ -996,6 +1061,7 @@ class PipelineConfig:
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+    projection: ProjectionConfig = field(default_factory=ProjectionConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
@@ -1418,6 +1484,8 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
         # legacy experiment_ids survive, the *record* is not — a saved config always
         # says what transform the run applied (issue #283).
         "normalization": _normalize_yaml_value(asdict(config.normalization)),
+        # Same guard-the-hash-not-the-record rule as ``normalization`` (issue #284).
+        "projection": _normalize_yaml_value(asdict(config.projection)),
         "reports": {
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },

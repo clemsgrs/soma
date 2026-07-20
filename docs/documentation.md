@@ -1,5 +1,19 @@
 # Project Documentation Notes
 
+- 2026-07-20: Added the top-level `projection` section (`none` | `pca` | `random`, plus
+  `target_dim` and `seed`) as the feature adaptor's second stage, applied after
+  `normalization` (order: normalize → project). It is the dim-matched ablation for the
+  capacity confound — a wider encoder otherwise buys a larger aggregator — so when a
+  projection is active the aggregator/head is built against `target_dim` rather than the
+  encoder's native dim, equalizing trainable capacity across a roster. `pca` is fitted per
+  fold on the Support split only, centers intrinsically, and pins a sign convention so
+  repeated fits are byte-identical; `random` is a fixed Gaussian matrix seeded from `seed`
+  + encoder identity + dims, scaled to preserve inner products and constant across
+  trajectories. Both are frozen buffers, never learned. A preflight requires
+  `n_fit_rows >= target_dim` and `target_dim <= D` for PCA. Provenance mirrors
+  `normalization`: out of the feature-extraction cache key, folded into experiment
+  identity only when non-default, always serialized in the saved config, and summarized in
+  the per-fold `feature_adapter.json` sidecar (now with the PCA explained-variance ratio).
 - 2026-07-20: Added the top-level `normalization` section (`none` | `zscore` | `l2` |
   `layernorm`, plus `eps`) and the *feature adaptor* it drives — a buffer-carrying front
   module inserted ahead of the aggregator/head on the tile-encoder MIL path. `zscore` is

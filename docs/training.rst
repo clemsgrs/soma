@@ -115,6 +115,60 @@ each member's block before concatenation and is unaffected.
 Today the adaptor is fit on the tile-encoder MIL path; requesting a transform on
 a path that does not yet support one is refused rather than silently ignored.
 
+Feature projection
+------------------
+
+A wider embedding means a larger aggregator, so "smaller encoders are more
+label-efficient" can be manufactured from dimensionality alone. The top-level
+``projection`` section is the dim-matched ablation that tests whether a ranking
+survives once that confound is removed: every encoder is mapped to a common
+width by a **label-free** projection, so the trainable capacity downstream is
+equal across the roster.
+
+.. code-block:: yaml
+
+   projection:
+     method: pca      # none | pca | random
+     target_dim: 512  # required when method != none
+     seed: 0
+
+It is the *second* stage of the same feature adaptor, applied **after**
+``normalization`` — the order is normalize → project. The two sections are
+independently configurable: standardize without projecting, project without
+standardizing, or both.
+
+``pca`` is **fitted**: the principal components are estimated per fold from the
+Support (train) split alone, so the map is leak-free. It centers intrinsically
+(storing its own mean alongside the components) and pins a sign convention — the
+largest-magnitude entry of every component is made positive — so repeated fits on
+the same data are byte-identical. There is no whitening.
+
+``random`` draws a fixed Gaussian matrix scaled by ``1/sqrt(target_dim)``, which
+approximately preserves inner products and distances. Its seed is derived from
+``seed`` combined with the encoder identity and the in/out dims, from a private
+generator that never touches the global RNG — so the matrix is reproducible from
+the config alone, constant across training trajectories, and different for every
+encoder in a roster.
+
+Both maps are **frozen**: they live in buffers, not learned layers, so the
+projection cannot reintroduce or relocate the capacity confound it exists to
+remove. When a projection is active the aggregator and head are constructed
+against ``target_dim`` rather than the encoder's native dim — the *dim rewire* —
+which is what equalizes trainable capacity.
+
+A preflight refuses an unsatisfiable PCA up front: it needs at least
+``target_dim`` feature rows in the Support set, and ``target_dim`` can be at
+most the encoder's dimension ``D``. Either shortfall raises an error naming it.
+``random`` is unconstrained and may expand as well as reduce.
+
+Provenance follows the same guards as ``normalization``: the section is not part
+of the feature-extraction cache key (so one extracted cache is shared across
+every projection width), it folds into the experiment identity only when
+non-default, and the saved run config always serializes the block. The
+``feature_adapter.json`` sidecar records the method, ``target_dim``, ``seed``,
+the number of rows fit on, the in/out dims, and — for ``pca`` — the
+explained-variance ratio of the retained components.
+
 Live training summary
 ---------------------
 

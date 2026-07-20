@@ -230,6 +230,20 @@ Full config reference
      method: none  # none | zscore | l2 | layernorm
      eps: 1.0e-6
 
+   # Label-free projection of frozen encoder features to a common width — the dim-matched
+   # ablation that removes the capacity confound (a wider encoder otherwise buys a larger
+   # aggregator). Applied AFTER normalization. When active the aggregator is built against
+   # `target_dim`, not the encoder's native dim. 'pca' is FITTED per fold on the train
+   # split only (leak-free), centers intrinsically and pins a sign convention so repeated
+   # fits are identical; 'random' is a fixed Gaussian matrix seeded from `seed` + the
+   # encoder identity, scaled to preserve inner products. Both are frozen buffers, never
+   # learned. PCA requires n_fit_rows >= target_dim and target_dim <= D; random is
+   # unconstrained.
+   projection:
+     method: none  # none | pca | random
+     target_dim: null  # required when method != none
+     seed: 0
+
    reports:
      heatmaps:
        enabled: false

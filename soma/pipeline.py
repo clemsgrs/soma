@@ -44,6 +44,7 @@ from soma.config import (
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
+    ProjectionConfig,
     SamplingConfig,
     TaskConfig,
     TrainingConfig,
@@ -86,6 +87,7 @@ from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.feature_adaptor import (
     build_feature_adaptor,
+    feature_adaptor_output_dim,
     write_feature_adapter_sidecar,
 )
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
@@ -422,6 +424,23 @@ def _event_balanced_train_loader(
 # ---------------------------------------------------------------------------
 
 
+class _SupportFeatures:
+    """A re-iterable stream of the Support split's feature tensors, one sample at a time.
+
+    The feature adaptor fits its stages in pipeline order, so a fitted projection needs a
+    *second* pass over rows the normalize stage has already transformed. A generator would
+    arrive at that pass exhausted; this restarts the stream on every ``__iter__`` while
+    still never holding more than one sample's tiles at once.
+    """
+
+    def __init__(self, feature_store: FeatureStore, records) -> None:
+        self._feature_store = feature_store
+        self._sample_ids = [record.sample_id for record in records]
+
+    def __iter__(self):
+        return (self._feature_store.load(sample_id) for sample_id in self._sample_ids)
+
+
 def train_one_fold(
     feature_store: FeatureStore,
     dataset: Dataset,
@@ -438,6 +457,8 @@ def train_one_fold(
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
     normalization: NormalizationConfig | None = None,
+    projection: ProjectionConfig | None = None,
+    encoder_identity: str = "",
 ) -> FoldResult:
     """Train and evaluate a single fold.
 
@@ -460,6 +481,12 @@ def train_one_fold(
             a :class:`~soma.training.feature_adaptor.FeatureAdaptor` is fit on this
             fold's Support (train) features and inserted ahead of the aggregator.
             ``None``/``none`` means no adaptor at all.
+        projection: Feature-adaptor label-free projection, applied after
+            ``normalization``. When active the aggregator/head is built against
+            ``projection.target_dim`` rather than the encoder's native dim, so the
+            downstream trainable capacity is equal across a roster of encoders.
+        encoder_identity: Name of the encoder behind the features; seeds the
+            ``random`` projection so two encoders never share a matrix.
 
     Returns:
         FoldResult with training result + tune/test evaluation reports.
@@ -736,19 +763,24 @@ def train_one_fold(
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
 
-    # Feature adaptor (issue #283). Only the tile-encoder MIL path fits one today; the
-    # embedding (slide/patient/tile) and hierarchical paths are separate slices, so a
-    # normalization request they cannot honor is refused rather than silently ignored.
-    wants_adaptor = normalization is not None and normalization.method != "none"
-    if wants_adaptor and (
+    # Feature adaptor (issues #283, #284). Only the tile-encoder MIL path fits one today;
+    # the embedding (slide/patient/tile) and hierarchical paths are separate slices, so a
+    # normalization or projection request they cannot honor is refused rather than
+    # silently ignored — a silently-dropped transform is a false result.
+    requested_stages = []
+    if normalization is not None and normalization.method != "none":
+        requested_stages.append(f"normalization.method={normalization.method!r}")
+    if projection is not None and projection.method != "none":
+        requested_stages.append(f"projection.method={projection.method!r}")
+    if requested_stages and (
         dataset_type in ("patient", "tile")
         or feature_store.is_slide_level
         or feature_store.is_hierarchical
     ):
         raise ValueError(
-            f"normalization.method={normalization.method!r} is not yet supported on this "
-            "path — the feature adaptor currently fits on the tile-encoder MIL path only. "
-            "Use normalization: {method: none} here."
+            f"{' and '.join(requested_stages)} is not yet supported on this path — the "
+            "feature adaptor currently fits on the tile-encoder MIL path only. Use "
+            "{method: none} here."
         )
 
     # The task head owns its target contract. Build the head first, then derive
@@ -865,8 +897,39 @@ def train_one_fold(
         # Tile-level MIL path
         if aggregator is None:
             raise ValueError("aggregator must be provided for tile-level features")
+        # Fit the adaptor BEFORE anything trainable is constructed, from the Support
+        # split's tiles and nothing else — "K means K". Streaming one bag at a time keeps
+        # a whole cohort's tiles off the heap; the stream is re-iterable because a fitted
+        # projection needs a second pass over already-normalized rows. Held-out rows only
+        # ever pass through forward(), which never touches the buffers, so the transform
+        # is leak-free by construction.
+        feature_adaptor = build_feature_adaptor(
+            normalization,
+            projection,
+            num_features=feature_dim,
+            encoder_identity=encoder_identity,
+        )
+        if feature_adaptor is not None:
+            feature_adaptor.fit(_SupportFeatures(feature_store, train_records))
+            logger.info(
+                "Fitted feature adaptor on %d Support sample(s): normalization=%s "
+                "(%d channel(s) at the eps floor), projection=%s (%d → %d dims)",
+                len(train_records),
+                feature_adaptor.method,
+                feature_adaptor.num_eps_floored,
+                feature_adaptor.projection_method,
+                feature_dim,
+                feature_adaptor.output_dim,
+            )
+            write_feature_adapter_sidecar(feature_adaptor, fold_dir)
+        # The dim rewire (issue #284): with a projection active the aggregator is built
+        # against `target_dim`, not the encoder's native dim, so the trainable capacity
+        # below is identical across a roster of encoders of differing width.
+        adapted_dim = feature_adaptor_output_dim(
+            feature_adaptor, num_features=feature_dim
+        )
         aggregator_cls = aggregator_registry.get(aggregator.name)
-        agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
+        agg = aggregator_cls(input_dim=adapted_dim, **aggregator.params)
         if aggregator.name == "clam_mb" and task.name == "binary_classification":
             raise ValueError(
                 "clam_mb does not support binary_classification; "
@@ -907,23 +970,6 @@ def train_one_fold(
                     training=training,
                     min_events_per_window=head.min_events_per_window,
                 )
-        # Fit the adaptor BEFORE constructing the model, from the Support split's tiles
-        # and nothing else — "K means K". Streaming one bag at a time keeps a whole
-        # cohort's tiles off the heap. Held-out rows only ever pass through forward(),
-        # which never touches the buffers, so the transform is leak-free by construction.
-        feature_adaptor = build_feature_adaptor(normalization, num_features=feature_dim)
-        if feature_adaptor is not None:
-            feature_adaptor.fit(
-                feature_store.load(record.sample_id) for record in train_records
-            )
-            logger.info(
-                "Fitted %s feature adaptor on %d Support sample(s); %d channel(s) hit the "
-                "eps floor",
-                normalization.method,
-                len(train_records),
-                feature_adaptor.num_eps_floored,
-            )
-            write_feature_adapter_sidecar(feature_adaptor, fold_dir)
         model = MILModel(
             aggregator=agg, task_head=head, feature_adaptor=feature_adaptor
         )
@@ -1978,6 +2024,8 @@ def train(
     masks: "MasksConfig | None" = None,
     heatmaps: HeatmapConfig | None = None,
     normalization: NormalizationConfig | None = None,
+    projection: ProjectionConfig | None = None,
+    encoder_identity: str = "",
     dataset_type: str = "slide",
     test_digest: str | None = None,
     overwrite_test: bool = False,
@@ -2001,19 +2049,28 @@ def train(
             during the test evaluation pass and saved to fold_N/attention/.
         normalization: Feature-adaptor normalization, fit per fold on that fold's
             Support (train) split. Defaults to no adaptor.
+        projection: Feature-adaptor label-free projection to a common width, fit per
+            fold on that fold's Support split. Defaults to no projection.
+        encoder_identity: Name of the encoder behind the features; seeds the
+            ``random`` projection.
 
     Returns:
         PipelineResult with per-fold results and aggregated summary.
     """
-    # The feature adaptor is fit on the tile-encoder MIL path only for now (issue #283);
-    # the dense fold dispatchers below never reach train_one_fold, so guard here too
-    # rather than let a requested transform be silently dropped.
-    if normalization is not None and normalization.method != "none":
-        if dataset_type in ("segmentation", "detection", "spatial_expression"):
+    # The feature adaptor is fit on the tile-encoder MIL path only for now (issues #283,
+    # #284); the dense fold dispatchers below never reach train_one_fold, so guard here
+    # too rather than let a requested transform be silently dropped.
+    if dataset_type in ("segmentation", "detection", "spatial_expression"):
+        requested = []
+        if normalization is not None and normalization.method != "none":
+            requested.append(f"normalization.method={normalization.method!r}")
+        if projection is not None and projection.method != "none":
+            requested.append(f"projection.method={projection.method!r}")
+        if requested:
             raise ValueError(
-                f"normalization.method={normalization.method!r} is not yet supported for "
+                f"{' and '.join(requested)} is not yet supported for "
                 f"dataset_type={dataset_type!r} — the feature adaptor currently fits on "
-                "the tile-encoder MIL path only. Use normalization: {method: none} here."
+                "the tile-encoder MIL path only. Use {method: none} here."
             )
 
     run_dir = Path(run_dir)
@@ -2167,6 +2224,8 @@ def train(
                 preprocessing=preprocessing,
                 heatmaps=heatmaps,
                 normalization=normalization,
+                projection=projection,
+                encoder_identity=encoder_identity,
             )
         fold_results.append(result)
 
@@ -2553,6 +2612,10 @@ class Pipeline:
                 masks=self._config.preprocessing.masks,
                 heatmaps=self._config.heatmaps,
                 normalization=self._config.normalization,
+                projection=self._config.projection,
+                encoder_identity=(
+                    self._config.encoder.name if self._config.encoder is not None else ""
+                ),
                 test_digest=test_identity_digest(self._config),
                 overwrite_test=self._config.evaluation.overwrite_test,
                 run_id=layout.run_id,
