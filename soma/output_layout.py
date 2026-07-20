@@ -189,6 +189,11 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     # experiment_id. The saved config.yaml records the block regardless.
     if not config.normalization.is_default:
         payload["normalization"] = asdict(config.normalization)
+    # ``projection`` folds in under the same guard (issue #284): the dim-matched ablation
+    # is a different experiment from the native-width run, but `projection: none` must
+    # leave every pre-existing experiment_id untouched.
+    if not config.projection.is_default:
+        payload["projection"] = asdict(config.projection)
     return payload
 
 

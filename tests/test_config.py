@@ -17,6 +17,7 @@ from soma.config import (
     NormalizationConfig,
     PipelineConfig,
     PreprocessingConfig,
+    ProjectionConfig,
     SamplingConfig,
     SubgroupConfig,
     TaskConfig,
@@ -266,6 +267,101 @@ def test_load_config_rejects_unknown_normalization_method(tmp_path: Path):
                 },
                 "task": {"name": "binary_classification"},
                 "normalization": {"method": "standardize"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="method"):
+        load_config(yaml_path)
+
+
+def test_projection_config_defaults():
+    """Label-free projection is off by default (issue #284)."""
+    cfg = ProjectionConfig()
+
+    assert cfg.method == "none"
+    assert cfg.target_dim is None
+    assert cfg.seed == 0
+
+
+@pytest.mark.parametrize("method", ["none", "pca", "random"])
+def test_projection_config_accepts_vocabulary(method):
+    target_dim = None if method == "none" else 64
+    assert ProjectionConfig(method=method, target_dim=target_dim).method == method
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"method": "whiten", "target_dim": 8}, "method"),
+        ({"method": "pca"}, "target_dim"),
+        ({"method": "random"}, "target_dim"),
+        ({"method": "pca", "target_dim": 0}, "target_dim"),
+        ({"method": "pca", "target_dim": -4}, "target_dim"),
+    ],
+)
+def test_projection_config_rejects_invalid(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        ProjectionConfig(**kwargs)
+
+
+def test_pipeline_config_projection_defaults_to_off():
+    assert _make_pipeline_config().projection == ProjectionConfig()
+
+
+def test_saved_config_always_serializes_projection_block(tmp_path: Path):
+    """Guard the hash, not the record: the block is written even when off."""
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(_make_pipeline_config(), yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["projection"] == {"method": "none", "target_dim": None, "seed": 0}
+    assert load_config(yaml_path).projection == ProjectionConfig()
+
+
+def test_projection_survives_config_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        projection=ProjectionConfig(method="pca", target_dim=128, seed=7)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["projection"] == {"method": "pca", "target_dim": 128, "seed": 7}
+    assert loaded.projection == ProjectionConfig(method="pca", target_dim=128, seed=7)
+
+
+def test_normalization_and_projection_are_independently_configurable(tmp_path: Path):
+    """Standardize without projecting, project without standardizing, or both."""
+    yaml_path = tmp_path / "config.yaml"
+    cfg = _make_pipeline_config(
+        projection=ProjectionConfig(method="random", target_dim=32)
+    )
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.normalization == NormalizationConfig()
+    assert loaded.projection == ProjectionConfig(method="random", target_dim=32)
+
+
+def test_load_config_rejects_unknown_projection_method(tmp_path: Path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "run": {"output_root": str(tmp_path)},
+                "data": {
+                    "dataset_csv": "d.csv",
+                    "splits_csv": "s.csv",
+                    "dataset_type": "slide",
+                },
+                "task": {"name": "binary_classification"},
+                "projection": {"method": "whiten", "target_dim": 8},
             }
         ),
         encoding="utf-8",

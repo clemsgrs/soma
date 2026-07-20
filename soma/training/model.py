@@ -64,12 +64,19 @@ class MILModel(nn.Module):
 
     An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
     the aggregator and transforms the frozen features before anything trainable sees
-    them. It is ``None`` unless the run asks for one (``normalization`` — issue #283), and
-    ``None`` is not registered as a submodule, so a run without one has exactly the
-    ``state_dict``/``parameters`` of a model built before the adaptor existed.
+    them. It is ``None`` unless the run asks for one (``normalization`` — issue #283 — or
+    ``projection`` — issue #284), and ``None`` is not registered as a submodule, so a run
+    without one has exactly the ``state_dict``/``parameters`` of a model built before the
+    adaptor existed.
+
+    When the adaptor projects, it also *changes the width*: ``aggregator`` must already
+    have been constructed against the adaptor's ``output_dim`` rather than the encoder's
+    native dim. The caller owns that wiring (see
+    :func:`~soma.training.feature_adaptor.feature_adaptor_output_dim`).
 
     Args:
-        aggregator: MIL aggregator (e.g. ABMIL, MeanPool).
+        aggregator: MIL aggregator (e.g. ABMIL, MeanPool), built against the adaptor's
+            output width.
         task_head: Task head (e.g. ClassificationHead).
         feature_adaptor: Optional front module applied to ``X`` before aggregation.
     """

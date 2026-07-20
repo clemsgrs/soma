@@ -19,7 +19,7 @@ from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
 from soma.dataset import Dataset, Splits
 from soma.features import FeatureStore
 from soma.pipeline import train, train_one_fold
-from soma.config import NormalizationConfig
+from soma.config import NormalizationConfig, ProjectionConfig
 from soma.tasks.classification import BinaryClassificationHead
 from soma.training.feature_adaptor import build_feature_adaptor
 from soma.training.model import MILModel
@@ -116,6 +116,247 @@ def test_layernorm_standardizes_across_the_feature_axis_without_fitting():
 
     assert adaptor.requires_fit is False
     assert torch.allclose(out.mean(dim=-1), torch.zeros(features.shape[0]), atol=1e-5)
+
+
+def test_pca_projects_to_the_target_width():
+    """The tracer: a fitted PCA maps D-dim features onto `target_dim` columns."""
+    features = _train_features()
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+    )
+    adaptor.fit([features])
+
+    out = adaptor(features)
+
+    assert adaptor.output_dim == 2
+    assert out.shape == (512, 2)
+
+
+def test_pca_keeps_the_highest_variance_directions_first():
+    """PCA is not any old rotation: component k captures the k-th most variance, and the
+    projected columns are decorrelated."""
+    features = _train_features()
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=3), num_features=3
+    ).fit([features])
+
+    out = adaptor(features).to(torch.float64)
+
+    variances = out.var(dim=0, unbiased=True)
+    assert torch.all(variances[:-1] >= variances[1:])
+    # The (3,) feature was built with a 100x scale, so component 0 must dominate.
+    assert variances[0] / variances.sum() > 0.9
+    covariance = torch.cov(out.T)
+    off_diagonal = covariance - torch.diag(torch.diagonal(covariance))
+    assert torch.allclose(off_diagonal, torch.zeros_like(off_diagonal), atol=1e-3)
+
+
+def test_pca_centers_on_its_own_fitted_mean():
+    """`pca` centers intrinsically — the projected Support set has zero mean even with
+    no normalization stage in front of it."""
+    features = _train_features()
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+    ).fit([features])
+
+    out = adaptor(features)
+
+    assert torch.allclose(out.mean(dim=0), torch.zeros(2), atol=1e-3)
+
+
+def test_repeated_pca_fits_are_byte_identical():
+    """The pinned sign convention: an eigenvector is only defined up to sign, so two fits
+    on identical data must not differ by a flip, or the run is not reproducible."""
+    features = _train_features()
+    projection = ProjectionConfig(method="pca", target_dim=2)
+
+    first = build_feature_adaptor(None, projection, num_features=3).fit([features])
+    second = build_feature_adaptor(None, projection, num_features=3).fit([features])
+
+    assert torch.equal(first.projection_matrix, second.projection_matrix)
+    assert torch.equal(first.projection_mean, second.projection_mean)
+    assert torch.equal(first(features), second(features))
+
+
+def test_pca_sign_convention_pins_the_largest_entry_positive():
+    """The convention itself, stated as behavior: whatever LAPACK hands back, every
+    component leaves this module with its largest-magnitude entry positive."""
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=3), num_features=3
+    ).fit([_train_features()])
+
+    components = adaptor.projection_matrix
+    pivots = components.abs().argmax(dim=1)
+    assert torch.all(components.gather(1, pivots.unsqueeze(1)) > 0)
+
+
+def test_pca_is_fit_only_on_the_rows_it_is_given():
+    """Leak-free by construction: the basis comes from the batches handed to fit() and
+    nothing else."""
+    support = _train_features()
+    held_out = support * 50.0 + 1000.0
+    projection = ProjectionConfig(method="pca", target_dim=2)
+
+    support_only = build_feature_adaptor(None, projection, num_features=3).fit([support])
+    leaked = build_feature_adaptor(None, projection, num_features=3).fit(
+        [support, held_out]
+    )
+
+    assert support_only.n_fit_samples == support.shape[0]
+    assert not torch.allclose(
+        support_only.projection_mean, leaked.projection_mean, atol=1e-3
+    )
+
+
+def test_random_projection_is_reproducible_from_the_seed():
+    """Same seed + same encoder + same dims ⇒ the same matrix, drawn without ever
+    consulting the global RNG, so it is constant across training trajectories."""
+    projection = ProjectionConfig(method="random", target_dim=2, seed=11)
+
+    torch.manual_seed(1234)
+    first = build_feature_adaptor(
+        None, projection, num_features=3, encoder_identity="uni2"
+    )
+    torch.manual_seed(4321)  # a different trajectory seed must not move the matrix
+    torch.randn(97)
+    second = build_feature_adaptor(
+        None, projection, num_features=3, encoder_identity="uni2"
+    )
+
+    assert torch.equal(first.projection_matrix, second.projection_matrix)
+    assert first.projection_matrix.abs().sum() > 0
+
+
+def test_random_projection_differs_by_seed_and_by_encoder():
+    """The seed is combined with the encoder identity, so two encoders in one roster
+    never share a matrix."""
+    base = build_feature_adaptor(
+        None,
+        ProjectionConfig(method="random", target_dim=2, seed=11),
+        num_features=3,
+        encoder_identity="uni2",
+    )
+    reseeded = build_feature_adaptor(
+        None,
+        ProjectionConfig(method="random", target_dim=2, seed=12),
+        num_features=3,
+        encoder_identity="uni2",
+    )
+    other_encoder = build_feature_adaptor(
+        None,
+        ProjectionConfig(method="random", target_dim=2, seed=11),
+        num_features=3,
+        encoder_identity="virchow2",
+    )
+
+    assert not torch.equal(base.projection_matrix, reseeded.projection_matrix)
+    assert not torch.equal(base.projection_matrix, other_encoder.projection_matrix)
+
+
+def test_random_projection_approximately_preserves_inner_products():
+    """The 1/sqrt(target_dim) scaling is what makes the map an ablation of *width* rather
+    than a rescaling of the features."""
+    torch.manual_seed(0)
+    features = torch.nn.functional.normalize(torch.randn(64, 256), dim=-1)
+    adaptor = build_feature_adaptor(
+        None,
+        ProjectionConfig(method="random", target_dim=512, seed=3),
+        num_features=256,
+        encoder_identity="uni2",
+    )
+
+    projected = adaptor(features)
+
+    # Squared norms survive the map (this is what the 1/sqrt(target_dim) scaling buys)...
+    squared_norms = projected.pow(2).sum(dim=-1)
+    assert abs(float(squared_norms.mean()) - 1.0) < 0.05
+    # ...and so do pairwise inner products, to the O(1/sqrt(target_dim)) JL error.
+    original = features @ features.T
+    preserved = projected @ projected.T
+    assert float((preserved - original).abs().mean()) < 0.05
+
+
+def test_random_projection_needs_no_fitting():
+    """It is label-free *and* data-free: it never touches the Support set."""
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="random", target_dim=8), num_features=3
+    )
+
+    assert adaptor.requires_fit is False
+    assert adaptor(_train_features()).shape == (512, 8)
+
+
+def test_random_projection_may_expand_beyond_the_native_dim():
+    """Unlike PCA, random is unconstrained in target_dim."""
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="random", target_dim=64), num_features=3
+    )
+
+    assert adaptor.output_dim == 64
+    assert adaptor(_train_features()).shape == (512, 64)
+
+
+def test_pca_preflight_rejects_target_dim_above_the_feature_dim():
+    with pytest.raises(ValueError, match="exceeds the encoder's feature dimension"):
+        build_feature_adaptor(
+            None, ProjectionConfig(method="pca", target_dim=8), num_features=3
+        )
+
+
+def test_pca_preflight_rejects_too_few_fit_samples():
+    """`n_fit_samples >= target_dim`, with the shortfall named."""
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=3), num_features=3
+    )
+
+    with pytest.raises(ValueError, match="only 2 feature row"):
+        adaptor.fit([torch.randn(2, 3)])
+
+
+def test_pca_refuses_to_transform_before_it_is_fit():
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+    )
+
+    with pytest.raises(RuntimeError, match="before it was fit"):
+        adaptor(_train_features())
+
+
+def test_projection_is_applied_after_normalization():
+    """Order is normalize → project: the composed adaptor equals projecting a
+    separately-normalized copy of the same features."""
+    features = _train_features()
+    normalization = NormalizationConfig(method="zscore")
+    projection = ProjectionConfig(method="pca", target_dim=2)
+
+    composed = build_feature_adaptor(
+        normalization, projection, num_features=3
+    ).fit([features])
+    normalize_only = build_feature_adaptor(normalization, num_features=3).fit([features])
+    project_only = build_feature_adaptor(None, projection, num_features=3).fit(
+        [normalize_only(features)]
+    )
+
+    assert torch.allclose(
+        composed(features), project_only(normalize_only(features)), atol=1e-5
+    )
+    # ...and the reverse order is a genuinely different transform, so the assertion above
+    # is not vacuous.
+    assert not torch.allclose(
+        composed(features), normalize_only.center.new_zeros(1), atol=1e-5
+    )
+
+
+def test_projection_buffers_are_frozen_state_not_parameters():
+    """The projection must not be a learned layer: learning it would relocate the very
+    capacity confound the ablation exists to remove."""
+    adaptor = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+    ).fit([_train_features()])
+
+    assert list(adaptor.parameters()) == []
+    buffer_names = {name for name, _ in adaptor.named_buffers()}
+    assert {"projection_matrix", "projection_mean"} <= buffer_names
 
 
 def test_adaptor_preserves_shape_on_batched_bags():
@@ -224,9 +465,12 @@ def test_adaptor_state_round_trips_through_the_checkpoint(tmp_path: Path):
 _TILE_DIM = 4
 
 
-def _synthetic_fold(tmp_path: Path) -> tuple[Dataset, Splits, FeatureStore]:
+def _synthetic_fold(
+    tmp_path: Path, feature_dim: int = _TILE_DIM
+) -> tuple[Dataset, Splits, FeatureStore]:
     """4 samples — 2 train, 1 tune, 1 test — whose feature scales differ wildly per
     split, so a leaked tune/test row would visibly move the fitted statistics."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
         "sample_id,image_path,label\n"
@@ -246,24 +490,32 @@ def _synthetic_fold(tmp_path: Path) -> tuple[Dataset, Splits, FeatureStore]:
     torch.manual_seed(0)
     scales = {"s0": 1.0, "s1": 2.0, "s2": 500.0, "s3": 900.0}
     for sample_id, scale in scales.items():
-        torch.save(torch.randn(6, _TILE_DIM) * scale, feature_dir / f"{sample_id}.pt")
+        torch.save(torch.randn(6, feature_dim) * scale, feature_dir / f"{sample_id}.pt")
 
     dataset = Dataset(dataset_csv)
     return dataset, Splits(splits_csv, dataset), FeatureStore(feature_dir)
 
 
-def _run_fold(tmp_path: Path, normalization: NormalizationConfig | None):
-    dataset, splits, store = _synthetic_fold(tmp_path)
+def _run_fold(
+    tmp_path: Path,
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None = None,
+    *,
+    feature_dim: int = _TILE_DIM,
+    aggregator: str = "mean_pool",
+):
+    dataset, splits, store = _synthetic_fold(tmp_path, feature_dim)
     fold_dir = tmp_path / "fold_0"
     result = train_one_fold(
         feature_store=store,
         dataset=dataset,
         fold_split=splits.folds[0],
-        aggregator=AggregatorConfig(name="mean_pool"),
+        aggregator=AggregatorConfig(name=aggregator),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1),
         fold_dir=fold_dir,
         normalization=normalization,
+        projection=projection,
     )
     checkpoint = torch.load(
         result.train_result.checkpoint_path, weights_only=True, map_location="cpu"
@@ -345,6 +597,228 @@ def test_unsupported_path_refuses_normalization_rather_than_ignoring_it(tmp_path
             training=TrainingConfig(epochs=1, batch_size=1),
             fold_dir=tmp_path / "fold_tile",
             normalization=NormalizationConfig(method="zscore"),
+        )
+
+
+def test_projection_rewires_the_aggregator_to_the_target_width(tmp_path: Path):
+    """The dim rewire, stated as the thing it exists to guarantee: with a projection
+    active the downstream trainable parameter count is *independent of the encoder's
+    native dim*, so a capacity difference can no longer masquerade as a ranking."""
+    projection = ProjectionConfig(method="pca", target_dim=3)
+
+    _, narrow_state, _ = _run_fold(
+        tmp_path / "narrow", None, projection, feature_dim=4, aggregator="abmil"
+    )
+    _, wide_state, _ = _run_fold(
+        tmp_path / "wide", None, projection, feature_dim=32, aggregator="abmil"
+    )
+
+    def _trainable(state_dict) -> int:
+        return sum(
+            value.numel()
+            for key, value in state_dict.items()
+            if not key.startswith("feature_adaptor")
+        )
+
+    assert _trainable(narrow_state) == _trainable(wide_state)
+    # ...and the adaptor is what absorbs the difference: its frozen matrix is the only
+    # thing whose size still tracks the native dim.
+    assert narrow_state["feature_adaptor.projection_matrix"].shape == (3, 4)
+    assert wide_state["feature_adaptor.projection_matrix"].shape == (3, 32)
+
+
+def test_without_projection_the_aggregator_still_tracks_the_native_dim(tmp_path: Path):
+    """The counterpart that makes the test above non-vacuous: this is the confound."""
+    _, narrow_state, _ = _run_fold(
+        tmp_path / "narrow", None, None, feature_dim=4, aggregator="abmil"
+    )
+    _, wide_state, _ = _run_fold(
+        tmp_path / "wide", None, None, feature_dim=32, aggregator="abmil"
+    )
+
+    assert sum(v.numel() for v in narrow_state.values()) != sum(
+        v.numel() for v in wide_state.values()
+    )
+
+
+def test_projection_state_rides_in_the_fold_checkpoint(tmp_path: Path):
+    """The fitted map must be re-applied verbatim by the final-checkpoint test pass."""
+    fold_dir, state_dict, store = _run_fold(
+        tmp_path, None, ProjectionConfig(method="pca", target_dim=3)
+    )
+
+    support = torch.cat([store.load("s0"), store.load("s1")], dim=0)
+    expected = build_feature_adaptor(
+        None, ProjectionConfig(method="pca", target_dim=3), num_features=_TILE_DIM
+    ).fit([store.load("s0"), store.load("s1")])
+
+    assert torch.equal(
+        state_dict["feature_adaptor.projection_matrix"], expected.projection_matrix
+    )
+    assert torch.equal(
+        state_dict["feature_adaptor.projection_mean"], expected.projection_mean
+    )
+    # Fit on the Support split alone — the held-out rows are two orders of magnitude
+    # wider, so a leak would move the mean visibly.
+    assert not torch.allclose(
+        state_dict["feature_adaptor.projection_mean"],
+        torch.cat([store.load(f"s{i}") for i in range(4)], dim=0).mean(dim=0),
+        atol=1e-2,
+    )
+    assert support.shape[0] == 12
+
+
+def test_projection_without_normalization_needs_no_normalization_section(tmp_path: Path):
+    """`normalization` and `projection` are independently configurable."""
+    _, state_dict, _ = _run_fold(
+        tmp_path, None, ProjectionConfig(method="random", target_dim=5)
+    )
+
+    assert "feature_adaptor.projection_matrix" in state_dict
+    # The normalize stage is off, so its buffers stay at their identity values.
+    assert torch.equal(
+        state_dict["feature_adaptor.center"], torch.zeros(_TILE_DIM)
+    )
+    assert torch.equal(state_dict["feature_adaptor.scale"], torch.ones(_TILE_DIM))
+
+
+def test_normalization_and_projection_compose_in_one_fold(tmp_path: Path):
+    _, state_dict, store = _run_fold(
+        tmp_path,
+        NormalizationConfig(method="zscore"),
+        ProjectionConfig(method="pca", target_dim=3),
+    )
+
+    support = torch.cat([store.load("s0"), store.load("s1")], dim=0).to(torch.float64)
+    assert torch.allclose(
+        state_dict["feature_adaptor.center"], support.mean(dim=0).float(), atol=1e-5
+    )
+    assert state_dict["feature_adaptor.projection_matrix"].shape == (3, _TILE_DIM)
+
+
+def test_fold_sidecar_reports_the_projection(tmp_path: Path):
+    fold_dir, _, _ = _run_fold(
+        tmp_path, None, ProjectionConfig(method="pca", target_dim=3, seed=5)
+    )
+
+    sidecar = json.loads(
+        (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
+    )["projection"]
+
+    assert sidecar["method"] == "pca"
+    assert sidecar["target_dim"] == 3
+    assert sidecar["seed"] == 5
+    assert sidecar["n_fit_samples"] == 12  # 2 Support samples x 6 tiles
+    assert sidecar["input_dim"] == _TILE_DIM
+    assert sidecar["output_dim"] == 3
+    ratios = sidecar["explained_variance_ratio"]
+    assert len(ratios) == 3
+    assert ratios == sorted(ratios, reverse=True)
+    assert 0.0 < sum(ratios) <= 1.0 + 1e-6
+
+
+def test_sidecar_omits_explained_variance_for_random_projection(tmp_path: Path):
+    fold_dir, _, _ = _run_fold(
+        tmp_path, None, ProjectionConfig(method="random", target_dim=3)
+    )
+
+    sidecar = json.loads(
+        (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
+    )["projection"]
+
+    assert sidecar["method"] == "random"
+    assert "explained_variance_ratio" not in sidecar
+
+
+def test_projection_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
+    fold_dir, state_dict, _ = _run_fold(tmp_path, None, ProjectionConfig())
+
+    assert not any(key.startswith("feature_adaptor") for key in state_dict)
+    assert not (fold_dir / "feature_adapter.json").exists()
+
+
+def test_pca_preflight_fires_inside_a_fold(tmp_path: Path):
+    """The Support set here has 12 tile rows; asking for more components than that must
+    fail with the shortfall named rather than produce a degenerate basis."""
+    with pytest.raises(ValueError, match="only 12 feature row"):
+        _run_fold(
+            tmp_path,
+            None,
+            ProjectionConfig(method="pca", target_dim=13),
+            feature_dim=32,  # wide enough that the target_dim <= D half passes
+        )
+
+
+def test_attention_reconstructs_the_projected_model_from_the_checkpoint(tmp_path: Path):
+    """`save_attention` rebuilds MILModel from config + checkpoint and loads strictly.
+
+    Under a projection that rebuild has to agree on *both* the extra buffers and the
+    rewired aggregator width, or the strict load fails — the same class of breakage the
+    normalize stage hit.
+    """
+    from soma.config import PipelineConfig, save_config
+    from soma.heatmaps import save_attention
+
+    dataset, splits, store = _synthetic_fold(tmp_path / "data")
+    projection = ProjectionConfig(method="pca", target_dim=3)
+    fold_dir = tmp_path / "run"
+    train_one_fold(
+        feature_store=store,
+        dataset=dataset,
+        fold_split=splits.folds[0],
+        aggregator=AggregatorConfig(name="abmil"),
+        task=TaskConfig(name="binary_classification"),
+        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=1),
+        fold_dir=fold_dir,
+        projection=projection,
+    )
+    save_config(
+        PipelineConfig(
+            dataset_csv=tmp_path / "data" / "dataset.csv",
+            splits_csv=tmp_path / "data" / "splits.csv",
+            output_root=tmp_path / "out",
+            dataset_type="slide",
+            aggregator=AggregatorConfig(name="abmil"),
+            task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
+            projection=projection,
+        ),
+        fold_dir / "config.yaml",
+    )
+
+    save_attention(fold_dir, dataset, store)
+
+    assert list((fold_dir / "attention").rglob("*.npz"))
+
+
+def test_unsupported_path_refuses_projection_rather_than_ignoring_it(tmp_path: Path):
+    dataset, splits, store = _synthetic_fold(tmp_path)
+
+    with pytest.raises(ValueError, match="not yet supported"):
+        train_one_fold(
+            feature_store=store,
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="tile",
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=1, batch_size=1),
+            fold_dir=tmp_path / "fold_tile",
+            projection=ProjectionConfig(method="pca", target_dim=2),
+        )
+
+
+def test_train_refuses_projection_on_the_dense_paths(tmp_path: Path):
+    dataset, splits, store = _synthetic_fold(tmp_path)
+
+    with pytest.raises(ValueError, match="not yet supported"):
+        train(
+            feature_store=store,
+            dataset=dataset,
+            splits=splits,
+            dataset_type="segmentation",
+            task=TaskConfig(name="segmentation"),
+            training=TrainingConfig(epochs=1),
+            run_dir=tmp_path / "run",
+            projection=ProjectionConfig(method="random", target_dim=2),
         )
 
 

@@ -20,6 +20,7 @@ from soma.config import (
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
+    ProjectionConfig,
     SamplingConfig,
     TaskConfig,
     TrainingConfig,
@@ -178,6 +179,40 @@ def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
         build_experiment_spec(cfg).experiment_id for cfg in (off, zscore, l2)
     }
     assert len(ids) == 3
+
+
+def test_canonical_experiment_payload_omits_default_projection(tmp_path: Path):
+    """Guarded identity: `projection: none` must not re-mint legacy experiment ids."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "projection" not in payload
+
+
+def test_build_experiment_spec_distinguishes_projection(tmp_path: Path):
+    off = _make_pipeline_config(tmp_path)
+    pca = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="pca", target_dim=64)
+    )
+    random = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="random", target_dim=64)
+    )
+    narrower = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="pca", target_dim=32)
+    )
+    reseeded = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="random", target_dim=64, seed=1)
+    )
+
+    assert canonical_experiment_payload(pca)["projection"] == {
+        "method": "pca",
+        "target_dim": 64,
+        "seed": 0,
+    }
+    ids = {
+        build_experiment_spec(cfg).experiment_id
+        for cfg in (off, pca, random, narrower, reseeded)
+    }
+    assert len(ids) == 5
 
 
 def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
