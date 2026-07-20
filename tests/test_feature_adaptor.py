@@ -1,9 +1,12 @@
-"""Tests for soma.training.feature_adaptor — the fitted feature adaptor (issue #283).
+"""Tests for soma.training.feature_adaptor — the fitted feature adaptor.
 
 The adaptor is the one genuinely new seam this work adds: a buffer-carrying front
 module inserted ahead of the aggregator/head. These tests assert its *external*
 behavior — what the fitted buffers are, that they come from the Support split only,
 that the optimizer never sees them, and that they survive a checkpoint round-trip.
+
+Sections: the module itself, then each path it is wired into — the tile-encoder MIL
+path (issues #283, #284) and the slide-encoder embedding path (issue #285).
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from soma.pipeline import train, train_one_fold
 from soma.config import NormalizationConfig, ProjectionConfig
 from soma.tasks.classification import BinaryClassificationHead
 from soma.training.feature_adaptor import build_feature_adaptor
-from soma.training.model import MILModel
+from soma.training.model import EmbeddingModel, MILModel
 
 
 def _train_features() -> torch.Tensor:
@@ -788,6 +791,270 @@ def test_attention_reconstructs_the_projected_model_from_the_checkpoint(tmp_path
     save_attention(fold_dir, dataset, store)
 
     assert list((fold_dir / "attention").rglob("*.npz"))
+
+
+# ---------------------------------------------------------------------------
+# Slide-encoder embedding path — end to end through train_one_fold (issue #285)
+# ---------------------------------------------------------------------------
+
+_EMBEDDING_DIM = 4
+
+
+def _synthetic_embedding_fold(
+    tmp_path: Path, feature_dim: int = _EMBEDDING_DIM
+) -> tuple[Dataset, Splits, FeatureStore]:
+    """The slide-encoder path: **one** feature vector per slide, not a bag of tiles.
+
+    4 slides — 2 Support, 1 tune, 1 test — whose embedding scales differ wildly per
+    split, so a leaked held-out row would visibly move the fitted statistics. The
+    Support set is deliberately tiny: "K means K" is the regime this path runs in.
+    """
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label\n"
+        "s0,/slides/s0.svs,tumor\n"
+        "s1,/slides/s1.svs,normal\n"
+        "s2,/slides/s2.svs,tumor\n"
+        "s3,/slides/s3.svs,normal\n",
+        encoding="utf-8",
+    )
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text(
+        "fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,tune\n0,s3,test\n",
+        encoding="utf-8",
+    )
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir(exist_ok=True)
+    torch.manual_seed(0)
+    scales = {"s0": 1.0, "s1": 2.0, "s2": 500.0, "s3": 900.0}
+    for sample_id, scale in scales.items():
+        # (D,) — a single embedding per slide is what makes this the slide-encoder path.
+        torch.save(torch.randn(feature_dim) * scale, feature_dir / f"{sample_id}.pt")
+
+    dataset = Dataset(dataset_csv)
+    return dataset, Splits(splits_csv, dataset), FeatureStore(feature_dir)
+
+
+def _run_embedding_fold(
+    tmp_path: Path,
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None = None,
+    *,
+    feature_dim: int = _EMBEDDING_DIM,
+):
+    dataset, splits, store = _synthetic_embedding_fold(tmp_path, feature_dim)
+    fold_dir = tmp_path / "fold_0"
+    result = train_one_fold(
+        feature_store=store,
+        dataset=dataset,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="binary_classification"),
+        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1),
+        fold_dir=fold_dir,
+        normalization=normalization,
+        projection=projection,
+    )
+    checkpoint = torch.load(
+        result.train_result.checkpoint_path, weights_only=True, map_location="cpu"
+    )
+    return fold_dir, checkpoint["model_state_dict"], store
+
+
+def test_embedding_path_fits_zscore_on_the_support_embeddings_only(tmp_path: Path):
+    """The tracer for this path: the fit is over the K Support *embeddings* — one vector
+    per slide — and nothing else.
+    """
+    _, state_dict, store = _run_embedding_fold(
+        tmp_path, NormalizationConfig(method="zscore")
+    )
+
+    support = torch.stack([store.load("s0"), store.load("s1")]).to(torch.float64)
+    assert torch.allclose(
+        state_dict["feature_adaptor.center"], support.mean(dim=0).float(), atol=1e-5
+    )
+    assert torch.allclose(
+        state_dict["feature_adaptor.scale"],
+        support.std(dim=0, unbiased=False).float(),
+        atol=1e-4,
+    )
+    # The held-out slides are ~2 orders of magnitude wider; had either leaked in, the
+    # fitted scale could not match the Support-only estimate above.
+    everything = torch.stack([store.load(f"s{i}") for i in range(4)])
+    assert not torch.allclose(
+        state_dict["feature_adaptor.scale"],
+        everything.std(dim=0, unbiased=False),
+        atol=1e-4,
+    )
+
+
+def test_embedding_path_evaluation_never_moves_the_fitted_buffers(tmp_path: Path):
+    """train_one_fold evaluates tune and test after fitting; the buffers it saved must be
+    exactly the ones it fit — the transform is frozen, not running."""
+    dataset, splits, store = _synthetic_embedding_fold(tmp_path)
+    adaptor = build_feature_adaptor(
+        NormalizationConfig(method="zscore"), num_features=_EMBEDDING_DIM
+    ).fit([store.load("s0"), store.load("s1")])
+    expected_center = adaptor.center.clone()
+    expected_scale = adaptor.scale.clone()
+
+    _, state_dict, _ = _run_embedding_fold(
+        tmp_path, NormalizationConfig(method="zscore")
+    )
+
+    assert torch.equal(state_dict["feature_adaptor.center"], expected_center)
+    assert torch.equal(state_dict["feature_adaptor.scale"], expected_scale)
+
+
+def test_embedding_path_pca_preflight_fires_when_k_is_smaller_than_target_dim(
+    tmp_path: Path,
+):
+    """The preflight this path exists to protect: the fit sample count *is* K, so asking
+    for a basis wider than the Support set must name the shortfall rather than hand back
+    a degenerate basis. Two Support slides means two rows — nothing more is available."""
+    with pytest.raises(ValueError, match="only 2 feature row"):
+        _run_embedding_fold(
+            tmp_path,
+            None,
+            ProjectionConfig(method="pca", target_dim=3),
+            feature_dim=8,  # wide enough that the target_dim <= D half passes
+        )
+
+
+def test_embedding_path_projection_rewires_the_head_to_the_target_width(tmp_path: Path):
+    """The dim rewire on this path: with a projection active the *head* — the only
+    trainable thing here — is built against `target_dim`, so its parameter count is
+    independent of the encoder's native dim."""
+    projection = ProjectionConfig(method="random", target_dim=6)
+
+    _, narrow_state, _ = _run_embedding_fold(
+        tmp_path / "narrow", None, projection, feature_dim=4
+    )
+    _, wide_state, _ = _run_embedding_fold(
+        tmp_path / "wide", None, projection, feature_dim=32
+    )
+
+    def _trainable(state_dict) -> int:
+        return sum(
+            value.numel()
+            for key, value in state_dict.items()
+            if not key.startswith("feature_adaptor")
+        )
+
+    assert _trainable(narrow_state) == _trainable(wide_state)
+    # ...and the adaptor is what absorbs the difference: its frozen matrix is the only
+    # thing whose size still tracks the native dim.
+    assert narrow_state["feature_adaptor.projection_matrix"].shape == (6, 4)
+    assert wide_state["feature_adaptor.projection_matrix"].shape == (6, 32)
+
+
+def test_embedding_path_without_projection_the_head_tracks_the_native_dim(
+    tmp_path: Path,
+):
+    """The counterpart that makes the test above non-vacuous: this is the confound."""
+    _, narrow_state, _ = _run_embedding_fold(tmp_path / "narrow", None, None, feature_dim=4)
+    _, wide_state, _ = _run_embedding_fold(tmp_path / "wide", None, None, feature_dim=32)
+
+    assert sum(v.numel() for v in narrow_state.values()) != sum(
+        v.numel() for v in wide_state.values()
+    )
+
+
+def test_embedding_path_checkpoint_reconstructs_and_scores(tmp_path: Path):
+    """A fold's checkpoint must reload strictly into a model rebuilt from config alone,
+    and then score. Under a projection that rebuild has to agree on *both* the extra
+    adaptor buffers and the rewired head width — the width mismatch is invisible until
+    something actually runs, so this reconstructs and runs."""
+    normalization = NormalizationConfig(method="zscore")
+    projection = ProjectionConfig(method="pca", target_dim=2)
+    _, state_dict, store = _run_embedding_fold(tmp_path, normalization, projection)
+
+    rebuilt_adaptor = build_feature_adaptor(
+        normalization, projection, num_features=_EMBEDDING_DIM
+    )
+    restored = EmbeddingModel(
+        task_head=BinaryClassificationHead(input_dim=2, num_classes=2),
+        feature_adaptor=rebuilt_adaptor,
+    )
+    restored.load_state_dict(state_dict)  # strict: extra/missing keys would raise
+    restored.eval()
+
+    assert restored.feature_adaptor.is_fitted
+    # The fitted state came back, not the identity values it was constructed with.
+    expected = build_feature_adaptor(
+        normalization, projection, num_features=_EMBEDDING_DIM
+    ).fit([store.load("s0"), store.load("s1")])
+    assert torch.equal(restored.feature_adaptor.center, expected.center)
+    assert torch.equal(restored.feature_adaptor.projection_matrix, expected.projection_matrix)
+    # ...and it scores: the head really is `target_dim` wide.
+    logits = restored(store.load("s3").unsqueeze(0)).logits
+    assert logits.shape == (1, 2)
+    assert torch.isfinite(logits).all()
+
+
+def test_embedding_path_adaptor_state_is_not_among_the_models_parameters(tmp_path: Path):
+    """The optimizer builds from model.parameters(); the fitted statistics must not be
+    there, or they would be trained rather than estimated."""
+    adaptor = build_feature_adaptor(
+        NormalizationConfig(method="zscore"), num_features=_EMBEDDING_DIM
+    ).fit([torch.randn(8, _EMBEDDING_DIM)])
+    head_kwargs = {"input_dim": _EMBEDDING_DIM, "num_classes": 2}
+    model = EmbeddingModel(
+        task_head=BinaryClassificationHead(**head_kwargs), feature_adaptor=adaptor
+    )
+
+    parameter_names = {name for name, _ in model.named_parameters()}
+    assert not any(name.startswith("feature_adaptor") for name in parameter_names)
+    assert parameter_names == {
+        name
+        for name, _ in EmbeddingModel(
+            task_head=BinaryClassificationHead(**head_kwargs)
+        ).named_parameters()
+    }
+
+
+def test_embedding_model_without_adaptor_is_structurally_identical_to_today():
+    """"Omitted section = absent module" on this path: same state_dict, same parameters,
+    same logits — the byte-parity anchor for existing slide-encoder runs."""
+    torch.manual_seed(0)
+    legacy = EmbeddingModel(task_head=BinaryClassificationHead(input_dim=3, num_classes=2))
+    torch.manual_seed(0)
+    with_none = EmbeddingModel(
+        task_head=BinaryClassificationHead(input_dim=3, num_classes=2),
+        feature_adaptor=None,
+    )
+
+    assert list(with_none.state_dict()) == list(legacy.state_dict())
+    assert [name for name, _ in with_none.named_parameters()] == [
+        name for name, _ in legacy.named_parameters()
+    ]
+    X = torch.randn(2, 3)
+    assert torch.equal(with_none(X).logits, legacy(X).logits)
+
+
+def test_embedding_path_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
+    fold_dir, _, _ = _run_embedding_fold(
+        tmp_path,
+        NormalizationConfig(method="zscore", eps=1e-4),
+        ProjectionConfig(method="pca", target_dim=2, seed=7),
+    )
+
+    sidecar = json.loads((fold_dir / "feature_adapter.json").read_text(encoding="utf-8"))
+
+    assert sidecar["normalization"]["method"] == "zscore"
+    assert sidecar["normalization"]["eps"] == 1e-4
+    assert sidecar["projection"]["method"] == "pca"
+    assert sidecar["projection"]["seed"] == 7
+    assert sidecar["projection"]["n_fit_samples"] == 2  # K Support embeddings
+    assert sidecar["projection"]["input_dim"] == _EMBEDDING_DIM
+    assert sidecar["projection"]["output_dim"] == 2
+
+
+def test_embedding_path_with_both_blocks_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
+    fold_dir, state_dict, _ = _run_embedding_fold(tmp_path, None, ProjectionConfig())
+
+    assert not any(key.startswith("feature_adaptor") for key in state_dict)
+    assert not (fold_dir / "feature_adapter.json").exists()
 
 
 def test_unsupported_path_refuses_projection_rather_than_ignoring_it(tmp_path: Path):

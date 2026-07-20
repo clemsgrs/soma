@@ -112,8 +112,11 @@ regardless, as ``{method: none}`` when off.
 This is orthogonal to the composite per-member ``member_norm``, which normalizes
 each member's block before concatenation and is unaffected.
 
-Today the adaptor is fit on the tile-encoder MIL path; requesting a transform on
-a path that does not yet support one is refused rather than silently ignored.
+Today the adaptor is fit on the tile-encoder MIL path and on the slide-encoder
+embedding path. On the embedding path the fit is over the Support split's
+**embeddings** — one vector per slide — rather than tiles, so the fit sample
+count is exactly ``K``. Requesting a transform on a path that does not yet
+support one is refused rather than silently ignored.
 
 Feature projection
 ------------------
@@ -159,7 +162,9 @@ which is what equalizes trainable capacity.
 A preflight refuses an unsatisfiable PCA up front: it needs at least
 ``target_dim`` feature rows in the Support set, and ``target_dim`` can be at
 most the encoder's dimension ``D``. Either shortfall raises an error naming it.
-``random`` is unconstrained and may expand as well as reduce.
+``random`` is unconstrained and may expand as well as reduce. The row-count half
+bites hardest on the slide-encoder embedding path, where the Support set yields
+one row per slide: at ``K = 12`` no PCA wider than 12 components is available.
 
 Provenance follows the same guards as ``normalization``: the section is not part
 of the feature-extraction cache key (so one extracted cache is shared across
