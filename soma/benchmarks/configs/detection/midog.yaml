@@ -43,6 +43,13 @@ data:
   splits_csv: /data/pathology/projects/clement/code/soma/data/midog/curated/splits.csv
   dataset_type: detection
 
+cache:
+  # fp16 dense grids halve on-disk size (~128 MB -> ~64 MB per 1024 tile at 768-dim).
+  # MIDOG's 16,992 tiles make the fp32 default (~2.2 TB for a single encoder) infeasible;
+  # fp16 (~1.1 TB) fits and is numerically ~identical for frozen features. The driver sets
+  # cache.root_dir; the fp16 key differs from any fp32 cache so this forces a fresh extract.
+  dtype: fp16
+
 encoder:
   name: virchow2
   batch_size: 8
