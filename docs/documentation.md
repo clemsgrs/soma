@@ -1,6 +1,24 @@
 # Project Documentation Notes
 
 - 2026-07-20: Extended the feature adaptor (`normalization` + `projection`) to the
+  **single-encoder dense path** (`segmentation` and `detection` over one encoder's cached
+  grids), completing the protocol across all three paths. The adaptor operates
+  **channel-axis** on `(B, d, h, w)` grids and is fit over **all positions in the Support
+  ROIs** — so at a 2×2 token grid, two Support ROIs give 8 fit rows, not 2. The frozen
+  projection composes **ahead of** the decoder's own learnable 1×1 projection conv (frozen
+  `d → target_dim`, then learnable `target_dim → hidden`), so no decoder change was needed
+  and, because that 1×1 is the decoder's only `d`-dependent module, the whole decoder
+  becomes encoder-dim-independent under an active projection. This path **requires
+  `feature_mode: cached`**: `live` re-encodes *augmented* tiles every step, so a transform
+  fit on the cached Support grids would not match what it transforms — the combination is
+  refused at config validation and again in the fold. Composite (multi-encoder) dense
+  streams, the decoder-free `pixel_classifier` path, and `spatial_expression` are still
+  refused; composites keep their per-member `member_norm` unchanged. Checkpoint
+  reconstruction sites on this path (detection eval-only re-scoring, the OCELOT greedy
+  re-scorer, and `build_live_segmentation_models` for whole-slide sliding-window
+  inference) now rebuild the adaptor and size the decoder from its `output_dim`, so a
+  cached-trained projected checkpoint replays correctly.
+- 2026-07-20: Extended the feature adaptor (`normalization` + `projection`) to the
   **slide-encoder embedding path**, so the same protocol now covers both the tile-encoder
   MIL path and the embedding path. There the fit is over the Support split's *embeddings*
   — one vector per slide — so the fit sample count is exactly `K`, which makes the PCA

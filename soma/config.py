@@ -1265,6 +1265,28 @@ class PipelineConfig:
                 "feature_mode='live' is only supported for dataset_type='segmentation' "
                 f"(re-encoding augmented tiles), got dataset_type={self.dataset_type!r}."
             )
+        if self.feature_mode == "live":
+            # The feature adaptor is fit on the **cached** Support grids; the live path
+            # re-encodes *augmented* tiles every step, so the fitted transform would not
+            # match what it transforms. Refuse the combination here rather than let the
+            # run start and quietly apply a mis-fit transform (issue #286).
+            # Keyed on the *active* method, not on `is_default`: a section that carries a
+            # non-default `eps`/`seed` but `method: none` builds no adaptor at all, so it
+            # must not block a live run. This is the same predicate the pipeline's guard
+            # uses, and the two must not drift.
+            adaptor_sections = []
+            if self.normalization.method != "none":
+                adaptor_sections.append(f"normalization.method={self.normalization.method!r}")
+            if self.projection.method != "none":
+                adaptor_sections.append(f"projection.method={self.projection.method!r}")
+            if adaptor_sections:
+                raise ValueError(
+                    f"{' and '.join(adaptor_sections)} requires feature_mode='cached' — the "
+                    "feature adaptor is fit on the cached Support grids, and the live path "
+                    "re-encodes augmented tiles every step, so the fitted transform would "
+                    "not match what it transforms. Set feature_mode='cached', or use "
+                    "{method: none}."
+                )
         if self.augmentation.is_enabled():
             if self.feature_mode != "live":
                 raise ValueError(

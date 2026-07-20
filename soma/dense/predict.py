@@ -396,6 +396,9 @@ def build_live_segmentation_models(
     decoder_params: dict | None,
     num_classes: int,
     ckpt_paths: Sequence[str | Path],
+    normalization=None,
+    projection=None,
+    encoder_identity: str = "",
 ):
     """Reconstruct trained :class:`LiveSegmentationModel`\\ s from a source + checkpoints.
 
@@ -404,30 +407,44 @@ def build_live_segmentation_models(
     parameter-free :class:`SegmentationHead`, load the checkpoint's ``decoder.*`` weights,
     and put it in eval on the source's device. Mirrors the training-time construction so
     the inference forward matches by construction. Returns the list of eval-mode models.
-    """
-    import inspect
-    import math
 
-    from soma.decoders.registry import decoder_registry
+    These checkpoints are trained on the **cached** dense path and replayed live at
+    whole-slide scale, so they may carry a fitted feature adaptor (issue #286). Pass the
+    run's ``normalization``/``projection`` to rebuild it: without them the strict load
+    below rejects the adaptor's buffer keys, *and* the decoder would be built against the
+    encoder's native dim while the checkpoint carries ``target_dim`` shapes. The adaptor is
+    rebuilt **unfitted** — the checkpoint's buffers are the fitted state.
+    """
+    from soma.decoders.registry import build_decoder_for_grid
     from soma.tasks.segmentation import SegmentationHead
+    from soma.training.feature_adaptor import (
+        build_feature_adaptor,
+        feature_adaptor_output_dim,
+    )
     from soma.training.model import LiveSegmentationModel
 
     ckpt_paths = [Path(p) for p in ckpt_paths]
     if not ckpt_paths:
         raise ValueError("build_live_segmentation_models needs at least one checkpoint")
 
-    decoder_cls = decoder_registry.get(decoder_name)
-    ctor = inspect.signature(decoder_cls.__init__).parameters
+    def _make_adaptor():
+        return build_feature_adaptor(
+            normalization,
+            projection,
+            num_features=source.feature_dim,
+            encoder_identity=encoder_identity,
+        )
 
-    def _make_decoder():
-        params = dict(decoder_params or {})
-        if "num_upsample_blocks" in ctor and "num_upsample_blocks" not in params:
-            g = source.geometry
-            ratio = max(
-                g.encoded_size[0] / g.grid_shape[0], g.encoded_size[1] / g.grid_shape[1]
-            )
-            params["num_upsample_blocks"] = max(0, math.ceil(math.log2(ratio)))
-        return decoder_cls(input_dim=source.feature_dim, num_classes=num_classes, **params)
+    def _make_decoder(adaptor):
+        return build_decoder_for_grid(
+            decoder_name,
+            decoder_params,
+            geometry=source.geometry,
+            input_dim=feature_adaptor_output_dim(
+                adaptor, num_features=source.feature_dim
+            ),
+            num_classes=num_classes,
+        )
 
     models = []
     for ckpt in ckpt_paths:
@@ -438,17 +455,19 @@ def build_live_segmentation_models(
             backend=source.backend,
             tolerance=source.tolerance,
         )
+        adaptor = _make_adaptor()
         model = LiveSegmentationModel(
             encoder=source.encoder,
-            decoder=_make_decoder(),
+            decoder=_make_decoder(adaptor),
             task_head=head,
             device=source.device,
             precision=source.precision,
             geometry=source.geometry,
             window_size=source.window_size,
             overlap=source.overlap,
+            feature_adaptor=adaptor,
         )
         state = torch.load(ckpt, weights_only=True, map_location=source.device)["model_state_dict"]
-        model.load_state_dict(state)  # decoder.* only; head is parameter-free
+        model.load_state_dict(state)  # decoder.* (+ adaptor buffers); head is parameter-free
         models.append(model.to(source.device).eval())
     return models

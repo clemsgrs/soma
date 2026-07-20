@@ -41,7 +41,6 @@ import torch
 
 from soma.config import load_config
 from soma.dataset import DetectionManifest, Splits
-from soma.decoders.registry import decoder_registry
 from soma.dense import DenseFeatureStore
 from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.encoders.validation import resolve_preprocessing_config
@@ -51,7 +50,10 @@ from soma.pipeline import _make_loaders, _resolve_detection_px
 # OCELOT benchmark's `score` override (ADR 0002). This script stays as the thin CLI that
 # examples/ocelot/campaign.py drives per (cell, seed); it re-uses that single definition
 # instead of keeping a duplicate. New reproductions should prefer `soma reproduce ocelot`.
-from soma.benchmarks.ocelot import build_greedy_report  # noqa: F401
+from soma.benchmarks.ocelot import (  # noqa: F401
+    build_detection_model_from_checkpoint,
+    build_greedy_report,
+)
 
 
 def main() -> None:
@@ -73,8 +75,6 @@ def main() -> None:
         "use for model-selection re-scoring of runs whose test grids were never cached.",
     )
     args = ap.parse_args()
-
-    from soma.training.model import SegmentationModel
 
     cfg = load_config(str(args.config))
     manifest = DetectionManifest(cfg.dataset_csv)
@@ -175,16 +175,18 @@ def main() -> None:
         metrics=cfg.evaluation.metrics,
     )
 
-    # Rebuild the decoder exactly as the fold did, then load trained weights.
-    decoder_cls = decoder_registry.get(cfg.decoder.name)
-    dparams = dict(cfg.decoder.params)
-    if "num_upsample_blocks" in inspect.signature(decoder_cls.__init__).parameters and "num_upsample_blocks" not in dparams:
-        rh = geometry.encoded_size[0] / geometry.grid_shape[0]
-        rw = geometry.encoded_size[1] / geometry.grid_shape[1]
-        dparams["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(rh, rw))))
-    decoder_obj = decoder_cls(input_dim=store.feature_dim, num_classes=num_classes, **dparams)
-    model = SegmentationModel(decoder=decoder_obj, task_head=head)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu")["model_state_dict"])
+    # Rebuild the model exactly as the fold did (decoder + any feature adaptor the run
+    # carried), then load trained weights.
+    model = build_detection_model_from_checkpoint(
+        store=store,
+        checkpoint_path=ckpt,
+        decoder=cfg.decoder,
+        task_head=head,
+        geometry=geometry,
+        normalization=cfg.normalization,
+        projection=cfg.projection,
+        encoder_identity=cfg.encoder.name if cfg.encoder is not None else "",
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
 
