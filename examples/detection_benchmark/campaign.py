@@ -524,10 +524,13 @@ def _decode_cell_points(
     import torch
 
     from soma.benchmarks.detection_benchmark import CellPredictions, dataset_spec
-    from soma.benchmarks.ocelot import _locate_checkpoint, _locate_run_config
+    from soma.benchmarks.ocelot import (
+        _locate_checkpoint,
+        _locate_run_config,
+        build_detection_model_from_checkpoint,
+    )
     from soma.config import load_config
     from soma.dataset import DetectionManifest, Splits
-    from soma.decoders.registry import decoder_registry
     from soma.dense import DenseFeatureStore
     from soma.dense_extraction import DenseTileFeatureExtractor
     from soma.encoders.validation import resolve_preprocessing_config
@@ -538,7 +541,6 @@ def _decode_cell_points(
     )
     from soma.tasks.detection import DetectionHead
     from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
-    from soma.training.model import SegmentationModel
 
     spec = dataset_spec(dataset)
     cfg = load_config(str(_locate_run_config(run_dir)))
@@ -581,15 +583,19 @@ def _decode_cell_points(
         run_spacing=float(grid_spacing) if grid_spacing is not None else None,
         metrics=cfg.evaluation.metrics,
     )
-    decoder_cls = decoder_registry.get(cfg.decoder.name)
-    dparams = dict(cfg.decoder.params)
-    if "num_upsample_blocks" in inspect.signature(decoder_cls.__init__).parameters and "num_upsample_blocks" not in dparams:
-        rh = geometry.encoded_size[0] / geometry.grid_shape[0]
-        rw = geometry.encoded_size[1] / geometry.grid_shape[1]
-        dparams["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(rh, rw))))
-    decoder_obj = decoder_cls(input_dim=store.feature_dim, num_classes=num_classes, **dparams)
-    model = SegmentationModel(decoder=decoder_obj, task_head=head)
-    model.load_state_dict(torch.load(_locate_checkpoint(run_dir), map_location="cpu")["model_state_dict"])
+    # One reconstruction path for every re-scorer: it rebuilds the run's feature adaptor
+    # (issue #286) and sizes the decoder from the adaptor's output width, so a checkpoint
+    # trained under a projection loads back into the model that wrote it.
+    model = build_detection_model_from_checkpoint(
+        store=store,
+        checkpoint_path=_locate_checkpoint(run_dir),
+        decoder=cfg.decoder,
+        task_head=head,
+        geometry=geometry,
+        normalization=cfg.normalization,
+        projection=cfg.projection,
+        encoder_identity=cfg.encoder.name if cfg.encoder is not None else "",
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
 

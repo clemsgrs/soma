@@ -252,6 +252,20 @@ class FeatureAdaptor(nn.Module):
         """
         if not self.requires_fit:
             return self
+        needs_two_passes = (
+            self.method in _FITTED_METHODS
+            and self.projection_method in _FITTED_PROJECTIONS
+        )
+        if needs_two_passes and iter(batches) is batches:
+            # A one-shot iterator would arrive at the projection pass exhausted, and the
+            # PCA preflight would then blame the Support set size for what is really an
+            # exhausted stream. Name the real cause instead.
+            raise TypeError(
+                "Fitting both a normalization and a projection needs two passes over the "
+                "Support features, so `batches` must be re-iterable (a sequence, or an "
+                "object whose __iter__ restarts the stream) — a one-shot iterator or "
+                "generator would arrive at the projection pass already exhausted."
+            )
         if self.method in _FITTED_METHODS:
             self._fit_normalization(batches)
         if self.projection_method in _FITTED_PROJECTIONS:
@@ -390,6 +404,26 @@ class FeatureAdaptor(nn.Module):
     def forward(self, X: Tensor) -> Tensor:
         """Apply the active stages in order: **normalize → project**."""
         return self._project(self._normalize(X))
+
+    def forward_grid(self, grid: Tensor) -> Tensor:
+        """Apply the adaptor **channel-axis** to a dense grid ``(B, d, h, w)``.
+
+        The dense path's features are not rows with the feature dim last — they are grids
+        whose *channel* axis is the feature dim. Every spatial position is one feature
+        vector, so the transform is the same one :meth:`forward` applies; only the axis it
+        lives on differs. Moving ``d`` to the last axis, transforming, and moving it back
+        keeps a single implementation of the stages for every path, and makes "channel-axis
+        on ``(B, d, h, w)``" a property of the adaptor rather than of each caller.
+
+        Returns ``(B, output_dim, h, w)`` — under a projection the channel count is
+        ``target_dim``, which is the width the decoder must have been built against.
+        """
+        if grid.ndim != 4:
+            raise ValueError(
+                f"forward_grid expects a dense grid (B, d, h, w); got shape "
+                f"{tuple(grid.shape)}."
+            )
+        return self.forward(grid.movedim(1, -1)).movedim(-1, 1).contiguous()
 
     def qc_summary(self) -> dict[str, Any]:
         """The `feature_adapter` QC sidecar payload."""
