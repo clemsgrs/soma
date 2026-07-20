@@ -14,6 +14,7 @@ from soma.config import (
     EvalConfig,
     ExecutionConfig,
     MasksConfig,
+    NormalizationConfig,
     PipelineConfig,
     PreprocessingConfig,
     SamplingConfig,
@@ -195,6 +196,83 @@ def test_checkpoint_selection_composes_with_allow_missing_tune():
         TrainingConfig(checkpoint_selection="last", patience=None).allow_missing_tune
         is False
     )
+
+
+def test_normalization_config_defaults():
+    """Feature normalization is off by default (issue #283)."""
+    cfg = NormalizationConfig()
+
+    assert cfg.method == "none"
+    assert cfg.eps == 1e-6
+
+
+@pytest.mark.parametrize("method", ["none", "zscore", "l2", "layernorm"])
+def test_normalization_config_accepts_vocabulary(method):
+    assert NormalizationConfig(method=method).method == method
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"method": "standardize"}, "method"),
+        ({"method": "zscore", "eps": 0.0}, "eps"),
+        ({"method": "zscore", "eps": -1e-6}, "eps"),
+    ],
+)
+def test_normalization_config_rejects_invalid(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        NormalizationConfig(**kwargs)
+
+
+def test_pipeline_config_normalization_defaults_to_off():
+    assert _make_pipeline_config().normalization == NormalizationConfig()
+
+
+def test_saved_config_always_serializes_normalization_block(tmp_path: Path):
+    """Guard the hash, not the record: the block is written even when off."""
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(_make_pipeline_config(), yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["normalization"] == {"method": "none", "eps": 1e-6}
+    assert load_config(yaml_path).normalization == NormalizationConfig()
+
+
+def test_normalization_survives_config_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        normalization=NormalizationConfig(method="zscore", eps=1e-5)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["normalization"] == {"method": "zscore", "eps": 1e-5}
+    assert loaded.normalization == NormalizationConfig(method="zscore", eps=1e-5)
+
+
+def test_load_config_rejects_unknown_normalization_method(tmp_path: Path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "run": {"output_root": str(tmp_path)},
+                "data": {
+                    "dataset_csv": "d.csv",
+                    "splits_csv": "s.csv",
+                    "dataset_type": "slide",
+                },
+                "task": {"name": "binary_classification"},
+                "normalization": {"method": "standardize"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="method"):
+        load_config(yaml_path)
 
 
 def test_aggregator_config_explicit_name():

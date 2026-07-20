@@ -62,18 +62,33 @@ class MILModel(nn.Module):
     maps the bag representation to predictions. Tile attention (if available)
     is passed through for interpretability and heatmap generation.
 
+    An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
+    the aggregator and transforms the frozen features before anything trainable sees
+    them. It is ``None`` unless the run asks for one (``normalization`` — issue #283), and
+    ``None`` is not registered as a submodule, so a run without one has exactly the
+    ``state_dict``/``parameters`` of a model built before the adaptor existed.
+
     Args:
         aggregator: MIL aggregator (e.g. ABMIL, MeanPool).
         task_head: Task head (e.g. ClassificationHead).
+        feature_adaptor: Optional front module applied to ``X`` before aggregation.
     """
 
-    def __init__(self, aggregator: Aggregator, task_head: TaskHead) -> None:
+    def __init__(
+        self,
+        aggregator: Aggregator,
+        task_head: TaskHead,
+        feature_adaptor: nn.Module | None = None,
+    ) -> None:
         super().__init__()
         aggregator.configure_for_task(task_head)
         self.aggregator = aggregator
         self.task_head = task_head
+        self.feature_adaptor = feature_adaptor
 
     def forward(self, X: Tensor, mask: Tensor | None = None) -> MILModelOutput:
+        if self.feature_adaptor is not None:
+            X = self.feature_adaptor(X)
         agg_out = self.aggregator(X, mask=mask)
         if (
             agg_out.bag_representation.ndim == 3

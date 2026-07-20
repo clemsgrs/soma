@@ -78,6 +78,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "execution",
         "cache",
         "augmentation",
+        "normalization",
         "reports",
     }
     unknown_keys = [key for key in data if key not in allowed_sections]
@@ -110,6 +111,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "execution",
         "cache",
         "augmentation",
+        "normalization",
     ):
         if section in data:
             value = data[section]
@@ -251,6 +253,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         task=_load_task_config(data),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
+        normalization=NormalizationConfig(**data.get("normalization", {})),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
@@ -531,6 +534,54 @@ class CacheConfig:
     # per-epoch read I/O. Folded into every cache key (guarded so legacy fp32 keys stay
     # byte-stable) so an fp16 cache and an fp32 cache never collide.
     dtype: str | None = None
+
+
+_NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")
+
+
+@dataclass(frozen=True)
+class NormalizationConfig:
+    """Per-feature normalization applied to frozen encoder features before the model.
+
+    Frozen encoders span 768→4608 dimensions with very different activation scales, so a
+    shared aggregator/head and its single externally-calibrated learning rate do not see
+    comparable inputs across encoders. This section names the fix, as the first stage of
+    the *feature adaptor* — a buffer-carrying front module inserted ahead of the
+    aggregator/head (issue #283).
+
+    ``method``:
+
+    * ``none`` (default) — no adaptor stage at all; the model is structurally identical
+      to a run that predates this section.
+    * ``zscore`` — **fitted**: per-feature center/scale estimated from the Support (train)
+      split only, so the transform is leak-free. ``eps`` floors the scale so a constant
+      or near-constant channel cannot blow up.
+    * ``l2`` — stateless per-feature-vector L2 normalization.
+    * ``layernorm`` — stateless per-feature-vector standardization (mean/std over the
+      feature axis), with ``eps`` in the denominator.
+
+    This is orthogonal to the composite per-member ``member_norm``, which normalizes each
+    member's block *before* concatenation and is untouched by this section.
+    """
+
+    method: str = "none"
+    eps: float = 1e-6
+
+    def __post_init__(self) -> None:
+        if self.method not in _NORMALIZATION_METHODS:
+            raise ValueError(
+                "NormalizationConfig.method must be one of "
+                f"{list(_NORMALIZATION_METHODS)}, got {self.method!r}."
+            )
+        if float(self.eps) <= 0.0:
+            raise ValueError(
+                f"NormalizationConfig.eps must be > 0 (it floors the scale), got {self.eps}."
+            )
+
+    @property
+    def is_default(self) -> bool:
+        """True when this section asks for nothing — the guard for identity folding."""
+        return self == NormalizationConfig()
 
 
 @dataclass(frozen=True)
@@ -913,6 +964,9 @@ class PipelineConfig:
         task: Task-head configuration. Required.
         evaluation: Metric and subgroup evaluation configuration.
         training: Training hyperparameters.
+        normalization: Feature-adaptor normalization applied to frozen encoder
+            features ahead of the aggregator/head. Defaults to ``none`` (no
+            adaptor at all).
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
         resume: When True, reuse the latest existing run dir for this experiment
@@ -941,6 +995,7 @@ class PipelineConfig:
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
@@ -1359,6 +1414,10 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             }
         ),
         "augmentation": _normalize_yaml_value(asdict(config.augmentation)),
+        # Always recorded, even when off (`{method: none}`): the *hash* is guarded so
+        # legacy experiment_ids survive, the *record* is not — a saved config always
+        # says what transform the run applied (issue #283).
+        "normalization": _normalize_yaml_value(asdict(config.normalization)),
         "reports": {
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },

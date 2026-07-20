@@ -1,5 +1,15 @@
 # Project Documentation Notes
 
+- 2026-07-20: Added the top-level `normalization` section (`none` | `zscore` | `l2` |
+  `layernorm`, plus `eps`) and the *feature adaptor* it drives — a buffer-carrying front
+  module inserted ahead of the aggregator/head on the tile-encoder MIL path. `zscore` is
+  fitted on the Support (train) split only, so the transform is leak-free; its center and
+  scale live in buffers (never in `model.parameters()`) and ride in the checkpoint, so the
+  final-checkpoint test pass re-applies the exact transform. `none` (the default) builds no
+  adaptor at all, leaving the model structurally identical to before. The section does not
+  enter the feature-extraction cache key, folds into experiment identity only when
+  non-default, is always serialized in the saved run config, and is summarized in a
+  per-fold `feature_adapter.json` QC sidecar.
 - 2026-07-20: Added `TrainingConfig.checkpoint_selection` (`best` | `last`). `last`
   evaluates the final-epoch weights, takes model selection off the tune metric and
   disables early stopping (it requires `patience: null`), while still computing and

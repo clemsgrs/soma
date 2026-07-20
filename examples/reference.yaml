@@ -140,6 +140,15 @@ augmentation:
   saturation: 0.0
   hue: 0.0
 
+# Per-feature normalization of frozen encoder features, applied by the feature adaptor
+# (a buffer-carrying front module) ahead of the aggregator/head. 'none' (default) means
+# no adaptor at all. 'zscore' is FITTED on the train split only (leak-free) and its
+# center/scale ride in the checkpoint; 'l2' and 'layernorm' are stateless. `eps` floors
+# the scale so a constant channel cannot blow up. Orthogonal to composite member_norm.
+normalization:
+  method: none  # none | zscore | l2 | layernorm
+  eps: 1.0e-6
+
 reports:
   heatmaps:
     enabled: false

@@ -73,6 +73,48 @@ Practical defaults
 When tuning, keep the task and evaluation contract stable before sweeping
 optimizer details.
 
+Feature normalization
+---------------------
+
+Frozen encoders span 768 to 4608 dimensions with very different activation
+scales, so a shared aggregator and its single externally-calibrated learning
+rate do not see comparable inputs across encoders. The top-level
+``normalization`` section closes that gap by inserting a *feature adaptor* — a
+front module applied to the frozen features before anything trainable sees
+them.
+
+.. code-block:: yaml
+
+   normalization:
+     method: zscore   # none | zscore | l2 | layernorm
+     eps: 1.0e-6
+
+``zscore`` is **fitted**: per-feature center and scale are estimated from the
+Support (train) split's tiles alone, so the transform is leak-free — held-out
+rows only ever pass *through* the adaptor and never move its statistics.
+``eps`` floors the scale so a constant or near-constant channel cannot blow up.
+``l2`` and ``layernorm`` are stateless and need no fitting. The default,
+``none``, means no adaptor at all: the model is structurally identical to one
+built before this section existed.
+
+The fitted state is carried as **buffers, not parameters**, so the optimizer
+never sees it while it still rides in the checkpoint — the final-checkpoint test
+pass therefore re-applies the exact transform that was fit. Each fold writes a
+``feature_adapter.json`` QC sidecar next to its checkpoint recording the method,
+the ``eps`` floor, and how many channels that floor actually caught.
+
+Turning normalization on does **not** invalidate an extracted feature cache: the
+section is not part of the feature-extraction cache key. It *is* part of the
+experiment identity, but only when non-default, so every pre-existing
+``experiment_id`` is preserved. The saved run config always serializes the block
+regardless, as ``{method: none}`` when off.
+
+This is orthogonal to the composite per-member ``member_norm``, which normalizes
+each member's block before concatenation and is unaffected.
+
+Today the adaptor is fit on the tile-encoder MIL path; requesting a transform on
+a path that does not yet support one is refused rather than silently ignored.
+
 Live training summary
 ---------------------
 
