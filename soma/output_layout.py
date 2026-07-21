@@ -187,13 +187,25 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     # to the features *is* part of what the experiment is, but every pre-existing run was
     # implicitly ``none``, so emitting the key unconditionally would re-mint every legacy
     # experiment_id. The saved config.yaml records the block regardless.
-    if not config.normalization.is_default:
-        payload["normalization"] = asdict(config.normalization)
+    if config.normalization.method != "none":
+        payload["normalization"] = {
+            "method": config.normalization.method,
+            "eps": config.normalization.eps,
+        }
     # ``projection`` folds in under the same guard (issue #284): the dim-matched ablation
     # is a different experiment from the native-width run, but `projection: none` must
     # leave every pre-existing experiment_id untouched.
-    if not config.projection.is_default:
-        payload["projection"] = asdict(config.projection)
+    if config.projection.method == "pca":
+        payload["projection"] = {
+            "method": "pca",
+            "target_dim": config.projection.target_dim,
+        }
+    elif config.projection.method == "random":
+        payload["projection"] = {
+            "method": "random",
+            "target_dim": config.projection.target_dim,
+            "seed": config.projection.seed,
+        }
     return payload
 
 

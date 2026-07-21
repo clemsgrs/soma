@@ -594,6 +594,21 @@ def test_fold_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
     assert sidecar["normalization"]["method"] == "zscore"
     assert sidecar["normalization"]["eps"] == 1e-4
     assert sidecar["normalization"]["eps_floored_channels"] == 0
+    assert sidecar["n_support_samples"] == 2
+    assert sidecar["normalization"]["n_fit_samples"] == 12
+    assert sidecar["projection"]["n_fit_samples"] is None
+
+
+@pytest.mark.parametrize("method", ["l2", "layernorm"])
+def test_stateless_normalization_reports_zero_fit_rows(tmp_path: Path, method: str):
+    fold_dir, _, _ = _run_fold(tmp_path, NormalizationConfig(method=method))
+
+    sidecar = json.loads(
+        (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["n_support_samples"] == 2
+    assert sidecar["normalization"]["n_fit_samples"] == 0
+    assert sidecar["projection"]["n_fit_samples"] is None
 
 
 def test_normalization_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
@@ -719,20 +734,25 @@ def test_normalization_and_projection_compose_in_one_fold(tmp_path: Path):
 
 def test_fold_sidecar_reports_the_projection(tmp_path: Path):
     fold_dir, _, _ = _run_fold(
-        tmp_path, None, ProjectionConfig(method="pca", target_dim=3, seed=5)
+        tmp_path,
+        NormalizationConfig(method="zscore"),
+        ProjectionConfig(method="pca", target_dim=3),
     )
 
     sidecar = json.loads(
         (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
-    )["projection"]
+    )
+    projection = sidecar["projection"]
 
-    assert sidecar["method"] == "pca"
-    assert sidecar["target_dim"] == 3
-    assert sidecar["seed"] == 5
-    assert sidecar["n_fit_samples"] == 12  # 2 Support samples x 6 tiles
-    assert sidecar["input_dim"] == _TILE_DIM
-    assert sidecar["output_dim"] == 3
-    ratios = sidecar["explained_variance_ratio"]
+    assert sidecar["n_support_samples"] == 2
+    assert sidecar["normalization"]["n_fit_samples"] == 12
+    assert projection["method"] == "pca"
+    assert projection["target_dim"] == 3
+    assert projection["seed"] == 0
+    assert projection["n_fit_samples"] == 12  # 2 Support samples x 6 tiles
+    assert projection["input_dim"] == _TILE_DIM
+    assert projection["output_dim"] == 3
+    ratios = projection["explained_variance_ratio"]
     assert len(ratios) == 3
     assert ratios == sorted(ratios, reverse=True)
     assert 0.0 < sum(ratios) <= 1.0 + 1e-6
@@ -745,10 +765,14 @@ def test_sidecar_omits_explained_variance_for_random_projection(tmp_path: Path):
 
     sidecar = json.loads(
         (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
-    )["projection"]
+    )
+    projection = sidecar["projection"]
 
-    assert sidecar["method"] == "random"
-    assert "explained_variance_ratio" not in sidecar
+    assert sidecar["n_support_samples"] == 2
+    assert sidecar["normalization"]["n_fit_samples"] is None
+    assert projection["method"] == "random"
+    assert projection["n_fit_samples"] == 0
+    assert "explained_variance_ratio" not in projection
 
 
 def test_projection_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
@@ -1054,15 +1078,17 @@ def test_embedding_path_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
     fold_dir, _, _ = _run_embedding_fold(
         tmp_path,
         NormalizationConfig(method="zscore", eps=1e-4),
-        ProjectionConfig(method="pca", target_dim=2, seed=7),
+        ProjectionConfig(method="pca", target_dim=2),
     )
 
     sidecar = json.loads((fold_dir / "feature_adapter.json").read_text(encoding="utf-8"))
 
     assert sidecar["normalization"]["method"] == "zscore"
     assert sidecar["normalization"]["eps"] == 1e-4
+    assert sidecar["n_support_samples"] == 2
+    assert sidecar["normalization"]["n_fit_samples"] == 2
     assert sidecar["projection"]["method"] == "pca"
-    assert sidecar["projection"]["seed"] == 7
+    assert sidecar["projection"]["seed"] == 0
     assert sidecar["projection"]["n_fit_samples"] == 2  # K Support embeddings
     assert sidecar["projection"]["input_dim"] == _EMBEDDING_DIM
     assert sidecar["projection"]["output_dim"] == 2
@@ -1384,10 +1410,6 @@ def test_config_rejects_the_adaptor_together_with_feature_mode_live(tmp_path: Pa
         _config(projection=ProjectionConfig(method="random", target_dim=2))
     # ...and the default (both off) is untouched by the guard.
     assert _config().feature_mode == "live"
-    # A section with `method: none` builds no adaptor whatever its other fields say, so it
-    # must not block a live run — the guard keys on the active method, not on is_default.
-    assert _config(normalization=NormalizationConfig(eps=1e-4)).feature_mode == "live"
-    assert _config(projection=ProjectionConfig(seed=5)).feature_mode == "live"
 
 
 _DETECTION_SPACING = 0.2  # µm/px; match_distance 0.6 µm -> 3 target-frame px
@@ -1499,6 +1521,23 @@ def test_detection_dense_path_fits_the_adaptor_over_the_support_rois(tmp_path: P
     assert state_dict["decoder.proj.0.weight"].shape[1] == 2
 
 
+def test_detection_fold_refuses_adaptor_on_composite_dense_stream(tmp_path: Path):
+    """Detection's standalone fold API shares the single-encoder adaptor contract."""
+    from soma.dense.composite import CompositeDenseFeatureStore
+
+    manifest, splits, store = _synthetic_detection_fold(tmp_path / "data")
+    composite = CompositeDenseFeatureStore(
+        [store, store], concat_resolution="grid", member_norms=["l2", "l2"]
+    )
+
+    with pytest.raises(ValueError, match="not yet supported.*composite"):
+        _run_detection_fold(
+            tmp_path,
+            NormalizationConfig(method="zscore"),
+            fixtures=(manifest, splits, composite),
+        )
+
+
 def test_detection_dense_path_with_both_blocks_off_leaves_no_adaptor(tmp_path: Path):
     fold_dir, state_dict, _ = _run_detection_fold(tmp_path, None, None)
 
@@ -1510,15 +1549,17 @@ def test_dense_fold_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
     fold_dir, _, _ = _run_dense_fold(
         tmp_path,
         NormalizationConfig(method="zscore", eps=1e-4),
-        ProjectionConfig(method="pca", target_dim=2, seed=7),
+        ProjectionConfig(method="pca", target_dim=2),
     )
 
     sidecar = json.loads((fold_dir / "feature_adapter.json").read_text(encoding="utf-8"))
 
     assert sidecar["normalization"]["method"] == "zscore"
     assert sidecar["normalization"]["eps"] == 1e-4
+    assert sidecar["n_support_samples"] == 2
+    assert sidecar["normalization"]["n_fit_samples"] == 8
     assert sidecar["projection"]["method"] == "pca"
-    assert sidecar["projection"]["seed"] == 7
+    assert sidecar["projection"]["seed"] == 0
     # 2 Support ROIs x a 2x2 token grid = 8 positions, not 2 samples.
     assert sidecar["projection"]["n_fit_samples"] == 8
     assert sidecar["projection"]["input_dim"] == _DENSE_DIM
@@ -1596,6 +1637,30 @@ def test_train_still_refuses_the_adaptor_on_a_composite_dense_stream(tmp_path: P
             training=TrainingConfig(epochs=1),
             run_dir=tmp_path / "run",
             projection=ProjectionConfig(method="random", target_dim=2),
+        )
+
+
+def test_segmentation_fold_refuses_adaptor_on_composite_dense_stream(tmp_path: Path):
+    """The standalone fold API enforces the same single-encoder ownership rule."""
+    from soma.config import DecoderConfig
+    from soma.dense.composite import CompositeDenseFeatureStore
+    from soma.pipeline import train_one_segmentation_fold
+
+    manifest, splits, store = _synthetic_dense_fold(tmp_path / "data")
+    composite = CompositeDenseFeatureStore(
+        [store, store], concat_resolution="grid", member_norms=["l2", "l2"]
+    )
+
+    with pytest.raises(ValueError, match="not yet supported.*composite"):
+        train_one_segmentation_fold(
+            feature_store=composite,
+            dataset=manifest,
+            fold_split=splits.folds[0],
+            task=TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
+            training=TrainingConfig(epochs=1, batch_size=2),
+            fold_dir=tmp_path / "fold",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            normalization=NormalizationConfig(method="zscore"),
         )
 
 

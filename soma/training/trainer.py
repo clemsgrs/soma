@@ -229,8 +229,14 @@ class Trainer:
                 if select_last:
                     # Final-checkpoint protocol (#282): every epoch supersedes the last,
                     # so the checkpoint left on disk is the final-epoch weights. The tune
-                    # metrics above are still computed and logged — as diagnostics only,
-                    # never as a selection signal, so the monitor is not consulted here.
+                    # metrics above are still computed and logged — as diagnostics only.
+                    # Resolve the declared monitor to validate direct Trainer callers, then
+                    # deliberately discard it as a selection signal.
+                    _resolve_monitor_value(
+                        self._config,
+                        tune_loss=tune_loss,
+                        tune_metrics=tune_metrics,
+                    )
                     monitor_value = tune_loss
                     improved = True
                 else:

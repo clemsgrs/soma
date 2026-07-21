@@ -141,10 +141,10 @@ class FeatureAdaptor(nn.Module):
         self.eps = float(eps)
         self.num_features = int(num_features)
         self.projection_method = str(projection.method)
-        self.projection_seed = int(projection.seed)
+        self.projection_seed = projection.seed
         self.encoder_identity = str(encoder_identity)
         self.target_dim = (
-            int(projection.target_dim)
+            projection.target_dim
             if projection.target_dim is not None
             else self.num_features
         )
@@ -164,6 +164,14 @@ class FeatureAdaptor(nn.Module):
         self.register_buffer("scale", torch.ones(self.num_features))
         self.register_buffer("eps_floored", torch.zeros((), dtype=torch.long))
         self.register_buffer("fitted", torch.zeros((), dtype=torch.bool))
+        # QC provenance, not transform state: it is intentionally absent from checkpoints.
+        # The sidecar is written immediately after fitting, while old checkpoints remain
+        # strict-load compatible because this counter cannot affect ``forward``.
+        self.register_buffer(
+            "_normalization_n_fit_samples",
+            torch.zeros((), dtype=torch.long),
+            persistent=False,
+        )
         # The projection is frozen too — a buffer, not a learned layer, so it cannot
         # reintroduce or relocate the capacity confound it exists to remove.
         self.register_buffer("projection_mean", torch.zeros(self.num_features))
@@ -226,6 +234,24 @@ class FeatureAdaptor(nn.Module):
     def n_fit_samples(self) -> int:
         """Feature rows the fitted projection was estimated from (QC signal)."""
         return int(self.projection_n_fit_samples.item())
+
+    @property
+    def normalization_fit_samples(self) -> int | None:
+        """Feature rows used by normalization; zero means active but data-free."""
+        if self.method == "none":
+            return None
+        if self.method in _FITTED_METHODS:
+            return int(self._normalization_n_fit_samples.item())
+        return 0
+
+    @property
+    def projection_fit_samples(self) -> int | None:
+        """Feature rows used by projection; zero means active but data-free."""
+        if self.projection_method == "none":
+            return None
+        if self.projection_method in _FITTED_PROJECTIONS:
+            return self.n_fit_samples
+        return 0
 
     @property
     def num_eps_floored(self) -> int:
@@ -297,6 +323,7 @@ class FeatureAdaptor(nn.Module):
         self.center.copy_(mean.to(self.center.dtype))
         self.scale.copy_(scale.to(self.scale.dtype))
         self.eps_floored.fill_(int(floored.sum().item()))
+        self._normalization_n_fit_samples.fill_(count)
         self.fitted.fill_(True)
 
     def _fit_projection(self, batches: Iterable[Tensor]) -> None:
@@ -431,7 +458,7 @@ class FeatureAdaptor(nn.Module):
             "method": self.projection_method,
             "target_dim": self.target_dim if self.projects else None,
             "seed": self.projection_seed,
-            "n_fit_samples": self.n_fit_samples if self.projects else None,
+            "n_fit_samples": self.projection_fit_samples,
             "input_dim": self.num_features,
             "output_dim": self.output_dim,
         }
@@ -446,6 +473,7 @@ class FeatureAdaptor(nn.Module):
                 "method": self.method,
                 "eps": self.eps,
                 "eps_floored_channels": self.num_eps_floored,
+                "n_fit_samples": self.normalization_fit_samples,
             },
             "projection": projection,
             "num_features": self.num_features,
@@ -500,7 +528,12 @@ def feature_adaptor_output_dim(
     return num_features if adaptor is None else adaptor.output_dim
 
 
-def write_feature_adapter_sidecar(adaptor: FeatureAdaptor | None, fold_dir: Path) -> Path | None:
+def write_feature_adapter_sidecar(
+    adaptor: FeatureAdaptor | None,
+    fold_dir: Path,
+    *,
+    n_support_samples: int,
+) -> Path | None:
     """Write the ``feature_adapter.json`` QC sidecar, or nothing when no adaptor exists.
 
     Reports the normalization method, the ``eps`` floor, and how many channels that floor
@@ -511,7 +544,9 @@ def write_feature_adapter_sidecar(adaptor: FeatureAdaptor | None, fold_dir: Path
         return None
     path = Path(fold_dir) / FEATURE_ADAPTER_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = adaptor.qc_summary()
+    payload["n_support_samples"] = n_support_samples
     path.write_text(
-        json.dumps(adaptor.qc_summary(), indent=2, sort_keys=True), encoding="utf-8"
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
     return path

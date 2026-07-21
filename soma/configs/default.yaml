@@ -141,7 +141,7 @@ augmentation:
 # the scale so a constant channel cannot blow up. Orthogonal to composite member_norm.
 normalization:
   method: none  # none | zscore | l2 | layernorm
-  eps: 1.0e-6
+  eps: 1.0e-6  # finite > 0; must stay at this default when method=none
 
 # Label-free projection of frozen encoder features to a common width — the dim-matched
 # ablation that removes the capacity confound (a wider encoder otherwise buys a larger
@@ -155,7 +155,7 @@ normalization:
 projection:
   method: none  # none | pca | random
   target_dim: null  # required when method != none
-  seed: 0
+  seed: 0  # configurable only for random; none/pca require 0
 
 reports:
   heatmaps:
