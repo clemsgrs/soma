@@ -12,6 +12,8 @@ from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 import copy
+import math
+from numbers import Integral, Real
 from typing import Any
 
 import yaml
@@ -540,6 +542,20 @@ class CacheConfig:
 
 
 _NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")
+_DEFAULT_NORMALIZATION_EPS = 1e-6
+
+
+def _is_exact_integer(value: object) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool)
+
+
+def _is_finite_positive_real(value: object) -> bool:
+    return (
+        isinstance(value, Real)
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) > 0.0
+    )
 
 
 @dataclass(frozen=True)
@@ -568,7 +584,7 @@ class NormalizationConfig:
     """
 
     method: str = "none"
-    eps: float = 1e-6
+    eps: float = _DEFAULT_NORMALIZATION_EPS
 
     def __post_init__(self) -> None:
         if self.method not in _NORMALIZATION_METHODS:
@@ -576,9 +592,15 @@ class NormalizationConfig:
                 "NormalizationConfig.method must be one of "
                 f"{list(_NORMALIZATION_METHODS)}, got {self.method!r}."
             )
-        if float(self.eps) <= 0.0:
+        if not _is_finite_positive_real(self.eps):
             raise ValueError(
-                f"NormalizationConfig.eps must be > 0 (it floors the scale), got {self.eps}."
+                "NormalizationConfig.eps must be a finite positive real number "
+                f"(it floors the scale), got {self.eps!r}."
+            )
+        if self.method == "none" and self.eps != _DEFAULT_NORMALIZATION_EPS:
+            raise ValueError(
+                "NormalizationConfig.method='none' requires the default eps "
+                f"({_DEFAULT_NORMALIZATION_EPS}); got {self.eps!r}."
             )
 
     @property
@@ -630,21 +652,98 @@ class ProjectionConfig:
                 "ProjectionConfig.method must be one of "
                 f"{list(_PROJECTION_METHODS)}, got {self.method!r}."
             )
+        if not _is_exact_integer(self.seed):
+            raise ValueError(
+                f"ProjectionConfig.seed must be an integer, got {self.seed!r}."
+            )
+        if self.method == "none" and (self.target_dim is not None or self.seed != 0):
+            raise ValueError(
+                "ProjectionConfig.method='none' requires target_dim=None and seed=0; "
+                f"got target_dim={self.target_dim!r}, seed={self.seed!r}."
+            )
+        if self.method == "pca" and self.seed != 0:
+            raise ValueError(
+                "ProjectionConfig.method='pca' is deterministic and requires seed=0; "
+                f"got seed={self.seed!r}."
+            )
         if self.method != "none":
             if self.target_dim is None:
                 raise ValueError(
                     f"ProjectionConfig.method={self.method!r} requires target_dim — the "
                     "common width every encoder is projected to."
                 )
-            if int(self.target_dim) < 1:
+            if not _is_exact_integer(self.target_dim) or self.target_dim < 1:
                 raise ValueError(
-                    f"ProjectionConfig.target_dim must be >= 1, got {self.target_dim}."
+                    "ProjectionConfig.target_dim must be a positive integer, "
+                    f"got {self.target_dim!r}."
                 )
 
     @property
     def is_default(self) -> bool:
         """True when this section asks for nothing — the guard for identity folding."""
         return self == ProjectionConfig()
+
+
+def _requested_feature_adaptor_stages(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+) -> list[str]:
+    """Return the active top-level adaptor stages for validation and diagnostics."""
+    requested = []
+    if normalization is not None and normalization.method != "none":
+        requested.append(f"normalization.method={normalization.method!r}")
+    if projection is not None and projection.method != "none":
+        requested.append(f"projection.method={projection.method!r}")
+    return requested
+
+
+def validate_feature_adaptor_compatibility(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+    *,
+    feature_mode: str = "cached",
+    dataset_type: str | None = None,
+    has_composite: bool = False,
+    has_pixel_classifier: bool = False,
+    is_hierarchical: bool = False,
+) -> None:
+    """Enforce which data planes own the top-level feature adaptor.
+
+    Both configuration validation and standalone training APIs call this rule so a path
+    cannot become permissive merely by bypassing the orchestrator.
+    """
+    requested = _requested_feature_adaptor_stages(normalization, projection)
+    if not requested:
+        return
+    requested_text = " and ".join(requested)
+    if feature_mode == "live":
+        raise ValueError(
+            f"{requested_text} requires feature_mode='cached' — the feature adaptor is "
+            "fit on the cached Support grids, and the live path re-encodes augmented "
+            "tiles every step, so the fitted transform would not match what it "
+            "transforms. Set feature_mode='cached', or use {method: none}."
+        )
+
+    unsupported = (
+        "a composite (multi-encoder) dense stream"
+        if has_composite
+        else "the decoder-free pixel_classifier path"
+        if has_pixel_classifier
+        else "dataset_type='spatial_expression'"
+        if dataset_type == "spatial_expression"
+        else f"dataset_type={dataset_type!r}"
+        if dataset_type in {"patient", "tile"}
+        else "a hierarchical feature stream"
+        if is_hierarchical
+        else None
+    )
+    if unsupported is not None:
+        raise ValueError(
+            f"{requested_text} is not yet supported for {unsupported} — the feature "
+            "adaptor fits on the tile-encoder MIL path, the slide-encoder embedding "
+            "path, and the single-encoder dense path. Use {method: none} here "
+            "(composites normalize per member via composite.encoders[].member_norm)."
+        )
 
 
 @dataclass(frozen=True)
@@ -1085,6 +1184,24 @@ class PipelineConfig:
                 f"Invalid dataset_type {self.dataset_type!r}. "
                 f"Must be one of: {sorted(_valid_dataset_types)}"
             )
+        if (
+            self.training.checkpoint_selection == "last"
+            and self.pixel_classifier is not None
+        ):
+            raise ValueError(
+                "training.checkpoint_selection='last' is not supported with a "
+                "pixel_classifier: pixel classifiers own separate fit loops and do not "
+                "produce Trainer checkpoints. Use checkpoint_selection: best."
+            )
+        if (
+            self.training.checkpoint_selection == "last"
+            and self.training.method == "ridge_pca_probe"
+        ):
+            raise ValueError(
+                "training.checkpoint_selection='last' is not supported with "
+                "training.method='ridge_pca_probe': the closed-form probe has no epoch "
+                "checkpoint to select. Use checkpoint_selection: best."
+            )
         # spatial_expression (HEST gene-expression-from-morphology): one spot = one tile
         # with a vector target, trained by the closed-form Ridge+PCA probe. It reuses the
         # tile extraction path but its supervision is a multi-target regression vector, so
@@ -1265,28 +1382,14 @@ class PipelineConfig:
                 "feature_mode='live' is only supported for dataset_type='segmentation' "
                 f"(re-encoding augmented tiles), got dataset_type={self.dataset_type!r}."
             )
-        if self.feature_mode == "live":
-            # The feature adaptor is fit on the **cached** Support grids; the live path
-            # re-encodes *augmented* tiles every step, so the fitted transform would not
-            # match what it transforms. Refuse the combination here rather than let the
-            # run start and quietly apply a mis-fit transform (issue #286).
-            # Keyed on the *active* method, not on `is_default`: a section that carries a
-            # non-default `eps`/`seed` but `method: none` builds no adaptor at all, so it
-            # must not block a live run. This is the same predicate the pipeline's guard
-            # uses, and the two must not drift.
-            adaptor_sections = []
-            if self.normalization.method != "none":
-                adaptor_sections.append(f"normalization.method={self.normalization.method!r}")
-            if self.projection.method != "none":
-                adaptor_sections.append(f"projection.method={self.projection.method!r}")
-            if adaptor_sections:
-                raise ValueError(
-                    f"{' and '.join(adaptor_sections)} requires feature_mode='cached' — the "
-                    "feature adaptor is fit on the cached Support grids, and the live path "
-                    "re-encodes augmented tiles every step, so the fitted transform would "
-                    "not match what it transforms. Set feature_mode='cached', or use "
-                    "{method: none}."
-                )
+        validate_feature_adaptor_compatibility(
+            self.normalization,
+            self.projection,
+            feature_mode=self.feature_mode,
+            dataset_type=self.dataset_type,
+            has_composite=self.composite is not None,
+            has_pixel_classifier=self.pixel_classifier is not None,
+        )
         if self.augmentation.is_enabled():
             if self.feature_mode != "live":
                 raise ValueError(
@@ -1363,8 +1466,20 @@ class PipelineConfig:
                             "likelihood's risk set is the batch. (For large MIL bags, use "
                             "accumulation mode by setting task.params.cox_window >= 2.)"
                         )
-        # Validate that requested metrics are valid for the task family.
-        resolve_metrics(self.task.name, self.evaluation.metrics)
+        # Validate that requested metrics and the training monitor are valid for the task
+        # family.  ``last`` ignores the monitor for checkpoint selection, but the monitor is
+        # still part of the declared protocol and must name a diagnostic the run computes.
+        resolved_metrics = resolve_metrics(self.task.name, self.evaluation.metrics)
+        if (
+            self.training.monitor != "tune_loss"
+            and self.training.monitor not in resolved_metrics
+        ):
+            available = ", ".join(resolved_metrics)
+            raise ValueError(
+                f"Training monitor {self.training.monitor!r} is not an effective metric for "
+                f"task {self.task.name!r}. Available metrics: {available}; use 'tune_loss' "
+                "to monitor loss."
+            )
         # Fail fast on unknown encoder / aggregator names — catching these at
         # config construction avoids burning hours of preprocessing before the
         # pipeline would otherwise crash at component-build time.

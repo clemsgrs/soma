@@ -93,6 +93,8 @@ them.
 Support (train) split's tiles alone, so the transform is leak-free — held-out
 rows only ever pass *through* the adaptor and never move its statistics.
 ``eps`` floors the scale so a constant or near-constant channel cannot blow up.
+It must be a finite positive number; when ``method: none``, it must retain its
+default because it has no executed meaning.
 ``l2`` and ``layernorm`` are stateless and need no fitting. The default,
 ``none``, means no adaptor at all: the model is structurally identical to one
 built before this section existed.
@@ -101,7 +103,12 @@ The fitted state is carried as **buffers, not parameters**, so the optimizer
 never sees it while it still rides in the checkpoint — the final-checkpoint test
 pass therefore re-applies the exact transform that was fit. Each fold writes a
 ``feature_adapter.json`` QC sidecar next to its checkpoint recording the method,
-the ``eps`` floor, and how many channels that floor actually caught.
+the ``eps`` floor, and how many channels that floor actually caught. The sidecar
+distinguishes Support units from feature rows: top-level ``n_support_samples`` is
+the fold's ``K``, while each stage's ``n_fit_samples`` is the number of feature
+rows it estimated state from. Fitted stages report their actual row count,
+active stateless/data-free stages report ``0``, and inactive stages report
+``null``.
 
 Turning normalization on does **not** invalidate an extracted feature cache: the
 section is not part of the feature-extraction cache key. It *is* part of the
@@ -112,8 +119,9 @@ regardless, as ``{method: none}`` when off.
 This is orthogonal to the composite per-member ``member_norm``, which normalizes
 each member's block before concatenation and is unaffected.
 
-Today the adaptor is fit on the tile-encoder MIL path and on the slide-encoder
-embedding path. On the embedding path the fit is over the Support split's
+Today the adaptor is fit on the tile-encoder MIL path, the slide-encoder
+embedding path, and single-encoder cached dense paths. On the embedding path the
+fit is over the Support split's
 **embeddings** — one vector per slide — rather than tiles, so the fit sample
 count is exactly ``K``. Requesting a transform on a path that does not yet
 support one is refused rather than silently ignored.
@@ -133,7 +141,7 @@ equal across the roster.
    projection:
      method: pca      # none | pca | random
      target_dim: 512  # required when method != none
-     seed: 0
+     seed: 0           # configurable only for random
 
 It is the *second* stage of the same feature adaptor, applied **after**
 ``normalization`` — the order is normalize → project. The two sections are
@@ -153,6 +161,11 @@ generator that never touches the global RNG — so the matrix is reproducible fr
 the config alone, constant across training trajectories, and different for every
 encoder in a roster.
 
+Projection controls are exact integers (booleans, strings, and fractional
+numbers are rejected). ``target_dim`` is meaningful for active projections;
+``seed`` is meaningful only for ``random``. Inactive fields must retain their
+defaults, and PCA requires the default seed because it is deterministic.
+
 Both maps are **frozen**: they live in buffers, not learned layers, so the
 projection cannot reintroduce or relocate the capacity confound it exists to
 remove. When a projection is active the aggregator and head are constructed
@@ -169,7 +182,8 @@ one row per slide: at ``K = 12`` no PCA wider than 12 components is available.
 Provenance follows the same guards as ``normalization``: the section is not part
 of the feature-extraction cache key (so one extracted cache is shared across
 every projection width), it folds into the experiment identity only when
-non-default, and the saved run config always serializes the block. The
+active, and only with effective fields (PCA omits ``seed``; random includes it).
+The saved run config always serializes the complete block. The
 ``feature_adapter.json`` sidecar records the method, ``target_dim``, ``seed``,
 the number of rows fit on, the in/out dims, and — for ``pca`` — the
 explained-variance ratio of the retained components.

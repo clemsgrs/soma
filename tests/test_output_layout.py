@@ -206,6 +206,10 @@ def test_build_experiment_spec_distinguishes_projection(tmp_path: Path):
     assert canonical_experiment_payload(pca)["projection"] == {
         "method": "pca",
         "target_dim": 64,
+    }
+    assert canonical_experiment_payload(random)["projection"] == {
+        "method": "random",
+        "target_dim": 64,
         "seed": 0,
     }
     ids = {

@@ -51,6 +51,7 @@ from soma.config import (
     TrainingConfig,
     config_yaml_dict,
     save_config,
+    validate_feature_adaptor_compatibility,
 )
 from soma.dataset import (
     Dataset,
@@ -465,41 +466,23 @@ class _SupportGrids:
         )
 
 
-def _requested_adaptor_stages(
-    normalization: NormalizationConfig | None, projection: ProjectionConfig | None
-) -> list[str]:
-    """The active feature-adaptor sections, named for an error message (empty ⇒ none)."""
-    requested = []
-    if normalization is not None and normalization.method != "none":
-        requested.append(f"normalization.method={normalization.method!r}")
-    if projection is not None and projection.method != "none":
-        requested.append(f"projection.method={projection.method!r}")
-    return requested
-
-
-def _reject_feature_adaptor_on_live(
+def _validate_dense_feature_adaptor(
     normalization: NormalizationConfig | None,
     projection: ProjectionConfig | None,
     *,
-    is_live: bool,
+    feature_store,
 ) -> None:
-    """Refuse the feature adaptor on the augmented live dense path (issue #286).
+    """Resolve runtime dense-source facts, then apply the shared compatibility rule."""
+    from soma.dense.composite import CompositeDenseFeatureStore
 
-    The adaptor is fit from the **cached** Support grids; the live path re-encodes
-    *augmented* tiles every step, so the statistics it was fit on are not the statistics
-    of what it would be transforming. Rather than silently apply a mis-fit transform — a
-    false result dressed as a measurement — require ``feature_mode: cached`` here.
-    """
-    if not is_live:
-        return
-    requested = _requested_adaptor_stages(normalization, projection)
-    if requested:
-        raise ValueError(
-            f"{' and '.join(requested)} requires feature_mode='cached' — the feature "
-            "adaptor is fit on the cached Support grids, and the live path re-encodes "
-            "augmented tiles every step, so the fitted transform would not match what it "
-            "transforms. Set feature_mode='cached', or use {method: none}."
-        )
+    validate_feature_adaptor_compatibility(
+        normalization,
+        projection,
+        feature_mode=(
+            "live" if isinstance(feature_store, LiveSegmentationSource) else "cached"
+        ),
+        has_composite=isinstance(feature_store, CompositeDenseFeatureStore),
+    )
 
 
 def _fit_feature_adaptor(
@@ -547,7 +530,9 @@ def _fit_feature_adaptor(
         feature_dim,
         feature_adaptor.output_dim,
     )
-    write_feature_adapter_sidecar(feature_adaptor, fold_dir)
+    write_feature_adapter_sidecar(
+        feature_adaptor, fold_dir, n_support_samples=num_support
+    )
     return feature_adaptor
 
 
@@ -878,15 +863,12 @@ def train_one_fold(
     # hierarchical paths are separate slices, so a normalization or projection request
     # they cannot honor is refused rather than silently ignored — a silently-dropped
     # transform is a false result.
-    requested_stages = _requested_adaptor_stages(normalization, projection)
-    if requested_stages and (
-        dataset_type in ("patient", "tile") or feature_store.is_hierarchical
-    ):
-        raise ValueError(
-            f"{' and '.join(requested_stages)} is not yet supported on this path — the "
-            "feature adaptor currently fits on the tile-encoder MIL path and the "
-            "slide-encoder embedding path only. Use {method: none} here."
-        )
+    validate_feature_adaptor_compatibility(
+        normalization,
+        projection,
+        dataset_type=dataset_type,
+        is_hierarchical=feature_store.is_hierarchical,
+    )
 
     # The task head owns its target contract. Build the head first, then derive
     # the per-sample target_fn and per-key collation from it.
@@ -1323,7 +1305,7 @@ def train_one_segmentation_fold(
     all_records = fold_plan.all_records
 
     is_live = isinstance(feature_store, LiveSegmentationSource)
-    _reject_feature_adaptor_on_live(normalization, projection, is_live=is_live)
+    _validate_dense_feature_adaptor(normalization, projection, feature_store=feature_store)
 
     # num_classes is the single source — from task.params (no dataset auto-inject,
     # since segmentation has no scalar labels). Fed to BOTH decoder and head.
@@ -1581,6 +1563,7 @@ def train_one_detection_fold(
     if decoder is None:
         raise ValueError("dataset_type='detection' requires a decoder configuration")
 
+    _validate_dense_feature_adaptor(normalization, projection, feature_store=feature_store)
     evaluation = evaluation or EvalConfig()
     fold_dir = Path(fold_dir)
     fold_dir.mkdir(parents=True, exist_ok=True)
@@ -2252,27 +2235,15 @@ def train(
     #     single-encoder streams; composites keep their per-member ``member_norm``, and
     #     fitting one z-score over a channel-concatenated grid would silently treat several
     #     encoders as one.
-    requested = _requested_adaptor_stages(normalization, projection)
-    if requested:
-        from soma.dense.composite import CompositeDenseFeatureStore
+    from soma.dense.composite import CompositeDenseFeatureStore
 
-        is_composite = isinstance(feature_store, CompositeDenseFeatureStore)
-        unsupported = (
-            "dataset_type='spatial_expression'"
-            if dataset_type == "spatial_expression"
-            else "the decoder-free pixel_classifier path"
-            if pixel_classifier is not None
-            else "a composite (multi-encoder) dense stream"
-            if is_composite
-            else None
-        )
-        if unsupported is not None:
-            raise ValueError(
-                f"{' and '.join(requested)} is not yet supported for {unsupported} — the "
-                "feature adaptor fits on the tile-encoder MIL path, the slide-encoder "
-                "embedding path, and the single-encoder dense path. Use {method: none} "
-                "here (composites normalize per member via composite.encoders[].member_norm)."
-            )
+    validate_feature_adaptor_compatibility(
+        normalization,
+        projection,
+        dataset_type=dataset_type,
+        has_pixel_classifier=pixel_classifier is not None,
+        has_composite=isinstance(feature_store, CompositeDenseFeatureStore),
+    )
 
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)

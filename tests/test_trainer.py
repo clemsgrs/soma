@@ -275,6 +275,21 @@ class TestCheckpointSelection:
 
         assert len(result.history) == self.EPOCHS
 
+    def test_last_selection_rejects_unknown_monitor(self, tmp_path: Path):
+        """Direct Trainer callers get the same monitor validation as PipelineConfig."""
+        try:
+            self._fit(
+                tmp_path,
+                patience=None,
+                checkpoint_selection="last",
+                monitor="not_a_metric",
+            )
+        except ValueError as exc:
+            assert "not_a_metric" in str(exc)
+            assert "balanced_accuracy" in str(exc)
+        else:
+            raise AssertionError("Expected last-checkpoint training to validate its monitor")
+
     def test_last_selection_still_logs_per_epoch_tune_metrics(self, tmp_path: Path):
         """Tune metrics stay diagnostics under `last` — computed and logged, never used
         to pick the checkpoint."""
