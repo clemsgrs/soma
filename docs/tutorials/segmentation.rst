@@ -16,7 +16,7 @@ segmentation run can swap in, with the walkthrough for each where one exists.
      - A lightweight conv decoder regresses a per-pixel class map; the
        :class:`~soma.tasks.segmentation.SegmentationHead` trains it with cross-entropy +
        soft-Dice.
-     - :doc:`Dense prediction <walkthrough-dense>`
+     - :doc:`Segmentation <walkthrough-segmentation>`
    * - :doc:`Decoder-free pixel classifier </decoders/pixel-classifier>`
      - Swap the neural decoder for a per-pixel classifier on the encoder's own per-head
        attention (XGBoost / RF / logistic / MLP) — no decoder, no checkpoints.

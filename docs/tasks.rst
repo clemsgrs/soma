@@ -8,9 +8,9 @@ per-task pages.
 
 .. seealso::
 
-   The :doc:`slide-level walkthrough <tutorials/walkthrough-slide-level>` runs
-   classification, regression, and survival end to end on the **same** extracted
-   features — the clearest way to see how swapping a task head works in practice.
+   The :doc:`slide-level MIL walkthrough <tutorials/walkthrough-slide-mil>` trains a
+   task head on frozen features end to end — swapping classification, regression, or
+   survival is just a different ``TaskConfig`` on the **same** extracted features.
 
 Modeling paths
 --------------

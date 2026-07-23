@@ -44,7 +44,7 @@ def build() -> nbformat.NotebookNode:
             "```\n"
             "\n"
             "It is the alternative to the neural-decoder path in the\n"
-            "[dense-prediction walkthrough](walkthrough-dense.ipynb). Same\n"
+            "[segmentation walkthrough](walkthrough-segmentation.ipynb). Same\n"
             "`dataset_type='segmentation'` contract — same manifest, splits, spacing-aware\n"
             "mask reader, dense metrics, and prediction artifacts — but **only the\n"
             "trainable component changes**:\n"
@@ -64,7 +64,7 @@ def build() -> nbformat.NotebookNode:
             "\n"
             "> **Tiny synthetic data, runs on CPU, ungated encoder — the numbers are\n"
             "> meaningless; the point is the API.** We use\n"
-            "> [`phikon`](https://huggingface.co/owkin/phikon) at its native **224 px**\n"
+            "> [phikon](https://huggingface.co/owkin/phikon) at its native **224 px**\n"
             "> window (a 14×14 token grid), which avoids position-embedding interpolation."
         ),
         md(

@@ -13,9 +13,10 @@ across the dense paths.
 
 .. seealso::
 
-   The :doc:`dense-prediction walkthrough <tutorials/walkthrough-dense>` runs the
-   neural-decoder segmentation path end to end on a tiny synthetic dataset, then runs
-   detection right after, so you can see exactly what changes between the two.
+   The :doc:`segmentation walkthrough <tutorials/walkthrough-segmentation>` runs the
+   neural-decoder segmentation path end to end on a tiny synthetic dataset;
+   :doc:`detection <tutorials/walkthrough-detection>` is the same dense flow with point
+   supervision, so you can see exactly what changes between the two.
 
 The dense contract
 ------------------

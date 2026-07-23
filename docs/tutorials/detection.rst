@@ -17,7 +17,7 @@ one exists.
      - A lightweight conv decoder regresses a per-class peak heatmap; the
        :class:`~soma.tasks.detection.DetectionHead` reads points back out and scores
        **F1@δ**.
-     - :doc:`Dense prediction <walkthrough-dense>`
+     - :doc:`Detection <walkthrough-detection>`
    * - :doc:`Multi-encoder composite </encoders/composite>`
      - Concatenate the dense outputs of several foundation models into one richer
        per-position vector before the decoder.

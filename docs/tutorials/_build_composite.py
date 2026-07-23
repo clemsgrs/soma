@@ -44,18 +44,18 @@ def build() -> nbformat.NotebookNode:
             "                   [encoder B grid] ┘\n"
             "```\n"
             "\n"
-            "It builds directly on the [dense-prediction walkthrough](walkthrough-dense.ipynb):\n"
+            "It builds directly on the [segmentation walkthrough](walkthrough-segmentation.ipynb):\n"
             "the flow is identical, but instead of one `DenseFeatureStore` from a single\n"
             "encoder we extract **two** members independently and present a **load-time\n"
             "channel-concat view** (`CompositeDenseFeatureStore`) to `train`. The decoder\n"
             "sees a single wider grid and is otherwise unchanged — this is the\n"
-            "[`composite:`](../encoders/composite.rst) path the YAML config exposes, written\n"
+            "[composite:](../encoders/composite.rst) path the YAML config exposes, written\n"
             "out as building blocks.\n"
             "\n"
             "> **Tiny synthetic data, runs on CPU, ungated encoders — the numbers are\n"
             "> meaningless; the point is the API.** We concatenate two public 224 px /\n"
-            "> patch-16 encoders — [`phikon`](https://huggingface.co/owkin/phikon) and\n"
-            "> [`hibou-b`](https://huggingface.co/histai/hibou-b) — at their native window\n"
+            "> patch-16 encoders — [phikon](https://huggingface.co/owkin/phikon) and\n"
+            "> [hibou-b](https://huggingface.co/histai/hibou-b) — at their native window\n"
             "> (a 14×14 token grid each), which avoids position-embedding interpolation."
         ),
         md(
@@ -185,8 +185,8 @@ def build() -> nbformat.NotebookNode:
         md(
             "## 3. Train segmentation on the composite\n"
             "\n"
-            "From here the flow is **identical to the single-encoder dense walkthrough**: the\n"
-            "composite store drops into `train` wherever a `DenseFeatureStore` would go. The\n"
+            "From here the flow is **identical to the single-encoder segmentation walkthrough**:\n"
+            "the composite store drops into `train` wherever a `DenseFeatureStore` would go. The\n"
             "decoder simply sees a wider per-position vector; nothing else changes."
         ),
         code(

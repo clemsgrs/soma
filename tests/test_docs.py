@@ -15,8 +15,13 @@ import yaml
 from soma.config import PipelineConfig, load_config
 
 TUTORIALS = [
-    "walkthrough-slide-level.ipynb",
-    "walkthrough-dense.ipynb",
+    "walkthrough-tile-level.ipynb",
+    "walkthrough-slide-mil.ipynb",
+    "walkthrough-slide-encoder.ipynb",
+    "walkthrough-segmentation.ipynb",
+    "walkthrough-detection.ipynb",
+    "walkthrough-composite.ipynb",
+    "walkthrough-attention-segmentation.ipynb",
 ]
 
 
@@ -533,7 +538,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "detection",
         ),
         "training-evaluation.rst": ("training", "evaluation"),
-        "tutorials/index.rst": ("slide-level", "detection", "segmentation"),
+        "tutorials/index.rst": ("tile-level", "slide-level", "detection", "segmentation"),
         "benchmarking.rst": (
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
@@ -771,12 +776,14 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("name", TUTORIALS)
-def test_tutorial_notebook_is_executed(name: str) -> None:
-    """Tutorials ship with committed outputs (the docs build never executes them).
+def test_tutorial_notebook_ships_without_outputs(name: str) -> None:
+    """Tutorials ship as clean code listings — valid JSON, code cells, no outputs.
 
-    Guards against committing an empty / un-executed notebook: each must be valid
-    JSON, contain code cells, and every code cell must carry stored outputs with
-    no error output. Refresh via ``scripts/execute_tutorials.sh``.
+    The committed notebooks deliberately carry **no** stored outputs (the docs
+    build never executes them — nbsphinx_execute = "never" — and rendering empty
+    cells keeps the pages uncluttered). This guards that policy: each notebook is
+    valid JSON with code cells, and no code cell carries stored outputs. Smoke-test
+    that the code still runs via ``scripts/execute_tutorials.sh``.
     """
     path = Path(__file__).resolve().parents[1] / "docs" / "tutorials" / name
     nb = json.loads(path.read_text(encoding="utf-8"))
@@ -785,9 +792,7 @@ def test_tutorial_notebook_is_executed(name: str) -> None:
     assert code_cells, f"{name} has no code cells"
 
     for i, cell in enumerate(code_cells):
-        outputs = cell.get("outputs", [])
-        assert outputs, f"{name} code cell {i} has no stored outputs (re-execute it)"
-        for out in outputs:
-            assert out.get("output_type") != "error", (
-                f"{name} code cell {i} stored an error output: {out.get('ename')}"
-            )
+        assert not cell.get("outputs"), (
+            f"{name} code cell {i} carries stored outputs; strip them "
+            f"(committed tutorials ship without outputs)"
+        )

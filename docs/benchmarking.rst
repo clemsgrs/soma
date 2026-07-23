@@ -16,6 +16,11 @@ Two commands drive them:
 See :doc:`cli` for every command option and :doc:`outputs` for the artifacts each
 run writes.
 
+.. tip::
+
+   Prefer Python? soma ships this as an API — the same curate, run, and score
+   flow, driving the same protocol from code. See :ref:`benchmark-api`.
+
 Reproduce a benchmark
 ---------------------
 
