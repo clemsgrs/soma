@@ -1,5 +1,5 @@
-Tile-level classification
-=========================
+Tile-level
+===========
 
 Predict a class label for a single tile. Each sample is an already-cropped tile
 image — the path behind patch-classification benchmarks like EVA. A tile encoder

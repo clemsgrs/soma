@@ -306,6 +306,53 @@ def _reference_source_link(family: str) -> str:
     return f"`{label} <{url}>`__"
 
 
+def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
+    """A ``list-table`` of soma's recorded measurements joined against the reference band.
+
+    Built from the packaged results ledger (``results/<name>.csv``) via ``load_results`` — so
+    only cells that have actually been run appear, each next to its reference number, the
+    delta, and the provenance (seeds, date, commit) that produced it. Returns a plain
+    "nothing recorded yet" note when the ledger is empty (or absent), so a benchmark with no
+    reproductions still renders.
+    """
+    rows = load_results(name)
+    if not rows:
+        return (
+            "No reproductions have been recorded yet. Run ``soma reproduce <name> --record`` "
+            "to append a measured number + provenance to the results ledger."
+        )
+    header = [c.capitalize() for c in key_columns] + [
+        "soma (mean ± std)",
+        "Seeds",
+        "Reference",
+        "Δ",
+        "Recorded (date @ commit)",
+    ]
+    lines = [".. list-table::", "   :header-rows: 1", ""]
+    lines.extend([f"   * - {header[0]}"] + [f"     - {col}" for col in header[1:]])
+    for row in rows:
+        measured = f"{row.measured:.3f}" + (f" ± {row.std:.3f}" if row.std is not None else "")
+        seeds = "" if row.n_seeds is None else str(row.n_seeds)
+        gates = [
+            g
+            for g in expected_rows(name, metric=row.metric, **row.key)
+            if not g.is_external
+        ]
+        reference = f"{gates[0].expected:.3f}" if gates else "—"
+        delta = f"{row.measured - gates[0].expected:+.3f}" if gates else "—"
+        commit = f"``{row.soma_commit}``" if row.soma_commit else "—"
+        recorded = f"{row.date} @ {commit}" if row.date else commit
+        cells = [row.key.get(c, "") for c in key_columns] + [
+            measured,
+            seeds,
+            reference,
+            delta,
+            recorded,
+        ]
+        lines.extend([f"   * - {cells[0]}"] + [f"     - {cell}" for cell in cells[1:]])
+    return "\n".join(lines)
+
+
 def _eva_results_section() -> str:
     """Render the public reproduced-versus-reference EVA comparison."""
     rows = load_results("eva")
