@@ -65,3 +65,20 @@ def test_already_exact_tensor_is_written_unchanged(tmp_path: Path):
     saved = torch.load(path, map_location="cpu")
     assert torch.equal(saved, grid)
     assert saved.untyped_storage().nbytes() == grid.numel() * grid.element_size()
+
+
+def test_compact_expanded_tensor_is_not_materialized(tmp_path: Path):
+    """A broadcast grid keeps its compact backing storage when saved."""
+    geom, meta = _meta()
+    gh, gw = meta["grid_shape"]
+    base = torch.arange(gh * gw, dtype=torch.float32).reshape(1, gh, gw)
+    grid = base.expand(DIM, gh, gw)
+    compact_bytes = base.numel() * base.element_size()
+    assert grid.untyped_storage().nbytes() == compact_bytes
+    assert compact_bytes < grid.numel() * grid.element_size()
+
+    path = write_dense_grid(tmp_path, "s2", grid, meta)
+
+    saved = torch.load(path, map_location="cpu")
+    assert torch.equal(saved, grid)
+    assert saved.untyped_storage().nbytes() == compact_bytes

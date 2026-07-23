@@ -202,7 +202,7 @@ def write_dense_grid(
     # ``encoder.batch_size``-fold bloat (at B=8: 134 MB files holding 16.8 MB of grid).
     # ``.contiguous()`` does NOT help: a batch slice is already contiguous, so it no-ops.
     # An fp16 cache only escaped this because the dtype cast allocated a fresh tensor.
-    if grid.untyped_storage().nbytes() != grid.numel() * grid.element_size():
+    if grid.untyped_storage().nbytes() > grid.numel() * grid.element_size():
         grid = grid.clone()
     torch.save(grid, feature_path)
     sidecar_path.write_text(json.dumps(metadata, sort_keys=True, indent=2), encoding="utf-8")
