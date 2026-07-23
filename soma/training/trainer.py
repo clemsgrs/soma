@@ -1,4 +1,4 @@
-"""Trainer — MIL model training with early stopping and checkpointing."""
+"""Trainer — MIL model training with checkpoint selection and early stopping."""
 
 from __future__ import annotations
 
@@ -46,10 +46,16 @@ class TrainResult:
 
 
 class Trainer:
-    """Model trainer with early stopping and checkpointing.
+    """Model trainer with checkpoint selection, early stopping and checkpointing.
 
     Supports both MILModel (tile-level, batches have a `mask` attribute)
     and SlideModel (slide-level, batches have no mask).
+
+    ``config.checkpoint_selection`` decides which epoch's weights survive on disk:
+    ``best`` keeps the best monitored epoch (early-stopping after
+    ``config.patience`` epochs without improvement), ``last`` keeps the final epoch
+    and never early-stops, while still evaluating the tune split every epoch so the
+    history carries per-epoch diagnostics.
 
     Pure PyTorch training loop — no external frameworks needed.
 
@@ -104,6 +110,11 @@ class Trainer:
         selected_tune_metrics: dict[str, float] = {}
         patience_counter = 0
         started_at = time.perf_counter()
+        select_last = self._config.checkpoint_selection == "last"
+        patience = self._config.patience
+        # Under `last` the configured monitor selects nothing, so labelling the panel's
+        # tracked value with it would misreport which quantity is shown.
+        monitor_name = "tune_loss" if select_last else self._config.monitor
 
         console = self._console or Console()
         current_log: EpochLog | None = None
@@ -125,10 +136,10 @@ class Trainer:
                     selected_epoch=selected_epoch,
                     selected_tune_loss=selected_tune_loss,
                     selected_tune_metrics=selected_tune_metrics,
-                    monitor_name=self._config.monitor,
+                    monitor_name=monitor_name,
                     selected_monitor_value=selected_monitor_value,
                     patience_counter=patience_counter,
-                    patience_limit=self._config.patience,
+                    patience_limit=patience,
                     status=current_status,
                     trainable_param_count=self._trainable_param_count,
                     fold=self._fold,
@@ -150,10 +161,10 @@ class Trainer:
                 selected_epoch=selected_epoch,
                 selected_tune_loss=selected_tune_loss,
                 selected_tune_metrics=selected_tune_metrics,
-                monitor_name=self._config.monitor,
+                monitor_name=monitor_name,
                 selected_monitor_value=selected_monitor_value,
                 patience_counter=patience_counter,
-                patience_limit=self._config.patience,
+                patience_limit=patience,
                 status="waiting for epoch 1",
                 trainable_param_count=self._trainable_param_count,
                 fold=self._fold,
@@ -215,16 +226,30 @@ class Trainer:
                 )
                 history.append(log)
 
-                monitor_value = _resolve_monitor_value(
-                    self._config,
-                    tune_loss=tune_loss,
-                    tune_metrics=tune_metrics,
-                )
-                improved = _is_monitor_improvement(
-                    monitor_value,
-                    selected_monitor_value,
-                    self._config.monitor_mode,
-                )
+                if select_last:
+                    # Final-checkpoint protocol (#282): every epoch supersedes the last,
+                    # so the checkpoint left on disk is the final-epoch weights. The tune
+                    # metrics above are still computed and logged — as diagnostics only.
+                    # Resolve the declared monitor to validate direct Trainer callers, then
+                    # deliberately discard it as a selection signal.
+                    _resolve_monitor_value(
+                        self._config,
+                        tune_loss=tune_loss,
+                        tune_metrics=tune_metrics,
+                    )
+                    monitor_value = tune_loss
+                    improved = True
+                else:
+                    monitor_value = _resolve_monitor_value(
+                        self._config,
+                        tune_loss=tune_loss,
+                        tune_metrics=tune_metrics,
+                    )
+                    improved = _is_monitor_improvement(
+                        monitor_value,
+                        selected_monitor_value,
+                        self._config.monitor_mode,
+                    )
                 status: str
                 if improved:
                     selected_tune_loss = tune_loss
@@ -236,12 +261,12 @@ class Trainer:
                     status = f"new selected checkpoint saved at epoch {epoch + 1}"
                 else:
                     patience_counter += 1
-                    status = f"no improvement ({patience_counter}/{self._config.patience})"
+                    status = f"no improvement ({patience_counter}/{_format_patience(patience)})"
 
                 current_status = status
                 render_panel()
 
-                if not improved and patience_counter >= self._config.patience:
+                if not improved and patience is not None and patience_counter >= patience:
                     current_status = "early stopping triggered"
                     render_panel()
                     break
@@ -258,10 +283,10 @@ class Trainer:
                     selected_epoch=selected_epoch,
                     selected_tune_loss=selected_tune_loss,
                     selected_tune_metrics=selected_tune_metrics,
-                    monitor_name=self._config.monitor,
+                    monitor_name=monitor_name,
                     selected_monitor_value=selected_monitor_value,
                     patience_counter=patience_counter,
-                    patience_limit=self._config.patience,
+                    patience_limit=patience,
                     status=current_status,
                     trainable_param_count=self._trainable_param_count,
                     fold=self._fold,
@@ -656,7 +681,7 @@ def _build_training_panel(
     monitor_name: str,
     selected_monitor_value: float,
     patience_counter: int,
-    patience_limit: int,
+    patience_limit: int | None,
     status: str,
     trainable_param_count: int | None = None,
     fold: int | None = None,
@@ -705,7 +730,10 @@ def _build_training_panel(
     )
     if selected_metrics_text:
         table.add_row("selected @ epoch", Text(selected_metrics_text, style="green"))
-    table.add_row("patience", Text(f"{patience_counter}/{patience_limit}", style="white"))
+    table.add_row(
+        "patience",
+        Text(f"{patience_counter}/{_format_patience(patience_limit)}", style="white"),
+    )
     table.add_row("status", Text(status, style="bold green" if "selected" in status else "bold yellow"))
     table.add_row("epoch avg", Text(_format_optional_duration(avg_epoch_seconds), style="white"))
     table.add_row("elapsed", Text(_format_elapsed_with_eta(elapsed_seconds, eta_seconds), style="white"))
@@ -717,6 +745,11 @@ def _build_training_panel(
         border_style="cyan",
         box=box.ROUNDED,
     )
+
+
+def _format_patience(patience_limit: int | None) -> str:
+    """Render the early-stopping budget; ``None`` means early stopping is off."""
+    return "off" if patience_limit is None else str(patience_limit)
 
 
 def _format_selected_monitor(monitor_name: str, selected_monitor_value: float) -> str:

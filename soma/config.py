@@ -12,6 +12,8 @@ from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 import copy
+import math
+from numbers import Integral, Real
 from typing import Any
 
 import yaml
@@ -78,6 +80,8 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "execution",
         "cache",
         "augmentation",
+        "normalization",
+        "projection",
         "reports",
     }
     unknown_keys = [key for key in data if key not in allowed_sections]
@@ -110,6 +114,8 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "execution",
         "cache",
         "augmentation",
+        "normalization",
+        "projection",
     ):
         if section in data:
             value = data[section]
@@ -251,6 +257,8 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         task=_load_task_config(data),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
+        normalization=NormalizationConfig(**data.get("normalization", {})),
+        projection=ProjectionConfig(**data.get("projection", {})),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
@@ -533,6 +541,211 @@ class CacheConfig:
     dtype: str | None = None
 
 
+_NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")
+_DEFAULT_NORMALIZATION_EPS = 1e-6
+
+
+def _is_exact_integer(value: object) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool)
+
+
+def _is_finite_positive_real(value: object) -> bool:
+    return (
+        isinstance(value, Real)
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) > 0.0
+    )
+
+
+@dataclass(frozen=True)
+class NormalizationConfig:
+    """Per-feature normalization applied to frozen encoder features before the model.
+
+    Frozen encoders span 768→4608 dimensions with very different activation scales, so a
+    shared aggregator/head and its single externally-calibrated learning rate do not see
+    comparable inputs across encoders. This section names the fix, as the first stage of
+    the *feature adaptor* — a buffer-carrying front module inserted ahead of the
+    aggregator/head (issue #283).
+
+    ``method``:
+
+    * ``none`` (default) — no adaptor stage at all; the model is structurally identical
+      to a run that predates this section.
+    * ``zscore`` — **fitted**: per-feature center/scale estimated from the Support (train)
+      split only, so the transform is leak-free. ``eps`` floors the scale so a constant
+      or near-constant channel cannot blow up.
+    * ``l2`` — stateless per-feature-vector L2 normalization.
+    * ``layernorm`` — stateless per-feature-vector standardization (mean/std over the
+      feature axis), with ``eps`` in the denominator.
+
+    This is orthogonal to the composite per-member ``member_norm``, which normalizes each
+    member's block *before* concatenation and is untouched by this section.
+    """
+
+    method: str = "none"
+    eps: float = _DEFAULT_NORMALIZATION_EPS
+
+    def __post_init__(self) -> None:
+        if self.method not in _NORMALIZATION_METHODS:
+            raise ValueError(
+                "NormalizationConfig.method must be one of "
+                f"{list(_NORMALIZATION_METHODS)}, got {self.method!r}."
+            )
+        if not _is_finite_positive_real(self.eps):
+            raise ValueError(
+                "NormalizationConfig.eps must be a finite positive real number "
+                f"(it floors the scale), got {self.eps!r}."
+            )
+        if self.method == "none" and self.eps != _DEFAULT_NORMALIZATION_EPS:
+            raise ValueError(
+                "NormalizationConfig.method='none' requires the default eps "
+                f"({_DEFAULT_NORMALIZATION_EPS}); got {self.eps!r}."
+            )
+
+    @property
+    def is_default(self) -> bool:
+        """True when this section asks for nothing — the guard for identity folding."""
+        return self == NormalizationConfig()
+
+
+_PROJECTION_METHODS = ("none", "pca", "random")
+
+
+@dataclass(frozen=True)
+class ProjectionConfig:
+    """Label-free projection of frozen encoder features to a common width.
+
+    A wider embedding means a larger aggregator, so "smaller encoders are more
+    label-efficient" can be manufactured from dimensionality alone. This section is the
+    dim-matched ablation that tests whether a ranking survives when that confound is
+    removed: every encoder is projected to ``target_dim`` by a **label-free** map, so the
+    downstream trainable capacity is equal across the roster (issue #284).
+
+    It is the *second* stage of the feature adaptor, applied **after** ``normalization``
+    (order: normalize → project). The two sections are independently configurable.
+
+    ``method``:
+
+    * ``none`` (default) — no projection stage; the aggregator is built against the
+      encoder's native dim, exactly as before this section existed.
+    * ``pca`` — **fitted**: principal components estimated per fold from the Support
+      (train) split only, so the map is leak-free. Centers intrinsically (it stores its
+      own mean) and pins a sign convention so repeated fits are byte-identical. No
+      whitening. Requires ``n_fit_samples >= target_dim`` and ``target_dim <= D``.
+    * ``random`` — a fixed Gaussian matrix, scaled by ``1/sqrt(target_dim)`` to
+      approximately preserve inner products. Seeded from ``seed`` combined with the
+      encoder identity and the in/out dims, so it is reproducible and constant across
+      training trajectories. Unconstrained in ``target_dim``.
+
+    The projection is **frozen** — a buffer, not a learned layer — so it cannot
+    reintroduce or relocate the capacity confound it exists to remove.
+    """
+
+    method: str = "none"
+    target_dim: int | None = None
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.method not in _PROJECTION_METHODS:
+            raise ValueError(
+                "ProjectionConfig.method must be one of "
+                f"{list(_PROJECTION_METHODS)}, got {self.method!r}."
+            )
+        if not _is_exact_integer(self.seed):
+            raise ValueError(
+                f"ProjectionConfig.seed must be an integer, got {self.seed!r}."
+            )
+        if self.method == "none" and (self.target_dim is not None or self.seed != 0):
+            raise ValueError(
+                "ProjectionConfig.method='none' requires target_dim=None and seed=0; "
+                f"got target_dim={self.target_dim!r}, seed={self.seed!r}."
+            )
+        if self.method == "pca" and self.seed != 0:
+            raise ValueError(
+                "ProjectionConfig.method='pca' is deterministic and requires seed=0; "
+                f"got seed={self.seed!r}."
+            )
+        if self.method != "none":
+            if self.target_dim is None:
+                raise ValueError(
+                    f"ProjectionConfig.method={self.method!r} requires target_dim — the "
+                    "common width every encoder is projected to."
+                )
+            if not _is_exact_integer(self.target_dim) or self.target_dim < 1:
+                raise ValueError(
+                    "ProjectionConfig.target_dim must be a positive integer, "
+                    f"got {self.target_dim!r}."
+                )
+
+    @property
+    def is_default(self) -> bool:
+        """True when this section asks for nothing — the guard for identity folding."""
+        return self == ProjectionConfig()
+
+
+def _requested_feature_adaptor_stages(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+) -> list[str]:
+    """Return the active top-level adaptor stages for validation and diagnostics."""
+    requested = []
+    if normalization is not None and normalization.method != "none":
+        requested.append(f"normalization.method={normalization.method!r}")
+    if projection is not None and projection.method != "none":
+        requested.append(f"projection.method={projection.method!r}")
+    return requested
+
+
+def validate_feature_adaptor_compatibility(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+    *,
+    feature_mode: str = "cached",
+    dataset_type: str | None = None,
+    has_composite: bool = False,
+    has_pixel_classifier: bool = False,
+    is_hierarchical: bool = False,
+) -> None:
+    """Enforce which data planes own the top-level feature adaptor.
+
+    Both configuration validation and standalone training APIs call this rule so a path
+    cannot become permissive merely by bypassing the orchestrator.
+    """
+    requested = _requested_feature_adaptor_stages(normalization, projection)
+    if not requested:
+        return
+    requested_text = " and ".join(requested)
+    if feature_mode == "live":
+        raise ValueError(
+            f"{requested_text} requires feature_mode='cached' — the feature adaptor is "
+            "fit on the cached Support grids, and the live path re-encodes augmented "
+            "tiles every step, so the fitted transform would not match what it "
+            "transforms. Set feature_mode='cached', or use {method: none}."
+        )
+
+    unsupported = (
+        "a composite (multi-encoder) dense stream"
+        if has_composite
+        else "the decoder-free pixel_classifier path"
+        if has_pixel_classifier
+        else "dataset_type='spatial_expression'"
+        if dataset_type == "spatial_expression"
+        else f"dataset_type={dataset_type!r}"
+        if dataset_type in {"patient", "tile"}
+        else "a hierarchical feature stream"
+        if is_hierarchical
+        else None
+    )
+    if unsupported is not None:
+        raise ValueError(
+            f"{requested_text} is not yet supported for {unsupported} — the feature "
+            "adaptor fits on the tile-encoder MIL path, the slide-encoder embedding "
+            "path, and the single-encoder dense path. Use {method: none} here "
+            "(composites normalize per member via composite.encoders[].member_norm)."
+        )
+
+
 @dataclass(frozen=True)
 class AggregatorConfig:
     """MIL aggregator selection and constructor parameters.
@@ -742,6 +955,16 @@ class TrainingConfig:
     may provide either a tune split or a test split (not both), and that split
     is used for both checkpoint selection and test reporting. ``allow_missing_tune``
     enables a deliberate train-as-tune fallback when a fold has no tune split.
+
+    ``checkpoint_selection`` governs *which* epoch's weights are evaluated. ``best``
+    (default) is the historical behavior: select by the monitored tune metric, with
+    early stopping. ``last`` evaluates the **final-epoch** weights — model selection
+    comes off the tune metric entirely and early stopping is disabled (so ``patience``
+    must be ``None``), while per-epoch tune metrics are still computed and logged as
+    diagnostics. It is the protocol for benchmarks that predeclare a fixed epoch budget
+    and forbid per-encoder tuning. It is orthogonal to ``allow_missing_tune``: one
+    says which checkpoint is evaluated, the other where the diagnostic tune split
+    comes from, and neither implies the other.
     """
 
     seed: int = 0
@@ -750,7 +973,9 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     optimizer: str = "adam"
     scheduler: str = "cosine"
-    patience: int = 10
+    # Early-stopping patience in epochs, or ``None`` to disable early stopping and always
+    # train the full ``epochs`` budget. ``checkpoint_selection='last'`` *requires* ``None``.
+    patience: int | None = 10
     # Per-fold trainer selector within the shared training entry. ``"gradient"`` is the
     # default torch-based head/decoder loop; ``"ridge_pca_probe"`` selects the closed-form
     # Ridge+PCA probe (the HEST spatial_expression trainer — no gradient descent, no tune
@@ -762,6 +987,7 @@ class TrainingConfig:
     gradient_accumulation: int = 1
     tune_is_test: bool = False
     allow_missing_tune: bool = False
+    checkpoint_selection: str = "best"
     num_workers: int = 0
     pin_memory: bool = True
     persistent_workers: bool = True
@@ -780,18 +1006,30 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.batch_size must be >= 1")
         if self.gradient_accumulation < 1:
             raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
-        if self.patience < 1:
-            raise ValueError("TrainingConfig.patience must be >= 1")
+        if self.patience is not None and self.patience < 1:
+            raise ValueError("TrainingConfig.patience must be >= 1 (or null to disable)")
         if not self.monitor:
             raise ValueError("TrainingConfig.monitor must be non-empty")
         if self.monitor_mode not in {"min", "max"}:
             raise ValueError("TrainingConfig.monitor_mode must be 'min' or 'max'")
+        if self.checkpoint_selection not in {"best", "last"}:
+            raise ValueError(
+                "TrainingConfig.checkpoint_selection must be 'best' (select the checkpoint "
+                "by the monitored tune metric, with early stopping) or 'last' (evaluate the "
+                f"final-epoch weights), got {self.checkpoint_selection!r}."
+            )
         if self.num_workers < 0:
             raise ValueError("TrainingConfig.num_workers must be >= 0")
         if self.method not in {"gradient", "ridge_pca_probe"}:
             raise ValueError(
                 "TrainingConfig.method must be 'gradient' (torch head/decoder loop) or "
                 f"'ridge_pca_probe' (closed-form probe), got {self.method!r}."
+            )
+        if self.checkpoint_selection == "last" and self.patience is not None:
+            raise ValueError(
+                "TrainingConfig.checkpoint_selection='last' evaluates the final-epoch "
+                "weights and never early-stops, so a finite TrainingConfig.patience "
+                f"({self.patience}) would be silently ignored. Set patience: null."
             )
 
 
@@ -888,6 +1126,11 @@ class PipelineConfig:
         task: Task-head configuration. Required.
         evaluation: Metric and subgroup evaluation configuration.
         training: Training hyperparameters.
+        normalization: Feature-adaptor normalization applied to frozen encoder
+            features ahead of the aggregator/head. Defaults to ``none`` (no
+            adaptor at all).
+        projection: Feature-adaptor label-free projection to a common width,
+            applied after ``normalization``. Defaults to ``none``.
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
         resume: When True, reuse the latest existing run dir for this experiment
@@ -916,6 +1159,8 @@ class PipelineConfig:
     task: TaskConfig = field(default=None)  # type: ignore[assignment]
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
+    projection: ProjectionConfig = field(default_factory=ProjectionConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
@@ -938,6 +1183,24 @@ class PipelineConfig:
             raise ValueError(
                 f"Invalid dataset_type {self.dataset_type!r}. "
                 f"Must be one of: {sorted(_valid_dataset_types)}"
+            )
+        if (
+            self.training.checkpoint_selection == "last"
+            and self.pixel_classifier is not None
+        ):
+            raise ValueError(
+                "training.checkpoint_selection='last' is not supported with a "
+                "pixel_classifier: pixel classifiers own separate fit loops and do not "
+                "produce Trainer checkpoints. Use checkpoint_selection: best."
+            )
+        if (
+            self.training.checkpoint_selection == "last"
+            and self.training.method == "ridge_pca_probe"
+        ):
+            raise ValueError(
+                "training.checkpoint_selection='last' is not supported with "
+                "training.method='ridge_pca_probe': the closed-form probe has no epoch "
+                "checkpoint to select. Use checkpoint_selection: best."
             )
         # spatial_expression (HEST gene-expression-from-morphology): one spot = one tile
         # with a vector target, trained by the closed-form Ridge+PCA probe. It reuses the
@@ -1119,6 +1382,14 @@ class PipelineConfig:
                 "feature_mode='live' is only supported for dataset_type='segmentation' "
                 f"(re-encoding augmented tiles), got dataset_type={self.dataset_type!r}."
             )
+        validate_feature_adaptor_compatibility(
+            self.normalization,
+            self.projection,
+            feature_mode=self.feature_mode,
+            dataset_type=self.dataset_type,
+            has_composite=self.composite is not None,
+            has_pixel_classifier=self.pixel_classifier is not None,
+        )
         if self.augmentation.is_enabled():
             if self.feature_mode != "live":
                 raise ValueError(
@@ -1195,8 +1466,20 @@ class PipelineConfig:
                             "likelihood's risk set is the batch. (For large MIL bags, use "
                             "accumulation mode by setting task.params.cox_window >= 2.)"
                         )
-        # Validate that requested metrics are valid for the task family.
-        resolve_metrics(self.task.name, self.evaluation.metrics)
+        # Validate that requested metrics and the training monitor are valid for the task
+        # family.  ``last`` ignores the monitor for checkpoint selection, but the monitor is
+        # still part of the declared protocol and must name a diagnostic the run computes.
+        resolved_metrics = resolve_metrics(self.task.name, self.evaluation.metrics)
+        if (
+            self.training.monitor != "tune_loss"
+            and self.training.monitor not in resolved_metrics
+        ):
+            available = ", ".join(resolved_metrics)
+            raise ValueError(
+                f"Training monitor {self.training.monitor!r} is not an effective metric for "
+                f"task {self.task.name!r}. Available metrics: {available}; use 'tune_loss' "
+                "to monitor loss."
+            )
         # Fail fast on unknown encoder / aggregator names — catching these at
         # config construction avoids burning hours of preprocessing before the
         # pipeline would otherwise crash at component-build time.
@@ -1334,6 +1617,12 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             }
         ),
         "augmentation": _normalize_yaml_value(asdict(config.augmentation)),
+        # Always recorded, even when off (`{method: none}`): the *hash* is guarded so
+        # legacy experiment_ids survive, the *record* is not — a saved config always
+        # says what transform the run applied (issue #283).
+        "normalization": _normalize_yaml_value(asdict(config.normalization)),
+        # Same guard-the-hash-not-the-record rule as ``normalization`` (issue #284).
+        "projection": _normalize_yaml_value(asdict(config.projection)),
         "reports": {
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },

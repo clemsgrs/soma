@@ -43,9 +43,15 @@ def _stable_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _training_without_seed(config: PipelineConfig) -> dict[str, Any]:
+def _training_identity(config: PipelineConfig) -> dict[str, Any]:
     training = asdict(config.training)
     training.pop("seed", None)
+    # ``checkpoint_selection`` folds in only when non-default (issue #282), the same
+    # guard the dtype/annotation-sampling knobs use: the evaluation protocol *is* part
+    # of what the experiment is, but every pre-existing run was implicitly ``best``, so
+    # emitting the key unconditionally would re-mint every legacy experiment_id.
+    if config.training.checkpoint_selection == "best":
+        training.pop("checkpoint_selection", None)
     return training
 
 
@@ -144,7 +150,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_digest, splits_digest = _manifest_slice_digests(
         dataset_path, splits_path, _is_training_split
     )
-    return {
+    payload: dict[str, Any] = {
         # No manifest ``path`` here: identity is the {train,tune} content, not the machine-
         # local file location, so a checkpoint is reused even when the official test set
         # arrives as a *new* splits/dataset file rather than appended rows (issue #247).
@@ -173,9 +179,34 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "evaluation": _evaluation_identity(config),
         "heatmaps": _heatmap_identity(config),
         "augmentation": asdict(config.augmentation),
-        "training": _training_without_seed(config),
+        "training": _training_identity(config),
         "tags": list(config.tags),
     }
+    # ``normalization`` folds in only when non-default (issue #283), the same guard the
+    # dtype / annotation-sampling / checkpoint_selection knobs use: the transform applied
+    # to the features *is* part of what the experiment is, but every pre-existing run was
+    # implicitly ``none``, so emitting the key unconditionally would re-mint every legacy
+    # experiment_id. The saved config.yaml records the block regardless.
+    if config.normalization.method != "none":
+        payload["normalization"] = {
+            "method": config.normalization.method,
+            "eps": config.normalization.eps,
+        }
+    # ``projection`` folds in under the same guard (issue #284): the dim-matched ablation
+    # is a different experiment from the native-width run, but `projection: none` must
+    # leave every pre-existing experiment_id untouched.
+    if config.projection.method == "pca":
+        payload["projection"] = {
+            "method": "pca",
+            "target_dim": config.projection.target_dim,
+        }
+    elif config.projection.method == "random":
+        payload["projection"] = {
+            "method": "random",
+            "target_dim": config.projection.target_dim,
+            "seed": config.projection.seed,
+        }
+    return payload
 
 
 @dataclass(frozen=True)

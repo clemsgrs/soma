@@ -113,12 +113,13 @@ class RosterEntry:
     is_control: bool = False
 
 
-# Core-5 pathology FMs + the natural-image control, read at each dataset's native spacing.
+# Core pathology FMs + the natural-image control, read at each dataset's native spacing.
 # A list, not a hardcoded set: extraction is per-encoder additive and every downstream
 # computation recomputes for whatever roster is passed.
 DEFAULT_ROSTER: tuple[RosterEntry, ...] = (
     RosterEntry("virchow2"),
-    RosterEntry("uni2"),
+    RosterEntry("genbio-pathfm"),
+    RosterEntry("midnight"),
     RosterEntry("conchv15"),
     RosterEntry("h0-mini", is_compact=True),
     RosterEntry("h-optimus-1"),

@@ -212,6 +212,105 @@ class TestTrainer:
         assert "model_state_dict" in checkpoint
 
 
+def _anticorrelated_bags(*, flip: bool, seed: int = 0, num_slides: int = 6):
+    """Train/tune bags over identical features with mirror-image labels.
+
+    Fitting the train mapping therefore *worsens* the tune monitor monotonically, so
+    the best-monitor epoch is deterministically the first and never the last — the
+    only setup in which `best` and `last` selection are distinguishable.
+    """
+    torch.manual_seed(seed)
+    return [
+        (torch.randn(5 + i * 2, D), {"label": (i + 1) % 2 if flip else i % 2}, f"slide_{i}")
+        for i in range(num_slides)
+    ]
+
+
+def _states_match(left: dict, right: dict) -> bool:
+    return set(left) == set(right) and all(torch.equal(left[k], right[k]) for k in left)
+
+
+class TestCheckpointSelection:
+    """`checkpoint_selection` governs WHICH epoch's weights are evaluated (#282)."""
+
+    EPOCHS = 5
+
+    def _fit(self, tmp_path: Path, **overrides):
+        from torch.utils.data import DataLoader
+
+        seed_everything(42)
+        model = _make_model()
+        train_loader = DataLoader(
+            _anticorrelated_bags(flip=False), batch_size=2, collate_fn=_CLS_COLLATE
+        )
+        tune_loader = DataLoader(
+            _anticorrelated_bags(flip=True), batch_size=2, collate_fn=_CLS_COLLATE
+        )
+        config = TrainingConfig(epochs=self.EPOCHS, learning_rate=1e-1, **overrides)
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            tune_loader=tune_loader,
+            config=config,
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        return model, trainer.fit()
+
+    def test_best_selection_keeps_the_best_monitor_epoch(self, tmp_path: Path):
+        model, result = self._fit(tmp_path, patience=None)
+
+        assert result.selected_epoch == 0
+        checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+        assert checkpoint["epoch"] == 0
+        assert not _states_match(checkpoint["model_state_dict"], model.state_dict())
+
+    def test_best_selection_early_stops_on_a_worsening_monitor(self, tmp_path: Path):
+        _, result = self._fit(tmp_path, patience=2)
+
+        assert len(result.history) < self.EPOCHS
+
+    def test_last_selection_never_early_stops(self, tmp_path: Path):
+        _, result = self._fit(tmp_path, patience=None, checkpoint_selection="last")
+
+        assert len(result.history) == self.EPOCHS
+
+    def test_last_selection_rejects_unknown_monitor(self, tmp_path: Path):
+        """Direct Trainer callers get the same monitor validation as PipelineConfig."""
+        try:
+            self._fit(
+                tmp_path,
+                patience=None,
+                checkpoint_selection="last",
+                monitor="not_a_metric",
+            )
+        except ValueError as exc:
+            assert "not_a_metric" in str(exc)
+            assert "balanced_accuracy" in str(exc)
+        else:
+            raise AssertionError("Expected last-checkpoint training to validate its monitor")
+
+    def test_last_selection_still_logs_per_epoch_tune_metrics(self, tmp_path: Path):
+        """Tune metrics stay diagnostics under `last` — computed and logged, never used
+        to pick the checkpoint."""
+        _, result = self._fit(tmp_path, patience=None, checkpoint_selection="last")
+
+        assert len(result.history) == self.EPOCHS
+        for log in result.history:
+            assert set(log.tune_metrics) >= {"auroc", "balanced_accuracy", "auprc", "f1"}
+        # The monitor worsens every epoch, so a best-selected run would report epoch 0.
+        assert result.selected_tune_loss == result.history[-1].tune_loss
+        assert result.selected_tune_metrics == result.history[-1].tune_metrics
+
+    def test_last_selection_saves_final_epoch_weights(self, tmp_path: Path):
+        model, result = self._fit(tmp_path, patience=None, checkpoint_selection="last")
+
+        assert result.selected_epoch == self.EPOCHS - 1
+        checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+        assert checkpoint["epoch"] == self.EPOCHS - 1
+        assert _states_match(checkpoint["model_state_dict"], model.state_dict())
+
+
 class TestTrainerWithEmbeddingModel:
     def test_fit_with_embedding_model(self, tmp_path: Path):
         """Trainer should work with EmbeddingModel and SampleBatch (no mask)."""

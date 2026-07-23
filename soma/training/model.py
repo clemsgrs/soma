@@ -29,13 +29,34 @@ class EmbeddingModel(nn.Module):
 
     Used for slide-level, patient-level, and tile-level pipelines where each
     sample is already represented by a single feature vector — no aggregation.
+
+    An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
+    the task head and transforms the frozen embeddings before anything trainable sees
+    them (issue #285 on the slide-encoder path). It is ``None`` unless the run asks for
+    one, and ``None`` is not registered as a submodule, so a run without one has exactly
+    the ``state_dict``/``parameters`` of a model built before the adaptor existed.
+
+    When the adaptor projects it also *changes the width*: ``task_head`` must already
+    have been constructed against the adaptor's ``output_dim`` rather than the encoder's
+    native dim. The caller owns that wiring (see
+    :func:`~soma.training.feature_adaptor.feature_adaptor_output_dim`).
+
+    Args:
+        task_head: Task head (e.g. ClassificationHead), built against the adaptor's
+            output width.
+        feature_adaptor: Optional front module applied to ``X`` before the head.
     """
 
-    def __init__(self, task_head: TaskHead) -> None:
+    def __init__(
+        self, task_head: TaskHead, feature_adaptor: nn.Module | None = None
+    ) -> None:
         super().__init__()
         self.task_head = task_head
+        self.feature_adaptor = feature_adaptor
 
     def forward(self, X: Tensor) -> EmbeddingModelOutput:
+        if self.feature_adaptor is not None:
+            X = self.feature_adaptor(X)
         return EmbeddingModelOutput(logits=self.task_head(X))
 
 
@@ -62,18 +83,40 @@ class MILModel(nn.Module):
     maps the bag representation to predictions. Tile attention (if available)
     is passed through for interpretability and heatmap generation.
 
+    An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
+    the aggregator and transforms the frozen features before anything trainable sees
+    them. It is ``None`` unless the run asks for one (``normalization`` — issue #283 — or
+    ``projection`` — issue #284), and ``None`` is not registered as a submodule, so a run
+    without one has exactly the ``state_dict``/``parameters`` of a model built before the
+    adaptor existed.
+
+    When the adaptor projects, it also *changes the width*: ``aggregator`` must already
+    have been constructed against the adaptor's ``output_dim`` rather than the encoder's
+    native dim. The caller owns that wiring (see
+    :func:`~soma.training.feature_adaptor.feature_adaptor_output_dim`).
+
     Args:
-        aggregator: MIL aggregator (e.g. ABMIL, MeanPool).
+        aggregator: MIL aggregator (e.g. ABMIL, MeanPool), built against the adaptor's
+            output width.
         task_head: Task head (e.g. ClassificationHead).
+        feature_adaptor: Optional front module applied to ``X`` before aggregation.
     """
 
-    def __init__(self, aggregator: Aggregator, task_head: TaskHead) -> None:
+    def __init__(
+        self,
+        aggregator: Aggregator,
+        task_head: TaskHead,
+        feature_adaptor: nn.Module | None = None,
+    ) -> None:
         super().__init__()
         aggregator.configure_for_task(task_head)
         self.aggregator = aggregator
         self.task_head = task_head
+        self.feature_adaptor = feature_adaptor
 
     def forward(self, X: Tensor, mask: Tensor | None = None) -> MILModelOutput:
+        if self.feature_adaptor is not None:
+            X = self.feature_adaptor(X)
         agg_out = self.aggregator(X, mask=mask)
         if (
             agg_out.bag_representation.ndim == 3
@@ -109,18 +152,42 @@ class SegmentationModel(nn.Module):
     ``task_head.compute_loss``/``compute_metrics``). The encoder is frozen/absent at
     train time, like the aggregator+head path.
 
+    An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
+    the decoder and transforms the frozen grid **channel-axis** before anything trainable
+    sees it (issue #286 on the single-encoder dense path). It is ``None`` unless the run
+    asks for one, and ``None`` is not registered as a submodule, so a run without one has
+    exactly the ``state_dict``/``parameters`` of a model built before the adaptor existed.
+
+    When the adaptor projects it also *changes the channel count*: the frozen ``d ->
+    target_dim`` map composes **ahead of** the decoder's own learnable ``1x1`` projection
+    conv, so ``decoder`` must already have been constructed against the adaptor's
+    ``output_dim``. No decoder change is needed — and because the decoder's ``1x1``
+    projection is its only ``d``-dependent module, the whole decoder becomes
+    encoder-dim-independent under an active projection.
+
     Args:
-        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``.
+        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``, built against the
+            adaptor's output width.
         task_head: SegmentationHead owning targets/loss/metric/postprocess and the
             resize-to-encoded + crop-to-target geometry.
+        feature_adaptor: Optional front module applied channel-axis to ``X`` before the
+            decoder.
     """
 
-    def __init__(self, decoder: Decoder, task_head: TaskHead) -> None:
+    def __init__(
+        self,
+        decoder: Decoder,
+        task_head: TaskHead,
+        feature_adaptor: nn.Module | None = None,
+    ) -> None:
         super().__init__()
         self.decoder = decoder
         self.task_head = task_head
+        self.feature_adaptor = feature_adaptor
 
     def forward(self, X: Tensor) -> SegmentationModelOutput:
+        if self.feature_adaptor is not None:
+            X = self.feature_adaptor.forward_grid(X)
         return SegmentationModelOutput(logits=self.task_head(self.decoder(X)))
 
 
@@ -162,12 +229,21 @@ class LiveSegmentationModel(nn.Module):
     cached path (a real regression anchor). The decoder/head run in fp32 outside
     ``no_grad`` so backprop flows to them and stops at the frozen grid.
 
+    A ``feature_adaptor`` may be present at **inference** time even though live *training*
+    refuses one (issue #286): whole-slide sliding-window prediction rebuilds these models
+    from checkpoints trained on the cached path, and such a checkpoint can carry a fitted
+    adaptor whose buffers must be loaded and re-applied. What live training refuses is
+    *fitting* one against an augmented stream — here the transform is already fit and
+    frozen, so applying it to the re-encoded grid is exactly right.
+
     Args:
         encoder: A dense-capable slide2vec tile encoder (``encode_tiles_dense``).
-        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``.
+        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``, built against the
+            adaptor's output width.
         task_head: SegmentationHead (geometry + targets/loss/metric/postprocess).
         device: Device the encoder runs on (the trainer moves inputs here too).
         precision: Encoder autocast precision (resolved exactly as extraction does).
+        feature_adaptor: Optional front module applied channel-axis to the encoded grid.
     """
 
     def __init__(
@@ -181,10 +257,12 @@ class LiveSegmentationModel(nn.Module):
         geometry: "DenseGridGeometry",
         window_size: int | None = None,
         overlap: float = 0.0,
+        feature_adaptor: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.decoder = decoder
         self.task_head = task_head
+        self.feature_adaptor = feature_adaptor
         self._geometry = geometry
         self._window_size = None if window_size is None else int(window_size)
         self._overlap = float(overlap)
@@ -244,6 +322,8 @@ class LiveSegmentationModel(nn.Module):
 
     def forward_from_grid(self, grid: Tensor) -> SegmentationModelOutput:
         """Decoder + head on a precomputed dense grid — the trainable half of the forward."""
+        if self.feature_adaptor is not None:
+            grid = self.feature_adaptor.forward_grid(grid)
         return SegmentationModelOutput(logits=self.task_head(self.decoder(grid)))
 
     def forward(self, X: Tensor) -> SegmentationModelOutput:

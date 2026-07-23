@@ -16,6 +16,7 @@ import csv
 import functools
 import inspect
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +33,7 @@ from rich.table import Table
 from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
-from soma.decoders.registry import decoder_registry
+from soma.decoders.registry import build_decoder_for_grid
 from soma.config import (
     AggregatorConfig,
     DecoderConfig,
@@ -40,14 +41,17 @@ from soma.config import (
     EvalConfig,
     HeatmapConfig,
     MasksConfig,
+    NormalizationConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
+    ProjectionConfig,
     SamplingConfig,
     TaskConfig,
     TrainingConfig,
     config_yaml_dict,
     save_config,
+    validate_feature_adaptor_compatibility,
 )
 from soma.dataset import (
     Dataset,
@@ -83,6 +87,12 @@ from soma.tasks.registry import task_registry
 from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
+from soma.training.feature_adaptor import (
+    FeatureAdaptor,
+    build_feature_adaptor,
+    feature_adaptor_output_dim,
+    write_feature_adapter_sidecar,
+)
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
 from soma.training.model import (
     EmbeddingModel,
@@ -417,6 +427,115 @@ def _event_balanced_train_loader(
 # ---------------------------------------------------------------------------
 
 
+class _SupportFeatures:
+    """A re-iterable stream of the Support split's feature tensors, one sample at a time.
+
+    The feature adaptor fits its stages in pipeline order, so a fitted projection needs a
+    *second* pass over rows the normalize stage has already transformed. A generator would
+    arrive at that pass exhausted; this restarts the stream on every ``__iter__`` while
+    still never holding more than one sample's tiles at once.
+    """
+
+    def __init__(self, feature_store: FeatureStore, records) -> None:
+        self._feature_store = feature_store
+        self._sample_ids = [record.sample_id for record in records]
+
+    def __iter__(self):
+        return (self._feature_store.load(sample_id) for sample_id in self._sample_ids)
+
+
+class _SupportGrids:
+    """A re-iterable stream of the Support ROIs' dense grids, **channel-axis last**.
+
+    The dense path's features are ``(d, h, w)`` grids, not rows; every spatial position is
+    one feature vector, so the fit population is *all positions in the Support ROIs*.
+    Moving the channel axis last hands :meth:`FeatureAdaptor.fit` exactly the row layout it
+    expects (last axis = feature dim), which is why one fit implementation serves the MIL,
+    embedding and dense paths alike. Re-iterable for the same reason as
+    :class:`_SupportFeatures` — a fitted projection needs a second pass.
+    """
+
+    def __init__(self, feature_store, records) -> None:
+        self._feature_store = feature_store
+        self._sample_ids = [record.sample_id for record in records]
+
+    def __iter__(self):
+        return (
+            self._feature_store.load(sample_id).movedim(0, -1)
+            for sample_id in self._sample_ids
+        )
+
+
+def _validate_dense_feature_adaptor(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+    *,
+    feature_store,
+) -> None:
+    """Resolve runtime dense-source facts, then apply the shared compatibility rule."""
+    from soma.dense.composite import CompositeDenseFeatureStore
+
+    validate_feature_adaptor_compatibility(
+        normalization,
+        projection,
+        feature_mode=(
+            "live" if isinstance(feature_store, LiveSegmentationSource) else "cached"
+        ),
+        has_composite=isinstance(feature_store, CompositeDenseFeatureStore),
+    )
+
+
+def _fit_feature_adaptor(
+    normalization: NormalizationConfig | None,
+    projection: ProjectionConfig | None,
+    *,
+    support_features: Iterable[torch.Tensor],
+    num_support: int,
+    feature_dim: int,
+    encoder_identity: str,
+    fold_dir: Path,
+) -> FeatureAdaptor | None:
+    """Build and fit the fold's feature adaptor, or return ``None`` when it has no stage.
+
+    Shared by every path that carries an adaptor (the tile-encoder MIL path, issue #283;
+    the slide-encoder embedding path, issue #285; the single-encoder dense path, issue
+    #286), because the contract they share is the load-bearing part: the fit is over the
+    **Support split alone** — "K means K" — and it happens *before* anything trainable is
+    constructed, so the aggregator/decoder/head can be built against the adaptor's
+    (possibly rewired) output width.
+
+    ``support_features`` is the path's re-iterable stream of Support tensors whose **last**
+    axis is the feature dim (:class:`_SupportFeatures` for rows, :class:`_SupportGrids` for
+    dense grids). Streaming one sample at a time keeps a whole cohort off the heap; the
+    stream must be re-iterable because a fitted projection needs a second pass over
+    already-normalized rows. Held-out samples only ever pass through ``forward()``, which
+    never touches the buffers, so the transform is leak-free by construction.
+    """
+    feature_adaptor = build_feature_adaptor(
+        normalization,
+        projection,
+        num_features=feature_dim,
+        encoder_identity=encoder_identity,
+    )
+    if feature_adaptor is None:
+        return None
+    feature_adaptor.fit(support_features)
+    logger.info(
+        "Fitted feature adaptor on %d Support sample(s): normalization=%s "
+        "(%d channel(s) at the eps floor), projection=%s (%d → %d dims)",
+        num_support,
+        feature_adaptor.method,
+        feature_adaptor.num_eps_floored,
+        feature_adaptor.projection_method,
+        feature_dim,
+        feature_adaptor.output_dim,
+    )
+    write_feature_adapter_sidecar(
+        feature_adaptor, fold_dir, n_support_samples=num_support
+    )
+    return feature_adaptor
+
+
 def train_one_fold(
     feature_store: FeatureStore,
     dataset: Dataset,
@@ -432,6 +551,9 @@ def train_one_fold(
     num_folds: int = 1,
     preprocessing: PreprocessingConfig | None = None,
     heatmaps: HeatmapConfig | None = None,
+    normalization: NormalizationConfig | None = None,
+    projection: ProjectionConfig | None = None,
+    encoder_identity: str = "",
 ) -> FoldResult:
     """Train and evaluate a single fold.
 
@@ -450,6 +572,16 @@ def train_one_fold(
         fold: Fold index (for FoldResult metadata).
         heatmaps: When provided and enabled, attention scores are saved during
             the test evaluation pass (no separate inference pass needed).
+        normalization: Feature-adaptor normalization. When it asks for a transform,
+            a :class:`~soma.training.feature_adaptor.FeatureAdaptor` is fit on this
+            fold's Support (train) features and inserted ahead of the aggregator.
+            ``None``/``none`` means no adaptor at all.
+        projection: Feature-adaptor label-free projection, applied after
+            ``normalization``. When active the aggregator/head is built against
+            ``projection.target_dim`` rather than the encoder's native dim, so the
+            downstream trainable capacity is equal across a roster of encoders.
+        encoder_identity: Name of the encoder behind the features; seeds the
+            ``random`` projection so two encoders never share a matrix.
 
     Returns:
         FoldResult with training result + tune/test evaluation reports.
@@ -726,6 +858,18 @@ def train_one_fold(
     task_family = task_cls.task_family
     resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
 
+    # Feature adaptor (issues #283, #284, #285). The tile-encoder MIL path and the
+    # slide-encoder embedding path both fit one; the patient, tile-dataset and
+    # hierarchical paths are separate slices, so a normalization or projection request
+    # they cannot honor is refused rather than silently ignored — a silently-dropped
+    # transform is a false result.
+    validate_feature_adaptor_compatibility(
+        normalization,
+        projection,
+        dataset_type=dataset_type,
+        is_hierarchical=feature_store.is_hierarchical,
+    )
+
     # The task head owns its target contract. Build the head first, then derive
     # the per-sample target_fn and per-key collation from it.
     if dataset_type == "patient":
@@ -774,10 +918,29 @@ def train_one_fold(
             )
         model: torch.nn.Module = EmbeddingModel(task_head=head)
     elif dataset_type == "tile" or feature_store.is_slide_level:
-        # Single-embedding path: one pre-computed vector per sample, no aggregation
+        # Single-embedding path: one pre-computed vector per sample, no aggregation.
+        # Fit the adaptor BEFORE the head is constructed, from the Support split's
+        # embeddings and nothing else — "K means K", and here K rows is literally all
+        # there is, which is why the PCA preflight is load-bearing on this path.
         if feature_store.is_slide_level and aggregator is not None:
             raise ValueError("aggregator must be None for slide-level features")
-        head = task_cls(input_dim=feature_dim, **task_params)
+        feature_adaptor = _fit_feature_adaptor(
+            normalization,
+            projection,
+            support_features=_SupportFeatures(feature_store, train_records),
+            num_support=len(train_records),
+            feature_dim=feature_dim,
+            encoder_identity=encoder_identity,
+            fold_dir=fold_dir,
+        )
+        # The dim rewire (issue #284): with a projection active the head is built against
+        # `target_dim`, not the encoder's native dim.
+        head = task_cls(
+            input_dim=feature_adaptor_output_dim(
+                feature_adaptor, num_features=feature_dim
+            ),
+            **task_params,
+        )
         target_fn = head.extract_targets
         _sample_collate = functools.partial(sample_collate_fn, target_dtypes=head.target_dtypes)
         train_loader, tune_loader, test_loaders = _make_loaders(
@@ -793,7 +956,9 @@ def train_one_fold(
                 training=training,
                 min_events_per_window=head.min_events_per_window,
             )
-        model: torch.nn.Module = EmbeddingModel(task_head=head)
+        model: torch.nn.Module = EmbeddingModel(
+            task_head=head, feature_adaptor=feature_adaptor
+        )
     elif feature_store.is_hierarchical:
         if aggregator is None:
             raise ValueError("aggregator must be provided for hierarchical features")
@@ -840,8 +1005,25 @@ def train_one_fold(
         # Tile-level MIL path
         if aggregator is None:
             raise ValueError("aggregator must be provided for tile-level features")
+        # Fit the adaptor BEFORE anything trainable is constructed, from the Support
+        # split's tiles and nothing else — "K means K".
+        feature_adaptor = _fit_feature_adaptor(
+            normalization,
+            projection,
+            support_features=_SupportFeatures(feature_store, train_records),
+            num_support=len(train_records),
+            feature_dim=feature_dim,
+            encoder_identity=encoder_identity,
+            fold_dir=fold_dir,
+        )
+        # The dim rewire (issue #284): with a projection active the aggregator is built
+        # against `target_dim`, not the encoder's native dim, so the trainable capacity
+        # below is identical across a roster of encoders of differing width.
+        adapted_dim = feature_adaptor_output_dim(
+            feature_adaptor, num_features=feature_dim
+        )
         aggregator_cls = aggregator_registry.get(aggregator.name)
-        agg = aggregator_cls(input_dim=feature_dim, **aggregator.params)
+        agg = aggregator_cls(input_dim=adapted_dim, **aggregator.params)
         if aggregator.name == "clam_mb" and task.name == "binary_classification":
             raise ValueError(
                 "clam_mb does not support binary_classification; "
@@ -882,7 +1064,9 @@ def train_one_fold(
                     training=training,
                     min_events_per_window=head.min_events_per_window,
                 )
-        model = MILModel(aggregator=agg, task_head=head)
+        model = MILModel(
+            aggregator=agg, task_head=head, feature_adaptor=feature_adaptor
+        )
 
     deterministic_baseline = _build_deterministic_baseline(
         train_records,
@@ -1063,6 +1247,9 @@ def train_one_segmentation_fold(
     masks: "MasksConfig | None" = None,
     fold: int = 0,
     num_folds: int = 1,
+    normalization: NormalizationConfig | None = None,
+    projection: ProjectionConfig | None = None,
+    encoder_identity: str = "",
 ) -> FoldResult:
     """Train and evaluate a single dense-segmentation fold.
 
@@ -1081,6 +1268,19 @@ def train_one_segmentation_fold(
     five things differ — geometry source, feature_dim, coverage check, dataset, and
     model — and they are handled with inline branches here; everything else (records,
     num_classes, decoder/head build, trainer, eval, summary) is shared.
+
+    Args:
+        normalization: Feature-adaptor normalization (issue #286). When active, a
+            :class:`~soma.training.feature_adaptor.FeatureAdaptor` is fit **channel-axis**
+            over all positions in this fold's Support ROIs and inserted ahead of the
+            decoder. **Cached only** — a request on the live path is refused, because the
+            augmented live stream must never receive an unfit or mis-fit transform.
+        projection: Feature-adaptor label-free projection, applied after
+            ``normalization``. The frozen ``d -> target_dim`` map composes ahead of the
+            decoder's own learnable 1x1 projection conv, so the decoder is simply built
+            against ``target_dim`` and its body is unchanged.
+        encoder_identity: Name of the encoder behind the grids; seeds the ``random``
+            projection so two encoders never share a matrix.
     """
     if decoder is None:
         raise ValueError("dataset_type='segmentation' requires a decoder configuration")
@@ -1105,6 +1305,7 @@ def train_one_segmentation_fold(
     all_records = fold_plan.all_records
 
     is_live = isinstance(feature_store, LiveSegmentationSource)
+    _validate_dense_feature_adaptor(normalization, projection, feature_store=feature_store)
 
     # num_classes is the single source — from task.params (no dataset auto-inject,
     # since segmentation has no scalar labels). Fed to BOTH decoder and head.
@@ -1175,21 +1376,35 @@ def train_one_segmentation_fold(
     )
     target_fn = head.extract_targets
 
-    # Decoder: inject the auto-computed upsample depth only if the decoder accepts it
-    # (LinearDecoder does not) and the user did not pin it. num_upsample_blocks brings
-    # the token grid up to ~encoded resolution (the size the head interpolates to);
-    # encoded/grid == patch_size per axis.
-    decoder_cls = decoder_registry.get(decoder.name)
-    decoder_params = dict(decoder.params)
-    ctor_params = inspect.signature(decoder_cls.__init__).parameters
-    if "num_upsample_blocks" in ctor_params and "num_upsample_blocks" not in decoder_params:
-        ratio_h = geometry.encoded_size[0] / geometry.grid_shape[0]
-        ratio_w = geometry.encoded_size[1] / geometry.grid_shape[1]
-        decoder_params["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(ratio_h, ratio_w))))
-    decoder_obj = decoder_cls(
-        input_dim=ref_feature_dim,
+    # Feature adaptor (issue #286), fit BEFORE the decoder is constructed from the Support
+    # ROIs' grid positions and nothing else — "K means K". Cached only (asserted above).
+    feature_adaptor = (
+        None
+        if is_live
+        else _fit_feature_adaptor(
+            normalization,
+            projection,
+            support_features=_SupportGrids(feature_store, train_records),
+            num_support=len(train_records),
+            feature_dim=ref_feature_dim,
+            encoder_identity=encoder_identity,
+            fold_dir=fold_dir,
+        )
+    )
+    # The dim rewire: with a projection active the frozen `d -> target_dim` map composes
+    # *ahead of* the decoder's own learnable 1x1 projection conv, so the decoder is simply
+    # built against `target_dim`. Its body is untouched — and since that 1x1 is the
+    # decoder's only d-dependent module, the whole decoder becomes encoder-dim-independent.
+    decoder_input_dim = feature_adaptor_output_dim(
+        feature_adaptor, num_features=ref_feature_dim
+    )
+
+    decoder_obj = build_decoder_for_grid(
+        decoder.name,
+        decoder.params,
+        geometry=geometry,
+        input_dim=decoder_input_dim,
         num_classes=num_classes,
-        **decoder_params,
     )
     if decoder_obj.num_classes != head.num_classes:
         raise ValueError(
@@ -1220,7 +1435,9 @@ def train_one_segmentation_fold(
             ignore_index=head.ignore_index,
         )
     else:
-        model = SegmentationModel(decoder=decoder_obj, task_head=head)
+        model = SegmentationModel(
+            decoder=decoder_obj, task_head=head, feature_adaptor=feature_adaptor
+        )
         train_loader, tune_loader, test_loaders = _make_loaders(
             SegmentationDataset, seg_collate,
             train_records, tune_records, test_records_by_split,
@@ -1318,6 +1535,9 @@ def train_one_detection_fold(
     fold: int = 0,
     num_folds: int = 1,
     checkpoint_path: str | Path | None = None,
+    normalization: NormalizationConfig | None = None,
+    projection: ProjectionConfig | None = None,
+    encoder_identity: str = "",
 ) -> FoldResult:
     """Train and evaluate a single dense-detection fold (heatmap regression, design §6-§7).
 
@@ -1333,10 +1553,17 @@ def train_one_detection_fold(
     sweep and scoring are deterministic, so the regenerated metrics reproduce the original
     run's; ``FoldResult.train_result`` is ``None`` (no epoch history, mirroring the
     pixel-classifier path) and no ``training_history.json`` is written.
+
+    ``normalization``/``projection``/``encoder_identity`` carry the feature adaptor (issue
+    #286) on exactly the terms :func:`train_one_segmentation_fold` documents — this path is
+    cached-only, so the ``live`` question does not arise. Under ``checkpoint_path`` the
+    adaptor is rebuilt (unfitted) and the checkpoint's fitted buffers load into it, so an
+    eval-only rerun re-applies the transform the run trained under.
     """
     if decoder is None:
         raise ValueError("dataset_type='detection' requires a decoder configuration")
 
+    _validate_dense_feature_adaptor(normalization, projection, feature_store=feature_store)
     evaluation = evaluation or EvalConfig()
     fold_dir = Path(fold_dir)
     fold_dir.mkdir(parents=True, exist_ok=True)
@@ -1425,14 +1652,37 @@ def train_one_detection_fold(
     )
     target_fn = head.extract_targets
 
-    decoder_cls = decoder_registry.get(decoder.name)
-    decoder_params = dict(decoder.params)
-    ctor_params = inspect.signature(decoder_cls.__init__).parameters
-    if "num_upsample_blocks" in ctor_params and "num_upsample_blocks" not in decoder_params:
-        ratio_h = geometry.encoded_size[0] / geometry.grid_shape[0]
-        ratio_w = geometry.encoded_size[1] / geometry.grid_shape[1]
-        decoder_params["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(ratio_h, ratio_w))))
-    decoder_obj = decoder_cls(input_dim=ref_feature_dim, num_classes=num_classes, **decoder_params)
+    # Feature adaptor (issue #286). Training fits it on the Support ROIs' grid positions;
+    # an eval-only rerun builds it *unfitted* and lets the checkpoint's buffers below load
+    # into it, so the transform re-applied is exactly the one the run trained under (and
+    # no QC sidecar is rewritten for a run that did not fit anything).
+    if checkpoint_path is not None:
+        feature_adaptor = build_feature_adaptor(
+            normalization,
+            projection,
+            num_features=ref_feature_dim,
+            encoder_identity=encoder_identity,
+        )
+    else:
+        feature_adaptor = _fit_feature_adaptor(
+            normalization,
+            projection,
+            support_features=_SupportGrids(feature_store, train_records),
+            num_support=len(train_records),
+            feature_dim=ref_feature_dim,
+            encoder_identity=encoder_identity,
+            fold_dir=fold_dir,
+        )
+
+    # The dim rewire: the frozen projection composes ahead of the decoder's learnable 1x1
+    # projection conv, so the decoder is built against `target_dim` and its body is unchanged.
+    decoder_obj = build_decoder_for_grid(
+        decoder.name,
+        decoder.params,
+        geometry=geometry,
+        input_dim=feature_adaptor_output_dim(feature_adaptor, num_features=ref_feature_dim),
+        num_classes=num_classes,
+    )
     if decoder_obj.num_classes != head.num_classes:
         raise ValueError(
             f"decoder num_classes ({decoder_obj.num_classes}) != head num_classes "
@@ -1440,7 +1690,9 @@ def train_one_detection_fold(
         )
 
     det_collate = functools.partial(detection_collate_fn, target_dtypes=head.target_dtypes)
-    model = SegmentationModel(decoder=decoder_obj, task_head=head)
+    model = SegmentationModel(
+        decoder=decoder_obj, task_head=head, feature_adaptor=feature_adaptor
+    )
     train_loader, tune_loader, test_loaders = _make_loaders(
         DetectionDataset, det_collate,
         train_records, tune_records, test_records_by_split,
@@ -1933,6 +2185,9 @@ def train(
     preprocessing: PreprocessingConfig | None = None,
     masks: "MasksConfig | None" = None,
     heatmaps: HeatmapConfig | None = None,
+    normalization: NormalizationConfig | None = None,
+    projection: ProjectionConfig | None = None,
+    encoder_identity: str = "",
     dataset_type: str = "slide",
     test_digest: str | None = None,
     overwrite_test: bool = False,
@@ -1954,10 +2209,42 @@ def train(
         run_dir: Root directory — each fold gets a fold_N/ subdirectory.
         heatmaps: When provided and enabled, attention scores are captured
             during the test evaluation pass and saved to fold_N/attention/.
+        normalization: Feature-adaptor normalization, fit per fold on that fold's
+            Support (train) split. Defaults to no adaptor.
+        projection: Feature-adaptor label-free projection to a common width, fit per
+            fold on that fold's Support split. Defaults to no projection.
+        encoder_identity: Name of the encoder behind the features; seeds the
+            ``random`` projection.
 
     Returns:
         PipelineResult with per-fold results and aggregated summary.
     """
+    # Feature-adaptor path guard (issues #283-#286). The dense fold dispatchers below never
+    # reach train_one_fold's own guard, so the streams *this* entrypoint owns are checked
+    # here — a requested transform a path cannot honor must fail, never be silently dropped.
+    #
+    # Covered now: the single-encoder dense streams (`segmentation` / `detection` with a
+    # decoder over one encoder's cached grids), alongside the tile-encoder MIL and
+    # slide-encoder embedding paths in train_one_fold. Still refused:
+    #
+    #   * `spatial_expression` — one spot is a single embedding scored by the closed-form
+    #     Ridge+PCA probe, not a dense grid, and the probe carries no adaptor.
+    #   * the decoder-free `pixel_classifier` segmentation path — no torch model, so no
+    #     buffers and no checkpoint to carry them.
+    #   * composite (multi-encoder) dense streams — the top-level blocks are scoped to
+    #     single-encoder streams; composites keep their per-member ``member_norm``, and
+    #     fitting one z-score over a channel-concatenated grid would silently treat several
+    #     encoders as one.
+    from soma.dense.composite import CompositeDenseFeatureStore
+
+    validate_feature_adaptor_compatibility(
+        normalization,
+        projection,
+        dataset_type=dataset_type,
+        has_pixel_classifier=pixel_classifier is not None,
+        has_composite=isinstance(feature_store, CompositeDenseFeatureStore),
+    )
+
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     evaluation = evaluation or EvalConfig()
@@ -2078,6 +2365,9 @@ def train(
                 masks=masks,
                 fold=fold_idx,
                 num_folds=splits.num_folds,
+                normalization=normalization,
+                projection=projection,
+                encoder_identity=encoder_identity,
             )
         elif dataset_type == "detection":
             result = train_one_detection_fold(
@@ -2092,6 +2382,9 @@ def train(
                 preprocessing=preprocessing,
                 fold=fold_idx,
                 num_folds=splits.num_folds,
+                normalization=normalization,
+                projection=projection,
+                encoder_identity=encoder_identity,
             )
         else:
             result = train_one_fold(
@@ -2108,6 +2401,9 @@ def train(
                 num_folds=splits.num_folds,
                 preprocessing=preprocessing,
                 heatmaps=heatmaps,
+                normalization=normalization,
+                projection=projection,
+                encoder_identity=encoder_identity,
             )
         fold_results.append(result)
 
@@ -2493,6 +2789,11 @@ class Pipeline:
                 preprocessing=preprocessing,
                 masks=self._config.preprocessing.masks,
                 heatmaps=self._config.heatmaps,
+                normalization=self._config.normalization,
+                projection=self._config.projection,
+                encoder_identity=(
+                    self._config.encoder.name if self._config.encoder is not None else ""
+                ),
                 test_digest=test_identity_digest(self._config),
                 overwrite_test=self._config.evaluation.overwrite_test,
                 run_id=layout.run_id,

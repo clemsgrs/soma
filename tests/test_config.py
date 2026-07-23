@@ -14,8 +14,10 @@ from soma.config import (
     EvalConfig,
     ExecutionConfig,
     MasksConfig,
+    NormalizationConfig,
     PipelineConfig,
     PreprocessingConfig,
+    ProjectionConfig,
     SamplingConfig,
     SubgroupConfig,
     TaskConfig,
@@ -121,6 +123,7 @@ def test_training_config_defaults():
     assert cfg.batch_size == 1
     assert cfg.gradient_accumulation == 1
     assert cfg.tune_is_test is False
+    assert cfg.checkpoint_selection == "best"
     # DataLoader knobs (Phase 2.2). num_workers defaults to 0 so the suite stays
     # fast on test fixtures; users should raise it for real WSI runs.
     assert cfg.num_workers == 0
@@ -138,11 +141,285 @@ def test_training_config_defaults():
         ({"monitor": ""}, "monitor"),
         ({"monitor_mode": "largest"}, "monitor_mode"),
         ({"num_workers": -1}, "num_workers"),
+        ({"checkpoint_selection": "final"}, "checkpoint_selection"),
     ],
 )
 def test_training_config_rejects_non_positive_counts(kwargs, message):
     with pytest.raises(ValueError, match=message):
         TrainingConfig(**kwargs)
+
+
+def test_checkpoint_selection_last_rejects_finite_patience():
+    """`last` disables early stopping, so a finite patience is a silent lie."""
+    with pytest.raises(ValueError, match="patience"):
+        TrainingConfig(checkpoint_selection="last", patience=10)
+
+
+def test_checkpoint_selection_last_accepts_monitor_as_validated_noop():
+    """Under `last` the monitor still governs the logged diagnostics, so it is
+    validated as usual — it simply no longer selects the checkpoint."""
+    cfg = TrainingConfig(
+        checkpoint_selection="last", patience=None, monitor="auroc", monitor_mode="max"
+    )
+
+    assert cfg.monitor == "auroc"
+    assert cfg.monitor_mode == "max"
+    with pytest.raises(ValueError, match="monitor_mode"):
+        TrainingConfig(checkpoint_selection="last", patience=None, monitor_mode="largest")
+
+
+def test_pipeline_rejects_monitor_outside_effective_task_metrics():
+    """Monitor validity is protocol validation even when it does not select a checkpoint."""
+    with pytest.raises(ValueError, match="monitor.*accuracy.*multiclass_classification"):
+        _make_pipeline_config(
+            training=TrainingConfig(
+                checkpoint_selection="last",
+                patience=None,
+                monitor="accuracy",
+                monitor_mode="max",
+            )
+        )
+
+
+def test_checkpoint_selection_survives_config_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        training=TrainingConfig(checkpoint_selection="last", patience=None)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["training"]["checkpoint_selection"] == "last"
+    assert saved["training"]["patience"] is None
+    assert loaded.training.checkpoint_selection == "last"
+    assert loaded.training.patience is None
+
+
+def test_checkpoint_selection_composes_with_allow_missing_tune():
+    """Orthogonal knobs: which checkpoint is evaluated vs where tune comes from."""
+    cfg = TrainingConfig(
+        checkpoint_selection="last", patience=None, allow_missing_tune=True
+    )
+
+    assert cfg.checkpoint_selection == "last"
+    assert cfg.allow_missing_tune is True
+    assert TrainingConfig(allow_missing_tune=True).checkpoint_selection == "best"
+    assert (
+        TrainingConfig(checkpoint_selection="last", patience=None).allow_missing_tune
+        is False
+    )
+
+
+def test_normalization_config_defaults():
+    """Feature normalization is off by default (issue #283)."""
+    cfg = NormalizationConfig()
+
+    assert cfg.method == "none"
+    assert cfg.eps == 1e-6
+
+
+@pytest.mark.parametrize("method", ["none", "zscore", "l2", "layernorm"])
+def test_normalization_config_accepts_vocabulary(method):
+    assert NormalizationConfig(method=method).method == method
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"method": "standardize"}, "method"),
+        ({"method": "zscore", "eps": 0.0}, "eps"),
+        ({"method": "zscore", "eps": -1e-6}, "eps"),
+    ],
+)
+def test_normalization_config_rejects_invalid(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        NormalizationConfig(**kwargs)
+
+
+@pytest.mark.parametrize("eps", [True, "1e-6", float("nan"), float("inf"), float("-inf")])
+def test_normalization_eps_requires_a_finite_positive_real(eps):
+    with pytest.raises(ValueError, match="eps.*finite positive real"):
+        NormalizationConfig(method="zscore", eps=eps)
+
+
+def test_normalization_none_rejects_non_default_eps():
+    with pytest.raises(ValueError, match="method='none'.*eps"):
+        NormalizationConfig(method="none", eps=1e-4)
+
+
+def test_pipeline_config_normalization_defaults_to_off():
+    assert _make_pipeline_config().normalization == NormalizationConfig()
+
+
+def test_saved_config_always_serializes_normalization_block(tmp_path: Path):
+    """Guard the hash, not the record: the block is written even when off."""
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(_make_pipeline_config(), yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["normalization"] == {"method": "none", "eps": 1e-6}
+    assert load_config(yaml_path).normalization == NormalizationConfig()
+
+
+def test_normalization_survives_config_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        normalization=NormalizationConfig(method="zscore", eps=1e-5)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["normalization"] == {"method": "zscore", "eps": 1e-5}
+    assert loaded.normalization == NormalizationConfig(method="zscore", eps=1e-5)
+
+
+def test_load_config_rejects_unknown_normalization_method(tmp_path: Path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "run": {"output_root": str(tmp_path)},
+                "data": {
+                    "dataset_csv": "d.csv",
+                    "splits_csv": "s.csv",
+                    "dataset_type": "slide",
+                },
+                "task": {"name": "binary_classification"},
+                "normalization": {"method": "standardize"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="method"):
+        load_config(yaml_path)
+
+
+def test_projection_config_defaults():
+    """Label-free projection is off by default (issue #284)."""
+    cfg = ProjectionConfig()
+
+    assert cfg.method == "none"
+    assert cfg.target_dim is None
+    assert cfg.seed == 0
+
+
+@pytest.mark.parametrize("method", ["none", "pca", "random"])
+def test_projection_config_accepts_vocabulary(method):
+    target_dim = None if method == "none" else 64
+    assert ProjectionConfig(method=method, target_dim=target_dim).method == method
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"method": "whiten", "target_dim": 8}, "method"),
+        ({"method": "pca"}, "target_dim"),
+        ({"method": "random"}, "target_dim"),
+        ({"method": "pca", "target_dim": 0}, "target_dim"),
+        ({"method": "pca", "target_dim": -4}, "target_dim"),
+    ],
+)
+def test_projection_config_rejects_invalid(kwargs, message):
+    with pytest.raises(ValueError, match=message):
+        ProjectionConfig(**kwargs)
+
+
+@pytest.mark.parametrize("target_dim", [2.9, 2.0, True, "2"])
+def test_projection_target_dim_requires_a_positive_integer(target_dim):
+    with pytest.raises(ValueError, match="target_dim.*positive integer"):
+        ProjectionConfig(method="pca", target_dim=target_dim)
+
+
+@pytest.mark.parametrize("seed", [0.9, 0.0, True, "7"])
+def test_projection_seed_requires_an_integer(seed):
+    with pytest.raises(ValueError, match="seed.*integer"):
+        ProjectionConfig(method="random", target_dim=2, seed=seed)
+
+
+def test_projection_seed_accepts_negative_integer():
+    assert ProjectionConfig(method="random", target_dim=2, seed=-1).seed == -1
+
+
+@pytest.mark.parametrize("fields", [{"target_dim": 8}, {"seed": 1}])
+def test_projection_none_rejects_non_default_fields(fields):
+    with pytest.raises(ValueError, match="method='none'.*(target_dim|seed)"):
+        ProjectionConfig(method="none", **fields)
+
+
+def test_pca_rejects_non_default_seed():
+    with pytest.raises(ValueError, match="method='pca'.*seed"):
+        ProjectionConfig(method="pca", target_dim=2, seed=1)
+
+
+def test_pipeline_config_projection_defaults_to_off():
+    assert _make_pipeline_config().projection == ProjectionConfig()
+
+
+def test_saved_config_always_serializes_projection_block(tmp_path: Path):
+    """Guard the hash, not the record: the block is written even when off."""
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(_make_pipeline_config(), yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["projection"] == {"method": "none", "target_dim": None, "seed": 0}
+    assert load_config(yaml_path).projection == ProjectionConfig()
+
+
+def test_projection_survives_config_roundtrip(tmp_path: Path):
+    cfg = _make_pipeline_config(
+        projection=ProjectionConfig(method="random", target_dim=128, seed=7)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["projection"] == {"method": "random", "target_dim": 128, "seed": 7}
+    assert loaded.projection == ProjectionConfig(method="random", target_dim=128, seed=7)
+
+
+def test_normalization_and_projection_are_independently_configurable(tmp_path: Path):
+    """Standardize without projecting, project without standardizing, or both."""
+    yaml_path = tmp_path / "config.yaml"
+    cfg = _make_pipeline_config(
+        projection=ProjectionConfig(method="random", target_dim=32)
+    )
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    assert loaded.normalization == NormalizationConfig()
+    assert loaded.projection == ProjectionConfig(method="random", target_dim=32)
+
+
+def test_load_config_rejects_unknown_projection_method(tmp_path: Path):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "run": {"output_root": str(tmp_path)},
+                "data": {
+                    "dataset_csv": "d.csv",
+                    "splits_csv": "s.csv",
+                    "dataset_type": "slide",
+                },
+                "task": {"name": "binary_classification"},
+                "projection": {"method": "whiten", "target_dim": 8},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="method"):
+        load_config(yaml_path)
 
 
 def test_aggregator_config_explicit_name():
@@ -259,6 +536,35 @@ def test_segmentation_config_valid():
     assert cfg.dataset_type == "segmentation"
     assert cfg.decoder.name == "lightweight_conv"
     assert cfg.aggregator is None
+
+
+def test_pixel_classifier_rejects_last_checkpoint_selection():
+    """`last` is a Trainer capability; pixel classifiers own separate fit loops."""
+    from soma.config import PixelClassifierConfig
+
+    with pytest.raises(ValueError, match="checkpoint_selection='last'.*pixel_classifier"):
+        _seg_config(
+            decoder=None,
+            pixel_classifier=PixelClassifierConfig(name="mlp"),
+            training=TrainingConfig(checkpoint_selection="last", patience=None),
+        )
+
+
+def test_closed_form_probe_rejects_last_checkpoint_selection():
+    """A closed-form probe has no epoch checkpoint that `last` could select."""
+    with pytest.raises(ValueError, match="checkpoint_selection='last'.*ridge_pca_probe"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="spatial_expression",
+            task=TaskConfig(name="regression"),
+            training=TrainingConfig(
+                method="ridge_pca_probe",
+                checkpoint_selection="last",
+                patience=None,
+            ),
+        )
 
 
 def test_segmentation_requires_decoder():
@@ -610,6 +916,17 @@ def test_composite_decoder_path_cross_defaults_to_grid(tmp_path: Path):
     assert cfg.composite.concat_resolution == "grid"
     assert all(m.feature_kind == "patch_features" for m in cfg.composite.encoders)
     assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
+
+
+def test_composite_rejects_top_level_feature_adaptor():
+    """Composite streams own per-member normalization, not a concatenated adaptor."""
+    from soma.config import CompositeConfig, EncoderMemberConfig
+
+    with pytest.raises(ValueError, match="not yet supported.*composite"):
+        _seg_config(
+            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
+            normalization=NormalizationConfig(method="zscore"),
+        )
 
 
 def test_composite_grid_size_and_explicit_resolution_round_trip(tmp_path: Path):

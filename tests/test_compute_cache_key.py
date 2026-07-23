@@ -16,7 +16,17 @@ re-extracted; the hashes below are anchored to the current signature.
 import pytest
 
 from soma.cache import compute_cache_key
-from soma.config import EncoderConfig, PreprocessingConfig
+from dataclasses import replace
+
+from soma.config import (
+    AggregatorConfig,
+    EncoderConfig,
+    NormalizationConfig,
+    PipelineConfig,
+    PreprocessingConfig,
+    ProjectionConfig,
+    TaskConfig,
+)
 
 
 def test_compute_cache_key_tile_virchow():
@@ -402,3 +412,79 @@ def test_patient_annotation_bag_identical_specs_same_key():
     assert compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=a) == (
         compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=b)
     )
+
+
+@pytest.mark.parametrize("method", ["zscore", "l2", "layernorm"])
+def test_normalization_leaves_feature_cache_key_untouched(method):
+    """Issue #283: the feature adaptor consumes the cache, it does not define it.
+
+    Turning normalization on must never orphan an extracted feature cache, so the
+    key computed from a config's extraction inputs is identical either way.
+    """
+    off = PipelineConfig(
+        dataset_csv="d.csv",
+        splits_csv="s.csv",
+        output_root="runs",
+        dataset_type="slide",
+        preprocessing=PreprocessingConfig(
+            backend="asap",
+            requested_spacing_um=0.5,
+            requested_tile_size_px=224,
+            tissue_method="hsv",
+        ),
+        encoder=EncoderConfig(name="virchow"),
+        aggregator=AggregatorConfig(name="mean_pool"),
+        task=TaskConfig(name="binary_classification"),
+    )
+    on = replace(off, normalization=NormalizationConfig(method=method))
+
+    def _key(config: PipelineConfig) -> str:
+        return compute_cache_key(
+            kind="tile",
+            encoder_name=config.encoder.name,
+            preprocessing=config.preprocessing,
+            execution=config.encoder,
+        )
+
+    assert _key(on) == _key(off) == "4804c91c96ec19c1"
+
+
+@pytest.mark.parametrize(
+    "projection",
+    [
+        ProjectionConfig(method="pca", target_dim=256),
+        ProjectionConfig(method="random", target_dim=256, seed=3),
+    ],
+)
+def test_projection_leaves_feature_cache_key_untouched(projection):
+    """Issue #284: the projection consumes the cache, it does not define it.
+
+    The dim-matched ablation must never orphan an extracted feature cache — the whole
+    point is to re-use one shared extraction across every projection width.
+    """
+    off = PipelineConfig(
+        dataset_csv="d.csv",
+        splits_csv="s.csv",
+        output_root="runs",
+        dataset_type="slide",
+        preprocessing=PreprocessingConfig(
+            backend="asap",
+            requested_spacing_um=0.5,
+            requested_tile_size_px=224,
+            tissue_method="hsv",
+        ),
+        encoder=EncoderConfig(name="virchow"),
+        aggregator=AggregatorConfig(name="mean_pool"),
+        task=TaskConfig(name="binary_classification"),
+    )
+    on = replace(off, projection=projection)
+
+    def _key(config: PipelineConfig) -> str:
+        return compute_cache_key(
+            kind="tile",
+            encoder_name=config.encoder.name,
+            preprocessing=config.preprocessing,
+            execution=config.encoder,
+        )
+
+    assert _key(on) == _key(off) == "4804c91c96ec19c1"

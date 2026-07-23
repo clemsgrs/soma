@@ -142,6 +142,65 @@ def _locate_run_config(run_dir: Path) -> Path:
     raise FileNotFoundError(f"no config.yaml found under {run_dir}")
 
 
+def build_detection_model_from_checkpoint(
+    *,
+    store,
+    checkpoint_path: Path,
+    decoder,
+    task_head,
+    geometry,
+    normalization=None,
+    projection=None,
+    encoder_identity: str = "",
+):
+    """Rebuild a trained dense-detection model from its checkpoint, for re-scoring.
+
+    Reconstructing a trained model from config + checkpoint breaks two ways once a run can
+    carry a feature adaptor (issue #286), and only one of them is visible from the keys:
+
+    * the strict ``load_state_dict`` rejects the adaptor's extra buffers unless the adaptor
+      is rebuilt here too, and
+    * the decoder must be built against the adaptor's **output** width — a decoder built
+      against the encoder's native dim loads the checkpoint's ``target_dim``-shaped weights
+      by name but then reads the wrong number of channels.
+
+    The adaptor is built **unfitted**: the checkpoint's buffers are the fitted state, and
+    loading them is exactly what makes the re-score apply the transform the run trained
+    under. Returns the model in eval mode on CPU; the caller moves it.
+    """
+    import torch
+
+    from soma.decoders.registry import build_decoder_for_grid
+    from soma.training.feature_adaptor import (
+        build_feature_adaptor,
+        feature_adaptor_output_dim,
+    )
+    from soma.training.model import SegmentationModel
+
+    feature_adaptor = build_feature_adaptor(
+        normalization,
+        projection,
+        num_features=store.feature_dim,
+        encoder_identity=encoder_identity,
+    )
+    decoder_obj = build_decoder_for_grid(
+        decoder.name,
+        decoder.params,
+        geometry=geometry,
+        input_dim=feature_adaptor_output_dim(
+            feature_adaptor, num_features=store.feature_dim
+        ),
+        num_classes=task_head.num_classes,
+    )
+    model = SegmentationModel(
+        decoder=decoder_obj, task_head=task_head, feature_adaptor=feature_adaptor
+    )
+    model.load_state_dict(
+        torch.load(checkpoint_path, map_location="cpu", weights_only=True)["model_state_dict"]
+    )
+    return model.eval()
+
+
 def _locate_checkpoint(run_dir: Path) -> Path:
     """The newest ``best_model.pt`` under ``run_dir`` (deterministic across re-runs)."""
     direct = run_dir / "best_model.pt"
@@ -166,14 +225,12 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     import torch
 
     from soma.dataset import DetectionManifest, Splits
-    from soma.decoders.registry import decoder_registry
     from soma.dense import DenseFeatureStore
     from soma.dense_extraction import DenseTileFeatureExtractor
     from soma.encoders.validation import resolve_preprocessing_config
     from soma.pipeline import _make_loaders, _resolve_detection_px
     from soma.tasks.detection import DetectionHead
     from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
-    from soma.training.model import SegmentationModel
 
     run_dir = Path(run_dir)
     config_path = _locate_run_config(run_dir)
@@ -246,18 +303,18 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
         metrics=cfg.evaluation.metrics,
     )
 
-    decoder_cls = decoder_registry.get(cfg.decoder.name)
-    dparams = dict(cfg.decoder.params)
-    if (
-        "num_upsample_blocks" in inspect.signature(decoder_cls.__init__).parameters
-        and "num_upsample_blocks" not in dparams
-    ):
-        rh = geometry.encoded_size[0] / geometry.grid_shape[0]
-        rw = geometry.encoded_size[1] / geometry.grid_shape[1]
-        dparams["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(rh, rw))))
-    decoder_obj = decoder_cls(input_dim=store.feature_dim, num_classes=num_classes, **dparams)
-    model = SegmentationModel(decoder=decoder_obj, task_head=head)
-    model.load_state_dict(torch.load(ckpt, map_location="cpu")["model_state_dict"])
+    # Rebuild the trained model — including any feature adaptor the run carried, whose
+    # buffers and rewired decoder width the strict load below depends on (issue #286).
+    model = build_detection_model_from_checkpoint(
+        store=store,
+        checkpoint_path=ckpt,
+        decoder=cfg.decoder,
+        task_head=head,
+        geometry=geometry,
+        normalization=cfg.normalization,
+        projection=cfg.projection,
+        encoder_identity=cfg.encoder.name if cfg.encoder is not None else "",
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
 

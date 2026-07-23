@@ -1,5 +1,66 @@
 # Project Documentation Notes
 
+- 2026-07-20: Extended the feature adaptor (`normalization` + `projection`) to the
+  **single-encoder dense path** (`segmentation` and `detection` over one encoder's cached
+  grids), completing the protocol across all three paths. The adaptor operates
+  **channel-axis** on `(B, d, h, w)` grids and is fit over **all positions in the Support
+  ROIs** — so at a 2×2 token grid, two Support ROIs give 8 fit rows, not 2. The frozen
+  projection composes **ahead of** the decoder's own learnable 1×1 projection conv (frozen
+  `d → target_dim`, then learnable `target_dim → hidden`), so no decoder change was needed
+  and, because that 1×1 is the decoder's only `d`-dependent module, the whole decoder
+  becomes encoder-dim-independent under an active projection. This path **requires
+  `feature_mode: cached`**: `live` re-encodes *augmented* tiles every step, so a transform
+  fit on the cached Support grids would not match what it transforms — the combination is
+  refused at config validation and again in the fold. Composite (multi-encoder) dense
+  streams, the decoder-free `pixel_classifier` path, and `spatial_expression` are still
+  refused; composites keep their per-member `member_norm` unchanged. Checkpoint
+  reconstruction sites on this path (detection eval-only re-scoring, the OCELOT greedy
+  re-scorer, and `build_live_segmentation_models` for whole-slide sliding-window
+  inference) now rebuild the adaptor and size the decoder from its `output_dim`, so a
+  cached-trained projected checkpoint replays correctly.
+- 2026-07-20: Extended the feature adaptor (`normalization` + `projection`) to the
+  **slide-encoder embedding path**, so the same protocol now covers both the tile-encoder
+  MIL path and the embedding path. There the fit is over the Support split's *embeddings*
+  — one vector per slide — so the fit sample count is exactly `K`, which makes the PCA
+  preflight load-bearing: at `K = 12` no PCA wider than 12 components exists, and the
+  request raises rather than producing a degenerate basis. `EmbeddingModel` now carries an
+  optional adaptor as a front module, the task head is built against the adaptor's
+  `output_dim` under an active projection (the dim rewire), and everything else is
+  unchanged from the MIL path — leak-free Support-only fit, buffers not parameters riding
+  in the checkpoint, cache key untouched, identity folded only when non-default, config
+  always serialized, `feature_adapter.json` written. With both blocks off no adaptor is
+  built, so existing slide-encoder runs stay byte-identical.
+- 2026-07-20: Added the top-level `projection` section (`none` | `pca` | `random`, plus
+  `target_dim` and `seed`) as the feature adaptor's second stage, applied after
+  `normalization` (order: normalize → project). It is the dim-matched ablation for the
+  capacity confound — a wider encoder otherwise buys a larger aggregator — so when a
+  projection is active the aggregator/head is built against `target_dim` rather than the
+  encoder's native dim, equalizing trainable capacity across a roster. `pca` is fitted per
+  fold on the Support split only, centers intrinsically, and pins a sign convention so
+  repeated fits are byte-identical; `random` is a fixed Gaussian matrix seeded from `seed`
+  + encoder identity + dims, scaled to preserve inner products and constant across
+  trajectories. Both are frozen buffers, never learned. A preflight requires
+  `n_fit_rows >= target_dim` and `target_dim <= D` for PCA. Provenance mirrors
+  `normalization`: out of the feature-extraction cache key, folded into experiment
+  identity only when non-default, always serialized in the saved config, and summarized in
+  the per-fold `feature_adapter.json` sidecar (now with the PCA explained-variance ratio).
+- 2026-07-20: Added the top-level `normalization` section (`none` | `zscore` | `l2` |
+  `layernorm`, plus `eps`) and the *feature adaptor* it drives — a buffer-carrying front
+  module inserted ahead of the aggregator/head on the tile-encoder MIL path. `zscore` is
+  fitted on the Support (train) split only, so the transform is leak-free; its center and
+  scale live in buffers (never in `model.parameters()`) and ride in the checkpoint, so the
+  final-checkpoint test pass re-applies the exact transform. `none` (the default) builds no
+  adaptor at all, leaving the model structurally identical to before. The section does not
+  enter the feature-extraction cache key, folds into experiment identity only when
+  non-default, is always serialized in the saved run config, and is summarized in a
+  per-fold `feature_adapter.json` QC sidecar.
+- 2026-07-20: Added `TrainingConfig.checkpoint_selection` (`best` | `last`). `last`
+  evaluates the final-epoch weights, takes model selection off the tune metric and
+  disables early stopping (it requires `patience: null`), while still computing and
+  logging per-epoch tune metrics as diagnostics. `patience` is now `int | None`, with
+  `None` meaning "no early stopping". The default `best` keeps every existing run —
+  and every `experiment_id` — unchanged: the setting folds into experiment identity
+  only when non-default, though the saved run config always serializes it.
 - 2026-05-31: Added `TrainingConfig.tune_is_test` for benchmark protocols that
   use the single test split as the checkpoint-selection split. This keeps
   train/test-only split files explicit while warning that tune and test share

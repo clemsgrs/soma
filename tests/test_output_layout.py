@@ -16,9 +16,11 @@ from soma.config import (
     EncoderMemberConfig,
     HeatmapConfig,
     MasksConfig,
+    NormalizationConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
+    ProjectionConfig,
     SamplingConfig,
     TaskConfig,
     TrainingConfig,
@@ -132,6 +134,89 @@ def test_canonical_experiment_payload_omits_seed(tmp_path: Path):
     assert payload_a == payload_b
     assert payload_a["training"]["epochs"] == 10
     assert "seed" not in payload_a["training"]
+
+
+def test_canonical_experiment_payload_omits_default_checkpoint_selection(tmp_path: Path):
+    """Guarded identity: the default `best` must not perturb legacy experiment ids."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "checkpoint_selection" not in payload["training"]
+
+
+def test_build_experiment_spec_distinguishes_checkpoint_selection(tmp_path: Path):
+    best = _make_pipeline_config(tmp_path)
+    last = _make_pipeline_config(
+        tmp_path,
+        training=TrainingConfig(
+            seed=7, epochs=10, learning_rate=1e-4, checkpoint_selection="last", patience=None
+        ),
+    )
+
+    last_payload = canonical_experiment_payload(last)
+    assert last_payload["training"]["checkpoint_selection"] == "last"
+    assert build_experiment_spec(best).experiment_id != build_experiment_spec(last).experiment_id
+
+
+def test_canonical_experiment_payload_omits_default_normalization(tmp_path: Path):
+    """Guarded identity: `normalization: none` must not re-mint legacy experiment ids."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "normalization" not in payload
+
+
+def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
+    off = _make_pipeline_config(tmp_path)
+    zscore = _make_pipeline_config(
+        tmp_path, normalization=NormalizationConfig(method="zscore")
+    )
+    l2 = _make_pipeline_config(tmp_path, normalization=NormalizationConfig(method="l2"))
+
+    assert canonical_experiment_payload(zscore)["normalization"] == {
+        "method": "zscore",
+        "eps": 1e-6,
+    }
+    ids = {
+        build_experiment_spec(cfg).experiment_id for cfg in (off, zscore, l2)
+    }
+    assert len(ids) == 3
+
+
+def test_canonical_experiment_payload_omits_default_projection(tmp_path: Path):
+    """Guarded identity: `projection: none` must not re-mint legacy experiment ids."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "projection" not in payload
+
+
+def test_build_experiment_spec_distinguishes_projection(tmp_path: Path):
+    off = _make_pipeline_config(tmp_path)
+    pca = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="pca", target_dim=64)
+    )
+    random = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="random", target_dim=64)
+    )
+    narrower = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="pca", target_dim=32)
+    )
+    reseeded = _make_pipeline_config(
+        tmp_path, projection=ProjectionConfig(method="random", target_dim=64, seed=1)
+    )
+
+    assert canonical_experiment_payload(pca)["projection"] == {
+        "method": "pca",
+        "target_dim": 64,
+    }
+    assert canonical_experiment_payload(random)["projection"] == {
+        "method": "random",
+        "target_dim": 64,
+        "seed": 0,
+    }
+    ids = {
+        build_experiment_spec(cfg).experiment_id
+        for cfg in (off, pca, random, narrower, reseeded)
+    }
+    assert len(ids) == 5
 
 
 def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):

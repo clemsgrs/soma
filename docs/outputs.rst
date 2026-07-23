@@ -49,6 +49,7 @@ When ``splits.csv`` has no ``fold`` column (or a single fold value), all
 artifacts are written directly inside the run directory:
 
 - ``best_model.pt``, ``metrics.json``, ``training_history.json``
+- ``feature_adapter.json`` (only when ``normalization`` or ``projection`` asks for a transform)
 - ``predictions_<split>.csv``
 - ``attention/<sample_id>.npz`` (if heatmaps enabled)
 - ``heatmaps/<sample_id>.png``

@@ -66,6 +66,7 @@ from soma.benchmarks.detection_benchmark import (  # noqa: E402
 )
 
 HERE = Path(__file__).resolve().parent
+SCRIPT = Path(__file__).resolve()
 REPO_ROOT = HERE.parents[1]
 OUT_DIR = REPO_ROOT / "output" / "detection_benchmark"  # reports land here (git-ignored)
 
@@ -104,9 +105,39 @@ def cell_dir(out_root: str | Path, dataset: str, encoder: str, replicate: int) -
     return Path(out_root) / dataset / encoder / f"replicate_{replicate}"
 
 
-def checkpoint_exists(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
-    """Skip guard for phase 2: a trained cell already has a checkpoint."""
-    return (cell_dir(out_root, dataset, encoder, replicate) / "best_model.pt").is_file()
+def feature_cache_dir(out_root: str | Path, dataset: str) -> Path:
+    """The dense-grid cache shared by every ``(encoder, replicate)`` cell of a dataset.
+
+    ``CacheConfig.root_dir`` defaults to ``None`` ⇒ ``<run.output_root>/feature_cache``, and
+    ``run.output_root`` is per-replicate — so without this the identical grids would be
+    re-extracted and re-stored once per seed (3x the disk, 3x the extraction). The dense key
+    (``build_dense_cache_key``) folds in encoder / geometry / preprocessing / dtype but *not*
+    the seed or the output root, so one root per dataset is exactly right: replicates of an
+    encoder collide (intended — that is the reuse) and distinct encoders never do.
+    """
+    return Path(out_root) / dataset / "feature_cache"
+
+
+def training_done(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
+    """Skip guard for phase 2: this cell already trained *to completion*.
+
+    Two traps here, both of which the old ``best_model.pt``-at-``cell_dir`` probe fell into:
+
+    * **Layout.** soma does not drop artifacts at ``run.output_root``; it writes the run under
+      ``<output_root>/experiments/<experiment_key>/runs/<timestamp>/``. Probing the direct path
+      meant the guard never fired, so phase 2 retrained every replicate-0 cell phase 1 had
+      already trained (~2h x one per encoder).
+    * **Completion.** ``best_model.pt`` is rewritten on every epoch improvement, so it exists
+      mid-training. Keying on it would let a crashed, half-trained cell be skipped and then
+      scored as if it were final. ``summary.json`` is written once, at the end of a run, so it
+      is the honest "this finished" marker.
+
+    ``score_cell`` locates the weights with ``_locate_checkpoint``, which globs the same layout.
+    """
+    directory = cell_dir(out_root, dataset, encoder, replicate)
+    if (directory / "summary.json").is_file():
+        return True
+    return any(directory.glob("experiments/*/runs/*/summary.json"))
 
 
 def metrics_exists(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
@@ -301,8 +332,36 @@ def train_cell(
     cmd += _data_overrides(data_root, dataset)
     cmd += ["--set", f"encoder.name={encoder}"]
     cmd += ["--set", f"run.output_root={cell_dir(out_root, dataset, encoder, replicate)}"]
+    # Point every cell at the dataset-wide grid cache, else each replicate builds its own
+    # private copy under its run dir. score_cell reloads the run's persisted config, so it
+    # inherits this root too and reads the same grids it trained on.
+    cmd += ["--set", f"cache.root_dir={feature_cache_dir(out_root, dataset)}"]
     if axis == "seeds":
         cmd += ["--set", f"run.seed={replicate}"]
+    _run(cmd, cwd=REPO_ROOT)
+
+
+def score_cell_isolated(
+    encoder: str, dataset: str, replicate: int, axis: str, data_root: Path, out_root: Path
+) -> None:
+    """Run :func:`score_cell` in a child process, so its GPU memory dies with it.
+
+    Scoring loads the decoder + the dense grids onto the GPU. Done in-process, PyTorch's
+    caching allocator keeps those GiB reserved for the lifetime of this driver — and the
+    launcher pins the driver and every cell it trains to the *same* GPU, so the next
+    ``train_cell`` starts with several GiB already gone and OOMs (training needs nearly the
+    whole 12 GB card). A child process hands it all back on exit. Same reason ``train_cell``
+    shells out; scoring only got away with it while nothing trained after it.
+    """
+    cmd = [
+        sys.executable, str(SCRIPT), "score",
+        "--datasets", dataset,
+        "--encoders", encoder,
+        "--replicate", str(replicate),
+        "--axis", axis,
+        "--data-root", str(data_root),
+        "--out-root", str(out_root),
+    ]
     _run(cmd, cwd=REPO_ROOT)
 
 
@@ -336,9 +395,9 @@ def run_rank(
         if dry_run:
             print(f"[{ds}/{enc}/r{rid}] would train+score ({axis})")
             continue
-        if not checkpoint_exists(out_root, ds, enc, rid):
+        if not training_done(out_root, ds, enc, rid):
             train_cell(enc, ds, rid, axis, data_root, out_root)
-        score_cell(enc, ds, rid, axis, data_root, out_root)
+        score_cell_isolated(enc, ds, rid, axis, data_root, out_root)
     return aggregate_and_report(
         out_root, roster=roster, datasets=datasets, seeds=seeds, git_sha=git_sha
     )
@@ -465,10 +524,13 @@ def _decode_cell_points(
     import torch
 
     from soma.benchmarks.detection_benchmark import CellPredictions, dataset_spec
-    from soma.benchmarks.ocelot import _locate_checkpoint, _locate_run_config
+    from soma.benchmarks.ocelot import (
+        _locate_checkpoint,
+        _locate_run_config,
+        build_detection_model_from_checkpoint,
+    )
     from soma.config import load_config
     from soma.dataset import DetectionManifest, Splits
-    from soma.decoders.registry import decoder_registry
     from soma.dense import DenseFeatureStore
     from soma.dense_extraction import DenseTileFeatureExtractor
     from soma.encoders.validation import resolve_preprocessing_config
@@ -479,7 +541,6 @@ def _decode_cell_points(
     )
     from soma.tasks.detection import DetectionHead
     from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
-    from soma.training.model import SegmentationModel
 
     spec = dataset_spec(dataset)
     cfg = load_config(str(_locate_run_config(run_dir)))
@@ -522,15 +583,19 @@ def _decode_cell_points(
         run_spacing=float(grid_spacing) if grid_spacing is not None else None,
         metrics=cfg.evaluation.metrics,
     )
-    decoder_cls = decoder_registry.get(cfg.decoder.name)
-    dparams = dict(cfg.decoder.params)
-    if "num_upsample_blocks" in inspect.signature(decoder_cls.__init__).parameters and "num_upsample_blocks" not in dparams:
-        rh = geometry.encoded_size[0] / geometry.grid_shape[0]
-        rw = geometry.encoded_size[1] / geometry.grid_shape[1]
-        dparams["num_upsample_blocks"] = max(0, math.ceil(math.log2(max(rh, rw))))
-    decoder_obj = decoder_cls(input_dim=store.feature_dim, num_classes=num_classes, **dparams)
-    model = SegmentationModel(decoder=decoder_obj, task_head=head)
-    model.load_state_dict(torch.load(_locate_checkpoint(run_dir), map_location="cpu")["model_state_dict"])
+    # One reconstruction path for every re-scorer: it rebuilds the run's feature adaptor
+    # (issue #286) and sizes the decoder from the adaptor's output width, so a checkpoint
+    # trained under a projection loads back into the model that wrote it.
+    model = build_detection_model_from_checkpoint(
+        store=store,
+        checkpoint_path=_locate_checkpoint(run_dir),
+        decoder=cfg.decoder,
+        task_head=head,
+        geometry=geometry,
+        normalization=cfg.normalization,
+        projection=cfg.projection,
+        encoder_identity=cfg.encoder.name if cfg.encoder is not None else "",
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device).eval()
 
@@ -564,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("phase", choices=["extract", "rank"])
+    ap.add_argument("phase", choices=["extract", "rank", "score"])
     ap.add_argument("--data-root", type=Path, default=REPO_ROOT / "data",
                     help="root holding <dataset>/curated/{dataset,splits}.csv per dataset")
     ap.add_argument("--out-root", type=Path, default=OUT_DIR)
@@ -573,10 +638,26 @@ def main(argv: list[str] | None = None) -> int:
                     help="roster subset by name (default: the full DEFAULT_ROSTER)")
     ap.add_argument("--seeds", type=int, nargs="+", default=list(DEFAULT_SEEDS),
                     help="seed replicates for single-fold datasets (folds datasets ignore this)")
+    ap.add_argument("--replicate", type=int, default=0,
+                    help="score phase only: which replicate of the cell to score")
+    ap.add_argument("--axis", choices=["seeds", "folds"], default="seeds",
+                    help="score phase only: the cell's replicate axis")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
     roster = _resolve_roster(args.encoders)
+    if args.phase == "score":
+        # The out-of-process half of score_cell_isolated: exactly one cell, then exit so the
+        # GPU memory is returned before the caller trains the next one.
+        if len(args.datasets) != 1 or not args.encoders or len(args.encoders) != 1:
+            raise SystemExit(
+                "score scores a single cell: pass one --datasets and one --encoders"
+            )
+        score_cell(
+            args.encoders[0], args.datasets[0], args.replicate, args.axis,
+            args.data_root, args.out_root,
+        )
+        return 0
     if args.phase == "extract":
         run_extract(args.data_root, args.out_root, roster, args.datasets, dry_run=args.dry_run)
         return 0
