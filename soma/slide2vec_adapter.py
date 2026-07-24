@@ -44,7 +44,7 @@ def to_slide_spec(record: SampleRecord) -> SlideSpec:
         sample_id=record.sample_id,
         image_path=record.image_path,
         mask_path=record.mask_path,
-        spacing_at_level_0=record.metadata.get("spacing_at_level_0"),
+        spacing_at_level_0=record.metadata.get("level0_spacing"),
     )
 
 
