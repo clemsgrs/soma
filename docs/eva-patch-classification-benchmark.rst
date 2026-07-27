@@ -1,27 +1,112 @@
 EVA
 ===
 
-*Maps to task:* :doc:`classification` — frozen-tile linear-probe runs of the
-binary / multiclass classification heads reproducing the
-`kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_ patch-classification leaderboard.
+Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_
+patch-classification leaderboard with frozen tile encoders and linear
+:doc:`classification` heads.
 
-.. note::
+EVA provides 6 registered datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon. All share the same linear-probe protocol.
 
-   This page is generated from the registered benchmark definition — the protocol
-   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
-   (packaged ``soma/benchmarks/reference/eva.csv``), and the command from the benchmark name. Edit the registry
-   (``soma/benchmarks/eva.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
-   re-emits it and ``tests/test_docs.py`` guards the two from drifting.
+**Pipeline:** labelled patches → frozen encoder → linear head → balanced accuracy
 
-EVA is registered as **one sub-benchmark per dataset** (``eva/<dataset>``), each
-sharing the same offline linear-probe recipe and varying only the ``encoder`` axis.
-``soma reproduce eva`` fans out over the whole family; a single ``eva/<dataset>``
-reproduces one dataset.
+Prepare the data
+----------------
 
-The frozen-tile-probe protocol
-------------------------------
+soma does not download benchmark data. Download one dataset from its official
+source and unpack it in the directory you will pass as ``--raw-root``:
 
-Stated once, shared by every dataset:
+.. list-table::
+   :header-rows: 1
+   :widths: 38 62
+
+   * - Dataset and source
+     - Raw-root contents
+   * - `BACH <https://zenodo.org/records/3632035>`__ (``bach``)
+     - ``ICIAR2018_BACH_Challenge/Photos/<class>/*.tif``
+   * - `BreaKHis <https://web.inf.ufpr.br/vri/databases/breast-cancer-histopathological-database-breakhis/>`__ (``breakhis``)
+     - ``BreaKHis_v1/histology_slides/…/40X/*.png``; soma selects EVA classes
+   * - `CRC <https://zenodo.org/records/1214456>`__ (``crc``)
+     - ``NCT-CRC-HE-100K/`` and ``CRC-VAL-HE-7K/``
+   * - `Gleason Arvaniti <https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP>`__ (``gleason_arvaniti``)
+     - the ``ZT{76_39,111_4,199_1,204_6}*.tar.gz`` TMA archives and ``Gleason_masks_train.tar.gz``
+   * - `MHIST <https://bmirds.github.io/MHIST/#accessing-dataset>`__ (``mhist``)
+     - ``images/*.png`` and ``annotations.csv``
+   * - `PatchCamelyon <https://zenodo.org/records/2546921>`__ (``patch_camelyon``)
+     - the six ``camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5`` files
+
+For example, prepare BACH from its public archive::
+
+    mkdir -p /path/to/eva/bach
+    curl -L 'https://zenodo.org/records/3632035/files/ICIAR2018_BACH_Challenge.zip?download=1' -o /tmp/bach.zip
+    unzip /tmp/bach.zip -d /path/to/eva/bach
+
+Run the benchmark
+-----------------
+
+Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the
+downloaded dataset directory as ``--raw-root``. ``soma reproduce`` runs the
+built-in EVA curator automatically, writes the manifests under
+``<raw-root>/curated``, extracts features, trains the linear probe, and reports
+balanced accuracy. For example::
+
+    soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach
+
+Or run EVA's 6 datasets in one go::
+
+    soma reproduce eva --encoder virchow2 --raw-root /path/to/eva
+
+Results
+-------
+
+We benchmarked two encoders: soma closely reproduces
+EVA's published balanced accuracy scores.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Dataset
+     - Encoder
+     - soma (mean ± std)
+     - EVA reference
+   * - bach
+     - uni2
+     - 0.914 ± 0.007
+     - 0.915
+   * - bach
+     - virchow2
+     - 0.870 ± 0.010
+     - 0.883
+   * - breakhis
+     - uni2
+     - 0.855 ± 0.006
+     - 0.859
+   * - breakhis
+     - virchow2
+     - 0.812 ± 0.008
+     - 0.821
+   * - crc
+     - uni2
+     - 0.966 ± 0.001
+     - 0.965
+   * - crc
+     - virchow2
+     - 0.966 ± 0.001
+     - 0.967
+   * - gleason_arvaniti
+     - uni2
+     - 0.779 ± 0.005
+     - 0.775
+   * - gleason_arvaniti
+     - virchow2
+     - 0.778 ± 0.010
+     - 0.783
+
+Across these 8 recorded dataset–encoder comparisons, the median relative difference is **0.48%**.
+
+See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
+
+Protocol details
+----------------
 
 .. list-table::
    :header-rows: 1
@@ -46,153 +131,5 @@ Stated once, shared by every dataset:
    * - canonical seeds
      - ``0, 1, 2, 3, 4`` (averaged)
 
-Encoders
---------
-
-The ``encoder`` axis maps a soma encoder onto an EVA leaderboard backbone:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 70
-
-   * - Encoder
-     - EVA backbone
-   * - ``uni2`` (default)
-     - eva ``mahmood_uni2_h``
-   * - ``virchow2``
-     - eva ``paige_virchow2``, slide2vec ``cls`` output
-
-Datasets
---------
-
-Where EVA ships only train/validation, the EVA validation split becomes soma
-``test`` and the run sets ``tune_is_test: true`` (train-on-all-train /
-evaluate-on-validation); ``patch_camelyon`` has a real held-out test split:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 34 40 26
-
-   * - Benchmark
-     - Task head
-     - Eval split
-   * - ``eva/bach``
-     - ``multiclass_classification``
-     - EVA validation (``tune_is_test: true``)
-   * - ``eva/breakhis``
-     - ``multiclass_classification``
-     - EVA validation (``tune_is_test: true``)
-   * - ``eva/crc``
-     - ``multiclass_classification``
-     - EVA validation (``tune_is_test: true``)
-   * - ``eva/gleason_arvaniti``
-     - ``multiclass_classification``
-     - EVA validation (``tune_is_test: true``)
-   * - ``eva/mhist``
-     - ``binary_classification``
-     - EVA validation (``tune_is_test: true``)
-   * - ``eva/patch_camelyon``
-     - ``binary_classification``
-     - EVA test (real val + test)
-
-Reproduced numbers
-------------------
-
-What soma has actually measured, recorded by ``soma reproduce --record`` into the
-packaged results ledger (``soma/benchmarks/results/eva.csv``) alongside the commit
-and slide2vec version that produced each number. The ``Reference`` column is the
-published EVA balanced-accuracy band (keyed by ``dataset`` × ``encoder``, from `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__); only cells that have been run appear, each with its delta to that band:
-
-.. list-table::
-   :header-rows: 1
-
-   * - Dataset
-     - Encoder
-     - soma (mean ± std)
-     - Seeds
-     - Reference
-     - Δ
-     - Recorded (date @ commit)
-   * - bach
-     - uni2
-     - 0.914 ± 0.007
-     - 5
-     - 0.915
-     - -0.001
-     - 2026-06-19 @ ``7ef2d7c``
-   * - bach
-     - virchow2
-     - 0.870 ± 0.010
-     - 5
-     - 0.883
-     - -0.013
-     - 2026-06-19 @ ``7ef2d7c``
-   * - breakhis
-     - uni2
-     - 0.855 ± 0.006
-     - 5
-     - 0.859
-     - -0.004
-     - 2026-06-19 @ ``7ef2d7c``
-   * - breakhis
-     - virchow2
-     - 0.812 ± 0.008
-     - 5
-     - 0.821
-     - -0.009
-     - 2026-06-19 @ ``7ef2d7c``
-   * - crc
-     - uni2
-     - 0.966 ± 0.001
-     - 5
-     - 0.965
-     - +0.001
-     - 2026-06-19 @ ``7ef2d7c``
-   * - crc
-     - virchow2
-     - 0.966 ± 0.001
-     - 5
-     - 0.967
-     - -0.001
-     - 2026-06-19 @ ``7ef2d7c``
-   * - gleason_arvaniti
-     - virchow2
-     - 0.778 ± 0.010
-     - 5
-     - 0.783
-     - -0.005
-     - 2026-07-09 @ ``c8b320d``
-   * - gleason_arvaniti
-     - uni2
-     - 0.779 ± 0.005
-     - 5
-     - 0.775
-     - +0.004
-     - 2026-07-09 @ ``9663253``
-
-Reproduce
----------
-
-``soma reproduce`` curates the raw layout, trains the linear probe over the
-canonical seeds, reads ``test/balanced_accuracy`` from ``summary.json``, and
-tolerance-checks it against the band above. Reproduce one dataset::
-
-    soma reproduce eva/bach --raw-root /path/to/eva/bach
-    soma reproduce eva/breakhis --raw-root /path/to/eva/breakhis
-    soma reproduce eva/crc --raw-root /path/to/eva/crc
-    soma reproduce eva/gleason_arvaniti --raw-root /path/to/eva/gleason_arvaniti
-    soma reproduce eva/mhist --raw-root /path/to/eva/mhist
-    soma reproduce eva/patch_camelyon --raw-root /path/to/eva/patch_camelyon
-
-…or fan out over the whole family in one go (each member owns a per-dataset
-subdirectory)::
-
-    soma reproduce eva --raw-root /path/to/eva
-
-Pick the encoder axis with ``--encoder`` (default ``uni2``); ``--seeds 1`` runs a single-seed smoke.
-
-.. seealso::
-
-   * :doc:`classification` — the task heads the probe trains (binary, multiclass).
-   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.
-   * :doc:`curation` — the EVA curators and split policy.
+See :doc:`benchmarking` for the shared benchmark workflow and :doc:`classification`
+for task-head details.

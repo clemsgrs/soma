@@ -13,8 +13,10 @@ absorbs the former ``examples/ocelot/`` harness into first-class package code:
 * ``reproduce.py`` / ``eval_greedy.py`` are superseded by the generic ``soma reproduce``.
 
 The recipe backbone (frozen encoder -> dense token grid -> ``lightweight_conv`` decoder ->
-per-class peak heatmap -> class-aware F1 @ delta=3 um, greedy-matched) is fixed; the facet
-varies ``encoder`` x ``spacing``. The canonical anchor is Virchow2 @ 0.2 um/px, seed 0.
+per-class peak heatmap -> class-aware F1 @ delta=3 um, greedy-matched) is fixed; ``soma
+reproduce`` varies only the ``encoder`` and fixes spacing at the anchor (Virchow2 @ 0.2
+um/px, seed 0). ``build_config`` still resolves a protocol per ``(encoder, spacing)``, so a
+spacing sweep is custom configs + a leaderboard, like any other non-encoder axis.
 """
 
 from __future__ import annotations
@@ -57,14 +59,16 @@ CANONICAL_SEEDS: tuple[int, ...] = (0,)
 ANCHOR_ENCODER = "virchow2"
 ANCHOR_SPACING = 0.2
 
-# Recipe backbone held fixed across the benchmark; the facet varies encoder x spacing.
+# Recipe backbone held fixed across the benchmark; reproduce varies the encoder and fixes
+# spacing at the anchor. Spacing is a plain config field — sweep it (if wanted) via custom
+# configs + a leaderboard, exactly as for any other non-encoder axis — not a reproduce axis.
 FACET = Facet(
     fixed={
         "task": "detection",
         "decoder": "lightweight_conv",
         "matcher": "greedy_f1@delta=3um",
     },
-    varied=("encoder", "spacing"),
+    varied=("encoder",),
 )
 
 # A small reference environment shown alongside a run (the recorded anchor environment).
@@ -359,13 +363,18 @@ def extract_test_metrics(report: dict, split: str | None = None) -> dict[str, fl
 
 def _config_path_for(encoder: str, spacing: float) -> Path:
     key = (encoder, round(float(spacing), 2))
-    try:
-        filename = _CONFIG_FILES[key]
-    except KeyError:
+    filename = _CONFIG_FILES.get(key)
+    if filename is None:
+        # The committed files define the protocol at each supported spacing, not a closed
+        # encoder roster. Reuse the anchor encoder's spacing template for a new encoder;
+        # build_config replaces the encoder-specific fields below.
+        spacing_key = key[1]
+        filename = _CONFIG_FILES.get((ANCHOR_ENCODER, spacing_key))
+    if filename is None:
         known = ", ".join(f"{e}@{s}" for e, s in sorted(_CONFIG_FILES))
         raise KeyError(
-            f"no committed OCELOT config for encoder={encoder!r} spacing={spacing!r}; "
-            f"available axes: {known}."
+            f"no committed OCELOT protocol for spacing={spacing!r}; "
+            f"available encoder/spacing examples: {known}."
         ) from None
     return _CONFIG_DIR / filename
 
@@ -410,6 +419,7 @@ class OcelotBenchmark:
         ``overrides`` are merged onto the user-facing config layout last.
         """
         config_path = _config_path_for(encoder, spacing)
+        extends_encoder_roster = (encoder, round(float(spacing), 2)) not in _CONFIG_FILES
         merged: dict[str, Any] = {}
         data_over: dict[str, Any] = {}
         if dataset_csv is not None:
@@ -425,6 +435,20 @@ class OcelotBenchmark:
             run_over["seed"] = int(seed)
         if run_over:
             merged["run"] = run_over
+        if extends_encoder_roster:
+            merged.setdefault("run", {})["tags"] = [
+                "ocelot",
+                "detection",
+                encoder,
+                "lightweight_conv",
+                f"spacing_{float(spacing):.2f}".replace(".", "p"),
+            ]
+            merged["encoder"] = {
+                "name": encoder,
+                # The benchmark intentionally fixes spacing across encoders, including when
+                # that spacing falls outside a new encoder's recommended operating regime.
+                "allow_non_recommended_settings": True,
+            }
         if overrides:
             for section, values in overrides.items():
                 merged.setdefault(section, {}).update(values)

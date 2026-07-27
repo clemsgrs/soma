@@ -67,10 +67,16 @@ soma reproduce ocelot --raw-root <data_root>/ocelot --output-root output
 
 ## Reproducibility caveats
 
-- **Not bit-exact across GPUs/drivers.** The dense grids are cache-identical *only at
-  extraction batch 8* (the dense cache key omits batch size; fp16 features differ at other
-  batch sizes). The only stochastic stage is decoder training; cuDNN nondeterminism plus a
-  different GPU move mean_F1 by ~0.01–0.02. `soma reproduce ocelot` asserts |Δ mean_F1| ≤ 0.02
-  against the greedy headline; a larger gap signals a real environment/plumbing difference,
-  not noise.
-- **Pin the extraction batch size to 8** when reusing or resuming the dense cache.
+- **Not bit-exact across GPUs/drivers, and dense grids are not bit-exact across batch sizes.**
+  Encoder features depend on the batch size `B` of the forward (cuBLAS picks a different
+  reduction order as `B` changes), so a cache is reproducible only to a *float tolerance*, never
+  bit-for-bit. The effect is tiny — ~5.6e-6 in `1 − cosine`, *smaller* than the fp16-vs-fp32
+  difference the pipeline already accepts — so it does not matter for scores, but do not rely on
+  byte-identity. Note this holds even at a fixed nominal batch size: a slide whose ROI count is
+  not a multiple of the batch size sends its tail through a smaller-`B` forward, so "pin to 8"
+  never gave a single consistent `B`. The only stochastic stage is decoder training; cuDNN
+  nondeterminism plus a different GPU move mean_F1 by ~0.01–0.02. `soma reproduce ocelot` asserts
+  |Δ mean_F1| ≤ 0.02 against the greedy headline; a larger gap signals a real environment/plumbing
+  difference, not noise.
+- The dense cache key omits batch size — which is fine, because features are batch-tolerant, not
+  batch-identical. There is no need to pin the extraction batch size for reproducibility.

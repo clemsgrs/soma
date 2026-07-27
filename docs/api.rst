@@ -2,7 +2,8 @@ API
 ===
 
 `soma` exposes a modular public API that can be used either end to end or one
-piece at a time.
+piece at a time. For a quick tour of the end-to-end orchestration — from
+manifests to reports — before diving in, see :doc:`How soma works <how-soma-works>`.
 
 Main building blocks
 --------------------
@@ -14,8 +15,6 @@ Main building blocks
      - Focus
    * - :doc:`Dataset and splits <dataset>`
      - CSV manifest schema and fold assignment rules
-   * - :doc:`Pipeline <pipeline>`
-     - End-to-end orchestration from manifests to reports
    * - :doc:`Preprocessing <preprocessing>`
      - Tissue segmentation and slide tiling at a given spacing
    * - :doc:`Encoders <encoders>`
@@ -67,7 +66,7 @@ heads or aggregators against the same encoder output:
        cache=cache,
        output_root="output",
    )
-   store = extractor.extract(feature_dir="output/features/uni2")
+   store = extractor.extract()
    task = TaskConfig(name="binary_classification")
    training = TrainingConfig(epochs=50, learning_rate=1e-4)
    abmil_aggregator = AggregatorConfig(name="abmil", params={"hidden_dim": 256})
@@ -94,7 +93,9 @@ heads or aggregators against the same encoder output:
    )
 
 The returned ``FeatureStore`` can be reused across experiments as long as the
-upstream preprocessing and encoder settings do not change.
+upstream preprocessing and encoder settings do not change. ``extract()``
+defaults to ``<output_root>/features/<encoder>``; a supplied ``feature_dir``
+must be relative to ``output_root``.
 
 Train with explicit evaluation settings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -209,3 +210,48 @@ documented in :doc:`outputs`:
 
    # attention scores land in fold_N/attention/
    # rendered attention overlays in fold_N/heatmaps/
+
+.. _benchmark-api:
+
+Reproduce a packaged benchmark programmatically
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Every registered :doc:`benchmark <benchmarking>` is a Python object, so the
+``soma reproduce`` flow is available from code: discover benchmarks, curate the
+data, build the fixed config per seed, run the pipeline, and score. This is the
+same protocol the CLI drives, so results are directly comparable:
+
+.. code-block:: python
+
+   import statistics
+
+   from soma.benchmarks import get_benchmark, list_benchmarks
+   from soma.pipeline import Pipeline
+
+   list_benchmarks()                       # ["ocelot", "eva/bach", "hest/IDC", ...]
+   benchmark = get_benchmark("eva/bach")
+
+   manifest = benchmark.curate("/path/to/eva/bach", "runs/eva-bach/curated")
+
+   measured = []
+   for seed in benchmark.canonical_seeds:
+       seed_root = f"runs/eva-bach/seed_{seed}"
+       config = benchmark.build_config(
+           encoder="uni2",                 # the axis a benchmark varies
+           dataset_csv=manifest.dataset_csv,
+           splits_csv=manifest.splits_csv,
+           output_root=seed_root,
+           seed=seed,
+           # share one feature cache across seeds (extraction is seed-independent)
+           overrides={"cache": {"enabled": True, "root_dir": "runs/eva-bach/feature_cache"}},
+       )
+       Pipeline(config).run()
+       metrics = benchmark.score(seed_root)
+       measured.append(metrics[benchmark.primary_metric])
+
+   print(statistics.fmean(measured))
+
+``benchmark.expected(encoder="uni2")`` returns the packaged reference rows to
+compare against, and ``benchmark.score(run_dir)`` alone re-scores an existing run
+without retraining (the ``--from-run-dir`` fast path). See :doc:`benchmarking`
+for the CLI equivalents and :doc:`outputs` for the artifacts each run writes.

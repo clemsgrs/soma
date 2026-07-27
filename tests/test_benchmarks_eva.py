@@ -168,16 +168,17 @@ def test_build_config_applies_cache_overrides(tmp_path):
     assert str(config.cache.root_dir) == str(tmp_path / "cache")
 
 
-def test_build_config_rejects_unknown_encoder(tmp_path):
+def test_build_config_accepts_encoder_without_packaged_reference(tmp_path):
     splits = _write_splits(tmp_path, n_train=10)
-    with pytest.raises((ValueError, KeyError)):
-        get_benchmark("eva/bach").build_config(
-            encoder="nope",
-            dataset_csv=tmp_path / "dataset.csv",
-            splits_csv=splits,
-            output_root=tmp_path / "runs",
-            epochs=1,
-        )
+    config = get_benchmark("eva/bach").build_config(
+        encoder="phikon",
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=splits,
+        output_root=tmp_path / "runs",
+        epochs=1,
+    )
+    assert config.encoder.name == "phikon"
+    assert config.encoder.output_variant is None
 
 
 # --- keyed reference table ------------------------------------------------------------

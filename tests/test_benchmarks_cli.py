@@ -2,8 +2,8 @@
 
 The full curate→train→score reproduction needs OCELOT data + a GPU, so the reproduction is
 verified via ``--from-run-dir`` with the greedy scorer's data/GPU-bound inner seam stubbed:
-this exercises registry lookup, the fast-path log, the greedy ``score`` override, the
-per-row tolerance check, and the non-zero exit on failure.
+this exercises registry lookup, the fast-path log, the greedy ``score`` override, and the
+informational reference status.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ def test_list_benchmarks_shows_ocelot(capsys):
 
 
 def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp_path):
-    # mean_f1 = 0.70 is within 0.6995 +/- 0.02 -> PASS -> exit 0. Stub the greedy inner
+    # mean_f1 = 0.70 is within 0.6995 +/- 0.02 -> REFERENCE OK. Stub the greedy inner
     # seam so no data/GPU is touched.
     monkeypatch.setattr(
         "soma.benchmarks.ocelot._greedy_report_for_run",
@@ -48,11 +48,12 @@ def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp
     code = _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "PASS" in out
+    assert "REFERENCE OK" in out
 
 
-def test_reproduce_from_run_dir_exits_nonzero_on_failure(monkeypatch, capsys, tmp_path):
-    # mean_f1 = 0.50 is far outside the band -> FAIL -> non-zero exit.
+def test_reproduce_from_run_dir_reports_potential_drift_without_failing(monkeypatch, capsys, tmp_path):
+    # mean_f1 = 0.50 is far outside the reference band. The comparison is diagnostic: it
+    # highlights potential drift but does not turn a successfully scored run into a failure.
     monkeypatch.setattr(
         "soma.benchmarks.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
@@ -63,8 +64,9 @@ def test_reproduce_from_run_dir_exits_nonzero_on_failure(monkeypatch, capsys, tm
     )
     code = _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
-    assert code != 0
-    assert "FAIL" in out
+    assert code == 0
+    assert "POTENTIAL DRIFT" in out
+    assert "FAIL" not in out
 
 
 def test_reproduce_logs_fast_path_hint_at_start(monkeypatch, capsys, tmp_path):
@@ -156,14 +158,16 @@ def test_reproduce_external_only_renders_measured_beside_reference(capsys, tmp_p
     assert code == 0
     assert "MEASURED" in out
     assert "0.7300" in out  # the external Reference rendered beside Measured
-    assert "not gated" in out
+    assert "context only" in out
     assert "PASS" not in out and "FAIL" not in out  # never gated on the external anchor
 
 
-def test_reproduce_external_anchors_never_flip_the_gate_verdict(monkeypatch, capsys, tmp_path):
+def test_reproduce_external_anchors_do_not_override_comparable_reference(
+    monkeypatch, capsys, tmp_path
+):
     # OCELOT's CSV carries external anchors (0.70, 0.73) OUTSIDE the gate band alongside the
-    # gate (0.6995 ± 0.02). A measured 0.70 passes the gate; the external anchors must not
-    # turn it into a FAIL or a "multiple rows" error.
+    # comparable row (0.6995 ± 0.02). A measured 0.70 matches it; external anchors must not
+    # turn the result into a drift warning or a "multiple rows" error.
     monkeypatch.setattr(
         "soma.benchmarks.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
@@ -175,7 +179,7 @@ def test_reproduce_external_anchors_never_flip_the_gate_verdict(monkeypatch, cap
     code = _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "PASS" in out
+    assert "REFERENCE OK" in out
 
 
 def test_reproduce_unknown_benchmark_exits_nonzero(capsys):
@@ -190,6 +194,15 @@ def test_reproduce_full_mode_requires_raw_root(capsys):
     err = capsys.readouterr().err
     assert code == 2
     assert "raw-root" in err
+
+
+def test_reproduce_rejects_spacing_flag(capsys):
+    # Reproducing a benchmark fixes the whole protocol except the encoder; spacing is no
+    # longer a reproduce axis (vary it via custom configs + a leaderboard instead).
+    code = _run_cli(["reproduce", "ocelot", "--encoder", "uni2", "--spacing", "0.25"])
+    err = capsys.readouterr().err
+    assert code == 2
+    assert "unrecognized arguments" in err and "--spacing" in err
 
 
 # --- full-mode shared feature cache across seeds --------------------------------------
@@ -364,34 +377,36 @@ def _write_summary(tmp_path, balanced_accuracy: float):
 
 
 def test_reproduce_eva_from_run_dir_passes_within_tolerance(capsys, tmp_path):
-    # bach/uni2 reference is 0.915; a run reporting 0.915 -> PASS -> exit 0.
+    # bach/uni2 reference is 0.915; a run reporting 0.915 -> REFERENCE OK.
     _write_summary(tmp_path, 0.915)
     code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "PASS" in out
+    assert "REFERENCE OK" in out
 
 
 def test_reproduce_eva_encoder_narrows_to_one_backbone(capsys, tmp_path):
-    # A run reporting 0.883: fails against the default (uni2, 0.915) but passes once
-    # --encoder virchow2 narrows the reference to virchow2's 0.883.
+    # A run reporting 0.883 warns against the default (uni2, 0.915), while --encoder
+    # virchow2 narrows the reference to virchow2's matching 0.883. Both runs succeed.
     _write_summary(tmp_path, 0.883)
     default_code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path)])
-    assert default_code == 1
+    default_out = capsys.readouterr().out
+    assert default_code == 0
+    assert "POTENTIAL DRIFT" in default_out
     narrowed_code = _run_cli(
         ["reproduce", "eva/bach", "--encoder", "virchow2", "--from-run-dir", str(tmp_path)]
     )
     out = capsys.readouterr().out
     assert narrowed_code == 0
-    assert "PASS" in out
+    assert "REFERENCE OK" in out
 
 
-def test_reproduce_eva_from_run_dir_exits_nonzero_on_failure(capsys, tmp_path):
+def test_reproduce_eva_from_run_dir_reports_drift_without_failing(capsys, tmp_path):
     _write_summary(tmp_path, 0.60)  # far below bach/uni2's 0.915
     code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
-    assert code != 0
-    assert "FAIL" in out
+    assert code == 0
+    assert "POTENTIAL DRIFT" in out
 
 
 def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path, monkeypatch):
@@ -493,30 +508,33 @@ def test_reproduce_from_run_dir_keys_reference_on_run_encoder(capsys, tmp_path):
     code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(run_dir)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "PASS" in out
+    assert "REFERENCE OK" in out
 
 
-def test_reproduce_from_run_dir_encoder_without_reference_row_errors_honestly(capsys, tmp_path):
-    # The run used encoder=uni (no eva/bach reference row); rather than silently comparing
-    # against the uni2 default, --from-run-dir surfaces the missing row and exits 2.
+def test_reproduce_from_run_dir_encoder_without_reference_row_skips_comparison(capsys, tmp_path):
+    # The run used encoder=uni (no eva/bach reference row). It is still a valid execution of
+    # the packaged protocol: reproduce reports the measurement, makes the skipped comparison
+    # explicit, and succeeds without silently borrowing another encoder's reference.
     run_dir = _write_run(tmp_path, encoder="uni", balanced_accuracy=0.767)
     code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(run_dir)])
-    err = capsys.readouterr().err
-    assert code == 2
-    assert "no gate reference row" in err
-    assert "'encoder': 'uni'" in err
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "[MEASURED] eva/bach test/balanced_accuracy = 0.7670" in captured.out
+    assert "[REFERENCE SKIPPED]" in captured.out
+    assert "'encoder': 'uni'" in captured.out
+    assert captured.err == ""
 
 
 def test_reproduce_from_run_dir_cli_encoder_overrides_run_encoder(capsys, tmp_path):
     # An explicit --encoder still wins over the run's recorded axis (setdefault semantics):
-    # the uni run is force-compared against virchow2's 0.883 and passes.
+    # the uni run is force-compared against virchow2's 0.883 and matches it.
     run_dir = _write_run(tmp_path, encoder="uni", balanced_accuracy=0.883)
     code = _run_cli(
         ["reproduce", "eva/bach", "--encoder", "virchow2", "--from-run-dir", str(run_dir)]
     )
     out = capsys.readouterr().out
     assert code == 0
-    assert "PASS" in out
+    assert "REFERENCE OK" in out
 
 
 def test_reproduce_eva_family_fans_out_over_members(monkeypatch, capsys, tmp_path):

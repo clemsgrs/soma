@@ -1626,7 +1626,7 @@ class TestPipeline:
         output_root = tmp_path / "output_prism"
 
         def _fake_run(self, feature_dir, **kwargs):
-            out = Path(feature_dir)
+            out = self._output_root / feature_dir
             out.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(D), out / f"s{i}.pt")

@@ -49,7 +49,7 @@ from soma.cache import (
     write_tiling_cache_stub,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.dataset import Dataset, ensure_filename_safe_id
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.extraction.orchestration import (
     _aggregate_patients,
@@ -128,6 +128,21 @@ def _feature_kind_from_rank(feature_rank: int) -> str:
     if int(feature_rank) == 3:
         return "hierarchical"
     raise ValueError(f"Unsupported feature rank {feature_rank}")
+
+
+def _resolve_output_subpath(output_root: Path, path: str | Path, *, field: str) -> Path:
+    """Resolve a safe relative output path beneath ``output_root``."""
+    relative = Path(path)
+    if relative.is_absolute():
+        raise ValueError(f"{field} must be relative to output_root, got {path!r}")
+    resolved = (output_root / relative).resolve()
+    try:
+        resolved.relative_to(output_root)
+    except ValueError as exc:
+        raise ValueError(
+            f"{field} must stay within output_root; parent traversal is not allowed: {path!r}"
+        ) from exc
+    return resolved
 
 
 def _feature_rank_from_type(feature_type: str) -> int:
@@ -212,16 +227,16 @@ class FeatureExtractor:
         encoder: EncoderConfig,
         preprocessing: PreprocessingConfig = PreprocessingConfig(),
         *,
+        output_root: str | Path,
         execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig = CacheConfig(),
-        output_root: str | Path | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
         self._preprocessing = preprocessing
         self._execution = execution
         self._cache = cache
-        self._output_root = Path(output_root).resolve() if output_root is not None else None
+        self._output_root = Path(output_root).resolve()
 
     def _resolved_preprocessing(self) -> PreprocessingConfig:
         encoder_info = encoder_registry.info(self._encoder.name)
@@ -230,6 +245,15 @@ class FeatureExtractor:
             self._preprocessing,
             model_metadata=encoder_info,
         )
+
+    def _feature_subpath(self, feature_dir: str | Path | None) -> Path:
+        if feature_dir is not None:
+            return Path(feature_dir)
+        encoder_name = ensure_filename_safe_id(
+            self._encoder.name,
+            field="encoder name",
+        )
+        return Path("features") / encoder_name
 
     def _effective_preprocessing(self) -> PreprocessingConfig:
         """Resolve preprocessing, then prefer precomputed masks when every slide has one."""
@@ -391,13 +415,23 @@ class FeatureExtractor:
 
     def extract(
         self,
-        feature_dir: str | Path,
+        feature_dir: str | Path | None = None,
         *,
         tiling_dir: str | Path | None = None,
         num_gpus: int | None = None,
     ) -> FeatureStore:
-        """Extract features using slide2vec and adapt outputs for soma."""
-        feature_dir = Path(feature_dir).resolve()
+        """Extract features using slide2vec and adapt outputs for soma.
+
+        When ``feature_dir`` is omitted, it defaults to
+        ``<output_root>/features/<encoder-name>``. A supplied ``feature_dir``
+        is resolved relative to ``output_root``; absolute paths and parent
+        traversal are rejected.
+        """
+        feature_dir = _resolve_output_subpath(
+            self._output_root,
+            self._feature_subpath(feature_dir),
+            field="feature_dir",
+        )
         feature_dir.mkdir(parents=True, exist_ok=True)
         if tiling_dir is None:
             tiling_dir = feature_dir / "tiling"
@@ -1645,16 +1679,21 @@ class FeatureExtractor:
 
     def run(
         self,
-        feature_dir: str | Path,
+        feature_dir: str | Path | None = None,
         *,
         skip_existing: bool = True,
         num_gpus: int | None = None,
     ) -> FeatureStore:
-        feature_dir = Path(feature_dir).resolve()
-        tiling_dir = feature_dir.parent / "tiling"
+        feature_subpath = self._feature_subpath(feature_dir)
+        resolved_feature_dir = _resolve_output_subpath(
+            self._output_root,
+            feature_subpath,
+            field="feature_dir",
+        )
+        tiling_dir = resolved_feature_dir.parent / "tiling"
         self.preprocess(tiling_dir=tiling_dir, skip_existing=skip_existing)
         return self.extract(
-            feature_dir=feature_dir,
+            feature_dir=feature_subpath,
             tiling_dir=tiling_dir,
             num_gpus=num_gpus,
         )

@@ -1,7 +1,7 @@
 Curation
 ========
 
-Soma includes small curators for converting known public benchmark layouts into
+soma includes small curators for converting known public benchmark layouts into
 the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 :doc:`dataset`.
 
@@ -9,7 +9,7 @@ EVA patch-level classification
 ------------------------------
 
 The first supported EVA slice covers patch-level classification datasets that
-fit Soma's ``dataset_type: tile`` workflow:
+fit soma's ``dataset_type: tile`` workflow:
 
 - ``bach``
 - ``mhist``
@@ -51,7 +51,7 @@ orientation for binary tasks.
 Split policy
 ~~~~~~~~~~~~
 
-For datasets where EVA provides only train/validation-style splits, Soma
+For datasets where EVA provides only train/validation-style splits, soma
 reserves EVA validation as ``test`` and creates ``tune`` by deterministic
 stratified sampling from EVA train.
 
@@ -59,7 +59,7 @@ To reproduce EVA's train-on-all-train/evaluate-on-validation protocol, curate
 with ``tune_fraction=0.0`` and set ``training.tune_is_test: true`` in the run
 config. The generated split file will contain only ``train`` and ``test`` rows.
 
-For datasets where EVA provides train/validation/test splits, Soma preserves
+For datasets where EVA provides train/validation/test splits, soma preserves
 EVA validation as ``tune`` and EVA test as ``test``. This lets one run report
 both the EVA validation benchmark metric and the EVA test metric.
 
@@ -83,7 +83,7 @@ Raw layout expectations
 ``breakhis``
   BreaKHis images in the original nested layout. Only ``40X`` ``*.png`` images
   with EVA classes ``TA``, ``MC``, ``F``, and ``DC`` are used. The EVA
-  validation patient-id list is used to assign validation samples to Soma
+  validation patient-id list is used to assign validation samples to soma
   ``test``.
 
 ``gleason_arvaniti``
@@ -93,11 +93,11 @@ Raw layout expectations
   use ``test_patches_750`` — its test split "leads to unstable evaluation
   results" — so those patches are ignored even when present.
 
-  If ``train_validation_patches_750`` is absent, Soma materializes it from the raw
+  If ``train_validation_patches_750`` is absent, soma materializes it from the raw
   `Harvard Dataverse download <https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP>`_:
   drop the train/validation TMA archives (``ZT{76,111,199,204}_*.tar.gz``) and
   ``Gleason_masks_train.tar.gz`` into ``<root>`` (already-extracted folders or a
-  ``TMA_images/`` dir are also accepted). Soma slices the 750×750 patches itself —
+  ``TMA_images/`` dir are also accepted). soma slices the 750×750 patches itself —
   a vendored, dependency-free port of ``create_patches.py`` from the
   `gleason_CNN <https://github.com/eiriniar/gleason_CNN>`_ repo — so you do not need
   to run that (Python 2-era) script. Materialization is atomic and idempotent: a
@@ -119,9 +119,9 @@ covered by this tile-classification curation path.
 OCELOT 2023 cell detection
 --------------------------
 
-The OCELOT curator targets Soma's ``dataset_type: detection`` path. It converts
+The OCELOT curator targets soma's ``dataset_type: detection`` path. It converts
 the unzipped `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ release
-(Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) into Soma's detection
+(Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) into soma's detection
 manifests. Like the EVA curators it does not download anything; accept the Zenodo
 terms and unzip first (see ``examples/ocelot/README.md`` for the download step).
 
@@ -140,7 +140,7 @@ or from the command line::
 OCELOT ships paired *cell* and *tissue* patches; detection-v1 uses the **cell**
 patches only (1024×1024 JPEGs at ~0.2 µm/px). Each is paired with a headerless
 ``x,y,label`` point CSV whose 1-based cell label (``1`` = background cell, ``2`` =
-tumor cell) is remapped to Soma's 0-based class ids (BC→0, TC→1). The curator
+tumor cell) is remapped to soma's 0-based class ids (BC→0, TC→1). The curator
 writes ``dataset.csv`` (``sample_id, image_path, points_path``), ``splits.csv``,
 one ``points/<sample_id>.csv`` per sample, and ``summary.json``.
 
@@ -149,4 +149,4 @@ Split policy
 
 OCELOT's own train/val/test split is emitted verbatim as a single fold, with
 train → ``train``, val → ``tune`` (threshold sweep / monitor), and test →
-``test``. Soma never partitions the data itself.
+``test``. soma never partitions the data itself.

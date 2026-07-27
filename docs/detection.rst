@@ -25,9 +25,10 @@ postprocess, and metric are what differ.
 
 .. seealso::
 
-   The :doc:`dense-prediction walkthrough <tutorials/walkthrough-dense>` runs
-   detection end to end on a tiny synthetic dataset, right after segmentation, so
-   you can see exactly what changes between the two.
+   The :doc:`detection walkthrough <tutorials/walkthrough-detection>` runs
+   detection end to end on a tiny synthetic dataset;
+   :doc:`segmentation <tutorials/walkthrough-segmentation>` is the same dense flow
+   with mask supervision, so you can see exactly what changes between the two.
 
 The method
 ----------

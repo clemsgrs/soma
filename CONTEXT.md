@@ -4,10 +4,19 @@
 
 ## Language
 
+### Experiment structure
+
+**Modeling**:
+The trainable downstream portion of a soma workflow after frozen foundation-model encoding, including aggregation or decoding, task-specific prediction, and optimization.
+_Avoid_: including foundation-model encoding itself under Modeling.
+
 ### Benchmarking
 
+**Custom experimentation**:
+Exploring combinations of preprocessing, encoding, downstream modeling, and training choices to find or understand a strong workflow for a research task. Unlike Benchmarking, several choices may change together.
+
 **Benchmarking**:
-The core activity — running one or more frozen foundation-model encoders through soma's pipeline on a single dataset to obtain comparable metrics, so encoder (and aggregation/decoder/head) choices can be ranked. Works on *any* dataset the user brings; a published benchmark is a special case.
+The controlled comparison of one pipeline component on a single dataset: vary that component while holding the rest of the protocol fixed, then measure its effect on downstream performance. Foundation-model encoders are the most common comparison axis, but preprocessing, aggregation, decoding, or task-head choices can be studied the same way; a published Benchmark is a special case.
 
 **Benchmark**:
 A *published* evaluation dataset paired with a canonical protocol and recorded expected metrics, reproducible within a stated tolerance. A Benchmark is the pinned, annotated special case of Benchmarking — the same flow plus a fixed recipe and a checkable expected result.
@@ -60,6 +69,10 @@ The B statistic: over every `(dataset, encoder-pair)`, the fraction soma orders 
 An encoder pair the Reference separates by more than a small ε (`RESOLVABLE_EPS` = 0.005 on the metric). Below ε the benchmark itself cannot call the ordering, so a soma flip is a within-noise coin-flip, not a defect — excluded from the concordance.
 
 ### Data preparation
+
+**Supervision**:
+The target information paired with pathology images for learning or evaluation, including scalar labels, dense masks, and point annotations.
+_Avoid_: using "labels" as the umbrella term when masks or point annotations are also in scope.
 
 **Manifest**:
 The canonical on-disk schema soma consumes, identical across all task types: a `dataset.csv` (`sample_id`, `image_path`, and exactly one supervision column — `label` / `mask_path` / `points_path`, chosen by `dataset_type` — plus optional `patient_id`, `level0_spacing`), a `splits.csv` (`sample_id`, `split`, `fold`), and a `summary.json`. Validated against `dataset_type` at load; written by one shared `write_manifest`.

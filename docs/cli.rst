@@ -56,8 +56,10 @@ These drive the registered benchmarks (see :doc:`benchmarking` for the
 end-to-end curate → configure → run → leaderboard → reproduce story).
 
 ``soma reproduce NAME [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
-   Curate → run → score a registered benchmark and tolerance-check its
-   primary metric against the packaged reference band. ``NAME`` is a
+   Curate → run → score a registered benchmark. When a matching packaged
+   reference exists, report its delta and highlight potential drift;
+   otherwise, explicitly skip the comparison. Reference comparisons are
+   informational and never determine command success. ``NAME`` is a
    registered benchmark (``ocelot``, ``eva/bach``) or a family prefix
    (``eva``) that fans out over every ``eva/<dataset>``. Three manifest
    sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
@@ -254,5 +256,5 @@ Full config reference
 See also
 --------
 
-* :doc:`pipeline` – Python API equivalent of each config section
+* :doc:`getting-started` – Python API equivalent of each config section
 * :doc:`getting-started` – end-to-end walkthrough

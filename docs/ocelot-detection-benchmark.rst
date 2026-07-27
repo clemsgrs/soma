@@ -24,7 +24,8 @@ point (per-class score thresholds swept on ``tune``, frozen, applied once to
 Protocol
 --------
 
-The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.
+The recipe backbone is held fixed; ``soma reproduce`` varies only the ``encoder``
+and fixes image spacing at the anchor.
 
 .. list-table::
    :header-rows: 1
@@ -39,7 +40,7 @@ The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.
    * - ``matcher``
      - ``greedy_f1@delta=3um``
    * - varied axes
-     - ``encoder``, ``spacing``
+     - ``encoder``
    * - primary metric
      - ``mean_f1``
    * - canonical seeds
@@ -47,11 +48,13 @@ The recipe backbone is held fixed; the facet varies ``encoder`` × ``spacing``.
    * - anchor
      - ``virchow2`` @ 0.2 µm/px (seed 0)
 
-Axes
-----
+Packaged spacing protocols
+--------------------------
 
-``build_config`` resolves a committed config per ``(encoder, spacing)`` — the
-2×2 magnification-alignment ablation plus the native anchor:
+Reproduce fixes spacing at the anchor, but ``build_config`` still resolves a
+committed protocol per ``(encoder, spacing)`` — the 2×2 magnification-alignment
+ablation plus the native anchor. Use these for a custom spacing sweep compared on a
+:doc:`leaderboard <benchmarking>`, like any other non-encoder axis:
 
 .. list-table::
    :header-rows: 1
@@ -73,7 +76,8 @@ Axes
 Reference band
 --------------
 
-The tolerance band ``soma reproduce`` checks against — a **config-agnostic** banner
+The tolerance band ``soma reproduce`` uses to highlight potential drift — a
+**config-agnostic** banner
 (soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression
 anchor, not an external leaderboard number). The non-gating external anchors —
 fully-supervised end-to-end baselines from a *different* protocol — are surfaced
@@ -191,14 +195,14 @@ Reproduce
 ---------
 
 One command curates the raw data, trains the anchor for the canonical seed,
-greedy-scores it, and tolerance-checks ``mean_f1`` against the band above::
+greedy-scores it, and reports ``mean_f1`` beside the band above::
 
     soma reproduce ocelot --raw-root /path/to/ocelot
 
 Fast paths: ``--from-run-dir <dir>`` re-scores an existing run with the greedy
-matcher (no training); ``--seeds 1`` is the quickest smoke. Sweep the ablation
-with ``--encoder`` / ``--spacing`` (e.g. ``soma reproduce ocelot --encoder uni2
---spacing 0.25 --raw-root ...``).
+matcher (no training); ``--seeds 1`` is the quickest smoke. Compare encoders with
+``--encoder`` (e.g. ``soma reproduce ocelot --encoder uni2 --raw-root ...``); to
+compare spacings, run per-spacing configs and a :doc:`leaderboard <benchmarking>`.
 
 .. seealso::
 

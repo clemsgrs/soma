@@ -23,106 +23,42 @@ Under the hood, it builds on two open-source projects of mine:
 - `slide2vec <https://github.com/clemsgrs/slide2vec>`_ for fast whole-slide
   encoding
 
-``soma`` supports tile, slide, and patient workflows. You can use it either
-as a full end-to-end :doc:`pipeline <pipeline>` or as a set of composable :doc:`building blocks <api>`
+``soma`` supports tile, region-of-interest, slide, and patient workflows. You can use it either
+as a full end-to-end :doc:`pipeline <getting-started>` or as a set of composable :doc:`building blocks <api>`
 for custom experiment orchestration.
-
-Where to next? Pick the card that matches what you came to do.
 
 .. raw:: html
 
-   <section class="soma-section" style="margin-top: 1.5rem">
-     <div class="soma-card-grid">
-       <a class="soma-card" href="getting-started.html">
-         <h3>Start here →</h3>
-         <p>Install soma, run your first pipeline, and pick how you'll use it: pipeline API, building blocks, or CLI.</p>
+   <nav class="soma-route-list" aria-label="Documentation routes">
+       <a class="soma-route" href="how-soma-works.html">
+         <strong>How soma works</strong>
+         <span>See how reusable pipeline blocks support custom workflows and reproducible benchmarks.</span>
        </a>
-       <a class="soma-card" href="api.html">
-         <h3>Compose building blocks →</h3>
-         <p>Mix and match encoders, aggregators, and decoders for custom orchestration.</p>
+       <a class="soma-route" href="getting-started.html">
+         <strong>Get started</strong>
+         <span>Install soma and run one experiment through the modular API, pipeline, or CLI.</span>
        </a>
-       <a class="soma-card" href="tasks.html">
-         <h3>Pick a task →</h3>
-         <p>Classification, regression, survival, segmentation, or detection — with the methods that fit each.</p>
+       <a class="soma-route" href="benchmarking.html">
+         <strong>Benchmarking</strong>
+         <span>Reproduce and compare fixed foundation-model evaluation protocols.</span>
        </a>
-       <a class="soma-card" href="benchmarking.html">
-         <h3>Reproduce a benchmark →</h3>
-         <p>Curate, run, and tolerance-check a registered benchmark — the EVA patch suite or the OCELOT detection challenge.</p>
+       <a class="soma-route" href="encoders.html#model-zoo">
+         <strong>Foundation model zoo</strong>
+         <span>Browse registered tile-, slide-, and patient-level encoders.</span>
        </a>
-     </div>
-   </section>
+   </nav>
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :hidden:
 
+   how-soma-works
    getting-started
-   pipeline
-   api
-   cli
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Data
-
-   dataset
-   curation
-   preprocessing
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Components
-
-   encoders
-   aggregators
-   decoders
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Tasks
-
+   data
+   components
    tasks
-   classification
-   regression
-   survival
-   segmentation
-   detection
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Training & Evaluation
-
-   training
-   evaluation
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Tutorials
-
-   tutorials/slide-level
-   tutorials/detection
-   tutorials/segmentation
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: Benchmarks
-
+   training-evaluation
+   tutorials/index
    benchmarking
-   eva-patch-classification-benchmark
-   ocelot-detection-benchmark
-   hest-gene-expression-benchmark
-
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-   :caption: System
-
-   caching
-   outputs
-   reporting
+   reference
+   system

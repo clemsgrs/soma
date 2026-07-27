@@ -1,117 +1,90 @@
 Benchmarking
 ============
 
-``soma`` ships **foundation-model benchmarks as first-class, registered code**. A
-benchmark is not a folder of scripts you copy — it is a named entry in a registry
-inside the wheel that wires an existing curator, a committed config (or a config
-builder), a packaged reference table, and a scorer together behind one uniform
-interface. Because the protocol is code, ``soma list benchmarks`` enumerates it,
-``soma reproduce`` drives it, and the published numbers cannot silently drift from a
-doc someone forgot to update — every :doc:`per-benchmark page <ocelot-detection-benchmark>`
-renders its reference table straight from the same CSV the tolerance check reads.
+soma packages foundation model benchmarks as registered, reproducible
+protocols. Each benchmark fixes data preparation, splits, downstream training,
+metrics, and seeds, leaving the encoder as the component you choose.
 
-This page is the conceptual guide: the shared **curate → configure → run →
-leaderboard → reproduce** loop that every registered benchmark follows. The
-:doc:`cli` page documents the exact command surface.
+Two commands drive them:
 
-What a registered benchmark is
-------------------------------
+* ``soma reproduce`` runs a benchmark end to end for the encoder you pick —
+  curation, execution, and scoring — and, when the benchmark ships a packaged
+  reference, reports the delta against it.
+* ``soma leaderboard`` reads completed runs — from reproduce or from your own
+  configs — and renders a ranked comparison, without retraining.
 
-Each benchmark exposes a small, structural interface:
+See :doc:`cli` for every command option and :doc:`outputs` for the artifacts each
+run writes.
 
-.. list-table::
-   :header-rows: 1
-   :widths: 26 74
+.. tip::
 
-   * - Piece
-     - What it does
-   * - ``name``
-     - Registry key at per-dataset granularity (``ocelot``, ``eva/bach``).
-   * - ``facet``
-     - The canonical *fixed* recipe backbone vs the *varied* axes (what a
-       leaderboard facets on).
-   * - ``primary_metric``
-     - The metric the tolerance band is defined on.
-   * - ``canonical_seeds``
-     - The seeds ``reproduce`` runs by default, so the check is like-for-like
-       against the published number.
-   * - ``curate(...)``
-     - Turns a raw public dataset into soma ``dataset.csv`` / ``splits.csv``
-       manifests (delegates to a :doc:`curator <curation>`).
-   * - ``build_config(**axes)``
-     - Emits the benchmark-faithful :class:`~soma.config.PipelineConfig` for the
-       chosen axes.
-   * - ``expected(**axes)``
-     - The reference row(s) — from the packaged ``reference/<name>.csv`` — for
-       those axes.
-   * - ``score(run_dir)``
-     - Reads the run's headline metric (the default reads ``summary.json``;
-       OCELOT overrides it with its greedy matcher).
+   Prefer Python? soma ships this as an API — the same curate, run, and score
+   flow, driving the same protocol from code. See :ref:`benchmark-api`.
 
-The five steps
---------------
-
-**1. Curate.** Turn a raw public layout into soma manifests. The benchmark
-delegates to a curator, so the output is the ordinary ``dataset.csv`` /
-``splits.csv`` pair described in :doc:`dataset` — soma never invents splits, it
-preserves the benchmark's own. ``soma reproduce`` runs this step for you from
-``--raw-root``; you can also call the curator directly (see :doc:`curation`).
-
-**2. Configure.** ``build_config`` assembles the protocol-faithful config for the
-requested axes (encoder, spacing, …). This is the recipe that reproduces the
-published number — the training hyper-parameters, the frozen-encoder settings, the
-task head, and the metric are all fixed by the benchmark, not by you.
-
-**3. Run.** A config runs like any other soma experiment — ``soma path/to/config.yaml``
-(or ``python -m soma path/to/config.yaml``). Each run writes a self-contained,
-:doc:`self-describing bundle <outputs>` under ``output_root``: the resolved
-``config.yaml``, per-fold ``metrics.json``, and a run-level ``summary.json`` whose
-keys are split-prefixed (``test/balanced_accuracy``). ``soma reproduce`` drives this
-step for every canonical seed.
-
-**4. Leaderboard.** ``soma leaderboard`` renders a faceted view over the completed
-run dirs under an output root — no re-training, it reads what the runs already
-wrote. A benchmark name supplies the canonical facet and reference band; ``--vary``
-/ ``--fix`` / ``--like`` shape the facet on top of it. The leaderboard is a *view*,
-so the same run dirs support many faceted tables.
-
-**5. Reproduce.** ``soma reproduce <name>`` runs steps 1–4 end to end and
-**tolerance-checks** the primary metric against the packaged reference band,
-printing ``PASS`` / ``FAIL`` with the delta::
-
-    soma reproduce ocelot --raw-root /path/to/ocelot
-    soma reproduce eva/bach --raw-root /path/to/eva/bach
-
-``--curated-dir <dir>`` reuses an already-curated manifest (``dataset.csv`` +
-``splits.csv``) and skips curation — handy when curation is expensive (HEST-bench
-explodes tens of thousands of spots to lossless PNGs) or you are sweeping encoders over
-one fixed manifest; ``--from-run-dir <dir>`` re-scores an existing run without
-re-training; ``--seeds 1`` is the quickest smoke; a family prefix (``soma reproduce
-eva``) fans out over every member. Because the band lives in ``reference/<name>.csv``
-and the check reads it directly, a green ``reproduce`` is evidence the environment
-matches, not that a number was typed correctly.
-
-Registered benchmarks
+Reproduce a benchmark
 ---------------------
 
-List what is registered in your install::
+``soma reproduce NAME`` curates the data, runs the fixed protocol, and scores the
+result for a single encoder — your choice of any supported
+:doc:`encoder <encoders>`::
 
-    soma list benchmarks
+   soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
 
-The bundled benchmarks each have a generated page with the protocol summary, the
-reference table (verbatim from its CSV), and the exact ``soma reproduce`` command:
+``NAME`` is a registered benchmark (e.g. ``ocelot``, ``eva/bach``) or a family prefix
+(``eva``) that fans out over every member. ``--seeds 1`` is the quickest smoke; the
+benchmark's canonical seed set runs by default. Completed runs remain ordinary soma
+experiments.
 
-* :doc:`OCELOT <ocelot-detection-benchmark>` — the :doc:`detection` path on the
-  OCELOT 2023 cell-detection challenge, with the encoder × spacing ablation.
-* :doc:`EVA <eva-patch-classification-benchmark>` — the :doc:`classification` path
-  on the kaiko-ai/eva patch suite (``eva/<dataset>``), varying the encoder.
-* :doc:`HEST <hest-gene-expression-benchmark>` — the :doc:`regression` path on the
-  HEST-Benchmark gene-expression tasks (``hest/<task>``), a closed-form Ridge+PCA
-  probe, varying the encoder.
+When the benchmark ships a packaged reference for the encoder you ran, soma reports
+the measured value beside it and highlights potential drift. Because the encoder is a free choice, you
+can also benchmark models the reference never covered — passing an encoder with no
+matching reference simply skips the comparison::
 
-.. seealso::
+   soma reproduce eva/bach --encoder phikon --raw-root /path/to/eva/bach --output-root runs/eva-bach
 
-   * :doc:`cli` — the exact ``reproduce`` / ``leaderboard`` / ``list benchmarks``
-     command surface.
-   * :doc:`curation` — the curators benchmarks delegate to.
-   * :doc:`outputs` — the self-describing run bundle a leaderboard reads.
+Compare runs on a leaderboard
+-----------------------------
+
+``soma leaderboard`` projects a set of completed runs into a single
+ranked table, comparing them along the axis you pass to ``--vary``. It writes the table as CSV, JSON, and
+HTML, with any packaged reference shown alongside. Every run sharing one
+``(dataset, splits, task)`` triple joins the table.
+
+The encoder is the axis ``soma reproduce`` varies, so comparing encoders is one
+reproduce run per encoder under the same output root, then a leaderboard::
+
+   soma reproduce eva/bach --encoder uni2     --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+   soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+   soma leaderboard eva/bach --root runs/eva-bach/seed_0 --vary encoder
+
+Any other axis — aggregator, decoder, spacing, feature mode — works the same way, but
+you produce the runs yourself with ordinary ``soma <config>`` runs. To compare
+aggregators for a fixed encoder:
+
+#. Take one cohort — a shared ``dataset.csv`` + ``splits.csv`` + task
+#. Write N configs identical except the ``aggregation:`` key
+#. Run each ordinary pipeline: ``soma abmil.yaml``, ``soma transmil.yaml``, …
+#. ``soma leaderboard --root runs/agg-sweep --vary aggregator`` — every run sharing that
+   ``(dataset, splits, task)`` triple joins the table, ranked by the metric inferred
+   from the runs
+
+Included benchmarks
+-------------------
+
+* :doc:`EVA <eva-patch-classification-benchmark>` evaluates frozen encoders on
+  patch-classification datasets.
+* :doc:`OCELOT <ocelot-detection-benchmark>` evaluates dense encoders for cell
+  detection.
+* :doc:`HEST <hest-gene-expression-benchmark>` evaluates frozen encoders for
+  spatial gene-expression prediction.
+
+Each page documents data acquisition, the fixed protocol, reproduction commands,
+and the relevant packaged reference.
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   eva-patch-classification-benchmark
+   ocelot-detection-benchmark
+   hest-gene-expression-benchmark

@@ -502,6 +502,7 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         execution=ExecutionConfig(num_preprocessing_workers=0),
+        output_root=tmp_path / "outputs",
     )
     with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
         "soma.extraction.extractor.resolve_tiling_cache",
@@ -521,6 +522,7 @@ def test_preprocess_validates_encoder_settings_before_tiling(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=1.0),
         execution=ExecutionConfig(num_preprocessing_workers=0),
+        output_root=tmp_path / "outputs",
     )
 
     with patch("soma.extraction.extractor.Pipeline", autospec=True) as MockPipeline:
@@ -537,6 +539,7 @@ def test_preprocess_forwards_mask_path_to_slide2vec_pipeline(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         execution=ExecutionConfig(num_preprocessing_workers=0),
+        output_root=tmp_path / "outputs",
     )
 
     with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
@@ -562,6 +565,7 @@ def test_preprocess_uses_precomputed_mask_method_when_every_slide_has_mask(tmp_p
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         execution=ExecutionConfig(num_preprocessing_workers=0),
+        output_root=tmp_path / "outputs",
     )
 
     with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
@@ -584,6 +588,7 @@ def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Pat
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
     )
     cache_dir = tmp_path / "tiling_cache" / "abc123"
     artifacts_dir = cache_dir / "artifacts"
@@ -624,6 +629,7 @@ def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: P
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
     )
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
@@ -719,10 +725,95 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
         autospec=True,
         return_value=FeatureStore(fake_store_dir),
     ) as extract_tile_cached:
-        store = extractor.extract(feature_dir=tmp_path / "run" / "features", tiling_dir=tmp_path / "run" / "tiling")
+        store = extractor.extract(feature_dir="features/custom", tiling_dir=tmp_path / "run" / "tiling")
 
     assert extract_tile_cached.call_args.kwargs["cache_root"] == tmp_path / "outputs" / "feature_cache"
+    assert extract_tile_cached.call_args.kwargs["feature_dir"] == (
+        tmp_path / "outputs" / "features" / "custom"
+    ).resolve()
     assert store.load("s0").shape == (2, 8)
+
+
+def test_extract_derives_feature_dir_from_output_root_and_encoder_name(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    output_root = tmp_path / "outputs"
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        output_root=output_root,
+    )
+    expected_feature_dir = output_root / "features" / _TEST_TILE
+    expected_feature_dir.mkdir(parents=True)
+    (expected_feature_dir / "process_list.csv").write_text(
+        "sample_id,feature_status\ns0,success\n",
+        encoding="utf-8",
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(
+                sample_id="s0",
+                image_path=Path("/tmp/s0.svs"),
+                mask_path=None,
+                spacing_at_level_0=None,
+            ),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._validate_runtime"
+    ), patch.object(
+        FeatureExtractor,
+        "_extract_tile_cached",
+        autospec=True,
+        return_value=FeatureStore(expected_feature_dir),
+    ) as extract_tile_cached:
+        store = extractor.extract(tiling_dir=tmp_path / "tiling")
+
+    assert store.feature_dir == expected_feature_dir.resolve()
+    assert extract_tile_cached.call_args.kwargs["feature_dir"] == expected_feature_dir.resolve()
+
+
+def test_feature_extractor_requires_output_root(tmp_path: Path):
+    with pytest.raises(TypeError, match="output_root"):
+        FeatureExtractor(
+            _make_dataset(tmp_path),
+            EncoderConfig(name=_TEST_TILE),
+            PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        )
+
+
+def test_extract_rejects_unsafe_encoder_name_before_deriving_feature_dir(tmp_path: Path):
+    output_root = tmp_path / "outputs"
+    extractor = FeatureExtractor(
+        _make_dataset(tmp_path),
+        EncoderConfig(name="../escape"),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        output_root=output_root,
+    )
+
+    with pytest.raises(ValueError, match="Unsafe encoder name"):
+        extractor.extract()
+
+    assert not (output_root / "escape").exists()
+
+
+@pytest.mark.parametrize("feature_dir", ["../escape", "/absolute/features"])
+def test_extract_rejects_feature_dir_outside_output_root(
+    tmp_path: Path,
+    feature_dir: str,
+):
+    output_root = tmp_path / "outputs"
+    extractor = FeatureExtractor(
+        _make_dataset(tmp_path),
+        EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        output_root=output_root,
+    )
+
+    with pytest.raises(ValueError, match="feature_dir must"):
+        extractor.extract(feature_dir)
 
 
 def test_preprocess_requires_tissue_method_without_precomputed_masks(tmp_path: Path):
@@ -731,6 +822,7 @@ def test_preprocess_requires_tissue_method_without_precomputed_masks(tmp_path: P
         dataset,
         EncoderConfig(name=_TEST_TILE),
         _PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5, backend="openslide"),
+        output_root=tmp_path / "outputs",
     )
 
     with pytest.raises(ValueError, match="tissue_method is required"):
@@ -1181,6 +1273,7 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -1210,7 +1303,7 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ) as embed_tiles:
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
     assert embed_tiles.called
     assert store.available_samples == ["s0"]
     assert store.is_slide_level is False
@@ -1834,6 +1927,7 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -1868,7 +1962,7 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ):
-        extractor.extract(feature_dir=tmp_path / "features")
+        extractor.extract(feature_dir="features")
 
     preprocess.assert_called_once()
     assert preprocess.call_args.kwargs["tiling_dir"] == tmp_path / "features" / "tiling"
@@ -1881,6 +1975,7 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -1915,7 +2010,7 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ):
-        extractor.run(feature_dir=tmp_path / "features")
+        extractor.run(feature_dir="features")
 
     preprocess.assert_called_once()
     assert preprocess.call_args.kwargs["tiling_dir"] == tmp_path / "tiling"
@@ -1928,6 +2023,7 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -1962,7 +2058,7 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ):
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert store.has_feature_manifest is True
     assert store.empty_feature_samples == ["s1"]
@@ -1982,6 +2078,7 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
     )
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
     features_dir = cache_dir / "tile_embeddings"
@@ -2025,6 +2122,7 @@ def test_materialize_feature_dir_from_cache_leaves_pointer_only_run_dir(tmp_path
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
     )
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
     features_dir = cache_dir / "tile_embeddings"
@@ -2066,6 +2164,7 @@ def test_tile_cache_hit_aligns_cache_and_run_feature_manifests(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path / "outputs",
     )
     loaded = [
         LoadedTiling(
@@ -2148,6 +2247,7 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
     )
     feature_dir = tmp_path / "features"
     feature_dir.mkdir()
@@ -2195,6 +2295,7 @@ def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=True),
+        output_root=tmp_path / "outputs",
     )
     cache_payload_dir = tmp_path / "shared-cache" / "slide" / "abc123" / "slide_embeddings"
     cache_payload_dir.mkdir(parents=True)
@@ -2245,6 +2346,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2280,7 +2382,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ) as embed_tile_artifacts:
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert embed_tile_artifacts.called
     assert embed_tile_artifacts.call_args.kwargs["execution"].num_gpus == 2
@@ -2453,6 +2555,7 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2499,7 +2602,7 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
         "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
     assert store.available_samples == ["s0"]
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
@@ -2512,6 +2615,7 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
         EncoderConfig(name=_TEST_SLIDE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2569,7 +2673,7 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
         "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
-        extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert validate_runtime.call_args.kwargs["output_variant"] is None
 
@@ -2582,6 +2686,7 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2631,7 +2736,7 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
         "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     # Tiles land in the tile cache, slides in the slide cache, and crucially the
     # tile embeddings are NOT duplicated under the slide cache dir.
@@ -2650,6 +2755,7 @@ def test_slide_cache_population_records_all_empty_without_embedding(tmp_path: Pa
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2670,7 +2776,7 @@ def test_slide_cache_population_records_all_empty_without_embedding(tmp_path: Pa
         "soma.extraction.extractor.spawn_slide_aggregation_workers",
         side_effect=AssertionError("all-empty slide extraction should not spawn aggregation workers"),
     ):
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     tile_metadata_paths = list((cache_root / "tile").glob("*/cache_metadata.json"))
     slide_metadata_paths = list((cache_root / "slide").glob("*/cache_metadata.json"))
@@ -2695,6 +2801,7 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2771,6 +2878,7 @@ def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Pat
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2825,6 +2933,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         EncoderConfig(name=_TEST_PATIENT),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -2941,6 +3050,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
         EncoderConfig(name=_TEST_PATIENT),
         resolved_preprocessing,
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3052,6 +3162,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
         EncoderConfig(name=_TEST_PATIENT),
         resolved_preprocessing,
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3143,6 +3254,7 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
         EncoderConfig(name=_TEST_PATIENT),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        output_root=tmp_path / "outputs",
     )
 
     with pytest.raises(ValueError, match="every dataset row must have a patient_id"):
@@ -3163,6 +3275,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
         EncoderConfig(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path / "outputs",
     )
     loaded = [
         LoadedTiling(
@@ -3251,6 +3364,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path / "outputs",
     )
     empty_tiling = SimpleNamespace(
         **{
@@ -3347,6 +3461,7 @@ def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_p
         EncoderConfig(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path / "outputs",
     )
     loaded = [
         LoadedTiling(
@@ -3400,6 +3515,7 @@ def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3425,7 +3541,7 @@ def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ):
-        extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     metadata_path = next((cache_root / "tile").glob("*/cache_metadata.json"))
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -3442,6 +3558,7 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3504,7 +3621,7 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
         "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
-        extractor.extract(feature_dir=tmp_path / "features-initial", tiling_dir=tmp_path / "tiling")
+        extractor.extract(feature_dir="features-initial", tiling_dir=tmp_path / "tiling")
 
     slide_payload = next((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
     slide_payload.unlink()
@@ -3524,7 +3641,7 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=AssertionError("tile re-embedding must not run when the tile cache is complete"),
     ):
-        store = extractor.extract(feature_dir=tmp_path / "features-rerun", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features-rerun", tiling_dir=tmp_path / "tiling")
 
     assert aggregate_tiles.called
     assert store.is_slide_level is True
@@ -3539,6 +3656,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3562,6 +3680,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
 
     def _fake_load_model(model_name, *, output_variant, allow_non_recommended_settings):
@@ -3609,7 +3728,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         "soma.extraction.extractor._aggregate_tiles",
         side_effect=_fake_aggregate_tiles,
     ):
-        extractor.extract(feature_dir=tmp_path / "features-initial", tiling_dir=tmp_path / "tiling")
+        extractor.extract(feature_dir="features-initial", tiling_dir=tmp_path / "tiling")
 
     for sample_id in ("s0", "s1"):
         next((cache_root / "slide").glob(f"*/slide_embeddings/{sample_id}.pt")).unlink()
@@ -3678,7 +3797,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         side_effect=AssertionError("parent aggregate path should not run in multi-gpu shard mode"),
     ):
         store = extractor.extract(
-            feature_dir=tmp_path / "features-rerun",
+            feature_dir="features-rerun",
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
@@ -3698,6 +3817,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
         EncoderConfig(name=_TEST_TILE),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3732,7 +3852,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
         side_effect=_fake_embed_tile_artifacts,
     ) as embed_tile_artifacts:
         store = extractor.extract(
-            feature_dir=tmp_path / "features",
+            feature_dir="features",
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
@@ -3755,6 +3875,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3815,7 +3936,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         side_effect=_fake_spawn_slide_aggregation_workers,
     ):
         store = extractor.extract(
-            feature_dir=tmp_path / "features",
+            feature_dir="features",
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
@@ -3834,6 +3955,7 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3881,7 +4003,7 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
         wraps=cache_mod.resolve_slide_cache,
     ) as resolve_slide_cache:
         store = extractor.extract(
-            feature_dir=tmp_path / "features",
+            feature_dir="features",
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
@@ -3904,6 +4026,7 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
             region_tile_multiple=2,
         ),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -3948,7 +4071,7 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
         autospec=True,
         side_effect=_spy_extract_uncached,
     ) as extract_uncached:
-        store = extractor.extract(feature_dir=tmp_path / "features", tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
     assert extract_uncached.called
     assert seen_hierarchical == [True]
     assert store.is_hierarchical is True
@@ -3967,6 +4090,7 @@ def test_hierarchical_multi_gpu_uses_coordinate_helper(tmp_path: Path):
             region_tile_multiple=2,
         ),
         cache=CacheConfig(enabled=False),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -4016,7 +4140,7 @@ def test_hierarchical_multi_gpu_uses_coordinate_helper(tmp_path: Path):
         side_effect=_fake_embed_hierarchical_artifacts,
     ) as embed_hierarchical_artifacts:
         store = extractor.extract(
-            feature_dir=tmp_path / "features",
+            feature_dir="features",
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
@@ -4038,6 +4162,7 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
             region_tile_multiple=2,
         ),
         cache=CacheConfig(root_dir=cache_root),
+        output_root=tmp_path,
     )
     feature_dir = tmp_path / "features"
     loaded = [
@@ -4100,7 +4225,7 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
         autospec=True,
         side_effect=_fake_populate_hierarchical_cache,
     ) as populate_hierarchical_cache:
-        store = extractor.extract(feature_dir=feature_dir, tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert populate_hierarchical_cache.called
     assert store.is_hierarchical is True
@@ -4119,6 +4244,7 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
             region_tile_multiple=2,
         ),
         cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        output_root=tmp_path,
     )
     loaded = [
         LoadedTiling(
@@ -4142,7 +4268,7 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
         autospec=True,
         return_value=FeatureStore(feature_dir),
     ) as extract_hierarchical_cached:
-        store = extractor.extract(feature_dir=feature_dir, tiling_dir=tmp_path / "tiling")
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert extract_hierarchical_cached.called
     assert store.feature_dir == feature_dir
@@ -4152,7 +4278,11 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
 
 def test_multispacing_encoder_requires_explicit_spacing(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
-    extractor = FeatureExtractor(dataset, EncoderConfig(name=_TEST_MULTI))
+    extractor = FeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_MULTI),
+        output_root=tmp_path / "outputs",
+    )
     with pytest.raises(ValueError, match="supports multiple spacings"):
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
