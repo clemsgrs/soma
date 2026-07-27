@@ -7,13 +7,6 @@ the pipeline and CLI. The goal is to show how the pieces fit together. The
 :doc:`slide-level tutorial <tutorials/slide-level>` covers more hands-on and
 advanced workflows.
 
-.. figure:: /_static/figures/how-soma-works-workflow.svg
-   :figclass: soma-figure
-   :alt: Five modular blocks in sequence: Data, Preprocess, Encode with a frozen foundation model, Train with a trained downstream model, and Evaluate.
-
-   This walkthrough turns whole slides into tissue tiles, encodes them with
-   ``phikon``, trains an AB-MIL binary classifier, and reports held-out metrics.
-
 Install
 -------
 
