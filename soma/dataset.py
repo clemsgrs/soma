@@ -40,6 +40,8 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     # Slide-manifest segmentation ROI origin (level-0 px); typed onto SampleRecord.region.
     "region_x",
     "region_y",
+    # The parent slide an ROI was sampled from; typed onto SampleRecord.slide_id.
+    "slide_id",
 }
 REQUIRED_SPLITS_COLUMNS = {"sample_id", "split"}
 
@@ -91,6 +93,12 @@ class SampleRecord:
     # image_path/mask_path then point at the parent *slide* (+ annotation slide), and
     # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
     region: tuple[int, int] | None = None
+    # Slide-manifest segmentation: the parent slide this ROI was sampled from. Recorded
+    # explicitly because it is part of the ROI's on-disk address — slide2vec namespaces
+    # dense grids as ``<slide_id>/<x>_<y>.pt`` — and reconstructing it by splitting the
+    # ROI's own ``<slide>__x<X>_y<Y>`` id apart would make a naming convention
+    # load-bearing (ADR 0007). None for every non-ROI row.
+    slide_id: str | None = None
     # spatial_expression: the resolved multi-target regression vector for this spot,
     # attached from the sidecar target matrix (row ``target_index``). None for every
     # other dataset_type. Excluded from equality/hash — it is derived supervision data,
@@ -288,6 +296,11 @@ class SegmentationManifest:
             region = None
             if "region_x" in row.index and pd.notna(row.get("region_x")):
                 region = (int(row["region_x"]), int(row["region_y"]))
+            slide_id = (
+                str(row["slide_id"])
+                if "slide_id" in row.index and pd.notna(row.get("slide_id"))
+                else None
+            )
             samples[sid] = SampleRecord(
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
@@ -295,6 +308,7 @@ class SegmentationManifest:
                 mask_path=Path(str(row["mask_path"])),
                 patient_id=patient_id,
                 region=region,
+                slide_id=slide_id,
                 metadata=metadata,
             )
         return samples

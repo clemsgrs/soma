@@ -7,12 +7,16 @@ The slide-manifest counterpart of :class:`soma.dense_extraction.DenseTileFeature
 1. runs **hs2p annotation sampling** (``tile_slide(sampling=…)``, ``merged`` output mode) per
    slide to get ROI coordinates (the union of tiles passing any class threshold);
 2. asks **slide2vec** to encode each ROI region into a dense ``(d, gh, gw)`` grid
-   (:func:`slide2vec.runtime.dense_regions.iter_regions_dense` — region reads + the
-   encoder's whole/sliding dense forward, streamed one grid per coordinate); soma never
-   reads slide regions or runs the encoder itself, mirroring how the pooled path defers
-   to slide2vec;
+   (:meth:`slide2vec.Model.embed_regions_dense` — region reads, the encoder's
+   whole/sliding dense forward, and the write of each grid + geometry sidecar); soma never
+   reads slide regions, runs the encoder, or defines the artifact schema, mirroring how the
+   pooled path defers to slide2vec;
 3. **caches** the grids via soma's own dense cache layer, with the sampling spec folded into
    the cache key so distinct ``min_coverage``/spacing/strategy never alias.
+
+Persistence is not caching (ADR 0007): slide2vec writes the payloads, into soma's resolved
+cache directory, while the key, the completeness decision, the missing set and the identity
+signatures stay here.
 
 Splits stay slide-level and user-provided; the ROI manifest (one row per sampled tile, with
 its parent slide's ``image_path``/``mask_path`` + a ``region_x``/``region_y`` origin) and the
@@ -29,7 +33,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import torch
+from slide2vec import DenseOptions, Model, SlideRegions
 
 from soma.cache import (
     record_feature_dim,
@@ -39,11 +43,11 @@ from soma.cache import (
     resolve_output_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, MasksConfig, PreprocessingConfig, SamplingConfig
-from soma.dense import DenseFeatureStore, compute_dense_geometry, dense_grid_metadata, normalize_hw, write_dense_grid
+from soma.dense import DenseFeatureStore, normalize_hw
 from soma.slide2vec_adapter import build_execution_options
 
 if TYPE_CHECKING:
-    from soma.dataset import SampleRecord, SegmentationManifest
+    from soma.dataset import SegmentationManifest
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +154,12 @@ def build_roi_manifest(
     """Write the derived ROI coordinate manifest + ROI splits CSVs; return their paths.
 
     One ROI row per sampled tile (``sample_id = <slide>__x<X>_y<Y>``) carrying its parent
-    slide's ``image_path``/``mask_path`` and a ``region_x``/``region_y`` origin. The ROI
+    ``slide_id`` alongside that slide's ``image_path``/``mask_path`` and a
+    ``region_x``/``region_y`` origin. The ``slide_id`` column is what makes the ROI →
+    (slide, x, y) mapping a *recorded* fact rather than something recovered by splitting
+    the ROI id apart later — it is the ROI's address in slide2vec's per-slide dense
+    layout, so a slide id containing the ``__x``/``_y`` separators would otherwise be
+    ambiguous (ADR 0007). The ROI
     splits CSV is expanded **directly from the slide splits CSV** — every ROI inherits its
     parent slide row's split (and ``fold``, if present) verbatim (propagation, not creation;
     soma never partitions). Reading the slide splits CSV (rather than a parsed ``Splits``)
@@ -181,6 +190,7 @@ def build_roi_manifest(
             manifest_rows.append(
                 {
                     "sample_id": roi_id,
+                    "slide_id": slide_id,
                     "image_path": str(record.image_path),
                     "mask_path": str(record.mask_path),
                     "region_x": int(x),
@@ -190,7 +200,11 @@ def build_roi_manifest(
             for entry in rows_by_slide.get(slide_id, []):
                 splits_rows.append({"sample_id": roi_id, **entry})
 
-    _write_csv(manifest_path, ["sample_id", "image_path", "mask_path", "region_x", "region_y"], manifest_rows)
+    _write_csv(
+        manifest_path,
+        ["sample_id", "slide_id", "image_path", "mask_path", "region_x", "region_y"],
+        manifest_rows,
+    )
     splits_fields = ["sample_id", "split", "fold"] if has_fold else ["sample_id", "split"]
     _write_csv(splits_path, splits_fields, splits_rows)
     return manifest_path, splits_path
@@ -247,6 +261,29 @@ class SlideManifestDenseExtractor:
             self._attention_blocks = (-1,)
             self._attention_include_registers = False
 
+    def _payload_stems(self) -> dict[str, str]:
+        """ROI id → its path inside ``dense_embeddings/``, as ``<slide_id>/<x>_<y>``.
+
+        slide2vec namespaces ROI grids by their parent slide, so an ROI's on-disk address
+        is (slide, x, y) — all three read off the manifest row, never parsed back out of
+        the ROI id.
+        """
+        stems: dict[str, str] = {}
+        for record in self._dataset.samples.values():
+            if record.region is None:
+                raise ValueError(
+                    f"ROI '{record.sample_id}' has no region; the ROI manifest must carry "
+                    "region_x/region_y."
+                )
+            if record.slide_id is None:
+                raise ValueError(
+                    f"ROI '{record.sample_id}' has no slide_id; the ROI manifest must carry "
+                    "the parent slide id (it is part of the grid's on-disk address)."
+                )
+            x, y = record.region
+            stems[record.sample_id] = f"{record.slide_id}/{int(x)}_{int(y)}"
+        return stems
+
     def run(self, feature_dir: str | Path) -> DenseFeatureStore:
         from slide2vec.encoders.registry import resolve_patch_size
 
@@ -254,6 +291,7 @@ class SlideManifestDenseExtractor:
 
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
+        payload_stems = self._payload_stems()
 
         # Check-before-load (#165): the dense cache key needs only patch_size, which
         # slide2vec exposes as static registry metadata — read it without constructing
@@ -262,7 +300,6 @@ class SlideManifestDenseExtractor:
         # runtime encoder.patch_size in slide2vec (and re-asserted by load_model), so the
         # cache key is byte-identical to the pre-change key.
         patch_size = resolve_patch_size(self._encoder.name)
-        geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
         signature = sampling_signature(self._masks, self._sampling, self._preprocessing)
 
         # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
@@ -274,7 +311,9 @@ class SlideManifestDenseExtractor:
         dense_dtype = resolve_output_dtype(self._cache.dtype, precision_hint)
 
         cache_resolution = None
-        out_dir = feature_dir
+        # slide2vec appends ``dense_embeddings/`` to output_dir, and that subdirectory is
+        # exactly the dense cache's features_dir — so the payload root is the cache dir.
+        out_root = feature_dir
         if self._cache.enabled:
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
             cache_resolution = resolve_dense_cache(
@@ -296,11 +335,12 @@ class SlideManifestDenseExtractor:
                 sampling_signature=signature,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
+                payload_stem_by_id=payload_stems,
             )
             if cache_resolution.complete:
                 logger.info("Reusing cached ROI dense grids from %s", cache_resolution.features_dir)
-                return DenseFeatureStore(cache_resolution.cache_dir)
-            out_dir = cache_resolution.features_dir
+                return DenseFeatureStore(cache_resolution.cache_dir, payload_stems=payload_stems)
+            out_root = cache_resolution.cache_dir
 
         # Resume: encode only the ROIs absent from the cache (the missing set comes
         # from the shared FeatureCacheResolution contract — no inline missing-logic).
@@ -310,95 +350,71 @@ class SlideManifestDenseExtractor:
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
-                return DenseFeatureStore(out_dir)
+                return DenseFeatureStore(out_root, payload_stems=payload_stems)
 
-        # Group ROI records by parent slide so each slide is opened/read once.
-        records_by_slide: dict[Path, list["SampleRecord"]] = defaultdict(list)
+        # Group ROI coordinates by parent slide: one SlideRegions per slide, so slide2vec
+        # opens and reads each slide once.
+        coords_by_slide: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        image_path_by_slide: dict[str, Path] = {}
         for record in self._dataset.samples.values():
             if wanted is not None and record.sample_id not in wanted:
                 continue
-            if record.region is None:
-                raise ValueError(
-                    f"ROI '{record.sample_id}' has no region; the ROI manifest must carry "
-                    "region_x/region_y."
-                )
-            records_by_slide[record.image_path].append(record)
+            slide_id = str(record.slide_id)
+            coords_by_slide[slide_id].append(record.region)
+            image_path_by_slide[slide_id] = record.image_path
 
         # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
-        from slide2vec.inference import load_model
-        from slide2vec.runtime.dense_regions import iter_regions_dense
-
-        from hs2p.wsi.wsi import WSI
-
-        loaded = load_model(
-            name=self._encoder.name,
-            output_variant=self._encoder.output_variant,
+        model = Model.from_preset(
+            self._encoder.name,
             allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            dynamic_img_size=True,
         )
-        model = loaded.model
-        device = loaded.device
-
         execution = build_execution_options(
             self._encoder,
             execution=self._execution,
             encoder_name=self._encoder.name,
-            output_dir=out_dir,
+            output_dir=out_root,
+            # Multi-GPU dense is a separate, separately-verified follow-up: slide2vec splits
+            # the flat ROI list contiguously, so a slide straddling a shard boundary yields
+            # partial batches — and fp16 grids are batch-size sensitive.
             num_gpus=1,
             save_tile_embeddings=True,
+            # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved value,
+            # so the on-disk grid is cast to exactly the dtype folded into the cache key
+            # above (key and storage can never drift).
+            output_dtype=dense_dtype,
+        )
+        dense = DenseOptions(
+            spacing_um=self._spacing_um,
+            target_size=int(self._target_size[0]),
+            tolerance=float(self._preprocessing.tolerance),
+            backend=self._preprocessing.backend,
+            pad_mode=self._pad_mode,
+            # window_size=None ⇒ one whole-region forward; a smaller window slides the
+            # encoder over patch-aligned windows of each padded ROI and blends the grids.
+            # Sliding is required for encoders that only accept their native input size.
+            window_size=self._window_size,
+            overlap=self._overlap,
+            feature_kind=self._feature_kind,
+            attention_blocks=self._attention_blocks,
+            attention_include_registers=self._attention_include_registers,
+        )
+        artifacts = model.embed_regions_dense(
+            [
+                SlideRegions(
+                    sample_id=slide_id,
+                    image_path=image_path_by_slide[slide_id],
+                    coordinates=coords,
+                )
+                for slide_id, coords in coords_by_slide.items()
+            ],
+            dense=dense,
+            execution=execution,
         )
 
-        feature_dim: int | None = None
-        for image_path, records in records_by_slide.items():
-            wsi = WSI(Path(image_path), backend=self._preprocessing.backend)
-            coords = [record.region for record in records]
-            # One streaming call per slide: slide2vec's unified dense primitive reads each
-            # ROI region, encodes it (whole-region forward when window_size is None, else the
-            # encoder slid over patch-aligned windows + blended), and yields one (d, gh, gw)
-            # grid per coordinate in order — one batch resident at a time.
-            grids = iter_regions_dense(
-                model=model,
-                device=device,
-                wsi=wsi,
-                coordinates=coords,
-                requested_spacing_um=self._spacing_um,
-                target_size=self._target_size,
-                tolerance=float(self._preprocessing.tolerance),
-                pad_mode=self._pad_mode,
-                window_size=self._window_size,
-                overlap=self._overlap,
-                feature_kind=self._feature_kind,
-                attention_blocks=self._attention_blocks,
-                attention_include_registers=self._attention_include_registers,
-                batch_size=int(self._encoder.batch_size),
-                precision=execution.precision,
-                # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the concrete
-                # torch dtype, so the on-disk grid is cast to exactly the dtype folded into
-                # the cache key above (key and storage can never drift).
-                output_dtype={"fp16": torch.float16, "fp32": torch.float32}[dense_dtype],
-                dense_transform=model.get_dense_transform(),
-            )
-            for record, grid in zip(records, grids):
-                if feature_dim is None:
-                    feature_dim = int(grid.shape[0])
-                metadata = dense_grid_metadata(
-                    geometry,
-                    feature_dim=int(grid.shape[0]),
-                    pad_mode=self._pad_mode,
-                    dense_input_mode=dense_input_mode,
-                    window_size=self._window_size,
-                    overlap=self._overlap,
-                    spacing_um=self._spacing_um,
-                    feature_kind=self._feature_kind,
-                    attention_blocks=self._attention_blocks,
-                    attention_include_registers=self._attention_include_registers,
-                )
-                write_dense_grid(out_dir, record.sample_id, torch.from_numpy(grid), metadata)
-
-        if cache_resolution is not None and feature_dim is not None:
+        if cache_resolution is not None and artifacts:
             cache_resolution = record_feature_dim(
                 cache_resolution,
-                feature_dim,
+                int(artifacts[0].feature_dim),
                 validate_payloads=self._cache.validate_payloads,
             )
             cache_resolution = record_sample_identity_signatures(
@@ -406,4 +422,4 @@ class SlideManifestDenseExtractor:
                 [record.sample_id for record in self._dataset.samples.values()],
                 validate_payloads=self._cache.validate_payloads,
             )
-        return DenseFeatureStore(out_dir)
+        return DenseFeatureStore(out_root, payload_stems=payload_stems)
