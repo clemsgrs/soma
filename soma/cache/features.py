@@ -730,6 +730,7 @@ def resolve_tile_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    cache_kind: str = "tile",
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
@@ -743,13 +744,13 @@ def resolve_tile_cache(
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
-        cache_kind="tile",
+        cache_kind=cache_kind,
         static_identity_payload={"cache_key": metadata["cache_key"]},
         fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
-        cache_kind="tile",
+        cache_kind=cache_kind,
         key=metadata["cache_key"],
         dataset=dataset,
         metadata=metadata,
@@ -759,6 +760,43 @@ def resolve_tile_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+    )
+
+
+def resolve_image_cache(
+    *,
+    cache_root: Path,
+    dataset: Dataset,
+    tile_encoder_name: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+    dtype: str = "fp32",
+    complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
+    """Resolve the cache for given-geometry images (pre-cropped patch datasets).
+
+    One 1-D embedding per image, so the payload rank matches ``feature_type="tile"``; the
+    ``image`` cache *kind* is what routes ``features_dir`` at ``image_embeddings/``, the
+    directory :meth:`slide2vec.Model.embed_images` writes into. There is no
+    ``preprocessing`` argument by construction: the Given regime has no tiling and no
+    requested geometry to key on — the encoder's shipped transform is the contract, and it
+    is already pinned by the encoder name and output variant that are in the key.
+    """
+    return resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=tile_encoder_name,
+        preprocessing=None,
+        execution=execution,
+        output_variant=output_variant,
+        feature_type="tile",
+        dtype=dtype,
+        complete_state=complete_state,
+        fingerprint_files=fingerprint_files,
+        validate_payloads=validate_payloads,
+        cache_kind="image",
     )
 
 

@@ -27,6 +27,12 @@ _FEATURE_TYPE_TO_RANK = {
 
 _CACHE_KIND_TO_FEATURES_SUBDIR = {
     "tile": "tile_embeddings",
+    # Given-geometry images (pre-cropped patch benchmarks) are their own kind, not a
+    # variant of "tile": slide2vec writes them to ``image_embeddings/`` and their sidecar
+    # records ``encoder_input_regime="given"``, where a tile bag's geometry was declared.
+    # Keeping the kinds distinct means soma's features_dir *is* slide2vec's output layout,
+    # with no translation step between the two schemas (ADR 0007).
+    "image": "image_embeddings",
     "slide": "slide_embeddings",
     "patient": "patient_embeddings",
     "hierarchical": "hierarchical_embeddings",
