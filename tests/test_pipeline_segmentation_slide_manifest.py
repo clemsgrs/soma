@@ -34,6 +34,10 @@ from soma.config import (
 )
 
 NUM_CLASSES = 2
+# A patch-16 encoder that accepts a variable encoder input, so the tiny 32 px fixtures
+# below are a geometry the contract can actually honour (ADR 0006): declaring a 32 px
+# dense input on a fixed-224 encoder now raises at resolve time, as it should.
+ENCODER = "uni"
 TARGET = 32
 PATCH = 16
 GRID = TARGET // PATCH  # 2
@@ -183,7 +187,7 @@ def _config(root: Path, manifest: Path, splits: Path, *, masks: MasksConfig | No
         splits_csv=splits,
         output_root=root / "out",
         dataset_type="segmentation",
-        encoder=__import__("soma.config", fromlist=["EncoderConfig"]).EncoderConfig(name="phikon"),
+        encoder=__import__("soma.config", fromlist=["EncoderConfig"]).EncoderConfig(name=ENCODER),
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=TARGET,
             requested_spacing_um=0.5,
@@ -269,7 +273,7 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
     from soma.config import EncoderConfig
     from soma.dense_slide_extraction import sampling_signature
 
-    enc = EncoderConfig(name="phikon")
+    enc = EncoderConfig(name=ENCODER)
     pre = PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5)
     masks_a = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.1})
     masks_b = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.5})
@@ -277,7 +281,7 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
 
     def _key(sig):
         return build_dense_cache_key(
-            tile_encoder_name="phikon", target_size=(TARGET, TARGET), patch_size=(PATCH, PATCH),
+            tile_encoder_name=ENCODER, target_size=(TARGET, TARGET), patch_size=(PATCH, PATCH),
             pad_mode="reflect", execution=enc, preprocessing=pre, window_size=None, overlap=0.0,
             sampling_signature=sig,
         )
@@ -347,7 +351,10 @@ def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
 
 
 def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path, monkeypatch):
-    """A native-only encoder (window < target) is expressed as DenseOptions window/overlap.
+    """A window smaller than the target is expressed as DenseOptions window/overlap.
+
+    This is how a native-only encoder reaches a larger supervision tile — phikon@224 over
+    512 px ROIs, the BEETLE recipe — stated here at fixture scale.
 
     The sliding itself — encoder slid over patch-aligned windows of each padded ROI, grids
     blended back — is slide2vec's, and is tested there. soma's remaining responsibility is
@@ -370,7 +377,7 @@ def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path,
     WINDOW = 16  # < TARGET (32) -> genuine sliding
     extractor = SlideManifestDenseExtractor(
         dataset,
-        EncoderConfig(name="phikon", batch_size=2),
+        EncoderConfig(name=ENCODER, batch_size=2),
         masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         preprocessing=PreprocessingConfig(
@@ -411,7 +418,7 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
 
     store = SlideManifestDenseExtractor(
         dataset,
-        EncoderConfig(name="phikon"),
+        EncoderConfig(name=ENCODER),
         masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
@@ -449,7 +456,7 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     def _make_extractor():
         return SlideManifestDenseExtractor(
             dataset,
-            EncoderConfig(name="phikon", batch_size=2),
+            EncoderConfig(name=ENCODER, batch_size=2),
             masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
             sampling=SamplingConfig(strategy="joint", output_mode="merged"),
             preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),

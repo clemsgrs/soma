@@ -23,6 +23,10 @@ from soma.cache._types import (
     CacheValidationResult,
     FeatureCacheResolution,
 )
+from soma.cache.geometry import (
+    GEOMETRY_METADATA_KEY,
+    validate_recorded_geometry,
+)
 from soma.cache.io import (
     _CacheValidationProgress,
     _emit_cache_resolve_log,
@@ -62,6 +66,7 @@ def _build_tile_cache_metadata(
     feature_type: str = "bag",
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if feature_type not in _FEATURE_TYPE_TO_RANK:
         raise ValueError(f"Unsupported feature_type '{feature_type}' for tile cache metadata")
@@ -92,6 +97,8 @@ def _build_tile_cache_metadata(
     }
     if preprocessing is not None:
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
+    if extraction_geometry is not None:
+        metadata[GEOMETRY_METADATA_KEY] = extraction_geometry
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -187,6 +194,7 @@ def _build_hierarchical_cache_metadata(
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_hierarchical_cache_key(
         tile_encoder_name=tile_encoder_name,
@@ -213,6 +221,8 @@ def _build_hierarchical_cache_metadata(
         "feature_dim": None,
         "sample_identity_signature_by_id": {},
     }
+    if extraction_geometry is not None:
+        metadata[GEOMETRY_METADATA_KEY] = extraction_geometry
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -236,6 +246,7 @@ def _build_dense_cache_metadata(
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     sampling_signature: dict[str, Any] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Imported lazily so the cache layer has no load-time dependency on soma.dense
     # (soma.dense.store imports soma.cache; a top-level import here would cycle).
@@ -294,6 +305,8 @@ def _build_dense_cache_metadata(
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
     if sampling_signature is not None:
         metadata["sampling"] = sampling_signature
+    if extraction_geometry is not None:
+        metadata[GEOMETRY_METADATA_KEY] = extraction_geometry
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -309,6 +322,11 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     # dtype is fixed by its key. Excluding it lets legacy caches (whose metadata predates
     # the dtype field) still validate without a spurious "missing=[dtype=...]" mismatch.
     comparable.pop("dtype", None)
+    # The geometry record is validated on its own terms (validate_recorded_geometry), with
+    # a hard error naming both sizes, rather than folded into the generic "metadata
+    # mismatch" comparison — and its per-slide read sizes are provenance that must not make
+    # a cache look mismatched at all.
+    comparable.pop(GEOMETRY_METADATA_KEY, None)
     return comparable
 
 
@@ -652,6 +670,11 @@ def _resolve_cache(
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
         )
+        validate_recorded_geometry(
+            cache_dir=cache_dir,
+            existing=existing,
+            expected=metadata.get(GEOMETRY_METADATA_KEY),
+        )
         mismatch_message = _format_cache_metadata_mismatch(
             cache_label="Feature cache",
             cache_dir=cache_dir,
@@ -752,6 +775,7 @@ def resolve_tile_cache(
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
     cache_kind: str = "tile",
+    extraction_geometry: dict[str, Any] | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
@@ -762,6 +786,7 @@ def resolve_tile_cache(
         feature_type=feature_type,
         dtype=dtype,
         backend_provenance=backend_provenance,
+        extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
@@ -950,6 +975,7 @@ def resolve_hierarchical_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    extraction_geometry: dict[str, Any] | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
@@ -959,6 +985,7 @@ def resolve_hierarchical_cache(
         output_variant=output_variant,
         dtype=dtype,
         backend_provenance=backend_provenance,
+        extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
@@ -1005,6 +1032,7 @@ def resolve_dense_cache(
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_dense_cache_metadata(
@@ -1024,6 +1052,7 @@ def resolve_dense_cache(
         dtype=dtype,
         backend_provenance=backend_provenance,
         sampling_signature=sampling_signature,
+        extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,

@@ -36,6 +36,7 @@ from torch.utils.data import Dataset as TorchDataset
 
 from soma.cache import (
     build_dense_cache_key,
+    dense_extraction_geometry,
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
@@ -432,6 +433,11 @@ class DenseTileFeatureExtractor:
                 dtype=dense_dtype,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
+                extraction_geometry=dense_extraction_geometry(
+                    encoder_name=self._encoder.name,
+                    target_size_px=self._target_size,
+                    window_size=self._window_size,
+                ),
             )
             if cache_resolution.complete:
                 logger.info("Reusing cached dense grids from %s", cache_resolution.features_dir)

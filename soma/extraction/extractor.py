@@ -31,6 +31,7 @@ import slide2vec.progress as slide2vec_progress
 
 from soma.cache import (
     FeatureCacheResolution,
+    pooled_extraction_geometry,
     build_tile_artifacts_from_cache_payload,
     preprocessing_backend_provenance,
     record_empty_sample_ids,
@@ -895,6 +896,34 @@ class FeatureExtractor:
             execution=execution,
         )
 
+
+    def _extraction_geometry(
+        self,
+        *,
+        resolved_preprocessing: PreprocessingConfig,
+        loaded_tilings: list[LoadedTiling] | None = None,
+    ) -> dict[str, object] | None:
+        """The geometry record for this pooled run (ADR 0008), or None if undeclarable.
+
+        The per-slide read sizes come from the tilings that were just loaded — the same
+        objects extraction is about to encode — so the record describes what this run
+        actually read, not what a config implies.
+        """
+        read_by_id: dict[str, int] | None = None
+        if loaded_tilings:
+            read_by_id = {}
+            for loaded in loaded_tilings:
+                tiles = getattr(getattr(loaded, "tiling_result", None), "tiles", None)
+                read_size = getattr(tiles, "read_tile_size_px", None)
+                if read_size is not None:
+                    read_by_id[str(loaded.slide.sample_id)] = int(read_size)
+        return pooled_extraction_geometry(
+            encoder_name=self._encoder.name,
+            requested_tile_size_px=resolved_preprocessing.requested_tile_size_px,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            read_tile_size_px_by_id=read_by_id or None,
+        )
+
     def _extract_tile_cached(
         self,
         *,
@@ -924,6 +953,10 @@ class FeatureExtractor:
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            extraction_geometry=self._extraction_geometry(
+                resolved_preprocessing=resolved_preprocessing,
+                loaded_tilings=loaded_tilings,
+            ),
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
@@ -957,6 +990,10 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            extraction_geometry=self._extraction_geometry(
+                resolved_preprocessing=resolved_preprocessing,
+                loaded_tilings=loaded_tilings,
+            ),
             _precomputed_stems=cache_resolution.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
@@ -992,6 +1029,10 @@ class FeatureExtractor:
             backend_provenance=backend_provenance,
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            extraction_geometry=self._extraction_geometry(
+                resolved_preprocessing=resolved_preprocessing,
+                loaded_tilings=loaded_tilings,
+            ),
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
@@ -1025,6 +1066,10 @@ class FeatureExtractor:
             complete_state="populated",
             fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
+            extraction_geometry=self._extraction_geometry(
+                resolved_preprocessing=resolved_preprocessing,
+                loaded_tilings=loaded_tilings,
+            ),
             _precomputed_stems=cache_resolution.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)

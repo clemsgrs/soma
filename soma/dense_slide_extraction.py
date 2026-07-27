@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from slide2vec import DenseOptions, Model, SlideRegions
 
 from soma.cache import (
+    dense_extraction_geometry,
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
@@ -336,6 +337,11 @@ class SlideManifestDenseExtractor:
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
                 payload_stem_by_id=payload_stems,
+                extraction_geometry=dense_extraction_geometry(
+                    encoder_name=self._encoder.name,
+                    target_size_px=self._target_size,
+                    window_size=self._window_size,
+                ),
             )
             if cache_resolution.complete:
                 logger.info("Reusing cached ROI dense grids from %s", cache_resolution.features_dir)
