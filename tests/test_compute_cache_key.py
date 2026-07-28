@@ -30,7 +30,7 @@ from soma.config import (
 
 
 def test_compute_cache_key_tile_virchow():
-    """tile + virchow @ 0.5 µm / 224 px → 4804c91c96ec19c1."""
+    """tile + virchow @ 0.5 µm / 224 px → 2b0452e96803da2b."""
     preprocessing = PreprocessingConfig(
         backend="asap",
         requested_spacing_um=0.5,
@@ -44,12 +44,12 @@ def test_compute_cache_key_tile_virchow():
         preprocessing=preprocessing,
         execution=execution,
     )
-    assert key == "4804c91c96ec19c1"
+    assert key == "2b0452e96803da2b"
 
 
 def test_compute_cache_key_hierarchical_conch():
     """hierarchical + conch @ 0.5 µm / 448 px / region 3584 / multiple 8 →
-    fa22a8df1a8da4bf. Uses precomputed masks (the PANDA-debug dataset ships
+    b8c228c6666d9c68. Uses precomputed masks (the PANDA-debug dataset ships
     them for all samples, so soma promotes tissue_method automatically)."""
     preprocessing = PreprocessingConfig(
         backend="asap",
@@ -66,7 +66,7 @@ def test_compute_cache_key_hierarchical_conch():
         preprocessing=preprocessing,
         execution=execution,
     )
-    assert key == "fa22a8df1a8da4bf"
+    assert key == "b8c228c6666d9c68"
 
 
 def test_compute_cache_key_slide_prism_matches_soma_resolver():
@@ -126,7 +126,7 @@ def test_compute_cache_key_slide_prism_matches_soma_resolver():
 
 def test_compute_cache_key_tile_virchow_has_precomputed_masks():
     """tile + virchow @ 1.0 µm / 224 px with has_precomputed_masks=True →
-    31991065c7ca22fe. The operator typed tissue_method='hsv' but the dataset
+    dc3b9499693b0772. The operator typed tissue_method='hsv' but the dataset
     has masks for every sample, so soma promotes to 'precomputed_mask'
     during extraction; has_precomputed_masks=True mirrors that promotion."""
     preprocessing = PreprocessingConfig(
@@ -143,7 +143,7 @@ def test_compute_cache_key_tile_virchow_has_precomputed_masks():
         execution=execution,
         has_precomputed_masks=True,
     )
-    assert key == "31991065c7ca22fe"
+    assert key == "dc3b9499693b0772"
 
 
 def test_compute_cache_key_rejects_unknown_kind():
@@ -446,7 +446,7 @@ def test_normalization_leaves_feature_cache_key_untouched(method):
             execution=config.encoder,
         )
 
-    assert _key(on) == _key(off) == "4804c91c96ec19c1"
+    assert _key(on) == _key(off) == "2b0452e96803da2b"
 
 
 @pytest.mark.parametrize(
@@ -487,4 +487,4 @@ def test_projection_leaves_feature_cache_key_untouched(projection):
             execution=config.encoder,
         )
 
-    assert _key(on) == _key(off) == "4804c91c96ec19c1"
+    assert _key(on) == _key(off) == "2b0452e96803da2b"

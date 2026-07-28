@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 from hs2p import SlideSpec
+from hs2p.configs import TilingConfig
 from hs2p.preprocessing import validate_tiling_result_provenance
 import slide2vec.progress as slide2vec_progress
 
@@ -29,6 +30,11 @@ from soma.encoders.validation import resolve_encoder_precision
 _SLIDE2VEC_DEFAULT_MASK_LABELS: tuple[str, ...] = tuple(
     slide2vec_api.DEFAULT_MASKS["pixel_mapping"].keys()
 )
+
+# hs2p tiling fields soma routes somewhere other than the pooled payload's like-named field.
+# ``min_coverage`` is the tissue-coverage threshold, which slide2vec keeps inside its
+# ``masks`` block (it has no top-level field) — see ``_build_masks_block``.
+_TILING_FIELDS_ROUTED_ELSEWHERE = frozenset({"min_coverage"})
 
 
 @dataclass(frozen=True)
@@ -107,35 +113,32 @@ def ensure_supported_mask_value(
     )
 
 
-def _build_masks_block(
-    preprocessing: PreprocessingConfig,
-) -> tuple[dict[str, object], bool]:
-    """Translate soma preprocessing into slide2vec's ``masks`` block + ``independent_sampling``.
+def _build_masks_block(preprocessing: PreprocessingConfig) -> dict[str, object]:
+    """Translate soma preprocessing into slide2vec's ``masks`` block.
 
     Two regimes:
 
     * No annotation ``masks`` block (the default tissue path): emit only the tissue threshold
       (``min_coverage.tissue``). slide2vec deep-merges this over its shipped DEFAULT_MASKS, so
       the untouched ``{background:0, tissue:1}`` / ``per_annotation`` default stays byte-for-byte
-      tissue tiling. ``independent_sampling`` keeps slide2vec's default (``True``).
+      tissue tiling.
     * A customized annotation ``masks`` block (the annotation-restricted merged bag, #110):
       forward the FULL annotation vocabulary — ``pixel_mapping``, per-class ``min_coverage``,
       and ``colors`` — plus an EXPLICIT ``output_mode``. The explicit ``output_mode`` is
       load-bearing: slide2vec's DEFAULT_MASKS ``output_mode`` is ``per_annotation`` and is
       deep-merged, so omitting it would silently route a customized bag run to per-annotation
-      tiling (which collides on sample_id in load_tilings). ``independent_sampling`` is derived
-      from ``sampling.strategy`` (``independent`` → ``True``; ``joint`` → ``False``).
+      tiling (which collides on sample_id in load_tilings).
+
+    The companion ``independent_sampling`` toggle is not decided here: it is
+    ``PreprocessingConfig.independent_sampling``, and reaches the payload with the rest of
+    the hs2p tiling vocabulary.
     """
     masks = preprocessing.masks
     if masks is None:
-        tissue_only = {
-            "min_coverage": {"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)}
-        }
-        return tissue_only, True
+        return {"min_coverage": {"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)}}
 
     sampling = preprocessing.sampling
     output_mode = sampling.output_mode if sampling is not None else "merged"
-    strategy = sampling.strategy if sampling is not None else "joint"
     pixel_mapping: dict[str, object] = dict(masks.pixel_mapping)
     min_coverage: dict[str, object] = dict(masks.min_coverage)
     # Always forward a colors map covering every label in the vocabulary. hs2p validates that
@@ -158,44 +161,41 @@ def _build_masks_block(
             pixel_mapping[default_label] = None
             min_coverage[default_label] = None
             colors[default_label] = None
-    return (
-        {
-            "output_mode": output_mode,
-            "pixel_mapping": pixel_mapping,
-            "min_coverage": min_coverage,
-            "colors": colors,
-        },
-        strategy == "independent",
-    )
+    return {
+        "output_mode": output_mode,
+        "pixel_mapping": pixel_mapping,
+        "min_coverage": min_coverage,
+        "colors": colors,
+    }
 
 
 def build_preprocessing_config(
     preprocessing: PreprocessingConfig,
 ) -> Slide2VecPreprocessingConfig:
-    if preprocessing.requested_tile_size_px is None:
-        raise ValueError("requested_tile_size_px must be resolved before extraction")
-    if preprocessing.requested_spacing_um is None:
-        raise ValueError("requested_spacing_um must be resolved before extraction")
     if preprocessing.tissue_method is None:
         raise ValueError(
             "tissue_method is required unless the dataset provides precomputed masks"
         )
-    masks_block, independent_sampling = _build_masks_block(preprocessing)
+    masks_block = _build_masks_block(preprocessing)
+    # ADR 0009: the geometry block is hs2p's vocabulary, so it is forwarded field by field
+    # off the composed TilingConfig rather than restated here. A knob hs2p adds and slide2vec
+    # accepts (``mask_backend`` was the one due) then reaches the pooled path without a soma
+    # edit, and reaches it with the same value the cache key and the dense seam already use.
+    tiling = preprocessing.tiling_config()
     payload: dict[str, object] = {
-        "backend": preprocessing.backend,
-        "requested_spacing_um": float(preprocessing.requested_spacing_um),
-        "requested_tile_size_px": int(preprocessing.requested_tile_size_px),
-        "tolerance": float(preprocessing.tolerance),
-        "overlap": float(preprocessing.overlap),
+        name: getattr(tiling, name)
+        for name in TilingConfig.__dataclass_fields__
+        if name not in _TILING_FIELDS_ROUTED_ELSEWHERE
+    }
+    payload |= {
         # soma expresses the tissue coverage threshold as ``preprocessing.min_coverage["tissue"]``
-        # (a masks-shaped map mirroring hs2p's ``TilingConfig.min_coverage``). slide2vec has no
-        # top-level ``tissue_threshold`` field — the threshold lives in the ``masks`` block as
-        # ``min_coverage.tissue`` (the single source of truth). slide2vec deep-merges a partial
-        # ``masks`` over its shipped DEFAULT_MASKS, so we only state the override. When a
-        # customized annotation masks block is active (#110), ``_build_masks_block`` instead
-        # forwards the full annotation vocabulary + an explicit output_mode.
+        # (hs2p's ``TilingConfig.min_coverage``). slide2vec has no top-level ``tissue_threshold``
+        # field — the threshold lives in the ``masks`` block as ``min_coverage.tissue`` (the
+        # single source of truth). slide2vec deep-merges a partial ``masks`` over its shipped
+        # DEFAULT_MASKS, so we only state the override. When a customized annotation masks block
+        # is active (#110), ``_build_masks_block`` instead forwards the full annotation
+        # vocabulary + an explicit output_mode.
         "masks": masks_block,
-        "independent_sampling": independent_sampling,
         "on_the_fly": True,
         "adaptive_batching": False,
         "use_supertiles": True,

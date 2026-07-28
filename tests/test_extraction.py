@@ -856,7 +856,11 @@ def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
 def test_build_preprocessing_config_accounts_for_slide2vec_surface():
     slide2vec_fields = set(Slide2VecPreprocessingConfig.__dataclass_fields__)
     translated_fields = {
+        # hs2p's tiling vocabulary is forwarded field by field off the composed TilingConfig
+        # rather than restated (ADR 0009) — which is how ``mask_backend`` reached the pooled
+        # payload without a soma edit.
         "backend",
+        "mask_backend",
         "requested_spacing_um",
         "requested_tile_size_px",
         "requested_region_size_px",

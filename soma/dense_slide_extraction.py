@@ -30,6 +30,7 @@ from __future__ import annotations
 import csv
 import logging
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -57,30 +58,19 @@ _STRATEGY_MAP = {"joint": "joint_sampling", "independent": "independent_sampling
 
 
 def _build_tiling_config(preprocessing: PreprocessingConfig, sampling: SamplingConfig):
-    """hs2p ``TilingConfig`` from soma preprocessing (spacing/tile size/overlap/backend)."""
-    from hs2p.configs import TilingConfig
+    """The composed hs2p ``TilingConfig`` for slide-manifest ROI sampling (ADR 0009).
 
-    if preprocessing.requested_tile_size_px is None:
-        raise ValueError(
-            "slide-manifest segmentation requires preprocessing.requested_tile_size_px "
-            "(the supervision tile size)."
-        )
-    if preprocessing.requested_spacing_um is None:
-        raise ValueError(
-            "slide-manifest segmentation requires preprocessing.requested_spacing_um — set it "
-            "or use an encoder advertising a single supported spacing."
-        )
-    # soma expresses the tissue threshold as ``preprocessing.min_coverage["tissue"]``, the same
-    # masks-shaped map hs2p's ``TilingConfig.min_coverage`` expects. The per-class sampling map
-    # still flows separately through ``_resolve_sampling_spec_from_masks(masks, …)``; this
-    # tiling-level entry only feeds the result's binary ``min_tissue_fraction`` provenance.
-    return TilingConfig(
-        requested_spacing_um=float(preprocessing.requested_spacing_um),
-        requested_tile_size_px=int(preprocessing.requested_tile_size_px),
-        tolerance=float(preprocessing.tolerance),
-        overlap=float(preprocessing.overlap),
-        min_coverage={"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)},
-        backend=preprocessing.backend,
+    The geometry comes from the one composition soma has, so this seam cannot drift from the
+    pooled one or from the cache key. Only the sampling strategy is restated, because the
+    caller resolves it (a manifest run may sample under a strategy the config leaves unset).
+
+    soma's ``preprocessing.min_coverage`` is the tissue threshold in hs2p's own masks-shaped
+    form; the per-class sampling map still flows separately through
+    ``_resolve_sampling_spec_from_masks(masks, …)``, and this tiling-level entry only feeds
+    the result's binary ``min_tissue_fraction`` provenance.
+    """
+    return replace(
+        preprocessing.tiling_config(),
         independent_sampling=(sampling.strategy == "independent"),
     )
 

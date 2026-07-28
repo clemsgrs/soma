@@ -116,20 +116,22 @@ def annotation_sampling_signature(config: PreprocessingConfig) -> dict[str, Any]
 
 
 def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
+    """Canonical preprocessing signature: hs2p's tiling vocabulary plus soma's own knobs.
+
+    The tiling half is not restated here — it comes from ``config.tiling_values()``, the
+    same mapping the composed hs2p ``TilingConfig`` is built from (ADR 0009), so the key
+    cannot fall behind the geometry it is meant to key. What remains below is genuinely
+    soma's: tissue segmentation, region (hierarchical) geometry and the read-size overrides.
+    """
     signature: dict[str, Any] = {
-        "backend": config.backend,
-        "requested_tile_size_px": config.requested_tile_size_px,
-        "requested_spacing_um": config.requested_spacing_um,
+        **config.tiling_values(),
         "requested_region_size_px": config.requested_region_size_px,
         "region_tile_multiple": config.region_tile_multiple,
         "read_tile_size_px": config.read_tile_size_px,
         "read_region_size_px": config.read_region_size_px,
         "tissue_method": config.tissue_method,
         "tissue_mask_tissue_value": config.tissue_mask_tissue_value,
-        "min_coverage": {k: config.min_coverage[k] for k in sorted(config.min_coverage)},
-        "overlap": config.overlap,
         "seg_downsample": config.seg_downsample,
-        "tolerance": config.tolerance,
         "ref_tile_size_px": config.ref_tile_size_px,
         "a_t": config.a_t,
     }
