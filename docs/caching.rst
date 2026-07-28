@@ -46,8 +46,9 @@ extraction.
   cache resolution and can be expensive for large WSI cohorts.
 - By default, feature cache validation checks metadata identity and payload
   existence. Dense grids also validate their per-sample sidecar metadata
-  (feature dimension, channel axis, grid shape, target/encoded geometry, and
-  dense input mode) before reuse, without loading the tensor payload. Set
+  (feature dimension, grid shape, target/encoded geometry, and — for
+  ``cls_attention`` grids — the attention selection) before reuse, without
+  loading the tensor payload. Set
   ``cache.validate_payloads: true`` to load cached tensors and verify rank,
   feature dimension, and dense grid shape before accepting a cache hit. This
   catches corrupt or wrong-shaped payloads, but it adds I/O proportional to the
@@ -65,6 +66,30 @@ extraction.
   samples while still recomputing non-overlapping samples.
 - Cache hits do not replace the run directory, which still records one
   immutable experiment result.
+
+Extraction geometry
+-------------------
+
+A feature cache also records the geometry it was extracted under
+(``docs/adr/0008-cache-records-geometry-and-does-not-stamp-extraction-semantics.md``):
+the tile size that was **requested**, the size actually **read** off each slide, and the
+**effective encoder input** — the geometry of the tensor handed to the encoder.
+
+Only the last is validated on reuse, because it is the one soma can derive from config
+plus slide2vec's registry without loading a model, and the one whose change means the
+cached features are registered to a different extent. A 224 px request reaches a
+variable-input encoder at 224 px under its shipped transform and at 512 px under a
+normalization-only one; reusing features across that shift would train on grids that do
+not mean what the run thinks they mean. That is a **hard error**, not ordinary
+incompleteness: soma raises ``CacheGeometryMismatch`` naming both sizes rather than
+silently recomputing a feature set that may be hundreds of gigabytes. Delete the cache
+directory to re-extract, or point the run at a different cache root.
+
+What this deliberately does **not** catch is a change in *how* pixels are produced at
+unchanged sizes — a different interpolation kernel, a resize moving stage, a corrected
+photometric recipe. Those are not sizes, so no geometry record can see them; delete
+caches by hand when upgrading slide2vec across such a change. Caches written before the
+record exists have nothing to disagree with and stay reusable.
 
 See also
 --------
