@@ -39,7 +39,11 @@ __all__ = [
 ]
 
 DENSE_SIDECAR_SUFFIX = ".meta.json"
-DENSE_ARTIFACT_TYPE = "dense_grid"
+# slide2vec's name for a dense grid over a pre-cropped image. soma's remaining local
+# writer (the pre-cropped dense path, until it moves onto Model.embed_images_dense) emits
+# upstream's artifact_type so every dense sidecar the cache validator sees speaks one
+# vocabulary, whoever wrote it.
+DENSE_ARTIFACT_TYPE = "dense_image_embeddings"
 DENSE_PAYLOAD_SUBDIR = "dense_embeddings"
 
 # Networked/pooled mounts (zfs/NFS/CIFS) intermittently raise OSError /
@@ -210,17 +214,32 @@ def write_dense_grid(
 
 
 class DenseFeatureStore:
-    """Index and load dense ``(d, h, w)`` grids from a directory of ``.pt`` files.
+    """Index and load dense ``(d, h, w)`` grids written by slide2vec.
 
-    Every ``.pt`` must have a matching ``<sample_id>.meta.json`` sidecar; shape is
-    read from the sidecar, never inferred from tensor rank.
+    Every ``.pt`` must have a matching ``.meta.json`` sidecar; shape is read from the
+    sidecar, never inferred from tensor rank.
+
+    Two layouts are read, both slide2vec's own. Grids over pre-cropped images are flat —
+    ``<sample_id>.pt`` — and are discovered by globbing. ROI grids over a slide are
+    namespaced per slide — ``<slide_id>/<x>_<y>.pt`` — and cannot be discovered that way:
+    the ROI's identity is the manifest's, and recovering ``sample_id`` from the path would
+    mean parsing ``<slide>__x<X>_y<Y>`` back apart. So the caller passes ``payload_stems``,
+    the ``sample_id → relative stem`` mapping it already holds (ADR 0007).
     """
 
-    def __init__(self, feature_dir: Path | str) -> None:
+    def __init__(
+        self,
+        feature_dir: Path | str,
+        *,
+        payload_stems: dict[str, str] | None = None,
+    ) -> None:
         # Accept a cache dir and descend into dense_embeddings/, or a plain dir of
         # .pt files as-is. Dense-specific resolver: never falls through to a pooled
         # sibling dir (e.g. tile_embeddings) if both happen to exist.
         self._feature_dir = resolve_dense_payload_dir(feature_dir)
+        self._payload_stems = (
+            None if payload_stems is None else {str(k): str(v) for k, v in payload_stems.items()}
+        )
         self._index: dict[str, Path] = {}
         self._meta_cache: dict[str, dict] = {}
         self._feature_dim: int | None = None
@@ -228,11 +247,18 @@ class DenseFeatureStore:
         self._build_index()
 
     def _build_index(self) -> None:
+        if self._payload_stems is not None:
+            for sample_id, stem in self._payload_stems.items():
+                path = self._feature_dir / f"{stem}.pt"
+                if path.is_file():
+                    self._index[sample_id] = path
+            return
         for path in sorted(self._feature_dir.glob("*.pt")):
             self._index[path.stem] = path
 
     def _sidecar_path(self, sample_id: str) -> Path:
-        return self._feature_dir / f"{sample_id}{DENSE_SIDECAR_SUFFIX}"
+        stem = sample_id if self._payload_stems is None else self._payload_stems[sample_id]
+        return self._feature_dir / f"{stem}{DENSE_SIDECAR_SUFFIX}"
 
     def metadata(self, sample_id: str) -> dict:
         """Return the sidecar metadata for ``sample_id`` (cached)."""

@@ -23,6 +23,10 @@ from soma.cache._types import (
     CacheValidationResult,
     FeatureCacheResolution,
 )
+from soma.cache.geometry import (
+    GEOMETRY_METADATA_KEY,
+    validate_recorded_geometry,
+)
 from soma.cache.io import (
     _CacheValidationProgress,
     _emit_cache_resolve_log,
@@ -62,6 +66,7 @@ def _build_tile_cache_metadata(
     feature_type: str = "bag",
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if feature_type not in _FEATURE_TYPE_TO_RANK:
         raise ValueError(f"Unsupported feature_type '{feature_type}' for tile cache metadata")
@@ -92,6 +97,8 @@ def _build_tile_cache_metadata(
     }
     if preprocessing is not None:
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
+    if extraction_geometry is not None:
+        metadata[GEOMETRY_METADATA_KEY] = extraction_geometry
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -187,6 +194,7 @@ def _build_hierarchical_cache_metadata(
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     key = build_hierarchical_cache_key(
         tile_encoder_name=tile_encoder_name,
@@ -213,6 +221,8 @@ def _build_hierarchical_cache_metadata(
         "feature_dim": None,
         "sample_identity_signature_by_id": {},
     }
+    if extraction_geometry is not None:
+        metadata[GEOMETRY_METADATA_KEY] = extraction_geometry
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -236,6 +246,7 @@ def _build_dense_cache_metadata(
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     sampling_signature: dict[str, Any] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # Imported lazily so the cache layer has no load-time dependency on soma.dense
     # (soma.dense.store imports soma.cache; a top-level import here would cycle).
@@ -294,6 +305,8 @@ def _build_dense_cache_metadata(
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
     if sampling_signature is not None:
         metadata["sampling"] = sampling_signature
+    if extraction_geometry is not None:
+        metadata[GEOMETRY_METADATA_KEY] = extraction_geometry
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
@@ -309,6 +322,11 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     # dtype is fixed by its key. Excluding it lets legacy caches (whose metadata predates
     # the dtype field) still validate without a spurious "missing=[dtype=...]" mismatch.
     comparable.pop("dtype", None)
+    # The geometry record is validated on its own terms (validate_recorded_geometry), with
+    # a hard error naming both sizes, rather than folded into the generic "metadata
+    # mismatch" comparison — and its per-slide read sizes are provenance that must not make
+    # a cache look mismatched at all.
+    comparable.pop(GEOMETRY_METADATA_KEY, None)
     return comparable
 
 
@@ -356,6 +374,12 @@ def _backfill_feature_cache_identity_metadata(
     return metadata
 
 
+# slide2vec's dense geometry sidecars: ROI grids over a slide, and grids over a
+# pre-cropped image. soma reads these natively rather than rewriting them into a schema
+# of its own (ADR 0007), so the validator recognises upstream's ``artifact_type`` values.
+_DENSE_SIDECAR_ARTIFACT_TYPES = frozenset({"dense_embeddings", "dense_image_embeddings"})
+
+
 def _normalized_dense_field(value: Any) -> Any:
     if value is None:
         return None
@@ -383,26 +407,35 @@ def _validate_dense_sidecar_metadata(
         return f"dense sidecar for {cache_id} could not be read"
 
     artifact_type = sidecar.get("artifact_type", sidecar.get("feature_type"))
-    if artifact_type != "dense_grid":
+    if artifact_type not in _DENSE_SIDECAR_ARTIFACT_TYPES:
         return (
             f"dense sidecar artifact_type mismatch for {cache_id}: "
-            f"expected 'dense_grid', found {artifact_type!r}"
+            f"expected one of {sorted(_DENSE_SIDECAR_ARTIFACT_TYPES)}, found {artifact_type!r}"
         )
 
+    # The sidecar is slide2vec's, so the validated fields are the ones slide2vec writes.
+    # ``channel_dim`` and ``dense_input_mode`` are deliberately absent from it and are not
+    # checked here: grids are channel-first by contract, and the input mode is a restatement
+    # of ``window_size is None`` (ADR 0007) — validating a derived field would only be able
+    # to catch soma disagreeing with itself.
     expected_fields = {
-        "channel_dim": metadata.get("channel_dim"),
         "grid_shape": metadata.get("grid_shape"),
         "target_size": metadata.get("target_size"),
         "encoded_size": metadata.get("encoded_size"),
         "patch_size": metadata.get("patch_size"),
         "pad_mode": metadata.get("pad_mode"),
-        "dense_input_mode": metadata.get("dense_input_mode"),
         "window_size": metadata.get("window_size"),
         "overlap": metadata.get("overlap"),
         "feature_kind": metadata.get("feature_kind"),
-        "attention_blocks": metadata.get("attention_blocks"),
-        "attention_include_registers": metadata.get("attention_include_registers"),
     }
+    # The attention fields describe the channel layout of a ``cls_attention`` grid and mean
+    # nothing for patch tokens. soma's cache metadata records that by storing ``None``;
+    # slide2vec's sidecar records the same by storing the inert defaults it was handed. The
+    # two spellings of "not applicable" are not a mismatch, so compare them only when the
+    # run is actually attention-based.
+    if str(metadata.get("feature_kind")) != "patch_features":
+        expected_fields["attention_blocks"] = metadata.get("attention_blocks")
+        expected_fields["attention_include_registers"] = metadata.get("attention_include_registers")
     if metadata.get("feature_dim") is not None:
         expected_fields["feature_dim"] = metadata.get("feature_dim")
     for field, expected in expected_fields.items():
@@ -423,6 +456,7 @@ def _validate_feature_cache_contents(
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
     validate_payloads: bool = False,
+    payload_stem_by_id: dict[str, str] | None = None,
 ) -> tuple[CacheValidationResult, int, int]:
     feature_type = str(metadata.get("feature_type", ""))
     if feature_type not in _FEATURE_TYPE_TO_RANK:
@@ -460,8 +494,9 @@ def _validate_feature_cache_contents(
             cache_id = str(cache_id)
             checked += 1
             progress.update(checked)
-            path = features_dir / f"{cache_id}.pt"
-            feature_present = f"{cache_id}.pt" in existing_filenames
+            payload_stem = str(cache_id) if payload_stem_by_id is None else str(payload_stem_by_id[cache_id])
+            path = features_dir / f"{payload_stem}.pt"
+            feature_present = f"{payload_stem}.pt" in existing_filenames
             expected_signature = str(cache_stem_by_id[cache_id])
             cached_signature = cached_signature_by_id.get(cache_id)
             if cached_signature is None:
@@ -490,11 +525,11 @@ def _validate_feature_cache_contents(
                 # Existence is decided cheaply from the listing and always enforced:
                 # a half-written sample (a ``.pt`` whose sidecar never landed) must
                 # be treated as missing, never silently skipped into a load failure.
-                if f"{cache_id}{dense_sidecar_suffix}" not in existing_filenames:
+                if f"{payload_stem}{dense_sidecar_suffix}" not in existing_filenames:
                     if reason is None:
                         reason = f"missing dense sidecar for {cache_id}"
                     continue
-                sidecar_path = features_dir / f"{cache_id}{dense_sidecar_suffix}"
+                sidecar_path = features_dir / f"{payload_stem}{dense_sidecar_suffix}"
             if validate_payloads:
                 # Sidecar *content* validation (the JSON read + shape cross-check)
                 # is the one cost a listing cannot remove, so it joins the gated
@@ -610,6 +645,7 @@ def _resolve_cache(
     initial_reason: str | None = None,
     complete_state: str = "hit",
     validate_payloads: bool = False,
+    payload_stem_by_id: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
     features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
@@ -634,6 +670,11 @@ def _resolve_cache(
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
         )
+        validate_recorded_geometry(
+            cache_dir=cache_dir,
+            existing=existing,
+            expected=metadata.get(GEOMETRY_METADATA_KEY),
+        )
         mismatch_message = _format_cache_metadata_mismatch(
             cache_label="Feature cache",
             cache_dir=cache_dir,
@@ -648,6 +689,7 @@ def _resolve_cache(
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
             validate_payloads=validate_payloads,
+            payload_stem_by_id=payload_stem_by_id,
         )
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
@@ -689,6 +731,7 @@ def _resolve_cache(
             cache_ids=tuple(str(cache_id) for cache_id in cache_ids),
             cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
             validation=validation,
+            payload_stem_by_id=payload_stem_by_id,
         )
 
     if manifest_rows is not None:
@@ -713,6 +756,7 @@ def _resolve_cache(
         cache_ids=tuple(str(cache_id) for cache_id in cache_ids),
         cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
         validation=CacheValidationResult(complete=False, reason=initial_reason),
+        payload_stem_by_id=payload_stem_by_id,
     )
 
 
@@ -730,6 +774,8 @@ def resolve_tile_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    cache_kind: str = "tile",
+    extraction_geometry: dict[str, Any] | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
@@ -740,16 +786,17 @@ def resolve_tile_cache(
         feature_type=feature_type,
         dtype=dtype,
         backend_provenance=backend_provenance,
+        extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
-        cache_kind="tile",
+        cache_kind=cache_kind,
         static_identity_payload={"cache_key": metadata["cache_key"]},
         fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
-        cache_kind="tile",
+        cache_kind=cache_kind,
         key=metadata["cache_key"],
         dataset=dataset,
         metadata=metadata,
@@ -759,6 +806,43 @@ def resolve_tile_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+    )
+
+
+def resolve_image_cache(
+    *,
+    cache_root: Path,
+    dataset: Dataset,
+    tile_encoder_name: str,
+    execution: EncoderConfig,
+    output_variant: str | None = None,
+    dtype: str = "fp32",
+    complete_state: str = "hit",
+    fingerprint_files: bool = False,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
+    """Resolve the cache for given-geometry images (pre-cropped patch datasets).
+
+    One 1-D embedding per image, so the payload rank matches ``feature_type="tile"``; the
+    ``image`` cache *kind* is what routes ``features_dir`` at ``image_embeddings/``, the
+    directory :meth:`slide2vec.Model.embed_images` writes into. There is no
+    ``preprocessing`` argument by construction: the Given regime has no tiling and no
+    requested geometry to key on — the encoder's shipped transform is the contract, and it
+    is already pinned by the encoder name and output variant that are in the key.
+    """
+    return resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name=tile_encoder_name,
+        preprocessing=None,
+        execution=execution,
+        output_variant=output_variant,
+        feature_type="tile",
+        dtype=dtype,
+        complete_state=complete_state,
+        fingerprint_files=fingerprint_files,
+        validate_payloads=validate_payloads,
+        cache_kind="image",
     )
 
 
@@ -891,6 +975,7 @@ def resolve_hierarchical_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    extraction_geometry: dict[str, Any] | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
@@ -900,6 +985,7 @@ def resolve_hierarchical_cache(
         output_variant=output_variant,
         dtype=dtype,
         backend_provenance=backend_provenance,
+        extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
@@ -945,6 +1031,8 @@ def resolve_dense_cache(
     complete_state: str = "hit",
     fingerprint_files: bool = False,
     validate_payloads: bool = False,
+    payload_stem_by_id: dict[str, str] | None = None,
+    extraction_geometry: dict[str, Any] | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_dense_cache_metadata(
@@ -964,6 +1052,7 @@ def resolve_dense_cache(
         dtype=dtype,
         backend_provenance=backend_provenance,
         sampling_signature=sampling_signature,
+        extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
         dataset=dataset,
@@ -983,6 +1072,7 @@ def resolve_dense_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+        payload_stem_by_id=payload_stem_by_id,
     )
 
 

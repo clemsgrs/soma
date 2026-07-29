@@ -1,113 +1,63 @@
-"""TileFeatureExtractor — encodes individual tile images into 1D feature vectors."""
+"""TileFeatureExtractor — encodes individual tile images into 1D feature vectors.
+
+The Given-geometry entry point (ADR 0006): the dataset rows are *pre-cropped images*
+that soma never asked for at any particular size — a public patch benchmark (BACH, CRC,
+Gleason, BreakHis, MHIST, PCam), an exported ROI set — so the encoder's shipped transform
+is the contract and no geometry is declared.
+
+soma does not encode anything here. It resolves the cache (key, completeness, identity
+signatures), hands slide2vec the images that need encoding, and points
+``execution.output_dir`` at the resolved cache directory so slide2vec writes its payloads
+straight into ``<cache_dir>/image_embeddings/`` — which *is* soma's ``features_dir``, not a
+schema soma translates into (ADR 0007). Persistence, batching, multi-GPU sharding, resume
+and progress all live upstream in :meth:`slide2vec.Model.embed_images`.
+"""
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from pathlib import Path
 
-import slide2vec.progress as slide2vec_progress
-import torch
-from PIL import Image
-from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset as TorchDataset
-
-from slide2vec.inference import load_model
+from slide2vec import ImageSpec, Model
 
 from soma.cache import (
     FeatureCacheResolution,
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
+    resolve_image_cache,
     resolve_output_dtype,
-    resolve_tile_cache,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.encoders.validation import resolve_encoder_precision
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import build_execution_options
-from soma.tile_extraction_spawn import spawn_tile_feature_workers
-
-
-# On-disk feature storage dtype → torch cast dtype for the per-tile save chokepoint.
-_FEATURE_TORCH_DTYPE = {"fp16": torch.float16, "fp32": torch.float32}
-
 
 logger = logging.getLogger(__name__)
 
 
-class _TileImageDataset(TorchDataset):
-    """Internal dataset that loads tile images from disk and applies a transform."""
+def _drop_stale_payloads(features_dir: Path, sample_ids: list[str]) -> None:
+    """Remove on-disk artifacts for samples soma has decided must be re-encoded.
 
-    def __init__(self, records: list[SampleRecord], transform) -> None:
-        self._records = records
-        self._transform = transform
-
-    def __len__(self) -> int:
-        return len(self._records)
-
-    def __getitem__(self, idx: int) -> tuple[object, str]:
-        record = self._records[idx]
-        with Image.open(record.image_path) as image:
-            return self._transform(image.convert("RGB")), record.sample_id
-
-
-@contextlib.contextmanager
-def _make_tile_extraction_reporter_ctx(feature_dir: Path):
-    active = slide2vec_progress.get_progress_reporter()
-    if not isinstance(active, slide2vec_progress.NullProgressReporter):
-        yield
-        return
-
-    reporter = slide2vec_progress.create_api_progress_reporter(output_dir=feature_dir)
-    if isinstance(reporter, slide2vec_progress.NullProgressReporter):
-        yield
-        return
-
-    with slide2vec_progress.activate_progress_reporter(reporter):
-        yield
-
-
-def _install_tile_embedding_summary_patch() -> None:
-    """Ensure slide2vec embedding summaries can render tile-oriented labels."""
-    if getattr(slide2vec_progress, "_soma_tile_embedding_summary_patch_installed", False):
-        return
-
-    base_summary_rows = getattr(slide2vec_progress, "_embedding_summary_rows", None)
-    if not callable(base_summary_rows):
-        return
-
-    def _patched_embedding_summary_rows(payload: dict[str, object]) -> list[tuple[str, str]]:
-        summary_subject = payload.get("summary_subject")
-        if summary_subject is not None:
-            subject = str(summary_subject).strip() or "Samples"
-            if subject.lower() == "tiles":
-                total = int(payload.get("tile_count", payload.get("slide_count", 0)))
-                completed = int(payload.get("tiles_completed", payload.get("slides_completed", 0)))
-            else:
-                total = int(payload.get("slide_count", 0))
-                completed = int(payload.get("slides_completed", 0))
-            failed = max(0, total - completed)
-            return [
-                (subject, str(total)),
-                ("Completed", str(completed)),
-                ("Failed", str(failed)),
-            ]
-
-        return base_summary_rows(payload)
-
-    setattr(slide2vec_progress, "_embedding_summary_rows", _patched_embedding_summary_rows)
-    setattr(slide2vec_progress, "_soma_tile_embedding_summary_patch_installed", True)
+    slide2vec resumes on **sidecar existence**, which is the right rule for an interrupted
+    run but not for a sample whose *identity* changed underneath a stable ``sample_id``
+    (a re-pointed ``image_path``, say). soma's cache resolution is the authority on which
+    samples are stale; clearing their payloads first is how that decision reaches a
+    resume check that cannot see identity signatures. Without it slide2vec would skip the
+    sample and soma would then stamp the new signature onto the old features.
+    """
+    for sample_id in sample_ids:
+        for path in features_dir.glob(f"{sample_id}.*"):
+            path.unlink(missing_ok=True)
 
 
 class TileFeatureExtractor:
     """Encode individual tile images into 1D feature vectors using a tile encoder.
 
-    Loads each sample's tile image, applies the encoder's transform, runs the
-    tile encoder, and saves a 1D ``.pt`` feature vector per sample. This is the
-    entry point for ``dataset_type="tile"`` pipelines.
+    This is the entry point for ``dataset_type="tile"`` pipelines: each sample's
+    ``image_path`` points at one pre-cropped image, and the result is one 1-D ``.pt``
+    feature vector per sample.
 
     Args:
         dataset: Dataset whose ``image_path`` fields point to tile images.
@@ -133,36 +83,31 @@ class TileFeatureExtractor:
         """Encode all tile images and return a FeatureStore over the results.
 
         Args:
-            feature_dir: Directory to write ``.pt`` feature files into.
-                Ignored when a complete cache hit is found.
+            feature_dir: Directory to write embeddings into (under an
+                ``image_embeddings/`` subdirectory). Ignored when a complete cache hit
+                is found.
 
         Returns:
-            FeatureStore pointing at the directory containing 1D ``.pt`` files.
+            FeatureStore over the 1-D feature vectors.
         """
         feature_dir = Path(feature_dir).resolve()
 
         # On-disk feature dtype (#164): one resolved value folded into the cache key and
-        # used to cast at the per-tile save chokepoint, so storage matches the key.
+        # handed to slide2vec as output_dtype, so storage matches the key.
         dtype = resolve_output_dtype(
             self._cache.dtype,
             resolve_encoder_precision(self._encoder, encoder_name=self._encoder.name),
         )
-        feature_torch_dtype = _FEATURE_TORCH_DTYPE[dtype]
 
         cache_resolution: FeatureCacheResolution | None = None
         if self._cache.enabled:
-            cache_root = resolve_cache_root(
-                self._cache,
-                feature_dir=feature_dir,
-            )
-            cache_resolution = resolve_tile_cache(
+            cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
+            cache_resolution = resolve_image_cache(
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
-                preprocessing=None,
                 execution=self._encoder,
                 output_variant=self._encoder.output_variant,
-                feature_type="tile",
                 dtype=dtype,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
@@ -174,222 +119,55 @@ class TileFeatureExtractor:
                 )
                 return FeatureStore(cache_resolution.features_dir)
 
-        out_dir = cache_resolution.features_dir if cache_resolution is not None else feature_dir
-        out_dir.mkdir(parents=True, exist_ok=True)
+        # slide2vec appends ``image_embeddings/`` to output_dir, and that subdirectory is
+        # exactly the cache's features_dir — so the payload root is the cache dir itself.
+        out_root = cache_resolution.cache_dir if cache_resolution is not None else feature_dir
+        out_root.mkdir(parents=True, exist_ok=True)
 
         records = list(self._dataset.samples.values())
-        total_samples = len(records)
+        pending: list[SampleRecord] = records
+        if cache_resolution is not None:
+            missing = cache_resolution.missing_sample_ids()
+            _drop_stale_payloads(cache_resolution.features_dir, missing)
+            wanted = set(missing)
+            pending = [record for record in records if record.sample_id in wanted]
 
-        feature_dim: int | None = None
-
-        _install_tile_embedding_summary_patch()
-        with _make_tile_extraction_reporter_ctx(feature_dir):
+        if pending:
+            logger.info(
+                "Encoding %d tile images with '%s' (batch_size=%d)...",
+                len(pending),
+                self._encoder.name,
+                self._encoder.batch_size,
+            )
             execution = build_execution_options(
                 self._encoder,
                 execution=self._execution,
                 encoder_name=self._encoder.name,
-                output_dir=out_dir,
+                output_dir=out_root,
                 num_gpus=self._execution.num_gpus,
                 save_tile_embeddings=True,
+                output_dtype=dtype,
             )
-            resolved_num_workers = execution.resolved_num_workers_per_gpu()
-            tile_num_workers = resolved_num_workers
-            if execution.num_gpus > 1 and self._execution.num_workers_per_gpu is None:
-                tile_num_workers = 0
-            worker_source = (
-                "explicit ExecutionConfig.num_workers_per_gpu"
-                if self._execution.num_workers_per_gpu is not None
-                else (
-                    "tile multi-gpu conservative default"
-                    if execution.num_gpus > 1
-                    else "slide2vec cpu_worker_limit()"
-                )
-            )
-            slide2vec_progress.emit_progress_log(
-                f"Tile DataLoader workers: {tile_num_workers} ({worker_source})"
-            )
-            embedding_label = "Embedding tiles"
-
-            if execution.num_gpus > 1 and len(records) > 1:
-                logger.info(
-                    "Encoding %d tile images with '%s' across %d GPUs (precision=%s, batch_size=%d)...",
-                    len(records),
-                    self._encoder.name,
-                    execution.num_gpus,
-                    execution.precision,
-                    self._encoder.batch_size,
-                )
-                num_workers = min(execution.num_gpus, len(records))
-                for _ in range(num_workers):
-                    slide2vec_progress.emit_progress("model.loading", model_name=self._encoder.name)
-                records_by_rank: list[list[SampleRecord]] = [[] for _ in range(num_workers)]
-                for idx, record in enumerate(records):
-                    records_by_rank[idx % num_workers].append(record)
-
-                processed_samples = 0
-                processed_by_rank = [0 for _ in range(num_workers)]
-                ready_ranks: set[int] = set()
-
-                def _on_model_ready(rank: int, _device: str) -> None:
-                    if rank < 0 or rank >= len(records_by_rank):
-                        return
-                    if rank in ready_ranks:
-                        return
-                    ready_ranks.add(rank)
-                    slide2vec_progress.emit_progress(
-                        "embedding.slide.started",
-                        sample_id=embedding_label,
-                        progress_label=f"GPU {rank}",
-                        total_tiles=len(records_by_rank[rank]),
-                    )
-                    slide2vec_progress.emit_progress(
-                        "model.ready",
-                        model_name=self._encoder.name,
-                        device=f"GPU {rank}",
-                    )
-
-                def _on_progress(rank: int, count: int) -> None:
-                    nonlocal processed_samples
-                    if rank < 0 or rank >= len(processed_by_rank):
-                        return
-                    processed_samples += int(count)
-                    processed_by_rank[rank] += int(count)
-                    slide2vec_progress.emit_progress(
-                        "embedding.tile.progress",
-                        sample_id=embedding_label,
-                        progress_label=f"GPU {rank}",
-                        processed=processed_by_rank[rank],
-                        total=len(records_by_rank[rank]),
-                        unit="tile",
-                    )
-
-                written_ids, feature_dim = spawn_tile_feature_workers(
-                    num_workers=num_workers,
-                    encoder=self._encoder,
-                    output_dir=out_dir,
-                    records_by_rank=records_by_rank,
-                    batch_size=self._encoder.batch_size,
-                    num_workers_per_gpu=tile_num_workers,
-                    prefetch_factor=execution.prefetch_factor,
-                    precision=execution.precision,
-                    feature_dtype=dtype,
-                    on_model_ready=_on_model_ready,
-                    on_progress=_on_progress,
-                )
-                if set(written_ids) != {record.sample_id for record in records}:
-                    missing = sorted({record.sample_id for record in records} - set(written_ids))
-                    raise RuntimeError(
-                        "Multi-GPU tile extraction did not produce all expected feature files: "
-                        f"missing={missing}"
-                    )
-                for rank, shard_records in enumerate(records_by_rank):
-                    slide2vec_progress.emit_progress(
-                        "embedding.slide.finished",
-                        sample_id=embedding_label,
-                        progress_label=f"GPU {rank}",
-                        num_tiles=len(shard_records),
-                    )
-                slide2vec_progress.emit_progress(
-                    "embedding.finished",
-                    slide_count=1,
-                    slides_completed=1,
-                    summary_subject="Tiles",
-                    tile_count=processed_samples,
-                    tiles_completed=processed_samples,
-                    tile_artifacts=processed_samples,
-                    slide_artifacts=0,
-                )
-                logger.info("Saved tile features to %s (dim=%s)", out_dir, feature_dim)
-                if cache_resolution is not None and feature_dim is not None:
-                    record_feature_dim(cache_resolution, feature_dim)
-                    record_sample_identity_signatures(
-                        cache_resolution,
-                        [record.sample_id for record in records],
-                    )
-                return FeatureStore(out_dir)
-
-            logger.info("Loading tile encoder '%s'...", self._encoder.name)
-            slide2vec_progress.emit_progress("model.loading", model_name=self._encoder.name)
-            loaded = load_model(
-                name=self._encoder.name,
+            model = Model.from_preset(
+                self._encoder.name,
                 output_variant=self._encoder.output_variant,
                 allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
             )
-            encoder = loaded.model
-            transform = loaded.transforms
-            device = loaded.device
-            slide2vec_progress.emit_progress(
-                "model.ready",
-                model_name=self._encoder.name,
-                device=str(device),
+            artifacts = model.embed_images(
+                [
+                    ImageSpec(sample_id=record.sample_id, image_path=record.image_path)
+                    for record in pending
+                ],
+                execution=execution,
             )
+            feature_dim = int(artifacts[0].feature_dim) if artifacts else None
+            logger.info("Saved tile features to %s (dim=%s)", out_root, feature_dim)
 
-            image_dataset = _TileImageDataset(records, transform)
-            loader_kwargs = {
-                "batch_size": self._encoder.batch_size,
-                "shuffle": False,
-                "num_workers": resolved_num_workers,
-                "pin_memory": torch.cuda.is_available(),
-            }
-            if resolved_num_workers > 0:
-                loader_kwargs["prefetch_factor"] = execution.prefetch_factor
-            loader = DataLoader(image_dataset, **loader_kwargs)
+            if cache_resolution is not None and feature_dim is not None:
+                record_feature_dim(cache_resolution, feature_dim)
+                record_sample_identity_signatures(
+                    cache_resolution,
+                    [record.sample_id for record in records],
+                )
 
-            logger.info(
-                "Encoding %d tile images with '%s' (precision=%s, batch_size=%d)...",
-                len(records),
-                self._encoder.name,
-                execution.precision,
-                self._encoder.batch_size,
-            )
-            slide2vec_progress.emit_progress(
-                "embedding.slide.started",
-                sample_id=embedding_label,
-                total_tiles=total_samples,
-            )
-
-            processed_samples = 0
-            with torch.inference_mode(), slide_encode_autocast_ctx(device, execution.precision):
-                for batch_images, batch_ids in loader:
-                    batch_images = batch_images.to(device, non_blocking=True)
-                    features = encoder.encode_tiles(batch_images).detach().to(feature_torch_dtype).cpu()
-                    if feature_dim is None:
-                        feature_dim = features.shape[1]
-                    for feat, sample_id in zip(features, batch_ids):
-                        torch.save(feat, out_dir / f"{sample_id}.pt")
-                    processed_samples += len(batch_ids)
-
-                    slide2vec_progress.emit_progress(
-                        "embedding.tile.progress",
-                        sample_id=embedding_label,
-                        processed=processed_samples,
-                        total=total_samples,
-                        unit="tile",
-                    )
-
-            slide2vec_progress.emit_progress(
-                "embedding.slide.finished",
-                sample_id=embedding_label,
-                num_tiles=total_samples,
-            )
-            slide2vec_progress.emit_progress(
-                "embedding.finished",
-                slide_count=1,
-                slides_completed=1,
-                summary_subject="Tiles",
-                tile_count=processed_samples,
-                tiles_completed=processed_samples,
-                tile_artifacts=processed_samples,
-                slide_artifacts=0,
-            )
-
-        logger.info("Saved tile features to %s (dim=%s)", out_dir, feature_dim)
-
-        if cache_resolution is not None and feature_dim is not None:
-            record_feature_dim(cache_resolution, feature_dim)
-            record_sample_identity_signatures(
-                cache_resolution,
-                [record.sample_id for record in records],
-            )
-
-        return FeatureStore(out_dir)
+        return FeatureStore(out_root)

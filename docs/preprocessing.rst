@@ -43,6 +43,26 @@ Key knobs
    * - ``min_coverage.tissue``
      - Minimum tissue fraction to keep a tile (masks-shaped map; ``min_coverage.tissue``)
      - Adjust only if tissue masks are too loose or too strict
+   * - ``backend``
+     - Slide reader (``auto`` resolves per slide)
+     - Pin when a slide decodes correctly under only one reader
+   * - ``mask_backend``
+     - Reader for tissue/annotation mask rasters (``auto`` follows the slide)
+     - Set when a mask needs a different reader than its slide
+
+Geometry is hs2p's vocabulary
+-----------------------------
+
+The tiling half of ``PreprocessingConfig`` — ``requested_spacing_um``,
+``requested_tile_size_px``, ``tolerance``, ``overlap``, ``min_coverage``,
+``backend``, ``mask_backend`` — is hs2p's own ``TilingConfig`` vocabulary, and soma
+**composes** that config rather than re-declaring it
+(``docs/adr/0009-soma-composes-hs2p-tiling-config.md``).
+Composition happens once the encoder has supplied the spacing and tile size soma
+leaves unset, and the resulting ``TilingConfig`` is what the pooled path, the
+slide-manifest ROI sampler and the feature-cache key all read — so a run's cache key
+cannot describe a geometry the run did not use, and a knob hs2p adds does not become
+a setting soma users silently cannot reach.
 
 Segmentation slide-manifest sampling
 ------------------------------------

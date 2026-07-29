@@ -50,11 +50,17 @@ def resolve_feature_payload_dir(path: Path | str) -> Path:
     """Resolve the directory containing feature .pt files.
 
     Handles soma cache dirs (cache_metadata.json + features/),
-    slide2vec artifact dirs (slide_embeddings/, hierarchical_embeddings/, tile_embeddings/),
-    and plain directories.
+    slide2vec artifact dirs (slide_embeddings/, hierarchical_embeddings/, tile_embeddings/,
+    image_embeddings/), and plain directories.
     """
     root = Path(path)
-    for subdir in ("patient_embeddings", "slide_embeddings", "hierarchical_embeddings", "tile_embeddings"):
+    for subdir in (
+        "patient_embeddings",
+        "slide_embeddings",
+        "hierarchical_embeddings",
+        "tile_embeddings",
+        "image_embeddings",
+    ):
         candidate = root / subdir
         if candidate.is_dir():
             return candidate

@@ -26,7 +26,7 @@ from soma.extraction import FeatureExtractor, _embed_tiles, _load_model, _run_wi
 from soma.extraction.extractor import _feature_summary_from_sidecar
 from soma.features import PACKED_FILENAME
 from soma.slide2vec_adapter import LoadedTiling, build_preprocessing_config, load_tilings
-from soma.tile_extraction import TileFeatureExtractor, _install_tile_embedding_summary_patch
+from soma.tile_extraction import TileFeatureExtractor
 
 
 _TEST_TILE = "_cutover_tile"
@@ -856,7 +856,11 @@ def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
 def test_build_preprocessing_config_accounts_for_slide2vec_surface():
     slide2vec_fields = set(Slide2VecPreprocessingConfig.__dataclass_fields__)
     translated_fields = {
+        # hs2p's tiling vocabulary is forwarded field by field off the composed TilingConfig
+        # rather than restated (ADR 0009) — which is how ``mask_backend`` reached the pooled
+        # payload without a soma edit.
         "backend",
+        "mask_backend",
         "requested_spacing_um",
         "requested_tile_size_px",
         "requested_region_size_px",
@@ -1310,211 +1314,193 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
     assert store.load("s0").shape == (2, 8)
 
 
-def test_tile_feature_extractor_does_not_require_eval_method(tmp_path: Path):
-    image_path = tmp_path / "tile.png"
+def _make_tile_dataset(tmp_path: Path, sample_ids=("s0",)) -> Dataset:
     from PIL import Image
 
-    Image.new("RGB", (8, 8), color="white").save(image_path)
-
+    rows = []
+    for sample_id in sample_ids:
+        image_path = tmp_path / f"{sample_id}.png"
+        Image.new("RGB", (8, 8), color="white").save(image_path)
+        rows.append({"sample_id": sample_id, "image_path": str(image_path), "label": "tumor"})
     dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s0"],
-            "image_path": [str(image_path)],
-            "label": ["tumor"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
+    pd.DataFrame(rows).to_csv(dataset_csv, index=False)
+    return Dataset(dataset_csv)
 
-    class _FakeEncoder:
-        def encode_tiles(self, batch):
-            return torch.ones(batch.shape[0], 4)
 
-    fake_loaded = SimpleNamespace(
-        model=_FakeEncoder(),
-        transforms=lambda image: torch.zeros(3, 8, 8),
-        device=torch.device("cpu"),
-    )
+class _RecordingModel:
+    """Stand-in for ``slide2vec.Model`` that records the ``embed_images`` contract.
 
-    with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(name=_TEST_TILE),
-            execution=ExecutionConfig(num_workers_per_gpu=0),
-            cache=CacheConfig(enabled=False),
-        ).run(feature_dir=tmp_path / "features")
+    Payloads are written through slide2vec's own :func:`write_image_embedding`, so the
+    on-disk layout these tests read back is upstream's rather than this fake's idea of it —
+    the point of the migration is that soma no longer owns that schema.
+    """
 
-    assert store.available_samples == ["s0"]
+    calls: list[dict[str, object]] = []
+
+    def __init__(self, name: str, **kwargs) -> None:
+        self.name = name
+        self.kwargs = kwargs
+
+    @classmethod
+    def from_preset(cls, name: str, **kwargs) -> "_RecordingModel":
+        return cls(name, **kwargs)
+
+    def embed_images(self, images, *, execution):
+        from slide2vec.artifacts import write_image_embedding
+
+        type(self).calls.append(
+            {
+                "name": self.name,
+                "kwargs": dict(self.kwargs),
+                "sample_ids": [spec.sample_id for spec in images],
+                "image_paths": [str(spec.image_path) for spec in images],
+                "execution": execution,
+            }
+        )
+        artifacts = []
+        for spec in images:
+            value = float(int(str(spec.sample_id)[1:]) + 1)
+            artifacts.append(
+                write_image_embedding(
+                    torch.full((4,), value),
+                    output_dir=execution.output_dir,
+                    sample_id=spec.sample_id,
+                    output_format=execution.output_format,
+                    metadata={"artifact_type": "image_embeddings", "sample_id": spec.sample_id},
+                )
+            )
+        return artifacts
+
+
+@pytest.fixture
+def recording_model(monkeypatch: pytest.MonkeyPatch):
+    _RecordingModel.calls = []
+    monkeypatch.setattr("soma.tile_extraction.Model", _RecordingModel)
+    return _RecordingModel
+
+
+def test_tile_feature_extractor_embeds_given_images_via_slide2vec(tmp_path: Path, recording_model):
+    """soma hands slide2vec one ImageSpec per sample and reads back its layout natively."""
+    dataset = _make_tile_dataset(tmp_path, ("s0", "s1"))
+
+    store = TileFeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE, batch_size=2),
+        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
+        cache=CacheConfig(enabled=False),
+    ).run(feature_dir=tmp_path / "features")
+
+    assert store.available_samples == ["s0", "s1"]
     assert torch.equal(store.load("s0"), torch.ones(4))
+    assert torch.equal(store.load("s1"), torch.full((4,), 2.0))
+    # The store resolves slide2vec's image_embeddings/ subdirectory, not a soma schema.
+    assert store.feature_dir == (tmp_path / "features" / "image_embeddings")
 
-
-def test_tile_feature_extractor_keeps_encoder_inputs_in_float32(tmp_path: Path):
-    image_path = tmp_path / "tile.png"
-    from PIL import Image
-
-    Image.new("RGB", (8, 8), color="white").save(image_path)
-
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s0"],
-            "image_path": [str(image_path)],
-            "label": ["tumor"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
-
-    class _FakeEncoder:
-        def encode_tiles(self, batch):
-            assert batch.dtype == torch.float32
-            return torch.ones(batch.shape[0], 4)
-
-    fake_loaded = SimpleNamespace(
-        model=_FakeEncoder(),
-        transforms=lambda image: torch.zeros(3, 8, 8),
-        device=torch.device("cpu"),
-    )
-
-    with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(name=_TEST_TILE),
-            execution=ExecutionConfig(num_workers_per_gpu=0),
-            cache=CacheConfig(enabled=False),
-        ).run(feature_dir=tmp_path / "features")
-
-    assert store.available_samples == ["s0"]
-    assert torch.equal(store.load("s0"), torch.ones(4))
+    (call,) = recording_model.calls
+    assert call["name"] == _TEST_TILE
+    assert call["sample_ids"] == ["s0", "s1"]
+    execution = call["execution"]
+    assert Path(execution.output_dir) == (tmp_path / "features")
+    assert execution.batch_size == 2
+    assert execution.num_gpus == 1
 
 
 @pytest.mark.parametrize(
-    "dtype, expected_torch_dtype",
-    [(None, torch.float32), ("fp32", torch.float32), ("fp16", torch.float16)],
+    "dtype, expected_output_dtype",
+    [(None, "fp32"), ("fp32", "fp32"), ("fp16", "fp16")],
 )
-def test_tile_feature_extractor_casts_saved_features_to_cache_dtype(
-    tmp_path: Path, dtype, expected_torch_dtype
+def test_tile_feature_extractor_hands_resolved_dtype_to_slide2vec(
+    tmp_path: Path, recording_model, dtype, expected_output_dtype
 ):
-    """cache.dtype controls the on-disk feature precision (#164): the per-tile save
-    chokepoint casts to fp16 when requested (else fp32), and the dtype folds into the key."""
-    image_path = tmp_path / "tile.png"
-    from PIL import Image
+    """cache.dtype resolves to one value that is both folded into the key and passed as
+    ExecutionOptions.output_dtype (#164), so the stored precision can never drift from the
+    key. The cast itself is slide2vec's artifact writer, not soma's."""
+    dataset = _make_tile_dataset(tmp_path)
 
-    Image.new("RGB", (8, 8), color="white").save(image_path)
+    store = TileFeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_TILE, precision="fp32"),
+        execution=ExecutionConfig(num_workers_per_gpu=0),
+        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", dtype=dtype),
+    ).run(feature_dir=tmp_path / "features")
 
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {"sample_id": ["s0"], "image_path": [str(image_path)], "label": ["tumor"]}
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
-
-    class _FakeEncoder:
-        def encode_tiles(self, batch):
-            # Emit fp32 from compute; the extractor owns the storage cast.
-            return torch.ones(batch.shape[0], 4, dtype=torch.float32)
-
-    fake_loaded = SimpleNamespace(
-        model=_FakeEncoder(),
-        transforms=lambda image: torch.zeros(3, 8, 8),
-        device=torch.device("cpu"),
-    )
-
-    with patch("soma.tile_extraction.load_model", return_value=fake_loaded):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(name=_TEST_TILE, precision="fp32"),
-            execution=ExecutionConfig(num_workers_per_gpu=0),
-            cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", dtype=dtype),
-        ).run(feature_dir=tmp_path / "features")
-
-    # FeatureStore.load upcasts fp16→fp32 for downstream layers, so inspect the raw .pt.
-    raw = torch.load(store.feature_dir / "s0.pt")
-    assert raw.dtype == expected_torch_dtype
-    # cache_metadata.json sits in the cache dir (parent of the tile_embeddings features dir).
+    (call,) = recording_model.calls
+    assert call["execution"].output_dtype == expected_output_dtype
+    # cache_metadata.json sits in the cache dir (parent of the image_embeddings features dir).
     meta = json.loads((store.feature_dir.parent / "cache_metadata.json").read_text())
-    assert meta["dtype"] == ("fp16" if dtype == "fp16" else "fp32")
+    assert meta["dtype"] == expected_output_dtype
 
 
-def test_tile_feature_extractor_uses_cpu_worker_budget_when_num_workers_per_gpu_is_unset(monkeypatch, tmp_path: Path):
-    image_path = tmp_path / "tile.png"
-    from PIL import Image
+def test_tile_feature_extractor_reuses_complete_cache_without_loading_the_encoder(
+    tmp_path: Path, recording_model
+):
+    dataset = _make_tile_dataset(tmp_path, ("s0", "s1"))
+    cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
 
-    Image.new("RGB", (8, 8), color="white").save(image_path)
+    first = TileFeatureExtractor(
+        dataset, EncoderConfig(name=_TEST_TILE), cache=cache
+    ).run(feature_dir=tmp_path / "features")
+    assert len(recording_model.calls) == 1
 
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s0"],
-            "image_path": [str(image_path)],
-            "label": ["tumor"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
+    second = TileFeatureExtractor(
+        dataset, EncoderConfig(name=_TEST_TILE), cache=cache
+    ).run(feature_dir=tmp_path / "features")
 
-    class _FakeEncoder:
-        def encode_tiles(self, batch):
-            return torch.ones(batch.shape[0], 4)
+    assert len(recording_model.calls) == 1  # complete hit: slide2vec is never asked
+    assert second.feature_dir == first.feature_dir
+    assert torch.equal(second.load("s1"), torch.full((4,), 2.0))
 
-    fake_loaded = SimpleNamespace(
-        model=_FakeEncoder(),
-        transforms=lambda image: torch.zeros(3, 8, 8),
-        device=torch.device("cpu"),
+
+def test_tile_feature_extractor_only_encodes_samples_soma_reports_missing(
+    tmp_path: Path, recording_model
+):
+    """Resume is driven by soma's cache resolution, not by slide2vec's sidecar check."""
+    dataset = _make_tile_dataset(tmp_path, ("s0", "s1"))
+    cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
+
+    store = TileFeatureExtractor(
+        dataset, EncoderConfig(name=_TEST_TILE), cache=cache
+    ).run(feature_dir=tmp_path / "features")
+    for suffix in (".pt", ".meta.json"):
+        (store.feature_dir / f"s1{suffix}").unlink()
+
+    TileFeatureExtractor(dataset, EncoderConfig(name=_TEST_TILE), cache=cache).run(
+        feature_dir=tmp_path / "features"
     )
 
-    seen_num_workers: list[int] = []
-    seen_logs: list[str] = []
-    seen_loader_kwargs: list[dict[str, object]] = []
+    assert [call["sample_ids"] for call in recording_model.calls] == [["s0", "s1"], ["s1"]]
 
-    class _FakeDataLoader:
-        def __init__(self, dataset, **kwargs):
-            seen_loader_kwargs.append(dict(kwargs))
-            num_workers = kwargs["num_workers"]
-            seen_num_workers.append(num_workers)
-            batch_images, sample_id = dataset[0]
-            self._items = [(batch_images.unsqueeze(0), [sample_id])]
 
-        def __iter__(self):
-            return iter(self._items)
+def test_tile_feature_extractor_reencodes_a_sample_whose_identity_changed(
+    tmp_path: Path, recording_model
+):
+    """A re-pointed image_path under a stable sample_id must not be skipped.
 
-    class _FakeReporter:
-        def emit(self, event) -> None:
-            return None
+    slide2vec resumes on sidecar existence and cannot see soma's identity signatures, so
+    soma clears the stale payload before asking — otherwise the old features would survive
+    and get stamped with the new signature.
+    """
+    from PIL import Image
 
-        def write_log(self, message: str, *, stream=None) -> None:
-            seen_logs.append(message)
+    dataset = _make_tile_dataset(tmp_path, ("s0",))
+    cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
+    TileFeatureExtractor(dataset, EncoderConfig(name=_TEST_TILE), cache=cache).run(
+        feature_dir=tmp_path / "features"
+    )
 
-        def close(self) -> None:
-            return None
+    replacement = tmp_path / "replacement.png"
+    Image.new("RGB", (8, 8), color="black").save(replacement)
+    moved_csv = tmp_path / "dataset_moved.csv"
+    pd.DataFrame(
+        [{"sample_id": "s0", "image_path": str(replacement), "label": "tumor"}]
+    ).to_csv(moved_csv, index=False)
 
-    monkeypatch.setattr("slide2vec.api.cpu_worker_limit", lambda: 24)
-    monkeypatch.setattr("torch.cuda.is_available", lambda: False)
+    TileFeatureExtractor(
+        Dataset(moved_csv), EncoderConfig(name=_TEST_TILE), cache=cache
+    ).run(feature_dir=tmp_path / "features")
 
-    with patch("soma.tile_extraction.load_model", return_value=fake_loaded), patch(
-        "soma.tile_extraction.DataLoader",
-        _FakeDataLoader,
-    ), patch(
-        "soma.tile_extraction.slide2vec_progress.create_api_progress_reporter",
-        return_value=_FakeReporter(),
-    ):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(name=_TEST_TILE),
-            execution=ExecutionConfig(),
-            cache=CacheConfig(enabled=False),
-        ).run(feature_dir=tmp_path / "features")
-
-    assert store.available_samples == ["s0"]
-    assert seen_num_workers == [16]
-    assert seen_loader_kwargs == [
-        {
-            "batch_size": 32,
-            "shuffle": False,
-            "num_workers": 16,
-            "pin_memory": False,
-            "prefetch_factor": 4,
-        }
-    ]
-    assert seen_logs == ["Tile DataLoader workers: 16 (slide2vec cpu_worker_limit())"]
-
+    assert [call["sample_ids"] for call in recording_model.calls] == [["s0"], ["s0"]]
+    assert recording_model.calls[-1]["image_paths"] == [str(replacement)]
 
 def test_build_execution_options_splits_auto_workers_across_gpus(monkeypatch, tmp_path: Path):
     import slide2vec.api as slide2vec_api
@@ -1534,390 +1520,6 @@ def test_build_execution_options_splits_auto_workers_across_gpus(monkeypatch, tm
 
     assert execution.num_workers_per_gpu == 16  # capped at 16
 
-
-def test_tile_feature_extractor_shards_tile_encoding_across_gpus(tmp_path: Path):
-    image_paths = []
-    from PIL import Image
-
-    for sample_id in ("s0", "s1", "s2", "s3", "s4"):
-        image_path = tmp_path / f"{sample_id}.png"
-        Image.new("RGB", (8, 8), color="white").save(image_path)
-        image_paths.append(str(image_path))
-
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s0", "s1", "s2", "s3", "s4"],
-            "image_path": image_paths,
-            "label": ["tumor", "tumor", "tumor", "tumor", "tumor"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
-
-    seen_calls: list[dict[str, object]] = []
-    progress_counts: list[int] = []
-
-    class _FakeReporter:
-        def __init__(self) -> None:
-            self.events: list[tuple[str, dict[str, object]]] = []
-            self.logs: list[str] = []
-
-        def emit(self, event) -> None:
-            self.events.append((event.kind, dict(event.payload)))
-
-        def write_log(self, message: str, *, stream=None) -> None:
-            self.logs.append(message)
-
-        def close(self) -> None:
-            return None
-
-    fake_reporter = _FakeReporter()
-
-    def _fake_spawn_tile_feature_workers(
-        *,
-        num_workers,
-        encoder,
-        output_dir,
-        records_by_rank,
-        batch_size,
-        num_workers_per_gpu,
-        prefetch_factor,
-        precision,
-        feature_dtype="fp32",
-        on_model_ready=None,
-        on_progress=None,
-    ):
-        seen_calls.append(
-            {
-                "num_workers": num_workers,
-                "encoder": encoder,
-                "records_by_rank": records_by_rank,
-                "batch_size": batch_size,
-                "num_workers_per_gpu": num_workers_per_gpu,
-                "prefetch_factor": prefetch_factor,
-                "precision": precision,
-                "feature_dtype": feature_dtype,
-            }
-        )
-        written_ids = []
-        if on_model_ready is not None:
-            for rank in range(num_workers):
-                on_model_ready(rank, f"cuda:{rank}")
-        for rank, shard in enumerate(records_by_rank):
-            for record in shard:
-                sample_id = record.sample_id
-                torch.save(
-                    torch.full((4,), float(int(sample_id[1:]) + 1)),
-                    output_dir / f"{sample_id}.pt",
-                )
-                written_ids.append(sample_id)
-                if on_progress is not None:
-                    progress_counts.append(1)
-                    on_progress(rank, 1)
-        return written_ids, 4
-
-    with patch(
-        "soma.tile_extraction.load_model",
-        side_effect=AssertionError("parent process should not load the tile encoder"),
-    ), patch(
-        "soma.tile_extraction.spawn_tile_feature_workers",
-        side_effect=_fake_spawn_tile_feature_workers,
-    ), patch(
-        "soma.tile_extraction.slide2vec_progress.create_api_progress_reporter",
-        return_value=fake_reporter,
-    ):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(name=_TEST_TILE, batch_size=2),
-            execution=ExecutionConfig(num_gpus=4, num_workers_per_gpu=0, prefetch_factor=2),
-            cache=CacheConfig(enabled=False),
-        ).run(feature_dir=tmp_path / "features")
-
-    assert store.available_samples == ["s0", "s1", "s2", "s3", "s4"]
-    assert torch.equal(store.load("s0"), torch.ones(4))
-    assert torch.equal(store.load("s4"), torch.full((4,), 5.0))
-    assert progress_counts == [1, 1, 1, 1, 1]
-    assert len(seen_calls) == 1
-    call = seen_calls[0]
-    assert call["num_workers"] == 4
-    assert call["encoder"] == EncoderConfig(name=_TEST_TILE, batch_size=2)
-    assert call["batch_size"] == 2
-    assert call["num_workers_per_gpu"] == 0
-    assert call["prefetch_factor"] == 2
-    assert call["precision"] == "fp16"
-    assert [[r.sample_id for r in shard] for shard in call["records_by_rank"]] == [
-        ["s0", "s4"],
-        ["s1"],
-        ["s2"],
-        ["s3"],
-    ]
-    assert [
-        payload
-        for kind, payload in fake_reporter.events
-        if kind == "model.loading"
-    ] == [{"model_name": _TEST_TILE}] * 4
-    assert [
-        payload
-        for kind, payload in fake_reporter.events
-        if kind == "model.ready"
-    ] == [
-        {"model_name": _TEST_TILE, "device": "GPU 0"},
-        {"model_name": _TEST_TILE, "device": "GPU 1"},
-        {"model_name": _TEST_TILE, "device": "GPU 2"},
-        {"model_name": _TEST_TILE, "device": "GPU 3"},
-    ]
-    started = [
-        payload
-        for kind, payload in fake_reporter.events
-        if kind == "embedding.slide.started"
-    ]
-    assert started == [
-        {"sample_id": "Embedding tiles", "progress_label": "GPU 0", "total_tiles": 2},
-        {"sample_id": "Embedding tiles", "progress_label": "GPU 1", "total_tiles": 1},
-        {"sample_id": "Embedding tiles", "progress_label": "GPU 2", "total_tiles": 1},
-        {"sample_id": "Embedding tiles", "progress_label": "GPU 3", "total_tiles": 1},
-    ]
-    progress = [
-        payload
-        for kind, payload in fake_reporter.events
-        if kind == "embedding.tile.progress"
-    ]
-    assert progress == [
-        {
-            "sample_id": "Embedding tiles",
-            "progress_label": "GPU 0",
-            "processed": 1,
-            "total": 2,
-            "unit": "tile",
-        },
-        {
-            "sample_id": "Embedding tiles",
-            "progress_label": "GPU 0",
-            "processed": 2,
-            "total": 2,
-            "unit": "tile",
-        },
-        {
-            "sample_id": "Embedding tiles",
-            "progress_label": "GPU 1",
-            "processed": 1,
-            "total": 1,
-            "unit": "tile",
-        },
-        {
-            "sample_id": "Embedding tiles",
-            "progress_label": "GPU 2",
-            "processed": 1,
-            "total": 1,
-            "unit": "tile",
-        },
-        {
-            "sample_id": "Embedding tiles",
-            "progress_label": "GPU 3",
-            "processed": 1,
-            "total": 1,
-            "unit": "tile",
-        },
-    ]
-
-
-def test_tile_feature_extractor_uses_torch_default_loader_workers(tmp_path: Path):
-    image_path = tmp_path / "tile.png"
-    from PIL import Image
-
-    Image.new("RGB", (8, 8), color="white").save(image_path)
-
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s0", "s1"],
-            "image_path": [str(image_path), str(image_path)],
-            "label": ["tumor", "tumor"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
-
-    class _FakeEncoder:
-        def encode_tiles(self, batch):
-            return torch.ones(batch.shape[0], 4)
-
-    fake_loaded = SimpleNamespace(
-        model=_FakeEncoder(),
-        transforms=lambda image: torch.zeros(3, 8, 8),
-        device=torch.device("cpu"),
-    )
-
-    seen_loader_kwargs: list[dict[str, object]] = []
-
-    class _FakeDataLoader:
-        def __init__(self, dataset, **kwargs):
-            seen_loader_kwargs.append(dict(kwargs))
-            batch_images, sample_id = dataset[0]
-            self._items = [(batch_images.unsqueeze(0), [sample_id])]
-
-        def __iter__(self):
-            return iter(self._items)
-
-    with patch("soma.tile_extraction.load_model", return_value=fake_loaded), patch(
-        "soma.tile_extraction.DataLoader",
-        _FakeDataLoader,
-    ):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(
-                name=_TEST_TILE,
-            ),
-            execution=ExecutionConfig(
-                num_gpus=1,
-                num_workers_per_gpu=12,
-                prefetch_factor=6,
-            ),
-            cache=CacheConfig(enabled=False),
-        ).run(feature_dir=tmp_path / "features")
-
-    assert store.available_samples == ["s0"]
-    assert seen_loader_kwargs == [
-        {
-            "batch_size": 32,
-            "shuffle": False,
-            "num_workers": 12,
-            "pin_memory": False,
-            "prefetch_factor": 6,
-        }
-    ]
-
-
-def test_tile_feature_extractor_renders_rich_progress_for_model_loading_and_batches(tmp_path: Path):
-    image_paths = []
-    for sample_id in ("s0", "s1", "s2"):
-        image_path = tmp_path / f"{sample_id}.png"
-        from PIL import Image
-
-        Image.new("RGB", (8, 8), color="white").save(image_path)
-        image_paths.append(str(image_path))
-
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s0", "s1", "s2"],
-            "image_path": image_paths,
-            "label": ["tumor", "tumor", "tumor"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
-
-    class _FakeEncoder:
-        def encode_tiles(self, batch):
-            return torch.ones(batch.shape[0], 4)
-
-    fake_loaded = SimpleNamespace(
-        model=_FakeEncoder(),
-        transforms=lambda image: torch.zeros(3, 8, 8),
-        device=torch.device("cpu"),
-    )
-
-    class _FakeReporter:
-        def __init__(self) -> None:
-            self.events: list[tuple[str, dict[str, object]]] = []
-
-        def emit(self, event) -> None:
-            self.events.append((event.kind, dict(event.payload)))
-
-        def close(self) -> None:
-            return None
-
-    fake_reporter = _FakeReporter()
-
-    with patch("soma.tile_extraction.load_model", return_value=fake_loaded), patch(
-        "soma.tile_extraction.slide2vec_progress.create_api_progress_reporter",
-        return_value=fake_reporter,
-    ):
-        store = TileFeatureExtractor(
-            dataset,
-            EncoderConfig(name=_TEST_TILE, batch_size=2),
-            execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
-            cache=CacheConfig(enabled=False),
-        ).run(feature_dir=tmp_path / "features")
-
-    assert store.available_samples == ["s0", "s1", "s2"]
-    assert [kind for kind, _ in fake_reporter.events] == [
-        "model.loading",
-        "model.ready",
-        "embedding.slide.started",
-        "embedding.tile.progress",
-        "embedding.tile.progress",
-        "embedding.slide.finished",
-        "embedding.finished",
-    ]
-    assert fake_reporter.events[0][1] == {"model_name": _TEST_TILE}
-    assert fake_reporter.events[1][1] == {"model_name": _TEST_TILE, "device": "cpu"}
-    assert fake_reporter.events[2][1] == {
-        "sample_id": "Embedding tiles",
-        "total_tiles": 3,
-    }
-    assert fake_reporter.events[3][1] == {
-        "sample_id": "Embedding tiles",
-        "processed": 2,
-        "total": 3,
-        "unit": "tile",
-    }
-    assert fake_reporter.events[4][1] == {
-        "sample_id": "Embedding tiles",
-        "processed": 3,
-        "total": 3,
-        "unit": "tile",
-    }
-    assert fake_reporter.events[5][1] == {
-        "sample_id": "Embedding tiles",
-        "num_tiles": 3,
-    }
-    assert fake_reporter.events[-1][1] == {
-        "slide_count": 1,
-        "slides_completed": 1,
-        "summary_subject": "Tiles",
-        "tile_count": 3,
-        "tiles_completed": 3,
-        "tile_artifacts": 3,
-        "slide_artifacts": 0,
-    }
-
-
-def test_tile_embedding_finished_summary_rows_are_tile_oriented(monkeypatch: pytest.MonkeyPatch):
-    def _base_embedding_summary_rows(payload: dict[str, object]) -> list[tuple[str, str]]:
-        slide_count = int(payload["slide_count"])
-        completed = int(payload["slides_completed"])
-        failed = max(0, slide_count - completed)
-        return [
-            ("Slides w/ tiles", str(slide_count)),
-            ("Completed", str(completed)),
-            ("Failed", str(failed)),
-        ]
-
-    monkeypatch.setattr(
-        slide2vec_progress,
-        "_embedding_summary_rows",
-        _base_embedding_summary_rows,
-        raising=True,
-    )
-    monkeypatch.setattr(
-        slide2vec_progress,
-        "_soma_tile_embedding_summary_patch_installed",
-        False,
-        raising=False,
-    )
-
-    _install_tile_embedding_summary_patch()
-
-    rows = slide2vec_progress._embedding_summary_rows(
-        {
-            "slide_count": 1,
-            "slides_completed": 1,
-            "summary_subject": "Tiles",
-            "tile_count": 42,
-            "tiles_completed": 40,
-        }
-    )
-    assert rows == [("Tiles", "42"), ("Completed", "40"), ("Failed", "2")]
 
 
 def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):

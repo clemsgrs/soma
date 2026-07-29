@@ -100,6 +100,10 @@ _Avoid_: "tile size" (ambiguous between requested, read, and encoder-facing size
 slide2vec's explicit, non-defaultable statement of which regime a run is in, resolved at model load. soma names the regime and writes no geometry policy itself.
 _Avoid_: treating an absent contract as Given geometry — absence is an error, not a default.
 
+**Composed tiling config**:
+The hs2p `TilingConfig` a `PreprocessingConfig` resolves to (`tiling_config()`), built at **resolve** time rather than config-parse time because hs2p requires a spacing and a tile size that soma leaves unset until the encoder supplies them. The pooled adapter, the slide-manifest ROI sampler and the feature-cache key all read this one object, so the geometry a run used and the geometry its key describes cannot diverge.
+_Avoid_: "mirroring hs2p" (the fields are forwarded, not re-declared); treating it as a config-surface type — it exists only after resolution.
+
 ### Run identity (existing soma concepts, load-bearing for the Leaderboard)
 
 **Run**:
