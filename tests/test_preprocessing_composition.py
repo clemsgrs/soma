@@ -9,7 +9,7 @@ and that a field hs2p adds cannot go silently unreachable.
 
 from __future__ import annotations
 
-from dataclasses import MISSING, fields, replace
+from dataclasses import asdict, replace
 
 import pytest
 from hs2p.configs import FilterConfig, SegmentationConfig, TilingConfig
@@ -101,44 +101,46 @@ def test_an_unresolved_config_still_has_a_signature():
     assert signature["mask_backend"] == "auto"
 
 
-@pytest.mark.parametrize(
-    ("section", "hs2p_config", "stated_by_soma"),
-    [
-        ("segmentation", SegmentationConfig, {"method", "downsample", "sam2_device"}),
-        ("filtering", FilterConfig, {"ref_tile_size", "a_t"}),
-    ],
-)
-def test_slide2vec_section_defaults_agree_with_hs2p_where_soma_says_nothing(
-    section, hs2p_config, stated_by_soma
-):
-    """The tissue/filtering sections are hs2p's vocabulary reached through slide2vec.
+def test_slide2vec_segmentation_defaults_match_hs2p():
+    """The composed segmentation section stays on hs2p's explicit public contract."""
+    expected = {
+        "method": "hsv",
+        "downsample": 64,
+        "sthresh": 8,
+        "sthresh_up": 255,
+        "mthresh": 7,
+        "close": 4,
+        "sam2_checkpoint_path": None,
+        "sam2_config_path": None,
+        "sam2_device": "cpu",
+        "sam2_num_workers": None,
+    }
 
-    slide2vec 5.6.0 completes a partial ``segmentation``/``filtering`` override against its
-    own shipped YAML before handing it to hs2p, where 5.5.0 passed the partial through and
-    let hs2p's dataclass defaults fill the rest. soma states only a few keys in each section
-    (:func:`build_preprocessing_config`), so the two routes agree only as long as slide2vec's
-    defaults match hs2p's for every key soma leaves silent. They do today — and a drift there
-    would change which tiles a run keeps *without* moving soma's cache key, since the key is
-    ``tiling_values()`` and these sections are not in it. That is the failure this pins.
-    """
-    config = build_preprocessing_config(_resolved())
-    merged = getattr(config, section)
-    hs2p_defaults = {
-        field.name: field.default
-        for field in fields(hs2p_config)
-        if field.default is not MISSING
+    assert build_preprocessing_config(_resolved()).segmentation == expected
+    assert asdict(SegmentationConfig(method="hsv")) == expected
+
+
+def test_slide2vec_filtering_defaults_match_hs2p():
+    """The composed filtering section stays on hs2p's explicit public contract."""
+    expected = {
+        "ref_tile_size": 224,
+        "a_t": 4,
+        "a_h": 2,
+        "filter_white": False,
+        "filter_black": False,
+        "white_threshold": 220,
+        "black_threshold": 25,
+        "fraction_threshold": 0.9,
+        "filter_grayspace": False,
+        "grayspace_saturation_threshold": 0.05,
+        "grayspace_fraction_threshold": 0.6,
+        "filter_blur": False,
+        "blur_threshold": 50.0,
+        "qc_spacing_um": 2.0,
     }
-    silent = {
-        key: value for key, value in merged.items() if key not in stated_by_soma
-    }
-    assert silent, "expected slide2vec to complete the section soma only partially states"
-    for key, value in silent.items():
-        assert key in hs2p_defaults, f"{section}.{key} has no hs2p default to agree with"
-        assert value == hs2p_defaults[key], (
-            f"slide2vec's default for {section}.{key} ({value!r}) has drifted from hs2p's "
-            f"({hs2p_defaults[key]!r}); soma does not state this key, so the drift silently "
-            "changes tile selection under an unchanged cache key."
-        )
+
+    assert build_preprocessing_config(_resolved()).filtering == expected
+    assert asdict(FilterConfig(ref_tile_size=224, a_t=4)) == expected
 
 
 def test_independent_sampling_is_decided_once():
