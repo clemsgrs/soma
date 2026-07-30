@@ -358,7 +358,8 @@ def test_reproduce_record_appends_external_only_cell_to_ledger(tmp_path, monkeyp
     assert row.key == {"dataset": "IDC", "encoder": "uni2"}  # keyed off the external row
     assert row.metric == "test/mean_pearson_mean"
     assert row.measured == pytest.approx(0.5914)
-    assert row.std is None and row.n_seeds is None  # a single re-scored run has no spread
+    # A single re-scored run has no seed *spread* (std stays empty), but it is one seed.
+    assert row.std is None and row.n_seeds == 1
 
 
 def test_reproduce_record_writes_no_orphan_row_when_encoder_has_no_reference(

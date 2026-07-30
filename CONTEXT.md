@@ -82,6 +82,28 @@ _Avoid_: `manifest.csv` (the retired BEETLE name — the file is always `dataset
 Curation turns a *raw* public dataset into a Manifest. A Curator is a **deterministic function** `(raw_root, out_dir, **params) -> CuratedManifest`, typed by a structural `Protocol` — not a class hierarchy, because curators are dataset-specific adapters, not interchangeable components. Deterministic so re-curating the same raw data yields byte-identical files and a stable dataset identity.
 _Avoid_: a `Curator` base class; "swappable curator" (curators are not interchangeable).
 
+### Extraction geometry
+
+**Declared geometry**:
+The regime in which soma *states* the encoder input it wants — pooled `requested_tile_size_px`, dense `spacing_um` + `target_size` — as a claim about physical extent ("224 px covering 112 µm of tissue"). slide2vec must honor it exactly or raise; it never substitutes a different geometry.
+_Avoid_: "the pooled path" as a synonym — hierarchical and dense declarations are Declared geometry too.
+
+**Given geometry**:
+The regime in which the pixels are supplied without any soma request — pre-cropped tile datasets (`dataset_type="tile"`), whose sizes belong to the upstream dataset, vary per sample, and are often not square. The encoder's shipped transform is the contract, and its resizing is the published protocol rather than a substitution.
+_Avoid_: "the tile path" as a synonym; "raw tiles" (they are curated, just not requested).
+
+**Effective encoder input**:
+The geometry of the tensor immediately before `encode_tiles` / `encode_tiles_dense` — `requested_tile_size_px` for a pooled declaration, the padded `encoded_size` for whole-tile dense, `window_size` for sliding dense, and whatever the shipped transform produced under Given geometry. The single quantity the encoder-input contract is stated over, so one capability check serves pooled and dense alike.
+_Avoid_: "tile size" (ambiguous between requested, read, and encoder-facing sizes).
+
+**Encoder-input contract**:
+slide2vec's explicit, non-defaultable statement of which regime a run is in, resolved at model load. soma names the regime and writes no geometry policy itself.
+_Avoid_: treating an absent contract as Given geometry — absence is an error, not a default.
+
+**Composed tiling config**:
+The hs2p `TilingConfig` a `PreprocessingConfig` resolves to (`tiling_config()`), built at **resolve** time rather than config-parse time because hs2p requires a spacing and a tile size that soma leaves unset until the encoder supplies them. The pooled adapter, the slide-manifest ROI sampler and the feature-cache key all read this one object, so the geometry a run used and the geometry its key describes cannot diverge.
+_Avoid_: "mirroring hs2p" (the fields are forwarded, not re-declared); treating it as a config-surface type — it exists only after resolution.
+
 ### Run identity (existing soma concepts, load-bearing for the Leaderboard)
 
 **Run**:

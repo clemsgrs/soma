@@ -28,6 +28,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 from slide2vec.encoders.registry import resolve_patch_size
+from slide2vec.api import EncoderInputContract
 from slide2vec.inference import load_model
 from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
 from torch.utils.data import DataLoader
@@ -35,6 +36,7 @@ from torch.utils.data import Dataset as TorchDataset
 
 from soma.cache import (
     build_dense_cache_key,
+    dense_extraction_geometry,
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
@@ -431,6 +433,11 @@ class DenseTileFeatureExtractor:
                 dtype=dense_dtype,
                 fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
+                extraction_geometry=dense_extraction_geometry(
+                    encoder_name=self._encoder.name,
+                    target_size_px=self._target_size,
+                    window_size=self._window_size,
+                ),
             )
             if cache_resolution.complete:
                 logger.info("Reusing cached dense grids from %s", cache_resolution.features_dir)
@@ -448,14 +455,20 @@ class DenseTileFeatureExtractor:
             records = [record for record in records if record.sample_id in wanted]
 
         # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
-        # Construct a dense-capable encoder: dynamic_img_size for non-native sizes
-        # (signature-gated in load_model; a no-op for encoders that hardcode it, and
-        # the opt-in for H-optimus when allow_non_recommended_settings is set).
+        # Declare the dense geometry this run wants (ADR 0006). slide2vec derives the
+        # effective encoder input from it — the padded tile for a whole-tile run, one
+        # patch-aligned window for a sliding one — checks the encoder can accept it, and
+        # applies whatever constructor settings that takes. An encoder that cannot raises
+        # here, rather than silently encoding at a size it was never built for.
         loaded = load_model(
             name=self._encoder.name,
             output_variant=self._encoder.output_variant,
             allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            dynamic_img_size=True,
+            encoder_input=EncoderInputContract.declared_dense(
+                self._encoder.name,
+                target_size_px=self._target_size,
+                window_size=self._window_size,
+            ),
         )
         encoder = loaded.model
         device = loaded.device

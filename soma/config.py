@@ -18,6 +18,7 @@ from typing import Any
 
 import yaml
 from hs2p import PreviewConfig
+from hs2p.configs import TilingConfig
 
 from soma.evaluation.metrics import resolve_metrics
 
@@ -307,6 +308,10 @@ class PreprocessingConfig:
     """
 
     backend: str = "auto"
+    # Reader used to decode annotation/tissue mask rasters. hs2p 4.3.0 made mask decoding
+    # authoritative — there is no silent fallback to another reader — so a mask its slide's
+    # backend cannot decode needs this knob to be fixable from a config (ADR 0009).
+    mask_backend: str = "auto"
     requested_tile_size_px: int | None = None
     requested_spacing_um: float | None = None
     requested_region_size_px: int | None = None
@@ -382,6 +387,74 @@ class PreprocessingConfig:
                     f"preprocessing.min_coverage['{label}'] must be in [0, 1], got {frac!r}."
                 )
         object.__setattr__(self, "min_coverage", coverage)
+
+    def tiling_values(self) -> dict[str, Any]:
+        """soma's value for every hs2p ``TilingConfig`` field, ``None`` where unresolved.
+
+        The single place soma states the geometry mapping (ADR 0009). :meth:`tiling_config`
+        constructs from it and the cache signature keys on it, so the two cannot disagree,
+        and a field hs2p adds cannot enter one without the other. Coverage is checked
+        against ``TilingConfig``'s own fields below: a new upstream knob raises here rather
+        than becoming a setting soma users silently cannot reach.
+        """
+        values: dict[str, Any] = {
+            "requested_spacing_um": (
+                None if self.requested_spacing_um is None else float(self.requested_spacing_um)
+            ),
+            "requested_tile_size_px": (
+                None if self.requested_tile_size_px is None else int(self.requested_tile_size_px)
+            ),
+            "tolerance": float(self.tolerance),
+            "overlap": float(self.overlap),
+            "min_coverage": {k: float(self.min_coverage[k]) for k in sorted(self.min_coverage)},
+            "backend": str(self.backend),
+            "mask_backend": str(self.mask_backend),
+            "independent_sampling": self.independent_sampling,
+        }
+        # hs2p echoes what was *asked for* into these before auto-resolution; they restate
+        # backend/mask_backend rather than adding geometry, so soma neither sets them nor
+        # keys on them.
+        provenance = {"requested_backend", "requested_mask_backend"}
+        unmapped = set(TilingConfig.__dataclass_fields__) - set(values) - provenance
+        if unmapped:
+            raise RuntimeError(
+                f"hs2p TilingConfig field(s) {sorted(unmapped)} are not mapped by soma's "
+                "PreprocessingConfig. Add them to the config surface and to tiling_values() "
+                "(ADR 0009), or name them provenance if they only echo another field."
+            )
+        return values
+
+    def tiling_config(self) -> TilingConfig:
+        """The hs2p ``TilingConfig`` this preprocessing resolves to (ADR 0009).
+
+        Composition happens here, at resolve time, not at config-parse time: hs2p requires
+        a spacing and a tile size, and soma leaves both ``None`` until the encoder supplies
+        them. One construction serves the pooled adapter, the slide-manifest ROI sampler and
+        the cache signature, so those three cannot drift apart.
+        """
+        if self.requested_tile_size_px is None:
+            raise ValueError(
+                "requested_tile_size_px must be resolved before extraction — set it "
+                "explicitly or use an encoder that advertises a tile size."
+            )
+        if self.requested_spacing_um is None:
+            raise ValueError(
+                "requested_spacing_um must be resolved before extraction — set it "
+                "explicitly or use an encoder advertising a single supported spacing."
+            )
+        return TilingConfig(**self.tiling_values())
+
+    @property
+    def independent_sampling(self) -> bool:
+        """Whether tile coordinates are sampled per class rather than on one shared grid.
+
+        Tissue-only runs keep the upstream default (``True``); an annotation ``masks`` block
+        derives it from ``sampling.strategy``, defaulting to ``joint``. Stated once here
+        because it reaches hs2p, slide2vec and the cache key by three different routes.
+        """
+        if self.masks is None:
+            return True
+        return self.sampling is not None and self.sampling.strategy == "independent"
 
     @property
     def requested_backend(self) -> str:

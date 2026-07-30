@@ -2,11 +2,15 @@
 
 The genuinely-new A3a soma integration, tested deterministically and offline. The two
 cross-repo extraction primitives — hs2p annotation sampling (``sample_slide_rois``) and the
-slide2vec dense encode (``iter_regions_dense``) — are stubbed at their import seams (each
-is independently tested in its own repo: hs2p ``test_annotation_coverage``, slide2vec
-``test_dense_regions``); everything in between (ROI manifest + split propagation, the dense
+slide2vec dense encode (``Model.embed_regions_dense``) — are stubbed at their import seams
+(each is independently tested in its own repo: hs2p ``test_annotation_coverage``, slide2vec
+``test_dense_stage``); everything in between (ROI manifest + split propagation, the dense
 cache keyed on the sampling spec, explicit ROI training context, and the full cached dense
 training/eval) runs for real.
+
+The dense stub writes through slide2vec's own :func:`write_dense_region`, so the on-disk
+layout and sidecar these tests read back are upstream's rather than the stub's idea of
+them — the point of the migration is that soma no longer owns that schema.
 """
 
 from __future__ import annotations
@@ -30,6 +34,10 @@ from soma.config import (
 )
 
 NUM_CLASSES = 2
+# A patch-16 encoder that accepts a variable encoder input, so the tiny 32 px fixtures
+# below are a geometry the contract can actually honour (ADR 0006): declaring a 32 px
+# dense input on a fixed-224 encoder now raises at resolve time, as it should.
+ENCODER = "uni"
 TARGET = 32
 PATCH = 16
 GRID = TARGET // PATCH  # 2
@@ -62,37 +70,103 @@ def _coords_for(slide_id: str) -> list[tuple[int, int]]:
     return [(0, 0), (TARGET, 0)]
 
 
+class _FakeDenseModel:
+    """Stands in for ``slide2vec.Model`` at soma's import seam.
+
+    Records the ``embed_regions_dense`` contract soma states — which slides, which
+    coordinates, and the ``DenseOptions``/``ExecutionOptions`` it built — and persists a
+    deterministic grid per ROI through slide2vec's own writer, so the layout under test is
+    upstream's.
+    """
+
+    calls: list[dict] = []
+
+    def __init__(self, name: str, **kwargs) -> None:
+        self.name = name
+        self.kwargs = kwargs
+
+    @classmethod
+    def from_preset(cls, name: str, **kwargs) -> "_FakeDenseModel":
+        return cls(name, **kwargs)
+
+    def embed_regions_dense(self, regions, *, dense, execution):
+        from slide2vec.artifacts import write_dense_region
+
+        from soma.dense.geometry import compute_dense_geometry
+
+        type(self).calls.append(
+            {
+                "name": self.name,
+                "regions": [
+                    (r.sample_id, [tuple(int(v) for v in c) for c in r.coordinates])
+                    for r in regions
+                ],
+                "dense": dense,
+                "execution": execution,
+            }
+        )
+        geometry = compute_dense_geometry(
+            target_size=int(dense.target_size), patch_size=(PATCH, PATCH)
+        )
+        rng = np.random.default_rng(0)
+        artifacts = []
+        for region in regions:
+            for x, y in region.coordinates:
+                grid = rng.standard_normal(
+                    (FEATURE_DIM, geometry.grid_shape[0], geometry.grid_shape[1])
+                ).astype(np.float32)
+                artifacts.append(
+                    write_dense_region(
+                        grid,
+                        output_dir=execution.output_dir,
+                        sample_id=region.sample_id,
+                        annotation=region.annotation,
+                        x=int(x),
+                        y=int(y),
+                        metadata=_dense_sidecar(dense, geometry, grid),
+                    )
+                )
+        return artifacts
+
+
+def _dense_sidecar(dense, geometry, grid) -> dict:
+    """The geometry sidecar slide2vec writes next to every dense ROI grid."""
+    return {
+        "artifact_type": "dense_embeddings",
+        "feature_dim": int(grid.shape[0]),
+        "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
+        "target_size": [int(geometry.target_size[0]), int(geometry.target_size[1])],
+        "patch_size": [int(geometry.patch_size[0]), int(geometry.patch_size[1])],
+        "encoded_size": [int(geometry.encoded_size[0]), int(geometry.encoded_size[1])],
+        "pad": [int(geometry.pad[0]), int(geometry.pad[1])],
+        "spacing_um": float(dense.spacing_um),
+        "pad_mode": dense.pad_mode,
+        "image_pad_value": dense.image_pad_value,
+        "window_size": dense.window_size,
+        "overlap": float(dense.overlap),
+        "feature_kind": dense.feature_kind,
+        "attention_blocks": [int(b) for b in dense.attention_blocks],
+        "attention_include_registers": bool(dense.attention_include_registers),
+    }
+
+
+def _patch_dense_model(monkeypatch) -> type[_FakeDenseModel]:
+    import soma.dense_slide_extraction as dse
+
+    _FakeDenseModel.calls = []
+    monkeypatch.setattr(dse, "Model", _FakeDenseModel)
+    return _FakeDenseModel
+
+
 def _patch_extraction(monkeypatch):
     """Stub hs2p sampling + slide2vec encode + the WSI mask/image region reads (offline)."""
-    import slide2vec.inference as s2v_inference
-    import slide2vec.runtime.dense_regions as s2v_dense
-    import hs2p.wsi.wsi as hs2p_wsi
     import soma.dense_slide_extraction as dse
     import soma.dense.reader as reader_mod
     import soma.tasks.segmentation as segmod
 
     # hs2p sampling → known coords per slide.
     monkeypatch.setattr(dse, "sample_slide_rois", lambda dataset, **kw: {sid: _coords_for(sid) for sid in dataset.sample_ids})
-
-    # slide2vec model load → a dummy carrying patch_size + a no-op dense transform (the
-    # streaming encode is stubbed below, so the transform is only passed through).
-    monkeypatch.setattr(
-        s2v_inference, "load_model",
-        lambda **kw: SimpleNamespace(
-            model=SimpleNamespace(patch_size=(PATCH, PATCH), get_dense_transform=lambda: None),
-            device="cpu",
-        ),
-    )
-    # A WSI that opens any path without touching disk (encode is stubbed, so it's unused).
-    monkeypatch.setattr(hs2p_wsi, "WSI", lambda *a, **kw: SimpleNamespace())
-    # slide2vec dense encode → a generator yielding one deterministic random grid per coord.
-    rng = np.random.default_rng(0)
-    monkeypatch.setattr(
-        s2v_dense, "iter_regions_dense",
-        lambda *, coordinates, **kw: (
-            rng.standard_normal((FEATURE_DIM, GRID, GRID)).astype(np.float32) for _ in coordinates
-        ),
-    )
+    _patch_dense_model(monkeypatch)
     # Mask region read → a deterministic label window per ROI origin.
     def _fake_mask_region(path, *, location, size, spacing_um, backend, tolerance):
         x, _ = location
@@ -113,7 +187,7 @@ def _config(root: Path, manifest: Path, splits: Path, *, masks: MasksConfig | No
         splits_csv=splits,
         output_root=root / "out",
         dataset_type="segmentation",
-        encoder=__import__("soma.config", fromlist=["EncoderConfig"]).EncoderConfig(name="phikon"),
+        encoder=__import__("soma.config", fromlist=["EncoderConfig"]).EncoderConfig(name=ENCODER),
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=TARGET,
             requested_spacing_um=0.5,
@@ -199,7 +273,7 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
     from soma.config import EncoderConfig
     from soma.dense_slide_extraction import sampling_signature
 
-    enc = EncoderConfig(name="phikon")
+    enc = EncoderConfig(name=ENCODER)
     pre = PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5)
     masks_a = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.1})
     masks_b = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.5})
@@ -207,7 +281,7 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
 
     def _key(sig):
         return build_dense_cache_key(
-            tile_encoder_name="phikon", target_size=(TARGET, TARGET), patch_size=(PATCH, PATCH),
+            tile_encoder_name=ENCODER, target_size=(TARGET, TARGET), patch_size=(PATCH, PATCH),
             pad_mode="reflect", execution=enc, preprocessing=pre, window_size=None, overlap=0.0,
             sampling_signature=sig,
         )
@@ -276,67 +350,34 @@ def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
         pipeline._build_slide_manifest_dense_context(run_dir=tmp_path / "out" / "run")
 
 
-def test_slide_manifest_sliding_window_encodes_via_soma_sliding(tmp_path: Path, monkeypatch):
-    """A native-only encoder (window < target) slides over each padded ROI region and
-    writes cached dense grids — the phikon@224 → 512-tile path the BEETLE config uses."""
-    from dataclasses import replace
+def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path, monkeypatch):
+    """A window smaller than the target is expressed as DenseOptions window/overlap.
 
+    This is how a native-only encoder reaches a larger supervision tile — phikon@224 over
+    512 px ROIs, the BEETLE recipe — stated here at fixture scale.
+
+    The sliding itself — encoder slid over patch-aligned windows of each padded ROI, grids
+    blended back — is slide2vec's, and is tested there. soma's remaining responsibility is
+    to state the window it wants and to cache what comes back at the target grid size.
+    """
     from soma.config import EncoderConfig
     from soma.dense_slide_extraction import SlideManifestDenseExtractor
     from soma.dataset import SegmentationManifest
-    from soma.dense.geometry import compute_dense_geometry
 
     # A manifest of ROI rows (region origins) for one slide.
     roi_manifest = tmp_path / "roi_manifest.csv"
     roi_manifest.write_text(
-        "sample_id,image_path,mask_path,region_x,region_y\n"
-        "s0__x0_y0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
-        "s0__x32_y0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
+        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
+        "s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
     )
     dataset = SegmentationManifest(roi_manifest)
-
-    import slide2vec.inference as s2v_inference
-    import hs2p.wsi.wsi as hs2p_wsi
-
-    captured: dict = {}
-
-    class _Model:
-        patch_size = (PATCH, PATCH)
-
-        def get_dense_transform(self):
-            import torchvision.transforms as T
-
-            return T.ToTensor()
-
-        def encode_tiles_dense(self, window):
-            # Record the per-window spatial size to prove sliding (window < target).
-            captured.setdefault("window_hw", tuple(int(s) for s in window.shape[-2:]))
-            b = window.shape[0]
-            gh = window.shape[-2] // PATCH
-            gw = window.shape[-1] // PATCH
-            import torch as _t
-
-            return _t.zeros(b, FEATURE_DIM, gh, gw)
-
-    monkeypatch.setattr(
-        s2v_inference, "load_model",
-        lambda **kw: SimpleNamespace(model=_Model(), device="cpu"),
-    )
-
-    class _WSI:
-        def __init__(self, *a, **kw):
-            pass
-
-        def read_region_at_spacing(self, location, spacing, size, *, tolerance, interpolation):
-            w, h = size
-            return np.zeros((h, w, 3), dtype=np.uint8)
-
-    monkeypatch.setattr(hs2p_wsi, "WSI", _WSI)
+    model = _patch_dense_model(monkeypatch)
 
     WINDOW = 16  # < TARGET (32) -> genuine sliding
     extractor = SlideManifestDenseExtractor(
         dataset,
-        EncoderConfig(name="phikon", batch_size=2),
+        EncoderConfig(name=ENCODER, batch_size=2),
         masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         preprocessing=PreprocessingConfig(
@@ -345,9 +386,46 @@ def test_slide_manifest_sliding_window_encodes_via_soma_sliding(tmp_path: Path, 
         ),
     )
     store = extractor.run(feature_dir=tmp_path / "features")
-    assert captured["window_hw"] == (WINDOW, WINDOW)  # slid at the native window, not 32
+
+    (call,) = model.calls
+    assert call["dense"].window_size == WINDOW
+    assert call["dense"].overlap == 0.5
+    assert call["dense"].target_size == TARGET
+    assert call["dense"].spacing_um == 0.5
+    assert call["regions"] == [("s0", [(0, 0), (32, 0)])]
     grid = store.load("s0__x0_y0")
     assert grid.shape == (FEATURE_DIM, GRID, GRID)  # stitched back to the target grid
+
+
+def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypatch):
+    """ROI grids live at slide2vec's ``<slide_id>/<x>_<y>.pt``, addressed from the manifest.
+
+    The ROI id is never split back apart to find its grid: the manifest's slide_id +
+    region_x/region_y are the address (ADR 0007). A slide id that itself contains the
+    ``__x``/``_y`` separators therefore resolves correctly.
+    """
+    from soma.config import EncoderConfig
+    from soma.dense_slide_extraction import SlideManifestDenseExtractor
+    from soma.dataset import SegmentationManifest
+
+    roi_manifest = tmp_path / "roi_manifest.csv"
+    roi_manifest.write_text(
+        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "s0__x1_y2__x0_y0,s0__x1_y2,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
+    )
+    dataset = SegmentationManifest(roi_manifest)
+    _patch_dense_model(monkeypatch)
+
+    store = SlideManifestDenseExtractor(
+        dataset,
+        EncoderConfig(name=ENCODER),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
+    ).run(feature_dir=tmp_path / "features")
+
+    assert (tmp_path / "features" / "dense_embeddings" / "s0__x1_y2" / "0_0.pt").is_file()
+    assert store.load("s0__x1_y2__x0_y0").shape == (FEATURE_DIM, GRID, GRID)
 
 
 # --------------------------------------------------------------------------- #
@@ -363,49 +441,22 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     from soma.dense_slide_extraction import SlideManifestDenseExtractor
     from soma.dataset import SegmentationManifest
 
-    import slide2vec.inference as s2v_inference
-    import slide2vec.runtime.dense_regions as s2v_dense
-    import hs2p.wsi.wsi as hs2p_wsi
-
     # Two slides, two ROIs each.
     roi_manifest = tmp_path / "roi_manifest.csv"
     roi_manifest.write_text(
-        "sample_id,image_path,mask_path,region_x,region_y\n"
-        "s0__x0_y0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
-        "s0__x32_y0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
-        "s1__x0_y0,/fake/s1.tif,/fake/s1_mask.tif,0,0\n"
-        "s1__x32_y0,/fake/s1.tif,/fake/s1_mask.tif,32,0\n"
+        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
+        "s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
+        "s1__x0_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,0,0\n"
+        "s1__x32_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,32,0\n"
     )
     dataset = SegmentationManifest(roi_manifest)
-
-    monkeypatch.setattr(
-        s2v_inference, "load_model",
-        lambda **kw: SimpleNamespace(
-            model=SimpleNamespace(patch_size=(PATCH, PATCH), get_dense_transform=lambda: None),
-            device="cpu",
-        ),
-    )
-
-    opened_paths: list[str] = []
-    monkeypatch.setattr(
-        hs2p_wsi, "WSI",
-        lambda path, **kw: opened_paths.append(str(path)) or SimpleNamespace(),
-    )
-
-    encoded_coords: list[list] = []
-    rng = np.random.default_rng(0)
-
-    def _encode(*, coordinates, **kw):
-        encoded_coords.append([tuple(int(v) for v in c) for c in coordinates])
-        for _ in coordinates:
-            yield rng.standard_normal((FEATURE_DIM, GRID, GRID)).astype(np.float32)
-
-    monkeypatch.setattr(s2v_dense, "iter_regions_dense", _encode)
+    model = _patch_dense_model(monkeypatch)
 
     def _make_extractor():
         return SlideManifestDenseExtractor(
             dataset,
-            EncoderConfig(name="phikon", batch_size=2),
+            EncoderConfig(name=ENCODER, batch_size=2),
             masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
             sampling=SamplingConfig(strategy="joint", output_mode="merged"),
             preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
@@ -421,25 +472,23 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     features_dir = store.feature_dir
 
     # Simulate a crash before s1's grids landed: drop s1's grids + sidecars.
-    for sid in ("s1__x0_y0", "s1__x32_y0"):
-        (features_dir / f"{sid}.pt").unlink()
-        (features_dir / f"{sid}{DENSE_SIDECAR_SUFFIX}").unlink()
+    for x in (0, 32):
+        (features_dir / "s1" / f"{x}_0.pt").unlink()
+        (features_dir / "s1" / f"{x}_0{DENSE_SIDECAR_SUFFIX}").unlink()
     s0_mtimes = {
-        sid: (features_dir / f"{sid}.pt").stat().st_mtime_ns
-        for sid in ("s0__x0_y0", "s0__x32_y0")
+        x: (features_dir / "s0" / f"{x}_0.pt").stat().st_mtime_ns for x in (0, 32)
     }
 
     # Run 2: resume — only s1's ROIs are absent.
-    encoded_coords.clear()
-    opened_paths.clear()
+    model.calls.clear()
     resumed = _make_extractor().run(feature_dir=feature_dir)
 
-    # Exactly the absent set re-encoded; the fully-cached slide never opened.
-    assert encoded_coords == [[(0, 0), (32, 0)]]
-    assert opened_paths == ["/fake/s1.tif"]
+    # Exactly the absent set re-encoded; the fully-cached slide is never named, so
+    # slide2vec never opens it.
+    assert [call["regions"] for call in model.calls] == [[("s1", [(0, 0), (32, 0)])]]
     # The present (s0) grids are left byte-for-byte untouched.
-    for sid, mtime in s0_mtimes.items():
-        assert (features_dir / f"{sid}.pt").stat().st_mtime_ns == mtime
+    for x, mtime in s0_mtimes.items():
+        assert (features_dir / "s0" / f"{x}_0.pt").stat().st_mtime_ns == mtime
     # And the resume produced a complete, readable store.
     assert sorted(resumed.available_samples) == [
         "s0__x0_y0", "s0__x32_y0", "s1__x0_y0", "s1__x32_y0"

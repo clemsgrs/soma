@@ -27,6 +27,12 @@ _FEATURE_TYPE_TO_RANK = {
 
 _CACHE_KIND_TO_FEATURES_SUBDIR = {
     "tile": "tile_embeddings",
+    # Given-geometry images (pre-cropped patch benchmarks) are their own kind, not a
+    # variant of "tile": slide2vec writes them to ``image_embeddings/`` and their sidecar
+    # records ``encoder_input_regime="given"``, where a tile bag's geometry was declared.
+    # Keeping the kinds distinct means soma's features_dir *is* slide2vec's output layout,
+    # with no translation step between the two schemas (ADR 0007).
+    "image": "image_embeddings",
     "slide": "slide_embeddings",
     "patient": "patient_embeddings",
     "hierarchical": "hierarchical_embeddings",
@@ -42,16 +48,20 @@ def _features_subdir_for_kind(cache_kind: str) -> str:
 
 
 def _list_feature_filenames(features_dir: Path) -> set[str]:
-    """List ``features_dir`` once, returning the set of existing filenames.
+    """Walk ``features_dir`` once, returning every entry's path relative to it.
 
-    Single source of truth for cache-content existence: one ``readdir`` answers
-    both the ``<id>.pt`` and ``<id>.meta.json`` questions for *every* expected id,
-    so the validator and :meth:`FeatureCacheResolution.missing_sample_ids` decide
-    presence by set membership instead of a per-id ``stat`` — the per-launch tax
-    that, on a slow/near-full network mount, dwarfs the useful work and scales with
-    cache size. Both consumers route through this helper so they cannot drift.
+    Single source of truth for cache-content existence: one walk answers both the
+    ``<stem>.pt`` and ``<stem>.meta.json`` questions for *every* expected id, so the
+    validator and :meth:`FeatureCacheResolution.missing_sample_ids` decide presence by
+    set membership instead of a per-id ``stat`` — the per-launch tax that, on a slow or
+    near-full network mount, dwarfs the useful work and scales with cache size. Both
+    consumers route through this helper so they cannot drift.
+
+    Entries are keyed by *relative* posix path rather than bare filename because dense
+    ROI grids are namespaced per slide (``<slide>/<x>_<y>.pt``, slide2vec's layout). For
+    the flat kinds the relative path *is* the filename, so nothing changes for them.
     """
-    return {entry.name for entry in features_dir.glob("*")}
+    return {entry.relative_to(features_dir).as_posix() for entry in features_dir.rglob("*")}
 
 
 @dataclass(frozen=True)
@@ -78,13 +88,23 @@ class FeatureCacheResolution(BaseCacheResolution):
     cache_ids: tuple[str, ...]
     cache_stem_by_id: dict[str, str]
     validation: CacheValidationResult
+    # Where each id's payload lives *inside* features_dir, without the extension. Defaults
+    # to the cache id (the flat layout every pooled kind uses). Dense ROI grids override
+    # it with slide2vec's per-slide namespacing, ``<slide_id>/<x>_<y>`` — recorded by the
+    # caller from its manifest, never re-derived by splitting the ROI id apart (ADR 0007).
+    payload_stem_by_id: dict[str, str] | None = None
 
     @property
     def empty_sample_ids(self) -> set[str]:
         return {str(s) for s in self.metadata.get("empty_sample_ids", [])}
 
+    def payload_stem(self, cache_id: str) -> str:
+        if self.payload_stem_by_id is None:
+            return str(cache_id)
+        return str(self.payload_stem_by_id[str(cache_id)])
+
     def feature_path_for_id(self, cache_id: str) -> Path:
-        return self.features_dir / f"{cache_id}.pt"
+        return self.features_dir / f"{self.payload_stem(cache_id)}.pt"
 
     def missing_sample_ids(self) -> list[str]:
         expected = self.cache_ids
@@ -118,10 +138,11 @@ class FeatureCacheResolution(BaseCacheResolution):
             if cached_signature is None or cached_signature != expected_signature:
                 missing.append(cache_id)
                 continue
-            if f"{cache_id}.pt" not in existing:
+            payload_stem = self.payload_stem(cache_id)
+            if f"{payload_stem}.pt" not in existing:
                 missing.append(cache_id)
                 continue
-            if dense_sidecar_suffix is not None and f"{cache_id}{dense_sidecar_suffix}" not in existing:
+            if dense_sidecar_suffix is not None and f"{payload_stem}{dense_sidecar_suffix}" not in existing:
                 missing.append(cache_id)
         return missing
 

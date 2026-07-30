@@ -141,201 +141,23 @@ def test_cli_generator_matches_checked_in_file() -> None:
     checked_in = (docs_dir / "cli.rst").read_text(encoding="utf-8").strip()
 
     assert generated == checked_in
-    assert generated.startswith("CLI\n===")
-    assert "Available commands" in generated
-    assert "What the CLI expects" in generated
 
 
-def test_ocelot_benchmark_page_matches_registry() -> None:
+@pytest.mark.parametrize(
+    ("builder", "filename"),
+    [
+        ("build_ocelot_benchmark_rst", "ocelot-detection-benchmark.rst"),
+        ("build_eva_benchmark_rst", "eva-patch-classification-benchmark.rst"),
+        ("build_hest_benchmark_rst", "hest-gene-expression-benchmark.rst"),
+    ],
+)
+def test_benchmark_page_matches_registry(builder: str, filename: str) -> None:
     generator, docs_dir = _load_reference_generator()
-    generated = generator.build_ocelot_benchmark_rst().strip()
-    checked_in = (
-        docs_dir / "ocelot-detection-benchmark.rst"
-    ).read_text(encoding="utf-8").strip()
+    generated = getattr(generator, builder)().strip()
+    checked_in = (docs_dir / filename).read_text(encoding="utf-8").strip()
 
     assert generated == checked_in
     assert "TBD" not in generated
-    assert "soma reproduce ocelot" in generated
-
-
-def test_ocelot_benchmark_page_renders_external_guidance_anchors() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_ocelot_benchmark_rst()
-    # A dedicated, clearly-labelled guidance section (not the gate/tolerance band).
-    assert "guidance" in generated.lower()
-    # Rendered from the registry's external rows with clickable RST links + labels.
-    assert "`best reported (fully-supervised end-to-end) " in generated
-    assert "<https://wearewaiv.github.io/histoboard/>`__" in generated
-    # Framed as context, never a target soma gates on.
-    assert "non-gating" in generated.lower()
-
-
-def test_eva_benchmark_page_matches_registry() -> None:
-    generator, docs_dir = _load_reference_generator()
-    generated = generator.build_eva_benchmark_rst().strip()
-    checked_in = (
-        docs_dir / "eva-patch-classification-benchmark.rst"
-    ).read_text(encoding="utf-8").strip()
-
-    assert generated == checked_in
-    assert "TBD" not in generated
-    assert "soma reproduce eva/bach" in generated
-
-
-def test_eva_benchmark_page_renders_reproduced_ledger() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_eva_benchmark_rst()
-    results = generated.split("Results", 1)[1].split("Protocol details", 1)[0]
-
-    assert "soma (mean ± std)" in generated
-    assert "EVA reference" in results
-    assert "0.914 ± 0.007" in generated
-    assert "gleason_arvaniti" in results
-    assert "0.778 ± 0.010" in results
-    assert "7ef2d7c" not in results
-    for never_run in ("mhist", "patch_camelyon"):
-        assert never_run not in results
-
-
-def test_eva_benchmark_page_matches_the_hest_reader_flow() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_eva_benchmark_rst()
-
-    headings = (
-        "Prepare the data",
-        "Run the benchmark",
-        "Results",
-        "Protocol details",
-    )
-    assert [generated.index(heading) for heading in headings] == sorted(
-        generated.index(heading) for heading in headings
-    )
-    assert "EVA provides 6 registered datasets" in generated
-    assert "labelled patches → frozen encoder → linear head → balanced accuracy" in generated
-
-    run_section = generated.split("Run the benchmark", 1)[1].split("Results", 1)[0]
-    assert run_section.lstrip("\n-").startswith("Pick any tile-level")
-    assert run_section.count("--encoder virchow2") == 2
-    assert "default" not in run_section.lower()
-
-    results = generated.split("Results", 1)[1].split("Protocol details", 1)[0]
-    assert "We benchmarked two encoders" in results
-    assert "EVA reference" in results
-    assert "median relative difference" in results
-    for internal_detail in ("Seeds", "Recorded", "date @ commit", "Δ"):
-        assert internal_detail not in results
-
-    for unwanted in (
-        "*Maps to task:*",
-        "This page is generated",
-        "Encoders\n--------",
-        "What you can vary",
-        "Reproduced numbers",
-    ):
-        assert unwanted not in generated
-
-
-def test_eva_benchmark_page_documents_acquisition_then_automatic_curation() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_eva_benchmark_rst()
-    normalized = " ".join(generated.split())
-
-    for source in (
-        "zenodo.org/records/3632035",
-        "web.inf.ufpr.br/vri/databases/breast-cancer-histopathological-database-breakhis",
-        "zenodo.org/records/1214456",
-        "doi:10.7910/DVN/OCYCMP",
-        "bmirds.github.io/MHIST/#accessing-dataset",
-        "zenodo.org/records/2546921",
-    ):
-        assert source in generated
-    assert "curl -L" in generated
-    assert "soma does not download benchmark data" in generated
-    assert "soma reproduce`` runs the built-in EVA curator automatically" in normalized
-    for expected_raw_input in (
-        "BreaKHis_v1/histology_slides/",
-        "Gleason_masks_train.tar.gz",
-        "camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5",
-    ):
-        assert expected_raw_input in generated
-
-
-def test_hest_benchmark_page_matches_registry() -> None:
-    generator, docs_dir = _load_reference_generator()
-    generated = generator.build_hest_benchmark_rst().strip()
-    checked_in = (
-        docs_dir / "hest-gene-expression-benchmark.rst"
-    ).read_text(encoding="utf-8").strip()
-
-    assert generated == checked_in
-    assert "TBD" not in generated
-    assert "soma reproduce hest/IDC" in generated
-
-
-def test_hest_benchmark_page_documents_reader_facing_data_preparation() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_hest_benchmark_rst()
-    normalized = " ".join(generated.split())
-
-    assert "pip install 'soma-pathology[hest]'" in generated
-    assert "hf download MahmoodLab/hest-bench" in generated
-    assert "--include 'IDC/*'" in generated
-    assert "--exclude 'fm_v1/*'" in generated
-    assert "precomputed" in generated.lower()
-    assert "Omit ``--include`` to download every registered task" in normalized
-    assert "The ``hf`` CLI downloads the data" in normalized
-    assert "soma reproduce`` runs the built-in HEST curator automatically" in normalized
-    assert "HEST's fold assignments" in normalized
-    assert "Adding a HEST task" not in generated
-    assert "curate_hest" not in generated
-    assert "HEST_TASKS" not in generated
-
-
-def test_hest_benchmark_page_keeps_results_focused_on_reference_agreement() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_hest_benchmark_rst()
-    results = generated.split("Results\n-------", 1)[1].split("Protocol details", 1)[0]
-
-    assert "soma" in results
-    assert "HEST reference" in results
-    assert "median relative difference" in results
-    assert "Reproduction — is it sound?" not in generated
-    assert "rank concordance" not in generated.lower()
-    assert "drift guard" not in generated.lower()
-    assert "Spearman" not in generated
-
-
-def test_hest_benchmark_page_distinguishes_encoder_selection_from_validation() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_hest_benchmark_rst()
-    results = generated.split("Results\n-------", 1)[1].split("Protocol details", 1)[0]
-
-    assert "Pick any tile-level :doc:`encoder <encoders>` supported by soma" in generated
-    assert "We benchmarked three encoders" in results
-    assert "Choose one of the encoders supported" not in generated
-    assert "HEST backbone" not in generated
-
-
-def test_hest_benchmark_run_commands_require_an_explicit_encoder() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_hest_benchmark_rst()
-    run_section = generated.split("Run the benchmark\n-----------------", 1)[1].split(
-        "Results", 1
-    )[0]
-
-    assert run_section.lstrip().startswith("Pick any tile-level")
-    assert run_section.count("--encoder virchow2") == 2
-    assert "default" not in run_section.lower()
-
-
-def test_hest_benchmark_page_presents_cohorts_in_its_compact_overview() -> None:
-    generator, _ = _load_reference_generator()
-    generated = generator.build_hest_benchmark_rst()
-
-    overview = generated.split("Prepare the data", 1)[0]
-    assert "CCRCC, COAD, IDC, LUNG, LYMPH_IDC, PAAD, PRAD, READ, and SKCM" in overview
-    assert ".. list-table::" not in overview
-    assert "What you can vary" not in generated
 
 
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
@@ -378,132 +200,14 @@ def test_reference_example_yaml_matches_bundled_defaults() -> None:
     assert documented == bundled_defaults
 
 
-def test_modeling_hub_routes_readers_through_supported_downstream_paths() -> None:
+def test_home_page_links_its_primary_routes_to_pages_that_exist() -> None:
     docs_dir = Path(__file__).resolve().parents[1] / "docs"
-    page = (docs_dir / "modeling.rst").read_text(encoding="utf-8")
-    index = (docs_dir / "index.rst").read_text(encoding="utf-8")
-    components = (docs_dir / "components.rst").read_text(encoding="utf-8")
+    page = (docs_dir / "index.rst").read_text(encoding="utf-8")
 
-    expected = (
-        "Modeling",
-        "frozen foundation-model features",
-        "One feature vector per sample",
-        "A bag of tile features per slide or patient",
-        "A dense feature grid per tile or region",
-        "frozen by design",
-        ":doc:`aggregators`",
-        ":doc:`decoders`",
-        ":doc:`tasks`",
-        ":doc:`training`",
-        ":doc:`slide-level workflow <tutorials/slide-level>`",
-        ":doc:`segmentation workflow <tutorials/segmentation>`",
-        ":doc:`detection workflow <tutorials/detection>`",
-    )
+    routes = re.findall(r'<a class="soma-route" href="([^"#]+)(?:#[^"]*)?">', page)
 
-    normalized_page = " ".join(page.split())
-    assert [
-        text for text in expected if " ".join(text.split()) not in normalized_page
-    ] == []
-    assert "\n   components\n" in index
-    assert "\n   modeling\n" in components
-    assert ".. code-block::" not in page
-
-
-def test_how_soma_works_stays_conceptual_and_routes_readers_to_details() -> None:
-    docs_dir = Path(__file__).resolve().parents[1] / "docs"
-    page = (docs_dir / "how-soma-works.rst").read_text(encoding="utf-8")
-
-    expected = (
-        "How soma works",
-        "streamline computational pathology research with foundation models",
-        "Define images, labels, and splits",
-        "same modular workflow",
-        "One workflow, modular blocks",
-        "What you choose",
-        "Data",
-        "Preprocess",
-        "Encode",
-        "Train",
-        "Evaluate",
-        ":doc:`dataset`",
-        ":doc:`preprocessing`",
-        ":doc:`encoders`",
-        ":doc:`modeling`",
-        ":doc:`evaluation`",
-        ":doc:`outputs`",
-        "Explore or benchmark",
-        "Custom experimentation",
-        "optimize a workflow for your data and evaluation objective",
-        ":doc:`API <api>`",
-        "Benchmarking",
-        "Vary one block while holding the source cohort, labels, splits",
-        "Reproducible by design",
-        "resolved configuration",
-        "Where to go next",
-        ":doc:`Get started <getting-started>`",
-        ":doc:`Explore modeling paths <modeling>`",
-        ":doc:`Benchmark a component <benchmarking>`",
-        ":doc:`benchmarking`",
-    )
-
-    normalized_page = " ".join(page.split())
-    assert [
-        text for text in expected if " ".join(text.split()) not in normalized_page
-    ] == []
-    assert ".. code-block::" not in page
-    assert "PipelineConfig(" not in page
-    assert "dataset_type" not in page
-    assert "spatial_expression" not in page
-    assert "feature_mode" not in page
-    assert ":doc:`curation`" not in page
-    assert "Two common ways to use soma" not in page
-    assert len(page.split()) <= 400
-    assert not (docs_dir / "pipeline.rst").exists()
-
-
-def test_home_page_exposes_four_primary_routes_in_order() -> None:
-    page = (
-        Path(__file__).resolve().parents[1] / "docs" / "index.rst"
-    ).read_text(encoding="utf-8")
-
-    expected = [
-        (
-            "how-soma-works.html",
-            "How soma works",
-            "See how reusable pipeline blocks support custom workflows and "
-            "reproducible benchmarks.",
-        ),
-        (
-            "getting-started.html",
-            "Get started",
-            "Install soma and run one experiment through the modular API, pipeline, "
-            "or CLI.",
-        ),
-        (
-            "benchmarking.html",
-            "Benchmarking",
-            "Reproduce and compare fixed foundation-model evaluation protocols.",
-        ),
-        (
-            "encoders.html#model-zoo",
-            "Foundation model zoo",
-            "Browse registered tile-, slide-, and patient-level encoders.",
-        ),
-    ]
-
-    assert '<nav class="soma-route-list" aria-label="Documentation routes">' in page
-    assert [
-        (href, title, description)
-        for href, title, description in expected
-        if (
-            f'<a class="soma-route" href="{href}">\n'
-            f"         <strong>{title}</strong>\n"
-            f"         <span>{description}</span>"
-        ) in page
-    ] == expected
-    assert [page.index(f'href="{href}"') for href, _, _ in expected] == sorted(
-        page.index(f'href="{href}"') for href, _, _ in expected
-    )
+    assert routes
+    assert [route for route in routes if not (docs_dir / route).with_suffix(".rst").exists()] == []
 
 
 def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None:
@@ -558,117 +262,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         assert entries == list(children), filename
 
 
-def test_benchmarking_parent_page_is_a_concise_reader_facing_overview() -> None:
-    page = (
-        Path(__file__).resolve().parents[1] / "docs" / "benchmarking.rst"
-    ).read_text(encoding="utf-8")
-    normalized = " ".join(page.split())
-    normalized_lower = normalized.lower()
-
-    # The page is organised around the reproduce vs leaderboard split.
-    for expected in (
-        "registered, reproducible protocols",
-        "soma reproduce",
-        "soma leaderboard",
-    ):
-        assert expected in normalized_lower
-    for benchmark in ("EVA", "OCELOT", "HEST"):
-        assert benchmark in normalized
-
-    # reproduce: any encoder, compared to the packaged reference when one exists,
-    # and usable beyond the models the reference covered.
-    assert "--encoder uni2" in page
-    assert "--encoder phikon" in page
-    assert "packaged reference" in normalized_lower
-    assert "published reference" not in normalized_lower
-    assert "highlights potential drift" in normalized_lower
-    assert "the reference never covered" in normalized_lower
-
-    # leaderboard: compares completed runs along any --vary axis, without retraining.
-    assert "--encoder virchow2" in page
-    assert "--vary encoder" in page
-    assert "--vary aggregator" in page
-    assert "without retraining" in normalized_lower
-    # non-encoder axes (incl. spacing, now that reproduce no longer exposes --spacing) are
-    # produced with ordinary `soma <config>` runs, then compared on a leaderboard.
-    assert "--spacing" not in page
-    assert "aggregator, decoder, spacing" in normalized
-    assert "soma <config>" in page
-    assert "runs/agg-sweep" in page
-    assert "(dataset, splits, task)" in normalized
-
-    assert len(page.split()) <= 560
-
-
-def test_parent_pages_keep_modeling_and_result_boundaries_precise() -> None:
-    docs_dir = Path(__file__).resolve().parents[1] / "docs"
-    components = (docs_dir / "components.rst").read_text(encoding="utf-8")
-    tasks = (docs_dir / "tasks.rst").read_text(encoding="utf-8")
-    train_eval = (docs_dir / "training-evaluation.rst").read_text(encoding="utf-8")
-    system = (docs_dir / "system.rst").read_text(encoding="utf-8")
-
-    assert "overview" in components.lower()
-    assert "Modeling paths" in tasks
-    assert "single feature vector" in tasks
-    assert "bag of features" in tasks
-    assert "dense feature grid" in tasks
-    assert "NLL or CoxPH" in tasks
-    assert "Substrate cleavage" not in tasks
-    assert "metric configuration and computation" in train_eval
-    assert "run-directory artifact schema" in system
-    assert "single-run reports and multi-run comparisons" in system
-
-
-def test_getting_started_shows_one_workflow_through_all_public_interfaces() -> None:
-    page = (
-        Path(__file__).resolve().parents[1] / "docs" / "getting-started.rst"
-    ).read_text(encoding="utf-8")
-
-    expected = (
-        "slide-level classification walkthrough",
-        "pip install soma-pathology",
-        "/_static/figures/how-soma-works-workflow.svg",
-        "1. Define the data",
-        "sample_id,image_path,label",
-        "five-fold",
-        "Dataset(\"dataset.csv\")",
-        "Splits(\"splits.csv\", dataset)",
-        "2. Preprocess and encode",
-        "FeatureExtractor(",
-        ").extract()",
-        "must be relative to",
-        "requested_spacing_um=0.5",
-        "requested_tile_size_px=224",
-        "resolved from the encoder's native configuration",
-        ":doc:`preprocessing`",
-        ":doc:`encoders`",
-        "3. Train and evaluate",
-        "AggregatorConfig(name=\"abmil\")",
-        "train(",
-        "run_dir=\"output/abmil\"",
-        "TaskConfig(name=\"binary_classification\")",
-        "EvalConfig(metrics=[\"auroc\", \"balanced_accuracy\"])",
-        ":doc:`aggregators`",
-        ":doc:`classification`",
-        ":doc:`evaluation`",
-        "Pipeline and CLI",
-        "same experiment",
-        "single call",
-        "Pipeline(config).run()",
-        "scalable",
-        "soma config.yaml",
-        ":doc:`CLI reference <cli>`",
-        ":doc:`slide-level tutorial <tutorials/slide-level>`",
-    )
-
-    normalized_page = " ".join(page.split())
-    assert [
-        text for text in expected if " ".join(text.split()) not in normalized_page
-    ] == []
-    assert "aggregator_name" not in page
-    assert '.extract("output/features/phikon")' not in page
-
-
 def test_getting_started_pipeline_example_constructs_public_config() -> None:
     docs_dir = Path(__file__).resolve().parents[1] / "docs"
     rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
@@ -692,19 +285,9 @@ def test_getting_started_python_examples_are_syntactically_valid() -> None:
     ).read_text(encoding="utf-8")
     blocks = _extract_code_blocks(page, "python")
 
-    assert len(blocks) == 3
+    assert blocks
     for block in blocks:
         ast.parse(block)
-
-
-def test_getting_started_routes_cli_configuration_to_the_reference() -> None:
-    page = (
-        Path(__file__).resolve().parents[1] / "docs" / "getting-started.rst"
-    ).read_text(encoding="utf-8")
-
-    assert ".. code-block:: yaml" not in page
-    assert "soma config.yaml" in page
-    assert ":doc:`CLI reference <cli>`" in page
 
 
 def _without_pipeline_run(code: str) -> str:

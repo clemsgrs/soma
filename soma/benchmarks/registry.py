@@ -247,11 +247,11 @@ class MeasuredRow:
 
     Mirrors :class:`ReferenceRow`'s key convention (``key`` holds only the *populated* key
     cells) so a measured row joins the reference row at the same ``key`` + ``metric``.
-    ``std``/``n_seeds`` are ``None`` for a single re-scored run (``--from-run-dir``). The
-    provenance trio (``date``, ``soma_commit``, ``slide2vec_version``) pins the environment
-    that produced the number — a reproduced value is only meaningful with the code and
-    feature-extractor that made it. ``source`` is a free-text note (mirrors ``reference``'s
-    ``source`` column).
+    For a single re-scored run (``--from-run-dir``), ``std`` is ``None`` and ``n_seeds`` is
+    ``1``. The provenance trio (``date``, ``soma_commit``, ``slide2vec_version``) pins the
+    environment that produced the number — a reproduced value is only meaningful with the
+    code and feature-extractor that made it. ``source`` is a free-text note (mirrors
+    ``reference``'s ``source`` column).
     """
 
     key: dict[str, str]

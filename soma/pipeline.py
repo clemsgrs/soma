@@ -3218,12 +3218,14 @@ class Pipeline:
         """Load the frozen encoder once and bundle it with geometry/transform for live.
 
         Mirrors :meth:`DenseTileFeatureExtractor.run`'s encoder construction (same
-        ``load_model`` + ``dynamic_img_size`` + dense transform + resolved precision) so
+        ``load_model`` under the same declared dense contract + dense transform + resolved
+        precision) so
         a live-no-aug run reproduces the cached features exactly. ``feature_dim`` comes
         from a probe forward — the same ``grid.shape[1]`` source the cached extractor
         uses — which also fails fast if the encoder lacks a patch grid.
         """
         import torch as _torch
+        from slide2vec.api import EncoderInputContract
         from slide2vec.inference import load_model
         from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
 
@@ -3253,7 +3255,11 @@ class Pipeline:
             name=self._config.encoder.name,
             output_variant=self._config.encoder.output_variant,
             allow_non_recommended_settings=self._config.encoder.allow_non_recommended_settings,
-            dynamic_img_size=True,
+            encoder_input=EncoderInputContract.declared_dense(
+                self._config.encoder.name,
+                target_size_px=int(target_size),
+                window_size=preprocessing.dense_window_size,
+            ),
         )
         encoder = loaded.model
         device = loaded.device
