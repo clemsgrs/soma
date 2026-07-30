@@ -9,10 +9,10 @@ and that a field hs2p adds cannot go silently unreachable.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
-from hs2p.configs import TilingConfig
+from hs2p.configs import FilterConfig, SegmentationConfig, TilingConfig
 
 from soma.cache.keys import preprocessing_signature
 from soma.config import MasksConfig, PreprocessingConfig, SamplingConfig
@@ -99,6 +99,48 @@ def test_an_unresolved_config_still_has_a_signature():
     assert signature["requested_spacing_um"] is None
     assert signature["requested_tile_size_px"] is None
     assert signature["mask_backend"] == "auto"
+
+
+def test_slide2vec_segmentation_defaults_match_hs2p():
+    """The composed segmentation section stays on hs2p's explicit public contract."""
+    expected = {
+        "method": "hsv",
+        "downsample": 64,
+        "sthresh": 8,
+        "sthresh_up": 255,
+        "mthresh": 7,
+        "close": 4,
+        "sam2_checkpoint_path": None,
+        "sam2_config_path": None,
+        "sam2_device": "cpu",
+        "sam2_num_workers": None,
+    }
+
+    assert build_preprocessing_config(_resolved()).segmentation == expected
+    assert asdict(SegmentationConfig(method="hsv")) == expected
+
+
+def test_slide2vec_filtering_defaults_match_hs2p():
+    """The composed filtering section stays on hs2p's explicit public contract."""
+    expected = {
+        "ref_tile_size": 224,
+        "a_t": 4,
+        "a_h": 2,
+        "filter_white": False,
+        "filter_black": False,
+        "white_threshold": 220,
+        "black_threshold": 25,
+        "fraction_threshold": 0.9,
+        "filter_grayspace": False,
+        "grayspace_saturation_threshold": 0.05,
+        "grayspace_fraction_threshold": 0.6,
+        "filter_blur": False,
+        "blur_threshold": 50.0,
+        "qc_spacing_um": 2.0,
+    }
+
+    assert build_preprocessing_config(_resolved()).filtering == expected
+    assert asdict(FilterConfig(ref_tile_size=224, a_t=4)) == expected
 
 
 def test_independent_sampling_is_decided_once():
