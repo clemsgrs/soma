@@ -97,8 +97,9 @@ Encoder results
 
 Frozen-probe ``mean_f1`` on OCELOT test across foundation-model encoders — each a
 **frozen** encoder feeding the same ``lightweight_conv`` decoder at 0.2 µm/px, with
-per-class score thresholds swept on ``tune`` and applied once to ``test``, averaged
-over 3 seeds. ``Δ`` is against the Virchow2 anchor band above.
+per-class score thresholds swept on ``tune`` and applied once to ``test``. The
+``Seeds`` column states how many runs each ledger entry aggregates; ``Δ`` is against
+the Virchow2 anchor band above.
 
 .. list-table::
    :header-rows: 1
@@ -151,6 +152,12 @@ over 3 seeds. ``Δ`` is against the Virchow2 anchor band above.
      - 0.700
      - -0.043
      - 2026-07-15 @ ``54601e4``
+   * - virchow2
+     - 0.700
+     - 1
+     - 0.700
+     - +0.001
+     - 2026-07-30 @ ``16d9ddb``
 
 These frozen-probe encoder results accompany an upcoming publication — Grisi
 *et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;

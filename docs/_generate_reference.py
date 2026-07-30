@@ -506,8 +506,9 @@ def build_ocelot_benchmark_rst() -> str:
         "Encoder results\n---------------\n\n"
         "Frozen-probe ``mean_f1`` on OCELOT test across foundation-model encoders — each a\n"
         "**frozen** encoder feeding the same ``lightweight_conv`` decoder at 0.2 µm/px, with\n"
-        "per-class score thresholds swept on ``tune`` and applied once to ``test``, averaged\n"
-        "over 3 seeds. ``Δ`` is against the Virchow2 anchor band above.\n\n"
+        "per-class score thresholds swept on ``tune`` and applied once to ``test``. The\n"
+        "``Seeds`` column states how many runs each ledger entry aggregates; ``Δ`` is against\n"
+        "the Virchow2 anchor band above.\n\n"
         + _reproduced_table("ocelot", ("encoder",))
         + "\n\nThese frozen-probe encoder results accompany an upcoming publication — Grisi\n"
         "*et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;\n"

@@ -333,18 +333,56 @@ def _record_reference_row(benchmark, axes: dict[str, Any], gate_row):
     return external[0] if len(external) == 1 else None
 
 
-def _record_result(benchmark, row, measured: float, std: float | None, n_seeds: int | None) -> None:
+def _record_axes(benchmark, axes: dict[str, Any], run_dir: str | Path | None) -> dict[str, Any]:
+    """The varied-axis values a ``--record`` row must be attributable by.
+
+    A **broad** reference row states one config-agnostic band (OCELOT's) and so carries an
+    *empty* key. Copying it verbatim appends a measurement no reader can attribute, and
+    which :func:`~soma.benchmarks.reproduction.latest_measurements` drops outright because
+    its encoder is ``None`` — recorded in appearance only. So resolve the benchmark's varied
+    axes independently: what the CLI made explicit, falling back to the run's own recorded
+    spec for anything left implicit (an omitted ``--encoder`` means the benchmark's anchor,
+    which only the run knows). Axes that resolve nowhere are left out rather than guessed.
+    """
+    resolved = {
+        axis: axes[axis] for axis in benchmark.facet.varied if axes.get(axis) not in (None, "")
+    }
+    missing = [axis for axis in benchmark.facet.varied if axis not in resolved]
+    if missing and run_dir is not None:
+        for axis, value in _from_run_dir_axes(benchmark, run_dir).items():
+            if axis in missing:
+                resolved[axis] = value
+    return resolved
+
+
+def _record_result(
+    benchmark,
+    row,
+    measured: float,
+    std: float | None,
+    n_seeds: int | None,
+    key_axes: dict[str, Any] | None = None,
+) -> None:
     """Append a reproduced-measurement row to the benchmark's results ledger (``--record``).
 
     Keys and metric are copied from the matched reference ``row`` (a **gate** row, or an
     **external** row for an external-only benchmark) so the recorded measurement joins its
     reference at ``key`` + ``metric``; provenance is captured at run time.
+
+    ``key_axes`` fills key columns the reference leaves empty — see :func:`_record_axes`. A
+    keyed reference (EVA, HEST) already states them, so this only bites for a broad one;
+    values the reference does state always win, since that is the cell being joined.
     """
     from soma.benchmarks import MeasuredRow, append_result
 
+    key = dict(row.key)
+    for axis, value in (key_axes or {}).items():
+        if not key.get(axis):
+            key[axis] = value
+
     date, commit, slide2vec_version = _provenance()
     measured_row = MeasuredRow(
-        key=dict(row.key),
+        key=key,
         metric=row.metric,
         measured=measured,
         std=std,
@@ -354,7 +392,7 @@ def _record_result(benchmark, row, measured: float, std: float | None, n_seeds: 
         slide2vec_version=slide2vec_version,
         source="soma reproduce --record",
     )
-    path = append_result(_results_table_name(benchmark), measured_row, key_order=list(row.key))
+    path = append_result(_results_table_name(benchmark), measured_row, key_order=list(key))
     print(f"  recorded → {path}")
 
 
@@ -439,11 +477,20 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         metrics = benchmark.score(args.from_run_dir)
         measured = float(metrics[benchmark.primary_metric])
         if getattr(args, "record", False):
-            # A re-scored single run has no seed spread (std/n_seeds are None). Key the ledger
-            # entry off the gate row, or the external row for an external-only benchmark.
+            # A re-scored single run has no seed spread, so std is None — but it *is* one
+            # seed, and an empty n_seeds reads as "unknown" rather than "one". Key the ledger
+            # entry off the gate row, or the external row for an external-only benchmark,
+            # with the varied axes filled from the run itself.
             record_row = _record_reference_row(benchmark, axes, row)
             if record_row is not None:
-                _record_result(benchmark, record_row, measured, std=None, n_seeds=None)
+                _record_result(
+                    benchmark,
+                    record_row,
+                    measured,
+                    std=None,
+                    n_seeds=1,
+                    key_axes=_record_axes(benchmark, axes, args.from_run_dir),
+                )
             else:
                 print("  (no reference row to key --record on; nothing recorded)")
         return _finish(measured)
@@ -510,7 +557,16 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         record_row = _record_reference_row(benchmark, axes, row)
         if record_row is not None:
             std = statistics.stdev(measured_values) if len(measured_values) > 1 else 0.0
-            _record_result(benchmark, record_row, measured, std=std, n_seeds=len(seeds))
+            _record_result(
+                benchmark,
+                record_row,
+                measured,
+                std=std,
+                n_seeds=len(seeds),
+                # seed_root is the last seed's output; every seed shares the varied axes,
+                # so it answers "which encoder did this actually run" for all of them.
+                key_axes=_record_axes(benchmark, axes, seed_root),
+            )
         else:
             print("  (no reference row to key --record on; nothing recorded)")
     return _finish(measured)
