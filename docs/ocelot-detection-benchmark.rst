@@ -97,8 +97,9 @@ Encoder results
 
 Frozen-probe ``mean_f1`` on OCELOT test across foundation-model encoders — each a
 **frozen** encoder feeding the same ``lightweight_conv`` decoder at 0.2 µm/px, with
-per-class score thresholds swept on ``tune`` and applied once to ``test``, averaged
-over 3 seeds. ``Δ`` is against the Virchow2 anchor band above.
+per-class score thresholds swept on ``tune`` and applied once to ``test``. The
+``Seeds`` column states how many runs each ledger entry aggregates; ``Δ`` is against
+the Virchow2 anchor band above.
 
 .. list-table::
    :header-rows: 1

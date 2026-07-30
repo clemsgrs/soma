@@ -471,8 +471,14 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
 def test_record_axes_prefers_explicit_axis_over_the_run_dir(tmp_path):
     """An explicit ``--encoder`` wins; the run dir only fills what the CLI left implicit."""
     benchmark = registry_mod.get_benchmark("ocelot")
+    run_dir = _write_run(
+        tmp_path,
+        encoder="virchow2",
+        balanced_accuracy=0.70,
+    )
 
-    assert cli._record_axes(benchmark, {"encoder": "uni2"}, tmp_path) == {"encoder": "uni2"}
+    assert cli._record_axes(benchmark, {}, run_dir) == {"encoder": "virchow2"}
+    assert cli._record_axes(benchmark, {"encoder": "uni2"}, run_dir) == {"encoder": "uni2"}
     # Nothing explicit and nothing resolvable on disk -> omitted, never guessed.
     assert cli._record_axes(benchmark, {}, None) == {}
 
