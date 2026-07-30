@@ -151,6 +151,12 @@ over 3 seeds. ``Δ`` is against the Virchow2 anchor band above.
      - 0.700
      - -0.043
      - 2026-07-15 @ ``54601e4``
+   * - virchow2
+     - 0.700
+     - 1
+     - 0.700
+     - +0.001
+     - 2026-07-30 @ ``16d9ddb``
 
 These frozen-probe encoder results accompany an upcoming publication — Grisi
 *et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;
