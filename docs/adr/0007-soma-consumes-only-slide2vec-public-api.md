@@ -16,6 +16,7 @@ Persistence is not caching. slide2vec already writes the pooled artifacts soma's
 2. That contract extended to the effective encoder input across pooled + dense (ADR 0006).
 3. `embed_images` — given-geometry images on disk → embeddings, sharded across GPUs.
 4. Dense over given images — the dense sibling of (3), replacing `soma/dense_extraction.py`.
+5. A public home for the primitives soma's **live re-encode** path needs. Live re-encode is soma's own — it encodes inside the training loop, after augmentation, so no `embed_*` entry point covers it — but it must pad, window and autocast *exactly* as extraction does, or the cached-vs-live byte-identity anchor silently compares two implementations. Until these are exported (clemsgrs/slide2vec#267), that path stays on `slide2vec.runtime.*` (`pad_image_to_encoded`, `encode_dense_sliding`, `cover_origins`, `resolve_window_geometry`, `slide_encode_autocast_ctx`) — the one place this ADR's rule is knowingly unmet, and preferred over the alternative, which is soma keeping forks of them that must stay bit-compatible by hand.
 
 `embed_images` must apply the shipped transform **itemwise, then stack**: heterogeneously-sized inputs (BACH 2048×1536 alongside PCam 96²) cannot be stacked into one `(B, 3, H, W)` uint8 tensor before resizing, so slide2vec's batched transform spec is structurally inapplicable to the Given regime and stays exclusive to the uniform-size declared paths.
 

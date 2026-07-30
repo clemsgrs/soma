@@ -646,9 +646,16 @@ def _resolve_cache(
     complete_state: str = "hit",
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
+    features_subdir: str | None = None,
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
-    features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
+    # The payload subdir is slide2vec's, not soma's (ADR 0007), and one soma cache kind can
+    # front two of them: ``dense`` holds ROI grids in ``dense_embeddings/`` and grids over
+    # caller-supplied images in ``dense_image_embeddings/``. The *kind* stays single on
+    # purpose — it is folded into each sample's identity stem, so splitting it would
+    # invalidate every dense cache on disk merely to record a directory name, and the grids
+    # either side of this migration are byte-identical.
+    features_dir = cache_dir / (features_subdir or _features_subdir_for_kind(cache_kind))
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -1033,6 +1040,7 @@ def resolve_dense_cache(
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
     extraction_geometry: dict[str, Any] | None = None,
+    features_subdir: str | None = None,
     _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_dense_cache_metadata(
@@ -1073,6 +1081,7 @@ def resolve_dense_cache(
         complete_state=complete_state,
         validate_payloads=validate_payloads,
         payload_stem_by_id=payload_stem_by_id,
+        features_subdir=features_subdir,
     )
 
 

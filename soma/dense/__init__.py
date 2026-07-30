@@ -12,6 +12,7 @@ from soma.dense.source import (
 )
 from soma.dense.store import (
     DENSE_ARTIFACT_TYPE,
+    DENSE_IMAGE_PAYLOAD_SUBDIR,
     DENSE_PAYLOAD_SUBDIR,
     DENSE_SIDECAR_SUFFIX,
     DenseFeatureStore,
@@ -28,6 +29,7 @@ __all__ = [
     "DenseFeatureSource",
     "DenseSourceProvenance",
     "DENSE_ARTIFACT_TYPE",
+    "DENSE_IMAGE_PAYLOAD_SUBDIR",
     "DENSE_PAYLOAD_SUBDIR",
     "DENSE_SIDECAR_SUFFIX",
     "DenseFeatureStore",

@@ -40,11 +40,15 @@ __all__ = [
 
 DENSE_SIDECAR_SUFFIX = ".meta.json"
 # slide2vec's name for a dense grid over a pre-cropped image. soma's remaining local
-# writer (the pre-cropped dense path, until it moves onto Model.embed_images_dense) emits
-# upstream's artifact_type so every dense sidecar the cache validator sees speaks one
-# vocabulary, whoever wrote it.
+# writer — now only the test/composite fixture path — emits upstream's artifact_type so
+# every dense sidecar the cache validator sees speaks one vocabulary, whoever wrote it.
 DENSE_ARTIFACT_TYPE = "dense_image_embeddings"
+# slide2vec writes its two dense artifact kinds to two directories, and soma's cache
+# adopts them verbatim rather than translating (ADR 0007): ROI grids over a slide go to
+# ``dense_embeddings/<slide>/<x>_<y>.pt``, grids over caller-supplied images to a flat
+# ``dense_image_embeddings/<sample_id>.pt``. One cache key only ever holds one of them.
 DENSE_PAYLOAD_SUBDIR = "dense_embeddings"
+DENSE_IMAGE_PAYLOAD_SUBDIR = "dense_image_embeddings"
 
 # Networked/pooled mounts (zfs/NFS/CIFS) intermittently raise OSError /
 # FileNotFoundError on a grid read that succeeds moments later. A bare
@@ -88,16 +92,20 @@ def _load_array_resilient(path: Path):
 def resolve_dense_payload_dir(path: Path | str) -> Path:
     """Resolve the directory holding dense ``.pt`` grids.
 
-    Dense-specific on purpose: it descends into ``dense_embeddings/`` if present,
-    else treats ``path`` as a plain payload dir. Unlike the generic pooled
-    ``resolve_feature_payload_dir``, it never falls through to a sibling
+    Dense-specific on purpose: it descends into whichever of slide2vec's two dense
+    payload dirs is present — ``dense_embeddings/`` (ROI grids over a slide) or
+    ``dense_image_embeddings/`` (grids over caller-supplied images) — else treats
+    ``path`` as a plain payload dir. A single cache key holds one artifact kind, so the
+    two are never both present and the probe order carries no meaning. Unlike the generic
+    pooled ``resolve_feature_payload_dir``, it never falls through to a sibling
     ``tile_embeddings``/``slide_embeddings`` dir — so a cache root that happens to
     hold both pooled and dense payloads still resolves to the dense grids.
     """
     root = Path(path)
-    candidate = root / DENSE_PAYLOAD_SUBDIR
-    if candidate.is_dir():
-        return candidate
+    for subdir in (DENSE_PAYLOAD_SUBDIR, DENSE_IMAGE_PAYLOAD_SUBDIR):
+        candidate = root / subdir
+        if candidate.is_dir():
+            return candidate
     return root
 
 
@@ -322,8 +330,21 @@ class DenseFeatureStore:
         )
 
     def spacing_um(self, sample_id: str) -> float | None:
-        """Read-spacing in µm/px recorded for ``sample_id`` (``None`` for flat reads)."""
-        value = self.metadata(sample_id).get("spacing_um")
+        """Read-spacing in µm/px recorded for ``sample_id`` (``None`` for flat reads).
+
+        slide2vec spells this field differently in its two dense writers: the ROI writer
+        records ``spacing_um``, the image writer records ``declared_spacing_um`` (plus the
+        resolved ``read_``/``effective_`` pair). ``declared_spacing_um`` is the one that
+        matches — it is the spacing the run *asked* for, which is exactly what soma's own
+        writer recorded here before the migration, for a flat raster (where the request is
+        an assertion about pixels read unchanged) as much as for a pyramidal source. Taking
+        ``effective_spacing_um`` instead would silently change what the segmentation fold's
+        grid-vs-mask spacing guard compares. Reported upstream as clemsgrs/slide2vec#266;
+        until it is reconciled, reading both spellings here is what keeps that guard armed —
+        falling through to ``None`` would disarm it without a word.
+        """
+        metadata = self.metadata(sample_id)
+        value = metadata.get("spacing_um", metadata.get("declared_spacing_um"))
         return None if value is None else float(value)
 
     @property

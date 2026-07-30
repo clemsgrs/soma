@@ -28,7 +28,6 @@ from soma.config import AugmentationConfig, DecoderConfig, EvalConfig, TaskConfi
 from soma.dataset import SegmentationManifest, Splits  # noqa: E402
 from soma.dense import DenseFeatureStore, compute_dense_geometry  # noqa: E402
 from soma.dense.live import LiveSegmentationSource  # noqa: E402
-from soma.dense_extraction import extract_dense_grids  # noqa: E402
 from soma.pipeline import train_one_segmentation_fold  # noqa: E402
 from soma.training.model import LiveSegmentationModel  # noqa: E402
 
@@ -98,6 +97,49 @@ def _live_source(
     )
 
 
+def _extract_cached_grids(encoder, records, out_dir: Path, *, geometry, batch_size: int) -> None:
+    """Mint the cached grids the live path is measured against.
+
+    Encoded through slide2vec's own ``DenseGridEncoder`` — the core
+    ``Model.embed_images_dense`` runs, read→normalize→pad→encode included — so this anchor
+    compares the live re-encode against the real cached path rather than against a test
+    reimplementation of it. Only the *write* uses soma's local fixture writer; the store
+    reads either layout back the same way.
+    """
+    from slide2vec.runtime.dense_regions import DenseGridEncoder
+
+    from soma.dense import dense_grid_metadata, write_dense_grid
+
+    grid_encoder = DenseGridEncoder.resolve(
+        encoder,
+        target_size=TARGET,
+        target_size_origin="the declared target_size",
+        precision="fp32",
+        dense_transform=encoder.get_dense_transform(),
+    )
+    records = list(records)
+    for start in range(0, len(records), batch_size):
+        chunk = records[start : start + batch_size]
+        batch = torch.stack(
+            [
+                grid_encoder.transform_and_pad(
+                    Image.open(record.image_path).convert("RGB"), origin=record.image_path
+                )
+                for record in chunk
+            ]
+        )
+        grids = torch.as_tensor(np.asarray(grid_encoder.encode_batch(batch)))
+        for record, grid in zip(chunk, grids):
+            write_dense_grid(
+                out_dir,
+                record.sample_id,
+                grid,
+                dense_grid_metadata(
+                    geometry, feature_dim=int(grid.shape[0]), pad_mode="reflect"
+                ),
+            )
+
+
 def test_live_no_aug_grids_match_cached_bit_for_bit(tmp_path: Path):
     """The parity anchor: live-no-aug re-encoding reproduces the cached grids exactly.
 
@@ -112,16 +154,8 @@ def test_live_no_aug_grids_match_cached_bit_for_bit(tmp_path: Path):
     geom = compute_dense_geometry(target_size=TARGET, patch_size=encoder.patch_size)
     records = list(manifest.samples.values())
 
-    extract_dense_grids(
-        encoder=encoder,
-        device="cpu",
-        dense_transform=encoder.get_dense_transform(),
-        geometry=geom,
-        records=records,
-        out_dir=tmp_path / "dense",
-        window_size=None,
-        overlap=0.0,
-        batch_size=len(records),
+    _extract_cached_grids(
+        encoder, records, tmp_path / "dense", geometry=geom, batch_size=len(records)
     )
     cached_store = DenseFeatureStore(tmp_path / "dense")
 
@@ -154,15 +188,11 @@ def test_live_no_aug_metrics_match_cached(tmp_path: Path):
     manifest, splits = _build_run(tmp_path, sample_ids)
     encoder = _encoder()
     geom = compute_dense_geometry(target_size=TARGET, patch_size=encoder.patch_size)
-    extract_dense_grids(
-        encoder=encoder,
-        device="cpu",
-        dense_transform=encoder.get_dense_transform(),
+    _extract_cached_grids(
+        encoder,
+        manifest.samples.values(),
+        tmp_path / "dense",
         geometry=geom,
-        records=list(manifest.samples.values()),
-        out_dir=tmp_path / "dense",
-        window_size=None,
-        overlap=0.0,
         batch_size=2,
     )
     cached_store = DenseFeatureStore(tmp_path / "dense")
