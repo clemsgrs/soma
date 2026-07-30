@@ -427,9 +427,80 @@ def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path,
     row = rows[0]
     assert row.key == {"dataset": "bach", "encoder": "uni2"}
     assert row.measured == pytest.approx(0.914)
-    assert row.n_seeds is None  # a re-scored single run has no seed spread
+    # A re-scored run has no seed *spread* (std stays empty) but it is still one seed;
+    # an empty n_seeds would read as "unknown" rather than "one".
+    assert row.n_seeds == 1
+    assert row.std is None
     assert row.date and row.soma_commit  # provenance captured at run time
     assert row.source == "soma reproduce --record"
+
+
+def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, monkeypatch):
+    """A broad reference's empty key must not yield an unattributable ledger row.
+
+    OCELOT's reference is one config-agnostic band, so its key states no encoder. Copying
+    that key verbatim appended a row that ``latest_measurements`` silently drops (it skips
+    rows whose encoder is ``None``) — recorded in appearance only. The encoder comes from
+    the axes instead, so the row joins the encoder-keyed rows already in the ledger.
+    """
+    ledger = tmp_path / "ledger" / "ocelot.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    monkeypatch.setattr(
+        "soma.benchmarks.ocelot._greedy_report_for_run",
+        lambda run_dir, matching="greedy": {
+            "matching": "greedy",
+            "tune": {"mean_f1": 0.71},
+            "test": {"headline": {"metrics": {"mean_f1": 0.70}}},
+        },
+    )
+
+    code = _run_cli(
+        ["reproduce", "ocelot", "--encoder", "virchow2", "--from-run-dir", str(tmp_path), "--record"]
+    )
+    assert code == 0
+    assert "recorded" in capsys.readouterr().out
+
+    from soma.benchmarks import reproduced_rows
+
+    rows = reproduced_rows("ocelot", encoder="virchow2")
+    assert len(rows) == 1
+    assert rows[0].key == {"encoder": "virchow2"}
+    assert rows[0].measured == pytest.approx(0.70)
+
+
+def test_record_axes_prefers_explicit_axis_over_the_run_dir(tmp_path):
+    """An explicit ``--encoder`` wins; the run dir only fills what the CLI left implicit."""
+    benchmark = registry_mod.get_benchmark("ocelot")
+
+    assert cli._record_axes(benchmark, {"encoder": "uni2"}, tmp_path) == {"encoder": "uni2"}
+    # Nothing explicit and nothing resolvable on disk -> omitted, never guessed.
+    assert cli._record_axes(benchmark, {}, None) == {}
+
+
+def test_record_result_never_overwrites_a_key_the_reference_states(tmp_path, monkeypatch):
+    """A keyed reference (EVA/HEST) owns its cell; axes only fill blanks.
+
+    Otherwise a stale or mis-parsed axis could silently repoint a measurement at a
+    different reference cell than the one it was just compared against.
+    """
+    ledger = tmp_path / "ledger" / "eva.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    benchmark = registry_mod.get_benchmark("eva/bach")
+    row = ReferenceRow(
+        key={"dataset": "bach", "encoder": "uni2"},
+        metric="balanced_accuracy",
+        expected=0.915,
+        tolerance=0.02,
+        source="test",
+    )
+
+    cli._record_result(
+        benchmark, row, 0.9, std=None, n_seeds=1, key_axes={"encoder": "somethingelse"}
+    )
+
+    from soma.benchmarks import reproduced_rows
+
+    assert reproduced_rows("eva", dataset="bach", encoder="uni2")[0].key["encoder"] == "uni2"
 
 
 def test_git_commit_dirty_ignores_untracked_scratch(tmp_path, monkeypatch):
