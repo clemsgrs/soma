@@ -324,7 +324,6 @@ class SlideManifestDenseExtractor:
                 attention_include_registers=self._attention_include_registers,
                 dtype=dense_dtype,
                 sampling_signature=signature,
-                fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
                 payload_stem_by_id=payload_stems,
                 extraction_geometry=dense_extraction_geometry(

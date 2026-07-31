@@ -604,7 +604,6 @@ class CacheConfig:
     enabled: bool = True
     root_dir: str | Path | None = None
     reuse_policy: str = "strict"
-    fingerprint_files: bool = False
     validate_payloads: bool = False
     # On-disk storage dtype for ALL feature caches (pooled tile/bag/slide/patient/
     # hierarchical AND dense grids): None ⇒ follow the compute precision (fp16 run →

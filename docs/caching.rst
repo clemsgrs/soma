@@ -39,11 +39,8 @@ extraction.
 - Feature reuse keys include sample identity
   ``(sample_id, image_path, mask_path)`` plus encoder/preprocessing/execution
   settings.
-- By default, sample identity uses paths only. Set
-  ``cache.fingerprint_files: true`` to include SHA-256 hashes of slide and
-  mask file contents in per-sample cache identity. This is safer when files
-  may be replaced in place, but it requires reading each input file during
-  cache resolution and can be expensive for large WSI cohorts.
+- Sample identity uses ``sample_id``, ``image_path``, and ``mask_path``. Replace
+  files in place only after deleting the affected cache.
 - By default, feature cache validation checks metadata identity and payload
   existence. Dense grids also validate their per-sample sidecar metadata
   (feature dimension, grid shape, target/encoded geometry, and — for

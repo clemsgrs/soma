@@ -145,7 +145,6 @@ Full config reference
      enabled: true
      root_dir: null
      reuse_policy: strict
-     fingerprint_files: false
      validate_payloads: false
 
    # No default encoder — the framework stays neutral on model choice (you must set

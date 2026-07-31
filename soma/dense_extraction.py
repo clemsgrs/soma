@@ -56,7 +56,9 @@ class DenseTileFeatureExtractor:
     """Encode tile images into dense ``(d, h, w)`` grids (``dataset_type="segmentation"``).
 
     Args:
-        dataset: Dataset whose ``image_path`` fields point to tile images.
+        dataset: Dataset whose ``image_path`` fields point to tile images. One
+            extraction run must contain either raster images or spacing-readable
+            pyramidal images, not a mixture; split mixed manifests into separate runs.
         encoder: Encoder configuration. For encoders that recommend
             ``dynamic_img_size=False`` (H-optimus), set
             ``allow_non_recommended_settings=True`` to opt into the variable input
@@ -154,7 +156,7 @@ class DenseTileFeatureExtractor:
         )
 
     def cache_dir(self, feature_dir: str | Path | None = None) -> Path | None:
-        """The dense cache dir (``cache_root/dense/<key>``) this run reads and writes.
+        """The dense-image cache dir (``cache_root/dense_image/<key>``) this run uses.
 
         Resolved with **no side effects**: it loads no encoder (the key needs only the
         static ``patch_size`` slide2vec exposes as registry metadata — the #165
@@ -164,7 +166,7 @@ class DenseTileFeatureExtractor:
 
         Recomputes the *same* key ``run()`` resolves through ``resolve_dense_cache`` —
         ``build_dense_cache_key`` is the single source of truth for both, and the
-        ``cache_root / "dense" / key`` layout mirrors ``_resolve_cache`` — so an offline
+        ``cache_root / "dense_image" / key`` layout mirrors ``_resolve_cache`` — so an offline
         re-scorer can address the *exact* grids this run trained on rather than guessing
         among sibling cache-key dirs (an empty orphan from a since-changed key looks just
         like the real one to a blind glob). ``feature_dir`` is consulted only when
@@ -195,7 +197,7 @@ class DenseTileFeatureExtractor:
             attention_include_registers=self._attention_include_registers,
             dtype=dense_dtype,
         )
-        return cache_root / "dense" / key
+        return cache_root / "dense_image" / key
 
     def run(self, feature_dir: str | Path) -> DenseFeatureStore:
         feature_dir = Path(feature_dir).resolve()
@@ -224,6 +226,7 @@ class DenseTileFeatureExtractor:
 
         cache_resolution = None
         out_root = feature_dir
+        payload_dir = feature_dir / DENSE_IMAGE_PAYLOAD_SUBDIR
         if self._cache.enabled:
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
             cache_resolution = resolve_dense_cache(
@@ -242,20 +245,18 @@ class DenseTileFeatureExtractor:
                 attention_blocks=self._attention_blocks,
                 attention_include_registers=self._attention_include_registers,
                 dtype=dense_dtype,
-                fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
-                # Grids over images land in slide2vec's flat ``dense_image_embeddings/``,
-                # not the per-slide ``dense_embeddings/`` the ROI path writes.
-                features_subdir=DENSE_IMAGE_PAYLOAD_SUBDIR,
+                cache_kind="dense_image",
                 extraction_geometry=dense_extraction_geometry(
                     encoder_name=self._encoder.name,
                     target_size_px=self._target_size,
                     window_size=self._window_size,
                 ),
             )
+            payload_dir = cache_resolution.features_dir
             if cache_resolution.complete:
                 logger.info("Reusing cached dense grids from %s", cache_resolution.features_dir)
-                return DenseFeatureStore(cache_resolution.cache_dir)
+                return DenseFeatureStore(payload_dir)
             # slide2vec appends its own payload subdir, so it is handed the cache dir.
             out_root = cache_resolution.cache_dir
 
@@ -273,7 +274,7 @@ class DenseTileFeatureExtractor:
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
-                return DenseFeatureStore(out_root)
+                return DenseFeatureStore(payload_dir)
             records = [record for record in records if record.sample_id in wanted]
 
         model = Model.from_preset(
@@ -323,4 +324,4 @@ class DenseTileFeatureExtractor:
                 [record.sample_id for record in records],
                 validate_payloads=self._cache.validate_payloads,
             )
-        return DenseFeatureStore(out_root)
+        return DenseFeatureStore(payload_dir)

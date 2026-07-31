@@ -157,11 +157,15 @@ def _extractor(dataset: Dataset, tmp_path: Path, **overrides) -> DenseTileFeatur
 
 def test_run_writes_grids_into_slide2vecs_image_payload_dir(tmp_path: Path, fake_model):
     """Grids land in ``dense_image_embeddings/`` — upstream's flat layout for image
-    sources, not the per-slide ``dense_embeddings/`` the ROI path writes — and the store
-    finds them from the cache dir without being told which of the two it is."""
+    sources, under their own cache kind rather than the ROI path's ``dense`` cache."""
     dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=3, size=32))
-    store = _extractor(dataset, tmp_path).run(tmp_path / "features")
+    extractor = _extractor(dataset, tmp_path)
+    store = extractor.run(tmp_path / "features")
 
+    cache_dir = extractor.cache_dir(tmp_path / "features")
+    assert cache_dir is not None
+    assert cache_dir.parent.name == "dense_image"
+    assert store.feature_dir == cache_dir / "dense_image_embeddings"
     assert store.feature_dir.name == "dense_image_embeddings"
     assert sorted(store.available_samples) == ["s0", "s1", "s2"]
     assert store.feature_dim == FEATURE_DIM

@@ -237,7 +237,6 @@ def resolve_tiling_cache(
     encoder_name: str | None = None,
     requested_preprocessing: dict[str, Any] | None = None,
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
 ) -> TilingCacheResolution:
     metadata = _build_tiling_cache_metadata(
         preprocessing=preprocessing,
@@ -249,7 +248,6 @@ def resolve_tiling_cache(
     cache_stem_by_id = _sample_stems_for_tiling(
         dataset=dataset,
         cache_key=str(metadata["cache_key"]),
-        fingerprint_files=fingerprint_files,
     )
     cache_dir = _tiling_cache_dir(cache_root, str(metadata["cache_key"]))
     metadata_path = cache_dir / CACHE_METADATA_NAME

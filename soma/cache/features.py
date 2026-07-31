@@ -646,16 +646,9 @@ def _resolve_cache(
     complete_state: str = "hit",
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
-    features_subdir: str | None = None,
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
-    # The payload subdir is slide2vec's, not soma's (ADR 0007), and one soma cache kind can
-    # front two of them: ``dense`` holds ROI grids in ``dense_embeddings/`` and grids over
-    # caller-supplied images in ``dense_image_embeddings/``. The *kind* stays single on
-    # purpose — it is folded into each sample's identity stem, so splitting it would
-    # invalidate every dense cache on disk merely to record a directory name, and the grids
-    # either side of this migration are byte-identical.
-    features_dir = cache_dir / (features_subdir or _features_subdir_for_kind(cache_kind))
+    features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -779,11 +772,9 @@ def resolve_tile_cache(
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
     validate_payloads: bool = False,
     cache_kind: str = "tile",
     extraction_geometry: dict[str, Any] | None = None,
-    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -795,11 +786,10 @@ def resolve_tile_cache(
         backend_provenance=backend_provenance,
         extraction_geometry=extraction_geometry,
     )
-    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
+    cache_stem_by_id = _sample_stems_for_kind(
         dataset=dataset,
         cache_kind=cache_kind,
         static_identity_payload={"cache_key": metadata["cache_key"]},
-        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -825,7 +815,6 @@ def resolve_image_cache(
     output_variant: str | None = None,
     dtype: str = "fp32",
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
     validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
     """Resolve the cache for given-geometry images (pre-cropped patch datasets).
@@ -847,7 +836,6 @@ def resolve_image_cache(
         feature_type="tile",
         dtype=dtype,
         complete_state=complete_state,
-        fingerprint_files=fingerprint_files,
         validate_payloads=validate_payloads,
         cache_kind="image",
     )
@@ -867,9 +855,7 @@ def resolve_slide_cache(
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
     validate_payloads: bool = False,
-    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -890,11 +876,10 @@ def resolve_slide_cache(
         dtype=dtype,
         backend_provenance=backend_provenance,
     )
-    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
+    cache_stem_by_id = _sample_stems_for_kind(
         dataset=dataset,
         cache_kind="slide",
         static_identity_payload={"cache_key": metadata["cache_key"]},
-        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -925,9 +910,7 @@ def resolve_patient_cache(
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
     validate_payloads: bool = False,
-    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -948,11 +931,10 @@ def resolve_patient_cache(
         dtype=dtype,
         backend_provenance=backend_provenance,
     )
-    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _patient_stems_for_kind(
+    cache_stem_by_id = _patient_stems_for_kind(
         dataset=dataset,
         cache_kind="patient",
         static_identity_payload={"cache_key": metadata["cache_key"]},
-        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -980,10 +962,8 @@ def resolve_hierarchical_cache(
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
     validate_payloads: bool = False,
     extraction_geometry: dict[str, Any] | None = None,
-    _precomputed_stems: dict[str, str] | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -994,11 +974,10 @@ def resolve_hierarchical_cache(
         backend_provenance=backend_provenance,
         extraction_geometry=extraction_geometry,
     )
-    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
+    cache_stem_by_id = _sample_stems_for_kind(
         dataset=dataset,
         cache_kind="hierarchical",
         static_identity_payload={"cache_key": metadata["cache_key"]},
-        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
@@ -1036,12 +1015,10 @@ def resolve_dense_cache(
     backend_provenance: dict[str, Any] | None = None,
     sampling_signature: dict[str, Any] | None = None,
     complete_state: str = "hit",
-    fingerprint_files: bool = False,
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
     extraction_geometry: dict[str, Any] | None = None,
-    features_subdir: str | None = None,
-    _precomputed_stems: dict[str, str] | None = None,
+    cache_kind: str = "dense",
 ) -> FeatureCacheResolution:
     metadata = _build_dense_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -1062,15 +1039,14 @@ def resolve_dense_cache(
         sampling_signature=sampling_signature,
         extraction_geometry=extraction_geometry,
     )
-    cache_stem_by_id = _precomputed_stems if _precomputed_stems is not None else _sample_stems_for_kind(
+    cache_stem_by_id = _sample_stems_for_kind(
         dataset=dataset,
-        cache_kind="dense",
+        cache_kind=cache_kind,
         static_identity_payload={"cache_key": metadata["cache_key"]},
-        fingerprint_files=fingerprint_files,
     )
     return _resolve_cache(
         cache_root=cache_root,
-        cache_kind="dense",
+        cache_kind=cache_kind,
         key=metadata["cache_key"],
         dataset=dataset,
         metadata=metadata,
@@ -1081,7 +1057,6 @@ def resolve_dense_cache(
         complete_state=complete_state,
         validate_payloads=validate_payloads,
         payload_stem_by_id=payload_stem_by_id,
-        features_subdir=features_subdir,
     )
 
 
