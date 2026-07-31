@@ -221,175 +221,25 @@ def test_cache_validation_surfaces_payload_errors(tmp_path: Path, caplog):
     )
 
 
-def test_cache_resolution_reuses_precomputed_stems(tmp_path: Path):
-    """Phase 2.3: two-pass extraction must not re-hash files on the second pass.
-
-    Every extraction path resolves the cache twice: once before population and
-    once after to confirm what landed on disk. With ``fingerprint_files=True``
-    the per-sample SHA256 hash dominates resolution cost; recomputing it on
-    the second pass is pure overhead.
-    """
-    import soma.cache.keys as keys_module
-
-    dataset_rows = [
-        {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
-        {"sample_id": "s2", "image_path": str(tmp_path / "s2.svs"), "label": "normal"},
-    ]
-    for row in dataset_rows:
-        Path(row["image_path"]).write_bytes(b"slide-bytes-for-" + row["sample_id"].encode())
-    dataset = _make_dataset(tmp_path, rows=dataset_rows)
-    cache_root = tmp_path / "feature_cache"
-
-    digest_calls = [0]
-    original = keys_module._file_digest
-
-    def counting_digest(path):  # type: ignore[no-untyped-def]
-        digest_calls[0] += 1
-        return original(path)
-
-    keys_module._file_digest = counting_digest
-    try:
-        resolution = resolve_tile_cache(
-            cache_root=cache_root,
-            dataset=dataset,
-            tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
-            fingerprint_files=True,
-        )
-        first_pass_calls = digest_calls[0]
-        assert first_pass_calls == 2, (
-            f"first resolution should hash each of the 2 sample files once "
-            f"(got {first_pass_calls})"
-        )
-
-        # Simulate the second extractor pass — same args, expect zero extra hashes.
-        refreshed = resolve_tile_cache(
-            cache_root=cache_root,
-            dataset=dataset,
-            tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
-            fingerprint_files=True,
-            _precomputed_stems=resolution.cache_stem_by_id,
-        )
-        second_pass_calls = digest_calls[0] - first_pass_calls
-    finally:
-        keys_module._file_digest = original
-
-    assert second_pass_calls == 0, (
-        f"second resolution re-hashed sample files {second_pass_calls} times; "
-        "expected 0 — stems should be reused from the first resolution"
-    )
-    # And the re-resolution should give us back the same stems.
-    assert refreshed.cache_stem_by_id == resolution.cache_stem_by_id
-
-
-def test_patient_cache_resolution_reuses_precomputed_stems(tmp_path: Path):
-    """Phase 2.3: patient path also avoids re-hashing on the refresh pass.
-
-    Patient extraction calls ``resolve_patient_cache`` twice; with
-    ``fingerprint_files=True`` each call hashes one file per sample, so the
-    refresh pass should reuse stems and add zero hash calls.
-    """
-    from soma.cache import resolve_patient_cache
-    import soma.cache.keys as keys_module
-
-    dataset_rows = [
-        {
-            "sample_id": "s1",
-            "image_path": str(tmp_path / "s1.svs"),
-            "label": "tumor",
-            "patient_id": "p1",
-        },
-        {
-            "sample_id": "s2",
-            "image_path": str(tmp_path / "s2.svs"),
-            "label": "normal",
-            "patient_id": "p1",
-        },
-    ]
-    for row in dataset_rows:
-        Path(row["image_path"]).write_bytes(b"slide-bytes-for-" + row["sample_id"].encode())
-    dataset = _make_dataset(tmp_path, rows=dataset_rows)
-    cache_root = tmp_path / "feature_cache"
-
-    digest_calls = [0]
-    original = keys_module._file_digest
-
-    def counting_digest(path):  # type: ignore[no-untyped-def]
-        digest_calls[0] += 1
-        return original(path)
-
-    keys_module._file_digest = counting_digest
-    try:
-        resolution = resolve_patient_cache(
-            cache_root=cache_root,
-            dataset=dataset,
-            patient_encoder_name="prism",
-            tile_encoder_name="virchow",
-            tile_preprocessing=PreprocessingConfig(),
-            tile_execution=EncoderConfig(name="virchow", precision="fp16"),
-            execution=EncoderConfig(name="prism", precision="fp16"),
-            fingerprint_files=True,
-        )
-        first_pass_calls = digest_calls[0]
-        assert first_pass_calls == 2, (
-            f"first patient resolution should hash each of the 2 sample files once "
-            f"(got {first_pass_calls})"
-        )
-
-        refreshed = resolve_patient_cache(
-            cache_root=cache_root,
-            dataset=dataset,
-            patient_encoder_name="prism",
-            tile_encoder_name="virchow",
-            tile_preprocessing=PreprocessingConfig(),
-            tile_execution=EncoderConfig(name="virchow", precision="fp16"),
-            execution=EncoderConfig(name="prism", precision="fp16"),
-            fingerprint_files=True,
-            _precomputed_stems=resolution.cache_stem_by_id,
-        )
-        second_pass_calls = digest_calls[0] - first_pass_calls
-    finally:
-        keys_module._file_digest = original
-
-    assert second_pass_calls == 0
-    assert refreshed.cache_stem_by_id == resolution.cache_stem_by_id
-
-
-def test_sample_identity_file_fingerprinting_is_opt_in(tmp_path: Path):
+def test_sample_identity_is_path_based(tmp_path: Path):
     image_path = tmp_path / "slide.svs"
     image_path.write_bytes(b"original")
 
-    default_a = sample_identity_signature(
+    signature_before = sample_identity_signature(
         sample_id="s1",
         image_path=image_path,
         mask_path=None,
-    )
-    fingerprinted_a = sample_identity_signature(
-        sample_id="s1",
-        image_path=image_path,
-        mask_path=None,
-        fingerprint_files=True,
     )
 
     image_path.write_bytes(b"changed")
 
-    default_b = sample_identity_signature(
+    signature_after = sample_identity_signature(
         sample_id="s1",
         image_path=image_path,
         mask_path=None,
-    )
-    fingerprinted_b = sample_identity_signature(
-        sample_id="s1",
-        image_path=image_path,
-        mask_path=None,
-        fingerprint_files=True,
     )
 
-    assert default_a == default_b
-    assert fingerprinted_a != fingerprinted_b
+    assert signature_before == signature_after
 
 
 def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):

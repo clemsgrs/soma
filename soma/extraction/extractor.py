@@ -366,7 +366,6 @@ class FeatureExtractor:
             backend_provenance=backend_provenance,
             encoder_name=self._encoder.name,
             requested_preprocessing=asdict(self._preprocessing),
-            fingerprint_files=self._cache.fingerprint_files,
         )
         if cache_resolution.complete:
             write_tiling_cache_stub(tiling_dir, cache_resolution=cache_resolution)
@@ -409,7 +408,6 @@ class FeatureExtractor:
                 encoder_name=self._encoder.name,
                 requested_preprocessing=asdict(self._preprocessing),
                 complete_state="populated",
-                fingerprint_files=self._cache.fingerprint_files,
             )
             if refreshed.complete:
                 write_tiling_cache_stub(tiling_dir, cache_resolution=refreshed)
@@ -951,7 +949,6 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
             extraction_geometry=self._extraction_geometry(
                 resolved_preprocessing=resolved_preprocessing,
@@ -988,13 +985,11 @@ class FeatureExtractor:
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
             extraction_geometry=self._extraction_geometry(
                 resolved_preprocessing=resolved_preprocessing,
                 loaded_tilings=loaded_tilings,
             ),
-            _precomputed_stems=cache_resolution.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1027,7 +1022,6 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
             extraction_geometry=self._extraction_geometry(
                 resolved_preprocessing=resolved_preprocessing,
@@ -1064,13 +1058,11 @@ class FeatureExtractor:
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
             extraction_geometry=self._extraction_geometry(
                 resolved_preprocessing=resolved_preprocessing,
                 loaded_tilings=loaded_tilings,
             ),
-            _precomputed_stems=cache_resolution.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1111,7 +1103,6 @@ class FeatureExtractor:
             output_variant=str(tile_dependency_output["output_variant"]),
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
         )
         slide_cache = resolve_slide_cache(
@@ -1134,7 +1125,6 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
         )
         self._write_cache_marker(feature_dir, cache_resolution=slide_cache)
@@ -1174,9 +1164,7 @@ class FeatureExtractor:
                 dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
                 backend_provenance=backend_provenance,
                 complete_state="populated",
-                fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
-                _precomputed_stems=tile_cache.cache_stem_by_id,
             )
 
         self._populate_slide_cache(
@@ -1209,9 +1197,7 @@ class FeatureExtractor:
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
-            _precomputed_stems=slide_cache.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1252,7 +1238,6 @@ class FeatureExtractor:
             output_variant=str(tile_dependency_output["output_variant"]),
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
         )
         patient_cache = resolve_patient_cache(
@@ -1275,7 +1260,6 @@ class FeatureExtractor:
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
         )
         self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
@@ -1310,9 +1294,7 @@ class FeatureExtractor:
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
             complete_state="populated",
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
-            _precomputed_stems=tile_cache.cache_stem_by_id,
         )
         self._populate_patient_cache(
             patient_cache=patient_cache,
@@ -1344,9 +1326,7 @@ class FeatureExtractor:
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             complete_state="populated",
-            fingerprint_files=self._cache.fingerprint_files,
             validate_payloads=self._cache.validate_payloads,
-            _precomputed_stems=patient_cache.cache_stem_by_id,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)

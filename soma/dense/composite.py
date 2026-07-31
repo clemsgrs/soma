@@ -206,7 +206,12 @@ class CompositeDenseFeatureStore:
 
     def metadata(self, sample_id: str) -> dict:
         target = self._resolve_target_size(sample_id)
-        spacings = {m.metadata(sample_id).get("spacing_um") for m in self._members}
+        # Ask each member for its spacing rather than reading the raw sidecar key: slide2vec
+        # spells the field differently per dense writer, and ``spacing_um()`` is the one
+        # place that knows both spellings. Reading the key directly would make every
+        # image-sourced member report ``None``, and this disagreement check would then pass
+        # vacuously on a set of unknowns instead of comparing real spacings.
+        spacings = {m.spacing_um(sample_id) for m in self._members}
         if len(spacings) != 1:
             raise ValueError(
                 f"composite members disagree on read-spacing for '{sample_id}': {sorted(spacings)}. "

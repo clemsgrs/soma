@@ -140,8 +140,12 @@ class LiveSegmentationDataset(Dataset):
     def __getitem__(self, idx: int) -> tuple[Tensor, dict[str, Tensor], str]:
         from PIL import Image
 
+        # The live path pads through slide2vec's own helper — the one the cached path now
+        # pads with inside embed_images_dense — so a live-no-aug run stays byte-identical
+        # to the cached grid rather than tracking it in a second implementation.
+        from slide2vec.runtime.dense_regions import pad_image_to_encoded
+
         from soma.dense.reader import read_image_at_spacing, read_mask_at_spacing
-        from soma.dense_extraction import _pad_image_to_encoded
 
         record = self._records[idx]
         if record.mask_path is None:
@@ -185,7 +189,7 @@ class LiveSegmentationDataset(Dataset):
                 f"after the dense transform, but the run's target_size is "
                 f"{self._geometry.target_size}."
             )
-        padded = _pad_image_to_encoded(
+        padded = pad_image_to_encoded(
             tensor, self._geometry, pad_mode=self._pad_mode, image_pad_value=self._image_pad_value
         )
 

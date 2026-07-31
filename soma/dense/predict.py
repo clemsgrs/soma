@@ -284,11 +284,13 @@ class SlidingWindowSegmentationPredictor:
 
     def _tile_to_encoded(self, crop: np.ndarray) -> torch.Tensor:
         """Tile crop (target_size px) -> normalized, pad-to-encoded ``(3, Henc, Wenc)`` tensor."""
-        from soma.dense_extraction import _pad_image_to_encoded
+        # slide2vec's helper — the same padding embed_images_dense applies during
+        # extraction, so inference pads exactly as the cached grids were built.
+        from slide2vec.runtime.dense_regions import pad_image_to_encoded
 
         t = self.dense_transform(Image.fromarray(crop))
         t = torch.as_tensor(t).as_subclass(torch.Tensor)
-        return _pad_image_to_encoded(
+        return pad_image_to_encoded(
             t, self.geometry, pad_mode=self.pad_mode, image_pad_value=self.image_pad_value
         )
 

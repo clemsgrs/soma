@@ -109,7 +109,6 @@ class TileFeatureExtractor:
                 execution=self._encoder,
                 output_variant=self._encoder.output_variant,
                 dtype=dtype,
-                fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
             )
             if cache_resolution.complete:

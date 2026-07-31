@@ -37,6 +37,7 @@ _CACHE_KIND_TO_FEATURES_SUBDIR = {
     "patient": "patient_embeddings",
     "hierarchical": "hierarchical_embeddings",
     "dense": "dense_embeddings",
+    "dense_image": "dense_image_embeddings",
 }
 
 

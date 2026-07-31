@@ -1139,8 +1139,13 @@ def test_cache_config_defaults():
     assert cfg.enabled is True
     assert cfg.root_dir is None
     assert cfg.reuse_policy == "strict"
-    assert cfg.fingerprint_files is False
     assert cfg.validate_payloads is False
+    assert "fingerprint_files" not in {field.name for field in fields(CacheConfig)}
+
+
+def test_cache_config_rejects_noncanonical_fields():
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        CacheConfig(fingerprint_files=True)
 
 
 def test_aggregator_config_with_params():

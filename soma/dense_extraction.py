@@ -1,38 +1,31 @@
-"""DenseTileFeatureExtractor — encode tile images into dense ``(d, h, w)`` grids.
+"""DenseTileFeatureExtractor — dense ``(d, h, w)`` grids over caller-supplied images.
 
-The dense analog of :class:`soma.tile_extraction.TileFeatureExtractor`: each tile
-image is loaded, run through the encoder's **normalization-only** dense transform
-(``get_dense_transform`` — NOT the pooled ``get_transform``, which crops GigaPath/
-Lunit), padded up to the encoder's patch multiple, encoded via
-``encode_tiles_dense``, and written as a ``(d, h, w)`` grid + sidecar through
-:func:`soma.dense.write_dense_grid`.
+The Given-image counterpart of :class:`soma.dense_slide_extraction.DenseSlideFeatureExtractor`:
+where that one names ROI coordinates inside a slide, this one names whole pre-cropped
+images (segmentation/detection tiles, patch benchmarks). Both delegate the extraction
+itself to slide2vec — here :meth:`slide2vec.Model.embed_images_dense`, which reads each
+image, runs the encoder's **normalization-only** dense transform, pads up to the encoder's
+patch multiple, encodes whole-image or by sliding the encoder's native field, and writes
+``dense_image_embeddings/<sample_id>.pt`` plus a geometry sidecar.
 
-The extraction loop (:func:`extract_dense_grids`) takes an already-loaded encoder
-so it is unit-testable offline with random weights, independent of the GPU/weights
-needed by :meth:`DenseTileFeatureExtractor.run`.
+What stays soma's (ADR 0007, ADR 0008): the cache **key**, what counts as complete, the
+identity signatures, and the recorded extraction geometry. slide2vec persists into the
+directory soma resolves; it does not decide whether a cached grid may be reused.
 
-Dense-input mode is a *derived* window-as-knob (design §5): ``window_size=None`` ⇒
-``whole`` (one padded forward); a smaller ``window_size`` (+ ``overlap``) slides the
-encoder over patch-aligned windows and blends the token grids (see
-:func:`soma.dense.sliding.encode_dense_sliding`). Single-GPU only (multi-GPU sharding
-deferred).
+Dense-input mode is a *derived* window-as-knob (design §5): ``window_size=None`` ⇒ one
+padded forward; a smaller ``window_size`` (+ ``overlap``) slides the encoder over
+patch-aligned windows and blends the token grids. Single-GPU only — slide2vec shards the
+image list contiguously across GPUs, which changes batch composition, and dense grids are
+batch-size sensitive (see #305).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Callable, Sequence
 
-import torch
-import torch.nn.functional as F
-from PIL import Image
+from slide2vec.api import DenseImageOptions, ImageSpec, Model
 from slide2vec.encoders.registry import resolve_patch_size
-from slide2vec.api import EncoderInputContract
-from slide2vec.inference import load_model
-from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
-from torch.utils.data import DataLoader
-from torch.utils.data import Dataset as TorchDataset
 
 from soma.cache import (
     build_dense_cache_key,
@@ -44,18 +37,14 @@ from soma.cache import (
     resolve_output_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
-from soma.dataset import Dataset, SampleRecord
+from soma.dataset import Dataset
 from soma.dense import (
+    DENSE_IMAGE_PAYLOAD_SUBDIR,
     DenseFeatureStore,
-    DenseGridGeometry,
     compute_dense_geometry,
-    dense_grid_metadata,
     normalize_hw,
-    write_dense_grid,
 )
-from soma.dense.reader import read_image_at_spacing
 from soma.dense.sliding import describe_dense_mode
-from slide2vec.runtime.dense_sliding import encode_dense_sliding
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
@@ -63,216 +52,13 @@ logger = logging.getLogger(__name__)
 _PAD_MODES = {"reflect", "constant", "zero", "replicate"}
 
 
-def _pad_image_to_encoded(
-    tensor: torch.Tensor,
-    geometry: DenseGridGeometry,
-    *,
-    pad_mode: str,
-    image_pad_value: float | None,
-) -> torch.Tensor:
-    """Pad a ``(C, H, W)`` tile (bottom/right) up to ``geometry.encoded_size``."""
-    pad_bottom, pad_right = geometry.pad
-    if pad_bottom == 0 and pad_right == 0:
-        return tensor
-    x = tensor.unsqueeze(0)  # F.pad's 2-D modes need a batch dim
-    pad = (0, pad_right, 0, pad_bottom)  # (left, right, top, bottom)
-    if pad_mode in ("constant", "zero"):
-        x = F.pad(x, pad, mode="constant", value=float(image_pad_value or 0.0))
-    else:
-        x = F.pad(x, pad, mode=pad_mode)
-    return x.squeeze(0)
-
-
-class _DenseTileImageDataset(TorchDataset):
-    """Load tile images, apply the dense transform, and pad to ``encoded_size``."""
-
-    def __init__(
-        self,
-        records: list[SampleRecord],
-        dense_transform: Callable,
-        geometry: DenseGridGeometry,
-        *,
-        pad_mode: str,
-        image_pad_value: float | None,
-        spacing_um: float | None = None,
-        backend: str = "auto",
-        tolerance: float = 0.05,
-    ) -> None:
-        self._records = records
-        self._transform = dense_transform
-        self._geometry = geometry
-        self._pad_mode = pad_mode
-        self._image_pad_value = image_pad_value
-        self._spacing_um = spacing_um
-        self._backend = backend
-        self._tolerance = tolerance
-
-    def __len__(self) -> int:
-        return len(self._records)
-
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, str]:
-        record = self._records[idx]
-        # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
-        # spacing ignored; pyramidal/spacing-bearing → hs2p (finest level <= requested
-        # spacing, downscaled; byte-identical to a page-0 PIL read at an exact match).
-        array = read_image_at_spacing(
-            record.image_path,
-            spacing_um=self._spacing_um,
-            backend=self._backend,
-            tolerance=self._tolerance,
-        )
-        tensor = self._transform(Image.fromarray(array))
-        tensor = torch.as_tensor(tensor).as_subclass(torch.Tensor)
-        if tensor.ndim != 3:
-            raise ValueError(
-                f"dense transform for tile '{record.sample_id}' produced a "
-                f"{tensor.ndim}-D tensor; expected (C, H, W)."
-            )
-        if tuple(int(s) for s in tensor.shape[-2:]) != self._geometry.target_size:
-            raise ValueError(
-                f"tile '{record.sample_id}' is {tuple(int(s) for s in tensor.shape[-2:])} "
-                f"after the dense transform, but the run's target_size is "
-                f"{self._geometry.target_size}. v1 assumes a fixed tile size; resize the "
-                "tiles or set target_size to match."
-            )
-        padded = _pad_image_to_encoded(
-            tensor, self._geometry, pad_mode=self._pad_mode, image_pad_value=self._image_pad_value
-        )
-        return padded, record.sample_id
-
-
-def extract_dense_grids(
-    *,
-    encoder,
-    device: torch.device | str,
-    dense_transform: Callable,
-    geometry: DenseGridGeometry,
-    records: Sequence[SampleRecord],
-    out_dir: Path | str,
-    spacing_um: float | None = None,
-    backend: str = "auto",
-    tolerance: float = 0.05,
-    pad_mode: str = "reflect",
-    image_pad_value: float | None = None,
-    mask_pad_value: int | None = None,
-    window_size: int | None,
-    overlap: float,
-    feature_kind: str = "patch_features",
-    attention_blocks: tuple[int, ...] = (-1,),
-    attention_include_registers: bool = False,
-    batch_size: int = 1,
-    precision: str = "fp32",
-    output_dtype: str = "fp32",
-    num_workers: int = 0,
-    prefetch_factor: int | None = None,
-) -> int | None:
-    """Encode ``records`` into dense grids written under ``out_dir``; return ``d``.
-
-    Injectable core: takes a constructed dense-capable ``encoder`` (with
-    ``encode_tiles_dense`` / ``encode_tiles_attention``), so it runs offline in tests
-    with random weights. ``window_size``/``overlap`` are required (no silent default):
-    ``window_size=None`` is the ``whole`` path (one padded forward), a smaller
-    ``window_size`` slides the encoder over patch-aligned windows — the caller must
-    choose so a sliding run is never mis-keyed/mis-extracted as ``whole``.
-
-    ``feature_kind`` picks the per-window encode: ``patch_features`` →
-    ``encode_tiles_dense`` (the ViT patch grid); ``cls_attention`` →
-    ``encode_tiles_attention`` with ``attention_blocks`` / ``attention_include_registers``
-    (per-head prefix-token self-attention, ``K`` channels). The sliding/stitching and
-    write path are identical — an attention grid is just another ``(C, gh, gw)`` grid.
-    """
-    dense_input_mode = "whole" if window_size is None else "sliding_window"
-    if pad_mode not in _PAD_MODES:
-        raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
-    # On-disk grid dtype (#164): stitch/blend in fp32, then cast to the requested storage
-    # dtype just before write_dense_grid, so the saved grid matches the dtype in the key.
-    write_torch_dtype = torch.float16 if str(output_dtype) == "fp16" else torch.float32
-
-    if feature_kind == "cls_attention":
-        attention_blocks = tuple(int(b) for b in attention_blocks)
-        attention_include_registers = bool(attention_include_registers)
-
-        def encode_fn(window: torch.Tensor) -> torch.Tensor:
-            return encoder.encode_tiles_attention(
-                window, blocks=attention_blocks, include_registers=attention_include_registers
-            )
-    elif feature_kind == "patch_features":
-        encode_fn = encoder.encode_tiles_dense
-    else:
-        raise ValueError(
-            f"unsupported feature_kind {feature_kind!r}; expected 'patch_features' or 'cls_attention'"
-        )
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    dataset = _DenseTileImageDataset(
-        list(records),
-        dense_transform,
-        geometry,
-        pad_mode=pad_mode,
-        image_pad_value=image_pad_value,
-        spacing_um=spacing_um,
-        backend=backend,
-        tolerance=tolerance,
-    )
-    loader_kwargs: dict = {
-        "batch_size": batch_size,
-        "shuffle": False,
-        "num_workers": num_workers,
-        "pin_memory": torch.cuda.is_available(),
-    }
-    if num_workers > 0 and prefetch_factor is not None:
-        loader_kwargs["prefetch_factor"] = prefetch_factor
-    loader = DataLoader(dataset, **loader_kwargs)
-
-    feature_dim: int | None = None
-    with torch.inference_mode(), slide_encode_autocast_ctx(device, precision):
-        for batch, sample_ids in loader:
-            batch = batch.to(device, non_blocking=True)
-            grids = (
-                encode_dense_sliding(
-                    encoder,
-                    batch,
-                    geometry=geometry,
-                    window_size=window_size,
-                    overlap=overlap,
-                    encode_fn=encode_fn,
-                )
-                .detach()
-                .float()
-                .cpu()
-            )
-            if grids.ndim != 4:
-                raise ValueError(
-                    f"encode_tiles_dense returned a {grids.ndim}-D tensor; expected "
-                    "(B, d, grid_h, grid_w)."
-                )
-            if feature_dim is None:
-                feature_dim = int(grids.shape[1])
-            for grid, sample_id in zip(grids, sample_ids):
-                metadata = dense_grid_metadata(
-                    geometry,
-                    feature_dim=int(grid.shape[0]),
-                    pad_mode=pad_mode,
-                    image_pad_value=image_pad_value,
-                    mask_pad_value=mask_pad_value,
-                    dense_input_mode=dense_input_mode,
-                    window_size=window_size,
-                    overlap=overlap,
-                    spacing_um=spacing_um,
-                    feature_kind=feature_kind,
-                    attention_blocks=attention_blocks,
-                    attention_include_registers=attention_include_registers,
-                )
-                write_dense_grid(out_dir, str(sample_id), grid.to(write_torch_dtype), metadata)
-    return feature_dim
-
-
 class DenseTileFeatureExtractor:
     """Encode tile images into dense ``(d, h, w)`` grids (``dataset_type="segmentation"``).
 
     Args:
-        dataset: Dataset whose ``image_path`` fields point to tile images.
+        dataset: Dataset whose ``image_path`` fields point to tile images. One
+            extraction run must contain either raster images or spacing-readable
+            pyramidal images, not a mixture; split mixed manifests into separate runs.
         encoder: Encoder configuration. For encoders that recommend
             ``dynamic_img_size=False`` (H-optimus), set
             ``allow_non_recommended_settings=True`` to opt into the variable input
@@ -323,7 +109,8 @@ class DenseTileFeatureExtractor:
         # never alias to one cache entry (mirrors the pooled/bag tile path).
         self._preprocessing = preprocessing
         # feature_kind + attention knobs (design — attention-pixel segmentation §7).
-        # patch_features → encode_tiles_dense; cls_attention → encode_tiles_attention.
+        # patch_features → the ViT patch grid; cls_attention → per-head prefix-token
+        # self-attention. slide2vec picks the per-window encode from this.
         self._feature_kind = (
             (preprocessing.feature_kind or "patch_features")
             if preprocessing is not None
@@ -340,8 +127,36 @@ class DenseTileFeatureExtractor:
         # Only meaningful for constant/zero padding; None (N/A) for reflect/replicate.
         return 0.0 if self._pad_mode in ("constant", "zero") else None
 
+    def _dense_options(self) -> DenseImageOptions:
+        """The read + encode recipe handed to slide2vec.
+
+        ``target_size`` is passed as an ``int`` when square so the option object is
+        spelled the way a square run reads, and as ``(h, w)`` otherwise; slide2vec treats
+        it as a strict post-read declaration either way — it never resizes to fit.
+        """
+        height, width = self._target_size
+        return DenseImageOptions(
+            target_size=int(height) if height == width else (int(height), int(width)),
+            # soma always states a spacing (the pipeline requires one for a dense run), so
+            # slide2vec's ``None`` behaviour — resolve the encoder's registry default for a
+            # spacing-readable source — is unreachable from soma's config surface.
+            spacing_um=self._spacing_um,
+            tolerance=self._tolerance,
+            backend=self._backend,
+            pad_mode=self._pad_mode,
+            image_pad_value=self._image_pad_value(),
+            # window_size=None ⇒ one whole-image forward; a smaller window slides the
+            # encoder over patch-aligned windows of each padded image and blends the grids.
+            # Sliding is required for encoders that only accept their native input size.
+            window_size=self._window_size,
+            overlap=self._overlap,
+            feature_kind=self._feature_kind,
+            attention_blocks=self._attention_blocks,
+            attention_include_registers=self._attention_include_registers,
+        )
+
     def cache_dir(self, feature_dir: str | Path | None = None) -> Path | None:
-        """The dense cache dir (``cache_root/dense/<key>``) this run reads and writes.
+        """The dense-image cache dir (``cache_root/dense_image/<key>``) this run uses.
 
         Resolved with **no side effects**: it loads no encoder (the key needs only the
         static ``patch_size`` slide2vec exposes as registry metadata — the #165
@@ -351,7 +166,7 @@ class DenseTileFeatureExtractor:
 
         Recomputes the *same* key ``run()`` resolves through ``resolve_dense_cache`` —
         ``build_dense_cache_key`` is the single source of truth for both, and the
-        ``cache_root / "dense" / key`` layout mirrors ``_resolve_cache`` — so an offline
+        ``cache_root / "dense_image" / key`` layout mirrors ``_resolve_cache`` — so an offline
         re-scorer can address the *exact* grids this run trained on rather than guessing
         among sibling cache-key dirs (an empty orphan from a since-changed key looks just
         like the real one to a blind glob). ``feature_dir`` is consulted only when
@@ -382,7 +197,7 @@ class DenseTileFeatureExtractor:
             attention_include_registers=self._attention_include_registers,
             dtype=dense_dtype,
         )
-        return cache_root / "dense" / key
+        return cache_root / "dense_image" / key
 
     def run(self, feature_dir: str | Path) -> DenseFeatureStore:
         feature_dir = Path(feature_dir).resolve()
@@ -391,28 +206,27 @@ class DenseTileFeatureExtractor:
         # Check-before-load (#165): the dense cache key needs only patch_size, an
         # architectural constant slide2vec exposes as static registry metadata. Read it
         # without constructing the (multi-GB) encoder, so a full cache hit pays no ViT
-        # load / CUDA context — the common case for campaign reruns. load_model is
-        # deferred to the miss path below, where extraction genuinely needs the encoder.
-        # The static value is parity-tested against the runtime encoder.patch_size in
-        # slide2vec, and load_model re-asserts the match, so the cache key is unchanged.
+        # load / CUDA context — the common case for campaign reruns. The model is
+        # constructed on the miss path below, where extraction genuinely needs it.
         patch_size = resolve_patch_size(self._encoder.name)
         geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
 
         # Announce the resolved dense-input mode before the cache check, so it always shows
-        # (cache hit too — extract_dense_grids only runs on a miss) regardless of logging
-        # config. print, not logger, so the user never has to opt into seeing it.
+        # (cache hit too — extraction only runs on a miss) regardless of logging config.
+        # print, not logger, so the user never has to opt into seeing it.
         print(f"Dense extraction mode: {describe_dense_mode(self._window_size, self._overlap)}")
 
         # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
         # None ⇒ follow the compute precision; 'fp16'/'fp32' force it. Folded into the cache
-        # key (guarded so fp32 keys stay byte-stable) and used to cast the grids at write
-        # time, so storage matches the key.
+        # key (guarded so fp32 keys stay byte-stable) and handed to slide2vec as the write
+        # dtype, so storage matches the key.
         dense_dtype = resolve_output_dtype(
             self._cache.dtype, self._execution.precision or self._encoder.precision
         )
 
         cache_resolution = None
-        out_dir = feature_dir
+        out_root = feature_dir
+        payload_dir = feature_dir / DENSE_IMAGE_PAYLOAD_SUBDIR
         if self._cache.enabled:
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
             cache_resolution = resolve_dense_cache(
@@ -431,56 +245,56 @@ class DenseTileFeatureExtractor:
                 attention_blocks=self._attention_blocks,
                 attention_include_registers=self._attention_include_registers,
                 dtype=dense_dtype,
-                fingerprint_files=self._cache.fingerprint_files,
                 validate_payloads=self._cache.validate_payloads,
+                cache_kind="dense_image",
                 extraction_geometry=dense_extraction_geometry(
                     encoder_name=self._encoder.name,
                     target_size_px=self._target_size,
                     window_size=self._window_size,
                 ),
             )
+            payload_dir = cache_resolution.features_dir
             if cache_resolution.complete:
                 logger.info("Reusing cached dense grids from %s", cache_resolution.features_dir)
-                return DenseFeatureStore(cache_resolution.cache_dir)
-            out_dir = cache_resolution.features_dir
+                return DenseFeatureStore(payload_dir)
+            # slide2vec appends its own payload subdir, so it is handed the cache dir.
+            out_root = cache_resolution.cache_dir
 
         records = list(self._dataset.samples.values())
-        # Resume: encode only the tiles absent from the cache (missing set comes from
+        # Resume: encode only the images absent from the cache (the missing set comes from
         # the shared FeatureCacheResolution contract — no inline missing-logic). Present
         # grids are left untouched. Cache disabled ⇒ encode all.
+        #
+        # soma's cache is the authority on reuse; slide2vec runs its own recipe-aware resume
+        # over whatever it is handed, but it only ever sees the images soma already decided
+        # to encode, so the two cannot disagree about a skip. The one thing upstream's recipe
+        # deliberately does not key on is batch size — and soma's dense grids are only
+        # byte-stable at a fixed batch size, which is why the standing rule is to resume a
+        # dense cache at the batch size that built it (docs/caching.rst).
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
-                return DenseFeatureStore(out_dir)
+                return DenseFeatureStore(payload_dir)
             records = [record for record in records if record.sample_id in wanted]
 
-        # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
-        # Declare the dense geometry this run wants (ADR 0006). slide2vec derives the
-        # effective encoder input from it — the padded tile for a whole-tile run, one
-        # patch-aligned window for a sliding one — checks the encoder can accept it, and
-        # applies whatever constructor settings that takes. An encoder that cannot raises
-        # here, rather than silently encoding at a size it was never built for.
-        loaded = load_model(
-            name=self._encoder.name,
-            output_variant=self._encoder.output_variant,
+        model = Model.from_preset(
+            self._encoder.name,
             allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            encoder_input=EncoderInputContract.declared_dense(
-                self._encoder.name,
-                target_size_px=self._target_size,
-                window_size=self._window_size,
-            ),
         )
-        encoder = loaded.model
-        device = loaded.device
-        dense_transform = encoder.get_dense_transform()  # NOT loaded.transforms (pooled, crops!)
-
         execution = build_execution_options(
             self._encoder,
             execution=self._execution,
             encoder_name=self._encoder.name,
-            output_dir=out_dir,
-            num_gpus=1,  # single-GPU path (multi-GPU sharding deferred)
+            output_dir=out_root,
+            # Multi-GPU dense is a separate, separately-verified follow-up (#305): slide2vec
+            # splits the flat image list contiguously, so a shard boundary yields partial
+            # batches — and fp16 grids are batch-size sensitive.
+            num_gpus=1,
             save_tile_embeddings=True,
+            # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved value,
+            # so the on-disk grid is cast to exactly the dtype folded into the cache key
+            # above (key and storage can never drift).
+            output_dtype=dense_dtype,
         )
         logger.info(
             "Encoding %d tiles into dense grids with '%s' at target_size=%s, patch=%s -> grid %s",
@@ -490,38 +304,19 @@ class DenseTileFeatureExtractor:
             patch_size,
             geometry.grid_shape,
         )
-        feature_dim = extract_dense_grids(
-            encoder=encoder,
-            device=device,
-            dense_transform=dense_transform,
-            geometry=geometry,
-            records=records,
-            out_dir=out_dir,
-            spacing_um=self._spacing_um,
-            backend=self._backend,
-            tolerance=self._tolerance,
-            pad_mode=self._pad_mode,
-            image_pad_value=self._image_pad_value(),
-            mask_pad_value=None,  # ignore_index is owned by the segmentation dataset slice
-            window_size=self._window_size,
-            overlap=self._overlap,
-            feature_kind=self._feature_kind,
-            attention_blocks=self._attention_blocks,
-            attention_include_registers=self._attention_include_registers,
-            batch_size=self._encoder.batch_size,
-            # execution.precision honors an ExecutionConfig.precision override
-            # (build_execution_options falls back to the encoder's precision when unset),
-            # matching TileFeatureExtractor.
-            precision=execution.precision,
-            output_dtype=dense_dtype,
-            num_workers=execution.resolved_num_workers_per_gpu(),
-            prefetch_factor=execution.prefetch_factor,
+        artifacts = model.embed_images_dense(
+            [
+                ImageSpec(sample_id=str(record.sample_id), image_path=record.image_path)
+                for record in records
+            ],
+            dense=self._dense_options(),
+            execution=execution,
         )
 
-        if cache_resolution is not None and feature_dim is not None:
+        if cache_resolution is not None and artifacts:
             cache_resolution = record_feature_dim(
                 cache_resolution,
-                feature_dim,
+                int(artifacts[0].feature_dim),
                 validate_payloads=self._cache.validate_payloads,
             )
             cache_resolution = record_sample_identity_signatures(
@@ -529,4 +324,4 @@ class DenseTileFeatureExtractor:
                 [record.sample_id for record in records],
                 validate_payloads=self._cache.validate_payloads,
             )
-        return DenseFeatureStore(out_dir)
+        return DenseFeatureStore(payload_dir)
