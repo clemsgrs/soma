@@ -25,6 +25,7 @@ from slide2vec.artifacts import load_array
 
 from soma.dataset import ensure_filename_safe_id
 from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry
+from soma.dense.source import DenseSampleSpacing, dense_sample_spacing_from_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -346,6 +347,12 @@ class DenseFeatureStore:
         metadata = self.metadata(sample_id)
         value = metadata.get("spacing_um", metadata.get("declared_spacing_um"))
         return None if value is None else float(value)
+
+    def spacing(self, sample_id: str) -> DenseSampleSpacing:
+        """Resolved source and effective grid spacing persisted by Slide2Vec."""
+        return dense_sample_spacing_from_metadata(
+            self.metadata(sample_id), sample_id=sample_id
+        )
 
     @property
     def feature_dir(self) -> Path:

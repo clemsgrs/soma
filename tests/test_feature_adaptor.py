@@ -1430,6 +1430,10 @@ def _synthetic_detection_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     meta = dense_grid_metadata(
         geom, feature_dim=feature_dim, pad_mode="reflect", spacing_um=_DETECTION_SPACING
     )
+    meta.update(
+        source_spacing_um=_DETECTION_SPACING,
+        effective_spacing_um=_DETECTION_SPACING,
+    )
     torch.manual_seed(0)
     rows = []
     for sample_id, scale in {"s0": 1.0, "s1": 2.0, "s2": 500.0, "s3": 900.0}.items():
@@ -1442,8 +1446,8 @@ def _synthetic_detection_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
 
     manifest_csv = tmp_path / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,points_path\n"
-        + "\n".join(f"{s},{i},{p}" for s, i, p in rows)
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
+        + "\n".join(f"{s},{i},{p},{_DETECTION_SPACING}" for s, i, p in rows)
         + "\n",
         encoding="utf-8",
     )
@@ -1461,7 +1465,6 @@ _DETECTION_TASK = TaskConfig(
     params={
         "num_classes": 2,
         "match_distance": 0.6,
-        "level0_spacing": _DETECTION_SPACING,
     },
 )
 
@@ -1764,8 +1767,7 @@ def test_ocelot_greedy_rescoring_reconstructs_the_projected_model(tmp_path: Path
             delta_px=3.0,
             sigma_px=1.0,
             nms_distance_px=3.0,
-            run_spacing=_DETECTION_SPACING,
-            level0_spacing=_DETECTION_SPACING,
+            sample_spacings={sid: store.spacing(sid) for sid in store.available_samples},
         ),
         normalization=normalization,
         projection=projection,

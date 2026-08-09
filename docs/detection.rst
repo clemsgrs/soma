@@ -71,10 +71,10 @@ supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
    * - ``points_path``
      - yes
      - Per-sample point file (replaces seg's ``mask_path``).
-   * - ``level0_spacing``
+   * - ``spacing_at_level_0``
      - no
-     - µm/px of the frame the points are stored in (per-sample override; otherwise the
-       task default).
+     - Finite positive µm/px declaration for the source image's level-0 pixels. Required
+       for flat PNG/JPEG extraction; WSI readers may resolve it from the slide.
    * - ``source_wsi`` / ``tile_x`` / ``tile_y``
      - no
      - Parent slide id + tile origin — retained now for deferred WSI stitching.
@@ -94,13 +94,17 @@ Points are **persisted in level-0 (base full-resolution) pixels** — the pathol
 convention (ASAP / QuPath / hs2p), invariant to the experiment. The loader maps them
 into the run's ``target_size`` frame for encoding and matching::
 
-   x_target = x_level0 * (level0_spacing / run_spacing) - crop_left
-   y_target = y_level0 * (level0_spacing / run_spacing) - crop_top
+   x_target = x_level0 * (source_spacing_um / effective_spacing_um) - crop_left
+   y_target = y_level0 * (source_spacing_um / effective_spacing_um) - crop_top
 
-where ``run_spacing`` is the µm/px the grids were extracted at. For flat tiles read at
-their native resolution (``level0_spacing == run_spacing``, no crop) this is the
-identity. Predicted points are written **back** to level-0 in the prediction CSV, so the
-deferred WSI-stitching step needs no data migration.
+Both values come from each dense artifact's Slide2Vec sidecar:
+``source_spacing_um`` is the resolved physical scale of the stored point/source frame,
+and ``effective_spacing_um`` is the scale actually sampled for the dense grid. The latter
+can legitimately differ slightly from ``preprocessing.requested_spacing_um`` when a WSI
+reader accepts a nearby native level. For flat tiles read at native resolution (equal
+source/effective spacing, no crop) the transform is the identity. Predicted points are
+written **back** to level-0 in the prediction CSV, so deferred WSI stitching needs no data
+migration.
 
 Configuration
 -------------
@@ -111,7 +115,7 @@ Configuration
      dataset_type: detection
    preprocessing:
      requested_tile_size_px: 1024         # supervision tile size
-     requested_spacing_um: 0.2            # read + native encoder spacing (= run_spacing)
+     requested_spacing_um: 0.2            # requested read scale; sidecar records effective scale
    encoder: { name: uni }
    decoder:                               # the heatmap regressor
      name: lightweight_conv
@@ -123,19 +127,20 @@ Configuration
        sigma: 1.0                          # target Gaussian σ in µm (default ≈ δ/3)
        matching: hungarian                # hungarian (default) | greedy (OCELOT-official)
        foreground_weight: 10.0            # MSE up-weight on near-peak pixels
-       level0_spacing: 0.2                # µm/px of the stored point frame (per-sample override via column)
    evaluation:
      metrics: [mean_f1, f1_per_class]
 
 ``match_distance`` (δ), ``sigma``, and ``nms_distance`` are **always given in µm** —
 physically meaningful and spacing-invariant, so the same value means the same tolerance
 regardless of which encoder / spacing the run uses, with no "px at which level?"
-ambiguity. Each is resolved to target-frame pixels by dividing by ``run_spacing`` (the
-µm/px the grids were extracted at), so a spacing is required (detection extraction always
-records one). ``match_distance`` is required; ``sigma`` defaults to δ/3 and
+ambiguity. Each is resolved to target-frame pixels by dividing by the persisted
+``effective_spacing_um`` (the scale actually sampled), so resolved provenance is required
+for every detection grid. One run may contain different source spacings, but all samples
+must share one effective spacing because they share a decoder geometry. ``match_distance``
+is required; ``sigma`` defaults to δ/3 and
 ``nms_distance`` to δ (so two detections cannot both satisfy one ground-truth point).
 Benchmarks that define their tolerance in pixels are expressed in µm via the read
-spacing: OCELOT's official **15 px** at ``requested_spacing_um: 0.2`` is
+effective spacing: OCELOT's official **15 px** at ``effective_spacing_um = 0.2`` is
 ``match_distance: 3.0`` µm (``3.0 / 0.2 = 15`` px).
 
 Feature substrate — patch features or attention grids

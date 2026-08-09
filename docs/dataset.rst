@@ -26,7 +26,8 @@ replace the scalar ``label`` with a per-sample supervision file:
   (:class:`soma.dataset.DetectionManifest`), a CSV of object centroids with
   ``x, y, class`` columns (headerless ``x,y,class`` — OCELOT's format — or a
   2-column ``x,y`` for a single class). Points are stored in **level-0** pixels;
-  an optional per-sample ``level0_spacing`` column records their frame. See
+  an optional finite positive per-sample ``spacing_at_level_0`` column declares the
+  source image's level-0 µm/px. It is required for flat PNG/JPEG dense extraction. See
   :doc:`detection` for the full column contract.
 
 Splits format

@@ -22,6 +22,7 @@ target-frame pixels (the pipeline converts from µm/px via the run spacing).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -39,6 +40,7 @@ from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
     from soma.dataset import SampleRecord
+    from soma.dense import DenseSampleSpacing
     from soma.dense.geometry import DenseGridGeometry
 
 
@@ -60,12 +62,8 @@ class DetectionHead(TaskHead):
             fight the heavy background imbalance; per-pixel weight ``1 + fw * target``.
         matching: ``"hungarian"`` (default, optimal one-to-one) or ``"greedy"``
             (OCELOT-official by confidence).
-        level0_spacing: µm/px of the stored (level-0) point frame. ``None`` (default)
-            means "use ``run_spacing``" — i.e. points are assumed already in the grid
-            frame (identity transform) unless a sample's ``level0_spacing`` metadata
-            column or this argument says otherwise.
-        run_spacing: µm/px the grid/image was extracted at; ``None`` ⇒ tiles-as-level-0
-            (identity transform).
+        sample_spacings: Resolved source and effective grid spacing for every sample,
+            read from dense extraction sidecars before the head is built.
         truncate: Render each target Gaussian within ``truncate * sigma_px``.
         metrics: Metric names (validated against the ``detection`` family).
     """
@@ -85,8 +83,7 @@ class DetectionHead(TaskHead):
         score_threshold: float | list[float] = 0.5,
         foreground_weight: float = 10.0,
         matching: str = "hungarian",
-        level0_spacing: float | None = None,
-        run_spacing: float | None = None,
+        sample_spacings: Mapping[str, "DenseSampleSpacing"],
         truncate: float = 3.0,
         metrics: list[str] | None = None,
     ) -> None:
@@ -108,8 +105,9 @@ class DetectionHead(TaskHead):
         self.score_threshold: float | list[float] = score_threshold
         self.foreground_weight = float(foreground_weight)
         self.matching = matching
-        self.level0_spacing = float(level0_spacing) if level0_spacing is not None else None
-        self.run_spacing = float(run_spacing) if run_spacing is not None else None
+        self._sample_spacings = {
+            str(sample_id): spacing for sample_id, spacing in sample_spacings.items()
+        }
         self.truncate = float(truncate)
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
@@ -128,37 +126,25 @@ class DetectionHead(TaskHead):
 
     # --- targets ----------------------------------------------------------- #
 
-    def resolve_spacings(self, record: "SampleRecord") -> tuple[float, float]:
-        """Resolve ``(level0_spacing, run_spacing)`` for a sample's point transform.
-
-        level0_spacing precedence: per-sample ``metadata`` override → head default →
-        ``run_spacing`` (points assumed already in the grid frame ⇒ identity) → ``1.0``
-        (tiles-as-level-0, no spacing info). run_spacing falls back to level0_spacing when
-        the grid spacing is unknown, also giving an identity transform. Defaulting to
-        ``run_spacing`` (not ``1.0``) matters: with grids at e.g. 0.2 µm/px, a stale ``1.0``
-        would scale points by 5× and silently push annotations out of the tile.
-        """
-        override = record.metadata.get("level0_spacing") if record.metadata else None
-        if override is not None:
-            level0_spacing = float(override)
-        elif self.level0_spacing is not None:
-            level0_spacing = self.level0_spacing
-        elif self.run_spacing is not None:
-            level0_spacing = self.run_spacing
-        else:
-            level0_spacing = 1.0
-        run_spacing = self.run_spacing if self.run_spacing is not None else level0_spacing
-        return level0_spacing, run_spacing
+    def spacing_for_sample(self, sample_id: str) -> "DenseSampleSpacing":
+        try:
+            return self._sample_spacings[str(sample_id)]
+        except KeyError:
+            raise ValueError(
+                f"Detection sample '{sample_id}' has no resolved dense spacing provenance."
+            ) from None
 
     def _sample_target_points(self, record: "SampleRecord") -> tuple[np.ndarray, np.ndarray]:
         """Read + transform a sample's points into in-frame ``(xy, classes)``."""
         if getattr(record, "points_path", None) is None:
             raise ValueError(f"detection sample '{record.sample_id}' has no points_path")
         xy_l0, classes = read_points(record.points_path)
-        level0_spacing, run_spacing = self.resolve_spacings(record)
+        spacing = self.spacing_for_sample(record.sample_id)
         top, left, height, width = self._crop_box
         xy = transform_points_to_target(
-            xy_l0, level0_spacing=level0_spacing, run_spacing=run_spacing,
+            xy_l0,
+            source_spacing_um=spacing.source_spacing_um,
+            effective_spacing_um=spacing.effective_spacing_um,
             crop_top=top, crop_left=left,
         )
         # Keep only points landing inside this tile's target frame (the supervised set).

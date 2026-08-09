@@ -44,7 +44,11 @@ from soma.dataset import DetectionManifest, Splits
 from soma.dense import DenseFeatureStore
 from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.encoders.validation import resolve_preprocessing_config
-from soma.pipeline import _make_loaders, _resolve_detection_px
+from soma.pipeline import (
+    _make_loaders,
+    _resolve_detection_px,
+    _resolve_detection_sample_spacings,
+)
 
 # The greedy matcher is now first-class package code (soma/benchmarks/ocelot.py): it IS the
 # OCELOT benchmark's `score` override (ADR 0002). This script stays as the thin CLI that
@@ -156,10 +160,17 @@ def main() -> None:
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])
-    grid_spacing = store.metadata(train_records[0].sample_id).get("spacing_um")
-    delta_px = _resolve_detection_px(float(p["match_distance"]), grid_spacing, "match_distance")
+    all_records = train_records + tune_records + [
+        record for records in test_by_split.values() for record in records
+    ]
+    sample_spacings, effective_spacing_um = _resolve_detection_sample_spacings(
+        store, all_records
+    )
+    delta_px = _resolve_detection_px(
+        float(p["match_distance"]), effective_spacing_um, "match_distance"
+    )
     sigma_px = (
-        _resolve_detection_px(float(p["sigma"]), grid_spacing, "sigma")
+        _resolve_detection_px(float(p["sigma"]), effective_spacing_um, "sigma")
         if p.get("sigma") is not None else delta_px / 3.0
     )
     geometry = store.geometry(train_records[0].sample_id)
@@ -170,8 +181,7 @@ def main() -> None:
         num_classes=num_classes, geometry=geometry, delta_px=delta_px, sigma_px=sigma_px,
         nms_distance_px=delta_px, matching=args.matching,
         foreground_weight=float(p.get("foreground_weight", 10.0)),
-        level0_spacing=float(p.get("level0_spacing", 1.0)),
-        run_spacing=float(grid_spacing) if grid_spacing is not None else None,
+        sample_spacings=sample_spacings,
         metrics=cfg.evaluation.metrics,
     )
 

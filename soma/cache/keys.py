@@ -39,6 +39,7 @@ def dataset_manifest_rows(dataset: Dataset) -> list[dict[str, object]]:
                 "mask_path": str(sample.mask_path)
                 if sample.mask_path is not None
                 else None,
+                "spacing_at_level_0": sample.spacing_at_level_0,
             }
         )
     return rows
@@ -51,6 +52,7 @@ def manifest_digest(manifest_rows: Iterable[dict[str, object]]) -> str:
                 "sample_id": row["sample_id"],
                 "image_path": row["image_path"],
                 "mask_path": row.get("mask_path"),
+                "spacing_at_level_0": row.get("spacing_at_level_0"),
             }
             for row in manifest_rows
         ],
@@ -64,11 +66,13 @@ def sample_identity_signature(
     sample_id: str,
     image_path: Path | str,
     mask_path: Path | str | None,
+    spacing_at_level_0: float | None = None,
 ) -> str:
     payload = {
         "sample_id": str(sample_id),
         "image_path": str(image_path),
         "mask_path": str(mask_path) if mask_path is not None else None,
+        "spacing_at_level_0": spacing_at_level_0,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -173,6 +177,7 @@ def probe_resolved_backends(
             requested_backend,
             wsi_path=sample.image_path,
             mask_path=sample.mask_path,
+            spacing_override=sample.spacing_at_level_0,
         )
         mapping[sample_id] = str(selection.backend)
     return mapping
@@ -445,6 +450,7 @@ def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
             sample_id=sample.sample_id,
             image_path=sample.image_path,
             mask_path=sample.mask_path,
+            spacing_at_level_0=sample.spacing_at_level_0,
         )
         for sample_id, sample in dataset.samples.items()
     }

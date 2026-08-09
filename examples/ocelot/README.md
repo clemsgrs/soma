@@ -64,13 +64,12 @@ train→`train`, val→`tune`, test→`test`, single fold), one `points/<sample_
 
 ### Magnification variants (encoder × spacing ablation)
 
-The dense reader reads flat JPEGs with PIL and ignores any `requested_spacing_um`, so
-a coarser magnification must be **materialized at curation time**. Pass
-`--render-spacing-um` to downsample every cell patch to a target µm/px (≥ the native
-0.2) and rescale its points by the same factor; the emitted manifest stamps a
-`level0_spacing` column equal to the rendered spacing and the patches land under
-`curated/images/`. Each variant is its own output dir (own manifest digest in the
-dense cache):
+The committed magnification-ablation workflow materializes each coarser variant at
+curation time. Pass `--render-spacing-um` to downsample every cell patch to a target
+µm/px (≥ the native 0.2) and rescale its points by the same factor; the emitted manifest
+stamps `spacing_at_level_0` with that rendered source scale and the patches land under
+`curated/images/`. Each variant is its own output dir (own manifest digest in the dense
+cache):
 
 ```bash
 python -m soma.curation.ocelot \

@@ -121,7 +121,12 @@ def sample_slide_rois(
         if record.mask_path is None:
             raise ValueError(f"slide '{sid}' has no mask_path; a slide-manifest row needs one.")
         result = tile_slide(
-            SlideSpec(sample_id=sid, image_path=record.image_path, mask_path=record.mask_path),
+            SlideSpec(
+                sample_id=sid,
+                image_path=record.image_path,
+                mask_path=record.mask_path,
+                spacing_at_level_0=record.spacing_at_level_0,
+            ),
             tiling=tiling,
             sampling=spec,
             selection_strategy=strategy,
@@ -184,6 +189,7 @@ def build_roi_manifest(
                     "slide_id": slide_id,
                     "image_path": str(record.image_path),
                     "mask_path": str(record.mask_path),
+                    "spacing_at_level_0": record.spacing_at_level_0,
                     "region_x": int(x),
                     "region_y": int(y),
                 }
@@ -193,7 +199,15 @@ def build_roi_manifest(
 
     _write_csv(
         manifest_path,
-        ["sample_id", "slide_id", "image_path", "mask_path", "region_x", "region_y"],
+        [
+            "sample_id",
+            "slide_id",
+            "image_path",
+            "mask_path",
+            "spacing_at_level_0",
+            "region_x",
+            "region_y",
+        ],
         manifest_rows,
     )
     splits_fields = ["sample_id", "split", "fold"] if has_fold else ["sample_id", "split"]
@@ -351,12 +365,22 @@ class SlideManifestDenseExtractor:
         # opens and reads each slide once.
         coords_by_slide: dict[str, list[tuple[int, int]]] = defaultdict(list)
         image_path_by_slide: dict[str, Path] = {}
+        spacing_by_slide: dict[str, float | None] = {}
         for record in self._dataset.samples.values():
             if wanted is not None and record.sample_id not in wanted:
                 continue
             slide_id = str(record.slide_id)
             coords_by_slide[slide_id].append(record.region)
             image_path_by_slide[slide_id] = record.image_path
+            if (
+                slide_id in spacing_by_slide
+                and spacing_by_slide[slide_id] != record.spacing_at_level_0
+            ):
+                raise ValueError(
+                    f"ROI rows for slide '{slide_id}' disagree on spacing_at_level_0: "
+                    f"{spacing_by_slide[slide_id]} vs {record.spacing_at_level_0}."
+                )
+            spacing_by_slide[slide_id] = record.spacing_at_level_0
 
         # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
         model = Model.from_preset(
@@ -399,6 +423,7 @@ class SlideManifestDenseExtractor:
                     sample_id=slide_id,
                     image_path=image_path_by_slide[slide_id],
                     coordinates=coords,
+                    spacing_at_level_0=spacing_by_slide[slide_id],
                 )
                 for slide_id, coords in coords_by_slide.items()
             ],

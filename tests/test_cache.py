@@ -292,8 +292,10 @@ def test_probe_resolved_backends_uses_explicit_backend_without_probe(tmp_path: P
 def test_probe_resolved_backends_uses_runtime_backend_probe_for_auto(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
 
-    def _fake_resolve_backend(requested_backend, *, wsi_path, mask_path=None):
-        del requested_backend, mask_path
+    def _fake_resolve_backend(
+        requested_backend, *, wsi_path, mask_path=None, spacing_override=None
+    ):
+        del requested_backend, mask_path, spacing_override
         return SimpleNamespace(backend="cucim" if Path(wsi_path).name == "s1.svs" else "openslide")
 
     with patch("soma.cache.keys.resolve_backend", side_effect=_fake_resolve_backend) as resolve_backend:

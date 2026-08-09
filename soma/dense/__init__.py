@@ -8,6 +8,7 @@ from soma.dense.geometry import (
 from soma.dense.source import (
     CacheBackedDenseSource,
     DenseFeatureSource,
+    DenseSampleSpacing,
     DenseSourceProvenance,
 )
 from soma.dense.store import (
@@ -27,6 +28,7 @@ __all__ = [
     "normalize_hw",
     "CacheBackedDenseSource",
     "DenseFeatureSource",
+    "DenseSampleSpacing",
     "DenseSourceProvenance",
     "DENSE_ARTIFACT_TYPE",
     "DENSE_IMAGE_PAYLOAD_SUBDIR",

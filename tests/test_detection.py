@@ -10,7 +10,11 @@ import numpy as np
 import pytest
 import torch
 
-from soma.detection.encode import render_peak_heatmap, transform_points_to_target
+from soma.detection.encode import (
+    render_peak_heatmap,
+    transform_points_to_level0,
+    transform_points_to_target,
+)
 from soma.detection.matching import (
     ClassMatch,
     detection_counts,
@@ -27,35 +31,68 @@ from soma.detection.peaks import extract_peaks
 # --------------------------------------------------------------------------- #
 
 
+def test_transform_uses_resolved_source_and_effective_spacing_exactly():
+    level0 = np.array([[20.0, 10.0]])
+    target = transform_points_to_target(
+        level0,
+        source_spacing_um=0.5,
+        effective_spacing_um=1.0,
+    )
+    np.testing.assert_array_equal(target, np.array([[10.0, 5.0]]))
+    np.testing.assert_array_equal(
+        transform_points_to_level0(
+            target,
+            source_spacing_um=0.5,
+            effective_spacing_um=1.0,
+        ),
+        level0,
+    )
+
+
 def test_transform_identity_when_spacing_and_crop_match():
     pts = np.array([[10.0, 20.0], [0.0, 0.0]])
-    out = transform_points_to_target(pts, level0_spacing=0.2, run_spacing=0.2)
+    out = transform_points_to_target(
+        pts, source_spacing_um=0.2, effective_spacing_um=0.2
+    )
     np.testing.assert_allclose(out, pts)
 
 
 def test_transform_scales_by_spacing_ratio():
     pts = np.array([[10.0, 20.0]])
     # level-0 finer than run: a level-0 px maps to half a run px.
-    out = transform_points_to_target(pts, level0_spacing=0.25, run_spacing=0.5)
+    out = transform_points_to_target(
+        pts, source_spacing_um=0.25, effective_spacing_um=0.5
+    )
     np.testing.assert_allclose(out, [[5.0, 10.0]])
 
 
 def test_transform_applies_crop_offset():
     pts = np.array([[10.0, 20.0]])
     out = transform_points_to_target(
-        pts, level0_spacing=0.5, run_spacing=0.5, crop_top=3, crop_left=4
+        pts,
+        source_spacing_um=0.5,
+        effective_spacing_um=0.5,
+        crop_top=3,
+        crop_left=4,
     )
     np.testing.assert_allclose(out, [[6.0, 17.0]])
 
 
 def test_transform_empty_passthrough():
-    out = transform_points_to_target(np.zeros((0, 2)), level0_spacing=0.5, run_spacing=0.5)
+    out = transform_points_to_target(
+        np.zeros((0, 2)), source_spacing_um=0.5, effective_spacing_um=0.5
+    )
     assert out.shape == (0, 2)
 
 
-def test_transform_rejects_nonpositive_spacing():
-    with pytest.raises(ValueError, match="positive"):
-        transform_points_to_target(np.array([[1.0, 1.0]]), level0_spacing=0.0, run_spacing=0.5)
+@pytest.mark.parametrize("invalid", [0.0, -0.1, float("nan"), float("inf"), True])
+def test_transform_rejects_invalid_spacing(invalid):
+    with pytest.raises(ValueError, match="positive and finite"):
+        transform_points_to_target(
+            np.array([[1.0, 1.0]]),
+            source_spacing_um=invalid,
+            effective_spacing_um=0.5,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -386,11 +423,19 @@ def test_sweep_thresholds_suppresses_all_false_positive_class():
 
 
 def _make_head(**kwargs):
+    from soma.dense import DenseSampleSpacing
     from soma.dense.geometry import compute_dense_geometry
     from soma.tasks.detection import DetectionHead
 
     geom = compute_dense_geometry(target_size=32, patch_size=4)
-    params = dict(num_classes=2, geometry=geom, delta_px=3.0, sigma_px=1.5, score_threshold=0.5)
+    params = dict(
+        num_classes=2,
+        geometry=geom,
+        delta_px=3.0,
+        sigma_px=1.5,
+        score_threshold=0.5,
+        sample_spacings={"s": DenseSampleSpacing(1.0, 1.0)},
+    )
     params.update(kwargs)
     return DetectionHead(**params)
 
@@ -424,26 +469,19 @@ def test_head_extract_targets_renders_points(tmp_path):
     assert targets["gt_points"].shape == (2, 3)
 
 
-def test_head_level0_spacing_defaults_to_run_spacing(tmp_path):
-    # Grids extracted at run_spacing=0.2 with no level0_spacing override: points must be
-    # treated as already in the grid frame (identity), NOT scaled by 1.0/0.2 = 5 out of
-    # the tile. The point (10, 12) should land exactly, giving two in-frame targets.
+def test_head_uses_persisted_per_sample_spacing(tmp_path):
+    from soma.dense import DenseSampleSpacing
     from soma.dataset import SampleRecord
 
     pts = tmp_path / "p.csv"
-    pts.write_text("x,y,class\n10,12,0\n20,8,1\n")
+    pts.write_text("x,y,class\n20,10,0\n")
     record = SampleRecord(sample_id="s", image_path=tmp_path / "i.jpg", label=None, points_path=pts)
-    head = _make_head(run_spacing=0.2)
-    assert head.resolve_spacings(record) == (0.2, 0.2)
+    spacing = DenseSampleSpacing(source_spacing_um=0.5, effective_spacing_um=1.0)
+    head = _make_head(sample_spacings={"s": spacing})
+    assert head.spacing_for_sample("s") == spacing
     targets = head.extract_targets(record)
-    assert targets["gt_points"].shape == (2, 3)
-    assert targets["heatmap"][0, 12, 10] == pytest.approx(1.0)
-    # An explicit per-sample level0_spacing override still wins and rescales.
-    record_override = SampleRecord(
-        sample_id="s", image_path=tmp_path / "i.jpg", label=None,
-        points_path=pts, metadata={"level0_spacing": 0.4},
-    )
-    assert head.resolve_spacings(record_override) == (0.4, 0.2)
+    assert targets["gt_points"].tolist() == [[10.0, 5.0, 0.0]]
+    assert targets["heatmap"][0, 5, 10] == pytest.approx(1.0)
 
 
 def test_head_eval_roundtrip_perfect_on_gt_heatmap():
@@ -491,13 +529,13 @@ def test_detection_manifest_loads_points_path(tmp_path):
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
     csv.write_text(
-        "sample_id,image_path,points_path,level0_spacing\n"
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
         f"s0,img0.jpg,{tmp_path / 'a.csv'},0.25\n"
     )
     manifest = DetectionManifest(csv)
     rec = manifest.samples["s0"]
     assert rec.points_path == tmp_path / "a.csv"
-    assert rec.metadata["level0_spacing"] == pytest.approx(0.25)
+    assert rec.spacing_at_level_0 == pytest.approx(0.25)
 
 
 def test_detection_manifest_retains_tile_origin(tmp_path):

@@ -32,10 +32,9 @@ domain, all of a patient's images kept together), so re-curation is byte-identic
 numbers are **not comparable** to the published MIDOG 2022 leaderboard (different test
 set) — render the leaderboard as a reference band only.
 
-``level0_spacing`` (µm/px of the stored point frame) is emitted per sample when known —
+``spacing_at_level_0`` (µm/px of the stored image's level-0 frame) is emitted when known —
 either from a per-image ``spacing`` in the JSON (MIDOG scanners differ) or from the
-``level0_spacing_um`` argument — so the detection head can resolve the µm match distance
-(:data:`~soma.detection.midog_f1.MIDOG_MATCH_DISTANCE_UM`) to target-frame pixels.
+``spacing_at_level_0`` argument — so extraction can resolve the source's physical scale.
 """
 
 from __future__ import annotations
@@ -149,7 +148,7 @@ def curate_midog_detection(
     output_dir: str | Path,
     *,
     annotations_json: str | Path | None = None,
-    level0_spacing_um: float | None = None,
+    spacing_at_level_0: float | None = None,
     bbox_format: str = "xywh",
     test_fraction: float = DEFAULT_TEST_FRACTION,
     tune_fraction: float = DEFAULT_TUNE_FRACTION,
@@ -162,10 +161,9 @@ def curate_midog_detection(
             ``points/<sample_id>.csv`` files, and ``summary.json`` are written.
         annotations_json: Path to the COCO annotations file (default
             ``raw_root/MIDOG2022_training.json``).
-        level0_spacing_um: Optional µm/px of the point frame, stamped per sample so the
-            detection head resolves the match distance; a per-image ``spacing`` in the JSON
-            overrides it (MIDOG scanners differ). When neither is given, no
-            ``level0_spacing`` column is emitted (wiring it is a run-time step).
+        spacing_at_level_0: Optional µm/px declaration for the source image, stamped per
+            sample; a per-image ``spacing`` in the JSON overrides it because MIDOG scanners
+            differ. When neither is given, no declaration is emitted.
         bbox_format: Box convention in the JSON — ``"xywh"`` (COCO, default) or ``"xyxy"``.
         test_fraction / tune_fraction: Local held-out split fractions per domain.
 
@@ -217,7 +215,7 @@ def curate_midog_detection(
         scanner = img.get("scanner")
         patient_id = str(img.get("patient_id", sample_id))
         domain = str(tumor_type or scanner or "unknown")
-        spacing = img.get("spacing", level0_spacing_um)
+        spacing = img.get("spacing", spacing_at_level_0)
 
         centers = sorted(mitoses_by_image.get(int(img["id"]), []))
         out_csv = points_dir / f"{sample_id}.csv"
@@ -243,7 +241,7 @@ def curate_midog_detection(
         if scanner is not None:
             row["scanner"] = str(scanner)
         if spacing is not None:
-            row["level0_spacing"] = float(spacing)
+            row["spacing_at_level_0"] = float(spacing)
         dataset_rows.append(row)
 
     if not dataset_rows:
@@ -275,7 +273,7 @@ def curate_midog_detection(
         "num_hard_negatives": num_hard_negatives,
         "num_empty": num_empty,
         "domains": dict(per_domain_samples),
-        "level0_spacing_um": level0_spacing_um,
+        "spacing_at_level_0": spacing_at_level_0,
         "bbox_format": bbox_format,
         "split_fractions": {
             "test": test_fraction,
@@ -304,8 +302,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--output-dir", type=Path, required=True, help="curated output dir")
     ap.add_argument("--annotations-json", type=Path, default=None, help="COCO json path override")
     ap.add_argument(
-        "--level0-spacing-um", type=float, default=None,
-        help="µm/px of the point frame to stamp per sample (per-image JSON spacing wins)",
+        "--spacing-at-level-0", type=float, default=None,
+        help="source-image µm/px declaration to stamp (per-image JSON spacing wins)",
     )
     ap.add_argument("--bbox-format", choices=("xywh", "xyxy"), default="xywh")
     ap.add_argument("--test-fraction", type=float, default=DEFAULT_TEST_FRACTION)
@@ -316,7 +314,7 @@ def main(argv: list[str] | None = None) -> None:
         args.raw_root,
         args.output_dir,
         annotations_json=args.annotations_json,
-        level0_spacing_um=args.level0_spacing_um,
+        spacing_at_level_0=args.spacing_at_level_0,
         bbox_format=args.bbox_format,
         test_fraction=args.test_fraction,
         tune_fraction=args.tune_fraction,

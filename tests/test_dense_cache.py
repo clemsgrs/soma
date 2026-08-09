@@ -34,16 +34,20 @@ from soma.dense import (
 from soma.dense.store import DENSE_SIDECAR_SUFFIX
 
 
-def _make_dataset(tmp_path: Path) -> Dataset:
+def _make_dataset(
+    tmp_path: Path, *, spacing_by_id: dict[str, float] | None = None
+) -> Dataset:
     csv_path = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        [
+    rows = [
             # label is unused by the cache layer (the seg loader makes it optional);
             # the base Dataset still requires the column, so supply a placeholder.
             {"sample_id": "s1", "image_path": "/tiles/s1.png", "mask_path": "/masks/s1.png", "label": "a"},
             {"sample_id": "s2", "image_path": "/tiles/s2.png", "mask_path": "/masks/s2.png", "label": "b"},
         ]
-    ).to_csv(csv_path, index=False)
+    if spacing_by_id is not None:
+        for row in rows:
+            row["spacing_at_level_0"] = spacing_by_id[row["sample_id"]]
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
     return Dataset(csv_path)
 
 
@@ -387,6 +391,8 @@ def _populate(res, dataset, *, d: int, gh: int, gw: int) -> None:
     geom = compute_dense_geometry(target_size=(gh * 16, gw * 16), patch_size=16)
     for sid in dataset.sample_ids:
         meta = dense_grid_metadata(geom, feature_dim=d, pad_mode="reflect")
+        meta["source_spacing_um"] = 0.5
+        meta["effective_spacing_um"] = 0.5
         write_dense_grid(res.features_dir, sid, torch.randn(d, gh, gw), meta)
     record_feature_dim(res, d)
     record_sample_identity_signatures(res, list(dataset.sample_ids))
@@ -448,6 +454,8 @@ def test_dense_cache_validator_gates_sidecar_content_validation(
     wrong_geom = compute_dense_geometry(target_size=(256, 512), patch_size=16)
     for sid in dataset.sample_ids:
         meta = dense_grid_metadata(wrong_geom, feature_dim=1536, pad_mode="reflect")
+        meta["source_spacing_um"] = 0.5
+        meta["effective_spacing_um"] = 0.5
         write_dense_grid(res.features_dir, sid, torch.randn(1536, 16, 32), meta)
     record_feature_dim(res, 1536)
     record_sample_identity_signatures(res, list(dataset.sample_ids))
@@ -465,6 +473,22 @@ def test_dense_cache_validator_gates_sidecar_content_validation(
     assert deep.complete is False
     assert deep.validation.reason is not None
     assert "dense sidecar grid_shape mismatch for s1" in deep.validation.reason
+
+
+def test_dense_cache_deep_validation_requires_source_and_effective_spacing(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+    sidecar = res.features_dir / f"s1{DENSE_SIDECAR_SUFFIX}"
+    metadata = json.loads(sidecar.read_text())
+    del metadata["source_spacing_um"]
+    sidecar.write_text(json.dumps(metadata))
+
+    assert resolve_dense_cache(**kw).complete is True
+    deep = resolve_dense_cache(**kw, validate_payloads=True)
+    assert deep.complete is False
+    assert deep.validation.reason == "dense sidecar missing source_spacing_um for s1"
 
 
 def test_dense_cache_validator_scans_directory_once(
@@ -548,6 +572,28 @@ def test_dense_missing_sample_ids_empty_when_fully_populated(tmp_path: Path):
     kw = _dense_kw(tmp_path, dataset)
     _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
     assert resolve_dense_cache(**kw).missing_sample_ids() == []
+
+
+def test_dense_source_spacing_selectively_invalidates_sample_identity(tmp_path: Path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = _make_dataset(first_dir, spacing_by_id={"s1": 0.25, "s2": 0.25})
+    second = _make_dataset(second_dir, spacing_by_id={"s1": 0.5, "s2": 0.25})
+    cache_root = tmp_path / "shared-cache"
+
+    first_kw = _dense_kw(tmp_path, first)
+    first_kw["cache_root"] = cache_root
+    populated = resolve_dense_cache(**first_kw)
+    _populate(populated, first, d=1536, gh=32, gw=32)
+
+    second_kw = _dense_kw(tmp_path, second)
+    second_kw["cache_root"] = cache_root
+    resumed = resolve_dense_cache(**second_kw)
+
+    assert resumed.key == populated.key
+    assert resumed.missing_sample_ids() == ["s1"]
 
 
 def test_dense_missing_sample_ids_treats_pt_without_sidecar_as_missing(tmp_path: Path):

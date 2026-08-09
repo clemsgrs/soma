@@ -182,6 +182,28 @@ def test_write_manifest_rejects_unknown_dataset_type(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize("spacing", [0.0, -0.25, float("inf"), True, "invalid"])
+def test_write_manifest_rejects_invalid_source_spacing(tmp_path: Path, spacing):
+    with pytest.raises(
+        ValueError,
+        match=r"spacing_at_level_0 must be a positive, finite number or blank",
+    ):
+        write_manifest(
+            tmp_path / "out",
+            dataset_type="detection",
+            dataset_rows=[
+                {
+                    "sample_id": "s0",
+                    "image_path": "/a.jpg",
+                    "points_path": "/p.csv",
+                    "spacing_at_level_0": spacing,
+                }
+            ],
+            split_rows=[{"sample_id": "s0", "split": "test"}],
+            summary={},
+        )
+
+
 # ------------------------------------------------------------- load-time validation
 
 
@@ -206,6 +228,84 @@ def test_load_manifest_rejects_malformed_supervision_column(tmp_path: Path):
     bad.write_text("sample_id,image_path,label\ns0,/a.tif,1\n")
     with pytest.raises(ValueError, match="mask_path"):
         load_manifest(bad, "segmentation")
+
+
+@pytest.mark.parametrize(
+    ("dataset_type", "supervision_column", "supervision_value"),
+    [
+        ("tile", "label", 1),
+        ("segmentation", "mask_path", "/m.png"),
+        ("detection", "points_path", "/p.csv"),
+        ("spatial_expression", "target_index", 0),
+    ],
+)
+def test_manifest_round_trips_typed_source_spacing(
+    tmp_path: Path, dataset_type: str, supervision_column: str, supervision_value
+):
+    sidecars = (
+        {"target_matrix": np.array([[1.0]]), "genes": ["GENE"]}
+        if dataset_type == "spatial_expression"
+        else {}
+    )
+    manifest = write_manifest(
+        tmp_path / dataset_type,
+        dataset_type=dataset_type,
+        dataset_rows=[
+            {
+                "sample_id": "s0",
+                "image_path": "/a.jpg",
+                supervision_column: supervision_value,
+                "spacing_at_level_0": 0.25,
+            }
+        ],
+        split_rows=[{"sample_id": "s0", "split": "test"}],
+        summary={},
+        **sidecars,
+    )
+
+    record = load_manifest(manifest.dataset_csv, dataset_type).samples["s0"]
+    assert record.spacing_at_level_0 == 0.25
+    assert record.metadata == {}
+
+
+@pytest.mark.parametrize(
+    ("dataset_type", "supervision_column", "supervision_value"),
+    [
+        ("tile", "label", "1"),
+        ("segmentation", "mask_path", "/m.png"),
+        ("detection", "points_path", "/p.csv"),
+        ("spatial_expression", "target_index", "0"),
+    ],
+)
+def test_load_manifest_rejects_invalid_source_spacing(
+    tmp_path: Path, dataset_type: str, supervision_column: str, supervision_value: str
+):
+    manifest = tmp_path / "dataset.csv"
+    manifest.write_text(
+        f"sample_id,image_path,{supervision_column},spacing_at_level_0\n"
+        f"s0,/a.jpg,{supervision_value},0\n"
+    )
+    if dataset_type == "spatial_expression":
+        np.save(tmp_path / "targets.npy", np.array([[1.0]]))
+        (tmp_path / "genes.json").write_text('["GENE"]')
+
+    with pytest.raises(
+        ValueError,
+        match=r"spacing_at_level_0 must be a positive, finite number or blank",
+    ):
+        load_manifest(manifest, dataset_type)
+
+
+def test_load_manifest_does_not_translate_retired_spacing_metadata(tmp_path: Path):
+    manifest = tmp_path / "dataset.csv"
+    manifest.write_text(
+        "sample_id,image_path,points_path,level0_spacing\n"
+        "s0,/a.jpg,/p.csv,0.25\n"
+    )
+
+    record = load_manifest(manifest, "detection").samples["s0"]
+    assert record.spacing_at_level_0 is None
+    assert record.metadata == {"level0_spacing": 0.25}
 
 
 # ----------------------------------------------------------------- Curator Protocol

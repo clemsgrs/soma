@@ -1521,6 +1521,29 @@ def _resolve_detection_px(value_um: float, spacing_um: float | None, name: str) 
     return float(value_um) / float(spacing_um)
 
 
+def _resolve_detection_sample_spacings(feature_store, records):
+    """Read per-sample extraction provenance and require one effective grid scale."""
+    spacing_by_id = {
+        str(record.sample_id): feature_store.spacing(str(record.sample_id))
+        for record in records
+    }
+    effective_groups: dict[float, list[str]] = {}
+    for sample_id, spacing in spacing_by_id.items():
+        effective_groups.setdefault(float(spacing.effective_spacing_um), []).append(
+            sample_id
+        )
+    if len(effective_groups) != 1:
+        details = {
+            value: sorted(sample_ids)
+            for value, sample_ids in sorted(effective_groups.items())
+        }
+        raise ValueError(
+            "Detection requires one effective_spacing_um across the run; "
+            f"found {details}."
+        )
+    return spacing_by_id, next(iter(effective_groups))
+
+
 def train_one_detection_fold(
     feature_store: "DenseFeatureSource",
     dataset: DetectionManifest,
@@ -1605,16 +1628,9 @@ def train_one_detection_fold(
                 f"'{ref_id}'; dataset_type='detection' v1 requires a uniform tile/grid size."
             )
 
-    # run_spacing = the spacing the grids were extracted at (sidecar), which the points
-    # transform maps level-0 into. Cross-check against the configured spacing (the
-    # detection analogue of the seg mask-spacing guard).
-    grid_spacing_um = feature_store.spacing_um(ref_id)
-    requested_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    if not _dense_spacings_match(grid_spacing_um, requested_spacing_um):
-        raise ValueError(
-            f"detection requested spacing ({requested_spacing_um} µm/px) does not match the "
-            f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px)."
-        )
+    sample_spacings, effective_spacing_um = _resolve_detection_sample_spacings(
+        feature_store, all_records
+    )
 
     # Matching distance / σ / NMS radius are configured in µm and resolved to
     # target-frame pixels via the grid spacing (µm is spacing-invariant; px would
@@ -1626,16 +1642,18 @@ def train_one_detection_fold(
             "dataset_type='detection' requires task.params.match_distance (the F1 "
             "matching distance δ, in µm)."
         )
-    delta_px = _resolve_detection_px(float(match_distance_um), grid_spacing_um, "match_distance")
+    delta_px = _resolve_detection_px(
+        float(match_distance_um), effective_spacing_um, "match_distance"
+    )
     sigma_um = det_params.pop("sigma", None)
     sigma_px = (
-        _resolve_detection_px(float(sigma_um), grid_spacing_um, "sigma")
+        _resolve_detection_px(float(sigma_um), effective_spacing_um, "sigma")
         if sigma_um is not None
         else delta_px / 3.0
     )
     nms_um = det_params.pop("nms_distance", None)
     nms_px = (
-        _resolve_detection_px(float(nms_um), grid_spacing_um, "nms_distance")
+        _resolve_detection_px(float(nms_um), effective_spacing_um, "nms_distance")
         if nms_um is not None
         else delta_px
     )
@@ -1646,7 +1664,7 @@ def train_one_detection_fold(
         delta_px=delta_px,
         sigma_px=sigma_px,
         nms_distance_px=nms_px,
-        run_spacing=float(grid_spacing_um) if grid_spacing_um is not None else None,
+        sample_spacings=sample_spacings,
         metrics=evaluation.metrics,
         **det_params,
     )
@@ -1854,10 +1872,13 @@ def _evaluate_detection(
                 counts[c] = m.counts
             stat_rows.append(torch.from_numpy(counts).to(torch.long).unsqueeze(0))
             if pred_xy.shape[0]:
-                record = dataset.samples[sid]
-                l0, run = head.resolve_spacings(record)
+                spacing = head.spacing_for_sample(sid)
                 xy_l0 = transform_points_to_level0(
-                    pred_xy, level0_spacing=l0, run_spacing=run, crop_top=top, crop_left=left
+                    pred_xy,
+                    source_spacing_um=spacing.source_spacing_um,
+                    effective_spacing_um=spacing.effective_spacing_um,
+                    crop_top=top,
+                    crop_left=left,
                 )
                 for (x, y), c, s in zip(xy_l0, pred_cls, pred_score):
                     pred_rows.append(f"{sid},{x:.3f},{y:.3f},{int(c)},{float(s):.4f}")

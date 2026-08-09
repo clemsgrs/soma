@@ -40,7 +40,6 @@ task:
     sigma: 1.7                # target Gaussian σ in µm (≈ δ/3)
     matching: greedy          # FROC uses greedy-by-confidence matching
     foreground_weight: 10.0
-    level0_spacing: 0.242     # native spacing of this manifest
 
 evaluation:
   metrics: [mean_f1, f1_per_class, precision, recall]

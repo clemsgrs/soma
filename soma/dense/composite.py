@@ -37,6 +37,7 @@ import torch
 import torch.nn.functional as F
 
 from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry, normalize_hw
+from soma.dense.source import DenseSampleSpacing
 from soma.dense.store import DenseFeatureStore
 
 __all__ = ["resample_grid_to_target", "apply_member_norm", "CompositeDenseFeatureStore"]
@@ -247,6 +248,16 @@ class CompositeDenseFeatureStore:
     def spacing_um(self, sample_id: str) -> float | None:
         value = self.metadata(sample_id).get("spacing_um")
         return None if value is None else float(value)
+
+    def spacing(self, sample_id: str) -> DenseSampleSpacing:
+        member_spacings = [member.spacing(sample_id) for member in self._members]
+        for field in ("source_spacing_um", "effective_spacing_um"):
+            values = [getattr(spacing, field) for spacing in member_spacings]
+            if len(set(values)) != 1:
+                raise ValueError(
+                    f"composite members disagree on {field} for '{sample_id}': {values}."
+                )
+        return member_spacings[0]
 
     def load(self, sample_id: str) -> torch.Tensor:
         """Concatenate every member's resampled+normalized grid along the channel axis.

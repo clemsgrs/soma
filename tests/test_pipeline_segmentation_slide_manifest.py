@@ -101,6 +101,9 @@ class _FakeDenseModel:
                     (r.sample_id, [tuple(int(v) for v in c) for c in r.coordinates])
                     for r in regions
                 ],
+                "source_spacings": {
+                    r.sample_id: r.spacing_at_level_0 for r in regions
+                },
                 "dense": dense,
                 "execution": execution,
             }
@@ -261,6 +264,83 @@ def test_slide_manifest_propagates_slide_splits_to_rois(tmp_path: Path, monkeypa
     assert len(by_split["tune"]) == 2 and all(r.startswith("s2") for r in by_split["tune"])
     assert len(by_split["test"]) == 2 and all(r.startswith("s3") for r in by_split["test"])
     assert set(splits_df["fold"]) == {0}
+
+
+def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
+    tmp_path: Path, monkeypatch
+):
+    from soma.config import EncoderConfig
+    from soma.dataset import SegmentationManifest
+    from soma.dense_slide_extraction import (
+        SlideManifestDenseExtractor,
+        build_roi_manifest,
+    )
+
+    slides = tmp_path / "slides.csv"
+    slides.write_text(
+        "sample_id,image_path,mask_path,spacing_at_level_0\n"
+        "s0,/fake/s0.tif,/fake/s0_mask.tif,0.25\n"
+    )
+    splits = tmp_path / "splits.csv"
+    splits.write_text("sample_id,split,fold\ns0,test,0\n")
+    source = SegmentationManifest(slides)
+    roi_manifest, _ = build_roi_manifest(
+        source, splits, {"s0": [(0, 0)]}, out_dir=tmp_path / "rois"
+    )
+    roi_dataset = SegmentationManifest(roi_manifest)
+    assert roi_dataset.samples["s0__x0_y0"].spacing_at_level_0 == 0.25
+
+    model = _patch_dense_model(monkeypatch)
+    SlideManifestDenseExtractor(
+        roi_dataset,
+        EncoderConfig(name=ENCODER),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+        ),
+    ).run(feature_dir=tmp_path / "features")
+
+    assert model.calls[0]["source_spacings"] == {"s0": 0.25}
+
+
+def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypatch):
+    from hs2p import SlideSpec
+    from soma.dataset import SegmentationManifest
+    from soma.dense_slide_extraction import sample_slide_rois
+
+    manifest = tmp_path / "slides.csv"
+    manifest.write_text(
+        "sample_id,image_path,mask_path,spacing_at_level_0\n"
+        "s0,/fake/s0.tif,/fake/s0_mask.tif,0.25\n"
+    )
+    captured: list[SlideSpec] = []
+
+    def _tile_slide(slide, **kwargs):
+        captured.append(slide)
+        return {
+            None: SimpleNamespace(
+                tiles=SimpleNamespace(
+                    x=np.asarray([0], dtype=np.int64),
+                    y=np.asarray([0], dtype=np.int64),
+                )
+            )
+        }
+
+    monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
+    coords = sample_slide_rois(
+        SegmentationManifest(manifest),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+        ),
+    )
+
+    assert coords == {"s0": [(0, 0)]}
+    assert captured[0].spacing_at_level_0 == 0.25
 
 
 # --------------------------------------------------------------------------- #

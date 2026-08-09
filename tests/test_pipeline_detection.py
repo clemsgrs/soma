@@ -24,7 +24,7 @@ from soma.config import (
     TrainingConfig,
 )
 from soma.dataset import DetectionManifest, Splits
-from soma.dense import DenseFeatureStore
+from soma.dense import DenseFeatureStore, DenseSampleSpacing
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
 from soma.pipeline import train_one_detection_fold
@@ -34,9 +34,47 @@ TARGET = 16
 PATCH = 4
 FEATURE_DIM = 4
 # Detection distances are µm-only; grids are read flat at this bookkeeping spacing, so
-# level0_spacing == run_spacing == SPACING makes the point transform the identity, and
+# source_spacing_um == effective_spacing_um == SPACING makes the transform identity, and
 # match_distance/sigma in µm divide by SPACING to recover target-frame pixels.
 SPACING = 0.2  # µm/px; 0.6 µm -> 3 px (δ), 0.3 µm -> 1.5 px (σ)
+
+
+def test_detection_spacing_allows_heterogeneous_sources_with_one_effective_grid():
+    from types import SimpleNamespace
+
+    from soma.pipeline import _resolve_detection_sample_spacings
+
+    by_id = {
+        "a": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.5),
+        "b": DenseSampleSpacing(source_spacing_um=0.4, effective_spacing_um=0.5),
+    }
+    source = SimpleNamespace(spacing=lambda sample_id: by_id[sample_id])
+
+    resolved, effective = _resolve_detection_sample_spacings(
+        source, [SimpleNamespace(sample_id="a"), SimpleNamespace(sample_id="b")]
+    )
+
+    assert resolved == by_id
+    assert effective == 0.5
+
+
+def test_detection_spacing_rejects_multiple_effective_grids_with_sample_ids():
+    from types import SimpleNamespace
+
+    import pytest
+
+    from soma.pipeline import _resolve_detection_sample_spacings
+
+    by_id = {
+        "a": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.5),
+        "b": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=1.0),
+    }
+    source = SimpleNamespace(spacing=lambda sample_id: by_id[sample_id])
+
+    with pytest.raises(ValueError, match=r"effective_spacing_um.*0.5.*a.*1.0.*b"):
+        _resolve_detection_sample_spacings(
+            source, [SimpleNamespace(sample_id="a"), SimpleNamespace(sample_id="b")]
+        )
 
 
 def _build_detection_run(root: Path, sample_ids: list[str], make_images: bool = False):
@@ -47,6 +85,7 @@ def _build_detection_run(root: Path, sample_ids: list[str], make_images: bool = 
 
     geom = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
     meta = dense_grid_metadata(geom, feature_dim=FEATURE_DIM, pad_mode="reflect", spacing_um=SPACING)
+    meta.update(source_spacing_um=SPACING, effective_spacing_um=SPACING)
 
     rng = np.random.default_rng(0)
     rows = []
@@ -69,8 +108,8 @@ def _build_detection_run(root: Path, sample_ids: list[str], make_images: bool = 
 
     manifest_csv = root / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,points_path\n"
-        + "\n".join(f"{sid},{img},{pp}" for sid, img, pp in rows)
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
+        + "\n".join(f"{sid},{img},{pp},{SPACING}" for sid, img, pp in rows)
         + "\n"
     )
     splits_csv = root / "splits.csv"
@@ -99,7 +138,6 @@ def test_train_one_detection_fold_end_to_end(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,  # µm -> 3 px at SPACING
                 "sigma": 0.3,  # µm -> 1.5 px
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=2, batch_size=2),
@@ -140,7 +178,6 @@ def test_train_one_detection_fold_eval_only_from_checkpoint(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,
                 "sigma": 0.3,
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=2, batch_size=2),
@@ -184,6 +221,7 @@ def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
         geom, feature_dim=K, pad_mode="reflect", spacing_um=SPACING,
         feature_kind="cls_attention", attention_blocks=(-1,),
     )
+    meta.update(source_spacing_um=SPACING, effective_spacing_um=SPACING)
     sample_ids = ["s0", "s1", "s2", "s3"]
     rows = []
     for sid in sample_ids:
@@ -192,8 +230,8 @@ def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
         pts.write_text("x,y,class\n4,4,0\n11,11,1\n")
         rows.append((sid, f"{sid}.jpg", str(pts)))
     (tmp_path / "manifest.csv").write_text(
-        "sample_id,image_path,points_path\n"
-        + "\n".join(f"{s},{i},{p}" for s, i, p in rows) + "\n"
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
+        + "\n".join(f"{s},{i},{p},{SPACING}" for s, i, p in rows) + "\n"
     )
     assign = {sample_ids[0]: "train", sample_ids[1]: "train", sample_ids[2]: "tune", sample_ids[3]: "test"}
     (tmp_path / "splits.csv").write_text(
@@ -215,7 +253,6 @@ def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,
                 "sigma": 0.3,
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=1, batch_size=2),
@@ -262,7 +299,6 @@ def test_detection_fold_writes_qualitative_artifacts(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,
                 "sigma": 0.3,
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=1, batch_size=2),
@@ -316,7 +352,6 @@ def test_detection_fold_overlays_suppressible(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,
                 "sigma": 0.3,
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=1, batch_size=2),
@@ -354,7 +389,6 @@ def test_detection_fold_heatmap_artifacts_opt_in(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,
                 "sigma": 0.3,
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=1, batch_size=2),
@@ -399,7 +433,6 @@ def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
                 "num_classes": NUM_CLASSES,
                 "match_distance": 0.6,
                 "sigma": 0.3,
-                "level0_spacing": SPACING,
             },
         ),
         training=TrainingConfig(epochs=2, batch_size=2),
