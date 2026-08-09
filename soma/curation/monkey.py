@@ -22,7 +22,7 @@ is recovered at score time by pooling both, so it is *not* a third stored class)
 is referenced in place and never decoded, exactly like OCELOT's native path.
 
 FROC — MONKEY's native metric — normalizes false positives per **mm²**, so every row also
-carries ``level0_spacing`` (µm/px) and, when the annotation ROIs give it, ``roi_area_mm2``
+carries ``spacing_at_level_0`` (µm/px) and, when the annotation ROIs give it, ``roi_area_mm2``
 (``spacing² · area_rois / 1e6``), the physical area the FROC sweep divides by.
 
 **Splits.** MONKEY's official test set is hidden, and the public labelled data ships no
@@ -130,7 +130,7 @@ def curate_monkey_detection(
     raw_root: str | Path,
     output_dir: str | Path,
     *,
-    spacing_um: float = MONKEY_SPACING_LEVEL0,
+    spacing_at_level_0: float = MONKEY_SPACING_LEVEL0,
     split_fractions: tuple[float, float, float] = DEFAULT_SPLIT_FRACTIONS,
 ) -> CuratedManifest:
     """Curate the MONKEY detection dataset into Soma's unified detection Manifest.
@@ -140,8 +140,9 @@ def curate_monkey_detection(
             ``annotations/json/<case>_{lymphocytes,monocytes}.json``.
         output_dir: Where ``dataset.csv``, ``splits.csv``, the per-case
             ``points/<case>.csv`` files, and ``summary.json`` are written.
-        spacing_um: Level-0 µm/px used to convert mm dot annotations to level-0 pixels and
-            emitted per row as ``level0_spacing`` (defaults to :data:`MONKEY_SPACING_LEVEL0`).
+        spacing_at_level_0: Level-0 µm/px used to convert mm dot annotations to level-0
+            pixels and emitted as the source declaration (defaults to
+            :data:`MONKEY_SPACING_LEVEL0`).
         split_fractions: ``(train, tune, test)`` fractions for the carved deterministic
             patient-stratified local held-out split.
 
@@ -156,9 +157,11 @@ def curate_monkey_detection(
             f"expected images/pas-cpg/ and annotations/json/ under the MONKEY root: {raw_root}"
         )
 
-    if spacing_um <= 0:
-        raise ValueError(f"spacing_um must be > 0, got {spacing_um}.")
-    mm_to_px = 1000.0 / float(spacing_um)  # mm -> µm (×1000) -> px (÷spacing)
+    if spacing_at_level_0 <= 0:
+        raise ValueError(
+            f"spacing_at_level_0 must be > 0, got {spacing_at_level_0}."
+        )
+    mm_to_px = 1000.0 / float(spacing_at_level_0)  # mm -> µm (×1000) -> px (÷spacing)
 
     output_dir = Path(output_dir)
     points_dir = output_dir / "points"
@@ -209,12 +212,14 @@ def curate_monkey_detection(
             "image_path": str(wsi_path.resolve()),
             "points_path": str(out_csv.resolve()),
             "patient_id": patient_id,
-            "level0_spacing": float(spacing_um),
+            "spacing_at_level_0": float(spacing_at_level_0),
             "department": department,
         }
         if roi_area_px is not None:
             # Physical ROI area for FROC's per-mm² false-positive normalization.
-            row["roi_area_mm2"] = float(spacing_um) * float(spacing_um) * roi_area_px / 1_000_000.0
+            row["roi_area_mm2"] = (
+                float(spacing_at_level_0) ** 2 * roi_area_px / 1_000_000.0
+            )
         dataset_rows.append(row)
 
     patient_split = assign_patient_splits(patients, fractions=split_fractions)
@@ -235,7 +240,7 @@ def curate_monkey_detection(
         "class_names": list(MONKEY_CLASS_NAMES),
         "mnl_merged_class": "inflammatory-cells",
         "native_metric": "FROC",
-        "level0_spacing_um": float(spacing_um),
+        "spacing_at_level_0": float(spacing_at_level_0),
         "total_cases": len(dataset_rows),
         "total_patients": len(patients),
         "num_empty": n_empty,
@@ -271,11 +276,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--raw-root", type=Path, required=True, help="MONKEY raw root")
     ap.add_argument("--output-dir", type=Path, required=True, help="curated output dir")
     ap.add_argument(
-        "--spacing-um", type=float, default=MONKEY_SPACING_LEVEL0, help="level-0 µm/px"
+        "--spacing-at-level-0",
+        type=float,
+        default=MONKEY_SPACING_LEVEL0,
+        help="source-image level-0 µm/px declaration",
     )
     args = ap.parse_args(argv)
     manifest = curate_monkey_detection(
-        args.raw_root, args.output_dir, spacing_um=args.spacing_um
+        args.raw_root,
+        args.output_dir,
+        spacing_at_level_0=args.spacing_at_level_0,
     )
     print(f"curated: {manifest.dataset_csv}")
     print(f"         {manifest.splits_csv}")

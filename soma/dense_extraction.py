@@ -306,7 +306,11 @@ class DenseTileFeatureExtractor:
         )
         artifacts = model.embed_images_dense(
             [
-                ImageSpec(sample_id=str(record.sample_id), image_path=record.image_path)
+                ImageSpec(
+                    sample_id=str(record.sample_id),
+                    image_path=record.image_path,
+                    spacing_at_level_0=record.spacing_at_level_0,
+                )
                 for record in records
             ],
             dense=self._dense_options(),

@@ -475,18 +475,25 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
                 for m in assignment:
                     if m.pairs.shape[0]:
                         matched[m.pairs[:, 0]] = True
-                record = manifest.samples[sid]
-                l0, run = head.resolve_spacings(record)
+                spacing = head.spacing_for_sample(sid)
                 xy_l0 = (
                     transform_points_to_level0(
-                        pred_xy, level0_spacing=l0, run_spacing=run, crop_top=top, crop_left=left
+                        pred_xy,
+                        source_spacing_um=spacing.source_spacing_um,
+                        effective_spacing_um=spacing.effective_spacing_um,
+                        crop_top=top,
+                        crop_left=left,
                     )
                     if pred_xy.shape[0]
                     else np.zeros((0, 2))
                 )
                 gt_l0 = (
                     transform_points_to_level0(
-                        gt_xy, level0_spacing=l0, run_spacing=run, crop_top=top, crop_left=left
+                        gt_xy,
+                        source_spacing_um=spacing.source_spacing_um,
+                        effective_spacing_um=spacing.effective_spacing_um,
+                        crop_top=top,
+                        crop_left=left,
                     )
                     if gt_xy.shape[0]
                     else np.zeros((0, 2))
@@ -500,7 +507,9 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
                         gt_xy=gt_l0.tolist(),
                         gt_class=[int(c) for c in gt_cls],
                         matched=matched.tolist(),
-                        area_mm2=patch_area_mm2(int(crop_w), int(crop_h), l0),
+                        area_mm2=patch_area_mm2(
+                            int(crop_w), int(crop_h), spacing.source_spacing_um
+                        ),
                     )
                 )
     return samples
@@ -537,6 +546,7 @@ def _decode_cell_points(
     from soma.pipeline import (
         _make_loaders,
         _resolve_detection_px,
+        _resolve_detection_sample_spacings,
         _sweep_detection_thresholds,
     )
     from soma.tasks.detection import DetectionHead
@@ -568,10 +578,17 @@ def _decode_cell_points(
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])
-    grid_spacing = store.metadata(train_records[0].sample_id).get("spacing_um")
-    delta_px = _resolve_detection_px(float(p["match_distance"]), grid_spacing, "match_distance")
+    all_records = train_records + tune_records + [
+        record for records in test_by_split.values() for record in records
+    ]
+    sample_spacings, effective_spacing_um = _resolve_detection_sample_spacings(
+        store, all_records
+    )
+    delta_px = _resolve_detection_px(
+        float(p["match_distance"]), effective_spacing_um, "match_distance"
+    )
     sigma_px = (
-        _resolve_detection_px(float(p["sigma"]), grid_spacing, "sigma")
+        _resolve_detection_px(float(p["sigma"]), effective_spacing_um, "sigma")
         if p.get("sigma") is not None else delta_px / 3.0
     )
     geometry = store.geometry(train_records[0].sample_id)
@@ -579,8 +596,7 @@ def _decode_cell_points(
         num_classes=num_classes, geometry=geometry, delta_px=delta_px, sigma_px=sigma_px,
         nms_distance_px=delta_px, matching=spec.match_method,
         foreground_weight=float(p.get("foreground_weight", 10.0)),
-        level0_spacing=float(p.get("level0_spacing", 1.0)),
-        run_spacing=float(grid_spacing) if grid_spacing is not None else None,
+        sample_spacings=sample_spacings,
         metrics=cfg.evaluation.metrics,
     )
     # One reconstruction path for every re-scorer: it rebuilds the run's feature adaptor

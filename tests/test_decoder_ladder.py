@@ -26,7 +26,7 @@ from soma.dense.geometry import compute_dense_geometry  # noqa: E402
 from soma.dense.store import DenseFeatureStore, dense_grid_metadata, write_dense_grid  # noqa: E402
 
 TARGET = 16
-SPACING = 0.2  # µm/px; makes the point transform the identity (level0 == run spacing)
+SPACING = 0.2  # µm/px; source == effective spacing makes the point transform identity
 
 
 def _write_member(dir_: Path, sample_ids: list[str], *, feature_dim: int, patch: int) -> DenseFeatureStore:
@@ -34,6 +34,7 @@ def _write_member(dir_: Path, sample_ids: list[str], *, feature_dim: int, patch:
     dir_.mkdir(parents=True, exist_ok=True)
     geom = compute_dense_geometry(target_size=TARGET, patch_size=patch)
     meta = dense_grid_metadata(geom, feature_dim=feature_dim, pad_mode="reflect", spacing_um=SPACING)
+    meta.update(source_spacing_um=SPACING, effective_spacing_um=SPACING)
     rng = np.random.default_rng(feature_dim)
     for sid in sample_ids:
         write_dense_grid(dir_, sid, torch.from_numpy(rng.standard_normal((feature_dim, *geom.grid_shape)).astype("float32")), meta)
@@ -101,8 +102,12 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     for sid in ids:
         pts = points_dir / f"{sid}.csv"
         pts.write_text("x,y,class\n4,4,0\n11,11,1\n")
-        rows.append(f"{sid},{sid}.jpg,{pts}")
-    (tmp_path / "manifest.csv").write_text("sample_id,image_path,points_path\n" + "\n".join(rows) + "\n")
+        rows.append(f"{sid},{sid}.jpg,{pts},{SPACING}")
+    (tmp_path / "manifest.csv").write_text(
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
+        + "\n".join(rows)
+        + "\n"
+    )
     assign = {"s0": "train", "s1": "train", "s2": "tune", "s3": "test"}
     (tmp_path / "splits.csv").write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
@@ -116,7 +121,7 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
         fold_split=splits.folds[0],
         task=TaskConfig(
             name="detection",
-            params={"num_classes": 2, "match_distance": 0.6, "sigma": 0.3, "level0_spacing": SPACING},
+            params={"num_classes": 2, "match_distance": 0.6, "sigma": 0.3},
         ),
         training=TrainingConfig(epochs=1, batch_size=2),
         fold_dir=tmp_path / "fold",
@@ -158,7 +163,13 @@ def test_attention_map_detection_heatmap_end_to_end():
     assert float(heatmap.max()) == pytest.approx(1.0)  # min-max normalised to [0, 1]
 
     head = DetectionHead(
-        num_classes=1, geometry=geom, delta_px=5.0, sigma_px=2.0, score_threshold=0.5, metrics=["mean_f1"]
+        num_classes=1,
+        geometry=geom,
+        delta_px=5.0,
+        sigma_px=2.0,
+        score_threshold=0.5,
+        sample_spacings={},
+        metrics=["mean_f1"],
     )
     gt = torch.tensor([[[gt_x, gt_y, 0.0]]])  # (1, K=1, 3)
     metrics = head.compute_metrics(heatmap.unsqueeze(0), {"gt_points": gt})

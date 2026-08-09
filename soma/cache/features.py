@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import math
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
@@ -412,6 +413,19 @@ def _validate_dense_sidecar_metadata(
             f"dense sidecar artifact_type mismatch for {cache_id}: "
             f"expected one of {sorted(_DENSE_SIDECAR_ARTIFACT_TYPES)}, found {artifact_type!r}"
         )
+
+    for field in ("source_spacing_um", "effective_spacing_um"):
+        if field not in sidecar or sidecar[field] is None:
+            return f"dense sidecar missing {field} for {cache_id}"
+        value = sidecar[field]
+        if isinstance(value, bool):
+            return f"dense sidecar invalid {field} for {cache_id}: {value!r}"
+        try:
+            spacing = float(value)
+        except (TypeError, ValueError):
+            return f"dense sidecar invalid {field} for {cache_id}: {value!r}"
+        if not math.isfinite(spacing) or spacing <= 0.0:
+            return f"dense sidecar invalid {field} for {cache_id}: {value!r}"
 
     # The sidecar is slide2vec's, so the validated fields are the ones slide2vec writes.
     # ``channel_dim`` and ``dense_input_mode`` are deliberately absent from it and are not

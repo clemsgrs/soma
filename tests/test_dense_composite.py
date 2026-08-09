@@ -14,7 +14,7 @@ import pytest
 import torch
 from PIL import Image
 
-from soma.dense import DenseFeatureStore
+from soma.dense import DenseFeatureStore, DenseSampleSpacing
 from soma.dense.composite import CompositeDenseFeatureStore, resample_grid_to_target
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -22,13 +22,29 @@ from soma.dense.store import dense_grid_metadata, write_dense_grid
 TARGET = 8
 
 
-def _write_member(root: Path, name: str, sample_ids, *, patch: int, k: int, spacing=None):
+def _write_member(
+    root: Path,
+    name: str,
+    sample_ids,
+    *,
+    patch: int,
+    k: int,
+    spacing=None,
+    source_spacing=None,
+    effective_spacing=None,
+):
     out = root / name
     geom = compute_dense_geometry(target_size=TARGET, patch_size=patch)
     meta = dense_grid_metadata(
         geom, feature_dim=k, pad_mode="reflect", spacing_um=spacing,
         feature_kind="cls_attention", attention_blocks=(-1,),
     )
+    if source_spacing is not None or spacing is not None:
+        meta["source_spacing_um"] = source_spacing if source_spacing is not None else spacing
+    if effective_spacing is not None or spacing is not None:
+        meta["effective_spacing_um"] = (
+            effective_spacing if effective_spacing is not None else spacing
+        )
     for sid in sample_ids:
         write_dense_grid(out, sid, torch.rand(k, *geom.grid_shape), meta)
     return DenseFeatureStore(out)
@@ -77,6 +93,40 @@ def test_composite_rejects_target_size_mismatch(tmp_path: Path):
     comp = CompositeDenseFeatureStore([a, DenseFeatureStore(out)])
     with pytest.raises(ValueError, match="disagree on target_size"):
         comp.geometry("s0")
+
+
+def test_composite_exposes_one_agreed_resolved_spacing(tmp_path: Path):
+    a = _write_member(tmp_path, "a", ["s0"], patch=4, k=3, spacing=0.5)
+    b = _write_member(tmp_path, "b", ["s0"], patch=2, k=5, spacing=0.5)
+
+    assert CompositeDenseFeatureStore([a, b]).spacing("s0") == DenseSampleSpacing(
+        source_spacing_um=0.5,
+        effective_spacing_um=0.5,
+    )
+
+
+def test_composite_rejects_member_source_spacing_disagreement(tmp_path: Path):
+    a = _write_member(
+        tmp_path,
+        "a",
+        ["s0"],
+        patch=4,
+        k=3,
+        spacing=0.5,
+        source_spacing=0.25,
+    )
+    b = _write_member(
+        tmp_path,
+        "b",
+        ["s0"],
+        patch=2,
+        k=5,
+        spacing=0.5,
+        source_spacing=0.3,
+    )
+
+    with pytest.raises(ValueError, match=r"source_spacing_um.*s0.*0.25.*0.3"):
+        CompositeDenseFeatureStore([a, b]).spacing("s0")
 
 
 def test_composite_grid_mode_concats_at_largest_member_grid(tmp_path: Path):

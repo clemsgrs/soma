@@ -53,13 +53,17 @@ def _build_detection_run(root: Path, sample_ids: list[str]):
 
     geom = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
     meta = dense_grid_metadata(geom, feature_dim=FEATURE_DIM, pad_mode="reflect", spacing_um=SPACING)
+    meta.update(source_spacing_um=SPACING, effective_spacing_um=SPACING)
     for sid in sample_ids:
         write_dense_grid(dense_dir, sid, torch.randn(FEATURE_DIM, *geom.grid_shape), meta)
         (points_dir / f"{sid}.csv").write_text("x,y,class\n4,4,0\n11,11,1\n")
 
     (root / "manifest.csv").write_text(
-        "sample_id,image_path,points_path\n"
-        + "\n".join(f"{sid},{sid}.jpg,{points_dir / f'{sid}.csv'}" for sid in sample_ids)
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
+        + "\n".join(
+            f"{sid},{sid}.jpg,{points_dir / f'{sid}.csv'},{SPACING}"
+            for sid in sample_ids
+        )
         + "\n"
     )
     # Two test splits so per-split headline reporting is exercised.
@@ -83,15 +87,17 @@ def _build_model_and_loaders(manifest, splits, store):
     tune_records = [manifest.samples[s] for s in fold_split.tune]
     test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
 
-    grid_spacing = store.metadata(train_records[0].sample_id).get("spacing_um")
+    grid_spacing = store.spacing(train_records[0].sample_id).effective_spacing_um
     delta_px = _resolve_detection_px(0.6, grid_spacing, "match_distance")
     sigma_px = _resolve_detection_px(0.3, grid_spacing, "sigma")
     geometry = store.geometry(train_records[0].sample_id)
 
     head = DetectionHead(
         num_classes=NUM_CLASSES, geometry=geometry, delta_px=delta_px, sigma_px=sigma_px,
-        nms_distance_px=delta_px, matching="greedy", level0_spacing=SPACING,
-        run_spacing=grid_spacing, metrics=["mean_f1", "f1_per_class"],
+        nms_distance_px=delta_px,
+        matching="greedy",
+        sample_spacings={sid: store.spacing(sid) for sid in store.available_samples},
+        metrics=["mean_f1", "f1_per_class"],
     )
 
     decoder_cls = decoder_registry.get("lightweight_conv")

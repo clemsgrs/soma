@@ -63,9 +63,15 @@ def test_curate_ocelot_emits_detection_manifest_and_remaps_labels(tmp_path: Path
 
     # Manifest loads through Soma's detection manifest (required cols present, ids safe).
     df = pd.read_csv(manifest.dataset_csv)
-    assert list(df.columns) == ["sample_id", "image_path", "points_path"]
+    assert list(df.columns) == [
+        "sample_id",
+        "image_path",
+        "points_path",
+        "spacing_at_level_0",
+    ]
     detection = DetectionManifest(manifest.dataset_csv)
     assert set(detection.sample_ids) == {"train_001", "train_002", "val_010", "test_020"}
+    assert detection.samples["train_001"].spacing_at_level_0 == OCELOT_NATIVE_SPACING_UM
 
     # OCELOT 1-based labels are remapped to Soma 0-based: 1=BC->0, 2=TC->1.
     pts = pd.read_csv(out / "points" / "train_001.csv")
@@ -120,9 +126,9 @@ def test_curate_ocelot_render_spacing_downsamples_images_and_points(tmp_path: Pa
     manifest = curate_ocelot_detection(raw_root, out, render_spacing_um=target)
 
     df = pd.read_csv(manifest.dataset_csv)
-    # The render variant stamps a per-sample level0_spacing == rendered spacing.
-    assert "level0_spacing" in df.columns
-    assert (df["level0_spacing"] == target).all()
+    # The render variant declares the physical spacing of each rendered source image.
+    assert "spacing_at_level_0" in df.columns
+    assert (df["spacing_at_level_0"] == target).all()
 
     # Every rendered cell patch is downsampled to the target spacing.
     detection = DetectionManifest(manifest.dataset_csv)
@@ -136,17 +142,16 @@ def test_curate_ocelot_render_spacing_downsamples_images_and_points(tmp_path: Pa
     rows = sorted((r.x, r.y, r["class"]) for _, r in pts.iterrows())
     assert rows == [(5.0, 10.0, 0), (25.0, 20.0, 1)]
 
-    # Per-sample metadata exposes the rendered spacing to the detection head.
-    assert float(rendered.metadata["level0_spacing"]) == target
+    assert rendered.spacing_at_level_0 == target
+    assert "spacing_at_level_0" not in rendered.metadata
 
 
-def test_curate_ocelot_native_path_has_no_render_spacing_column(tmp_path: Path):
+def test_curate_ocelot_native_path_declares_native_source_spacing(tmp_path: Path):
     raw_root = _make_raw(tmp_path)
     out = tmp_path / "curated"
 
-    # Omitting render_spacing_um reproduces today's native output unchanged.
     manifest = curate_ocelot_detection(raw_root, out)
     df = pd.read_csv(manifest.dataset_csv)
-    assert list(df.columns) == ["sample_id", "image_path", "points_path"]
+    assert df["spacing_at_level_0"].tolist() == [OCELOT_NATIVE_SPACING_UM] * len(df)
     # Native path points image_path at the original raw JPEGs (no re-render dir).
     assert not (out / "images").exists()

@@ -16,10 +16,8 @@ OCELOT (Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) ships paired *cell* an
 Soma's :class:`~soma.tasks.detection.DetectionHead` wants **0-based** class ids, so we
 remap ``1 -> 0`` (BC) and ``2 -> 1`` (TC) and write one ``x,y,class`` point CSV per
 sample under ``points/``. Points stay in the cell-patch pixel frame (0..1023); because
-the JPEGs are read flat at native resolution, that frame *is* the run's target frame, so
-the detection coordinate transform is the identity as long as the run config sets
-``task.params.level0_spacing == preprocessing.requested_spacing_um`` (see
-``examples/ocelot/ocelot.yaml``).
+the JPEGs are read flat at native resolution. The curator therefore declares each
+source image's physical scale as ``spacing_at_level_0`` in the Manifest.
 
 OCELOT's own train/val/test split maps onto Soma's roles as train -> ``train``,
 val -> ``tune`` (the threshold-sweep / monitor split), test -> ``test``. Soma never
@@ -90,11 +88,11 @@ def curate_ocelot_detection(
             ``points/<sample_id>.csv`` files, and ``summary.json`` are written.
         render_spacing_um: Optional target µm/px at which to materialize the cell
             patches. When ``None`` (default), patches are referenced in place at their
-            native :data:`OCELOT_NATIVE_SPACING_UM` and the manifest is unchanged. When
+            native :data:`OCELOT_NATIVE_SPACING_UM`. When
             set, every patch is downsampled by ``render_spacing_um / native`` into
             ``output_dir/images/`` and its point coordinates are scaled by the same
             factor, so annotations stay on the cells; the manifest then carries a
-            ``level0_spacing`` column equal to ``render_spacing_um`` per sample. This
+            ``spacing_at_level_0`` declaration equal to ``render_spacing_um`` per sample. This
             materialization is required because the dense reader reads flat JPEGs with PIL
             and ignores any requested spacing, so magnification must be baked in here.
 
@@ -126,9 +124,7 @@ def curate_ocelot_detection(
     if factor is not None:
         rendered_img_dir.mkdir(parents=True, exist_ok=True)
 
-    # When rendering, the manifest gains a per-sample level0_spacing column; the native
-    # path keeps the original three-column schema unchanged.
-    dataset_rows: list[dict] = []  # sample_id, image_path, points_path[, level0_spacing]
+    dataset_rows: list[dict] = []
     split_rows: list[dict] = []  # sample_id, split, fold
     per_split: dict[str, dict] = {}
 
@@ -167,9 +163,12 @@ def curate_ocelot_detection(
                 "sample_id": sample_id,
                 "image_path": str(image_path.resolve()),
                 "points_path": str(out_csv.resolve()),
+                "spacing_at_level_0": (
+                    render_spacing_um
+                    if render_spacing_um is not None
+                    else OCELOT_NATIVE_SPACING_UM
+                ),
             }
-            if render_spacing_um is not None:
-                row["level0_spacing"] = render_spacing_um
             dataset_rows.append(row)
             split_rows.append({"sample_id": sample_id, "split": role, "fold": 0})
         per_split[role] = {

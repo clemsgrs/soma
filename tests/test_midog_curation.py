@@ -1,7 +1,7 @@
 """Tests for MIDOG 2022 mitosis-detection curation (synthetic COCO layout).
 
 Built + tested against a synthetic on-disk layout — the real MIDOG download is never
-needed (wiring to real data + level0_spacing is a run-time step). The layout mirrors
+needed (wiring to real data + source-spacing declaration is a run-time step). The layout mirrors
 MIDOG 2022's COCO export: an ``images/`` dir of TIFFs and a ``MIDOG2022_training.json``
 with ``images`` / ``categories`` / ``annotations``. Each image entry carries the
 per-domain (tumor type / scanner) metadata the challenge ships.
@@ -189,18 +189,18 @@ def test_split_is_fixed_across_recuration(tmp_path: Path):
     assert a.splits_csv.read_bytes() == b.splits_csv.read_bytes()
 
 
-# ------------------------------------------------------------------- level0 spacing
+# --------------------------------------------------------- source-spacing declaration
 
 
-def test_level0_spacing_param_stamped_per_sample(tmp_path: Path):
+def test_spacing_at_level_0_param_stamped_per_sample(tmp_path: Path):
     raw = _write_midog_raw(
         tmp_path / "raw", [{"file_name": "001.tiff", "tumortype": "breast", "boxes": []}]
     )
     out = tmp_path / "curated"
-    manifest = curate_midog_detection(raw, out, level0_spacing_um=0.5)
+    manifest = curate_midog_detection(raw, out, spacing_at_level_0=0.5)
     df = pd.read_csv(manifest.dataset_csv)
-    assert "level0_spacing" in df.columns
-    assert (df["level0_spacing"] == 0.5).all()
+    assert "spacing_at_level_0" in df.columns
+    assert (df["spacing_at_level_0"] == 0.5).all()
 
 
 def test_per_image_spacing_overrides_param(tmp_path: Path):
@@ -213,11 +213,11 @@ def test_per_image_spacing_overrides_param(tmp_path: Path):
     )
     out = tmp_path / "curated"
     detection = DetectionManifest(
-        curate_midog_detection(raw, out, level0_spacing_um=0.5).dataset_csv
+        curate_midog_detection(raw, out, spacing_at_level_0=0.5).dataset_csv
     )
     # Per-image spacing (from the JSON) wins; the param fills in where absent.
-    assert float(detection.samples["midog_001"].metadata["level0_spacing"]) == 0.23
-    assert float(detection.samples["midog_002"].metadata["level0_spacing"]) == 0.5
+    assert detection.samples["midog_001"].spacing_at_level_0 == 0.23
+    assert detection.samples["midog_002"].spacing_at_level_0 == 0.5
 
 
 def test_native_path_has_no_spacing_column(tmp_path: Path):
@@ -226,7 +226,7 @@ def test_native_path_has_no_spacing_column(tmp_path: Path):
     )
     out = tmp_path / "curated"
     df = pd.read_csv(curate_midog_detection(raw, out).dataset_csv)
-    assert "level0_spacing" not in df.columns
+    assert "spacing_at_level_0" not in df.columns
 
 
 # ------------------------------------------------------------------- summary + protocol
@@ -268,9 +268,9 @@ def test_recuration_is_byte_identical(tmp_path: Path):
     # determinism check re-curates into one dir rather than comparing two different dirs.)
     raw = _write_midog_raw(tmp_path / "raw", _stratified_images())
     out = tmp_path / "curated"
-    a = curate_midog_detection(raw, out, level0_spacing_um=0.5)
+    a = curate_midog_detection(raw, out, spacing_at_level_0=0.5)
     before = {name: (out / name).read_bytes() for name in ("dataset.csv", "splits.csv", "summary.json")}
-    curate_midog_detection(raw, out, level0_spacing_um=0.5)
+    curate_midog_detection(raw, out, spacing_at_level_0=0.5)
     for name, data in before.items():
         assert (out / name).read_bytes() == data, f"{name} is not byte-identical across re-curation"
     assert a.dataset_csv == out / "dataset.csv"
@@ -278,6 +278,6 @@ def test_recuration_is_byte_identical(tmp_path: Path):
     # The path-free artifacts (the fixed split + summary) are byte-identical even across a
     # fresh output directory — the local held-out split does not depend on where it lands.
     other = tmp_path / "curated_elsewhere"
-    curate_midog_detection(raw, other, level0_spacing_um=0.5)
+    curate_midog_detection(raw, other, spacing_at_level_0=0.5)
     for name in ("splits.csv", "summary.json"):
         assert (other / name).read_bytes() == before[name], f"{name} differs across dirs"

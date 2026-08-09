@@ -75,7 +75,7 @@ The target information paired with pathology images for learning or evaluation, 
 _Avoid_: using "labels" as the umbrella term when masks or point annotations are also in scope.
 
 **Manifest**:
-The canonical on-disk schema soma consumes, identical across all task types: a `dataset.csv` (`sample_id`, `image_path`, and exactly one supervision column — `label` / `mask_path` / `points_path`, chosen by `dataset_type` — plus optional `patient_id`, `level0_spacing`), a `splits.csv` (`sample_id`, `split`, `fold`), and a `summary.json`. Validated against `dataset_type` at load; written by one shared `write_manifest`.
+The canonical on-disk schema soma consumes, identical across all task types: a `dataset.csv` (`sample_id`, `image_path`, and exactly one supervision column — `label` / `mask_path` / `points_path`, chosen by `dataset_type` — plus optional `patient_id`, `spacing_at_level_0`), a `splits.csv` (`sample_id`, `split`, `fold`), and a `summary.json`. `spacing_at_level_0` is a finite positive µm/px declaration for the source image's level-0 pixels, not a requested extraction spacing. The Manifest is validated against `dataset_type` at load and written by one shared `write_manifest`.
 _Avoid_: `manifest.csv` (the retired BEETLE name — the file is always `dataset.csv`); "dataset" for the files (a `Dataset` is the loaded object, a Manifest is the on-disk schema).
 
 **Curator / Curation**:

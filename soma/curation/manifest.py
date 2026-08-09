@@ -14,7 +14,7 @@ Unified schema:
   column selected by ``dataset_type`` (:data:`SUPERVISION_COLUMN`): ``label`` for
   classification, ``mask_path`` for segmentation, ``points_path`` for detection,
   ``target_index`` for spatial_expression. Optional recognized columns ``patient_id`` and
-  ``level0_spacing`` follow; any further columns are preserved verbatim as per-sample
+  ``spacing_at_level_0`` follow; any further columns are preserved verbatim as per-sample
   metadata.
 * ``splits.csv`` — ``sample_id``, ``split``, ``fold`` (single-fold curators emit
   ``fold=0`` for every row).
@@ -39,7 +39,11 @@ from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 import numpy as np
 import pandas as pd
 
-from soma.dataset import GENES_FILENAME, TARGET_MATRIX_FILENAME
+from soma.dataset import (
+    GENES_FILENAME,
+    TARGET_MATRIX_FILENAME,
+    validate_spacing_declaration_columns,
+)
 
 # dataset_type -> the single supervision column its Manifest carries. The task families
 # are mutually exclusive: classification is a scalar ``label``, segmentation a per-pixel
@@ -59,7 +63,7 @@ _ALL_SUPERVISION_COLUMNS = frozenset(SUPERVISION_COLUMN.values())
 
 # Fixed leading columns and the recognized optional columns, in canonical order.
 _LEADING_COLUMNS = ("sample_id", "image_path")
-_OPTIONAL_COLUMNS = ("patient_id", "level0_spacing")
+_OPTIONAL_COLUMNS = ("patient_id", "spacing_at_level_0")
 _SPLITS_COLUMNS = ("sample_id", "split", "fold")
 
 
@@ -133,7 +137,7 @@ def write_manifest(
             :data:`SUPERVISION_COLUMN`.
         dataset_rows: One mapping per sample. Each must contain ``sample_id``,
             ``image_path`` and the supervision column for ``dataset_type``; may also
-            carry ``patient_id`` / ``level0_spacing`` and arbitrary metadata columns. Rows
+            carry ``patient_id`` / ``spacing_at_level_0`` and arbitrary metadata columns. Rows
             are written in the given order; columns are reordered to the canonical layout.
         split_rows: One mapping per (sample, fold) with ``sample_id`` + ``split`` and an
             optional ``fold`` (defaults to ``0`` when omitted, per the single-fold rule).
@@ -176,6 +180,7 @@ def write_manifest(
             f"dataset rows for dataset_type={dataset_type!r} must carry exactly one "
             f"supervision column ({supervision!r}), but also contain {present_forbidden}."
         )
+    validate_spacing_declaration_columns(dataset_df)
 
     matrix: np.ndarray | None = None
     if is_spatial:

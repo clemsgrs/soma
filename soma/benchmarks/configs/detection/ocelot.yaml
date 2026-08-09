@@ -47,7 +47,6 @@ task:
     sigma: 1.0                # target Gaussian σ in µm (≈ δ/3)
     matching: hungarian       # headline; greedy is OCELOT's official ranking scorer
     foreground_weight: 10.0
-    level0_spacing: 0.2       # native spacing of this manifest
 
 evaluation:
   metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]

@@ -76,10 +76,10 @@ def test_curate_monkey_emits_detection_manifest_with_merged_points(tmp_path: Pat
     assert manifest.dataset_csv == out / "dataset.csv"
     df = pd.read_csv(manifest.dataset_csv)
     # Unified detection schema: sample_id, image_path, points_path, then recognized
-    # optional columns (patient_id, level0_spacing) and curator metadata.
+    # optional columns (patient_id, spacing_at_level_0) and curator metadata.
     assert df.columns[:3].tolist() == ["sample_id", "image_path", "points_path"]
     assert "patient_id" in df.columns
-    assert "level0_spacing" in df.columns
+    assert "spacing_at_level_0" in df.columns
 
     detection = DetectionManifest(manifest.dataset_csv)
     assert set(detection.sample_ids) == {
@@ -91,8 +91,13 @@ def test_curate_monkey_emits_detection_manifest_with_merged_points(tmp_path: Pat
     assert pts.columns.tolist() == ["x", "y", "class"]
     assert sorted(pts["class"].tolist()) == [0, 1]
 
-    # level0_spacing is emitted (FROC needs physical spacing for the per-mm² axis).
-    assert df["level0_spacing"].tolist() == pytest.approx([MONKEY_SPACING_LEVEL0] * len(df))
+    # The source declaration is emitted (FROC also needs physical spacing per mm²).
+    assert df["spacing_at_level_0"].tolist() == pytest.approx(
+        [MONKEY_SPACING_LEVEL0] * len(df)
+    )
+    assert detection.samples["A_P000001"].spacing_at_level_0 == pytest.approx(
+        MONKEY_SPACING_LEVEL0
+    )
 
 
 def test_curate_monkey_converts_mm_points_to_level0_pixels(tmp_path: Path):
@@ -101,7 +106,7 @@ def test_curate_monkey_converts_mm_points_to_level0_pixels(tmp_path: Path):
     _write_case(raw, "A_P000001", [(0.01, 0.02)], [(0.05, 0.05)])
     out = tmp_path / "curated"
 
-    curate_monkey_detection(raw, out, spacing_um=0.25)
+    curate_monkey_detection(raw, out, spacing_at_level_0=0.25)
 
     pts = pd.read_csv(out / "points" / "A_P000001.csv")
     rows = sorted((r.x, r.y, int(r["class"])) for _, r in pts.iterrows())
@@ -114,7 +119,7 @@ def test_curate_monkey_emits_roi_area_mm2_for_froc(tmp_path: Path):
     _write_case(raw, "A_P000001", [(0.01, 0.01)], [], area_rois_px=4_000_000.0)
     out = tmp_path / "curated"
 
-    curate_monkey_detection(raw, out, spacing_um=0.25)
+    curate_monkey_detection(raw, out, spacing_at_level_0=0.25)
 
     df = pd.read_csv(out / "dataset.csv")
     # roi_area_mm2 = spacing² · area_rois / 1e6 = 0.0625 · 4e6 / 1e6 = 0.25 mm².

@@ -7,7 +7,7 @@ values without an encoder or a torch head:
    **level-0** frame they are persisted in (the pathology convention: ASAP / QuPath
    / hs2p author points in base full-resolution pixels, invariant to the experiment)
    into the run's **target_size** frame, where the heatmap and predictions live.
-   The map is ``x_t = x_l0 * (level0_spacing / run_spacing) - crop_left`` (``y``
+   The map is ``x_t = x_l0 * (source_spacing_um / effective_spacing_um) - crop_left`` (``y``
    analogously with ``crop_top``); identity for OCELOT-as-shipped (read at native
    spacing, no crop).
 
@@ -33,11 +33,26 @@ __all__ = [
 ]
 
 
+def _validate_spacings(source_spacing_um: float, effective_spacing_um: float) -> None:
+    values = (source_spacing_um, effective_spacing_um)
+    if any(
+        isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or float(value) <= 0.0
+        for value in values
+    ):
+        raise ValueError(
+            "spacings must be positive and finite, got "
+            f"source_spacing_um={source_spacing_um}, "
+            f"effective_spacing_um={effective_spacing_um}."
+        )
+
+
 def transform_points_to_target(
     points_xy: np.ndarray,
     *,
-    level0_spacing: float,
-    run_spacing: float,
+    source_spacing_um: float,
+    effective_spacing_um: float,
     crop_top: int = 0,
     crop_left: int = 0,
 ) -> np.ndarray:
@@ -48,17 +63,13 @@ def transform_points_to_target(
     as float (sub-pixel positions are kept; the renderer rounds to the nearest
     pixel). An empty ``(0, 2)`` array passes through unchanged.
     """
-    if float(level0_spacing) <= 0.0 or float(run_spacing) <= 0.0:
-        raise ValueError(
-            f"spacings must be positive, got level0_spacing={level0_spacing}, "
-            f"run_spacing={run_spacing}."
-        )
+    _validate_spacings(source_spacing_um, effective_spacing_um)
     pts = np.asarray(points_xy, dtype=np.float64)
     if pts.size == 0:
         return pts.reshape(0, 2)
     if pts.ndim != 2 or pts.shape[1] != 2:
         raise ValueError(f"points_xy must be (N, 2), got shape {pts.shape}.")
-    scale = float(level0_spacing) / float(run_spacing)
+    scale = float(source_spacing_um) / float(effective_spacing_um)
     out = pts * scale
     out[:, 0] -= float(crop_left)
     out[:, 1] -= float(crop_top)
@@ -68,27 +79,23 @@ def transform_points_to_target(
 def transform_points_to_level0(
     points_xy: np.ndarray,
     *,
-    level0_spacing: float,
-    run_spacing: float,
+    source_spacing_um: float,
+    effective_spacing_um: float,
     crop_top: int = 0,
     crop_left: int = 0,
 ) -> np.ndarray:
     """Inverse of :func:`transform_points_to_target` — target frame -> level-0 px.
 
-    ``x_l0 = (x_t + crop_left) * run_spacing / level0_spacing`` (``y`` analogously).
+    ``x_l0 = (x_t + crop_left) * effective_spacing_um / source_spacing_um`` (``y`` analogously).
     Used to persist predicted points in the level-0 frame (stitch-ready, design §4).
     """
-    if float(level0_spacing) <= 0.0 or float(run_spacing) <= 0.0:
-        raise ValueError(
-            f"spacings must be positive, got level0_spacing={level0_spacing}, "
-            f"run_spacing={run_spacing}."
-        )
+    _validate_spacings(source_spacing_um, effective_spacing_um)
     pts = np.asarray(points_xy, dtype=np.float64)
     if pts.size == 0:
         return pts.reshape(0, 2)
     if pts.ndim != 2 or pts.shape[1] != 2:
         raise ValueError(f"points_xy must be (N, 2), got shape {pts.shape}.")
-    scale = float(run_spacing) / float(level0_spacing)
+    scale = float(effective_spacing_um) / float(source_spacing_um)
     out = pts.copy()
     out[:, 0] = (out[:, 0] + float(crop_left)) * scale
     out[:, 1] = (out[:, 1] + float(crop_top)) * scale

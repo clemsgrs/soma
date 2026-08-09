@@ -23,7 +23,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from soma.config import CacheConfig, EncoderConfig  # noqa: E402
+from soma.config import CacheConfig, EncoderConfig, ExecutionConfig  # noqa: E402
 from soma.dataset import Dataset, SampleRecord  # noqa: E402
 from soma.dense import DenseFeatureStore, compute_dense_geometry  # noqa: E402
 from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
@@ -153,6 +153,56 @@ def _extractor(dataset: Dataset, tmp_path: Path, **overrides) -> DenseTileFeatur
     return DenseTileFeatureExtractor(
         dataset, EncoderConfig(name="uni", precision="fp32", batch_size=2), **kwargs
     )
+
+
+def test_real_flat_raster_extraction_forwards_source_spacing(tmp_path: Path, monkeypatch):
+    """Soma's public dense path must carry the Manifest declaration through hs2p."""
+    from tests.dense_literal_encoder import register_literal_encoder
+    from slide2vec.encoders.registry import encoder_registry
+
+    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
+    encoder_name = register_literal_encoder()
+
+    pixels = np.empty((16, 16, 3), dtype=np.uint8)
+    pixels[:8, :8] = [10, 11, 12]
+    pixels[:8, 8:] = [20, 21, 22]
+    pixels[8:, :8] = [30, 31, 32]
+    pixels[8:, 8:] = [40, 41, 42]
+    image_path = tmp_path / "literal.png"
+    Image.fromarray(pixels).save(image_path)
+    manifest = tmp_path / "dataset.csv"
+    pd.DataFrame(
+        [
+            {
+                "sample_id": "literal",
+                "image_path": image_path,
+                "label": 0,
+                "spacing_at_level_0": 0.5,
+            }
+        ]
+    ).to_csv(manifest, index=False)
+
+    store = DenseTileFeatureExtractor(
+        Dataset(manifest),
+        EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
+        target_size=16,
+        spacing_um=0.5,
+        execution=ExecutionConfig(num_workers_per_gpu=0, precision="fp32"),
+    ).run(tmp_path / "features")
+
+    expected = torch.tensor(
+        [
+            [[10.0, 20.0], [30.0, 40.0]],
+            [[11.0, 21.0], [31.0, 41.0]],
+            [[12.0, 22.0], [32.0, 42.0]],
+        ]
+    )
+    torch.testing.assert_close(store.load("literal"), expected, rtol=0, atol=0)
+    metadata = store.metadata("literal")
+    assert metadata["spacing_at_level_0"] == 0.5
+    assert metadata["source_spacing_um"] == 0.5
+    assert metadata["declared_spacing_um"] == 0.5
+    assert metadata["effective_spacing_um"] == 0.5
 
 
 def test_run_writes_grids_into_slide2vecs_image_payload_dir(tmp_path: Path, fake_model):

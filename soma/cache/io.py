@@ -188,7 +188,12 @@ def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["sample_id", "image_path", "mask_path"],
+            fieldnames=[
+                "sample_id",
+                "image_path",
+                "mask_path",
+                "spacing_at_level_0",
+            ],
         )
         writer.writeheader()
         for row in rows:
@@ -218,6 +223,12 @@ def _normalized_manifest_rows(rows: Iterable[dict[str, object]]) -> list[dict[st
                 "sample_id": str(row["sample_id"]),
                 "image_path": str(row["image_path"]),
                 "mask_path": mask_text,
+                "spacing_at_level_0": (
+                    ""
+                    if row.get("spacing_at_level_0") in (None, "")
+                    or str(row.get("spacing_at_level_0")).lower() == "nan"
+                    else str(row["spacing_at_level_0"])
+                ),
             }
         )
     return sorted(normalized, key=lambda row: row["sample_id"])

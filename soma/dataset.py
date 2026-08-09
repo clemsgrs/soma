@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,12 +25,11 @@ GENES_FILENAME = "genes.json"
 
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
-# ``points_path`` (detection's per-sample point file) is a recognized typed column, like
-# ``mask_path``. Other detection columns — ``level0_spacing`` (µm/px of the stored point
-# frame, an optional per-sample override) and ``source_wsi`` / ``tile_x`` / ``tile_y``
-# (tile origin, retained for deferred WSI stitching) — carry no typed ``SampleRecord``
-# field, so they are deliberately left out of ``KNOWN_DATASET_COLUMNS`` and surface via
-# ``metadata`` in every loader rather than being dropped.
+# ``points_path`` (detection's per-sample point file) and ``spacing_at_level_0`` (the
+# optional caller declaration for the source image's level-0 spacing) are recognized
+# typed columns, like ``mask_path``. Other detection columns — ``source_wsi`` / ``tile_x``
+# / ``tile_y`` (tile origin, retained for deferred WSI stitching) — carry no typed
+# ``SampleRecord`` field and surface via ``metadata`` rather than being dropped.
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "mask_path",
     "patient_id",
@@ -42,6 +42,7 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "region_y",
     # The parent slide an ROI was sampled from; typed onto SampleRecord.slide_id.
     "slide_id",
+    "spacing_at_level_0",
 }
 REQUIRED_SPLITS_COLUMNS = {"sample_id", "split"}
 
@@ -74,6 +75,43 @@ def ensure_filename_safe_id(value: object, *, field: str = "sample_id") -> str:
     return str(value)
 
 
+def _parse_spacing_at_level_0(value: object) -> float | None:
+    if value is None or (isinstance(value, str) and not value.strip()) or pd.isna(value):
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError
+    try:
+        spacing = float(value)
+    except (TypeError, ValueError):
+        raise ValueError from None
+    if not math.isfinite(spacing) or spacing <= 0.0:
+        raise ValueError
+    return spacing
+
+
+def validate_spacing_declaration_columns(df: pd.DataFrame) -> None:
+    """Validate the sole optional source-spacing declaration in a Manifest table."""
+    if "spacing_at_level_0" not in df.columns:
+        return
+
+    invalid: list[str] = []
+    for index, row in df.iterrows():
+        try:
+            _parse_spacing_at_level_0(row["spacing_at_level_0"])
+        except ValueError:
+            sample = row.get("sample_id", index)
+            invalid.append(f"{sample}={row['spacing_at_level_0']!r}")
+    if invalid:
+        raise ValueError(
+            "spacing_at_level_0 must be a positive, finite number or blank; "
+            f"invalid sample(s): {invalid}."
+        )
+
+
+def _spacing_at_level_0(row: pd.Series) -> float | None:
+    return _parse_spacing_at_level_0(row.get("spacing_at_level_0"))
+
+
 def _is_valid_split_name(name: str) -> bool:
     """A split name is valid if it is 'train', 'tune', or starts with 'test'."""
     return name in ("train", "tune") or name.startswith("test")
@@ -89,6 +127,9 @@ class SampleRecord:
     mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
     patient_id: str | None = None
+    # Optional caller declaration for ``image_path``'s physical level-0 pixel size.
+    # Extraction resolves and persists the authoritative source spacing separately.
+    spacing_at_level_0: float | None = None
     # Slide-manifest segmentation: an ROI's (x, y) top-left in level-0 pixel space.
     # image_path/mask_path then point at the parent *slide* (+ annotation slide), and
     # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
@@ -120,6 +161,7 @@ class Dataset:
         self._samples = self._build_samples(df)
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
+        validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
             raise ValueError("Use 'mask_path' instead of 'tissue_mask_path'.")
         for col in REQUIRED_DATASET_COLUMNS:
@@ -170,6 +212,7 @@ class Dataset:
                 label=row["label"],
                 mask_path=mask_path,
                 patient_id=patient_id,
+                spacing_at_level_0=_spacing_at_level_0(row),
                 metadata=metadata,
             )
         return samples
@@ -249,6 +292,7 @@ class SegmentationManifest:
         self._samples = self._build_samples(df)
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
+        validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
             raise ValueError("Use 'mask_path' instead of 'tissue_mask_path'.")
         for col in REQUIRED_SEGMENTATION_COLUMNS:
@@ -307,6 +351,7 @@ class SegmentationManifest:
                 label=label,  # optional for segmentation; supervision is the mask
                 mask_path=Path(str(row["mask_path"])),
                 patient_id=patient_id,
+                spacing_at_level_0=_spacing_at_level_0(row),
                 region=region,
                 slide_id=slide_id,
                 metadata=metadata,
@@ -334,8 +379,8 @@ class DetectionManifest:
 
     The detection counterpart of :class:`SegmentationManifest` (design §3): the
     supervision is a per-sample point file (``points_path``, level-0 ``x,y,class``),
-    not a scalar ``label`` (optional) or a mask. Optional columns: ``level0_spacing``
-    (per-sample override of the stored coordinate frame's µm/px), ``source_wsi`` /
+    not a scalar ``label`` (optional) or a mask. Optional columns include
+    ``spacing_at_level_0`` (the source image's optional µm/px declaration), ``source_wsi`` /
     ``tile_x`` / ``tile_y`` (retained now for deferred WSI stitching), ``label``,
     ``patient_id``. ``points_path`` must be present and non-null for every row. Exposes
     the same ``samples`` / ``sample_ids`` surface as :class:`Dataset`, so
@@ -349,6 +394,7 @@ class DetectionManifest:
         self._samples = self._build_samples(df)
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
+        validate_spacing_declaration_columns(df)
         for col in REQUIRED_DETECTION_COLUMNS:
             if col not in df.columns:
                 raise ValueError(
@@ -379,9 +425,8 @@ class DetectionManifest:
                 )
 
     def _build_samples(self, df: pd.DataFrame) -> dict[str, SampleRecord]:
-        # level0_spacing / source_wsi / tile_x / tile_y are not in KNOWN_DATASET_COLUMNS, so
-        # they fall through to metadata here (the head reads an optional per-sample
-        # level0_spacing override; the tile-origin trio is kept for deferred WSI stitching).
+        # source_wsi / tile_x / tile_y are not typed yet and remain metadata for deferred
+        # WSI stitching. Source spacing is the canonical typed declaration instead.
         meta_columns = [c for c in df.columns if c not in KNOWN_DATASET_COLUMNS]
         samples: dict[str, SampleRecord] = {}
         for _, row in df.iterrows():
@@ -399,6 +444,7 @@ class DetectionManifest:
                 label=label,  # optional for detection; supervision is the points
                 points_path=Path(str(row["points_path"])),
                 patient_id=patient_id,
+                spacing_at_level_0=_spacing_at_level_0(row),
                 metadata=metadata,
             )
         return samples
@@ -449,6 +495,7 @@ class SpatialExpressionManifest:
         self._samples = self._build_samples(df)
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
+        validate_spacing_declaration_columns(df)
         for col in REQUIRED_SPATIAL_EXPRESSION_COLUMNS:
             if col not in df.columns:
                 raise ValueError(
@@ -533,6 +580,7 @@ class SpatialExpressionManifest:
                 image_path=Path(str(row["image_path"])),
                 label=None,  # supervision is the vector target, not a scalar label
                 patient_id=patient_id,
+                spacing_at_level_0=_spacing_at_level_0(row),
                 target=self._target_matrix[target_index],
                 metadata=metadata,
             )

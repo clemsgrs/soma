@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -34,11 +35,53 @@ class DenseFeatureSource(Protocol):
     def geometry(self, sample_id: str) -> DenseGridGeometry:
         ...
 
+    def spacing(self, sample_id: str) -> "DenseSampleSpacing":
+        ...
+
     def spacing_um(self, sample_id: str) -> float | None:
         ...
 
     def validate_coverage(self, sample_ids: list[str]) -> None:
         ...
+
+
+@dataclass(frozen=True)
+class DenseSampleSpacing:
+    """Resolved physical scales persisted with one dense sample."""
+
+    source_spacing_um: float
+    effective_spacing_um: float
+
+
+def dense_sample_spacing_from_metadata(
+    metadata: dict, *, sample_id: str
+) -> DenseSampleSpacing:
+    values: dict[str, float] = {}
+    for field in ("source_spacing_um", "effective_spacing_um"):
+        if field not in metadata or metadata[field] is None:
+            raise ValueError(
+                f"Dense feature '{sample_id}' is missing required {field} provenance."
+            )
+        value = metadata[field]
+        if isinstance(value, bool):
+            raise ValueError(
+                f"Dense feature '{sample_id}' has invalid {field}={value!r}; "
+                "expected a positive, finite number."
+            )
+        try:
+            spacing = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Dense feature '{sample_id}' has invalid {field}={value!r}; "
+                "expected a positive, finite number."
+            ) from None
+        if not math.isfinite(spacing) or spacing <= 0.0:
+            raise ValueError(
+                f"Dense feature '{sample_id}' has invalid {field}={value!r}; "
+                "expected a positive, finite number."
+            )
+        values[field] = spacing
+    return DenseSampleSpacing(**values)
 
 
 @dataclass(frozen=True)
@@ -102,6 +145,9 @@ class CacheBackedDenseSource:
 
     def geometry(self, sample_id: str) -> DenseGridGeometry:
         return self._store.geometry(sample_id)
+
+    def spacing(self, sample_id: str) -> DenseSampleSpacing:
+        return self._store.spacing(sample_id)
 
     def spacing_um(self, sample_id: str) -> float | None:
         value = self.metadata(sample_id).get("spacing_um")
