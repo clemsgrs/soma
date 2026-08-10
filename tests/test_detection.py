@@ -31,39 +31,32 @@ from soma.detection.peaks import extract_peaks
 # --------------------------------------------------------------------------- #
 
 
-def test_transform_uses_resolved_source_and_effective_spacing_exactly():
-    level0 = np.array([[20.0, 10.0]])
+@pytest.mark.parametrize(
+    ("effective_spacing_um", "expected_target"),
+    [
+        (0.2, [[100.0, 250.0]]),
+        (0.25, [[80.0, 200.0]]),
+        (0.5, [[40.0, 100.0]]),
+    ],
+)
+def test_ocelot_point_transform_round_trips_every_protocol_exactly(
+    effective_spacing_um: float, expected_target: list[list[float]]
+):
+    level0 = np.array([[100.0, 250.0]])
     target = transform_points_to_target(
         level0,
-        source_spacing_um=0.5,
-        effective_spacing_um=1.0,
+        source_spacing_um=0.2,
+        effective_spacing_um=effective_spacing_um,
     )
-    np.testing.assert_array_equal(target, np.array([[10.0, 5.0]]))
+    np.testing.assert_array_equal(target, np.array(expected_target))
     np.testing.assert_array_equal(
         transform_points_to_level0(
             target,
-            source_spacing_um=0.5,
-            effective_spacing_um=1.0,
+            source_spacing_um=0.2,
+            effective_spacing_um=effective_spacing_um,
         ),
         level0,
     )
-
-
-def test_transform_identity_when_spacing_and_crop_match():
-    pts = np.array([[10.0, 20.0], [0.0, 0.0]])
-    out = transform_points_to_target(
-        pts, source_spacing_um=0.2, effective_spacing_um=0.2
-    )
-    np.testing.assert_allclose(out, pts)
-
-
-def test_transform_scales_by_spacing_ratio():
-    pts = np.array([[10.0, 20.0]])
-    # level-0 finer than run: a level-0 px maps to half a run px.
-    out = transform_points_to_target(
-        pts, source_spacing_um=0.25, effective_spacing_um=0.5
-    )
-    np.testing.assert_allclose(out, [[5.0, 10.0]])
 
 
 def test_transform_applies_crop_offset():

@@ -2,8 +2,8 @@
 #
 # Frozen Virchow2 -> dense token grid -> conv decoder -> per-class peak heatmap, scored
 # with class-aware F1@δ (δ = 3 µm, OCELOT's official tolerance). This is the native-spacing
-# anchor of the 2x2 + native ablation; it consumes the native-resolution curated manifest
-# (no --render-spacing-um at curation time). See examples/ocelot/README.md for the workflow.
+# anchor of the 2x2 + native ablation; every spacing protocol consumes the same native
+# Manifest. See examples/ocelot/README.md for the workflow.
 #   python -m soma.curation.ocelot \
 #     --raw-root   /data/pathology/projects/clement/code/soma/data/ocelot \
 #     --output-dir /data/pathology/projects/clement/code/soma/data/ocelot/curated

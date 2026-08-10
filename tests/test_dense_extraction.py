@@ -155,14 +155,31 @@ def _extractor(dataset: Dataset, tmp_path: Path, **overrides) -> DenseTileFeatur
     )
 
 
-def test_real_flat_raster_extraction_forwards_source_spacing(tmp_path: Path, monkeypatch):
-    """Soma's public dense path must carry the Manifest declaration through hs2p."""
+@pytest.mark.parametrize(
+    ("source_spacing_um", "target_size", "expected_grid"),
+    [
+        (
+            0.5,
+            16,
+            [
+                [[10.0, 20.0], [30.0, 40.0]],
+                [[11.0, 21.0], [31.0, 41.0]],
+                [[12.0, 22.0], [32.0, 42.0]],
+            ],
+        ),
+        (0.25, 8, [[[25.0]], [[26.0]], [[27.0]]]),
+    ],
+)
+def test_real_flat_raster_extraction_respects_manifest_source_spacing(
+    tmp_path: Path,
+    source_spacing_um: float,
+    target_size: int,
+    expected_grid: list[list[list[float]]],
+):
+    """The public dense path preserves exact reads and supports coarser reads."""
     from tests.dense_literal_encoder import register_literal_encoder
-    from slide2vec.encoders.registry import encoder_registry
 
-    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
     encoder_name = register_literal_encoder()
-
     pixels = np.empty((16, 16, 3), dtype=np.uint8)
     pixels[:8, :8] = [10, 11, 12]
     pixels[:8, 8:] = [20, 21, 22]
@@ -177,7 +194,7 @@ def test_real_flat_raster_extraction_forwards_source_spacing(tmp_path: Path, mon
                 "sample_id": "literal",
                 "image_path": image_path,
                 "label": 0,
-                "spacing_at_level_0": 0.5,
+                "spacing_at_level_0": source_spacing_um,
             }
         ]
     ).to_csv(manifest, index=False)
@@ -185,22 +202,16 @@ def test_real_flat_raster_extraction_forwards_source_spacing(tmp_path: Path, mon
     store = DenseTileFeatureExtractor(
         Dataset(manifest),
         EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
-        target_size=16,
+        target_size=target_size,
         spacing_um=0.5,
         execution=ExecutionConfig(num_workers_per_gpu=0, precision="fp32"),
     ).run(tmp_path / "features")
 
-    expected = torch.tensor(
-        [
-            [[10.0, 20.0], [30.0, 40.0]],
-            [[11.0, 21.0], [31.0, 41.0]],
-            [[12.0, 22.0], [32.0, 42.0]],
-        ]
-    )
+    expected = torch.tensor(expected_grid)
     torch.testing.assert_close(store.load("literal"), expected, rtol=0, atol=0)
     metadata = store.metadata("literal")
-    assert metadata["spacing_at_level_0"] == 0.5
-    assert metadata["source_spacing_um"] == 0.5
+    assert metadata["spacing_at_level_0"] == source_spacing_um
+    assert metadata["source_spacing_um"] == source_spacing_um
     assert metadata["declared_spacing_um"] == 0.5
     assert metadata["effective_spacing_um"] == 0.5
 

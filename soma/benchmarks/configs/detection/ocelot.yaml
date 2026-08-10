@@ -21,9 +21,9 @@ data:
   dataset_type: detection
 
 preprocessing:
-  # OCELOT cell patches are flat 1024x1024 JPEGs at ~0.194 µm/px; the reader reads them at
-  # native resolution and ignores requested_spacing_um (kept to pin the µm->px conversions
-  # and self-document the cache key). The 448 window + 0.25 overlap blends window seams.
+  # OCELOT cell patches are flat 1024x1024 JPEGs declared at the benchmark's native
+  # 0.2 µm/px. This exact-spacing request preserves their decoded RGB pixels. The 448
+  # window + 0.25 overlap blends window seams.
   requested_tile_size_px: 1024
   requested_spacing_um: 0.2
   dense_window_size: 448

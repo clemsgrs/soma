@@ -88,8 +88,8 @@ class Curator(Protocol):
     """Structural type for a curator: a deterministic ``raw data -> CuratedManifest`` fn.
 
     There is **no base class** (ADR 0004). Curators are dataset-specific adapters with
-    heterogeneous signatures (EVA takes a dataset ``name``, OCELOT a ``render_spacing_um``,
-    …); the only thing they structurally share is being callables that return a
+    heterogeneous signatures (EVA takes a dataset ``name``, MONKEY a source-spacing
+    declaration, …); the only thing they structurally share is being callables that return a
     :class:`CuratedManifest`. This Protocol documents that shared shape and lets a test
     assert conformance via ``isinstance`` without ever coupling curators by inheritance.
     """
