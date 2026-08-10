@@ -19,8 +19,8 @@ data:
   dataset_type: detection
 
 preprocessing:
-  # OCELOT cell patches are flat 1024x1024 JPEGs at ~0.194 µm/px; the reader reads them
-  # at native resolution (spacing is bookkeeping that pins the µm->px conversions).
+  # OCELOT cell patches are flat 1024x1024 JPEGs declared at 0.2 µm/px; this exact-spacing
+  # request preserves their native pixels and pins the physical coordinate transforms.
   # CONCH's timm ViT-B/16 trunk is built (by open_clip) without dynamic_img_size, so dense
   # extraction uses the native 448 window; 0.25 overlap covers the non-even tiling of 1024
   # and blends window seams / border artifacts.

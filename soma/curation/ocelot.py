@@ -40,9 +40,9 @@ OCELOT_LABEL_REMAP = {1: 0, 2: 1}  # 1=BC -> 0, 2=TC -> 1
 OCELOT_CELL_CLASS_NAMES = ("BC", "TC")  # index = 0-based class id
 OCELOT_NUM_CLASSES = len(OCELOT_CELL_CLASS_NAMES)
 
-# Native µm/px of the OCELOT cell patches (1024x1024 JPEGs at ~0.2 µm/px). The render
-# variant materializes a coarser spacing at curation time because the dense reader reads
-# flat JPEGs with PIL and ignores any requested spacing.
+# Native µm/px of the OCELOT cell patches (1024x1024 JPEGs at ~0.2 µm/px). The legacy
+# ablation protocol materializes coarser variants at curation time; spacing-aware on-read
+# resampling is available in slide2vec 5.7 and tracked for adoption in soma #320.
 OCELOT_NATIVE_SPACING_UM = 0.2
 
 # OCELOT split name -> Soma split role.
@@ -92,9 +92,9 @@ def curate_ocelot_detection(
             set, every patch is downsampled by ``render_spacing_um / native`` into
             ``output_dir/images/`` and its point coordinates are scaled by the same
             factor, so annotations stay on the cells; the manifest then carries a
-            ``spacing_at_level_0`` declaration equal to ``render_spacing_um`` per sample. This
-            materialization is required because the dense reader reads flat JPEGs with PIL
-            and ignores any requested spacing, so magnification must be baked in here.
+            ``spacing_at_level_0`` declaration equal to ``render_spacing_um`` per sample.
+            This preserves the committed magnification-ablation protocol until soma #320
+            verifies spacing-aware on-read resampling and retires the rendered variants.
 
     Returns:
         A :class:`~soma.curation.manifest.CuratedManifest` pointing at the generated

@@ -69,7 +69,8 @@ curation time. Pass `--render-spacing-um` to downsample every cell patch to a ta
 µm/px (≥ the native 0.2) and rescale its points by the same factor; the emitted manifest
 stamps `spacing_at_level_0` with that rendered source scale and the patches land under
 `curated/images/`. Each variant is its own output dir (own manifest digest in the dense
-cache):
+cache). This remains the committed ablation protocol until issue #320 verifies and removes
+the rendered variants; slide2vec 5.7 can now perform the equivalent spacing-aware read:
 
 ```bash
 python -m soma.curation.ocelot \
@@ -122,4 +123,6 @@ The former `reproduce.py` / `expected_metrics.json` are absorbed into this bench
 `eval_greedy.py` remains only as the thin CLI that `campaign.py` drives per (cell, seed)
 and now re-uses the benchmark's greedy scorer.
 
-Exit code 0 = within the ±0.02 mean_F1 band; 1 = a real environment/plumbing difference.
+The command prints `REFERENCE OK` within the ±0.02 mean_F1 band and `POTENTIAL DRIFT`
+outside it. Reference comparisons are diagnostic and do not change the command's exit
+status; release gates should inspect the reported value explicitly.

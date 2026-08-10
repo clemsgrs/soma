@@ -52,6 +52,14 @@ works." The health-gate context is GitHub issue #151.
 Run: dense extraction batch 8, decoder training batch 1 × grad-accum 8, 39 epochs run
 (best at epoch 29, early-stopped at patience 10).
 
+## Soma 1.9 release revalidation
+
+The native anchor was reproduced from a fresh cache at soma `ba8e529` with released
+slide2vec 5.7.0 on an RTX 3080 Ti. Seed 0 reached greedy test mean_F1 **0.7030**
+(Δ **+0.0035** from the 0.6995 anchor), tune mean_F1 0.7149, and Hungarian test
+mean_F1 0.7031. Training again selected epoch 29 and stopped at epoch 39. The result is
+recorded in `soma/benchmarks/results/ocelot.csv`.
+
 ## Reproducing
 
 See [`README.md`](README.md) for the full download → curate → run → score workflow, or run
@@ -75,8 +83,8 @@ soma reproduce ocelot --raw-root <data_root>/ocelot --output-root output
   byte-identity. Note this holds even at a fixed nominal batch size: a slide whose ROI count is
   not a multiple of the batch size sends its tail through a smaller-`B` forward, so "pin to 8"
   never gave a single consistent `B`. The only stochastic stage is decoder training; cuDNN
-  nondeterminism plus a different GPU move mean_F1 by ~0.01–0.02. `soma reproduce ocelot` asserts
-  |Δ mean_F1| ≤ 0.02 against the greedy headline; a larger gap signals a real environment/plumbing
-  difference, not noise.
+  nondeterminism plus a different GPU move mean_F1 by ~0.01–0.02. `soma reproduce ocelot`
+  highlights |Δ mean_F1| ≤ 0.02 as `REFERENCE OK`; a larger gap is reported as
+  `POTENTIAL DRIFT` and signals a real environment/plumbing difference, not noise.
 - The dense cache key omits batch size — which is fine, because features are batch-tolerant, not
   batch-identical. There is no need to pin the extraction batch size for reproducibility.
