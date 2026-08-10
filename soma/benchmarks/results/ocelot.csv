@@ -1,10 +1,12 @@
-encoder,metric,measured,std,n_seeds,date,soma_commit,slide2vec_version,source
-genbio-pathfm,mean_f1,0.7333,0.0037,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-h-optimus-1,mean_f1,0.7204,0.0024,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-h0-mini,mean_f1,0.7189,0.0028,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-conchv15,mean_f1,0.7108,0.0009,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-virchow2,mean_f1,0.6989,0.0039,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-midnight,mean_f1,0.6578,0.0023,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-dinov2-vitb14,mean_f1,0.6561,0.0022,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
-virchow2,mean_f1,0.7004,,1,2026-07-30,16d9ddb,5.5.0,soma reproduce --record
-virchow2,mean_f1,0.7030,,1,2026-08-10,ba8e529,5.7.0,soma reproduce --record
+encoder,spacing,metric,measured,std,n_seeds,date,soma_commit,slide2vec_version,source
+genbio-pathfm,0.2,mean_f1,0.7333,0.0037,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+h-optimus-1,0.2,mean_f1,0.7204,0.0024,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+h0-mini,0.2,mean_f1,0.7189,0.0028,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+conchv15,0.2,mean_f1,0.7108,0.0009,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+virchow2,0.2,mean_f1,0.6989,0.0039,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+midnight,0.2,mean_f1,0.6578,0.0023,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+dinov2-vitb14,0.2,mean_f1,0.6561,0.0022,3,2026-07-15,54601e4,5.3.0,"Frozen-probe encoder sweep (examples/detection_benchmark/campaign.py); lightweight_conv decoder @ 0.2 µm/px; thresholds frozen on tune; 3 seeds; branch detection-benchmark-roster."
+virchow2,0.2,mean_f1,0.7004,,1,2026-07-30,16d9ddb,5.5.0,soma reproduce --record
+virchow2,0.2,mean_f1,0.7030,,1,2026-08-10,ba8e529,5.7.0,soma reproduce --record
+virchow2,0.25,mean_f1,0.7148,,1,2026-08-10,c5d36b5,5.7.0,"Issue #320 fresh-cache on-read validation; official greedy test headline; seed 0; RTX 3080 Ti."
+virchow2,0.5,mean_f1,0.6085,,1,2026-08-10,c5d36b5,5.7.0,"Issue #320 fresh-cache on-read validation; official greedy test headline; seed 0; RTX 3080 Ti."
