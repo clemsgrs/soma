@@ -242,7 +242,7 @@ def _artifact(
     )
 
 
-def test_embed_tiles_reports_progress_for_selected_slides(tmp_path: Path):
+def test_embed_tiles_forwards_inputs_and_returns_public_artifacts_unchanged(tmp_path: Path):
     slides = [
         SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
         SlideSpec(sample_id="s1", image_path=Path("/tmp/s1.svs"), mask_path=None, spacing_at_level_0=None),
@@ -254,52 +254,14 @@ def test_embed_tiles_reports_progress_for_selected_slides(tmp_path: Path):
         requested_spacing_um=0.5,
         backend="openslide",
     )
-    fake_model = SimpleNamespace(name=_TEST_TILE, level="tile")
+    fake_model = object.__new__(orchestration_mod.Model)
+    expected_artifacts = [object(), object()]
 
-    def _fake_compute_embedded_slides(
-        model,
-        slide_records,
-        tiling_results,
-        *,
-        preprocessing,
-        execution,
-        on_embedded_slide,
-        collect_results,
-    ):
-        assert model is fake_model
-        assert list(slide_records) == slides
-        assert list(tiling_results) == tilings
-        assert collect_results is False
-        for slide, tiling_result in zip(slide_records, tiling_results):
-            on_embedded_slide(slide, tiling_result, SimpleNamespace(sample_id=slide.sample_id))
-
-    def _fake_persist_embedded_slide(
-        model,
-        embedded_slide,
-        tiling_result,
-        *,
-        preprocessing,
-        execution,
-    ):
-        return (
-            _artifact(
-                sample_id=embedded_slide.sample_id,
-                output_dir=Path(execution.output_dir),
-                kind="tile_embeddings",
-                tensor=torch.ones(2, 8),
-            ),
-            None,
-        )
-
-    with patch("soma.extraction.orchestration._load_model", return_value=fake_model), patch(
-        "soma.extraction.orchestration._compute_embedded_slides",
-        side_effect=_fake_compute_embedded_slides,
-    ), patch(
-        "soma.extraction.orchestration._persist_embedded_slide",
-        side_effect=_fake_persist_embedded_slide,
-    ), patch(
-        "soma.extraction.orchestration.slide2vec_progress.emit_progress"
-    ) as emit_progress:
+    with patch("soma.extraction.orchestration._load_model", return_value=fake_model), patch.object(
+        orchestration_mod.Model,
+        "embed_tiles",
+        return_value=expected_artifacts,
+    ) as embed_tiles:
         artifacts = _embed_tiles(
             model_name=_TEST_TILE,
             output_variant="default",
@@ -307,17 +269,16 @@ def test_embed_tiles_reports_progress_for_selected_slides(tmp_path: Path):
             tiling_results=tilings,
             preprocessing=preprocessing,
             execution=execution,
-        )
+    )
 
-    assert [artifact.sample_id for artifact in artifacts] == ["s0", "s1"]
-    assert emit_progress.call_args_list[0].args == ("embedding.started",)
-    assert emit_progress.call_args_list[0].kwargs == {"slide_count": 2}
-    assert emit_progress.call_args_list[-1].args == ("embedding.finished",)
-    assert emit_progress.call_args_list[-1].kwargs == {
-        "slide_count": 2,
-        "slides_completed": 2,
-        "tile_artifacts": 2,
-        "slide_artifacts": 0,
+    assert artifacts is expected_artifacts
+    embed_tiles.assert_called_once()
+    forwarded_slides, forwarded_tilings = embed_tiles.call_args.args
+    assert forwarded_slides is slides
+    assert forwarded_tilings is tilings
+    assert embed_tiles.call_args.kwargs == {
+        "preprocessing": preprocessing,
+        "execution": execution,
     }
 
 
@@ -2150,11 +2111,15 @@ def test_run_with_coordinates_releases_parent_cuda_state_no_gpu_count(tmp_path: 
     instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
 
 
-def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
+@pytest.mark.parametrize("save_tile_features", [True, False])
+def test_extract_slide_features_preserves_requested_tile_artifact_regime(
+    tmp_path: Path,
+    save_tile_features: bool,
+):
     dataset = _make_dataset(tmp_path)
     extractor = FeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
+        EncoderConfig(name=_TEST_SLIDE, save_tile_features=save_tile_features),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
@@ -2165,6 +2130,8 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
             tiling_result=_tiling(),
         )
     ]
+
+    embedded_tile_paths: list[Path] = []
 
     def _fake_embed_tiles(
         *,
@@ -2178,9 +2145,14 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
     ):
         artifacts = []
         for slide in slides:
-            artifacts.append(
-                _artifact(sample_id=slide.sample_id, output_dir=Path(execution.output_dir), kind="tile_embeddings", tensor=torch.ones(2, 8))
+            artifact = _artifact(
+                sample_id=slide.sample_id,
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
             )
+            embedded_tile_paths.append(artifact.path)
+            artifacts.append(artifact)
         return artifacts
 
     def _fake_aggregate_tiles(
@@ -2193,6 +2165,7 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
         execution,
     ):
         for artifact in tile_artifacts:
+            assert artifact.path.is_file()
             _artifact(sample_id=artifact.sample_id, output_dir=Path(execution.output_dir), kind="slide_embeddings", tensor=torch.ones(8))
 
     with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
@@ -2208,6 +2181,9 @@ def test_extract_slide_features_returns_slide_embedding_store(tmp_path: Path):
     assert store.available_samples == ["s0"]
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
+    assert len(embedded_tile_paths) == 1
+    assert embedded_tile_paths[0].exists() is save_tile_features
+    assert (tmp_path / "features" / "tile_embeddings" / "s0.pt").exists() is save_tile_features
 
 
 def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path: Path):

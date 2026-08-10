@@ -1,4 +1,4 @@
-"""slide2vec orchestration: model loading, tile embedding, aggregation, CUDA cleanup."""
+"""Orchestrate extraction through slide2vec's public model and pipeline interfaces."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Sequence
 
 import torch
-import slide2vec.progress as slide2vec_progress
 from hs2p.utils.stderr import run_with_filtered_stderr
 from slide2vec import (
     ExecutionOptions,
@@ -16,8 +15,6 @@ from slide2vec import (
     Pipeline,
     PreprocessingConfig as Slide2VecPreprocessingConfig,
 )
-from slide2vec.runtime.embedding_persist import persist_embedded_slide as _persist_embedded_slide
-from slide2vec.runtime.embedding_pipeline import compute_embedded_slides as _compute_embedded_slides
 
 from soma.extraction.process_list import (
     _normalize_process_list_for_embedding,
@@ -57,48 +54,20 @@ def _embed_tiles(
     preprocessing: Slide2VecPreprocessingConfig,
     execution: ExecutionOptions,
 ) -> list:
-    slide_records = list(slides)
-    resolved_tilings = list(tiling_results)
-    artifacts: list[object] = []
-
-    def _run_embedding() -> None:
+    def _run_embedding() -> list:
         model = _load_model(
             model_name,
             output_variant=output_variant,
             allow_non_recommended_settings=allow_non_recommended_settings,
         )
-
-        def _on_embedded_slide(slide, tiling_result, embedded_slide) -> None:
-            tile_or_hier_artifact, _slide_artifact = _persist_embedded_slide(
-                model,
-                embedded_slide,
-                tiling_result,
-                preprocessing=preprocessing,
-                execution=execution,
-            )
-            if tile_or_hier_artifact is not None:
-                artifacts.append(tile_or_hier_artifact)
-
-        slide2vec_progress.emit_progress("embedding.started", slide_count=len(slide_records))
-        _compute_embedded_slides(
-            model,
-            slide_records,
-            resolved_tilings,
+        return model.embed_tiles(
+            slides,
+            tiling_results,
             preprocessing=preprocessing,
             execution=execution,
-            on_embedded_slide=_on_embedded_slide,
-            collect_results=False,
-        )
-        slide2vec_progress.emit_progress(
-            "embedding.finished",
-            slide_count=len(slide_records),
-            slides_completed=len(slide_records),
-            tile_artifacts=len(artifacts),
-            slide_artifacts=0,
         )
 
-    run_with_filtered_stderr(_run_embedding)
-    return artifacts
+    return run_with_filtered_stderr(_run_embedding)
 
 
 def _run_with_coordinates(

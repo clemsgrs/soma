@@ -10,6 +10,8 @@ The duplication was larger than the dense call site. soma carried ~640 lines of 
 
 Persistence is not caching. slide2vec already writes the pooled artifacts soma's cache layer wraps; pointing `execution.output_dir` at soma's resolved cache directory keeps everything that actually constitutes caching in soma — the key, the completeness decision, `missing_sample_ids`, identity signatures, validation — while slide2vec writes the payloads. Nothing changes layers.
 
+For in-process pooled slide encoding, soma calls the public `Model.embed_tiles` interface with its prepared slides and tiling results, then hands the returned artifacts unchanged to public `Model.aggregate_tiles`. slide2vec owns embedding progress and persistence in both the requested-output and temporary-artifact regimes; soma owns the outer cache gate and artifact lifetime.
+
 ## Upstream additions this requires
 
 1. An explicit input contract at model load (ADR 0006).
@@ -31,4 +33,4 @@ Persistence is not caching. slide2vec already writes the pooled artifacts soma's
 - **Merge gate for the dense migration: byte-identity at `num_gpus=1`**, at fixed batch size and dtype, against grids produced by the current path — achievable because `embed_regions_dense` calls the same primitive underneath. Multi-GPU dense is a separate, separately-verified follow-up: `plan_dense_shards` splits the flat ROI list contiguously, so a slide straddling a shard boundary yields partial batches, and soma's grids are known to be batch-size sensitive in fp16. If 2-GPU output does not match 1-GPU on soma's data, that contradicts an ADR slide2vec's sharding design rests on and is worth reporting upstream.
 - The tile-path migration has no equivalent gate: `results/eva.csv` may be re-recorded within its 2 % relative band if numbers move.
 - soma skipped slide2vec 5.4.0 entirely and aligned through 5.5/5.6. The dense source-spacing contract now requires slide2vec 5.7 and hs2p 4.4.1: soma declares `spacing_at_level_0` on source specs and consumes persisted `source_spacing_um` plus `effective_spacing_um` rather than reconstructing them from requested settings.
-- The remaining private slide2vec imports are confined to pooled embedding orchestration and are tracked by #288; they are not part of the dense/live surface completed in #322.
+- With pooled embedding orchestration migrated in #288 and dense live encoding migrated in #322, soma's production extraction paths have no `slide2vec.runtime.*` imports.

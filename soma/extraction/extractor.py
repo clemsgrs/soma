@@ -854,19 +854,15 @@ class FeatureExtractor:
             )
             return
 
-        if self._encoder.save_tile_features:
-            tile_artifacts = _embed_tiles(
-                model_name=model_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=allow_non_recommended_settings,
-                slides=slides,
-                tiling_results=embedding_tiling_results,
-                preprocessing=preprocessing,
-                execution=execution,
-            )
-        else:
-            with tempfile.TemporaryDirectory(prefix="soma-tiles-") as tmp_dir:
-                temp_execution = build_execution_options(
+        tile_dir_context = (
+            contextlib.nullcontext(None)
+            if self._encoder.save_tile_features
+            else tempfile.TemporaryDirectory(prefix="soma-tiles-")
+        )
+        with tile_dir_context as tmp_dir:
+            tile_execution = execution
+            if tmp_dir is not None:
+                tile_execution = build_execution_options(
                     self._encoder,
                     execution=self._execution,
                     encoder_name=self._encoder.name,
@@ -875,24 +871,23 @@ class FeatureExtractor:
                     save_tile_embeddings=True,
                     output_dtype=self._resolved_dtype(),
                 )
-                tile_artifacts = _embed_tiles(
-                    model_name=model_name,
-                    output_variant=output_variant,
-                    allow_non_recommended_settings=allow_non_recommended_settings,
-                    slides=slides,
-                    tiling_results=embedding_tiling_results,
-                    preprocessing=preprocessing,
-                    execution=temp_execution,
-                )
-
-        _aggregate_tiles(
-            model_name=model_name,
-            output_variant=output_variant,
-            allow_non_recommended_settings=allow_non_recommended_settings,
-            tile_artifacts=tile_artifacts,
-            preprocessing=preprocessing,
-            execution=execution,
-        )
+            tile_artifacts = _embed_tiles(
+                model_name=model_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
+                slides=slides,
+                tiling_results=embedding_tiling_results,
+                preprocessing=preprocessing,
+                execution=tile_execution,
+            )
+            _aggregate_tiles(
+                model_name=model_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=allow_non_recommended_settings,
+                tile_artifacts=tile_artifacts,
+                preprocessing=preprocessing,
+                execution=execution,
+            )
 
 
     def _extraction_geometry(
