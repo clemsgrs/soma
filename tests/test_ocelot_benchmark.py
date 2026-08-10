@@ -49,9 +49,8 @@ def test_ocelot_registered_under_name():
 
 def test_ocelot_declares_canonical_facet():
     facet = OCELOT.facet
-    # Canonical reproduction still fixes 0.2, while the benchmark ledger/leaderboard can
-    # attribute the committed spacing sweep without turning spacing into a CLI flag.
-    assert facet.varied == ("encoder", "spacing")
+    # The canonical comparison fixes physical spacing and varies only the encoder.
+    assert facet.varied == ("encoder",)
     assert facet.fixed["decoder"] == "lightweight_conv"
     assert facet.fixed["task"] == "detection"
 

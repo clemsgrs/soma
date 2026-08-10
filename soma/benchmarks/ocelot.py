@@ -62,15 +62,16 @@ CANONICAL_SEEDS: tuple[int, ...] = (0,)
 ANCHOR_ENCODER = "virchow2"
 ANCHOR_SPACING = 0.2
 
-# Canonical reproduction fixes spacing at the anchor. Committed configs and result ledgers
-# also expose spacing as a sweep axis without making it a reproduce CLI flag.
+# Canonical reproduction fixes spacing at the anchor. Committed configs still expose the
+# historical spacing sweep, but it is not part of this benchmark facet: those protocols are
+# migration-validation evidence rather than cells in the canonical encoder comparison.
 FACET = Facet(
     fixed={
         "task": "detection",
         "decoder": "lightweight_conv",
         "matcher": "greedy_f1@delta=3um",
     },
-    varied=("encoder", "spacing"),
+    varied=("encoder",),
 )
 
 # A small reference environment shown alongside a run (the recorded anchor environment).

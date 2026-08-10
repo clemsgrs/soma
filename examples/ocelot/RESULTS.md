@@ -106,6 +106,9 @@ the historical three-seed sweeps.
 The native 0.2 fresh-cache release reproduction above independently remained within its
 published tolerance (0.7030 versus the 0.6995 anchor). Together, these runs show no
 benchmark regression from collapsing the rendered variants onto spacing-aware reads.
+The two coarse on-read results and their code/version provenance are recorded separately
+in `soma/benchmarks/results/ocelot-spacing-migration.csv`; they are validation evidence,
+not cells in the canonical encoder-only benchmark facet.
 
 ## Reproducing
 

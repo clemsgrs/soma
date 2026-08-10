@@ -74,7 +74,10 @@ def test_ocelot_spacing_migration_rows_are_provenance_pinned():
 
     for spacing, (measured, commit) in expected.items():
         rows = reproduced_rows(
-            "ocelot", encoder="virchow2", spacing=spacing, metric="mean_f1"
+            "ocelot-spacing-migration",
+            encoder="virchow2",
+            spacing=spacing,
+            metric="mean_f1",
         )
         assert rows
         assert rows[-1].measured == pytest.approx(measured)

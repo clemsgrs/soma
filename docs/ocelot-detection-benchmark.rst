@@ -40,7 +40,7 @@ and fixes image spacing at the anchor.
    * - ``matcher``
      - ``greedy_f1@delta=3um``
    * - varied axes
-     - ``encoder``, ``spacing``
+     - ``encoder``
    * - primary metric
      - ``mean_f1``
    * - canonical seeds
@@ -164,18 +164,6 @@ the Virchow2 anchor band above.
      - 0.700
      - +0.003
      - 2026-08-10 @ ``ba8e529``
-   * - virchow2
-     - 0.715
-     - 1
-     - 0.700
-     - +0.015
-     - 2026-08-10 @ ``c5d36b5``
-   * - virchow2
-     - 0.609
-     - 1
-     - 0.700
-     - -0.091
-     - 2026-08-10 @ ``c5d36b5``
 
 These frozen-probe encoder results accompany an upcoming publication — Grisi
 *et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;
