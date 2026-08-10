@@ -2,11 +2,10 @@
 
 Where the cached path returns a :class:`~soma.dense.DenseFeatureSource` (grids on
 disk plus provenance), the live path returns a :class:`LiveSegmentationSource`: a
-passive struct that holds the **single loaded frozen encoder** plus everything the
+passive struct that holds the **single public dense encode kit** plus everything the
 fold needs to build a :class:`~soma.training.model.LiveSegmentationModel` and a
 :class:`~soma.training.segmentation_dataset.LiveSegmentationDataset` —
-``{encoder, device, precision, geometry, feature_dim, dense_transform, augmentation,
-spacing, pad}``.
+``{kit, device, geometry, feature_dim, preprocessor, augmentation, spacing}``.
 
 It is built **once**, before the fold loop, so the (large) backbone loads a single
 time and every fold's model shares the same frozen encoder (safe: it has no trainable
@@ -19,7 +18,7 @@ branch (design §13.B-3/§13.B-8). It deliberately stays outside the cache-backe
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from soma.config import AugmentationConfig
@@ -28,41 +27,46 @@ from soma.dense.geometry import DenseGridGeometry
 
 @dataclass
 class LiveSegmentationSource:
-    """Frozen encoder + geometry/transform bundle for the live re-encode path.
+    """Public DenseEncodeKit + Soma data settings for the live re-encode path.
 
     Attributes:
-        encoder: The loaded dense-capable slide2vec tile encoder (shared across folds).
-        device: Device the encoder lives on.
-        precision: Encoder autocast precision (resolved as extraction does).
-        geometry: Dense geometry from ``patch_size + target_size`` (no cache sidecar).
-        feature_dim: Encoder output channels ``d`` (from a probe forward — the same
-            source of truth as the cached extractor's ``grids.shape[1]``).
-        dense_transform: The encoder's normalization-only transform.
+        kit: The public slide2vec DenseEncodeKit shared across folds.
+        device: Device on which the kit returns grids and trainable modules run.
+        geometry: Soma's crop-convention adapter of the authoritative ``kit.geometry``.
+        feature_dim: Encoder output channels ``d`` from public ``Model.feature_dim``.
+        preprocessor: Serializable callable returned by ``kit.preprocessor()``.
         augmentation: The run's augmentation config (applied on the train split only).
         spacing_um: µm/px to read image+mask at (``None`` = flat PIL read).
         backend / tolerance: hs2p reader settings.
-        pad_mode / image_pad_value: image pad-to-encoded contract (mirrors extraction).
-        window_size / overlap: dense encoder-window knobs (design §5, window-as-knob).
-            ``window_size=None`` ⇒ ``whole`` (one padded forward, the live default and
-            the cached-parity anchor); a smaller window slides the encoder over
-            patch-aligned windows and blends the token grids — identical mechanism to
-            the cached extractor, so cached/live agree under any window setting.
+        Dense mode, padding, precision, output variant, feature kind, windowing, and
+        attention selection are resolved and owned by the kit rather than restated here.
     """
 
-    encoder: object
+    kit: object
     device: object
-    precision: str
-    geometry: DenseGridGeometry
     feature_dim: int
-    dense_transform: Callable
     augmentation: AugmentationConfig
     spacing_um: float | None
     backend: str = "auto"
     tolerance: float = 0.05
-    pad_mode: str = "reflect"
-    image_pad_value: float | None = None
-    window_size: int | None = None
-    overlap: float = 0.0
+    geometry: DenseGridGeometry = field(init=False)
+    preprocessor: Callable = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        resolved = self.kit.geometry
+        left, top, right, bottom = (int(value) for value in resolved.crop_box)
+        # Consume the kit's resolved geometry directly. Only crop-box notation differs:
+        # Slide2Vec exposes (left, top, right, bottom), while Soma's heads use
+        # (top, left, height, width).
+        self.geometry = DenseGridGeometry(
+            target_size=tuple(int(v) for v in resolved.target_size),
+            patch_size=tuple(int(v) for v in resolved.patch_size),
+            encoded_size=tuple(int(v) for v in resolved.encoded_size),
+            grid_shape=tuple(int(v) for v in resolved.grid_shape),
+            pad=tuple(int(v) for v in resolved.pad),
+            crop_box=(top, left, bottom - top, right - left),
+        )
+        self.preprocessor = self.kit.preprocessor()
 
     def validate_coverage(self, sample_ids) -> None:
         """No-op coverage hook (name-compatible with ``DenseFeatureStore``).

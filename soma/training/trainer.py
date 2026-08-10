@@ -20,6 +20,15 @@ from rich.text import Text
 from soma.config import TrainingConfig
 
 
+def model_input_device(model: torch.nn.Module, default: torch.device | str) -> torch.device:
+    """Resolve where a batch's feature tensor belongs before ``model(features)``.
+
+    Most models consume features on their trainable-module device. Live dense models
+    deliberately consume CPU pixels because Slide2Vec's public kit owns device transfer.
+    """
+    return torch.device(getattr(model, "input_device", default))
+
+
 @dataclass(frozen=True)
 class EpochLog:
     """Metrics for a single training epoch."""
@@ -329,7 +338,7 @@ class Trainer:
             processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
             if on_batch_progress is not None:
                 on_batch_progress("train", processed_items, total_items)
-            features = batch.features.to(self._device)
+            features = batch.features.to(model_input_device(self._model, self._device))
             targets = {key: value.to(self._device) for key, value in batch.targets.items()}
 
             if hasattr(batch, "mask"):
@@ -433,7 +442,7 @@ class Trainer:
             processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
             if on_batch_progress is not None:
                 on_batch_progress("tune", processed_items, total_items)
-            features = batch.features.to(self._device)
+            features = batch.features.to(model_input_device(self._model, self._device))
             targets = {key: value.to(self._device) for key, value in batch.targets.items()}
 
             if hasattr(batch, "mask"):
@@ -532,7 +541,7 @@ def accumulate_dense_stats(
         processed_items = min(total_items, processed_items + _infer_batch_item_count(batch))
         if on_batch_progress is not None:
             on_batch_progress(progress_label, processed_items, total_items)
-        features = batch.features.to(device)
+        features = batch.features.to(model_input_device(model, device))
         targets = {key: value.to(device) for key, value in batch.targets.items()}
         out = model(features)
         if compute_loss:

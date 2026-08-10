@@ -357,15 +357,13 @@ def _make_live_loaders(
         return LiveSegmentationDataset(
             records,
             geometry=source.geometry,
-            dense_transform=source.dense_transform,
+            preprocessor=source.preprocessor,
             spacing_um=source.spacing_um,
             backend=source.backend,
             tolerance=source.tolerance,
             num_classes=num_classes,
             ignore_index=ignore_index,
             augment=augment,
-            pad_mode=source.pad_mode,
-            image_pad_value=source.image_pad_value,
         )
 
     train_loader = DataLoader(
@@ -1418,14 +1416,9 @@ def train_one_segmentation_fold(
     # grids. The trainer, eval, and checkpoint reload paths below are identical.
     if is_live:
         model = LiveSegmentationModel(
-            encoder=feature_store.encoder,
+            kit=feature_store.kit,
             decoder=decoder_obj,
             task_head=head,
-            device=feature_store.device,
-            precision=feature_store.precision,
-            geometry=geometry,
-            window_size=feature_store.window_size,
-            overlap=feature_store.overlap,
         )
         train_loader, tune_loader, test_loaders = _make_live_loaders(
             feature_store, seg_collate,
@@ -3236,21 +3229,14 @@ class Pipeline:
         return unique[0]
 
     def _build_live_segmentation_source(self) -> "LiveSegmentationSource":
-        """Load the frozen encoder once and bundle it with geometry/transform for live.
+        """Prepare one public DenseEncodeKit and share it across every fold.
 
-        Mirrors :meth:`DenseTileFeatureExtractor.run`'s encoder construction (same
-        ``load_model`` under the same declared dense contract + dense transform + resolved
-        precision) so
-        a live-no-aug run reproduces the cached features exactly. ``feature_dim`` comes
-        from a probe forward — the same ``grid.shape[1]`` source the cached extractor
-        uses — which also fails fast if the encoder lacks a patch grid.
+        Soma owns the augmented-pixel handoff. Slide2Vec owns the dense normalization,
+        resolved geometry, padding, precision/device transfer, frozen encoding,
+        windowing/attention mode, and output dtype behind the public kit boundary.
         """
-        import torch as _torch
-        from slide2vec.api import EncoderInputContract
-        from slide2vec.inference import load_model
-        from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
+        from slide2vec import DenseImageOptions, ExecutionOptions, Model
 
-        from soma.dense.geometry import compute_dense_geometry
         from soma.dense.live import LiveSegmentationSource
         from soma.encoders.validation import resolve_encoder_precision
 
@@ -3272,73 +3258,75 @@ class Pipeline:
                 "single supported_spacing_um."
             )
 
-        loaded = load_model(
-            name=self._config.encoder.name,
+        model = Model.from_preset(
+            self._config.encoder.name,
             output_variant=self._config.encoder.output_variant,
             allow_non_recommended_settings=self._config.encoder.allow_non_recommended_settings,
-            encoder_input=EncoderInputContract.declared_dense(
-                self._config.encoder.name,
-                target_size_px=int(target_size),
-                window_size=preprocessing.dense_window_size,
-            ),
         )
-        encoder = loaded.model
-        device = loaded.device
         precision = resolve_encoder_precision(
             self._config.encoder, encoder_name=self._config.encoder.name
         )
-        geometry = compute_dense_geometry(
-            target_size=int(target_size), patch_size=encoder.patch_size
-        )
         window_size = preprocessing.dense_window_size
         overlap = float(preprocessing.dense_window_overlap)
-        from slide2vec.runtime.dense_sliding import resolve_window_geometry
-
         from soma.dense.sliding import describe_dense_mode
 
         # print, not logger: always visible regardless of logging config (same as the
         # cached extractor's announcement) so the resolved mode is never silent.
         print(f"Live segmentation dense mode: {describe_dense_mode(window_size, overlap)}")
-
-        # Probe feature_dim (d) on a single forward (same source of truth as the cached
-        # extractor's grids.shape[1]; also a fail-fast dense-capability check). When
-        # sliding, probe ONE resolved window rather than the full padded tile: the whole
-        # point of a smaller window is to avoid the full-size forward (which can OOM at
-        # large scale-ups), and d is spatial-size-independent, so a window probe yields
-        # the same channel count.
-
-        probe_h, probe_w = (
-            geometry.encoded_size
-            if window_size is None
-            else resolve_window_geometry(geometry, window_size=window_size, overlap=overlap)[0]
-        )
-        dummy = _torch.zeros(1, 3, probe_h, probe_w, device=device)
-        with _torch.no_grad(), slide_encode_autocast_ctx(device, precision):
-            probe = encoder.encode_tiles_dense(dummy)
-        if probe.ndim != 4:
-            raise ValueError(
-                f"encode_tiles_dense returned a {probe.ndim}-D tensor for encoder "
-                f"'{self._config.encoder.name}'; expected (B, d, grid_h, grid_w)."
-            )
-        feature_dim = int(probe.shape[1])
-
-        # Reflect padding (no out-of-distribution constant border), matching the cached
-        # extractor's default; image_pad_value is unused for reflect.
-        return LiveSegmentationSource(
-            encoder=encoder,
-            device=device,
-            precision=precision,
-            geometry=geometry,
-            feature_dim=feature_dim,
-            dense_transform=encoder.get_dense_transform(),
-            augmentation=self._config.augmentation,
+        feature_kind = preprocessing.feature_kind or "patch_features"
+        dense = DenseImageOptions(
+            target_size=int(target_size),
             spacing_um=float(preprocessing.requested_spacing_um),
-            backend=preprocessing.backend,
             tolerance=float(preprocessing.tolerance),
+            backend=preprocessing.backend,
             pad_mode="reflect",
             image_pad_value=None,
             window_size=window_size,
             overlap=overlap,
+            feature_kind=feature_kind,
+            attention_blocks=(
+                tuple(preprocessing.attention.blocks)
+                if feature_kind == "cls_attention"
+                else (-1,)
+            ),
+            attention_include_registers=(
+                bool(preprocessing.attention.include_registers)
+                if feature_kind == "cls_attention"
+                else False
+            ),
+        )
+        kit = model.prepare_dense_encoder(
+            dense=dense,
+            execution=ExecutionOptions(
+                num_gpus=self._config.execution.num_gpus,
+                precision=precision,
+                output_dtype="fp32",
+            ),
+        )
+        # Model.feature_dim is the pooled/backbone width and is not authoritative for
+        # alternate dense outputs such as CLS attention. Probe only the public tensor
+        # boundary so the decoder is built for the kit's actual resolved grid channels.
+        probe_pixels = torch.zeros(
+            (3, *kit.geometry.target_size), dtype=torch.uint8, device="cpu"
+        )
+        probe_batch = torch.stack([kit.preprocessor()(probe_pixels)])
+        probe_grid = kit.encode(probe_batch)
+        if probe_grid.ndim != 4 or tuple(int(v) for v in probe_grid.shape[-2:]) != tuple(
+            int(v) for v in kit.geometry.grid_shape
+        ):
+            raise ValueError(
+                "DenseEncodeKit returned an invalid probe grid: expected "
+                f"(B, d, {kit.geometry.grid_shape[0]}, {kit.geometry.grid_shape[1]}), "
+                f"got {tuple(probe_grid.shape)}."
+            )
+        return LiveSegmentationSource(
+            kit=kit,
+            device=model.device,
+            feature_dim=int(probe_grid.shape[1]),
+            augmentation=self._config.augmentation,
+            spacing_um=float(preprocessing.requested_spacing_um),
+            backend=preprocessing.backend,
+            tolerance=float(preprocessing.tolerance),
         )
 
     def _resolve_preprocessing(self) -> "PreprocessingConfig":

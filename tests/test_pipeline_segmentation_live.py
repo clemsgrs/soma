@@ -37,6 +37,7 @@ PATCH = 16  # vit_tiny_patch16 -> 2x2 grid at target 32
 
 
 def _encoder() -> TimmTileEncoder:
+    torch.manual_seed(0)
     return TimmTileEncoder("vit_tiny_patch16_224", pretrained=False, dynamic_img_size=True)
 
 
@@ -80,20 +81,34 @@ def _live_source(
     window_size: int | None = None,
     overlap: float = 0.0,
 ) -> LiveSegmentationSource:
-    geom = compute_dense_geometry(target_size=TARGET, patch_size=encoder.patch_size)
-    return LiveSegmentationSource(
-        encoder=encoder,
-        device="cpu",
-        precision="fp32",
-        geometry=geom,
+    from types import SimpleNamespace
+
+    from slide2vec import DenseImageOptions, ExecutionOptions, Model
+
+    loaded = SimpleNamespace(
+        model=encoder,
+        transforms=encoder.get_dense_transform(),
+        device=torch.device("cpu"),
         feature_dim=encoder.encode_dim,
-        dense_transform=encoder.get_dense_transform(),
+    )
+    model = Model(name="uni", device="cpu")
+    model._load_backend = lambda: loaded
+    kit = model.prepare_dense_encoder(
+        dense=DenseImageOptions(
+            target_size=TARGET,
+            window_size=window_size,
+            overlap=overlap,
+        ),
+        execution=ExecutionOptions(num_gpus=1, precision="fp32", output_dtype="fp32"),
+    )
+    return LiveSegmentationSource(
+        kit=kit,
+        device="cpu",
+        feature_dim=encoder.encode_dim,
         augmentation=augmentation or AugmentationConfig(),
         spacing_um=None,  # flat PNG read (spacing ignored)
         backend="auto",
         tolerance=0.05,
-        window_size=window_size,
-        overlap=overlap,
     )
 
 
@@ -160,13 +175,12 @@ def test_live_no_aug_grids_match_cached_bit_for_bit(tmp_path: Path):
     cached_store = DenseFeatureStore(tmp_path / "dense")
 
     from soma.training.segmentation_dataset import LiveSegmentationDataset
-    from slide2vec.runtime.slide_encode import slide_encode_autocast_ctx
 
     source = _live_source(encoder)
     ds = LiveSegmentationDataset(
         records,
         geometry=geom,
-        dense_transform=source.dense_transform,
+        preprocessor=source.preprocessor,
         spacing_um=None,
         backend="auto",
         tolerance=0.05,
@@ -175,10 +189,41 @@ def test_live_no_aug_grids_match_cached_bit_for_bit(tmp_path: Path):
         augment=None,
     )
     batch = torch.stack([ds[i][0] for i in range(len(records))])
-    with torch.no_grad(), slide_encode_autocast_ctx("cpu", "fp32"):
-        live_grids = encoder.encode_tiles_dense(batch).float()
+    live_grids = source.kit.encode(batch).float()
     for i, record in enumerate(records):
         assert torch.equal(cached_store.load(record.sample_id), live_grids[i])
+
+
+def test_live_dataset_hands_augmented_uint8_pixels_to_kit_preprocessor(tmp_path: Path):
+    from soma.training.segmentation_dataset import LiveSegmentationDataset
+
+    manifest, _ = _build_run(tmp_path, ["s0", "s1", "s2", "s3"])
+    record = manifest.samples["s0"]
+    geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
+    seen = []
+
+    def preprocessor(item):
+        seen.append(item)
+        return torch.full((3, TARGET, TARGET), 7.0)
+
+    dataset = LiveSegmentationDataset(
+        [record],
+        geometry=geometry,
+        preprocessor=preprocessor,
+        spacing_um=None,
+        backend="auto",
+        tolerance=0.05,
+        num_classes=NUM_CLASSES,
+        ignore_index=255,
+    )
+
+    image, _targets, _sample_id = dataset[0]
+
+    assert len(seen) == 1
+    assert seen[0].shape == (3, TARGET, TARGET)
+    assert seen[0].dtype == torch.uint8
+    assert seen[0].device.type == "cpu"
+    assert torch.equal(image, torch.full((3, TARGET, TARGET), 7.0))
 
 
 def test_live_no_aug_metrics_match_cached(tmp_path: Path):
@@ -300,8 +345,7 @@ def test_live_checkpoint_excludes_encoder_and_reloads(tmp_path: Path):
         input_dim=encoder.encode_dim, num_classes=NUM_CLASSES, num_upsample_blocks=4
     )
     model = LiveSegmentationModel(
-        encoder=encoder, decoder=decoder, task_head=head, device="cpu", precision="fp32",
-        geometry=geom,
+        kit=_live_source(encoder).kit, decoder=decoder, task_head=head,
     )
     model.load_state_dict(state)  # strict=False under the hood: encoder already built
 
@@ -311,14 +355,41 @@ def test_live_source_validate_coverage_is_noop():
     assert source.validate_coverage(["s0", "s1"]) is None
 
 
-def test_build_live_source_probes_a_single_window_when_sliding(tmp_path: Path, monkeypatch):
-    """Regression: ``_build_live_segmentation_source`` must NOT probe feature_dim on the
-    full padded tile when a window is set — the whole point of a smaller window is to
-    avoid the full-size forward (OOM at large scale-ups). The probe should run on one
-    resolved window instead. (The direct ``LiveSegmentationSource`` tests bypass this
-    initialization path, so the probe is only covered here.)"""
-    import types
+def test_live_model_delegates_cpu_batch_to_public_dense_kit():
+    """The live model leaves device transfer and frozen encoding to DenseEncodeKit."""
+    from soma.decoders.registry import decoder_registry
+    from soma.tasks.segmentation import SegmentationHead
 
+    geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
+
+    class LiteralKit:
+        def __init__(self):
+            self.inputs = []
+
+        def encode(self, batch):
+            self.inputs.append(batch)
+            return torch.ones((batch.shape[0], 4, 2, 2), dtype=torch.float16)
+
+    kit = LiteralKit()
+    head = SegmentationHead(num_classes=NUM_CLASSES, geometry=geometry)
+    decoder = decoder_registry.get("lightweight_conv")(
+        input_dim=4, num_classes=NUM_CLASSES, num_upsample_blocks=4
+    )
+    model = LiveSegmentationModel(kit=kit, decoder=decoder, task_head=head)
+    batch = torch.zeros((2, 3, TARGET, TARGET), dtype=torch.float32)
+
+    output = model(batch)
+
+    assert kit.inputs == [batch]
+    assert kit.inputs[0].device.type == "cpu"
+    assert output.logits.shape == (2, NUM_CLASSES, TARGET, TARGET)
+
+
+def test_build_live_source_probes_feature_width_through_public_kit(tmp_path: Path, monkeypatch):
+    """The width probe uses the kit and therefore honors its resolved sliding window."""
+    from types import SimpleNamespace
+
+    from slide2vec import Model
     from soma.config import DecoderConfig, EncoderConfig, PipelineConfig, PreprocessingConfig
     from soma.pipeline import Pipeline
 
@@ -333,10 +404,16 @@ def test_build_live_source_probes_a_single_window_when_sliding(tmp_path: Path, m
         return original(x)
 
     encoder.encode_tiles_dense = _spy  # TileEncoder is a plain object: instance attr shadows
-    monkeypatch.setattr(
-        "slide2vec.inference.load_model",
-        lambda **_: types.SimpleNamespace(model=encoder, device="cpu"),
+    loaded = SimpleNamespace(
+        model=encoder,
+        transforms=encoder.get_dense_transform(),
+        device=torch.device("cpu"),
+        feature_dim=encoder.encode_dim,
     )
+    public_model = Model(name="uni", device="cpu")
+    public_model._load_backend = lambda: loaded
+    public_model._load_backend_without_transform = lambda: loaded
+    monkeypatch.setattr(Model, "from_preset", lambda *args, **kwargs: public_model)
 
     config = PipelineConfig(
         dataset_csv=str(tmp_path / "manifest.csv"),
@@ -344,7 +421,7 @@ def test_build_live_source_probes_a_single_window_when_sliding(tmp_path: Path, m
         output_root=str(tmp_path / "out"),
         dataset_type="segmentation",
         feature_mode="live",
-        encoder=EncoderConfig(name="uni2", precision="fp32"),
+        encoder=EncoderConfig(name="uni", precision="fp32"),
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
         preprocessing=PreprocessingConfig(
@@ -356,7 +433,82 @@ def test_build_live_source_probes_a_single_window_when_sliding(tmp_path: Path, m
     )
     source = Pipeline(config)._build_live_segmentation_source()
 
-    # The single probe forward ran on ONE window (16x16), not the full padded tile (32x32).
-    assert probe_shapes == [(PATCH, PATCH)]
+    assert probe_shapes == [(PATCH, PATCH)] * 4
     assert source.feature_dim == encoder.encode_dim
-    assert source.window_size == PATCH
+    assert source.geometry.target_size == (TARGET, TARGET)
+    assert source.kit is not None
+
+
+def test_build_live_source_forwards_output_variant_and_attention_recipe(tmp_path: Path, monkeypatch):
+    """Soma forwards model/feature choices; the public kit resolves their execution."""
+    from types import SimpleNamespace
+
+    from slide2vec import Model
+    from soma.config import (
+        AttentionConfig,
+        DecoderConfig,
+        EncoderConfig,
+        PipelineConfig,
+        PreprocessingConfig,
+    )
+    from soma.pipeline import Pipeline
+
+    _build_run(tmp_path, ["s0", "s1", "s2", "s3"])
+    calls = {}
+    geometry = SimpleNamespace(
+        target_size=(TARGET, TARGET),
+        patch_size=(PATCH, PATCH),
+        encoded_size=(TARGET, TARGET),
+        grid_shape=(2, 2),
+        pad=(0, 0),
+        crop_box=(0, 0, TARGET, TARGET),
+    )
+    kit = SimpleNamespace(
+        geometry=geometry,
+        preprocessor=lambda: (lambda item: item.float()),
+        encode=lambda batch: torch.zeros((batch.shape[0], 6, 2, 2)),
+    )
+
+    class PublicModel:
+        device = torch.device("cpu")
+        feature_dim = 24
+
+        def prepare_dense_encoder(self, *, dense, execution):
+            calls["dense"] = dense
+            calls["execution"] = execution
+            return kit
+
+    def from_preset(name, **kwargs):
+        calls["preset"] = (name, kwargs)
+        return PublicModel()
+
+    monkeypatch.setattr(Model, "from_preset", from_preset)
+    config = PipelineConfig(
+        dataset_csv=str(tmp_path / "manifest.csv"),
+        splits_csv=str(tmp_path / "splits.csv"),
+        output_root=str(tmp_path / "out"),
+        dataset_type="segmentation",
+        feature_mode="live",
+        encoder=EncoderConfig(name="uni", precision="fp32", output_variant="tokens"),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+            feature_kind="cls_attention",
+            attention=AttentionConfig(blocks=(-1, -2), include_registers=True),
+        ),
+    )
+
+    source = Pipeline(config)._build_live_segmentation_source()
+
+    assert calls["preset"] == (
+        "uni",
+        {"output_variant": "tokens", "allow_non_recommended_settings": False},
+    )
+    assert calls["dense"].feature_kind == "cls_attention"
+    assert calls["dense"].attention_blocks == (-1, -2)
+    assert calls["dense"].attention_include_registers is True
+    assert calls["execution"].precision == "fp32"
+    assert source.kit is kit
+    assert source.feature_dim == 6

@@ -1127,6 +1127,25 @@ _DENSE_PATCH = 4
 _DENSE_CLASSES = 2
 
 
+def _literal_dense_kit(geometry):
+    """Plain public-kit-shaped fixture for tests that never run the encoder half."""
+    from types import SimpleNamespace
+
+    top, left, height, width = geometry.crop_box
+    public_geometry = SimpleNamespace(
+        target_size=geometry.target_size,
+        patch_size=geometry.patch_size,
+        encoded_size=geometry.encoded_size,
+        grid_shape=geometry.grid_shape,
+        pad=geometry.pad,
+        crop_box=(left, top, left + width, top + height),
+    )
+    return SimpleNamespace(
+        geometry=public_geometry,
+        preprocessor=lambda: (lambda pixels: pixels.float()),
+    )
+
+
 def _synthetic_dense_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     """A cached dense-grid cohort: 4 ROIs — 2 Support, 1 tune, 1 test.
 
@@ -1364,13 +1383,11 @@ def test_dense_fold_refuses_the_adaptor_on_the_live_feature_mode(tmp_path: Path)
     from soma.pipeline import train_one_segmentation_fold
 
     manifest, splits, _ = _synthetic_dense_fold(tmp_path / "data")
+    geometry = compute_dense_geometry(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH)
     source = LiveSegmentationSource(
-        encoder=object(),
+        kit=_literal_dense_kit(geometry),
         device="cpu",
-        precision="fp32",
-        geometry=compute_dense_geometry(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH),
         feature_dim=_DENSE_DIM,
-        dense_transform=lambda x: x,
         augmentation=AugmentationConfig(),
         spacing_um=None,
     )
@@ -1800,12 +1817,9 @@ def test_live_prediction_models_reconstruct_a_cached_trained_projected_checkpoin
         target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH
     )
     source = LiveSegmentationSource(
-        encoder=object(),
+        kit=_literal_dense_kit(geometry),
         device="cpu",
-        precision="fp32",
-        geometry=geometry,
         feature_dim=_DENSE_DIM,
-        dense_transform=lambda x: x,
         augmentation=AugmentationConfig(),
         spacing_um=None,
     )
