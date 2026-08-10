@@ -31,6 +31,13 @@ Cache reuse rules
 The shared cache stores reusable upstream artifacts such as tiling and feature
 extraction.
 
+On a cache miss, soma delegates extraction and persistence through slide2vec's
+public ``Model`` interfaces. Pooled slide encoders receive artifacts from
+``Model.embed_tiles`` and pass those same artifacts to ``Model.aggregate_tiles``;
+slide2vec owns progress and writes into the directory soma selected. soma retains
+ownership of cache identity, completeness, and check-before-load decisions, so a
+complete cache hit does not load the foundation encoder.
+
 - Tiling payloads are reused per sample when preprocessing matches.
 - Tiling reuse keys include sample identity
   ``(sample_id, image_path, mask_path)`` plus resolved preprocessing settings.
