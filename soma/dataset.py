@@ -91,6 +91,10 @@ def _parse_spacing_at_level_0(value: object) -> float | None:
 
 def validate_spacing_declaration_columns(df: pd.DataFrame) -> None:
     """Validate the sole optional source-spacing declaration in a Manifest table."""
+    if "level0_spacing" in df.columns:
+        raise ValueError(
+            "Manifest column 'level0_spacing' is retired; use 'spacing_at_level_0' instead."
+        )
     if "spacing_at_level_0" not in df.columns:
         return
 

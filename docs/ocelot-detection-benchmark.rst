@@ -158,6 +158,12 @@ the Virchow2 anchor band above.
      - 0.700
      - +0.001
      - 2026-07-30 @ ``16d9ddb``
+   * - virchow2
+     - 0.703
+     - 1
+     - 0.700
+     - +0.003
+     - 2026-08-10 @ ``ba8e529``
 
 These frozen-probe encoder results accompany an upcoming publication — Grisi
 *et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;

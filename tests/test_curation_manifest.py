@@ -296,16 +296,32 @@ def test_load_manifest_rejects_invalid_source_spacing(
         load_manifest(manifest, dataset_type)
 
 
-def test_load_manifest_does_not_translate_retired_spacing_metadata(tmp_path: Path):
+@pytest.mark.parametrize(
+    ("dataset_type", "supervision_column", "supervision_value"),
+    [
+        ("tile", "label", "1"),
+        ("segmentation", "mask_path", "/m.png"),
+        ("detection", "points_path", "/p.csv"),
+        ("spatial_expression", "target_index", "0"),
+    ],
+)
+def test_load_manifest_rejects_retired_source_spacing(
+    tmp_path: Path, dataset_type: str, supervision_column: str, supervision_value: str
+):
     manifest = tmp_path / "dataset.csv"
     manifest.write_text(
-        "sample_id,image_path,points_path,level0_spacing\n"
-        "s0,/a.jpg,/p.csv,0.25\n"
+        f"sample_id,image_path,{supervision_column},level0_spacing\n"
+        f"s0,/a.jpg,{supervision_value},0.25\n"
     )
+    if dataset_type == "spatial_expression":
+        np.save(tmp_path / "targets.npy", np.array([[1.0]]))
+        (tmp_path / "genes.json").write_text('["GENE"]')
 
-    record = load_manifest(manifest, "detection").samples["s0"]
-    assert record.spacing_at_level_0 is None
-    assert record.metadata == {"level0_spacing": 0.25}
+    with pytest.raises(
+        ValueError,
+        match="Manifest column 'level0_spacing' is retired; use 'spacing_at_level_0'",
+    ):
+        load_manifest(manifest, dataset_type)
 
 
 # ----------------------------------------------------------------- Curator Protocol
