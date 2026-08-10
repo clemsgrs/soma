@@ -23,8 +23,17 @@ from slide2vec.runtime.dense_sliding import (  # noqa: E402
 )
 
 from soma.dense.geometry import compute_dense_geometry  # noqa: E402
+from soma.dense.sliding import cover_origins  # noqa: E402
 
 PATCH = 16
+
+
+def test_cover_origins_exact_stride_has_no_duplicate_final_origin():
+    assert cover_origins(extent=96, size=32, stride=32) == [0, 32, 64]
+
+
+def test_cover_origins_appends_flush_final_edge_when_stride_misses():
+    assert cover_origins(extent=100, size=32, stride=24) == [0, 24, 48, 68]
 
 
 def _encoder() -> TimmTileEncoder:

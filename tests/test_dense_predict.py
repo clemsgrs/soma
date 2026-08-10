@@ -26,10 +26,9 @@ PATCH = 16
 TILE = 64
 
 
-def _transform(pil_image):
-    """RGB PIL -> (3, H, W) float tensor in [0, 1] (a stand-in for the dense transform)."""
-    arr = np.asarray(pil_image, dtype=np.float32) / 255.0
-    return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
+def _preprocessor(pixels):
+    """Kit-style uint8 CHW -> float CHW in [0, 1]."""
+    return pixels.to(torch.float32) / 255.0
 
 
 def _color_logits(geometry, grid):
@@ -62,11 +61,9 @@ class _GridModel:
     decodes colour exactly like :class:`_ColorModel`.
     """
 
-    def __init__(self, geometry, encoder, *, window_size=None, overlap=0.0):
+    def __init__(self, geometry, kit):
         self._g = geometry
-        self.encoder = encoder
-        self.window_size = window_size
-        self.overlap = overlap
+        self.kit = kit
         self.task_head = SimpleNamespace(num_classes=3)
         self.encode_calls = 0
 
@@ -86,10 +83,8 @@ def _predictor(models, *, spacing_um=None):
     return SlidingWindowSegmentationPredictor(
         models=models,
         geometry=geom,
-        dense_transform=_transform,
+        preprocessor=_preprocessor,
         device=torch.device("cpu"),
-        pad_mode="reflect",
-        image_pad_value=None,
         spacing_um=spacing_um,
     )
 

@@ -38,12 +38,9 @@ from typing import Sequence
 import numpy as np
 import torch
 import torch.nn.functional as F
-from PIL import Image
-
-from slide2vec.runtime.dense_sliding import cover_origins
-
 from soma.dense.geometry import DenseGridGeometry
 from soma.dense.reader import read_image_at_spacing
+from soma.dense.sliding import cover_origins
 
 __all__ = [
     "PredictionResult",
@@ -116,19 +113,16 @@ class SlidingWindowSegmentationPredictor:
             (e.g. :class:`~soma.training.model.LiveSegmentationModel`). Each consumes a
             padded ``(B, 3, Henc, Wenc)`` batch and returns ``(B, C, target_h, target_w)``.
         geometry: The run's :class:`DenseGridGeometry` (tile ``target_size`` + pad/encoded).
-        dense_transform: The encoder's normalization-only transform (tile -> CHW tensor).
-        device: Device to run the models on (inputs are moved here).
-        pad_mode / image_pad_value: Pad-to-encoded contract, mirroring extraction.
+        preprocessor: The kit-owned item preprocessor used during training.
+        device: Device on which the trainable models and kit outputs live.
         spacing_um: The training read-spacing (used by :meth:`predict_image`).
         backend / tolerance: hs2p reader settings for pyramidal inputs.
     """
 
     models: Sequence
     geometry: DenseGridGeometry
-    dense_transform: object
+    preprocessor: object
     device: torch.device
-    pad_mode: str = "reflect"
-    image_pad_value: float | None = None
     spacing_um: float | None = None
     backend: str = "auto"
     tolerance: float = 0.05
@@ -146,10 +140,8 @@ class SlidingWindowSegmentationPredictor:
         return cls(
             models=list(models),
             geometry=source.geometry,
-            dense_transform=source.dense_transform,
+            preprocessor=source.preprocessor,
             device=torch.device(source.device),
-            pad_mode=source.pad_mode,
-            image_pad_value=source.image_pad_value,
             spacing_um=source.spacing_um,
             backend=source.backend,
             tolerance=source.tolerance,
@@ -201,7 +193,7 @@ class SlidingWindowSegmentationPredictor:
         for start in range(0, len(origins), max(1, int(batch_size))):
             batch = origins[start : start + max(1, int(batch_size))]
             tiles = [self._tile_to_encoded(arr[y : y + th, x : x + tw]) for (y, x) in batch]
-            X = torch.stack(tiles).to(self.device)  # (B, 3, Henc, Wenc)
+            X = torch.stack(tiles)  # public kit owns CPU -> encoder-device transfer
             soft = self._ensemble_softmax(X)  # (B, C, th, tw) on cpu, float32
             for k, (y, x) in enumerate(batch):
                 prob[:, y : y + th, x : x + tw] += soft[k] * window
@@ -284,21 +276,14 @@ class SlidingWindowSegmentationPredictor:
 
     def _tile_to_encoded(self, crop: np.ndarray) -> torch.Tensor:
         """Tile crop (target_size px) -> normalized, pad-to-encoded ``(3, Henc, Wenc)`` tensor."""
-        # slide2vec's helper — the same padding embed_images_dense applies during
-        # extraction, so inference pads exactly as the cached grids were built.
-        from slide2vec.runtime.dense_regions import pad_image_to_encoded
-
-        t = self.dense_transform(Image.fromarray(crop))
-        t = torch.as_tensor(t).as_subclass(torch.Tensor)
-        return pad_image_to_encoded(
-            t, self.geometry, pad_mode=self.pad_mode, image_pad_value=self.image_pad_value
-        )
+        pixels = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)
+        return self.preprocessor(pixels)
 
     def _ensemble_softmax(self, X: torch.Tensor) -> np.ndarray:
         """Mean softmax across folds for a padded batch -> ``(B, C, th, tw)`` cpu float32.
 
         When the fold models **share the frozen encoder** (the multi-fold case built by
-        :func:`build_live_segmentation_models` — same encoder object + window/overlap), the
+        :func:`build_live_segmentation_models` — the same public kit object), the
         expensive encoder forward is run **once** and every fold's decoder+head runs on the
         shared grid (``encode`` / ``forward_from_grid``). Otherwise (heterogeneous models, or
         plain callables that don't expose the split) it falls back to a full ``model(X)`` per
@@ -313,30 +298,30 @@ class SlidingWindowSegmentationPredictor:
                 acc = s if acc is None else acc + s
         else:
             for model in models:
-                s = torch.softmax(model(X).logits, dim=1)
+                # Kit-backed live models declare CPU input because their kit owns
+                # transfer. Plain fallback models keep the historical predictor device.
+                input_device = torch.device(
+                    getattr(model, "input_device", self.device)
+                )
+                s = torch.softmax(model(X.to(input_device)).logits, dim=1)
                 acc = s if acc is None else acc + s
         return (acc / len(models)).float().cpu().numpy()
 
     @staticmethod
     def _models_share_encoder(models: list) -> bool:
-        """True iff every model exposes the encode/decode split AND shares encoder+window.
+        """True iff every model exposes the encode/decode split and shares one kit.
 
-        The precondition for encoding once: all models must run the *identical* encoder
-        forward (same frozen encoder object, same dense window/overlap), so their grids are
-        byte-identical. ``from_source``/``build_live_segmentation_models`` guarantee this;
+        Kit identity captures the frozen encoder and its resolved geometry, precision,
+        feature kind, and windowing recipe, so shared-kit grids are byte-identical.
+        ``from_source``/``build_live_segmentation_models`` guarantee this;
         anything else (a future multi-encoder ensemble, a test stub) returns False → the
         safe per-model fallback.
         """
-        needed = ("encode", "forward_from_grid", "encoder", "window_size", "overlap")
+        needed = ("encode", "forward_from_grid", "kit")
         if not all(all(hasattr(m, attr) for attr in needed) for m in models):
             return False
         head = models[0]
-        return all(
-            m.encoder is head.encoder
-            and m.window_size == head.window_size
-            and m.overlap == head.overlap
-            for m in models[1:]
-        )
+        return all(m.kit is head.kit for m in models[1:])
 
     def _plan_resample(
         self, is_flat: bool, native_spacing_um: float | None, allow_upsample: bool
@@ -459,14 +444,9 @@ def build_live_segmentation_models(
         )
         adaptor = _make_adaptor()
         model = LiveSegmentationModel(
-            encoder=source.encoder,
+            kit=source.kit,
             decoder=_make_decoder(adaptor),
             task_head=head,
-            device=source.device,
-            precision=source.precision,
-            geometry=source.geometry,
-            window_size=source.window_size,
-            overlap=source.overlap,
             feature_adaptor=adaptor,
         )
         state = torch.load(ckpt, weights_only=True, map_location=source.device)["model_state_dict"]

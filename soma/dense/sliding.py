@@ -1,14 +1,23 @@
-"""Dense-mode description helper (soma-only).
+"""Soma-owned dense-mode and outer prediction-canvas helpers.
 
-The sliding-window dense-encoding primitives (``cover_origins``,
-``resolve_window_geometry``, ``encode_dense_sliding``) now live in slide2vec's unified
-streaming dense module :mod:`slide2vec.runtime.dense_sliding`; soma imports them from
-there. Only :func:`describe_dense_mode` — a soma-side logging helper — remains here.
+Encoder-window geometry and encoding live behind slide2vec's public ``DenseEncodeKit``.
+The outer segmentation prediction canvas remains Soma's responsibility, including its
+small cover rule below.
 """
 
 from __future__ import annotations
 
-__all__ = ["describe_dense_mode"]
+__all__ = ["cover_origins", "describe_dense_mode"]
+
+
+def cover_origins(extent: int, size: int, stride: int) -> list[int]:
+    """Window starts covering an outer pixel canvas, including a flush final edge."""
+    if size >= extent:
+        return [0]
+    starts = list(range(0, extent - size + 1, stride))
+    if starts[-1] + size < extent:
+        starts.append(extent - size)
+    return starts
 
 
 def describe_dense_mode(window_size: int | None, overlap: float) -> str:

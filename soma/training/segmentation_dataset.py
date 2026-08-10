@@ -96,15 +96,14 @@ class LiveSegmentationDataset(Dataset):
     Args:
         records: SampleRecords (with ``image_path`` and ``mask_path``) for this split.
         geometry: The run's :class:`DenseGridGeometry` (target/encoded size + pad).
-        dense_transform: The encoder's normalization-only transform (PIL -> tensor).
+        preprocessor: The public kit's serializable CPU item preprocessor. It owns
+            normalization, geometry validation, and padding after Soma augmentation.
         spacing_um: µm/px to read both image and mask at (``None`` = flat PIL read).
         backend: hs2p backend for spacing-aware reads.
         tolerance: hs2p spacing tolerance.
         num_classes / ignore_index: validate mask label values (fail loud, with the
             sample id, before a cryptic device-side one_hot/CE assert).
         augment: Joint ``(image, mask)`` v2 transform, or ``None`` for no augmentation.
-        pad_mode / image_pad_value: How to pad the image up to ``encoded_size`` (same
-            contract as the cached extractor).
     """
 
     def __init__(
@@ -112,39 +111,28 @@ class LiveSegmentationDataset(Dataset):
         records: list[SampleRecord],
         *,
         geometry: DenseGridGeometry,
-        dense_transform: Callable,
+        preprocessor: Callable,
         spacing_um: float | None,
         backend: str,
         tolerance: float,
         num_classes: int,
         ignore_index: int,
         augment: Callable | None = None,
-        pad_mode: str = "reflect",
-        image_pad_value: float | None = None,
     ) -> None:
         self._records = records
         self._geometry = geometry
-        self._transform = dense_transform
+        self._preprocessor = preprocessor
         self._spacing_um = float(spacing_um) if spacing_um is not None else None
         self._backend = backend
         self._tolerance = float(tolerance)
         self._num_classes = int(num_classes)
         self._ignore_index = int(ignore_index)
         self._augment = augment
-        self._pad_mode = pad_mode
-        self._image_pad_value = image_pad_value
 
     def __len__(self) -> int:
         return len(self._records)
 
     def __getitem__(self, idx: int) -> tuple[Tensor, dict[str, Tensor], str]:
-        from PIL import Image
-
-        # The live path pads through slide2vec's own helper — the one the cached path now
-        # pads with inside embed_images_dense — so a live-no-aug run stays byte-identical
-        # to the cached grid rather than tracking it in a second implementation.
-        from slide2vec.runtime.dense_regions import pad_image_to_encoded
-
         from soma.dense.reader import read_image_at_spacing, read_mask_at_spacing
 
         record = self._records[idx]
@@ -174,24 +162,15 @@ class LiveSegmentationDataset(Dataset):
                 torch.from_numpy(np.ascontiguousarray(mask_array).astype(np.int64))
             )  # (H, W)
             image_tv, mask_tv = self._augment(image_tv, mask_tv)
-            image_array = image_tv.permute(1, 2, 0).contiguous().numpy().astype(np.uint8)
+            image = image_tv.as_subclass(torch.Tensor).to(torch.uint8)
             mask = mask_tv.as_subclass(torch.Tensor).to(torch.long)
         else:
+            image = torch.from_numpy(np.ascontiguousarray(image_array)).permute(2, 0, 1)
             mask = torch.from_numpy(np.ascontiguousarray(mask_array).astype(np.int64))
 
-        # Normalize the (augmented) image exactly as the cached extractor does, so a
-        # live-no-aug run is byte-identical to the cached path (the parity anchor).
-        tensor = self._transform(Image.fromarray(image_array))
-        tensor = torch.as_tensor(tensor).as_subclass(torch.Tensor)
-        if tuple(int(s) for s in tensor.shape[-2:]) != self._geometry.target_size:
-            raise ValueError(
-                f"tile '{record.sample_id}' is {tuple(int(s) for s in tensor.shape[-2:])} "
-                f"after the dense transform, but the run's target_size is "
-                f"{self._geometry.target_size}."
-            )
-        padded = pad_image_to_encoded(
-            tensor, self._geometry, pad_mode=self._pad_mode, image_pad_value=self._image_pad_value
-        )
+        # Soma owns joint augmentation; the public kit owns every encoder-specific step
+        # after that handoff (normalization, geometry validation, and padding).
+        padded = self._preprocessor(image.contiguous())
 
         if tuple(int(s) for s in mask.shape[-2:]) != self._geometry.target_size:
             raise ValueError(
