@@ -8,9 +8,10 @@ the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 PathoROB Robustness Index views
 -------------------------------
 
-``curate_pathorob_ri_views`` deterministically curates the three PathoROB
-Robustness Index (RI) views as one family. It does not download or decode source
-data; it consumes the prepared tree produced for the pinned PathoROB sources::
+``curate_pathorob_ri_view`` is a structural Curator that deterministically
+produces one Manifest for one PathoROB Robustness Index (RI) view. It does not
+download or decode source data; it consumes the prepared tree produced for the
+pinned PathoROB sources::
 
     <raw-root>/
       camelyon/
@@ -32,7 +33,18 @@ columns. Relative image paths are resolved from their cohort directory. Each
 and ``metadata`` entries under ``sources``; each source entry has its pinned
 ``repository`` and ``revision``. Unknown repositories or revisions are refused.
 
-Use the family curator so sample IDs are checked across all three views::
+Curate one view through the standard single-Manifest interface::
+
+    from soma.curation import curate_pathorob_ri_view
+
+    camelyon = curate_pathorob_ri_view(
+        "/path/to/prepared/pathorob",
+        "data/pathorob/camelyon",
+        cohort="camelyon",
+    )
+
+For normal use, run the family orchestrator so sample IDs are additionally
+checked across all three views::
 
     from soma.curation import curate_pathorob_ri_views
 

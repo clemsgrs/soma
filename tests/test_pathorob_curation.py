@@ -6,6 +6,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+import soma.curation as curation
+from soma.curation.manifest import CuratedManifest, Curator
 from soma.curation.pathorob import curate_pathorob_ri_views
 
 
@@ -152,6 +154,19 @@ def test_curate_pathorob_ri_views_emits_exact_balanced_manifests(tmp_path: Path)
 
     camelyon = pd.read_csv(manifests["camelyon"].dataset_csv)
     assert not camelyon["sample_id"].str.contains("-ood-").any()
+
+
+def test_single_view_entry_point_is_a_structural_curator(tmp_path: Path):
+    raw_root = tmp_path / "raw"
+    output_dir = tmp_path / "curated-camelyon"
+    _write_prepared_tree(raw_root)
+
+    curator = getattr(curation, "curate_pathorob_ri_view")
+    manifest = curator(raw_root, output_dir, cohort="camelyon")
+
+    assert isinstance(curator, Curator)
+    assert isinstance(manifest, CuratedManifest)
+    assert manifest.dataset_csv == output_dir / "dataset.csv"
 
 
 def test_curator_rejects_row_without_each_required_typed_neighbour(tmp_path: Path):
@@ -326,6 +341,30 @@ def test_curator_rejects_mismatched_prepared_data_revision(tmp_path: Path):
         curate_pathorob_ri_views(raw_root, tmp_path / "curated")
 
 
+@pytest.mark.parametrize(
+    ("field", "invalid", "expected"),
+    [
+        ("schema_version", 999, r"schema_version 999.*expected 1"),
+        ("cohort", "tolkach-esca", r"cohort 'tolkach-esca'.*expected 'camelyon'"),
+    ],
+)
+def test_curator_rejects_mismatched_provenance_envelope(
+    field: str,
+    invalid: object,
+    expected: str,
+    tmp_path: Path,
+):
+    raw_root = tmp_path / "raw"
+    _write_prepared_tree(raw_root)
+    provenance_path = raw_root / "camelyon" / "provenance.json"
+    provenance = json.loads(provenance_path.read_text())
+    provenance[field] = invalid
+    provenance_path.write_text(json.dumps(provenance))
+
+    with pytest.raises(ValueError, match=expected):
+        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+
+
 def test_recuration_is_byte_identical_and_preserves_metadata_order(tmp_path: Path):
     raw_root = tmp_path / "raw"
     output_root = tmp_path / "curated"
@@ -366,7 +405,28 @@ def test_curator_rejects_extra_center(tmp_path: Path):
 
     with pytest.raises(
         ValueError,
-        match=r"2 label x 2 center grid with 5100 rows per cell",
+        match=r"requires exactly 2 labels and 2 centers; found 2 labels and 3 centers",
+    ):
+        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+
+
+def test_curator_rejects_wrong_label_and_center_cardinalities(tmp_path: Path):
+    raw_root = tmp_path / "raw"
+    _write_prepared_tree(raw_root)
+    metadata_path = raw_root / "camelyon" / "camelyon.csv"
+    metadata = pd.read_csv(metadata_path, dtype=str)
+    selected = metadata["subset"] == "ID"
+    original_label = metadata.loc[selected, "biological_class"].str[-1].astype(int)
+    original_center = metadata.loc[selected, "medical_center"].str[-1].astype(int)
+    metadata.loc[selected, "medical_center"] = (
+        "center-" + (original_label * 2 + original_center).astype(str)
+    )
+    metadata.loc[selected, "biological_class"] = "label-0"
+    metadata.to_csv(metadata_path, index=False)
+
+    with pytest.raises(
+        ValueError,
+        match=r"requires exactly 2 labels and 2 centers; found 1 labels and 4 centers",
     ):
         curate_pathorob_ri_views(raw_root, tmp_path / "curated")
 

@@ -28,6 +28,13 @@ class _RIView:
         return self.labels * self.centers * self.rows_per_cell
 
 
+@dataclass(frozen=True)
+class _PreparedRIView:
+    cohort: str
+    dataset_rows: list[dict[str, str]]
+    provenance: dict[str, Any]
+
+
 _RI_VIEWS = {
     "camelyon": _RIView(
         "camelyon.csv",
@@ -59,87 +66,131 @@ _RI_VIEWS = {
 }
 _METADATA_REPOSITORY = "bifold-pathomics/PathoROB"
 _METADATA_REVISION = "6583cf0b0d902c8cc032308262fa3a3befdc0687"
+_MIN_TYPED_NEIGHBOURS = 5
+
+
+def curate_pathorob_ri_view(
+    raw_root: str | Path,
+    output_dir: str | Path,
+    *,
+    cohort: str,
+) -> CuratedManifest:
+    """Curate one prepared PathoROB RI view into one Soma Manifest."""
+    view = _get_ri_view(cohort)
+    prepared = _prepare_ri_view(Path(raw_root), cohort, view, sample_id_owners={})
+    return _write_ri_view(prepared, Path(output_dir))
 
 
 def curate_pathorob_ri_views(
     raw_root: str | Path,
     output_root: str | Path,
 ) -> dict[str, CuratedManifest]:
-    """Curate the three prepared PathoROB RI views as one validated family."""
+    """Orchestrate all PathoROB RI curators with family-wide ID validation."""
     raw_root = Path(raw_root)
     output_root = Path(output_root)
-    manifests: dict[str, CuratedManifest] = {}
     sample_id_owners: dict[str, str] = {}
+    prepared_views = [
+        _prepare_ri_view(raw_root, cohort, view, sample_id_owners)
+        for cohort, view in _RI_VIEWS.items()
+    ]
+    return {
+        prepared.cohort: _write_ri_view(
+            prepared,
+            output_root / prepared.cohort,
+        )
+        for prepared in prepared_views
+    }
 
-    for cohort, view in _RI_VIEWS.items():
-        cohort_root = raw_root / cohort
-        metadata = pd.read_csv(
-            cohort_root / view.metadata_filename,
-            dtype=str,
-            keep_default_na=False,
-        )
-        _validate_required_metadata_values(metadata, cohort, view.metadata_filename)
-        _validate_identifiers(
-            metadata, cohort, view.metadata_filename, ("slide_id", "patch_id")
-        )
-        _validate_unique_keys(metadata, cohort, view.metadata_filename)
-        if view.select_id_subset:
-            metadata = metadata.loc[metadata["subset"] == "ID"].copy()
 
-        source_index = pd.read_csv(
-            cohort_root / "source_index.csv",
-            dtype=str,
-            keep_default_na=False,
-        )
-        _validate_identifiers(
-            source_index,
-            cohort,
-            "source_index.csv",
-            ("slide_id", "patch_id", "sample_id"),
-        )
-        _validate_unique_keys(source_index, cohort, "source_index.csv")
-        joined = metadata.merge(
-            source_index,
-            on=["slide_id", "patch_id"],
-            how="left",
-            sort=False,
-        )
-        _validate_join_matches(joined, cohort)
-        _validate_sample_id_uniqueness(joined, cohort, sample_id_owners)
-        _validate_balance(joined, cohort, view)
-        _validate_typed_neighbour_support(joined, cohort)
-        _validate_images(joined, cohort, cohort_root)
+def _get_ri_view(cohort: str) -> _RIView:
+    try:
+        return _RI_VIEWS[cohort]
+    except KeyError:
+        raise ValueError(
+            f"Unknown PathoROB RI cohort {cohort!r}; expected one of "
+            f"{list(_RI_VIEWS)}."
+        ) from None
 
-        provenance = _load_and_validate_provenance(cohort_root, cohort, view)
-        dataset_rows = [
-            {
-                "sample_id": row.sample_id,
-                "image_path": str(_resolve_image_path(cohort_root, row.image_path)),
-                "label": row.biological_class,
-                "medical_center": row.medical_center,
-                "group_id": row.slide_id,
-            }
-            for row in joined.itertuples(index=False)
-        ]
-        split_rows = [
-            {"sample_id": row["sample_id"], "split": "test", "fold": 0}
-            for row in dataset_rows
-        ]
-        manifests[cohort] = write_manifest(
-            output_root / cohort,
-            dataset_type="tile",
-            dataset_rows=dataset_rows,
-            split_rows=split_rows,
-            summary={
-                "cohort": cohort,
-                "dataset_type": "tile",
-                "num_samples": len(dataset_rows),
-                "prepared_data_provenance": provenance,
-                "view": "robustness_index",
-            },
-        )
 
-    return manifests
+def _prepare_ri_view(
+    raw_root: Path,
+    cohort: str,
+    view: _RIView,
+    sample_id_owners: dict[str, str],
+) -> _PreparedRIView:
+    cohort_root = raw_root / cohort
+    provenance = _load_and_validate_provenance(cohort_root, cohort, view)
+    metadata = pd.read_csv(
+        cohort_root / view.metadata_filename,
+        dtype=str,
+        keep_default_na=False,
+    )
+    _validate_required_metadata_values(metadata, cohort, view.metadata_filename)
+    _validate_identifiers(
+        metadata, cohort, view.metadata_filename, ("slide_id", "patch_id")
+    )
+    _validate_unique_keys(metadata, cohort, view.metadata_filename)
+    if view.select_id_subset:
+        metadata = metadata.loc[metadata["subset"] == "ID"].copy()
+
+    source_index = pd.read_csv(
+        cohort_root / "source_index.csv",
+        dtype=str,
+        keep_default_na=False,
+    )
+    _validate_identifiers(
+        source_index,
+        cohort,
+        "source_index.csv",
+        ("slide_id", "patch_id", "sample_id"),
+    )
+    _validate_unique_keys(source_index, cohort, "source_index.csv")
+    joined = metadata.merge(
+        source_index,
+        on=["slide_id", "patch_id"],
+        how="left",
+        sort=False,
+    )
+    _validate_join_matches(joined, cohort)
+    _validate_sample_id_uniqueness(joined, cohort, sample_id_owners)
+    _validate_balance(joined, cohort, view)
+    _validate_typed_neighbour_support(joined, cohort)
+    _validate_images(joined, cohort, cohort_root)
+    dataset_rows = [
+        {
+            "sample_id": row.sample_id,
+            "image_path": str(_resolve_image_path(cohort_root, row.image_path)),
+            "label": row.biological_class,
+            "medical_center": row.medical_center,
+            "group_id": row.slide_id,
+        }
+        for row in joined.itertuples(index=False)
+    ]
+    return _PreparedRIView(
+        cohort=cohort,
+        dataset_rows=dataset_rows,
+        provenance=provenance,
+    )
+
+
+def _write_ri_view(prepared: _PreparedRIView, output_dir: Path) -> CuratedManifest:
+    split_rows = [
+        {"sample_id": row["sample_id"], "split": "test", "fold": 0}
+        for row in prepared.dataset_rows
+    ]
+    return write_manifest(
+        output_dir,
+        dataset_type="tile",
+        dataset_rows=prepared.dataset_rows,
+        split_rows=split_rows,
+        summary={
+            "cohort": prepared.cohort,
+            "dataset_type": "tile",
+            "num_samples": len(prepared.dataset_rows),
+            "prepared_data_provenance": prepared.provenance,
+            "view": "robustness_index",
+        },
+    )
 
 
 def _resolve_image_path(cohort_root: Path, image_path: Any) -> Path:
@@ -155,6 +206,18 @@ def _load_and_validate_provenance(
     view: _RIView,
 ) -> dict[str, Any]:
     provenance = json.loads((cohort_root / "provenance.json").read_text())
+    schema_version = provenance.get("schema_version")
+    if schema_version != 1:
+        raise ValueError(
+            f"PathoROB {cohort} provenance schema_version {schema_version!r} "
+            "does not match expected 1."
+        )
+    declared_cohort = provenance.get("cohort")
+    if declared_cohort != cohort:
+        raise ValueError(
+            f"PathoROB {cohort} provenance declares cohort {declared_cohort!r}; "
+            f"expected {cohort!r}."
+        )
     expected_sources = {
         "dataset": (view.dataset_repository, view.dataset_revision),
         "metadata": (_METADATA_REPOSITORY, _METADATA_REVISION),
@@ -285,6 +348,15 @@ def _validate_balance(joined: pd.DataFrame, cohort: str, view: _RIView) -> None:
             f"found {len(joined)}."
         )
 
+    num_labels = joined["biological_class"].nunique()
+    num_centers = joined["medical_center"].nunique()
+    if num_labels != view.labels or num_centers != view.centers:
+        raise ValueError(
+            f"PathoROB {cohort} RI view requires exactly {view.labels} labels and "
+            f"{view.centers} centers; found {num_labels} labels and "
+            f"{num_centers} centers."
+        )
+
     cell_counts = joined.groupby(
         ["biological_class", "medical_center"], sort=False, dropna=False
     ).size()
@@ -299,8 +371,6 @@ def _validate_balance(joined: pd.DataFrame, cohort: str, view: _RIView) -> None:
 def _validate_typed_neighbour_support(
     joined: pd.DataFrame,
     cohort: str,
-    *,
-    minimum: int = 5,
 ) -> None:
     label = joined["biological_class"]
     center = joined["medical_center"]
@@ -330,7 +400,7 @@ def _validate_typed_neighbour_support(
         ),
     }
     unsupported = pd.DataFrame(
-        {name: counts < minimum for name, counts in eligible.items()}
+        {name: counts < _MIN_TYPED_NEIGHBOURS for name, counts in eligible.items()}
     )
     if not unsupported.any(axis=None):
         return
@@ -339,7 +409,8 @@ def _validate_typed_neighbour_support(
     missing_types = [name for name in eligible if unsupported.iloc[row_index][name]]
     sample_id = joined.iloc[row_index]["sample_id"]
     raise ValueError(
-        f"PathoROB {cohort} sample_id {sample_id!r} lacks at least {minimum} "
+        f"PathoROB {cohort} sample_id {sample_id!r} lacks at least "
+        f"{_MIN_TYPED_NEIGHBOURS} "
         "eligible non-same-group neighbour(s) for: "
         f"{', '.join(missing_types)}."
     )
