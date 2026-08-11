@@ -142,6 +142,30 @@ def test_identity_digest(config: PipelineConfig) -> str:
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_path = Path(config.dataset_csv).resolve()
     splits_path = Path(config.splits_csv).resolve()
+    if config.representation is not None:
+        representation = asdict(config.representation)
+        dataset_digest, splits_digest = _manifest_slice_digests(
+            dataset_path,
+            splits_path,
+            lambda name: name == config.representation.split,
+        )
+        return {
+            "dataset": {"checksum": dataset_digest},
+            "splits": {"checksum": splits_digest},
+            "dataset_type": config.dataset_type,
+            "feature_mode": config.feature_mode,
+            "preprocessing": asdict(config.preprocessing),
+            "cache": {
+                "enabled": config.cache.enabled,
+                "reuse_policy": config.cache.reuse_policy,
+                "dtype": config.cache.dtype,
+            },
+            "encoder": asdict(config.encoder) if config.encoder is not None else None,
+            "execution": {"precision": config.execution.precision},
+            "task": None,
+            "representation": representation,
+        }
+
     # Experiment identity is invariant to the *test* set (issue #247): only the {train,
     # tune} slice of the dataset + splits manifest enters the digest, so dropping in a
     # new/official test set (which only adds test rows) leaves experiment_id — and the
@@ -242,7 +266,9 @@ def build_experiment_spec(config: PipelineConfig) -> ExperimentSpec:
     dataset_name = _slugify(Path(config.dataset_csv).stem)
     encoder_name = _slugify(config.encoder.name if config.encoder is not None else "precomputed")
     aggregator_name = _slugify(config.aggregator.name if config.aggregator is not None else "slide")
-    task_name = _slugify(config.task.name)
+    task_name = _slugify(
+        config.task.name if config.task is not None else config.representation.kind
+    )
     slug = f"{dataset_name}-{encoder_name}-{aggregator_name}-{task_name}_{short_hash}"
     return ExperimentSpec(
         experiment_id=digest,
@@ -284,9 +310,11 @@ class RunMetadata:
     test_checksum: str = ""
     dataset_file_checksum: str = ""
     splits_file_checksum: str = ""
+    comparison_key: dict[str, Any] = field(default_factory=dict)
+    representation_provenance: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "run_id": self.run_id,
             "experiment_id": self.experiment_id,
             "status": self.status,
@@ -307,6 +335,10 @@ class RunMetadata:
             "splits_file_checksum": self.splits_file_checksum,
             "error": self.error or "",
         }
+        payload["comparison_key"] = dict(self.comparison_key)
+        if self.representation_provenance:
+            payload["representation_provenance"] = dict(self.representation_provenance)
+        return payload
 
     def with_updates(self, **updates: Any) -> "RunMetadata":
         return replace(self, **updates)
@@ -459,6 +491,28 @@ def create_run_metadata(
     cwd = Path.cwd()
     dataset_path = Path(config.dataset_csv)
     splits_path = Path(config.splits_csv)
+    if config.representation is not None:
+        comparison_key = {
+            "kind": "representation",
+            "dataset_checksum": experiment.dataset_checksum,
+            "splits_checksum": experiment.splits_checksum,
+            "representation": asdict(config.representation),
+        }
+        try:
+            from importlib.metadata import version
+
+            croma_version = version("croma")
+        except Exception:
+            croma_version = ""
+        representation_provenance = {"croma": croma_version}
+    else:
+        comparison_key = {
+            "kind": "task",
+            "dataset_checksum": experiment.dataset_checksum,
+            "splits_checksum": experiment.splits_checksum,
+            "task": config.task.name if config.task is not None else "",
+        }
+        representation_provenance = {}
     return RunMetadata(
         run_id=run_id,
         experiment_id=experiment.experiment_id,
@@ -479,6 +533,8 @@ def create_run_metadata(
         test_checksum=test_identity_digest(config),
         dataset_file_checksum=_sha256_file(dataset_path) if dataset_path.is_file() else "",
         splits_file_checksum=_sha256_file(splits_path) if splits_path.is_file() else "",
+        comparison_key=comparison_key,
+        representation_provenance=representation_provenance,
     )
 
 

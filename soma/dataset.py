@@ -33,6 +33,7 @@ REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "mask_path",
     "patient_id",
+    "group_id",
     "points_path",
     # spatial_expression: integer row-key into the sidecar target matrix; resolved to a
     # vector on SampleRecord.target, so it is a typed column (not free metadata).
@@ -131,6 +132,9 @@ class SampleRecord:
     mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
     patient_id: str | None = None
+    # Literal non-independence group from the manifest. Optional for every task;
+    # representation evaluation validates it only for the selected cohort.
+    group_id: str | None = None
     # Optional caller declaration for ``image_path``'s physical level-0 pixel size.
     # Extraction resolves and persists the authoritative source spacing separately.
     spacing_at_level_0: float | None = None
@@ -209,6 +213,11 @@ class Dataset:
                 if "patient_id" in row.index and pd.notna(row.get("patient_id"))
                 else None
             )
+            group_id = (
+                str(row["group_id"])
+                if "group_id" in row.index and pd.notna(row.get("group_id"))
+                else None
+            )
             metadata = {c: row[c] for c in meta_columns}
             samples[sid] = SampleRecord(
                 sample_id=sid,
@@ -216,6 +225,7 @@ class Dataset:
                 label=row["label"],
                 mask_path=mask_path,
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 metadata=metadata,
             )
@@ -340,6 +350,11 @@ class SegmentationManifest:
                 if "patient_id" in row.index and pd.notna(row.get("patient_id"))
                 else None
             )
+            group_id = (
+                str(row["group_id"])
+                if "group_id" in row.index and pd.notna(row.get("group_id"))
+                else None
+            )
             metadata = {c: row[c] for c in meta_columns}
             region = None
             if "region_x" in row.index and pd.notna(row.get("region_x")):
@@ -355,6 +370,7 @@ class SegmentationManifest:
                 label=label,  # optional for segmentation; supervision is the mask
                 mask_path=Path(str(row["mask_path"])),
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 region=region,
                 slide_id=slide_id,
@@ -441,6 +457,11 @@ class DetectionManifest:
                 if "patient_id" in row.index and pd.notna(row.get("patient_id"))
                 else None
             )
+            group_id = (
+                str(row["group_id"])
+                if "group_id" in row.index and pd.notna(row.get("group_id"))
+                else None
+            )
             metadata = {c: row[c] for c in meta_columns if pd.notna(row.get(c))}
             samples[sid] = SampleRecord(
                 sample_id=sid,
@@ -448,6 +469,7 @@ class DetectionManifest:
                 label=label,  # optional for detection; supervision is the points
                 points_path=Path(str(row["points_path"])),
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 metadata=metadata,
             )
@@ -577,6 +599,11 @@ class SpatialExpressionManifest:
                 if "patient_id" in row.index and pd.notna(row.get("patient_id"))
                 else None
             )
+            group_id = (
+                str(row["group_id"])
+                if "group_id" in row.index and pd.notna(row.get("group_id"))
+                else None
+            )
             metadata = {c: row[c] for c in meta_columns}
             target_index = int(row["target_index"])
             samples[sid] = SampleRecord(
@@ -584,6 +611,7 @@ class SpatialExpressionManifest:
                 image_path=Path(str(row["image_path"])),
                 label=None,  # supervision is the vector target, not a scalar label
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 target=self._target_matrix[target_index],
                 metadata=metadata,

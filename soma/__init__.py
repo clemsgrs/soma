@@ -22,6 +22,7 @@ from soma.config import (
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
+    RepresentationConfig,
     PreviewConfig,
     SamplingConfig,
     SubgroupConfig,
@@ -50,7 +51,14 @@ from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 from soma.pixel_classifiers import list_pixel_classifiers
-from soma.pipeline import FoldResult, Pipeline, PipelineResult, train, train_one_fold
+from soma.pipeline import (
+    FoldResult,
+    Pipeline,
+    PipelineResult,
+    evaluate_representation,
+    train,
+    train_one_fold,
+)
 from soma.preprocessing import (
     overlay_mask_on_slide,
     save_overlay_preview,
@@ -91,6 +99,7 @@ __all__ = [
     "PipelineConfig",
     "PixelClassifierConfig",
     "PreprocessingConfig",
+    "RepresentationConfig",
     "PreviewConfig",
     "SamplingConfig",
     "SubgroupConfig",
@@ -120,6 +129,7 @@ __all__ = [
     "FoldResult",
     "Pipeline",
     "PipelineResult",
+    "evaluate_representation",
     "train",
     "train_one_fold",
     "overlay_mask_on_slide",
