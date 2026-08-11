@@ -65,7 +65,6 @@ class Cell:
     key: str
     encoder: str
     spacing: float
-    curated: str  # subdir under --data-root holding this spacing's manifest
     is_anchor: bool = False
 
     @property
@@ -78,14 +77,14 @@ class Cell:
         return _config_path_for(self.encoder, self.spacing)
 
 
-# The five cells. The anchor (Virchow2 @ 0.2 native) reuses the curated/ native manifest and
-# #151's cache + seed-0 decoder; the other four consume rendered-spacing manifests.
+# The five cells all consume the one native Manifest; requested spacing varies only in
+# their extraction configs. The anchor reuses #151's cache + seed-0 decoder.
 CELLS: list[Cell] = [
-    Cell("virchow2_0.20", "virchow2", 0.2, "curated", is_anchor=True),
-    Cell("virchow2_0.25", "virchow2", 0.25, "curated_0p25"),
-    Cell("virchow2_0.50", "virchow2", 0.5, "curated_0p5"),
-    Cell("uni2_0.25", "uni2", 0.25, "curated_0p25"),
-    Cell("uni2_0.50", "uni2", 0.5, "curated_0p5"),
+    Cell("virchow2_0.20", "virchow2", 0.2, is_anchor=True),
+    Cell("virchow2_0.25", "virchow2", 0.25),
+    Cell("virchow2_0.50", "virchow2", 0.5),
+    Cell("uni2_0.25", "uni2", 0.25),
+    Cell("uni2_0.50", "uni2", 0.5),
 ]
 ANCHOR = next(c for c in CELLS if c.is_anchor)
 
@@ -244,7 +243,7 @@ def find_seed_runs(output_root: Path) -> dict[int, Path]:
 
 
 def _data_overrides(cell: Cell, data_root: Path) -> list[str]:
-    curated = data_root / cell.curated
+    curated = data_root / "curated"
     return [
         "--set", f"data.dataset_csv={curated / 'dataset.csv'}",
         "--set", f"data.splits_csv={curated / 'splits.csv'}",
@@ -266,10 +265,11 @@ def score_run(
     cell: Cell, run_subdir: Path, *, tune_only: bool, matching: str = "greedy"
 ) -> dict:
     """Greedy re-score one checkpoint; returns eval_greedy's parsed JSON report."""
+    saved_config = run_subdir / "config.yaml"
     cmd = [
         sys.executable, str(EVAL_GREEDY),
         "--run-dir", str(output_root_for(cell)),
-        "--config", str(cell.config_path),
+        "--config", str(saved_config),
         "--run-subdir", str(run_subdir),
         "--matching", matching,
     ]
@@ -368,19 +368,28 @@ def test_headline_metrics(report: dict) -> dict:
     return report[names[0]]["headline"]["metrics"]
 
 
-def dense_embeddings_dir(cell: Cell) -> Path | None:
-    """The cached dense-grid dir for a cell, or None if it has not been extracted yet."""
-    base = output_root_for(cell) / "feature_cache" / "dense"
-    if not base.exists():
-        return None
-    hashes = [p / "dense_embeddings" for p in base.glob("*") if (p / "dense_embeddings").is_dir()]
-    return hashes[0] if hashes else None
+def dense_embeddings_dir(cell: Cell, data_root: Path) -> Path | None:
+    """Resolve the exact current dense-grid directory for a campaign cell."""
+    from soma.benchmarks.ocelot import OCELOT, resolve_dense_cache_dir
+    from soma.dataset import DetectionManifest
+    from soma.dense import DENSE_IMAGE_PAYLOAD_SUBDIR
+
+    curated = data_root / "curated"
+    cfg = OCELOT.build_config(
+        encoder=cell.encoder,
+        spacing=cell.spacing,
+        dataset_csv=curated / "dataset.csv",
+        splits_csv=curated / "splits.csv",
+        output_root=output_root_for(cell),
+    )
+    cache_dir = resolve_dense_cache_dir(cfg, DetectionManifest(cfg.dataset_csv))
+    return None if cache_dir is None else cache_dir / DENSE_IMAGE_PAYLOAD_SUBDIR
 
 
 def test_sample_ids(cell: Cell, data_root: Path) -> list[str]:
     from soma.dataset import DetectionManifest, Splits
 
-    curated = data_root / cell.curated
+    curated = data_root / "curated"
     manifest = DetectionManifest(curated / "dataset.csv")
     splits = Splits(curated / "splits.csv", manifest)
     return [sid for ids in splits.folds[0].tests.values() for sid in ids]
@@ -388,7 +397,7 @@ def test_sample_ids(cell: Cell, data_root: Path) -> list[str]:
 
 def test_grids_present(cell: Cell, data_root: Path) -> bool:
     """True iff every test-split dense grid is already cached for this cell."""
-    emb = dense_embeddings_dir(cell)
+    emb = dense_embeddings_dir(cell, data_root)
     if emb is None:
         return False
     return all((emb / f"{sid}.pt").exists() for sid in test_sample_ids(cell, data_root))
@@ -531,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("phase", choices=["selection", "confirmation"])
     ap.add_argument("--data-root", type=Path, default=REPO_ROOT / "data" / "ocelot",
-                    help="root holding curated/ + curated_0p25/ + curated_0p5/ manifests")
+                    help="root holding the native curated/ Manifest")
     ap.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     ap.add_argument("--no-train", action="store_true",
                     help="score/aggregate existing runs only; do not launch training")

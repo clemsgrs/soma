@@ -97,7 +97,7 @@ into the run's ``target_size`` frame for encoding and matching::
    x_target = x_level0 * (source_spacing_um / effective_spacing_um) - crop_left
    y_target = y_level0 * (source_spacing_um / effective_spacing_um) - crop_top
 
-Both values come from each dense artifact's Slide2Vec sidecar:
+Both values come from each dense artifact's slide2vec sidecar:
 ``source_spacing_um`` is the resolved physical scale of the stored point/source frame,
 and ``effective_spacing_um`` is the scale actually sampled for the dense grid. The latter
 can legitimately differ slightly from ``preprocessing.requested_spacing_um`` when a WSI

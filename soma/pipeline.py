@@ -3231,7 +3231,7 @@ class Pipeline:
     def _build_live_segmentation_source(self) -> "LiveSegmentationSource":
         """Prepare one public DenseEncodeKit and share it across every fold.
 
-        Soma owns the augmented-pixel handoff. Slide2Vec owns the dense normalization,
+        Soma owns the augmented-pixel handoff. slide2vec owns the dense normalization,
         resolved geometry, padding, precision/device transfer, frozen encoding,
         windowing/attention mode, and output dtype behind the public kit boundary.
         """

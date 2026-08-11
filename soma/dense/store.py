@@ -349,7 +349,7 @@ class DenseFeatureStore:
         return None if value is None else float(value)
 
     def spacing(self, sample_id: str) -> DenseSampleSpacing:
-        """Resolved source and effective grid spacing persisted by Slide2Vec."""
+        """Resolved source and effective grid spacing persisted by slide2vec."""
         return dense_sample_spacing_from_metadata(
             self.metadata(sample_id), sample_id=sample_id
         )

@@ -60,6 +60,56 @@ slide2vec 5.7.0 on an RTX 3080 Ti. Seed 0 reached greedy test mean_F1 **0.7030**
 mean_F1 0.7031. Training again selected epoch 29 and stopped at epoch 39. The result is
 recorded in `soma/benchmarks/results/ocelot.csv`.
 
+## Spacing-aware migration validation
+
+Issue #320 replaced the separately rendered 0.25/0.5 datasets with on-read resampling
+from the one native 0.2 Manifest. The frozen rendered artifacts were compared before
+retiring their workflow.
+
+Across all 663 images, native 0.2 reads preserved decoded RGB bytes exactly. Coarser
+dimensions also matched every rendered image; pixel values differ because the historical
+path used Pillow BOX followed by a second lossy JPEG encode, while slide2vec 5.7 uses
+OpenCV area resampling directly on the original decoded JPEG.
+
+| spacing (µm/px) | shape | pixel MAE | RMSE | PSNR | max abs | exact channels |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0.25 | 819×819 | 3.1753 | 4.4478 | 35.17 dB | 66 | 15.81% |
+| 0.50 | 410×410 | 4.7285 | 6.4826 | 31.90 dB | 94 | 11.40% |
+
+Dense grids were regenerated through both source paths with the same slide2vec 5.7
+runtime, six samples spanning train/tune/test, identical sample order, batch size 8,
+fp16 compute/fp32 storage, and the committed 448-window/25%-overlap geometry. Every grid
+had the same shape and finite values.
+
+| encoder | spacing | grid | flattened cosine, mean (range) | relative L2, mean |
+|---|---:|---:|---:|---:|
+| Virchow2 | 0.25 | 1280×59×59 | 0.9654 (0.9123–0.9896) | 0.2531 |
+| Virchow2 | 0.50 | 1280×30×30 | 0.9453 (0.8452–0.9726) | 0.3257 |
+| UNI2 | 0.25 | 1536×59×59 | 0.9720 (0.9214–0.9880) | 0.2237 |
+| UNI2 | 0.50 | 1536×30×30 | 0.9531 (0.8773–0.9757) | 0.2928 |
+
+Native-frame annotations transformed to the historical 0.25/0.5 coordinates within
+1.14e-13 px and inverse-exported exactly in the committed coordinate tests. The grid
+difference is large enough that coarse protocol performance must be validated
+empirically; it is not treated as numerical identity.
+
+Fresh-cache seed-0 Virchow2 runs then exercised the complete on-read extraction,
+training, tune-threshold sweep, and official greedy test scorer. Their tune scores match
+or improve on the corresponding rendered-input seed-0 results and remain consistent with
+the historical three-seed sweeps.
+
+| spacing | rendered tune, seed 0 | rendered tune, 3-seed sweep | on-read tune, seed 0 | on-read test, seed 0 |
+|---:|---:|---:|---:|---:|
+| 0.25 | 0.7024 | 0.6948 ± 0.0065 | 0.7053 | 0.7148 |
+| 0.50 | 0.5924 | 0.5928 ± 0.0047 | 0.5970 | 0.6085 |
+
+The native 0.2 fresh-cache release reproduction above independently remained within its
+published tolerance (0.7030 versus the 0.6995 anchor). Together, these runs show no
+benchmark regression from collapsing the rendered variants onto spacing-aware reads.
+The two coarse on-read results and their code/version provenance are recorded separately
+in `soma/benchmarks/results/ocelot-spacing-migration.csv`; they are validation evidence,
+not cells in the canonical encoder-only benchmark facet.
+
 ## Reproducing
 
 See [`README.md`](README.md) for the full download → curate → run → score workflow, or run

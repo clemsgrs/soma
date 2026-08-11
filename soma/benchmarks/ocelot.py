@@ -13,10 +13,10 @@ absorbs the former ``examples/ocelot/`` harness into first-class package code:
 * ``reproduce.py`` / ``eval_greedy.py`` are superseded by the generic ``soma reproduce``.
 
 The recipe backbone (frozen encoder -> dense token grid -> ``lightweight_conv`` decoder ->
-per-class peak heatmap -> class-aware F1 @ delta=3 um, greedy-matched) is fixed; ``soma
-reproduce`` varies only the ``encoder`` and fixes spacing at the anchor (Virchow2 @ 0.2
-um/px, seed 0). ``build_config`` still resolves a protocol per ``(encoder, spacing)``, so a
-spacing sweep is custom configs + a leaderboard, like any other non-encoder axis.
+per-class peak heatmap -> class-aware F1 @ delta=3 um, greedy-matched) is fixed. Canonical
+``soma reproduce`` varies the ``encoder`` and fixes spacing at the Virchow2 @ 0.2 um/px
+anchor. ``build_config`` also resolves spacing sweeps, whose recorded results remain
+attributable on that second benchmark axis.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import inspect
 import math
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from soma.benchmarks.registry import (
     Facet,
@@ -37,6 +37,9 @@ from soma.benchmarks.registry import (
 from soma.config import PipelineConfig, load_config
 from soma.curation.manifest import CuratedManifest
 from soma.curation.ocelot import curate_ocelot_detection
+
+if TYPE_CHECKING:
+    from soma.dataset import DetectionManifest
 
 _CONFIG_DIR = Path(__file__).resolve().parent / "configs" / "ocelot"
 
@@ -59,9 +62,9 @@ CANONICAL_SEEDS: tuple[int, ...] = (0,)
 ANCHOR_ENCODER = "virchow2"
 ANCHOR_SPACING = 0.2
 
-# Recipe backbone held fixed across the benchmark; reproduce varies the encoder and fixes
-# spacing at the anchor. Spacing is a plain config field — sweep it (if wanted) via custom
-# configs + a leaderboard, exactly as for any other non-encoder axis — not a reproduce axis.
+# Canonical reproduction fixes spacing at the anchor. Committed configs still expose the
+# historical spacing sweep, but it is not part of this benchmark facet: those protocols are
+# migration-validation evidence rather than cells in the canonical encoder comparison.
 FACET = Facet(
     fixed={
         "task": "detection",
@@ -214,6 +217,33 @@ def _locate_checkpoint(run_dir: Path) -> Path:
     return candidates[-1]
 
 
+def resolve_dense_cache_dir(
+    cfg: PipelineConfig, manifest: DetectionManifest
+) -> Path | None:
+    """Resolve the exact dense-image cache directory described by ``cfg``."""
+    from soma.dense_extraction import DenseTileFeatureExtractor
+    from soma.encoders.validation import resolve_preprocessing_config
+
+    preprocessing = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
+    cache = cfg.cache
+    if cache.root_dir is None:
+        cache = replace(cache, root_dir=Path(cfg.output_root) / "feature_cache")
+    extractor = DenseTileFeatureExtractor(
+        manifest,
+        cfg.encoder,
+        target_size=int(preprocessing.requested_tile_size_px),
+        spacing_um=float(preprocessing.requested_spacing_um),
+        backend=preprocessing.backend,
+        tolerance=float(preprocessing.tolerance),
+        window_size=preprocessing.dense_window_size,
+        overlap=float(preprocessing.dense_window_overlap),
+        execution=cfg.execution,
+        cache=cache,
+        preprocessing=preprocessing,
+    )
+    return extractor.cache_dir()
+
+
 def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> dict:
     """Re-score a trained OCELOT run with the greedy matcher (no training).
 
@@ -226,8 +256,6 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
 
     from soma.dataset import DetectionManifest, Splits
     from soma.dense import DenseFeatureStore
-    from soma.dense_extraction import DenseTileFeatureExtractor
-    from soma.encoders.validation import resolve_preprocessing_config
     from soma.pipeline import (
         _make_loaders,
         _resolve_detection_px,
@@ -245,27 +273,7 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     train_records = [manifest.samples[s] for s in fold_split.train]
     probe_id = train_records[0].sample_id
 
-    pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
-    cache_cfg = cfg.cache
-    if cache_cfg.root_dir is None:
-        # Mirror the pipeline's default (Pipeline resolves a null cache root to
-        # ``output_root/feature_cache``, not ``run_dir/feature_cache``); otherwise
-        # re-scoring a real run can never find the dense grids it trained on.
-        cache_cfg = replace(cache_cfg, root_dir=Path(cfg.output_root) / "feature_cache")
-    extractor = DenseTileFeatureExtractor(
-        manifest,
-        cfg.encoder,
-        target_size=int(pre.requested_tile_size_px),
-        spacing_um=float(pre.requested_spacing_um),
-        backend=pre.backend,
-        tolerance=float(pre.tolerance),
-        window_size=pre.dense_window_size,
-        overlap=float(pre.dense_window_overlap),
-        execution=cfg.execution,
-        cache=cache_cfg,
-        preprocessing=pre,
-    )
-    store_dir = extractor.cache_dir()
+    store_dir = resolve_dense_cache_dir(cfg, manifest)
     if store_dir is None:
         raise RuntimeError(
             "caching is disabled in this config; greedy re-scoring needs the cached dense "
@@ -405,11 +413,9 @@ class OcelotBenchmark:
         self,
         raw_root: str | Path,
         out_dir: str | Path,
-        *,
-        render_spacing_um: float | None = None,
     ) -> CuratedManifest:
         """Curate raw OCELOT into a soma detection Manifest (delegates to the curator)."""
-        return curate_ocelot_detection(raw_root, out_dir, render_spacing_um=render_spacing_um)
+        return curate_ocelot_detection(raw_root, out_dir)
 
     def build_config(
         self,

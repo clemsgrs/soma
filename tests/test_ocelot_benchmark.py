@@ -49,8 +49,7 @@ def test_ocelot_registered_under_name():
 
 def test_ocelot_declares_canonical_facet():
     facet = OCELOT.facet
-    # Reproduce fixes the whole protocol except the encoder; spacing is a plain config
-    # field, swept (if wanted) via custom configs + a leaderboard, not a reproduce axis.
+    # The canonical comparison fixes physical spacing and varies only the encoder.
     assert facet.varied == ("encoder",)
     assert facet.fixed["decoder"] == "lightweight_conv"
     assert facet.fixed["task"] == "detection"
@@ -76,9 +75,26 @@ def test_build_config_loads_committed_anchor_yaml():
     assert cfg.training.seed == 3
 
 
-def test_build_config_selects_config_by_axes():
-    cfg = OCELOT.build_config(encoder="uni2", spacing=0.25)
-    assert cfg.encoder.name == "uni2"
+@pytest.mark.parametrize(
+    ("encoder", "spacing", "target_size"),
+    [
+        ("virchow2", 0.2, 1024),
+        ("virchow2", 0.25, 819),
+        ("virchow2", 0.5, 410),
+        ("uni2", 0.25, 819),
+        ("uni2", 0.5, 410),
+    ],
+)
+def test_build_config_selects_one_native_manifest_for_every_protocol(
+    encoder: str, spacing: float, target_size: int
+):
+    cfg = OCELOT.build_config(encoder=encoder, spacing=spacing)
+
+    assert cfg.encoder.name == encoder
+    assert cfg.preprocessing.requested_spacing_um == pytest.approx(spacing)
+    assert cfg.preprocessing.requested_tile_size_px == target_size
+    assert Path(cfg.dataset_csv).parts[-3:] == ("ocelot", "curated", "dataset.csv")
+    assert Path(cfg.splits_csv).parts[-3:] == ("ocelot", "curated", "splits.csv")
 
 
 def test_build_config_accepts_unreferenced_encoder_at_packaged_spacing():

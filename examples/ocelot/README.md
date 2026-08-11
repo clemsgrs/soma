@@ -64,22 +64,22 @@ train→`train`, val→`tune`, test→`test`, single fold), one `points/<sample_
 
 ### Magnification variants (encoder × spacing ablation)
 
-The committed magnification-ablation workflow materializes each coarser variant at
-curation time. Pass `--render-spacing-um` to downsample every cell patch to a target
-µm/px (≥ the native 0.2) and rescale its points by the same factor; the emitted manifest
-stamps `spacing_at_level_0` with that rendered source scale and the patches land under
-`curated/images/`. Each variant is its own output dir (own manifest digest in the dense
-cache). This remains the committed ablation protocol until issue #320 verifies and removes
-the rendered variants; slide2vec 5.7 can now perform the equivalent spacing-aware read:
+Every magnification protocol consumes the same native Manifest. Its images remain
+1024×1024 at `spacing_at_level_0: 0.2`, and its annotations remain in that level-0 pixel
+frame. A config selects physical scale only through
+`preprocessing.requested_spacing_um`; slide2vec and hs2p area-downsample the native JPEG
+on read and record the resolved source/effective spacing beside each dense grid.
 
 ```bash
-python -m soma.curation.ocelot \
-  --raw-root        <data_root>/ocelot \
-  --output-dir      <data_root>/ocelot/curated_0p4 \
-  --render-spacing-um 0.4   # half-resolution (512×512) patches
+# All three configs use curated/dataset.csv + curated/splits.csv.
+python -m soma soma/benchmarks/configs/ocelot/ocelot_virchow2_0.25.yaml \
+  --set data.dataset_csv=<data_root>/ocelot/curated/dataset.csv \
+  --set data.splits_csv=<data_root>/ocelot/curated/splits.csv
 ```
 
-Omitting the flag reproduces the native-resolution manifest above unchanged.
+The committed 0.2/0.25/0.5 protocols declare target sizes 1024/819/410 pixels,
+respectively. Detection targets are transformed from level 0 into that effective frame;
+exported predictions are transformed back to level-0 coordinates.
 
 ## 3. Run
 

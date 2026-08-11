@@ -66,6 +66,26 @@ def test_reproduced_rows_filters_by_axes_and_metric():
     assert reproduced_rows("eva", dataset="crc", encoder="nope") == []
 
 
+def test_ocelot_spacing_migration_rows_are_provenance_pinned():
+    expected = {
+        "0.25": (0.7148, "c5d36b5"),
+        "0.5": (0.6085, "c5d36b5"),
+    }
+
+    for spacing, (measured, commit) in expected.items():
+        rows = reproduced_rows(
+            "ocelot-spacing-migration",
+            encoder="virchow2",
+            spacing=spacing,
+            metric="mean_f1",
+        )
+        assert rows
+        assert rows[-1].measured == pytest.approx(measured)
+        assert rows[-1].n_seeds == 1
+        assert rows[-1].soma_commit == commit
+        assert rows[-1].slide2vec_version == "5.7.0"
+
+
 # --- append_result: append-only ledger ------------------------------------------------
 
 

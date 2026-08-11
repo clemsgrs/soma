@@ -34,6 +34,66 @@ def test_cells_cover_the_2x2_plus_anchor():
     assert m.ANCHOR.key == "virchow2_0.20"
 
 
+def test_every_cell_uses_the_one_native_manifest(tmp_path: Path):
+    m = _load_campaign()
+    expected = [
+        "--set",
+        f"data.dataset_csv={tmp_path / 'curated' / 'dataset.csv'}",
+        "--set",
+        f"data.splits_csv={tmp_path / 'curated' / 'splits.csv'}",
+    ]
+
+    assert [m._data_overrides(cell, tmp_path) for cell in m.CELLS] == [
+        expected,
+        expected,
+        expected,
+        expected,
+        expected,
+    ]
+
+
+def test_campaign_resolves_the_current_dense_image_cache_layout(tmp_path: Path):
+    m = _load_campaign()
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    (curated / "dataset.csv").write_text(
+        "sample_id,image_path,points_path,spacing_at_level_0\n"
+        "train_001,/images/001.jpg,/points/001.csv,0.2\n"
+    )
+    (curated / "splits.csv").write_text(
+        "sample_id,split,fold\ntrain_001,train,0\n"
+    )
+
+    path = m.dense_embeddings_dir(m.ANCHOR, tmp_path)
+
+    assert path is not None
+    assert path.parts[-3] == "dense_image"
+    assert path.name == "dense_image_embeddings"
+
+
+def test_score_run_reuses_the_trained_runs_saved_config(monkeypatch, tmp_path: Path):
+    m = _load_campaign()
+    run_subdir = tmp_path / "experiments" / "exp" / "runs" / "seed-0"
+    run_subdir.mkdir(parents=True)
+    saved_config = run_subdir / "config.yaml"
+    saved_config.write_text("data:\n  dataset_csv: /chosen/curated/dataset.csv\n")
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return type(
+            "Result", (), {"stdout": '{\n  "tune": {"mean_f1": 0.7}\n}\n'}
+        )()
+
+    monkeypatch.setattr(m, "_run", fake_run)
+
+    assert m.score_run(m.ANCHOR, run_subdir, tune_only=True)["tune"] == {
+        "mean_f1": 0.7
+    }
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--config") + 1] == str(saved_config)
+
+
 def test_extract_trailing_json():
     m = _load_campaign()
     stdout = "feature store: /x\n  [tune] mF1=0.71\n{\n  \"tune\": {\"mean_f1\": 0.71}\n}\n"

@@ -24,7 +24,7 @@ def model_input_device(model: torch.nn.Module, default: torch.device | str) -> t
     """Resolve where a batch's feature tensor belongs before ``model(features)``.
 
     Most models consume features on their trainable-module device. Live dense models
-    deliberately consume CPU pixels because Slide2Vec's public kit owns device transfer.
+    deliberately consume CPU pixels because slide2vec's public kit owns device transfer.
     """
     return torch.device(getattr(model, "input_device", default))
 

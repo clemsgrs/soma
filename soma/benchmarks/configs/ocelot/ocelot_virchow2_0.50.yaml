@@ -1,13 +1,12 @@
 # OCELOT 2023 cell-detection — encoder×spacing ablation: Virchow2 @ 0.5 µm/px.
 #
 # Frozen Virchow2 -> dense token grid -> conv decoder -> per-class peak heatmap, scored
-# with class-aware F1@δ (δ = 3 µm, OCELOT's official tolerance). Consumes the 0.5 µm/px
-# rendered manifest materialized by the committed ablation protocol (pending its
-# spacing-aware consolidation in #320). See examples/ocelot/README.md for the workflow.
+# with class-aware F1@δ (δ = 3 µm, OCELOT's official tolerance). The one native
+# OCELOT Manifest declares 0.2 µm/px; slide2vec reads it at 0.5 µm/px on demand.
+# See examples/ocelot/README.md for the workflow.
 #   python -m soma.curation.ocelot \
-#     --raw-root          /data/pathology/projects/clement/code/soma/data/ocelot \
-#     --output-dir        /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5 \
-#     --render-spacing-um 0.5
+#     --raw-root   /data/pathology/projects/clement/code/soma/data/ocelot \
+#     --output-dir /data/pathology/projects/clement/code/soma/data/ocelot/curated
 # Then run:  python -m soma soma/benchmarks/configs/ocelot/ocelot_virchow2_0.50.yaml
 #   (or, preferred, drive the registered benchmark: soma reproduce ocelot)
 #
@@ -19,15 +18,14 @@ run:
   tags: [ocelot, detection, virchow2, lightweight_conv, spacing_0p50]
 
 data:
-  dataset_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5/dataset.csv
-  splits_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated_0p5/splits.csv
+  dataset_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/dataset.csv
+  splits_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/splits.csv
   dataset_type: detection
 
 preprocessing:
-  # The rendered JPEGs declare 0.5 µm/px and the request matches that source spacing
-  # exactly, preserving pixels and pinning the physical transforms and cache identity.
+  # Native JPEGs declare 0.2 µm/px; slide2vec area-downsamples them to this request.
   # The 448 window + 0.25 overlap blends window seams / border artifacts.
-  requested_tile_size_px: 410   # native px of the 0.5 µm/px render (1024 × 0.2/0.5); v1 needs target_size == tile size
+  requested_tile_size_px: 410   # round(1024 × 0.2/0.5); v1 needs target_size == read size
   requested_spacing_um: 0.5
   dense_window_size: 448
   dense_window_overlap: 0.25

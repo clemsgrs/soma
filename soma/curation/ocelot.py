@@ -15,8 +15,8 @@ OCELOT (Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) ships paired *cell* an
 
 Soma's :class:`~soma.tasks.detection.DetectionHead` wants **0-based** class ids, so we
 remap ``1 -> 0`` (BC) and ``2 -> 1`` (TC) and write one ``x,y,class`` point CSV per
-sample under ``points/``. Points stay in the cell-patch pixel frame (0..1023); because
-the JPEGs are read flat at native resolution. The curator therefore declares each
+sample under ``points/``. Points stay in the cell-patch pixel frame (0..1023) because
+the JPEGs are referenced at native resolution. The curator therefore declares each
 source image's physical scale as ``spacing_at_level_0`` in the Manifest.
 
 OCELOT's own train/val/test split maps onto Soma's roles as train -> ``train``,
@@ -31,8 +31,6 @@ import csv
 from collections import Counter
 from pathlib import Path
 
-from PIL import Image
-
 from soma.curation.manifest import CuratedManifest, write_manifest
 
 # OCELOT 1-based cell label -> Soma 0-based class id.
@@ -40,9 +38,7 @@ OCELOT_LABEL_REMAP = {1: 0, 2: 1}  # 1=BC -> 0, 2=TC -> 1
 OCELOT_CELL_CLASS_NAMES = ("BC", "TC")  # index = 0-based class id
 OCELOT_NUM_CLASSES = len(OCELOT_CELL_CLASS_NAMES)
 
-# Native µm/px of the OCELOT cell patches (1024x1024 JPEGs at ~0.2 µm/px). The legacy
-# ablation protocol materializes coarser variants at curation time; spacing-aware on-read
-# resampling is available in slide2vec 5.7 and tracked for adoption in soma #320.
+# Native µm/px of the OCELOT cell patches (1024x1024 JPEGs at ~0.2 µm/px).
 OCELOT_NATIVE_SPACING_UM = 0.2
 
 # OCELOT split name -> Soma split role.
@@ -65,19 +61,9 @@ def _read_ocelot_points(csv_path: Path) -> list[tuple[float, float, int]]:
     return rows
 
 
-def _render_patch(src: Path, dst: Path, factor: float) -> None:
-    """Downsample ``src`` by ``factor`` (area resampling) and write it to ``dst``."""
-    with Image.open(src) as image:
-        image = image.convert("RGB")
-        w, h = image.size
-        new_size = (max(1, round(w / factor)), max(1, round(h / factor)))
-        image.resize(new_size, resample=Image.Resampling.BOX).save(dst)
-
-
 def curate_ocelot_detection(
     raw_root: str | Path,
     output_dir: str | Path,
-    render_spacing_um: float | None = None,
 ) -> CuratedManifest:
     """Curate the OCELOT 2023 cell-detection dataset into Soma's detection format.
 
@@ -86,16 +72,6 @@ def curate_ocelot_detection(
             ``images/`` and ``annotations/``.
         output_dir: Directory where ``dataset.csv``, ``splits.csv``, the per-sample
             ``points/<sample_id>.csv`` files, and ``summary.json`` are written.
-        render_spacing_um: Optional target µm/px at which to materialize the cell
-            patches. When ``None`` (default), patches are referenced in place at their
-            native :data:`OCELOT_NATIVE_SPACING_UM`. When
-            set, every patch is downsampled by ``render_spacing_um / native`` into
-            ``output_dir/images/`` and its point coordinates are scaled by the same
-            factor, so annotations stay on the cells; the manifest then carries a
-            ``spacing_at_level_0`` declaration equal to ``render_spacing_um`` per sample.
-            This preserves the committed magnification-ablation protocol until soma #320
-            verifies spacing-aware on-read resampling and retires the rendered variants.
-
     Returns:
         A :class:`~soma.curation.manifest.CuratedManifest` pointing at the generated
         ``dataset.csv`` and ``splits.csv``.
@@ -108,21 +84,9 @@ def curate_ocelot_detection(
             f"expected images/ and annotations/ under the unzipped OCELOT root: {raw_root}"
         )
 
-    if render_spacing_um is not None:
-        render_spacing_um = float(render_spacing_um)
-        if render_spacing_um < OCELOT_NATIVE_SPACING_UM:
-            raise ValueError(
-                f"render_spacing_um={render_spacing_um} is finer than the native "
-                f"{OCELOT_NATIVE_SPACING_UM} µm/px; flat JPEGs can only be downsampled"
-            )
-    factor = render_spacing_um / OCELOT_NATIVE_SPACING_UM if render_spacing_um is not None else None
-
     output_dir = Path(output_dir)
     points_dir = output_dir / "points"
     points_dir.mkdir(parents=True, exist_ok=True)
-    rendered_img_dir = output_dir / "images"
-    if factor is not None:
-        rendered_img_dir.mkdir(parents=True, exist_ok=True)
 
     dataset_rows: list[dict] = []
     split_rows: list[dict] = []  # sample_id, split, fold
@@ -142,8 +106,6 @@ def curate_ocelot_detection(
                 raise FileNotFoundError(f"missing annotation for {img_path}: {ann_path}")
             sample_id = f"{ocelot_split}_{stem}"
             pts = _read_ocelot_points(ann_path)
-            if factor is not None:
-                pts = [(x / factor, y / factor, c) for x, y, c in pts]
             out_csv = points_dir / f"{sample_id}.csv"
             with out_csv.open("w", newline="") as fh:
                 w = csv.writer(fh)
@@ -151,23 +113,13 @@ def curate_ocelot_detection(
                 for x, y, c in pts:
                     w.writerow([x, y, c])
                     class_counter[c] += 1
-            if factor is not None:
-                rendered_path = rendered_img_dir / f"{sample_id}.jpg"
-                _render_patch(img_path, rendered_path, factor)
-                image_path = rendered_path
-            else:
-                image_path = img_path
             n_samples += 1
             n_empty += int(len(pts) == 0)
             row = {
                 "sample_id": sample_id,
-                "image_path": str(image_path.resolve()),
+                "image_path": str(img_path.resolve()),
                 "points_path": str(out_csv.resolve()),
-                "spacing_at_level_0": (
-                    render_spacing_um
-                    if render_spacing_um is not None
-                    else OCELOT_NATIVE_SPACING_UM
-                ),
+                "spacing_at_level_0": OCELOT_NATIVE_SPACING_UM,
             }
             dataset_rows.append(row)
             split_rows.append({"sample_id": sample_id, "split": role, "fold": 0})
@@ -190,7 +142,6 @@ def curate_ocelot_detection(
         "class_names": list(OCELOT_CELL_CLASS_NAMES),
         "label_remap": {str(k): v for k, v in OCELOT_LABEL_REMAP.items()},
         "native_spacing_um": OCELOT_NATIVE_SPACING_UM,
-        "render_spacing_um": render_spacing_um,
         "total_samples": len(dataset_rows),
         "splits": per_split,
     }
@@ -209,20 +160,9 @@ def main() -> None:
         "--raw-root", type=Path, required=True, help="unzipped ocelot2023_v1.0.1 dir"
     )
     ap.add_argument("--output-dir", type=Path, required=True, help="curated output dir")
-    ap.add_argument(
-        "--render-spacing-um",
-        type=float,
-        default=None,
-        help=(
-            "optional target µm/px to materialize the patches at (>= native "
-            f"{OCELOT_NATIVE_SPACING_UM}); omit to reference native patches in place"
-        ),
-    )
     args = ap.parse_args()
 
-    manifest = curate_ocelot_detection(
-        args.raw_root, args.output_dir, render_spacing_um=args.render_spacing_um
-    )
+    manifest = curate_ocelot_detection(args.raw_root, args.output_dir)
     print(f"curated: {manifest.dataset_csv}")
     print(f"         {manifest.splits_csv}")
 
