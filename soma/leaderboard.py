@@ -23,6 +23,7 @@ a per-row tolerance PASS/FAIL.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -461,36 +462,21 @@ def project_leaderboard(
         entry["config_diff"] = {k: v for k, v in diff.items() if k not in suppress}
 
     # Rank by the primary metric (direction-aware); deterministic tie-break.
+    scalar_ranks = (
+        _competition_ranks_for(
+            prelim, value=lambda entry: entry["mean"], higher_is_better=higher
+        )
+        if ranking_enabled
+        else {}
+    )
     if ranking_enabled:
         prelim.sort(
-            key=lambda e: (
-                not e["ranking_eligible"],
-                (-e["mean"] if higher else e["mean"])
-                if e["ranking_eligible"]
-                else 0.0,
-                [str(v) for v in e["vary_values"].values()],
-                e["experiment_id"],
+            key=lambda entry: (
+                scalar_ranks.get(entry["experiment_id"], float("inf")),
+                [str(value) for value in entry["vary_values"].values()],
+                entry["experiment_id"],
             )
         )
-
-    scalar_ranks: dict[str, int] = {}
-    previous_value: float | None = None
-    previous_rank = 0
-    eligible_position = 0
-    if ranking_enabled:
-        for entry in prelim:
-            if not entry["ranking_eligible"]:
-                continue
-            eligible_position += 1
-            value = entry["mean"]
-            rank = (
-                previous_rank
-                if previous_value is not None and value == previous_value
-                else eligible_position
-            )
-            scalar_ranks[entry["experiment_id"]] = rank
-            previous_value = value
-            previous_rank = rank
     else:
         prelim.sort(
             key=lambda e: (
@@ -729,13 +715,24 @@ def _attempt_recency_key(record: RunRecord) -> tuple[datetime, str, str]:
 def _competition_ranks(
     entries: list[dict[str, Any]], metric: str
 ) -> dict[str, int]:
-    higher = metric_higher_is_better(metric)
+    return _competition_ranks_for(
+        entries,
+        value=lambda entry: entry["metrics"][metric]["mean"],
+        higher_is_better=metric_higher_is_better(metric),
+    )
+
+
+def _competition_ranks_for(
+    entries: list[dict[str, Any]],
+    *,
+    value: Callable[[dict[str, Any]], float],
+    higher_is_better: bool,
+) -> dict[str, int]:
+    """Return standard competition ranks for eligible entries."""
     eligible = [entry for entry in entries if entry["ranking_eligible"]]
     eligible.sort(
         key=lambda entry: (
-            -entry["metrics"][metric]["mean"]
-            if higher
-            else entry["metrics"][metric]["mean"],
+            -value(entry) if higher_is_better else value(entry),
             entry["experiment_id"],
         )
     )
@@ -743,10 +740,10 @@ def _competition_ranks(
     previous: float | None = None
     previous_rank = 0
     for position, entry in enumerate(eligible, start=1):
-        value = entry["metrics"][metric]["mean"]
-        rank = previous_rank if previous is not None and value == previous else position
+        current = value(entry)
+        rank = previous_rank if previous is not None and current == previous else position
         result[entry["experiment_id"]] = rank
-        previous = value
+        previous = current
         previous_rank = rank
     return result
 
