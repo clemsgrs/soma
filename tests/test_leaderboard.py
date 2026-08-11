@@ -835,13 +835,15 @@ def test_multi_metric_references_are_metric_local_and_external_never_gates(tmp_p
     )
 
     metrics = table.rows[0].metrics
-    assert metrics["croma_median"].reference_expected == pytest.approx(0.18)
-    assert metrics["croma_median"].reference_delta == pytest.approx(0.02)
-    assert metrics["croma_f0"].reference_expected == pytest.approx(0.15)
-    assert metrics["croma_f0"].reference_delta == pytest.approx(-0.02)
-    assert metrics["croma_ltm10"].reference_expected == pytest.approx(0.10)
-    assert metrics["croma_ltm10"].reference_delta == pytest.approx(0.01)
-    assert all(metric.reference_pass is None for metric in metrics.values())
+    assert metrics["croma_median"].reference.expected == pytest.approx(0.18)
+    assert metrics["croma_median"].reference.delta == pytest.approx(0.02)
+    assert metrics["croma_f0"].reference.expected == pytest.approx(0.15)
+    assert metrics["croma_f0"].reference.delta == pytest.approx(-0.02)
+    assert metrics["croma_ltm10"].reference.expected == pytest.approx(0.10)
+    assert metrics["croma_ltm10"].reference.delta == pytest.approx(0.01)
+    assert all(
+        metric.reference.within_tolerance is None for metric in metrics.values()
+    )
 
 
 def test_only_primary_metric_reference_exposes_tolerance_verdict(tmp_path: Path):
@@ -863,17 +865,17 @@ def test_only_primary_metric_reference_exposes_tolerance_verdict(tmp_path: Path)
     )
 
     metrics = table.rows[0].metrics
-    assert metrics["croma_median"].reference_pass is True
-    assert metrics["croma_median"].reference_tolerance == pytest.approx(0.05)
-    assert metrics["croma_f0"].reference_expected == pytest.approx(0.15)
-    assert metrics["croma_ltm10"].reference_expected == pytest.approx(0.10)
-    assert metrics["croma_f0"].reference_pass is None
-    assert metrics["croma_ltm10"].reference_pass is None
-    assert metrics["croma_f0"].reference_tolerance is None
-    assert metrics["croma_ltm10"].reference_tolerance is None
+    assert metrics["croma_median"].reference.within_tolerance is True
+    assert metrics["croma_median"].reference.tolerance == pytest.approx(0.05)
+    assert metrics["croma_f0"].reference.expected == pytest.approx(0.15)
+    assert metrics["croma_ltm10"].reference.expected == pytest.approx(0.10)
+    assert metrics["croma_f0"].reference.within_tolerance is None
+    assert metrics["croma_ltm10"].reference.within_tolerance is None
+    assert metrics["croma_f0"].reference.tolerance is None
+    assert metrics["croma_ltm10"].reference.tolerance is None
 
 
-def test_multi_metric_renderers_emit_ordered_wide_schemas(tmp_path: Path):
+def _multi_reference_table(tmp_path: Path) -> LeaderboardTable:
     root = tmp_path / "out"
     ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
     run = make_run_dir(
@@ -884,13 +886,15 @@ def test_multi_metric_renderers_emit_ordered_wide_schemas(tmp_path: Path):
             "test/croma_ltm10": 0.11,
         },
     )
-    table = project_leaderboard(
+    return project_leaderboard(
         [run],
         LeaderboardFacet(vary=("encoder",)),
         benchmark=_MultiReferenceBenchmark(),
     )
 
-    data = json.loads(render_json(table))
+
+def test_multi_metric_json_emits_ordered_wide_schema(tmp_path: Path):
+    data = json.loads(render_json(_multi_reference_table(tmp_path)))
     assert data["reported_metrics"] == [
         {"metric": "croma_median", "higher_is_better": True},
         {"metric": "croma_f0", "higher_is_better": False},
@@ -913,7 +917,10 @@ def test_multi_metric_renderers_emit_ordered_wide_schemas(tmp_path: Path):
         "url": "https://example.test/pathorob",
     }
 
-    assert render_csv(table).splitlines()[0].split(",") == [
+
+def test_multi_metric_csv_emits_ordered_wide_schema(tmp_path: Path):
+    lines = render_csv(_multi_reference_table(tmp_path)).splitlines()
+    assert lines[0].split(",") == [
         "encoder",
         "croma_median_mean",
         "croma_median_std",
@@ -940,14 +947,20 @@ def test_multi_metric_renderers_emit_ordered_wide_schemas(tmp_path: Path):
         "pareto",
         "config_diff",
     ]
-    csv_row = render_csv(table).splitlines()[1].split(",")
+    csv_row = lines[1].split(",")
     assert csv_row[5:8] == ["0.180000", "0.020000", ""]
     assert csv_row[12:14] == ["0.150000", "-0.020000"]
-    plain_header = format_table(table).splitlines()[1]
+
+
+def test_multi_metric_plain_text_emits_ordered_wide_schema(tmp_path: Path):
+    plain_header = format_table(_multi_reference_table(tmp_path)).splitlines()[1]
     assert plain_header.index("croma_median") < plain_header.index("croma_f0")
     assert plain_header.index("croma_f0") < plain_header.index("croma_ltm10")
     assert "eligible" in plain_header and "pareto" in plain_header
-    html = render_html(table)
+
+
+def test_multi_metric_html_emits_ordered_wide_schema(tmp_path: Path):
+    html = render_html(_multi_reference_table(tmp_path))
     assert html.index("<th>croma_median</th>") < html.index("<th>croma_f0</th>")
     assert html.index("<th>croma_f0</th>") < html.index("<th>croma_ltm10</th>")
     assert "<th>eligible</th>" in html and "<th>pareto</th>" in html
@@ -1041,7 +1054,7 @@ def test_ranking_ineligible_control_is_visible_but_excluded_from_rank_and_pareto
     assert control.pareto is None
     assert all(metric.rank is None for metric in control.metrics.values())
     assert control.metrics["croma_median"].mean == pytest.approx(0.99)
-    assert control.metrics["croma_median"].reference_expected == pytest.approx(0.18)
+    assert control.metrics["croma_median"].reference.expected == pytest.approx(0.18)
     assert by_encoder["conch"].metrics["croma_median"].rank == 1
     assert by_encoder["phikon"].metrics["croma_median"].rank == 2
     assert "control (ranking-ineligible)" in format_table(table)
@@ -1111,8 +1124,36 @@ def test_metric_override_uses_scalar_schema_without_ranking_diagnostic(tmp_path:
     assert render_csv(table).splitlines()[1].startswith(",conch,")
 
 
+def test_metric_override_keeps_control_ineligible_for_scalar_rank(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    runs = [
+        make_run_dir(
+            _cfg(root, ds, sp, encoder=encoder),
+            {
+                "test/croma_median": median,
+                "test/croma_f0": 0.10,
+                "test/croma_ltm10": 0.50,
+            },
+        )
+        for encoder, median in (("uni2", 0.99), ("conch", 0.80))
+    ]
+
+    table = project_leaderboard(
+        runs,
+        LeaderboardFacet(vary=("encoder",)),
+        metric="croma_median",
+        benchmark=_ControlBenchmark(),
+    )
+
+    by_encoder = {row.vary_values["encoder"]: row for row in table.rows}
+    assert by_encoder["uni2"].ranking_eligible is False
+    assert by_encoder["uni2"].rank is None
+    assert by_encoder["conch"].rank == 1
+
+
 @pytest.mark.parametrize("benchmark", [_SingleMetricBenchmark(), _LegacyMetricBenchmark()])
-def test_single_or_undeclared_metric_benchmark_is_byte_identical_to_scalar(
+def test_single_or_undeclared_metric_benchmark_retains_scalar_model(
     tmp_path: Path, benchmark
 ):
     root = tmp_path / "out"
@@ -1124,19 +1165,46 @@ def test_single_or_undeclared_metric_benchmark_is_byte_identical_to_scalar(
         for encoder, accuracy in (("uni2", 0.80), ("conch", 0.90))
     ]
 
-    expected = project_leaderboard(
-        runs, LeaderboardFacet(vary=("encoder",)), metric="accuracy"
-    )
     actual = project_leaderboard(
         runs,
         LeaderboardFacet(vary=("encoder",)),
         benchmark=benchmark,
     )
+    uni2 = load_run_record(runs[0])
+    conch = load_run_record(runs[1])
+    expected = LeaderboardTable(
+        triple=conch.triple,
+        metric="accuracy",
+        higher_is_better=True,
+        vary=("encoder",),
+        split="test",
+        rows=[
+            LeaderboardRow(
+                rank=1,
+                experiment_id=conch.experiment_id,
+                vary_values={"encoder": "conch"},
+                metric="accuracy",
+                mean=0.90,
+                std=None,
+                n=1,
+                seeds=(0,),
+                config_diff={},
+            ),
+            LeaderboardRow(
+                rank=2,
+                experiment_id=uni2.experiment_id,
+                vary_values={"encoder": "uni2"},
+                metric="accuracy",
+                mean=0.80,
+                std=None,
+                n=1,
+                seeds=(0,),
+                config_diff={},
+            ),
+        ],
+    )
 
-    assert format_table(actual) == format_table(expected)
-    assert render_csv(actual) == render_csv(expected)
-    assert render_json(actual) == render_json(expected)
-    assert render_html(actual) == render_html(expected)
+    assert actual == expected
 
 
 @pytest.fixture()
@@ -1180,7 +1248,7 @@ def test_keyed_reference_joins_on_varied_axis_with_pass_fail(tmp_path: Path, key
 # --- render outputs ------------------------------------------------------------------
 
 
-def test_legacy_scalar_renderers_match_exact_goldens():
+def _legacy_scalar_table() -> LeaderboardTable:
     row = LeaderboardRow(
         rank=1,
         experiment_id="exp-a",
@@ -1192,7 +1260,7 @@ def test_legacy_scalar_renderers_match_exact_goldens():
         seeds=(0,),
         config_diff={},
     )
-    table = LeaderboardTable(
+    return LeaderboardTable(
         triple=("dataset", "splits", "binary_classification"),
         metric="accuracy",
         higher_is_better=True,
@@ -1201,17 +1269,25 @@ def test_legacy_scalar_renderers_match_exact_goldens():
         rows=[row],
     )
 
-    assert format_table(table) == (
+
+def test_legacy_scalar_plain_text_matches_exact_golden():
+    assert format_table(_legacy_scalar_table()) == (
         "Leaderboard — task=binary_classification · metric=accuracy "
         "(higher is better) · split=test\n"
         "#  encoder  accuracy  n  config diff\n"
         "1  uni2     0.8000    1  —          "
     )
-    assert render_csv(table) == (
+
+
+def test_legacy_scalar_csv_matches_exact_golden():
+    assert render_csv(_legacy_scalar_table()) == (
         "rank,encoder,mean,std,n,seeds,config_diff\r\n"
         "1,uni2,0.800000,,1,0,\r\n"
     )
-    assert render_json(table) == """{
+
+
+def test_legacy_scalar_json_matches_exact_golden():
+    assert render_json(_legacy_scalar_table()) == """{
   "triple": {
     "dataset_checksum": "dataset",
     "splits_checksum": "splits",
@@ -1244,8 +1320,12 @@ def test_legacy_scalar_renderers_match_exact_goldens():
     }
   ]
 }"""
-    assert len(render_html(table).encode()) == 14890
-    assert sha256(render_html(table).encode()).hexdigest() == (
+
+
+def test_legacy_scalar_html_matches_exact_golden():
+    rendered = render_html(_legacy_scalar_table()).encode()
+    assert len(rendered) == 14890
+    assert sha256(rendered).hexdigest() == (
         "29163d82fce3b9d0c84ec5d7c11067a9fb944e94736ddbdbba310435422bfc5c"
     )
 
@@ -1420,6 +1500,36 @@ def test_cli_metric_requests_scalar_schema_without_promoting_diagnostic(
     assert "None" not in out
     assert "reported_metrics" not in payload
     assert payload["rows"][0]["rank"] is None
+
+
+def test_cli_multi_metric_reports_logical_sample_with_no_completed_attempt(
+    tmp_path: Path, capsys, multi_metric_benchmark
+):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    make_run_dir(
+        _cfg(root, ds, sp, encoder="uni2"),
+        {
+            "test/croma_median": 0.20,
+            "test/croma_f0": 0.13,
+            "test/croma_ltm10": 0.11,
+        },
+    )
+    incomplete = make_run_dir(
+        _cfg(root, ds, sp, encoder="phikon"),
+        {"test/croma_median": 0.30},
+        status="running",
+    )
+    experiment_id = load_run_record(incomplete).experiment_id
+
+    code = _run_cli(
+        ["leaderboard", multi_metric_benchmark.name, "--root", str(root)]
+    )
+    error = capsys.readouterr().err
+
+    assert code == 2
+    assert experiment_id in error
+    assert "croma_median, croma_f0, croma_ltm10" in error
 
 
 def test_cli_unknown_benchmark_exits_nonzero(tmp_path: Path, capsys):

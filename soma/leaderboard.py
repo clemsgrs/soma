@@ -4,14 +4,15 @@ A Leaderboard is **not** a stored file. It is a pure projection over the run dir
 sweep already wrote: each run stamps its own ``config.yaml`` + ``summary.json`` +
 ``run.yaml``, and the experiment dir above it stamps ``experiment.json`` (the canonical
 config fingerprint + dataset/splits checksums). :func:`project_leaderboard` scans those
-artifacts and renders a ranked table — no pipeline execution, no shared mutable index.
+artifacts and renders a table — no pipeline execution, no shared mutable index.
 
 A **facet** fixes a ``(dataset + splits + task)`` triple, holds a set of config axes
-fixed, and surfaces one (or more) *varied* axes as the comparison columns, ranked by a
-primary metric. Because a run's identity (``experiment_id``) is a fingerprint of the
-*entire* config modulo seed, two runs that differ in any **unfixed** axis are never
-pooled: each distinct config becomes its own row, annotated with the config diff that
-distinguishes it. Seed-runs of the *same* config collapse to mean ± std + n.
+fixed, and surfaces one (or more) *varied* axes as comparison columns. Legacy scalar
+tables rank by one metric; multi-metric Benchmark tables use neutral row order and expose
+independent per-metric ranks plus Pareto membership. Because a run's identity
+(``experiment_id``) fingerprints the *entire* config modulo seed, two runs that differ in
+any **unfixed** axis are never pooled. Seed-runs of the *same* config collapse to mean ±
+std + n.
 
 Reference rows (a registered :class:`~soma.benchmarks.registry.Benchmark`'s
 ``expected()``) inject two ways: a broad, config-agnostic scalar renders as a **threshold
@@ -99,7 +100,7 @@ def _axis_flat_key(axis: str) -> str:
 
 @dataclass(frozen=True)
 class RunRecord:
-    """One completed run, loaded from its self-describing dir artifacts."""
+    """One persisted run attempt, loaded from its self-describing dir artifacts."""
 
     run_dir: Path
     run_id: str
@@ -167,8 +168,14 @@ def load_run_record(run_dir: str | Path) -> RunRecord | None:
     )
 
 
-def discover_triples(output_root: str | Path) -> dict[TripleKey, list[Path]]:
-    """Scan ``<output_root>/experiments/*/runs/*`` and group run dirs by their triple."""
+def discover_triples(
+    output_root: str | Path, *, include_incomplete: bool = False
+) -> dict[TripleKey, list[Path]]:
+    """Scan run attempts and group them by their data/task identity triple.
+
+    Legacy callers see completed, non-empty attempts only. Multi-metric Benchmark
+    projection opts into incomplete attempts so missing logical samples can fail loudly.
+    """
     root = Path(output_root)
     result: dict[TripleKey, list[Path]] = {}
     for exp_json in sorted(root.glob("experiments/*/experiment.json")):
@@ -179,7 +186,11 @@ def discover_triples(output_root: str | Path) -> dict[TripleKey, list[Path]]:
             if not run_dir.is_dir():
                 continue
             record = load_run_record(run_dir)
-            if record is None or record.status != "completed" or not record.summary:
+            if record is None:
+                continue
+            if not include_incomplete and (
+                record.status != "completed" or not record.summary
+            ):
                 continue
             result.setdefault(record.triple, []).append(run_dir)
     return result
@@ -282,6 +293,17 @@ class LeaderboardMetricDescription:
 
 
 @dataclass(frozen=True)
+class LeaderboardReference:
+    expected: float
+    delta: float
+    tolerance: float | None = None
+    within_tolerance: bool | None = None
+    source: str | None = None
+    label: str | None = None
+    url: str | None = None
+
+
+@dataclass(frozen=True)
 class LeaderboardMetric:
     metric: str
     rank: int | None
@@ -291,13 +313,7 @@ class LeaderboardMetric:
     seeds: tuple[int, ...]
     higher_is_better: bool
     ranking: bool
-    reference_expected: float | None = None
-    reference_tolerance: float | None = None
-    reference_pass: bool | None = None
-    reference_source: str | None = None
-    reference_label: str | None = None
-    reference_url: str | None = None
-    reference_delta: float | None = None
+    reference: LeaderboardReference | None = None
 
 
 @dataclass(frozen=True)
@@ -421,6 +437,7 @@ def project_leaderboard(
         if not values:
             continue
         spec = recs[0].canonical_spec
+        vary_values = {ax: _clean(axis_value(spec, ax)) for ax in facet.vary}
         prelim.append(
             {
                 "experiment_id": experiment_id,
@@ -429,7 +446,10 @@ def project_leaderboard(
                 "std": float(np.std(values)) if len(values) > 1 else None,
                 "n": len(values),
                 "seeds": tuple(sorted(r.seed for r in recs if r.seed is not None)),
-                "vary_values": {ax: _clean(axis_value(spec, ax)) for ax in facet.vary},
+                "vary_values": vary_values,
+                "ranking_eligible": _is_ranking_eligible(
+                    benchmark, {**facet.fixed, **vary_values}
+                ),
             }
         )
 
@@ -444,11 +464,33 @@ def project_leaderboard(
     if ranking_enabled:
         prelim.sort(
             key=lambda e: (
-                -e["mean"] if higher else e["mean"],
+                not e["ranking_eligible"],
+                (-e["mean"] if higher else e["mean"])
+                if e["ranking_eligible"]
+                else 0.0,
                 [str(v) for v in e["vary_values"].values()],
                 e["experiment_id"],
             )
         )
+
+    scalar_ranks: dict[str, int] = {}
+    previous_value: float | None = None
+    previous_rank = 0
+    eligible_position = 0
+    if ranking_enabled:
+        for entry in prelim:
+            if not entry["ranking_eligible"]:
+                continue
+            eligible_position += 1
+            value = entry["mean"]
+            rank = (
+                previous_rank
+                if previous_value is not None and value == previous_value
+                else eligible_position
+            )
+            scalar_ranks[entry["experiment_id"]] = rank
+            previous_value = value
+            previous_rank = rank
     else:
         prelim.sort(
             key=lambda e: (
@@ -460,11 +502,11 @@ def project_leaderboard(
     banner = _reference_banner(benchmark, metric_name)
     guidance = _guidance_anchors(benchmark, metric_name)
     rows: list[LeaderboardRow] = []
-    for index, entry in enumerate(prelim, start=1):
+    for entry in prelim:
         ref = _keyed_reference(benchmark, metric_name, entry["vary_values"], entry["mean"])
         rows.append(
             LeaderboardRow(
-                rank=index if ranking_enabled else None,
+                rank=scalar_ranks.get(entry["experiment_id"]),
                 experiment_id=entry["experiment_id"],
                 vary_values=entry["vary_values"],
                 metric=metric_name,
@@ -473,6 +515,7 @@ def project_leaderboard(
                 n=entry["n"],
                 seeds=entry["seeds"],
                 config_diff=entry["config_diff"],
+                ranking_eligible=entry["ranking_eligible"],
                 **ref,
             )
         )
@@ -541,11 +584,8 @@ def _project_multi_metric(
                 "seeds": tuple(sorted(seed for seed, _ in observations if seed is not None)),
             }
         vary_values = {axis: _clean(axis_value(spec, axis)) for axis in facet.vary}
-        eligibility = getattr(benchmark, "is_ranking_eligible", None)
         eligibility_axes = {**facet.fixed, **vary_values}
-        ranking_eligible = (
-            bool(eligibility(**eligibility_axes)) if callable(eligibility) else True
-        )
+        ranking_eligible = _is_ranking_eligible(benchmark, eligibility_axes)
         prelim.append(
             {
                 "experiment_id": experiment_id,
@@ -597,7 +637,7 @@ def _project_multi_metric(
                 seeds=stats["seeds"],
                 higher_is_better=metric_higher_is_better(metric_name),
                 ranking=is_ranking,
-                **reference,
+                reference=reference,
             )
         primary = row_metrics[benchmark.primary_metric]
         rows.append(
@@ -668,6 +708,13 @@ def _select_latest_attempts(
     return selected
 
 
+def _is_ranking_eligible(
+    benchmark: "Benchmark | None", axes: dict[str, Any]
+) -> bool:
+    eligibility = getattr(benchmark, "is_ranking_eligible", None)
+    return bool(eligibility(**axes)) if callable(eligibility) else True
+
+
 def _attempt_recency_key(record: RunRecord) -> tuple[datetime, str, str]:
     try:
         completed_at = datetime.fromisoformat(record.finished_at or "")
@@ -711,24 +758,24 @@ def _multi_metric_reference(
     measured: float,
     *,
     primary: bool,
-) -> dict[str, Any]:
+) -> LeaderboardReference | None:
     """Return a metric-local keyed comparison; only a primary gate gets a verdict."""
     candidates = [
         row for row in benchmark.expected(**axes) if row.key and row.metric == metric
     ]
     if len(candidates) != 1:
-        return {}
+        return None
     row = candidates[0]
     gates = primary and not row.is_external
-    return {
-        "reference_expected": row.expected,
-        "reference_tolerance": row.tolerance_band() if gates else None,
-        "reference_pass": row.within_tolerance(measured) if gates else None,
-        "reference_source": row.source,
-        "reference_label": row.label or None,
-        "reference_url": row.url or None,
-        "reference_delta": measured - row.expected,
-    }
+    return LeaderboardReference(
+        expected=row.expected,
+        delta=measured - row.expected,
+        tolerance=row.tolerance_band() if gates else None,
+        within_tolerance=row.within_tolerance(measured) if gates else None,
+        source=row.source,
+        label=row.label or None,
+        url=row.url or None,
+    )
 
 
 def _pareto_membership(
@@ -877,6 +924,7 @@ def _row_dict(row: LeaderboardRow) -> dict[str, Any]:
 
 
 def _metric_dict(metric: LeaderboardMetric) -> dict[str, Any]:
+    reference = metric.reference
     return {
         "rank": metric.rank,
         "mean": metric.mean,
@@ -887,15 +935,15 @@ def _metric_dict(metric: LeaderboardMetric) -> dict[str, Any]:
         "ranking": metric.ranking,
         "reference": (
             None
-            if metric.reference_expected is None
+            if reference is None
             else {
-                "expected": metric.reference_expected,
-                "delta": metric.reference_delta,
-                "tolerance": metric.reference_tolerance,
-                "pass": metric.reference_pass,
-                "source": metric.reference_source,
-                "label": metric.reference_label,
-                "url": metric.reference_url,
+                "expected": reference.expected,
+                "delta": reference.delta,
+                "tolerance": reference.tolerance,
+                "pass": reference.within_tolerance,
+                "source": reference.source,
+                "label": reference.label,
+                "url": reference.url,
             }
         ),
     }
@@ -989,7 +1037,7 @@ def render_csv(table: LeaderboardTable) -> str:
             description.metric
             for description in table.reported_metrics
             if any(
-                row.metrics[description.metric].reference_expected is not None
+                row.metrics[description.metric].reference is not None
                 for row in table.rows
             )
         }
@@ -1015,16 +1063,15 @@ def render_csv(table: LeaderboardTable) -> str:
                     "|".join(str(seed) for seed in result.seeds),
                 ]
                 if description.metric in referenced_metrics:
+                    reference = result.reference
                     cells += [
-                        "" if result.reference_expected is None
-                        else f"{result.reference_expected:.6f}",
-                        "" if result.reference_delta is None
-                        else f"{result.reference_delta:.6f}",
+                        "" if reference is None else f"{reference.expected:.6f}",
+                        "" if reference is None else f"{reference.delta:.6f}",
                     ]
                     if description.metric == table.metric:
                         cells += [
-                            "" if result.reference_pass is None
-                            else ("PASS" if result.reference_pass else "FAIL")
+                            "" if reference is None or reference.within_tolerance is None
+                            else ("PASS" if reference.within_tolerance else "FAIL")
                         ]
             cells += [
                 "" if row.metrics[description.metric].rank is None
@@ -1113,44 +1160,60 @@ def _fmt_wide_metric(metric: LeaderboardMetric) -> str:
     value = f"{metric.mean:.4f}"
     if metric.std is not None:
         value += f" ± {metric.std:.4f}"
-    if metric.reference_expected is not None:
-        value += f" (ref {metric.reference_expected:.4f}, Δ {metric.reference_delta:+.4f})"
-        if metric.reference_pass is not None:
-            value += " PASS" if metric.reference_pass else " FAIL"
+    if metric.reference is not None:
+        reference = metric.reference
+        value += f" (ref {reference.expected:.4f}, Δ {reference.delta:+.4f})"
+        if reference.within_tolerance is not None:
+            value += " PASS" if reference.within_tolerance else " FAIL"
     return value
 
 
 def _format_multi_metric_table(table: LeaderboardTable) -> str:
     names = ", ".join(description.metric for description in table.reported_metrics)
     lines = [f"Leaderboard — task={table.triple[2]} · metrics={names} · split={table.split}"]
-    header = [*table.vary]
-    header += [description.metric for description in table.reported_metrics]
-    header += [f"{description.metric} rank" for description in table.ranking_metrics]
-    header += ["eligible", "pareto", "config diff"]
-    rows_text: list[list[str]] = [header]
-    for row in table.rows:
-        cells = [str(_clean(row.vary_values.get(axis))) for axis in table.vary]
-        cells += [
-            _fmt_wide_metric(row.metrics[description.metric])
-            for description in table.reported_metrics
-        ]
-        cells += [
-            "" if row.metrics[description.metric].rank is None
-            else str(row.metrics[description.metric].rank)
-            for description in table.ranking_metrics
-        ]
-        cells += [
-            "eligible" if row.ranking_eligible else "control (ranking-ineligible)",
-            "" if row.pareto is None else ("yes" if row.pareto else "no"),
-            _fmt_diff(row.config_diff) or "—",
-        ]
-        rows_text.append(cells)
+    header, projected_rows = _wide_table_grid(table)
+    rows_text = [list(header)] + [
+        [*row[:-1], row[-1] or "—"] for row in projected_rows
+    ]
     widths = [max(len(row[index]) for row in rows_text) for index in range(len(header))]
     lines += [
         "  ".join(cell.ljust(widths[index]) for index, cell in enumerate(row))
         for row in rows_text
     ]
     return "\n".join(lines)
+
+
+def _wide_table_grid(
+    table: LeaderboardTable,
+) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
+    """Project the shared wide display columns once for text and HTML encoders."""
+    header = tuple(table.vary)
+    header += tuple(description.metric for description in table.reported_metrics)
+    header += tuple(
+        f"{description.metric} rank" for description in table.ranking_metrics
+    )
+    header += ("eligible", "pareto", "config diff")
+
+    rows: list[tuple[str, ...]] = []
+    for row in table.rows:
+        cells = tuple(str(_clean(row.vary_values.get(axis))) for axis in table.vary)
+        cells += tuple(
+            _fmt_wide_metric(row.metrics[description.metric])
+            for description in table.reported_metrics
+        )
+        cells += tuple(
+            ""
+            if row.metrics[description.metric].rank is None
+            else str(row.metrics[description.metric].rank)
+            for description in table.ranking_metrics
+        )
+        cells += (
+            "eligible" if row.ranking_eligible else "control (ranking-ineligible)",
+            "" if row.pareto is None else ("yes" if row.pareto else "no"),
+            _fmt_diff(row.config_diff),
+        )
+        rows.append(cells)
+    return header, tuple(rows)
 
 
 def render_html(table: LeaderboardTable) -> str:
@@ -1166,32 +1229,14 @@ def render_html(table: LeaderboardTable) -> str:
         )
 
     if table.reported_metrics:
-        header_cells = [*table.vary]
-        header_cells += [description.metric for description in table.reported_metrics]
-        header_cells += [
-            f"{description.metric} rank" for description in table.ranking_metrics
-        ]
-        header_cells += ["eligible", "pareto", "config diff"]
+        header_cells, projected_rows = _wide_table_grid(table)
         head = "".join(f"<th>{esc(cell)}</th>" for cell in header_cells)
         body_rows = []
-        for row in table.rows:
-            cells = [esc(_clean(row.vary_values.get(axis))) for axis in table.vary]
-            cells += [
-                esc(_fmt_wide_metric(row.metrics[description.metric]))
-                for description in table.reported_metrics
-            ]
-            cells += [
-                "" if row.metrics[description.metric].rank is None
-                else str(row.metrics[description.metric].rank)
-                for description in table.ranking_metrics
-            ]
-            cells += [
-                "eligible" if row.ranking_eligible else "control (ranking-ineligible)",
-                "" if row.pareto is None else ("yes" if row.pareto else "no"),
-                esc(_fmt_diff(row.config_diff)),
-            ]
+        for cells in projected_rows:
             body_rows.append(
-                "<tr>" + "".join(f"<td>{cell}</td>" for cell in cells) + "</tr>"
+                "<tr>"
+                + "".join(f"<td>{esc(cell)}</td>" for cell in cells)
+                + "</tr>"
             )
         title = f"SOMA leaderboard — {esc(table.triple[2])}"
         names = ", ".join(description.metric for description in table.reported_metrics)

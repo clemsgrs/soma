@@ -687,7 +687,12 @@ def _cmd_leaderboard(args: argparse.Namespace) -> int:
         print("Error: leaderboard needs --root <output_root>.", file=sys.stderr)
         return 2
 
-    triples = discover_triples(args.root)
+    include_incomplete = False
+    if benchmark is not None and args.metric is None:
+        from soma.benchmarks import get_reported_metrics
+
+        include_incomplete = len(get_reported_metrics(benchmark)) > 1
+    triples = discover_triples(args.root, include_incomplete=include_incomplete)
     if not triples:
         print(f"Error: no completed runs found under {args.root}.", file=sys.stderr)
         return 2
@@ -744,9 +749,13 @@ def _cmd_leaderboard(args: argparse.Namespace) -> int:
             return 2
 
     facet = LeaderboardFacet(vary=vary, fixed=fixed)
-    table = project_leaderboard(
-        triples[triple], facet, metric=args.metric, benchmark=benchmark, split=args.split
-    )
+    try:
+        table = project_leaderboard(
+            triples[triple], facet, metric=args.metric, benchmark=benchmark, split=args.split
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
     paths = write_leaderboard(table, args.root, name=args.name)
     print(format_table(table))
     print(f"\nWrote: {paths['csv']}  {paths['json']}  {paths['html']}")
