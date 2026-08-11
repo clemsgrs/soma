@@ -122,6 +122,34 @@ The returned `PipelineResult` includes:
 - `summary`: aggregated metrics across folds
 - `run_dir`: the resolved run directory containing the saved artifacts
 
+### Task-free representation evaluation
+
+Frozen tile embeddings can instead be evaluated directly with the fixed CRoMa v1
+protocol. A representation config must explicitly disable the ordinary task default:
+
+```yaml
+data:
+  dataset_csv: dataset.csv
+  splits_csv: splits.csv
+  dataset_type: tile
+task: null
+representation:
+  kind: croma
+  confounder_column: medical_center
+  split: test
+  evaluation_design: all
+  m: 5
+  alpha: 0.10
+```
+
+Selected dataset rows must contain non-empty `label`, literal `group_id`, and the
+configured confounder column. Representation runs do not fit a head or write a task
+report. Their provenance records the installed CRoMa version and the ordinary encoder
+configuration (including output variant). That record is useful for comparison, but an
+encoder slug, variant, dimension, package version, and ordinary run metadata do **not**
+by themselves prove byte-identical weights or preprocessing; Soma does not add checkpoint
+hashing or a separate upstream fingerprint for this protocol.
+
 ## CLI
 
 `soma` ships a command-line interface that runs a full pipeline from a YAML config file:

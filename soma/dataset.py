@@ -33,6 +33,7 @@ REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "mask_path",
     "patient_id",
+    "group_id",
     "points_path",
     # spatial_expression: integer row-key into the sidecar target matrix; resolved to a
     # vector on SampleRecord.target, so it is a typed column (not free metadata).
@@ -116,6 +117,11 @@ def _spacing_at_level_0(row: pd.Series) -> float | None:
     return _parse_spacing_at_level_0(row.get("spacing_at_level_0"))
 
 
+def _optional_text_column(row: pd.Series, column: str) -> str | None:
+    value = row.get(column)
+    return str(value) if column in row.index and pd.notna(value) else None
+
+
 def _is_valid_split_name(name: str) -> bool:
     """A split name is valid if it is 'train', 'tune', or starts with 'test'."""
     return name in ("train", "tune") or name.startswith("test")
@@ -131,6 +137,9 @@ class SampleRecord:
     mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
     patient_id: str | None = None
+    # Literal non-independence group from the manifest. Optional for every task;
+    # representation evaluation validates it only for the selected cohort.
+    group_id: str | None = None
     # Optional caller declaration for ``image_path``'s physical level-0 pixel size.
     # Extraction resolves and persists the authoritative source spacing separately.
     spacing_at_level_0: float | None = None
@@ -204,11 +213,8 @@ class Dataset:
                 if "mask_path" in row.index and pd.notna(row.get("mask_path"))
                 else None
             )
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
             samples[sid] = SampleRecord(
                 sample_id=sid,
@@ -216,6 +222,7 @@ class Dataset:
                 label=row["label"],
                 mask_path=mask_path,
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 metadata=metadata,
             )
@@ -335,11 +342,8 @@ class SegmentationManifest:
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
             label = row["label"] if "label" in row.index and pd.notna(row.get("label")) else None
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
             region = None
             if "region_x" in row.index and pd.notna(row.get("region_x")):
@@ -355,6 +359,7 @@ class SegmentationManifest:
                 label=label,  # optional for segmentation; supervision is the mask
                 mask_path=Path(str(row["mask_path"])),
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 region=region,
                 slide_id=slide_id,
@@ -436,11 +441,8 @@ class DetectionManifest:
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
             label = row["label"] if "label" in row.index and pd.notna(row.get("label")) else None
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns if pd.notna(row.get(c))}
             samples[sid] = SampleRecord(
                 sample_id=sid,
@@ -448,6 +450,7 @@ class DetectionManifest:
                 label=label,  # optional for detection; supervision is the points
                 points_path=Path(str(row["points_path"])),
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 metadata=metadata,
             )
@@ -572,11 +575,8 @@ class SpatialExpressionManifest:
         samples: dict[str, SampleRecord] = {}
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
             target_index = int(row["target_index"])
             samples[sid] = SampleRecord(
@@ -584,6 +584,7 @@ class SpatialExpressionManifest:
                 image_path=Path(str(row["image_path"])),
                 label=None,  # supervision is the vector target, not a scalar label
                 patient_id=patient_id,
+                group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 target=self._target_matrix[target_index],
                 metadata=metadata,

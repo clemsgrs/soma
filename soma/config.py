@@ -76,6 +76,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "decoder",
         "pixel_classifier",
         "task",
+        "representation",
         "evaluation",
         "training",
         "execution",
@@ -110,6 +111,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "decoder",
         "pixel_classifier",
         "task",
+        "representation",
         "evaluation",
         "training",
         "execution",
@@ -120,7 +122,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if section in data:
             value = data[section]
-            if section in ("aggregation", "decoder", "pixel_classifier"):
+            if section in ("aggregation", "decoder", "pixel_classifier", "task", "representation"):
                 if value is not None and not isinstance(value, dict):
                     raise TypeError(f"Config section '{section}' must be a mapping or null")
             elif value is not None and not isinstance(value, dict):
@@ -256,6 +258,11 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
             else None
         ),
         task=_load_task_config(data),
+        representation=(
+            RepresentationConfig(**data["representation"])
+            if data.get("representation")
+            else None
+        ),
         evaluation=_load_evaluation_config(data),
         training=TrainingConfig(**training_data),
         normalization=NormalizationConfig(**data.get("normalization", {})),
@@ -966,6 +973,42 @@ class TaskConfig:
 
 
 @dataclass(frozen=True)
+class RepresentationConfig:
+    """Fixed task-free representation-evaluation protocol.
+
+    V1 intentionally exposes only CRoMa's published all-neighbours protocol. Keeping
+    these fixed values explicit makes the saved config and experiment identity honest.
+    """
+
+    kind: str
+    confounder_column: str
+    split: str
+    evaluation_design: str = "all"
+    m: int = 5
+    alpha: float = 0.10
+
+    def __post_init__(self) -> None:
+        if self.kind != "croma":
+            raise ValueError(f"representation.kind must be exactly 'croma', got {self.kind!r}.")
+        if not isinstance(self.confounder_column, str) or not self.confounder_column.strip():
+            raise ValueError("representation.confounder_column must be a non-empty string.")
+        if not isinstance(self.split, str) or not self.split.strip():
+            raise ValueError("representation.split must be a non-empty string.")
+        if self.evaluation_design != "all":
+            raise ValueError(
+                "representation.evaluation_design must be exactly 'all'; "
+                f"got {self.evaluation_design!r}. paired_2x2 is not supported in v1."
+            )
+        if self.m != 5 or isinstance(self.m, bool):
+            raise ValueError(f"representation.m must be exactly 5, got {self.m!r}.")
+        if self.alpha != 0.10 or isinstance(self.alpha, bool):
+            raise ValueError(
+                "representation.alpha must be exactly 0.10 so croma_ltm10 is canonical; "
+                f"got {self.alpha!r}."
+            )
+
+
+@dataclass(frozen=True)
 class SubgroupConfig:
     """Columns used for subgroup metric breakdowns."""
 
@@ -1195,7 +1238,9 @@ class PipelineConfig:
             workflows that do not need one.
         aggregator: MIL aggregator configuration for slide-level bag
             learning, or ``None`` for tile/patient pipelines.
-        task: Task-head configuration. Required.
+        task: Task-head configuration. Exactly one of ``task`` and
+            ``representation`` is required.
+        representation: Task-free frozen-feature evaluation configuration.
         evaluation: Metric and subgroup evaluation configuration.
         training: Training hyperparameters.
         normalization: Feature-adaptor normalization applied to frozen encoder
@@ -1228,7 +1273,8 @@ class PipelineConfig:
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
     pixel_classifier: PixelClassifierConfig | None = None
-    task: TaskConfig = field(default=None)  # type: ignore[assignment]
+    task: TaskConfig | None = None
+    representation: RepresentationConfig | None = None
     evaluation: EvalConfig = field(default_factory=EvalConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
@@ -1241,8 +1287,10 @@ class PipelineConfig:
     run_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.task is None:
-            raise TypeError("PipelineConfig requires a 'task' argument (e.g. TaskConfig(name='classification'))")
+        if (self.task is None) == (self.representation is None):
+            raise TypeError(
+                "PipelineConfig requires exactly one of 'task' and 'representation'."
+            )
         _valid_dataset_types = {
             "slide",
             "tile",
@@ -1256,6 +1304,49 @@ class PipelineConfig:
                 f"Invalid dataset_type {self.dataset_type!r}. "
                 f"Must be one of: {sorted(_valid_dataset_types)}"
             )
+        if self.representation is not None:
+            if self.dataset_type != "tile":
+                raise ValueError("representation v1 requires data.dataset_type='tile'.")
+            if self.training.seed != 0:
+                raise ValueError(
+                    "representation v1 is deterministic and requires run.seed=0; "
+                    f"got {self.training.seed!r}. Repeated launches are attempts, not seeds."
+                )
+            if self.feature_mode != "cached":
+                raise ValueError("representation v1 requires data.feature_mode='cached'.")
+            if any(
+                component is not None
+                for component in (
+                    self.aggregator,
+                    self.decoder,
+                    self.pixel_classifier,
+                    self.composite,
+                )
+            ):
+                raise ValueError(
+                    "representation v1 does not use aggregation, decoder, pixel_classifier, "
+                    "or composite task components."
+                )
+            if (
+                self.normalization.method != "none"
+                or self.projection.method != "none"
+                or self.augmentation.is_enabled()
+            ):
+                raise ValueError(
+                    "representation v1 requires normalization.method='none', "
+                    "projection.method='none', and augmentation disabled."
+                )
+            if self.encoder is not None:
+                from slide2vec.encoders.registry import encoder_registry
+
+                try:
+                    encoder_registry.info(self.encoder.name)
+                except KeyError as exc:
+                    available = ", ".join(sorted(encoder_registry.names())) or "(none)"
+                    raise ValueError(
+                        f"Unknown encoder name '{self.encoder.name}'. Available encoders: {available}"
+                    ) from exc
+            return
         if (
             self.training.checkpoint_selection == "last"
             and self.pixel_classifier is not None
@@ -1677,7 +1768,11 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
         "preprocessing": _normalize_yaml_value(asdict(config.preprocessing)),
         "execution": _normalize_yaml_value(asdict(config.execution)),
         "cache": _normalize_yaml_value(asdict(config.cache)),
-        "task": _normalize_yaml_value(asdict(config.task)),
+        "task": (
+            _normalize_yaml_value(asdict(config.task))
+            if config.task is not None
+            else None
+        ),
         "evaluation": _normalize_yaml_value(asdict(config.evaluation)),
         # seed lives under run.seed in YAML; training.seed is excluded here to avoid
         # duplication — _layout_to_pipeline_config copies run.seed into TrainingConfig on load.
@@ -1725,6 +1820,8 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
         if config.composite is not None
         else None
     )
+    if config.representation is not None:
+        data["representation"] = _normalize_yaml_value(asdict(config.representation))
     return data
 
 
@@ -1770,8 +1867,10 @@ def load_config(
     return _layout_to_pipeline_config(canonical)
 
 
-def _load_task_config(data: dict[str, Any]) -> TaskConfig:
+def _load_task_config(data: dict[str, Any]) -> TaskConfig | None:
     task_data = data.get("task")
+    if task_data is None:
+        return None
     if not task_data or "name" not in task_data:
         raise ValueError(
             "Config is missing required 'task.name' (e.g. task: {name: binary_classification})"
