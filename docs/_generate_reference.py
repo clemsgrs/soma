@@ -323,6 +323,7 @@ def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
             "to append a measured number + provenance to the results ledger."
         )
     header = [c.capitalize() for c in key_columns] + [
+        "Metric",
         "soma (mean ± std)",
         "Seeds",
         "Reference",
@@ -344,6 +345,7 @@ def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
         commit = f"``{row.soma_commit}``" if row.soma_commit else "—"
         recorded = f"{row.date} @ {commit}" if row.date else commit
         cells = [row.key.get(c, "") for c in key_columns] + [
+            f"``{row.metric}``",
             measured,
             seeds,
             reference,

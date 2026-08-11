@@ -9,6 +9,7 @@ informational reference status.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -48,7 +49,15 @@ def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp
     code = _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "REFERENCE OK" in out
+    assert out == (
+        "Reproducing benchmark 'ocelot' — canonical seeds [0], running [0].\n"
+        "  Fast paths: --seeds 1 (single-seed smoke) | --from-run-dir <dir> "
+        "(re-score an existing run, no training).\n"
+        "  Cache-aware: feature extraction is cached and shared across seeds and repeat "
+        "runs, so it runs once per encoder.\n"
+        "[REFERENCE OK] ocelot mean_f1 = 0.7000  "
+        "(reference 0.6995, Δ +0.0005, tolerance ±0.0200)\n"
+    )
 
 
 def test_reproduce_from_run_dir_reports_potential_drift_without_failing(monkeypatch, capsys, tmp_path):
@@ -139,6 +148,70 @@ class _ExternalOnlyBenchmark:
         return {"mean_f1": 0.60}
 
 
+class _MultiMetricBenchmark:
+    name = "multi_metric_fixture"
+    facet = Facet(fixed={}, varied=())
+    canonical_seeds = (0, 1)
+    primary_metric = "median"
+    reported_metrics = ("median", "f0", "ltm10")
+    ranking_metrics = ("median", "ltm10")
+    reference_environment: dict[str, str] = {}
+
+    def __init__(self, scores=None):
+        self.scores = scores or {"median": 0.50, "f0": 0.25, "ltm10": 0.75}
+        self.scores_by_seed = None
+
+    def curate(self, raw_root, out_dir):
+        from pathlib import Path
+
+        from soma.curation.manifest import CuratedManifest
+
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        return CuratedManifest(
+            dataset_csv=Path(out_dir) / "dataset.csv",
+            splits_csv=Path(out_dir) / "splits.csv",
+        )
+
+    def build_config(self, **axes):
+        return object()
+
+    def expected(self, **axes):
+        return [
+            ReferenceRow(
+                key={"encoder": "fixture"},
+                metric="median",
+                expected=0.48,
+                tolerance=0.05,
+                source="fixture",
+            ),
+            ReferenceRow(
+                key={"encoder": "fixture"},
+                metric="f0",
+                expected=0.20,
+                tolerance=0.0,
+                source="fixture",
+                kind="external",
+                label="published diagnostic",
+                url="https://example.org/diagnostic",
+            ),
+        ]
+
+    def score(self, run_dir):
+        if self.scores_by_seed is not None:
+            return dict(self.scores_by_seed[Path(run_dir).name])
+        return dict(self.scores)
+
+
+@pytest.fixture()
+def multi_metric_benchmark():
+    bench = _MultiMetricBenchmark()
+    register_benchmark(bench)
+    try:
+        yield bench
+    finally:
+        registry_mod._REGISTRY.pop(bench.name, None)
+
+
 @pytest.fixture()
 def external_only_benchmark():
     bench = _ExternalOnlyBenchmark()
@@ -156,10 +229,212 @@ def test_reproduce_external_only_renders_measured_beside_reference(capsys, tmp_p
     code = _run_cli(["reproduce", "ext_only_fixture", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 0
-    assert "MEASURED" in out
-    assert "0.7300" in out  # the external Reference rendered beside Measured
-    assert "context only" in out
-    assert "PASS" not in out and "FAIL" not in out  # never gated on the external anchor
+    assert out == (
+        "Reproducing benchmark 'ext_only_fixture' — canonical seeds [0], running [0].\n"
+        "  Fast paths: --seeds 1 (single-seed smoke) | --from-run-dir <dir> "
+        "(re-score an existing run, no training).\n"
+        "  Cache-aware: feature extraction is cached and shared across seeds and repeat "
+        "runs, so it runs once per encoder.\n"
+        "[MEASURED] ext_only_fixture mean_f1 = 0.6000\n"
+        "  reference [best reported]: mean_f1 = 0.7300  "
+        "(Δ -0.1300, external — context only)  <https://example.org/board>\n"
+    )
+
+
+def test_reproduce_from_run_dir_names_every_missing_reported_metric(
+    capsys, tmp_path, multi_metric_benchmark
+):
+    multi_metric_benchmark.scores = {"median": 0.50}
+
+    code = _run_cli(
+        ["reproduce", multi_metric_benchmark.name, "--from-run-dir", str(tmp_path)]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert multi_metric_benchmark.name in captured.err
+    assert "f0" in captured.err
+    assert "ltm10" in captured.err
+
+
+def test_reproduce_renders_reported_metrics_in_order_and_only_primary_gates(
+    capsys, tmp_path, multi_metric_benchmark
+):
+    code = _run_cli(
+        ["reproduce", multi_metric_benchmark.name, "--from-run-dir", str(tmp_path)]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    primary_at = out.index("[REFERENCE OK] multi_metric_fixture median = 0.5000")
+    external_at = out.index("[MEASURED] multi_metric_fixture f0 = 0.2500")
+    diagnostic_at = out.index("[MEASURED] multi_metric_fixture ltm10 = 0.7500")
+    assert primary_at < external_at < diagnostic_at
+    assert "reference [published diagnostic]: f0 = 0.2000  (Δ +0.0500" in out
+    assert "multi_metric_fixture ltm10 — no reference matches axes={}" in out
+    assert out.count("REFERENCE OK") == 1
+    assert "POTENTIAL DRIFT" not in out
+
+
+def test_reproduce_full_mode_averages_each_reported_metric_independently(
+    monkeypatch, capsys, tmp_path, multi_metric_benchmark
+):
+    import argparse
+    import types
+
+    multi_metric_benchmark.scores_by_seed = {
+        "seed_0": {"median": 0.40, "f0": 0.20, "ltm10": 0.60},
+        "seed_1": {"median": 0.60, "f0": 0.40, "ltm10": 0.80},
+    }
+    monkeypatch.setattr(cli, "Pipeline", lambda config: types.SimpleNamespace(run=lambda: None))
+    args = argparse.Namespace(
+        encoder=None,
+        from_run_dir=None,
+        seeds=None,
+        raw_root=str(tmp_path / "raw"),
+        curated_dir=None,
+        out_dir=None,
+        output_root=str(tmp_path / "out"),
+        cache_root=None,
+        record=False,
+    )
+
+    code = cli._reproduce_one(multi_metric_benchmark, args)
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "median = 0.5000" in out
+    assert "f0 = 0.3000" in out
+    assert "ltm10 = 0.7000" in out
+
+
+def test_reproduce_record_writes_every_reported_metric_from_primary_anchor(
+    capsys, tmp_path, monkeypatch, multi_metric_benchmark
+):
+    ledger = tmp_path / "ledger" / "multi.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    monkeypatch.setattr(cli, "_provenance", lambda: ("2026-08-11", "abc123", "5.7.0"))
+
+    code = _run_cli(
+        [
+            "reproduce",
+            multi_metric_benchmark.name,
+            "--from-run-dir",
+            str(tmp_path),
+            "--record",
+        ]
+    )
+
+    assert code == 0
+    rows = registry_mod.load_results("multi_metric_fixture")
+    assert [row.metric for row in rows] == ["median", "f0", "ltm10"]
+    assert [row.measured for row in rows] == pytest.approx([0.50, 0.25, 0.75])
+    assert {tuple(row.key.items()) for row in rows} == {
+        (("encoder", "fixture"),)
+    }
+    assert all(row.n_seeds == 1 and row.std is None for row in rows)
+    assert all(row.date and row.soma_commit and row.slide2vec_version for row in rows)
+    assert "recorded" in capsys.readouterr().out
+
+
+def test_reproduce_record_skips_every_metric_without_unambiguous_primary_anchor(
+    capsys, tmp_path, monkeypatch, multi_metric_benchmark
+):
+    ledger = tmp_path / "ledger" / "multi.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    multi_metric_benchmark.expected = lambda **axes: [
+        ReferenceRow(
+            key={"encoder": encoder},
+            metric="median",
+            expected=0.48,
+            tolerance=0.0,
+            source="fixture",
+            kind="external",
+        )
+        for encoder in ("one", "two")
+    ]
+
+    code = _run_cli(
+        [
+            "reproduce",
+            multi_metric_benchmark.name,
+            "--from-run-dir",
+            str(tmp_path),
+            "--record",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert not ledger.exists()
+    assert "no unambiguous primary reference anchor" in out
+    assert "nothing recorded" in out
+
+
+def test_reproduce_full_mode_names_every_missing_reported_metric(
+    monkeypatch, capsys, tmp_path, multi_metric_benchmark
+):
+    import argparse
+    import types
+
+    multi_metric_benchmark.scores_by_seed = {"seed_0": {"median": 0.40}}
+    monkeypatch.setattr(cli, "Pipeline", lambda config: types.SimpleNamespace(run=lambda: None))
+    args = argparse.Namespace(
+        encoder=None,
+        from_run_dir=None,
+        seeds=1,
+        raw_root=str(tmp_path / "raw"),
+        curated_dir=None,
+        out_dir=None,
+        output_root=str(tmp_path / "out"),
+        cache_root=None,
+        record=False,
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli._reproduce_one(multi_metric_benchmark, args)
+    err = capsys.readouterr().err
+
+    assert exc.value.code == 2
+    assert multi_metric_benchmark.name in err
+    assert "f0" in err
+    assert "ltm10" in err
+
+
+def test_reproduce_full_mode_records_independent_standard_deviations(
+    monkeypatch, tmp_path, multi_metric_benchmark
+):
+    import argparse
+    import types
+
+    ledger = tmp_path / "ledger" / "multi.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    monkeypatch.setattr(cli, "_provenance", lambda: ("2026-08-11", "abc123", "5.7.0"))
+    monkeypatch.setattr(cli, "Pipeline", lambda config: types.SimpleNamespace(run=lambda: None))
+    multi_metric_benchmark.scores_by_seed = {
+        "seed_0": {"median": 0.40, "f0": 0.20, "ltm10": 0.60},
+        "seed_1": {"median": 0.60, "f0": 0.50, "ltm10": 1.00},
+    }
+    args = argparse.Namespace(
+        encoder=None,
+        from_run_dir=None,
+        seeds=None,
+        raw_root=str(tmp_path / "raw"),
+        curated_dir=None,
+        out_dir=None,
+        output_root=str(tmp_path / "out"),
+        cache_root=None,
+        record=True,
+    )
+
+    assert cli._reproduce_one(multi_metric_benchmark, args) == 0
+
+    rows = registry_mod.load_results("multi_metric_fixture")
+    assert [row.measured for row in rows] == pytest.approx([0.50, 0.35, 0.80])
+    assert [row.std for row in rows] == pytest.approx(
+        [0.1414, 0.2121, 0.2828], abs=5e-5
+    )
+    assert [row.n_seeds for row in rows] == [2, 2, 2]
 
 
 def test_reproduce_external_anchors_do_not_override_comparable_reference(

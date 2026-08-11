@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -136,6 +137,62 @@ class Benchmark(Protocol):
     def expected(self, **axes: Any) -> list[ReferenceRow]: ...
 
     def score(self, run_dir: str | Path) -> dict[str, float]: ...
+
+
+def _metric_declaration(
+    benchmark: Benchmark,
+    *,
+    attribute: str,
+    label: str,
+    fallback: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Read and validate one optional ordered metric declaration."""
+    declared = getattr(benchmark, attribute, fallback)
+    if not isinstance(declared, Sequence) or isinstance(declared, (str, bytes)):
+        raise ValueError(
+            f"Benchmark {benchmark.name!r}: {label} metrics must be an ordered sequence."
+        )
+    metrics = tuple(declared)
+    if not metrics:
+        raise ValueError(f"Benchmark {benchmark.name!r}: {label} metrics must be non-empty.")
+    primary_count = metrics.count(benchmark.primary_metric)
+    if primary_count != 1:
+        uniqueness = "unique and " if primary_count > 1 else ""
+        raise ValueError(
+            f"Benchmark {benchmark.name!r}: {label} metrics must be {uniqueness}include "
+            f"primary_metric {benchmark.primary_metric!r} exactly once."
+        )
+    if len(set(metrics)) != len(metrics):
+        raise ValueError(f"Benchmark {benchmark.name!r}: {label} metrics must be unique.")
+    return metrics
+
+
+def get_reported_metrics(benchmark: Benchmark) -> tuple[str, ...]:
+    """Metrics a benchmark requires and renders, in declaration order."""
+    return _metric_declaration(
+        benchmark,
+        attribute="reported_metrics",
+        label="Reported",
+        fallback=(benchmark.primary_metric,),
+    )
+
+
+def get_ranking_metrics(benchmark: Benchmark) -> tuple[str, ...]:
+    """Metrics eligible for ranking, defaulting to every Reported metric."""
+    reported = get_reported_metrics(benchmark)
+    metrics = _metric_declaration(
+        benchmark,
+        attribute="ranking_metrics",
+        label="Ranking",
+        fallback=reported,
+    )
+    unreported = [metric for metric in metrics if metric not in reported]
+    if unreported:
+        names = ", ".join(repr(metric) for metric in unreported)
+        raise ValueError(
+            f"Benchmark {benchmark.name!r}: Ranking metrics are not Reported: {names}."
+        )
+    return metrics
 
 
 # --- registry ------------------------------------------------------------------------
