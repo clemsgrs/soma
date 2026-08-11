@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 import yaml
 
 from soma.config import (
+    EncoderConfig,
     PipelineConfig,
     RepresentationConfig,
     TaskConfig,
@@ -100,6 +102,65 @@ def test_pipeline_config_requires_exactly_one_consumer():
             task=TaskConfig(name="binary_classification"),
             representation=representation,
         )
+
+
+def test_representation_requires_tile_dataset():
+    with pytest.raises(ValueError, match="dataset_type='tile'"):
+        PipelineConfig(
+            dataset_csv="dataset.csv",
+            splits_csv="splits.csv",
+            output_root="runs",
+            dataset_type="slide",
+            task=None,
+            representation=RepresentationConfig(
+                kind="croma", confounder_column="site", split="test"
+            ),
+        )
+
+
+def test_ordinary_task_default_and_identity_match_origin_main(tmp_path: Path):
+    (tmp_path / "dataset.csv").write_text(
+        "sample_id,image_path,label\n"
+        "train,/images/train.png,A\n"
+        "held,/images/held.png,B\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "splits.csv").write_text(
+        "fold,sample_id,split\n0,train,train\n0,held,test\n",
+        encoding="utf-8",
+    )
+    path = tmp_path / "task.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "run": {"output_root": str(tmp_path / "runs")},
+                "data": {
+                    "dataset_csv": str(tmp_path / "dataset.csv"),
+                    "splits_csv": str(tmp_path / "splits.csv"),
+                    "dataset_type": "tile",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(path)
+    persisted = config_yaml_dict(config)
+    payload = canonical_experiment_payload(config)
+    experiment = build_experiment_spec(config)
+
+    assert config.task == TaskConfig(name="binary_classification")
+    assert config.representation is None
+    assert persisted["task"] == {"name": "binary_classification", "params": {}}
+    assert "representation" not in persisted
+    assert payload["task"] == {"name": "binary_classification", "params": {}}
+    assert "representation" not in payload
+    assert experiment.experiment_id == (
+        "d3cc5e80fff797440aadcfd0ede9d24a869f2c777c4c34551e1d7fa41c88b869"
+    )
+    assert experiment.slug == (
+        "dataset-precomputed-slide-binary-classification_d3cc5e80fff7"
+    )
 
 
 @pytest.mark.parametrize(
@@ -235,6 +296,50 @@ def test_representation_identity_uses_only_selected_rows_and_protocol(tmp_path: 
     assert "evaluation" not in payload
 
 
+@pytest.mark.parametrize(
+    "selected_row",
+    [
+        "held,/images/held.png,C,g1,south\n",
+        "held,/images/held.png,B,other-group,south\n",
+        "held,/images/held.png,B,g1,north\n",
+    ],
+)
+def test_representation_identity_covers_selected_evaluation_values(
+    tmp_path: Path, selected_row: str
+):
+    base = _representation_config_with_manifests(
+        tmp_path / "base",
+        dataset_rows="held,/images/held.png,B,g1,south\n",
+        split_rows="0,held,test\n",
+    )
+    changed = _representation_config_with_manifests(
+        tmp_path / "changed",
+        dataset_rows=selected_row,
+        split_rows="0,held,test\n",
+    )
+
+    assert build_experiment_spec(changed).experiment_id != build_experiment_spec(
+        base
+    ).experiment_id
+
+
+def test_representation_identity_covers_encoder_output_variant(tmp_path: Path):
+    base = _representation_config_with_manifests(
+        tmp_path,
+        dataset_rows="held,/images/held.png,B,g1,south\n",
+        split_rows="0,held,test\n",
+    )
+    cls = replace(base, encoder=EncoderConfig(name="h0-mini", output_variant="cls"))
+    patch_mean = replace(
+        base,
+        encoder=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
+    )
+
+    assert build_experiment_spec(cls).experiment_id != build_experiment_spec(
+        patch_mean
+    ).experiment_id
+
+
 def test_representation_slug_and_metadata_use_tagged_comparison_key(tmp_path: Path):
     config = _representation_config_with_manifests(
         tmp_path,
@@ -272,6 +377,7 @@ def _representation_inputs(
     rows: list[tuple[str, str, str, str]],
     split_rows: list[tuple[int, str, str]],
     tensors: dict[str, torch.Tensor] | None = None,
+    missing_feature_ids: set[str] | None = None,
 ):
     dataset_csv = tmp_path / "dataset.csv"
     pd.DataFrame(
@@ -293,6 +399,8 @@ def _representation_inputs(
     feature_dir = tmp_path / "features"
     feature_dir.mkdir()
     for index, (sample_id, *_rest) in enumerate(rows):
+        if sample_id in (missing_feature_ids or set()):
+            continue
         tensor = (tensors or {}).get(
             sample_id, torch.tensor([float(index), float(index + 10)])
         )
@@ -459,9 +567,103 @@ def test_representation_split_must_be_nonempty_and_in_exactly_one_fold(tmp_path:
         )
 
 
+def test_representation_split_must_exist(tmp_path: Path):
+    dataset, splits, store = _representation_inputs(
+        tmp_path,
+        rows=[("s0", "A", "g0", "north")],
+        split_rows=[(0, "s0", "test")],
+    )
+
+    with pytest.raises(ValueError, match="non-empty cohort in exactly one fold"):
+        evaluate_representation(
+            feature_store=store,
+            dataset=dataset,
+            splits=splits,
+            representation=RepresentationConfig(
+                kind="croma", confounder_column="site", split="test_external"
+            ),
+            run_dir=tmp_path / "run",
+        )
+
+
+def test_representation_rejects_duplicate_split_membership(tmp_path: Path):
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label,group_id,site\n"
+        "s0,/images/s0.png,A,g0,north\n",
+        encoding="utf-8",
+    )
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text(
+        "fold,sample_id,split\n0,s0,test\n0,s0,test\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Duplicate sample_id.*s0"):
+        Splits(splits_csv, Dataset(dataset_csv))
+
+
+def test_representation_rejects_missing_selected_feature(tmp_path: Path):
+    dataset, splits, store = _representation_inputs(
+        tmp_path,
+        rows=[("s0", "A", "g0", "north")],
+        split_rows=[(0, "s0", "test")],
+        missing_feature_ids={"s0"},
+    )
+
+    with pytest.raises(ValueError, match="Missing features.*s0"):
+        evaluate_representation(
+            feature_store=store,
+            dataset=dataset,
+            splits=splits,
+            representation=RepresentationConfig(
+                kind="croma", confounder_column="site", split="test"
+            ),
+            run_dir=tmp_path / "run",
+        )
+
+
+def test_representation_attempt_metadata_retains_attempt_and_completion_time(
+    tmp_path: Path,
+):
+    config = _representation_config_with_manifests(
+        tmp_path,
+        dataset_rows="held,/images/held.png,B,g1,south\n",
+        split_rows="0,held,test\n",
+    )
+    experiment = build_experiment_spec(config)
+
+    first = create_run_metadata(
+        config=config,
+        experiment=experiment,
+        run_dir=tmp_path / "attempt-1",
+        run_id="attempt-1",
+        status="completed",
+        finished_at="2026-08-11T12:00:00+00:00",
+    )
+    second = create_run_metadata(
+        config=config,
+        experiment=experiment,
+        run_dir=tmp_path / "attempt-2",
+        run_id="attempt-2",
+        status="completed",
+        finished_at="2026-08-11T12:01:00+00:00",
+    )
+
+    assert (first.run_id, first.finished_at) == (
+        "attempt-1",
+        "2026-08-11T12:00:00+00:00",
+    )
+    assert (second.run_id, second.finished_at) == (
+        "attempt-2",
+        "2026-08-11T12:01:00+00:00",
+    )
+
+
 def test_pipeline_representation_run_writes_normal_artifacts_without_task_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    monkeypatch.setattr("importlib.metadata.version", lambda name: "9.8.7")
     dataset, _splits, store = _representation_inputs(
         tmp_path,
         rows=[("s0", "A", "g0", "north")],
@@ -502,4 +704,4 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
     assert metadata["status"] == "completed"
     assert metadata["finished_at"]
     assert metadata["seed"] == 0
-    assert metadata["representation_provenance"] == {"croma": "0.3.0"}
+    assert metadata["representation_provenance"] == {"croma": "9.8.7"}
