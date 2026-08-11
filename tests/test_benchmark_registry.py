@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,8 @@ from soma.benchmarks import (
     ReferenceRow,
     expected_rows,
     get_benchmark,
+    get_ranking_metrics,
+    get_reported_metrics,
     list_benchmarks,
     load_reference,
     register_benchmark,
@@ -93,6 +96,106 @@ def test_get_benchmark_unknown_is_keyerror():
 
 def test_fixture_conforms_to_benchmark_protocol(fixture_benchmark):
     assert isinstance(fixture_benchmark, Benchmark)
+
+
+def test_metric_accessors_preserve_declared_order_and_legacy_fallback():
+    legacy = SimpleNamespace(name="legacy", primary_metric="primary")
+    multi = SimpleNamespace(
+        name="multi",
+        primary_metric="median",
+        reported_metrics=("median", "f0", "ltm10"),
+        ranking_metrics=("median", "ltm10"),
+    )
+
+    assert get_reported_metrics(legacy) == ("primary",)
+    assert get_ranking_metrics(legacy) == ("primary",)
+    assert get_reported_metrics(multi) == ("median", "f0", "ltm10")
+    assert get_ranking_metrics(multi) == ("median", "ltm10")
+
+
+@pytest.mark.parametrize(
+    ("declared", "message"),
+    [
+        ((), "Reported metrics must be non-empty"),
+        (("primary", "primary"), "Reported metrics must be unique"),
+    ],
+)
+def test_reported_metrics_reject_empty_or_duplicate_declarations(declared, message):
+    benchmark = SimpleNamespace(
+        name="invalid", primary_metric="primary", reported_metrics=declared
+    )
+
+    with pytest.raises(ValueError, match=message):
+        get_reported_metrics(benchmark)
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [("secondary",), ("primary", "secondary", "primary")],
+)
+def test_reported_metrics_require_primary_exactly_once(declared):
+    benchmark = SimpleNamespace(
+        name="invalid", primary_metric="primary", reported_metrics=declared
+    )
+
+    with pytest.raises(ValueError, match="primary_metric 'primary' exactly once"):
+        get_reported_metrics(benchmark)
+
+
+def test_reported_metrics_reject_unordered_declarations():
+    benchmark = SimpleNamespace(
+        name="invalid", primary_metric="primary", reported_metrics={"primary", "secondary"}
+    )
+
+    with pytest.raises(ValueError, match="ordered sequence"):
+        get_reported_metrics(benchmark)
+
+
+@pytest.mark.parametrize(
+    ("declared", "message"),
+    [
+        ((), "Ranking metrics must be non-empty"),
+        (("primary", "other", "other"), "Ranking metrics must be unique"),
+    ],
+)
+def test_ranking_metrics_reject_empty_or_duplicate_declarations(declared, message):
+    benchmark = SimpleNamespace(
+        name="invalid",
+        primary_metric="primary",
+        reported_metrics=("primary", "other"),
+        ranking_metrics=declared,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        get_ranking_metrics(benchmark)
+
+
+def test_ranking_metrics_must_be_a_subset_of_reported_metrics():
+    benchmark = SimpleNamespace(
+        name="invalid",
+        primary_metric="primary",
+        reported_metrics=("primary", "diagnostic"),
+        ranking_metrics=("primary", "unreported"),
+    )
+
+    with pytest.raises(ValueError, match="not Reported: 'unreported'"):
+        get_ranking_metrics(benchmark)
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [("other",), ("primary", "other", "primary")],
+)
+def test_ranking_metrics_require_primary_exactly_once(declared):
+    benchmark = SimpleNamespace(
+        name="invalid",
+        primary_metric="primary",
+        reported_metrics=("primary", "other"),
+        ranking_metrics=declared,
+    )
+
+    with pytest.raises(ValueError, match="primary_metric 'primary' exactly once"):
+        get_ranking_metrics(benchmark)
 
 
 def test_reference_row_axis_matching():

@@ -150,6 +150,22 @@ def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
     return tuple(range(requested))
 
 
+def _require_reported_scores(benchmark, scores: dict[str, float]) -> dict[str, float]:
+    """Fail one scoring attempt if any required Reported metric is absent."""
+    from soma.benchmarks import get_reported_metrics
+
+    missing = [metric for metric in get_reported_metrics(benchmark) if metric not in scores]
+    if missing:
+        names = ", ".join(repr(metric) for metric in missing)
+        print(
+            f"Error: benchmark {benchmark.name!r} score is missing Reported metric(s): "
+            f"{names}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return scores
+
+
 def _reproduce_reference_row(benchmark, axes: dict[str, Any]):
     """The single comparable reference row for the primary metric, if one exists.
 
@@ -189,6 +205,20 @@ def _report_tolerance(benchmark, measured: float, row) -> bool:
     return ok
 
 
+def _render_reference_comparison(row, measured: float) -> None:
+    """Render one measured value beside a matching reference row."""
+    delta = measured - row.expected
+    if row.is_external:
+        label = row.label or "external reference"
+        link = f"  <{row.url}>" if row.url else ""
+        print(
+            f"  reference [{label}]: {row.metric} = {row.expected:.4f}  "
+            f"(Δ {delta:+.4f}, external — context only){link}"
+        )
+    else:
+        print(f"  reference: {row.metric} = {row.expected:.4f}  (Δ {delta:+.4f})")
+
+
 def _report_external(benchmark, measured: float, axes: dict[str, Any]) -> int:
     """Render the Measured value beside external contextual Reference row(s) (#260).
 
@@ -209,14 +239,19 @@ def _report_external(benchmark, measured: float, axes: dict[str, Any]) -> int:
         )
         return 0
     for row in external:
-        delta = measured - row.expected
-        label = row.label or "external reference"
-        link = f"  <{row.url}>" if row.url else ""
-        print(
-            f"  reference [{label}]: {row.metric} = {row.expected:.4f}  "
-            f"(Δ {delta:+.4f}, external — context only){link}"
-        )
+        _render_reference_comparison(row, measured)
     return 0
+
+
+def _report_secondary(benchmark, metric: str, measured: float, axes: dict[str, Any]) -> None:
+    """Render one non-gating Reported metric beside any matching references."""
+    print(f"[MEASURED] {benchmark.name} {metric} = {measured:.4f}")
+    references = [row for row in benchmark.expected(**axes) if row.metric == metric]
+    if not references:
+        print(f"  {benchmark.name} {metric} — no reference matches axes={axes}.")
+        return
+    for row in references:
+        _render_reference_comparison(row, measured)
 
 
 def _resolve_reproduce_targets(name: str) -> list[Any]:
@@ -362,12 +397,14 @@ def _record_result(
     std: float | None,
     n_seeds: int | None,
     key_axes: dict[str, Any] | None = None,
+    metric: str | None = None,
 ) -> None:
     """Append a reproduced-measurement row to the benchmark's results ledger (``--record``).
 
-    Keys and metric are copied from the matched reference ``row`` (a **gate** row, or an
-    **external** row for an external-only benchmark) so the recorded measurement joins its
-    reference at ``key`` + ``metric``; provenance is captured at run time.
+    Keys are copied from the primary reference anchor ``row`` (a **gate** row, or an
+    **external** row for an external-only benchmark). ``metric`` selects the Reported metric
+    being recorded, so secondary metrics share the primary cell key even when they have no
+    reference row. Provenance is captured at run time.
 
     ``key_axes`` fills key columns the reference leaves empty — see :func:`_record_axes`. A
     keyed reference (EVA, HEST) already states them, so this only bites for a broad one;
@@ -383,7 +420,7 @@ def _record_result(
     date, commit, slide2vec_version = _provenance()
     measured_row = MeasuredRow(
         key=key,
-        metric=row.metric,
+        metric=metric or row.metric,
         measured=measured,
         std=std,
         n_seeds=n_seeds,
@@ -465,16 +502,23 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
 
     row = _reproduce_reference_row(benchmark, axes)
 
-    def _finish(measured: float) -> int:
-        # A tolerance-bearing row highlights potential drift; an external-only benchmark
-        # renders Measured beside the Reference. Neither informational comparison gates a run.
-        if row is None:
-            return _report_external(benchmark, measured, axes)
-        _report_tolerance(benchmark, measured, row)
+    from soma.benchmarks import get_reported_metrics
+
+    reported_metrics = get_reported_metrics(benchmark)
+
+    def _report_measured_metrics(measured: dict[str, float]) -> int:
+        for metric in reported_metrics:
+            value = measured[metric]
+            if metric != benchmark.primary_metric:
+                _report_secondary(benchmark, metric, value, axes)
+            elif row is None:
+                _report_external(benchmark, value, axes)
+            else:
+                _report_tolerance(benchmark, value, row)
         return 0
 
     if args.from_run_dir is not None:
-        metrics = benchmark.score(args.from_run_dir)
+        metrics = _require_reported_scores(benchmark, benchmark.score(args.from_run_dir))
         measured = float(metrics[benchmark.primary_metric])
         if getattr(args, "record", False):
             # A re-scored single run has no seed spread, so std is None — but it *is* one
@@ -483,17 +527,20 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
             # with the varied axes filled from the run itself.
             record_row = _record_reference_row(benchmark, axes, row)
             if record_row is not None:
-                _record_result(
-                    benchmark,
-                    record_row,
-                    measured,
-                    std=None,
-                    n_seeds=1,
-                    key_axes=_record_axes(benchmark, axes, args.from_run_dir),
-                )
+                key_axes = _record_axes(benchmark, axes, args.from_run_dir)
+                for metric in reported_metrics:
+                    _record_result(
+                        benchmark,
+                        record_row,
+                        float(metrics[metric]),
+                        std=None,
+                        n_seeds=1,
+                        key_axes=key_axes,
+                        metric=metric,
+                    )
             else:
                 print("  (no reference row to key --record on; nothing recorded)")
-        return _finish(measured)
+        return _report_measured_metrics({benchmark.primary_metric: measured, **metrics})
 
     curated_dir = getattr(args, "curated_dir", None)
     if curated_dir is None and args.raw_root is None:
@@ -536,7 +583,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     overrides = {"cache": {"enabled": True, "root_dir": str(cache_root)}}
     print(f"Feature cache (shared across seeds): {cache_root}", flush=True)
 
-    measured_values: list[float] = []
+    measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     for seed in seeds:
         seed_root = output_root / f"seed_{seed}"
         config = benchmark.build_config(
@@ -548,28 +595,35 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
             overrides=overrides,
         )
         Pipeline(config).run()
-        metrics = benchmark.score(seed_root)
-        measured_values.append(float(metrics[benchmark.primary_metric]))
+        metrics = _require_reported_scores(benchmark, benchmark.score(seed_root))
+        for metric in reported_metrics:
+            measured_values[metric].append(float(metrics[metric]))
 
-    measured = statistics.fmean(measured_values)
+    measured = {
+        metric: statistics.fmean(values) for metric, values in measured_values.items()
+    }
     if getattr(args, "record", False):
         # Key off the gate row, or the external row for an external-only benchmark (hest).
         record_row = _record_reference_row(benchmark, axes, row)
         if record_row is not None:
-            std = statistics.stdev(measured_values) if len(measured_values) > 1 else 0.0
-            _record_result(
-                benchmark,
-                record_row,
-                measured,
-                std=std,
-                n_seeds=len(seeds),
-                # seed_root is the last seed's output; every seed shares the varied axes,
-                # so it answers "which encoder did this actually run" for all of them.
-                key_axes=_record_axes(benchmark, axes, seed_root),
-            )
+            key_axes = _record_axes(benchmark, axes, seed_root)
+            for metric in reported_metrics:
+                values = measured_values[metric]
+                std = statistics.stdev(values) if len(values) > 1 else 0.0
+                _record_result(
+                    benchmark,
+                    record_row,
+                    measured[metric],
+                    std=std,
+                    n_seeds=len(seeds),
+                    # seed_root is the last seed's output; every seed shares the varied
+                    # axes, so it identifies the cell for every Reported metric.
+                    key_axes=key_axes,
+                    metric=metric,
+                )
         else:
             print("  (no reference row to key --record on; nothing recorded)")
-    return _finish(measured)
+    return _report_measured_metrics(measured)
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> int:
