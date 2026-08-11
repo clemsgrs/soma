@@ -5,6 +5,49 @@ soma includes small curators for converting known public benchmark layouts into
 the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 :doc:`dataset`.
 
+PathoROB Robustness Index views
+-------------------------------
+
+``curate_pathorob_ri_views`` deterministically curates the three PathoROB
+Robustness Index (RI) views as one family. It does not download or decode source
+data; it consumes the prepared tree produced for the pinned PathoROB sources::
+
+    <raw-root>/
+      camelyon/
+        camelyon.csv
+        source_index.csv
+        provenance.json
+      tcga-4x4/
+        tcga_4x4.csv
+        source_index.csv
+        provenance.json
+      tolkach-esca/
+        tolkach_esca_reduced.csv
+        source_index.csv
+        provenance.json
+
+Each ``source_index.csv`` has literal ``slide_id,patch_id,sample_id,image_path``
+columns. Relative image paths are resolved from their cohort directory. Each
+``provenance.json`` records ``schema_version`` and ``cohort``, plus ``dataset``
+and ``metadata`` entries under ``sources``; each source entry has its pinned
+``repository`` and ``revision``. Unknown repositories or revisions are refused.
+
+Use the family curator so sample IDs are checked across all three views::
+
+    from soma.curation import curate_pathorob_ri_views
+
+    manifests = curate_pathorob_ri_views(
+        "/path/to/prepared/pathorob",
+        "data/pathorob",
+    )
+
+The RI views are fixed, balanced grids: Camelyon has 2 labels x 2 centers x
+5,100 rows (20,400 rows), TCGA-4x4 has 4 x 4 x 360 rows (5,760 rows), and
+Tolkach-ESCA has 6 x 3 x 500 rows (9,000 rows). Camelyon specifically selects
+the 20,400 ``subset == "ID"`` rows from its 22,402 source tiles; Tolkach-ESCA
+is already the stored balanced sample and is never resampled. Every emitted row
+is assigned to ``test``, fold ``0``.
+
 EVA patch-level classification
 ------------------------------
 
