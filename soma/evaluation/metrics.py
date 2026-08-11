@@ -91,7 +91,7 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "detection": ["mean_f1"],
 }
 
-LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae"}
+LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae", "croma_f0"}
 
 # ---------------------------------------------------------------------------
 # Per-metric functions — signature: (y_true, y_pred, y_prob) -> float
@@ -353,7 +353,7 @@ def compute_survival_metrics(
 
 def metric_higher_is_better(metric: str) -> bool:
     """Return whether larger values mean better performance for a metric."""
-    return metric not in LOWER_IS_BETTER_METRICS
+    return metric.rsplit("/", 1)[-1] not in LOWER_IS_BETTER_METRICS
 
 
 def probability_columns(columns) -> list[str]:
