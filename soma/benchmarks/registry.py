@@ -292,6 +292,7 @@ _RESULT_VALUE_COLUMNS = (
     "date",
     "soma_commit",
     "slide2vec_version",
+    "croma_version",
     "source",
 )
 # The minimum a results row must carry to be meaningful (a measurement for a metric).
@@ -305,10 +306,10 @@ class MeasuredRow:
     Mirrors :class:`ReferenceRow`'s key convention (``key`` holds only the *populated* key
     cells) so a measured row joins the reference row at the same ``key`` + ``metric``.
     For a single re-scored run (``--from-run-dir``), ``std`` is ``None`` and ``n_seeds`` is
-    ``1``. The provenance trio (``date``, ``soma_commit``, ``slide2vec_version``) pins the
-    environment that produced the number — a reproduced value is only meaningful with the
-    code and feature-extractor that made it. ``source`` is a free-text note (mirrors
-    ``reference``'s ``source`` column).
+    ``1``. The provenance fields pin the environment that produced the number — a reproduced
+    value is only meaningful with the code and feature-extractor that made it.
+    Representation benchmarks additionally record their runtime ``croma_version``.
+    ``source`` is a free-text note (mirrors ``reference``'s ``source`` column).
     """
 
     key: dict[str, str]
@@ -319,6 +320,7 @@ class MeasuredRow:
     date: str = ""
     soma_commit: str = ""
     slide2vec_version: str = ""
+    croma_version: str = ""
     source: str = ""
 
     def matches(self, axes: dict[str, Any]) -> bool:
@@ -367,6 +369,7 @@ def load_results(name: str) -> list[MeasuredRow]:
                     date=(raw.get("date") or "").strip(),
                     soma_commit=(raw.get("soma_commit") or "").strip(),
                     slide2vec_version=(raw.get("slide2vec_version") or "").strip(),
+                    croma_version=(raw.get("croma_version") or "").strip(),
                     source=(raw.get("source") or "").strip(),
                 )
             )
@@ -387,8 +390,8 @@ def reproduced_rows(name: str, *, metric: str | None = None, **axes: Any) -> lis
 
 
 def _format_measure(value: float | None) -> str:
-    """Serialise a measurement/std for the ledger (``""`` for ``None``, else 4 decimals)."""
-    return "" if value is None else f"{value:.4f}"
+    """Serialise a measurement/std without erasing rank-relevant precision."""
+    return "" if value is None else f"{value:.12g}"
 
 
 def append_result(name: str, row: MeasuredRow, *, key_order: list[str] | None = None) -> Path:
@@ -417,6 +420,7 @@ def append_result(name: str, row: MeasuredRow, *, key_order: list[str] | None = 
         "date": row.date,
         "soma_commit": row.soma_commit,
         "slide2vec_version": row.slide2vec_version,
+        "croma_version": row.croma_version,
         "source": row.source,
     }
     path.parent.mkdir(parents=True, exist_ok=True)

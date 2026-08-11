@@ -107,7 +107,10 @@ def test_append_result_creates_header_then_appends(tmp_path, monkeypatch):
     path = append_result("toy", first, key_order=["dataset", "encoder"])
     assert path == target
     header = target.read_text().splitlines()[0]
-    assert header == "dataset,encoder,metric,measured,std,n_seeds,date,soma_commit,slide2vec_version,source"
+    assert header == (
+        "dataset,encoder,metric,measured,std,n_seeds,date,soma_commit,"
+        "slide2vec_version,croma_version,source"
+    )
 
     # Re-running the same cell appends a second row (history), never overwrites.
     second = MeasuredRow(

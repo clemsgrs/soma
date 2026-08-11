@@ -77,6 +77,8 @@ Included benchmarks
   detection.
 * :doc:`HEST <hest-gene-expression-benchmark>` evaluates frozen encoders for
   spatial gene-expression prediction.
+* :doc:`PathoROB <pathorob-robustness-benchmark>` evaluates frozen tile
+  encoders for representation robustness across medical centers.
 
 Each page documents data acquisition, the fixed protocol, reproduction commands,
 and the relevant packaged reference.
@@ -92,4 +94,5 @@ benchmarks.
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
    hest-gene-expression-benchmark
+   pathorob-robustness-benchmark
    croma-encoder-panel

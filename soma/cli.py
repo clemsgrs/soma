@@ -269,6 +269,17 @@ def _resolve_reproduce_targets(name: str) -> list[Any]:
         return [get_benchmark(n) for n in list_benchmarks() if n.startswith(f"{name}/")]
 
 
+def _resolve_run_dir(path: str | Path) -> Path:
+    """Resolve a run directory directly or through its newest nested summary."""
+    candidate = Path(path)
+    if (candidate / "summary.json").is_file() or (candidate / "run.yaml").is_file():
+        return candidate
+    summaries = sorted(
+        candidate.glob("**/summary.json"), key=lambda summary: summary.stat().st_mtime
+    )
+    return summaries[-1].parent if summaries else candidate
+
+
 def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     """The benchmark's varied axes (encoder) read from a run's OWN recorded spec.
 
@@ -281,12 +292,7 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     """
     from soma.leaderboard import _MISSING, axis_value, load_run_record
 
-    path = Path(from_run_dir)
-    if (path / "summary.json").is_file() or (path / "run.yaml").is_file():
-        run_dir = path
-    else:  # an output_root above the run(s): mirror score()'s newest-summary resolution.
-        summaries = sorted(path.glob("**/summary.json"), key=lambda p: p.stat().st_mtime)
-        run_dir = summaries[-1].parent if summaries else path
+    run_dir = _resolve_run_dir(from_run_dir)
     record = load_run_record(run_dir)
     if record is None:
         return {}
@@ -348,6 +354,32 @@ def _provenance() -> tuple[str, str, str]:
     return date, _git_commit(), slide2vec_version
 
 
+def _runtime_croma_version() -> str:
+    """Installed Croma version used by a representation-evaluation run."""
+    from importlib import metadata
+
+    try:
+        return metadata.version("croma")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _recorded_croma_version(
+    run_dir: str | Path | None, *, historical_run: bool
+) -> str:
+    """Croma producer version from run metadata or the current execution environment."""
+    if run_dir is not None:
+        path = _resolve_run_dir(run_dir)
+        metadata_path = path / "run.yaml"
+        if metadata_path.is_file():
+            metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8")) or {}
+            provenance = metadata.get("representation_provenance") or {}
+            version = provenance.get("croma")
+            if version not in (None, ""):
+                return str(version)
+    return "unknown" if historical_run else _runtime_croma_version()
+
+
 def _record_reference_row(benchmark, axes: dict[str, Any], gate_row):
     """The reference row whose key + metric key a ``--record`` ledger entry.
 
@@ -398,6 +430,8 @@ def _record_result(
     n_seeds: int | None,
     key_axes: dict[str, Any] | None = None,
     metric: str | None = None,
+    run_dir: str | Path | None = None,
+    historical_run: bool = False,
 ) -> None:
     """Append a reproduced-measurement row to the benchmark's results ledger (``--record``).
 
@@ -427,6 +461,11 @@ def _record_result(
         date=date,
         soma_commit=commit,
         slide2vec_version=slide2vec_version,
+        croma_version=(
+            _recorded_croma_version(run_dir, historical_run=historical_run)
+            if getattr(benchmark, "records_croma_version", False)
+            else ""
+        ),
         source="soma reproduce --record",
     )
     path = append_result(_results_table_name(benchmark), measured_row, key_order=list(key))
@@ -537,6 +576,8 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                         n_seeds=1,
                         key_axes=key_axes,
                         metric=metric,
+                        run_dir=args.from_run_dir,
+                        historical_run=True,
                     )
             else:
                 print("  (no reference row to key --record on; nothing recorded)")
@@ -564,9 +605,17 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
         manifest = _curated_manifest_from_dir(curated)
         print(f"Using pre-curated manifest (skipping curation): {curated}", flush=True)
     else:
-        raw_root = Path(args.raw_root) / sub if sub else Path(args.raw_root)
+        family_raw_root = Path(args.raw_root)
+        shares_family_root = bool(
+            sub and getattr(benchmark, "family_uses_shared_raw_root", False)
+        )
+        raw_root = family_raw_root if shares_family_root else (
+            family_raw_root / sub if sub else family_raw_root
+        )
         if args.out_dir:
             out_dir = Path(args.out_dir) / sub if sub else Path(args.out_dir)
+        elif shares_family_root:
+            out_dir = family_raw_root / "curated" / sub
         else:
             out_dir = raw_root / "curated"
         manifest = benchmark.curate(raw_root, out_dir)
@@ -620,6 +669,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                     # axes, so it identifies the cell for every Reported metric.
                     key_axes=key_axes,
                     metric=metric,
+                    run_dir=seed_root,
                 )
         else:
             print("  (no reference row to key --record on; nothing recorded)")
