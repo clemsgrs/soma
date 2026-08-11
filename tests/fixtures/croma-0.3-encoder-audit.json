@@ -1,0 +1,1662 @@
+{
+  "about": "Pinned name-only audit fixture captured from the Croma 0.3.0 release. It records extraction-registry names/modes and the 234 (result table, metric, model) coordinates that issue #318 must translate. Numerical reference values are deliberately excluded; importing them belongs to issue #316.",
+  "source": {
+    "project": "clemsgrs/croma",
+    "release": "0.3.0",
+    "commit": "ed94b5404f010d69bf51c6e82b8ace97acc86fa3",
+    "model_registry": "https://github.com/clemsgrs/croma/blob/0.3.0/scripts/bench/model_registry.py",
+    "model_metadata": "https://github.com/clemsgrs/croma/blob/0.3.0/scripts/bench/model_metadata.csv",
+    "result_tables": [
+      "https://github.com/clemsgrs/croma/blob/0.3.0/results/camelyon.csv",
+      "https://github.com/clemsgrs/croma/blob/0.3.0/results/tcga-4x4.csv",
+      "https://github.com/clemsgrs/croma/blob/0.3.0/results/tolkach-esca.csv"
+    ],
+    "reference_metrics": [
+      "bio_bacc",
+      "conf_bacc",
+      "ri"
+    ]
+  },
+  "encoder_audit": [
+    {
+      "published_model": "Virchow2",
+      "croma_registry_name": "Virchow2",
+      "croma_extract": "virchow",
+      "croma_dimension": 2560,
+      "expected_soma_encoder": "virchow2",
+      "expected_output_variant": "cls_patch_mean",
+      "expected_dimension": 2560
+    },
+    {
+      "published_model": "CONCH",
+      "croma_registry_name": "CONCH",
+      "croma_extract": "raw",
+      "croma_dimension": 512,
+      "expected_soma_encoder": "conch",
+      "expected_output_variant": "default",
+      "expected_dimension": 512
+    },
+    {
+      "published_model": "GenBio-PathFM",
+      "croma_registry_name": "GenBio-PathFM",
+      "croma_extract": "raw",
+      "croma_dimension": 4608,
+      "expected_soma_encoder": "genbio-pathfm",
+      "expected_output_variant": "default",
+      "expected_dimension": 4608
+    },
+    {
+      "published_model": "CONCHv1.5",
+      "croma_registry_name": "CONCHv1.5",
+      "croma_extract": "raw",
+      "croma_dimension": 768,
+      "expected_soma_encoder": "conchv15",
+      "expected_output_variant": "default",
+      "expected_dimension": 768
+    },
+    {
+      "published_model": "H0-mini",
+      "croma_registry_name": "H0-mini",
+      "croma_extract": "virchow",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "h0-mini",
+      "expected_output_variant": "cls_patch_mean",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "Virchow",
+      "croma_registry_name": "Virchow",
+      "croma_extract": "cls_and_patch",
+      "croma_dimension": 2560,
+      "expected_soma_encoder": "virchow",
+      "expected_output_variant": "cls_patch_mean",
+      "expected_dimension": 2560
+    },
+    {
+      "published_model": "Midnight-12k",
+      "croma_registry_name": "Midnight-12k",
+      "croma_extract": "cls_and_patch",
+      "croma_dimension": 3072,
+      "expected_soma_encoder": "midnight",
+      "expected_output_variant": "default",
+      "expected_dimension": 3072
+    },
+    {
+      "published_model": "H-optimus-1",
+      "croma_registry_name": "H-optimus-1",
+      "croma_extract": "cls",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "h-optimus-1",
+      "expected_output_variant": "default",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "DINOv2-B",
+      "croma_registry_name": "DINOv2-B",
+      "croma_extract": "cls",
+      "croma_dimension": 768,
+      "expected_soma_encoder": "dinov2-vitb14",
+      "expected_output_variant": "default",
+      "expected_dimension": 768
+    },
+    {
+      "published_model": "H-optimus-0",
+      "croma_registry_name": "H-optimus-0",
+      "croma_extract": "cls",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "h-optimus-0",
+      "expected_output_variant": "default",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "UNI2-h",
+      "croma_registry_name": "UNI2-h",
+      "croma_extract": "cls",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "uni2",
+      "expected_output_variant": "default",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "MUSK",
+      "croma_registry_name": "MUSK",
+      "croma_extract": "ms_aug",
+      "croma_dimension": 2048,
+      "expected_soma_encoder": "musk",
+      "expected_output_variant": "ms_aug",
+      "expected_dimension": 2048
+    },
+    {
+      "published_model": "mSTAR",
+      "croma_registry_name": "mSTAR",
+      "croma_extract": "cls",
+      "croma_dimension": 1024,
+      "expected_soma_encoder": "mstar",
+      "expected_output_variant": "default",
+      "expected_dimension": 1024
+    },
+    {
+      "published_model": "Prov-GigaPath",
+      "croma_registry_name": "Prov-GigaPath",
+      "croma_extract": "cls",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "gigapath",
+      "expected_output_variant": "default",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "UNI",
+      "croma_registry_name": "UNI",
+      "croma_extract": "cls",
+      "croma_dimension": 1024,
+      "expected_soma_encoder": "uni",
+      "expected_output_variant": "default",
+      "expected_dimension": 1024
+    },
+    {
+      "published_model": "Hibou-B",
+      "croma_registry_name": "Hibou-B",
+      "croma_extract": "cls",
+      "croma_dimension": 768,
+      "expected_soma_encoder": "hibou-b",
+      "expected_output_variant": "default",
+      "expected_dimension": 768
+    },
+    {
+      "published_model": "GPFM",
+      "croma_registry_name": "GPFM",
+      "croma_extract": "cls",
+      "croma_dimension": 1024,
+      "expected_soma_encoder": "gpfm",
+      "expected_output_variant": "default",
+      "expected_dimension": 1024
+    },
+    {
+      "published_model": "Phikon",
+      "croma_registry_name": "Phikon",
+      "croma_extract": "cls",
+      "croma_dimension": 768,
+      "expected_soma_encoder": "phikon",
+      "expected_output_variant": "default",
+      "expected_dimension": 768
+    },
+    {
+      "published_model": "Phikon-v2",
+      "croma_registry_name": "Phikon-v2",
+      "croma_extract": "cls",
+      "croma_dimension": 1024,
+      "expected_soma_encoder": "phikonv2",
+      "expected_output_variant": "default",
+      "expected_dimension": 1024
+    },
+    {
+      "published_model": "Prost40M",
+      "croma_registry_name": "Prost40M",
+      "croma_extract": "cls",
+      "croma_dimension": 384,
+      "expected_soma_encoder": "prost40m",
+      "expected_output_variant": "default",
+      "expected_dimension": 384
+    },
+    {
+      "published_model": "Hibou-L",
+      "croma_registry_name": "Hibou-L",
+      "croma_extract": "cls",
+      "croma_dimension": 1024,
+      "expected_soma_encoder": "hibou-l",
+      "expected_output_variant": "default",
+      "expected_dimension": 1024
+    },
+    {
+      "published_model": "Mascaret",
+      "croma_registry_name": "Mascaret",
+      "croma_extract": "raw",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "mascaret",
+      "expected_output_variant": "default",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "Phaet",
+      "croma_registry_name": "Phaet",
+      "croma_extract": "raw",
+      "croma_dimension": 1024,
+      "expected_soma_encoder": "phaet",
+      "expected_output_variant": "default",
+      "expected_dimension": 1024
+    },
+    {
+      "published_model": "RudolfV-2",
+      "croma_registry_name": "RudolfV 2",
+      "croma_extract": "cls_and_patch",
+      "croma_dimension": 3072,
+      "expected_soma_encoder": "rudolfv2",
+      "expected_output_variant": "cls_patch_mean",
+      "expected_dimension": 3072
+    },
+    {
+      "published_model": "RudolfV-2-B",
+      "croma_registry_name": "RudolfV 2-B",
+      "croma_extract": "cls_and_patch",
+      "croma_dimension": 1536,
+      "expected_soma_encoder": "rudolfv2-b",
+      "expected_output_variant": "cls_patch_mean",
+      "expected_dimension": 1536
+    },
+    {
+      "published_model": "RudolfV-2-S",
+      "croma_registry_name": "RudolfV 2-S",
+      "croma_extract": "cls_and_patch",
+      "croma_dimension": 768,
+      "expected_soma_encoder": "rudolfv2-s",
+      "expected_output_variant": "cls_patch_mean",
+      "expected_dimension": 768
+    }
+  ],
+  "reference_rows": [
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "bio_bacc",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "conf_bacc",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/camelyon.csv",
+      "metric": "ri",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "bio_bacc",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "conf_bacc",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/tcga-4x4.csv",
+      "metric": "ri",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "bio_bacc",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "conf_bacc",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Midnight-12k",
+      "expected_soma_encoder": "midnight"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Mascaret",
+      "expected_soma_encoder": "mascaret"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2-S",
+      "expected_soma_encoder": "rudolfv2-s"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "CONCH",
+      "expected_soma_encoder": "conch"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2",
+      "expected_soma_encoder": "rudolfv2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "RudolfV-2-B",
+      "expected_soma_encoder": "rudolfv2-b"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "CONCHv1.5",
+      "expected_soma_encoder": "conchv15"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "GenBio-PathFM",
+      "expected_soma_encoder": "genbio-pathfm"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "H0-mini",
+      "expected_soma_encoder": "h0-mini"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Virchow",
+      "expected_soma_encoder": "virchow"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Virchow2",
+      "expected_soma_encoder": "virchow2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "MUSK",
+      "expected_soma_encoder": "musk"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "H-optimus-1",
+      "expected_soma_encoder": "h-optimus-1"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Phaet",
+      "expected_soma_encoder": "phaet"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "GPFM",
+      "expected_soma_encoder": "gpfm"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "H-optimus-0",
+      "expected_soma_encoder": "h-optimus-0"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "UNI2-h",
+      "expected_soma_encoder": "uni2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "mSTAR",
+      "expected_soma_encoder": "mstar"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "DINOv2-B",
+      "expected_soma_encoder": "dinov2-vitb14"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Phikon",
+      "expected_soma_encoder": "phikon"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "UNI",
+      "expected_soma_encoder": "uni"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Hibou-B",
+      "expected_soma_encoder": "hibou-b"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Prov-GigaPath",
+      "expected_soma_encoder": "gigapath"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Prost40M",
+      "expected_soma_encoder": "prost40m"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Phikon-v2",
+      "expected_soma_encoder": "phikonv2"
+    },
+    {
+      "result_table": "results/tolkach-esca.csv",
+      "metric": "ri",
+      "published_model": "Hibou-L",
+      "expected_soma_encoder": "hibou-l"
+    }
+  ]
+}

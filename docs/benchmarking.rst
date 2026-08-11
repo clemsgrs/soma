@@ -81,6 +81,10 @@ Included benchmarks
 Each page documents data acquisition, the fixed protocol, reproduction commands,
 and the relevant packaged reference.
 
+The :doc:`Croma 0.3 encoder panel audit <croma-encoder-panel>` pins the published
+model names to explicit slide2vec output contracts for reuse by robustness
+benchmarks.
+
 .. toctree::
    :maxdepth: 1
    :hidden:
@@ -88,3 +92,4 @@ and the relevant packaged reference.
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
    hest-gene-expression-benchmark
+   croma-encoder-panel

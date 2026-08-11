@@ -160,6 +160,26 @@ def test_benchmark_page_matches_registry(builder: str, filename: str) -> None:
     assert "TBD" not in generated
 
 
+def test_croma_encoder_panel_page_matches_mapping_and_scopes_compatibility() -> None:
+    generator, docs_dir = _load_reference_generator()
+    generated = generator.build_croma_encoder_panel_rst().strip()
+    checked_in = (docs_dir / "croma-encoder-panel.rst").read_text(
+        encoding="utf-8"
+    ).strip()
+
+    assert generated == checked_in
+    assert "does not prove exact numerical identity" in generated
+    for unpinned_factor in (
+        "weights and checkpoint revision",
+        "preprocessing",
+        "input geometry",
+        "normalization",
+        "precision",
+        "implementation version",
+    ):
+        assert unpinned_factor in generated
+
+
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     example_paths = (
@@ -247,6 +267,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
             "hest-gene-expression-benchmark",
+            "croma-encoder-panel",
         ),
         "reference.rst": ("api", "cli"),
         "system.rst": ("caching", "outputs", "reporting"),
