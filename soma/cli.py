@@ -540,10 +540,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                         metric=metric,
                     )
             else:
-                print(
-                    "  (no unambiguous primary reference anchor for --record; "
-                    "nothing recorded)"
-                )
+                print("  (no reference row to key --record on; nothing recorded)")
         return _finish({benchmark.primary_metric: measured, **metrics})
 
     curated_dir = getattr(args, "curated_dir", None)
@@ -626,9 +623,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                     metric=metric,
                 )
         else:
-            print(
-                "  (no unambiguous primary reference anchor for --record; nothing recorded)"
-            )
+            print("  (no reference row to key --record on; nothing recorded)")
     return _finish(measured)
 
 

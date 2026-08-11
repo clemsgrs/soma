@@ -367,7 +367,7 @@ def test_reproduce_record_skips_every_metric_without_unambiguous_primary_anchor(
 
     assert code == 0
     assert not ledger.exists()
-    assert "no unambiguous primary reference anchor" in out
+    assert "no reference row to key --record on" in out
     assert "nothing recorded" in out
 
 
