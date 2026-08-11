@@ -5,33 +5,58 @@ soma includes small curators for converting known public benchmark layouts into
 the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 :doc:`dataset`.
 
+PathoROB source preparation
+---------------------------
+
+PathoROB preparation is a separate acquisition and decoding step before RI-view
+curation. Install its Parquet dependency, then choose a new destination raw
+root::
+
+    pip install 'soma-pathology[pathorob]'
+    soma prepare-pathorob /data/pathorob
+
+The equivalent packaged callable is::
+
+    from soma.pathorob import prepare_pathorob
+
+    prepared = prepare_pathorob("/data/pathorob")
+
+The command downloads the exact pinned Hugging Face dataset revisions and
+metadata commit, verifies every available checksum, extracts the encoded tiles,
+and writes::
+
+    /data/pathorob/
+      camelyon/{images/,camelyon.csv,source_index.csv,provenance.json}
+      tcga-4x4/{images/,tcga_4x4.csv,source_index.csv,provenance.json}
+      tolkach-esca/{images/,tolkach_esca_reduced.csv,source_index.csv,provenance.json}
+
+The five pinned Parquet shards total about 1.9 GB. Allow at least 5 GB of free
+space for the Hugging Face cache, extracted images, and atomic staging. The
+source datasets retain their upstream licenses: CC0-1.0 for Camelyon,
+CC-BY-NC-SA-4.0 for TCGA, and CC-BY-SA-4.0 for Tolkach-ESCA. The metadata is
+BSD-3-Clause.
+
+Each source index has literal
+``slide_id,patch_id,sample_id,image_path`` columns. ``provenance.json`` records
+source URLs, revisions, file checksums and sizes, licenses, preparation time,
+and the soma tool version. A complete matching tree is reused unchanged. A
+partial or revision-mismatched destination fails; replace one deliberately only
+after reviewing the destination path::
+
+    soma prepare-pathorob /data/pathorob --rebuild
+
+Preparation never selects RI rows or writes soma Manifests. Pass this prepared
+root to ``curate_pathorob_ri_view`` or ``curate_pathorob_ri_views``; those
+deterministic curators own RI selection, validation, and Manifest writing.
+
 PathoROB Robustness Index views
 -------------------------------
 
 ``curate_pathorob_ri_view`` is a structural Curator that deterministically
-produces one Manifest for one PathoROB Robustness Index (RI) view. It does not
-download or decode source data; it consumes the prepared tree produced for the
-pinned PathoROB sources::
-
-    <raw-root>/
-      camelyon/
-        camelyon.csv
-        source_index.csv
-        provenance.json
-      tcga-4x4/
-        tcga_4x4.csv
-        source_index.csv
-        provenance.json
-      tolkach-esca/
-        tolkach_esca_reduced.csv
-        source_index.csv
-        provenance.json
-
-Each ``source_index.csv`` has literal ``slide_id,patch_id,sample_id,image_path``
-columns. Relative image paths are resolved from their cohort directory. Each
-``provenance.json`` records ``schema_version`` and ``cohort``, plus ``dataset``
-and ``metadata`` entries under ``sources``; each source entry has its pinned
-``repository`` and ``revision``. Unknown repositories or revisions are refused.
+produces one Manifest for one PathoROB Robustness Index (RI) view from the
+prepared tree above. It independently refuses unknown source repositories or
+revisions. Relative image paths in each source index are resolved from their
+cohort directory.
 
 Curate one view through the standard single-Manifest interface::
 
