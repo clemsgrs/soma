@@ -1152,6 +1152,32 @@ def test_metric_override_keeps_control_ineligible_for_scalar_rank(tmp_path: Path
     assert by_encoder["conch"].rank == 1
 
 
+def test_metric_override_never_gates_diagnostic_reference(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    run = make_run_dir(
+        _cfg(root, ds, sp, encoder="uni2"),
+        {
+            "test/croma_median": 0.20,
+            "test/croma_f0": 0.13,
+            "test/croma_ltm10": 0.11,
+        },
+    )
+
+    table = project_leaderboard(
+        [run],
+        LeaderboardFacet(vary=("encoder",)),
+        metric="croma_f0",
+        benchmark=_MultiGateBenchmark(),
+    )
+
+    row = table.rows[0]
+    assert row.reference_expected == pytest.approx(0.15)
+    assert row.reference_tolerance is None
+    assert row.reference_pass is None
+    assert "PASS" not in format_table(table) and "FAIL" not in format_table(table)
+
+
 @pytest.mark.parametrize("benchmark", [_SingleMetricBenchmark(), _LegacyMetricBenchmark()])
 def test_single_or_undeclared_metric_benchmark_retains_scalar_model(
     tmp_path: Path, benchmark

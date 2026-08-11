@@ -875,10 +875,11 @@ def _keyed_reference(
     if len(keyed) != 1:
         return empty
     row = keyed[0]
+    gates = metric == benchmark.primary_metric
     return {
         "reference_expected": row.expected,
-        "reference_tolerance": row.tolerance_band(),
-        "reference_pass": row.within_tolerance(measured),
+        "reference_tolerance": row.tolerance_band() if gates else None,
+        "reference_pass": row.within_tolerance(measured) if gates else None,
         "reference_source": row.source,
     }
 
