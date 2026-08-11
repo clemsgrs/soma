@@ -56,7 +56,7 @@ class LiveSegmentationSource:
         resolved = self.kit.geometry
         left, top, right, bottom = (int(value) for value in resolved.crop_box)
         # Consume the kit's resolved geometry directly. Only crop-box notation differs:
-        # Slide2Vec exposes (left, top, right, bottom), while Soma's heads use
+        # slide2vec exposes (left, top, right, bottom), while Soma's heads use
         # (top, left, height, width).
         self.geometry = DenseGridGeometry(
             target_size=tuple(int(v) for v in resolved.target_size),

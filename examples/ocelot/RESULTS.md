@@ -68,7 +68,7 @@ retiring their workflow.
 
 Across all 663 images, native 0.2 reads preserved decoded RGB bytes exactly. Coarser
 dimensions also matched every rendered image; pixel values differ because the historical
-path used Pillow BOX followed by a second lossy JPEG encode, while Slide2Vec 5.7 uses
+path used Pillow BOX followed by a second lossy JPEG encode, while slide2vec 5.7 uses
 OpenCV area resampling directly on the original decoded JPEG.
 
 | spacing (µm/px) | shape | pixel MAE | RMSE | PSNR | max abs | exact channels |
@@ -76,7 +76,7 @@ OpenCV area resampling directly on the original decoded JPEG.
 | 0.25 | 819×819 | 3.1753 | 4.4478 | 35.17 dB | 66 | 15.81% |
 | 0.50 | 410×410 | 4.7285 | 6.4826 | 31.90 dB | 94 | 11.40% |
 
-Dense grids were regenerated through both source paths with the same Slide2Vec 5.7
+Dense grids were regenerated through both source paths with the same slide2vec 5.7
 runtime, six samples spanning train/tune/test, identical sample order, batch size 8,
 fp16 compute/fp32 storage, and the committed 448-window/25%-overlap geometry. Every grid
 had the same shape and finite values.

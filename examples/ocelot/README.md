@@ -67,7 +67,7 @@ train→`train`, val→`tune`, test→`test`, single fold), one `points/<sample_
 Every magnification protocol consumes the same native Manifest. Its images remain
 1024×1024 at `spacing_at_level_0: 0.2`, and its annotations remain in that level-0 pixel
 frame. A config selects physical scale only through
-`preprocessing.requested_spacing_um`; Slide2Vec and hs2p area-downsample the native JPEG
+`preprocessing.requested_spacing_um`; slide2vec and hs2p area-downsample the native JPEG
 on read and record the resolved source/effective spacing beside each dense grid.
 
 ```bash
