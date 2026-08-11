@@ -37,6 +37,7 @@ from soma.benchmarks.registry import (
     MeasuredRow,
     ReferenceRow,
     get_benchmark,
+    get_ranking_metrics,
     list_benchmarks,
     load_reference,
     load_results,
@@ -195,6 +196,30 @@ def _latest_measurements(rows: list[MeasuredRow], metric: str) -> dict[tuple[str
     return latest
 
 
+def _ranking_cells(
+    name: str, dataset: str, metric: str, cells: list[Cell]
+) -> list[Cell]:
+    """Cells eligible for rank agreement; controls remain in the absolute table."""
+    member_name = f"{name}/{dataset}"
+    registered = set(list_benchmarks())
+    if member_name in registered:
+        benchmark = get_benchmark(member_name)
+    elif name in registered:
+        benchmark = get_benchmark(name)
+    else:
+        return cells
+    if metric not in get_ranking_metrics(benchmark):
+        return []
+    eligibility = getattr(benchmark, "is_ranking_eligible", None)
+    if not callable(eligibility):
+        return cells
+    return [
+        cell
+        for cell in cells
+        if eligibility(dataset=dataset, encoder=cell.encoder)
+    ]
+
+
 def _rankdata(values: list[float]) -> list[float]:
     """Average-tie ranks (1-based), matching ``scipy.stats.rankdata`` without the dependency."""
     order = sorted(range(len(values)), key=lambda i: values[i])
@@ -267,7 +292,9 @@ def reproduction_report(name: str, *, metric: str | None = None) -> Reproduction
     pairs: list[PairOutcome] = []
     spearman_by_dataset: dict[str, float | None] = {}
     for dataset in datasets_seen:
-        cell_here = [c for c in cells if c.dataset == dataset]
+        cell_here = _ranking_cells(
+            name, dataset, metric, [c for c in cells if c.dataset == dataset]
+        )
         if len(cell_here) >= 2:
             spearman_by_dataset[dataset] = _spearman(
                 [c.measured for c in cell_here], [c.reference for c in cell_here]

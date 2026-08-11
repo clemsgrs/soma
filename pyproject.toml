@@ -91,6 +91,7 @@ include = [
     "soma/configs/*.yaml",
     "soma/benchmarks/configs/**/*.yaml",
     "soma/benchmarks/reference/*.csv",
+    "soma/benchmarks/reference/*.json",
     "soma/benchmarks/results/*.csv",
 ]
 

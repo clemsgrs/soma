@@ -1,0 +1,19 @@
+{
+  "source_release": "Croma 0.3.0",
+  "artifact_producer": {
+    "croma_version": "0.2.0"
+  },
+  "exported": "2026-08-10",
+  "protocol": {
+    "name": "median-k",
+    "m": 5,
+    "alpha": 0.1,
+    "evaluation_design": "all"
+  },
+  "files": {
+    "results/camelyon.csv": "bb0a0dd0e62db64cd6d240fc98cfc4ae06794d46b06d5eae80e9bd3b6535d4d7",
+    "results/tcga-4x4.csv": "d30c1ae9305a83fe5bd0a9e4afa90cfbf7b09663cb41e66571b1abb18eaa231b",
+    "results/tolkach-esca.csv": "43fb47f602c35a3a12cd473b3ef08336739763972dd42e8fd0b8778a89b4cd3a"
+  },
+  "paper": "https://arxiv.org/abs/2607.25497"
+}

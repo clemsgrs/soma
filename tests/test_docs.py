@@ -267,6 +267,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
             "hest-gene-expression-benchmark",
+            "pathorob-robustness-benchmark",
             "croma-encoder-panel",
         ),
         "reference.rst": ("api", "cli"),
