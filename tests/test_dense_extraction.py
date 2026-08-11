@@ -37,9 +37,7 @@ def _make_tiles(tmp_path: Path, n: int, size: int) -> list[SampleRecord]:
     records = []
     for i in range(n):
         path = tmp_path / f"tile{i}.png"
-        Image.fromarray(
-            (torch.rand(size, size, 3) * 255).to(torch.uint8).numpy()
-        ).save(path)
+        Image.fromarray(np.full((size, size, 3), i, dtype=np.uint8)).save(path)
         records.append(SampleRecord(sample_id=f"s{i}", image_path=path, label="x"))
     return records
 
@@ -204,7 +202,7 @@ def test_real_flat_raster_extraction_respects_manifest_source_spacing(
         EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
         target_size=target_size,
         spacing_um=0.5,
-        execution=ExecutionConfig(num_workers_per_gpu=0, precision="fp32"),
+        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0, precision="fp32"),
     ).run(tmp_path / "features")
 
     expected = torch.tensor(expected_grid)
@@ -264,9 +262,18 @@ def test_run_passes_a_non_square_target_as_a_pair(tmp_path: Path, fake_model):
     assert fake_model.calls[0]["dense"].target_size == (32, 48)
 
 
-def test_run_pins_single_gpu_and_the_resolved_storage_dtype(tmp_path: Path, fake_model):
-    """num_gpus is pinned to 1 (sharding changes batch composition, and dense grids are
-    batch-size sensitive — #305), and the write dtype is the one folded into the key."""
+def test_run_forwards_num_gpus(tmp_path: Path, fake_model):
+    dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
+    _extractor(
+        dataset,
+        tmp_path,
+        execution=ExecutionConfig(num_gpus=2, precision="fp32"),
+    ).run(tmp_path / "features")
+
+    assert fake_model.calls[0]["execution"].num_gpus == 2
+
+
+def test_run_passes_the_resolved_storage_dtype(tmp_path: Path, fake_model):
     dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
     _extractor(
         dataset,
@@ -275,7 +282,6 @@ def test_run_pins_single_gpu_and_the_resolved_storage_dtype(tmp_path: Path, fake
     ).run(tmp_path / "features")
 
     execution = fake_model.calls[0]["execution"]
-    assert execution.num_gpus == 1
     assert execution.output_dtype == "fp16"
     assert execution.batch_size == 2
 

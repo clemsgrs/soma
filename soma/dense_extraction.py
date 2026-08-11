@@ -14,9 +14,7 @@ directory soma resolves; it does not decide whether a cached grid may be reused.
 
 Dense-input mode is a *derived* window-as-knob (design §5): ``window_size=None`` ⇒ one
 padded forward; a smaller ``window_size`` (+ ``overlap``) slides the encoder over
-patch-aligned windows and blends the token grids. Single-GPU only — slide2vec shards the
-image list contiguously across GPUs, which changes batch composition, and dense grids are
-batch-size sensitive (see #305).
+patch-aligned windows and blends the token grids.
 """
 
 from __future__ import annotations
@@ -286,10 +284,7 @@ class DenseTileFeatureExtractor:
             execution=self._execution,
             encoder_name=self._encoder.name,
             output_dir=out_root,
-            # Multi-GPU dense is a separate, separately-verified follow-up (#305): slide2vec
-            # splits the flat image list contiguously, so a shard boundary yields partial
-            # batches — and fp16 grids are batch-size sensitive.
-            num_gpus=1,
+            num_gpus=self._execution.num_gpus,
             save_tile_embeddings=True,
             # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved value,
             # so the on-disk grid is cast to exactly the dtype folded into the cache key

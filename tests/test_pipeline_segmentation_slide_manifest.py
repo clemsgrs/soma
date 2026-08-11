@@ -25,6 +25,7 @@ import pytest
 from soma.config import (
     DecoderConfig,
     EvalConfig,
+    ExecutionConfig,
     MasksConfig,
     PipelineConfig,
     PreprocessingConfig,
@@ -303,6 +304,32 @@ def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
     ).run(feature_dir=tmp_path / "features")
 
     assert model.calls[0]["source_spacings"] == {"s0": 0.25}
+
+
+def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monkeypatch):
+    from soma.config import EncoderConfig
+    from soma.dataset import SegmentationManifest
+    from soma.dense_slide_extraction import SlideManifestDenseExtractor
+
+    manifest = tmp_path / "rois.csv"
+    manifest.write_text(
+        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
+    )
+    model = _patch_dense_model(monkeypatch)
+    SlideManifestDenseExtractor(
+        SegmentationManifest(manifest),
+        EncoderConfig(name=ENCODER),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+        ),
+        execution=ExecutionConfig(num_gpus=2),
+    ).run(feature_dir=tmp_path / "features")
+
+    assert model.calls[0]["execution"].num_gpus == 2
 
 
 def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypatch):

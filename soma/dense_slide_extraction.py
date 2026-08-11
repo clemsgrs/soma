@@ -392,10 +392,7 @@ class SlideManifestDenseExtractor:
             execution=self._execution,
             encoder_name=self._encoder.name,
             output_dir=out_root,
-            # Multi-GPU dense is a separate, separately-verified follow-up: slide2vec splits
-            # the flat ROI list contiguously, so a slide straddling a shard boundary yields
-            # partial batches — and fp16 grids are batch-size sensitive.
-            num_gpus=1,
+            num_gpus=self._execution.num_gpus,
             save_tile_embeddings=True,
             # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved value,
             # so the on-disk grid is cast to exactly the dtype folded into the cache key
