@@ -117,6 +117,11 @@ def _spacing_at_level_0(row: pd.Series) -> float | None:
     return _parse_spacing_at_level_0(row.get("spacing_at_level_0"))
 
 
+def _optional_text_column(row: pd.Series, column: str) -> str | None:
+    value = row.get(column)
+    return str(value) if column in row.index and pd.notna(value) else None
+
+
 def _is_valid_split_name(name: str) -> bool:
     """A split name is valid if it is 'train', 'tune', or starts with 'test'."""
     return name in ("train", "tune") or name.startswith("test")
@@ -208,16 +213,8 @@ class Dataset:
                 if "mask_path" in row.index and pd.notna(row.get("mask_path"))
                 else None
             )
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
-            group_id = (
-                str(row["group_id"])
-                if "group_id" in row.index and pd.notna(row.get("group_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
             samples[sid] = SampleRecord(
                 sample_id=sid,
@@ -345,16 +342,8 @@ class SegmentationManifest:
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
             label = row["label"] if "label" in row.index and pd.notna(row.get("label")) else None
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
-            group_id = (
-                str(row["group_id"])
-                if "group_id" in row.index and pd.notna(row.get("group_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
             region = None
             if "region_x" in row.index and pd.notna(row.get("region_x")):
@@ -452,16 +441,8 @@ class DetectionManifest:
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
             label = row["label"] if "label" in row.index and pd.notna(row.get("label")) else None
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
-            group_id = (
-                str(row["group_id"])
-                if "group_id" in row.index and pd.notna(row.get("group_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns if pd.notna(row.get(c))}
             samples[sid] = SampleRecord(
                 sample_id=sid,
@@ -594,16 +575,8 @@ class SpatialExpressionManifest:
         samples: dict[str, SampleRecord] = {}
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
-            patient_id = (
-                str(row["patient_id"])
-                if "patient_id" in row.index and pd.notna(row.get("patient_id"))
-                else None
-            )
-            group_id = (
-                str(row["group_id"])
-                if "group_id" in row.index and pd.notna(row.get("group_id"))
-                else None
-            )
+            patient_id = _optional_text_column(row, "patient_id")
+            group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
             target_index = int(row["target_index"])
             samples[sid] = SampleRecord(

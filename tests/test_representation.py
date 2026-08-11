@@ -118,6 +118,16 @@ def test_representation_requires_tile_dataset():
         )
 
 
+def test_representation_requires_canonical_seed_zero(tmp_path: Path):
+    path = _representation_yaml(tmp_path)
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw["run"]["seed"] = 7
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="representation.*seed.*0"):
+        load_config(path)
+
+
 def test_ordinary_task_default_and_identity_match_origin_main(tmp_path: Path):
     (tmp_path / "dataset.csv").write_text(
         "sample_id,image_path,label\n"
@@ -371,6 +381,31 @@ def test_representation_slug_and_metadata_use_tagged_comparison_key(tmp_path: Pa
     }
 
 
+def test_representation_provenance_does_not_silence_version_lookup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = _representation_config_with_manifests(
+        tmp_path,
+        dataset_rows="held,/images/held.png,B,g1,south\n",
+        split_rows="0,held,test\n",
+    )
+    experiment = build_experiment_spec(config)
+
+    def fail_version_lookup(_distribution: str) -> str:
+        raise RuntimeError("distribution metadata is unreadable")
+
+    monkeypatch.setattr("importlib.metadata.version", fail_version_lookup)
+
+    with pytest.raises(RuntimeError, match="distribution metadata is unreadable"):
+        create_run_metadata(
+            config=config,
+            experiment=experiment,
+            run_dir=tmp_path / "run",
+            run_id="attempt-1",
+            status="running",
+        )
+
+
 def _representation_inputs(
     tmp_path: Path,
     *,
@@ -510,6 +545,44 @@ def test_representation_rejects_partial_or_nonfinite_croma_results(
             run_dir=tmp_path / "run",
         )
     assert not (tmp_path / "run" / "summary.json").exists()
+
+
+def test_invalid_representation_rerun_removes_stale_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset, splits, store = _representation_inputs(
+        tmp_path,
+        rows=[("s0", "A", "g0", "north")],
+        split_rows=[(0, "s0", "test")],
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "summary.json").write_text(
+        '{"test/croma_median": 0.9}\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "croma.CRoMa.compute",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            value=0.6,
+            f0=0.2,
+            ltm_alpha=0.4,
+            undefined_frac=0.5,
+            sample_values_aligned=np.array([0.6]),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="undefined"):
+        evaluate_representation(
+            feature_store=store,
+            dataset=dataset,
+            splits=splits,
+            representation=RepresentationConfig(
+                kind="croma", confounder_column="site", split="test"
+            ),
+            run_dir=run_dir,
+        )
+
+    assert not (run_dir / "summary.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -663,6 +736,19 @@ def test_representation_attempt_metadata_retains_attempt_and_completion_time(
 def test_pipeline_representation_run_writes_normal_artifacts_without_task_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    class FrozenTimestamp:
+        def astimezone(self) -> FrozenTimestamp:
+            return self
+
+        def isoformat(self) -> str:
+            return "2026-08-11T12:34:56+00:00"
+
+    class FrozenDateTime:
+        @classmethod
+        def now(cls) -> FrozenTimestamp:
+            return FrozenTimestamp()
+
+    monkeypatch.setattr("soma.pipeline.datetime", FrozenDateTime)
     monkeypatch.setattr("importlib.metadata.version", lambda name: "9.8.7")
     dataset, _splits, store = _representation_inputs(
         tmp_path,
@@ -702,6 +788,6 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
     assert not (result.run_dir / "report.html").exists()
     metadata = yaml.safe_load((result.run_dir / "run.yaml").read_text(encoding="utf-8"))
     assert metadata["status"] == "completed"
-    assert metadata["finished_at"]
+    assert metadata["finished_at"] == "2026-08-11T12:34:56+00:00"
     assert metadata["seed"] == 0
     assert metadata["representation_provenance"] == {"croma": "9.8.7"}

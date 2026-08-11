@@ -498,12 +498,9 @@ def create_run_metadata(
             "splits_checksum": experiment.splits_checksum,
             "representation": asdict(config.representation),
         }
-        try:
-            from importlib.metadata import version
+        from importlib.metadata import version
 
-            croma_version = version("croma")
-        except Exception:
-            croma_version = ""
+        croma_version = version("croma")
         representation_provenance = {"croma": croma_version}
     else:
         comparison_key = {

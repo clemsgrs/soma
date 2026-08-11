@@ -1307,6 +1307,11 @@ class PipelineConfig:
         if self.representation is not None:
             if self.dataset_type != "tile":
                 raise ValueError("representation v1 requires data.dataset_type='tile'.")
+            if self.training.seed != 0:
+                raise ValueError(
+                    "representation v1 is deterministic and requires run.seed=0; "
+                    f"got {self.training.seed!r}. Repeated launches are attempts, not seeds."
+                )
             if self.feature_mode != "cached":
                 raise ValueError("representation v1 requires data.feature_mode='cached'.")
             if any(

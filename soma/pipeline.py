@@ -240,6 +240,12 @@ def evaluate_representation(
     """Evaluate selected frozen tile embeddings directly with CRoMa's public API."""
     from croma import CRoMa
 
+    run_dir = Path(run_dir)
+    summary_path = run_dir / "summary.json"
+    # A pinned/retried attempt reuses its run directory. Remove any prior successful
+    # result before validation so a failed re-evaluation cannot leave rankable stale data.
+    summary_path.unlink(missing_ok=True)
+
     selected_membership = _representation_split_ids(splits, representation)
     selected_set = set(selected_membership)
     selected_ids = [sample_id for sample_id in dataset.sample_ids if sample_id in selected_set]
@@ -305,9 +311,9 @@ def evaluate_representation(
         features,
         manifest,
         confounder_column=representation.confounder_column,
-        evaluation_design="all",
-        m=5,
-        alpha=0.10,
+        evaluation_design=representation.evaluation_design,
+        m=representation.m,
+        alpha=representation.alpha,
     )
     if float(result.undefined_frac) != 0.0:
         raise ValueError(
@@ -326,9 +332,8 @@ def evaluate_representation(
         f"{representation.split}/croma_f0": metric_values[1],
         f"{representation.split}/croma_ltm10": metric_values[2],
     }
-    run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
-    _save_summary(summary, run_dir / "summary.json")
+    _save_summary(summary, summary_path)
 
     sample_values = np.asarray(result.sample_values_aligned, dtype=float)
     if sample_values.ndim == 1 and len(sample_values) == len(selected_ids):
