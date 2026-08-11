@@ -205,6 +205,20 @@ def _report_tolerance(benchmark, measured: float, row) -> bool:
     return ok
 
 
+def _render_reference_comparison(row, measured: float) -> None:
+    """Render one measured value beside a matching reference row."""
+    delta = measured - row.expected
+    if row.is_external:
+        label = row.label or "external reference"
+        link = f"  <{row.url}>" if row.url else ""
+        print(
+            f"  reference [{label}]: {row.metric} = {row.expected:.4f}  "
+            f"(Δ {delta:+.4f}, external — context only){link}"
+        )
+    else:
+        print(f"  reference: {row.metric} = {row.expected:.4f}  (Δ {delta:+.4f})")
+
+
 def _report_external(benchmark, measured: float, axes: dict[str, Any]) -> int:
     """Render the Measured value beside external contextual Reference row(s) (#260).
 
@@ -225,13 +239,7 @@ def _report_external(benchmark, measured: float, axes: dict[str, Any]) -> int:
         )
         return 0
     for row in external:
-        delta = measured - row.expected
-        label = row.label or "external reference"
-        link = f"  <{row.url}>" if row.url else ""
-        print(
-            f"  reference [{label}]: {row.metric} = {row.expected:.4f}  "
-            f"(Δ {delta:+.4f}, external — context only){link}"
-        )
+        _render_reference_comparison(row, measured)
     return 0
 
 
@@ -243,16 +251,7 @@ def _report_secondary(benchmark, metric: str, measured: float, axes: dict[str, A
         print(f"  {benchmark.name} {metric} — no reference matches axes={axes}.")
         return
     for row in references:
-        delta = measured - row.expected
-        if row.is_external:
-            label = row.label or "external reference"
-            link = f"  <{row.url}>" if row.url else ""
-            print(
-                f"  reference [{label}]: {row.metric} = {row.expected:.4f}  "
-                f"(Δ {delta:+.4f}, external — context only){link}"
-            )
-        else:
-            print(f"  reference: {row.metric} = {row.expected:.4f}  (Δ {delta:+.4f})")
+        _render_reference_comparison(row, measured)
 
 
 def _resolve_reproduce_targets(name: str) -> list[Any]:
@@ -507,7 +506,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
 
     reported_metrics = get_reported_metrics(benchmark)
 
-    def _finish(measured: dict[str, float]) -> int:
+    def _report_measured_metrics(measured: dict[str, float]) -> int:
         for metric in reported_metrics:
             value = measured[metric]
             if metric != benchmark.primary_metric:
@@ -541,7 +540,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                     )
             else:
                 print("  (no reference row to key --record on; nothing recorded)")
-        return _finish({benchmark.primary_metric: measured, **metrics})
+        return _report_measured_metrics({benchmark.primary_metric: measured, **metrics})
 
     curated_dir = getattr(args, "curated_dir", None)
     if curated_dir is None and args.raw_root is None:
@@ -624,7 +623,7 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                 )
         else:
             print("  (no reference row to key --record on; nothing recorded)")
-    return _finish(measured)
+    return _report_measured_metrics(measured)
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> int:
