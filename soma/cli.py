@@ -918,6 +918,71 @@ def _completed_run_dirs(output_root: Path) -> set[Path]:
     }
 
 
+def _run_reproduce_panel(
+    benchmark,
+    args: argparse.Namespace,
+    encoders: list[str],
+    *,
+    family_root: str | None = None,
+) -> tuple[list[tuple[str, str]], int]:
+    """Run and project one preflighted concrete Benchmark's Encoder panel."""
+    try:
+        manifest = _reproduce_manifest(benchmark, args, family_root=family_root)
+    except _MissingReproduceSourceError as exc:
+        print(f"Error: {benchmark.name}: {exc}", file=sys.stderr)
+        return [], 2
+
+    output_root = _reproduce_output_root(benchmark, args, family_root=family_root)
+    completed_before = _completed_run_dirs(output_root)
+    failures: list[tuple[str, str]] = []
+    fully_completed_encoders = 0
+    for encoder in encoders:
+        cell_args = argparse.Namespace(**vars(args))
+        cell_args.encoder = encoder
+        cell_args.encoders = None
+        try:
+            code = _reproduce_one(
+                benchmark,
+                cell_args,
+                family_root=family_root,
+                manifest=manifest,
+                isolate_runtime_failures=True,
+            )
+        except _PanelCellRuntimeFailure as exc:
+            failures.append((encoder, _panel_runtime_failure_context(exc.cause)))
+            continue
+        if code:
+            return failures, code
+        fully_completed_encoders += 1
+
+    leaderboard_code = 0
+    completed_during_panel = _completed_run_dirs(output_root) - completed_before
+    benchmark_label = (
+        f" for Benchmark {benchmark.name!r}" if family_root is not None else ""
+    )
+    if fully_completed_encoders or completed_during_panel:
+        if failures:
+            completed_run_count = len(completed_during_panel)
+            run_label = "Run" if completed_run_count == 1 else "Runs"
+            print(
+                f"PARTIAL Encoder panel{benchmark_label}: "
+                f"{fully_completed_encoders}/{len(encoders)} encoders completed; "
+                f"rendering the canonical Leaderboard from {completed_run_count} "
+                f"completed {run_label}. Completed Runs remain valid.",
+                flush=True,
+            )
+        leaderboard_code = _cmd_leaderboard(
+            _plural_leaderboard_args(benchmark, output_root)
+        )
+    elif failures:
+        print(
+            f"Encoder panel{benchmark_label}: 0/{len(encoders)} encoders completed; "
+            "no Leaderboard was written.",
+            flush=True,
+        )
+    return failures, leaderboard_code
+
+
 def _cmd_reproduce(args: argparse.Namespace) -> int:
     from soma.benchmarks import get_benchmark
 
@@ -956,89 +1021,69 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
         return 2
 
     if encoders is not None:
-        if is_family:
-            print(
-                "Error: --encoders requires one concrete registered Benchmark, "
-                f"not the {args.name!r} family.",
-                file=sys.stderr,
-            )
-            return 2
-        benchmark = targets[0]
-        failures = _preflight_reproduce_panel(benchmark, encoders)
-        if failures:
-            print(
-                f"Error: Encoder panel preflight failed for Benchmark "
-                f"{benchmark.name!r}:\n"
-                + "\n".join(
-                    f"  {index}. {failure}"
-                    for index, failure in enumerate(failures, 1)
+        preflight_failures = [
+            (benchmark, _preflight_reproduce_panel(benchmark, encoders))
+            for benchmark in targets
+        ]
+        preflight_failures = [
+            (benchmark, failures)
+            for benchmark, failures in preflight_failures
+            if failures
+        ]
+        if preflight_failures:
+            if is_family:
+                lines = ["Error: Encoder family panel preflight failed:"]
+                index = 1
+                for benchmark, failures in preflight_failures:
+                    for failure in failures:
+                        lines.append(
+                            f"  {index}. Benchmark {benchmark.name!r}, Encoder {failure}"
+                        )
+                        index += 1
+                message = "\n".join(lines)
+            else:
+                benchmark, failures = preflight_failures[0]
+                message = (
+                    f"Error: Encoder panel preflight failed for Benchmark "
+                    f"{benchmark.name!r}:\n"
+                    + "\n".join(
+                        f"  {index}. {failure}"
+                        for index, failure in enumerate(failures, 1)
+                    )
                 )
+            print(
+                message
                 + "\nNo curation, Pipeline, extraction, training, or Run writes started.",
                 file=sys.stderr,
             )
             return 2
-        try:
-            manifest = _reproduce_manifest(benchmark, args)
-        except _MissingReproduceSourceError as exc:
-            print(f"Error: {benchmark.name}: {exc}", file=sys.stderr)
-            return 2
-
-        output_root = _reproduce_output_root(benchmark, args)
-        completed_before = _completed_run_dirs(output_root)
-        failures: list[tuple[str, str]] = []
-        fully_completed_encoders = 0
-        for encoder in encoders:
-            cell_args = argparse.Namespace(**vars(args))
-            cell_args.encoder = encoder
-            cell_args.encoders = None
-            try:
-                code = _reproduce_one(
-                    benchmark,
-                    cell_args,
-                    manifest=manifest,
-                    isolate_runtime_failures=True,
-                )
-            except _PanelCellRuntimeFailure as exc:
-                failures.append(
-                    (encoder, _panel_runtime_failure_context(exc.cause))
-                )
-                continue
-            if code:
-                return code
-            fully_completed_encoders += 1
-
-        leaderboard_code = 0
-        completed_during_panel = _completed_run_dirs(output_root) - completed_before
-        if fully_completed_encoders or completed_during_panel:
-            if failures:
-                completed_run_count = len(completed_during_panel)
-                run_label = "Run" if completed_run_count == 1 else "Runs"
-                print(
-                    f"PARTIAL Encoder panel: {fully_completed_encoders}/{len(encoders)} "
-                    f"encoders completed; rendering the canonical Leaderboard from "
-                    f"{completed_run_count} completed {run_label}. Completed Runs remain "
-                    "valid.",
-                    flush=True,
-                )
-            leaderboard_code = _cmd_leaderboard(
-                _plural_leaderboard_args(benchmark, output_root)
+        runtime_failures: list[tuple[str, str, str]] = []
+        codes: list[int] = []
+        for benchmark in targets:
+            failures, code = _run_reproduce_panel(
+                benchmark,
+                args,
+                encoders,
+                family_root=args.name if is_family else None,
             )
-        elif failures:
-            print(
-                f"Encoder panel: 0/{len(encoders)} encoders completed; no Leaderboard "
-                "was written.",
-                flush=True,
+            runtime_failures.extend(
+                (benchmark.name, encoder, context) for encoder, context in failures
             )
+            codes.append(code)
+            if code == 2:
+                break
 
-        if failures:
+        if runtime_failures:
+            label = "Encoder family panel" if is_family else "Encoder panel"
             print(
-                f"Encoder panel runtime failures ({len(failures)}):",
+                f"{label} runtime failures ({len(runtime_failures)}):",
                 file=sys.stderr,
             )
-            for encoder, context in failures:
-                print(f"  - {encoder}: {context}", file=sys.stderr)
-            return max(1, leaderboard_code)
-        return leaderboard_code
+            for benchmark_name, encoder, context in runtime_failures:
+                cell = f"{benchmark_name}, {encoder}" if is_family else encoder
+                print(f"  - {cell}: {context}", file=sys.stderr)
+            return max(1, *codes)
+        return max(codes) if codes else 2
 
     codes = [
         _reproduce_one(bench, args, family_root=args.name if is_family else None)
@@ -1216,8 +1261,9 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         metavar="NAME",
         help=(
             "Run an ordered Encoder panel, checking the complete panel before any work "
-            "starts, then write the cross-encoder Leaderboard. If a capability is "
-            "missing, select a compatible Benchmark or fix the Encoder plugin."
+            "starts, then write one cross-encoder Leaderboard per concrete Benchmark. "
+            "If a capability is missing, select a compatible Benchmark or fix the "
+            "Encoder plugin."
         ),
     )
     parser.add_argument(

@@ -822,6 +822,179 @@ def test_reproduce_panel_uses_slide2vec_public_geometry_validation(
     assert benchmark.events == [("build", "uni2")]
 
 
+def test_reproduce_family_preflights_every_concrete_cell_before_any_work(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    _fixture, pooled_only_name = panel_benchmark
+    family = "test-panel-family"
+    benchmarks = [_PanelBenchmark(), _DensePanelBenchmark()]
+    benchmarks[0].name = f"{family}/alpha"
+    benchmarks[1].name = f"{family}/beta"
+    for benchmark in reversed(benchmarks):
+        register_benchmark(benchmark)
+    monkeypatch.setattr(
+        cli,
+        "Pipeline",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("invalid family panel must not construct a Pipeline")
+        ),
+    )
+
+    try:
+        code = _run_cli(
+            [
+                "reproduce",
+                family,
+                "--encoders",
+                pooled_only_name,
+                "uni2",
+                "--raw-root",
+                str(tmp_path / "raw"),
+            ]
+        )
+    finally:
+        for benchmark in benchmarks:
+            registry_mod._REGISTRY.pop(benchmark.name, None)
+
+    err = capsys.readouterr().err
+    assert code == 2
+    assert benchmarks[0].events == [
+        ("build", pooled_only_name),
+        ("build", "uni2"),
+    ]
+    assert benchmarks[1].events == [
+        ("build", pooled_only_name),
+        ("build", "uni2"),
+    ]
+    assert all(benchmark.curate_calls == 0 for benchmark in benchmarks)
+    assert f"Benchmark {family + '/beta'!r}, Encoder {pooled_only_name!r}" in err
+    assert "No curation, Pipeline, extraction, training, or Run writes started." in err
+
+
+def test_reproduce_family_continues_ordered_cells_and_writes_isolated_leaderboards(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    _fixture, private_name = panel_benchmark
+    family = "test-valid-panel-family"
+    audit: list[tuple] = []
+
+    def make_benchmark(member: str):
+        benchmark = _PanelBenchmark()
+        benchmark.name = f"{family}/{member}"
+        curate = benchmark.curate
+
+        def audited_curate(raw_root, out_dir):
+            audit.append(("curate", member))
+            return curate(raw_root, out_dir)
+
+        benchmark.curate = audited_curate
+        return benchmark
+
+    benchmarks = [make_benchmark("alpha"), make_benchmark("beta")]
+    for benchmark in reversed(benchmarks):
+        register_benchmark(benchmark)
+
+    output_root = tmp_path / "runs"
+    cache_root = tmp_path / "shared-cache"
+    scores = {
+        ("alpha", private_name): 0.61,
+        ("alpha", "uni2"): 0.72,
+        ("beta", private_name): 0.81,
+        ("beta", "uni2"): 0.92,
+    }
+
+    class FakePipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            config = self.config
+            relative = config.output_root.relative_to(output_root)
+            member = relative.parts[0]
+            encoder = config.encoder.name
+            audit.append(
+                (
+                    "run",
+                    member,
+                    encoder,
+                    config.training.seed,
+                    str(config.cache.root_dir),
+                )
+            )
+            if member == "alpha" and encoder == "uni2":
+                raise RuntimeError("alpha weights unavailable")
+            _write_completed_panel_run(
+                config=config,
+                metric="test/accuracy",
+                score=scores[(member, encoder)],
+            )
+
+    monkeypatch.setattr(cli, "Pipeline", FakePipeline)
+    try:
+        code = _run_cli(
+            [
+                "reproduce",
+                family,
+                "--encoders",
+                private_name,
+                "uni2",
+                "--raw-root",
+                str(tmp_path / "raw"),
+                "--output-root",
+                str(output_root),
+                "--cache-root",
+                str(cache_root),
+                "--seeds",
+                "1",
+            ]
+        )
+    finally:
+        for benchmark in benchmarks:
+            registry_mod._REGISTRY.pop(benchmark.name, None)
+
+    assert code == 1
+    assert audit == [
+        ("curate", "alpha"),
+        ("run", "alpha", private_name, 0, str(cache_root)),
+        ("run", "alpha", "uni2", 0, str(cache_root)),
+        ("curate", "beta"),
+        ("run", "beta", private_name, 0, str(cache_root)),
+        ("run", "beta", "uni2", 0, str(cache_root)),
+    ]
+
+    for member, expected_scores in (
+        ("alpha", [0.61]),
+        ("beta", [0.92, 0.81]),
+    ):
+        path = output_root / member / "leaderboards" / family / f"{member}.json"
+        table = json.loads(path.read_text())
+        expected_encoders = (
+            [private_name] if member == "alpha" else ["uni2", private_name]
+        )
+        assert [row["vary"]["encoder"] for row in table["rows"]] == expected_encoders
+        assert [row["mean"] for row in table["rows"]] == expected_scores
+        completed_run_ids = sorted(
+            path.parent.name
+            for path in (output_root / member).glob("**/runs/*/run.yaml")
+        )
+        expected_run_ids = [f"{private_name}-seed-0"]
+        if member == "beta":
+            expected_run_ids.append("uni2-seed-0")
+        assert completed_run_ids == expected_run_ids
+
+    assert not (output_root / "leaderboards").exists()
+    captured = capsys.readouterr()
+    assert (
+        "PARTIAL Encoder panel for Benchmark 'test-valid-panel-family/alpha'"
+        in captured.out
+    )
+    assert captured.err == (
+        "Encoder family panel runtime failures (1):\n"
+        "  - test-valid-panel-family/alpha, uni2: "
+        "RuntimeError: alpha weights unavailable\n"
+    )
+
+
 def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
     monkeypatch, capsys, tmp_path, panel_benchmark
 ):
@@ -1343,6 +1516,7 @@ def test_reproduce_help_documents_ordered_encoder_panel(capsys, monkeypatch):
     assert "complete panel before any work starts" in unwrapped
     assert "select a compatible Benchmark or fix the Encoder plugin" in unwrapped
     assert "cross-encoder Leaderboard" in unwrapped
+    assert "per concrete Benchmark" in unwrapped
 
 
 # --- full-mode shared feature cache across seeds --------------------------------------
