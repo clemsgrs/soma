@@ -38,6 +38,14 @@ canonical cross-encoder Leaderboard automatically. Raw data is curated once;
 mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
 Installed-preset discovery and capability preflight require slide2vec 5.8.0 or newer.
 
+A preflight rejection starts no Run. Once a valid panel has started, a runtime failure is
+different: later encoders still run, and completed Runs remain ordinary valid Runs. If at
+least one Run completed during the panel, soma writes the canonical Leaderboard from the
+completed Runs and labels the panel ``PARTIAL`` in command output; the Leaderboard remains
+the ordinary canonical projection. If no Run completed, soma writes no Leaderboard. In either
+case soma prints one failure summary and exits nonzero, so automation cannot mistake partial
+output for complete success.
+
 ``NAME`` is a registered benchmark (e.g. ``ocelot``, ``eva/bach``) or a family prefix
 (``eva``) that fans out over every member. ``--seeds 1`` is the quickest smoke; the
 benchmark's canonical seed set runs by default. Completed runs remain ordinary soma
