@@ -31,11 +31,14 @@ explicitly ordered panel with ``--encoders``::
    soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
    soma reproduce eva/bach --encoders private-pathology uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach
 
-For one concrete Benchmark, the plural form resolves the complete panel before curation,
-executes one ordinary Run at a time in the supplied order, and writes the Benchmark's
-canonical cross-encoder Leaderboard automatically. Raw data is curated once;
-``--curated-dir`` skips curation for the whole panel. ``--encoder`` and ``--encoders`` are
-mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
+For one concrete Benchmark, the plural form validates every preset before curation,
+Pipeline construction, extraction, training, or Run writes. If any cell is invalid, soma
+reports every incompatibility in panel order and starts no work. A missing capability means
+you must select a compatible Benchmark or fix the Encoder plugin implementation. After a
+successful preflight, soma executes one ordinary Run at a time in the supplied order and
+writes the Benchmark's canonical cross-encoder Leaderboard automatically. Raw data is
+curated once; ``--curated-dir`` skips curation for the whole panel. ``--encoder`` and
+``--encoders`` are mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
 Installed-preset discovery and capability preflight require slide2vec 5.8.0 or newer.
 
 A preflight rejection starts no Run. Once a valid panel has started, a runtime failure is

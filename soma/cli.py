@@ -719,12 +719,104 @@ def _reproduce_one(
     return _report_measured_metrics(measured)
 
 
-def _preflight_reproduce_panel(benchmark, encoders: list[str]) -> None:
-    """Resolve one concrete Benchmark's healthy Encoder panel before curation."""
+def _preflight_config_compatibility(
+    benchmark, encoder: str, config, capabilities, metadata: dict[str, Any]
+) -> str | None:
+    """Return one actionable incompatibility derived from a Benchmark config."""
+    from slide2vec.encoders import (
+        encoder_registry,
+        resolve_encoder_output,
+        resolve_preprocessing_requirements,
+    )
+
+    if config.encoder is None or config.encoder.name != capabilities.name:
+        resolved = None if config.encoder is None else config.encoder.name
+        return (
+            f"Benchmark builder resolved encoder {resolved!r}, expected "
+            f"{capabilities.name!r}."
+        )
+
+    feature_kind = config.preprocessing.feature_kind
+    if feature_kind == "patch_features" and not capabilities.dense:
+        return (
+            f"missing dense capability: Benchmark {benchmark.name!r} requires dense "
+            "patch features, but slide2vec reports dense=False. Select a compatible "
+            "Benchmark or change the Encoder plugin implementation."
+        )
+    if feature_kind == "cls_attention" and not capabilities.attention:
+        return (
+            f"missing attention capability: Benchmark {benchmark.name!r} requires CLS "
+            "attention grids, but slide2vec reports attention=False. Select a compatible "
+            "Benchmark or change the Encoder plugin implementation."
+        )
+    if feature_kind is None and not capabilities.pooled:
+        return (
+            f"missing pooled capability: Benchmark {benchmark.name!r} requires pooled "
+            "features, but slide2vec reports pooled=False. Select a compatible Benchmark "
+            "or change the Encoder plugin implementation."
+        )
+
+    declared_geometry = feature_kind is not None or config.dataset_type in {
+        "slide",
+        "patient",
+    }
+    resolve_encoder_output(
+        encoder,
+        requested_output_variant=config.encoder.output_variant,
+        metadata=metadata,
+    )
+    if not declared_geometry:
+        return None
+
+    from soma.encoders.validation import resolve_preprocessing_config
+
+    preprocessing = resolve_preprocessing_config(config.encoder, config.preprocessing)
+    requirements = resolve_preprocessing_requirements(encoder, metadata=metadata)
+    preset_size = int(requirements["tile_size_px"])
+    if feature_kind is not None:
+        patch_h, patch_w = capabilities.patch_size
+        target_size = int(preprocessing.requested_tile_size_px)
+        encoded_size = ((target_size + patch_h - 1) // patch_h) * patch_h
+        window_size = preprocessing.dense_window_size
+        effective_size = encoded_size if window_size is None else min(
+            ((int(window_size) + patch_h - 1) // patch_h) * patch_h,
+            encoded_size,
+        )
+        origin = (
+            f"dense target_size={target_size} padded to {encoded_size}"
+            if window_size is None
+            else f"dense window_size={int(window_size)}"
+        )
+    else:
+        effective_size = int(preprocessing.requested_tile_size_px)
+        origin = f"pooled requested_tile_size_px={effective_size}"
+
+    source_encoder = str(requirements["source_encoder"])
+    source_metadata = encoder_registry.info(source_encoder)
+    if effective_size != preset_size and not source_metadata[
+        "supports_variable_input_size"
+    ]:
+        return (
+            f"fixed encoder geometry is incompatible: Encoder {encoder!r} does not "
+            f"support a variable encoder input; its registered input size is "
+            f"{preset_size}px, but Benchmark {benchmark.name!r} requires an effective "
+            f"encoder input of {effective_size}px ({origin}). Select a compatible "
+            "Benchmark or change the Encoder plugin implementation."
+        )
+    return None
+
+
+def _preflight_reproduce_panel(benchmark, encoders: list[str]) -> list[str]:
+    """Collect one concrete Benchmark's Encoder incompatibilities before curation."""
     import tempfile
 
-    from slide2vec.encoders import resolve_encoder_capabilities
+    from slide2vec.encoders import (
+        encoder_registry,
+        list_encoder_provider_diagnostics,
+        resolve_encoder_capabilities,
+    )
 
+    failures: list[str] = []
     with tempfile.TemporaryDirectory(prefix="soma-reproduce-preflight-") as temp_dir:
         root = Path(temp_dir)
         dataset_csv = root / "dataset.csv"
@@ -741,21 +833,52 @@ def _preflight_reproduce_panel(benchmark, encoders: list[str]) -> None:
             "cache": {"enabled": True, "root_dir": str(root / "feature_cache")}
         }
         for encoder in encoders:
-            capabilities = resolve_encoder_capabilities(encoder)
-            config = benchmark.build_config(
-                encoder=encoder,
-                dataset_csv=dataset_csv,
-                splits_csv=splits_csv,
-                output_root=root / encoder,
-                seed=benchmark.canonical_seeds[0],
-                overrides=overrides,
-            )
-            if config.encoder is None or config.encoder.name != capabilities.name:
-                resolved = None if config.encoder is None else config.encoder.name
-                raise ValueError(
-                    f"Benchmark builder resolved encoder {resolved!r}, expected "
-                    f"{capabilities.name!r}."
+            try:
+                capabilities = resolve_encoder_capabilities(encoder)
+                metadata = encoder_registry.info(encoder)
+            except KeyError:
+                failure = (
+                    f"{encoder!r}: preset is unavailable from slide2vec's Encoder "
+                    "registry. Check the preset name and that its provider package is "
+                    "installed."
                 )
+                diagnostics = list_encoder_provider_diagnostics()
+                if diagnostics:
+                    failure += "\n" + "\n".join(
+                        "     Skipped slide2vec Encoder provider "
+                        f"{item.provider_key!r} ({item.provider}): "
+                        f"{item.exception_type}: {item.message}"
+                        for item in diagnostics
+                    )
+                failures.append(failure)
+                continue
+            except ValueError as exc:
+                failures.append(
+                    f"{encoder!r}: invalid slide2vec capability contract: {exc}"
+                )
+                continue
+
+            try:
+                config = benchmark.build_config(
+                    encoder=encoder,
+                    dataset_csv=dataset_csv,
+                    splits_csv=splits_csv,
+                    output_root=root / encoder,
+                    seed=benchmark.canonical_seeds[0],
+                    overrides=overrides,
+                )
+                incompatibility = _preflight_config_compatibility(
+                    benchmark, encoder, config, capabilities, metadata
+                )
+            except (KeyError, ValueError, TypeError) as exc:
+                failures.append(
+                    f"{encoder!r}: Benchmark config validation failed: {exc}"
+                )
+                continue
+            if incompatibility is not None:
+                failures.append(f"{encoder!r}: {incompatibility}")
+
+    return failures
 
 
 def _plural_leaderboard_args(benchmark, output_root: Path) -> argparse.Namespace:
@@ -853,10 +976,18 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
             )
             return 2
         benchmark = targets[0]
-        try:
-            _preflight_reproduce_panel(benchmark, encoders)
-        except (KeyError, ValueError) as exc:
-            print(f"Error: Encoder panel preflight failed: {exc}", file=sys.stderr)
+        failures = _preflight_reproduce_panel(benchmark, encoders)
+        if failures:
+            print(
+                f"Error: Encoder panel preflight failed for Benchmark "
+                f"{benchmark.name!r}:\n"
+                + "\n".join(
+                    f"  {index}. {failure}"
+                    for index, failure in enumerate(failures, 1)
+                )
+                + "\nNo curation, Pipeline, extraction, training, or Run writes started.",
+                file=sys.stderr,
+            )
             return 2
         try:
             manifest = _reproduce_manifest(benchmark, args)
@@ -1095,7 +1226,11 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         nargs="+",
         default=None,
         metavar="NAME",
-        help="Run an ordered Encoder panel, then write the cross-encoder Leaderboard.",
+        help=(
+            "Run an ordered Encoder panel, checking the complete panel before any work "
+            "starts, then write the cross-encoder Leaderboard. If a capability is "
+            "missing, select a compatible Benchmark or fix the Encoder plugin."
+        ),
     )
     parser.add_argument(
         "--record",
