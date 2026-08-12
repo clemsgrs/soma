@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soma-byom-smoke-fixture"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[project.entry-points."slide2vec.encoders"]
+byom_smoke = "byom_smoke.encoders:register_presets"
+
+[tool.setuptools.packages.find]
+where = ["src"]

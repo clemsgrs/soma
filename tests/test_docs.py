@@ -49,6 +49,79 @@ def test_documentation_always_spells_soma_lowercase() -> None:
     assert offenders == []
 
 
+def test_documentation_always_spells_slide2vec_lowercase() -> None:
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    offenders: list[str] = []
+
+    for path in sorted(docs_dir.rglob("*")):
+        if (
+            not path.is_file()
+            or path.suffix not in {".md", ".py", ".rst"}
+            or "_build" in path.parts
+        ):
+            continue
+        for line_number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            for match in re.finditer(r"\bslide2vec\b", line, flags=re.IGNORECASE):
+                if match.group() != "slide2vec":
+                    offenders.append(
+                        f"{path.relative_to(docs_dir)}:{line_number}: {match.group()}"
+                    )
+
+    assert offenders == []
+
+
+def test_in_house_encoder_guide_commands_match_public_cli() -> None:
+    guide = (
+        Path(__file__).resolve().parents[1] / "docs" / "benchmark-in-house-encoder.rst"
+    ).read_text(encoding="utf-8")
+
+    assert "soma list encoders" in guide
+    assert "soma list benchmarks" in guide
+    assert (
+        "soma reproduce eva/bach --encoders my-private-encoder uni2 "
+        "--raw-root /data/eva/bach --output-root runs/eva-bach --seeds 1"
+    ) in guide
+    assert (
+        "soma reproduce eva --encoders my-private-encoder uni2 "
+        "--raw-root /data/eva --output-root runs/eva --seeds 1"
+    ) in guide
+
+    from soma.cli import _build_list_parser, _build_reproduce_parser
+
+    _build_list_parser().parse_args(["encoders"])
+    _build_list_parser().parse_args(["benchmarks"])
+    _build_reproduce_parser().parse_args(
+        [
+            "eva/bach",
+            "--encoders",
+            "my-private-encoder",
+            "uni2",
+            "--raw-root",
+            "/data/eva/bach",
+            "--output-root",
+            "runs/eva-bach",
+            "--seeds",
+            "1",
+        ]
+    )
+    _build_reproduce_parser().parse_args(
+        [
+            "eva",
+            "--encoders",
+            "my-private-encoder",
+            "uni2",
+            "--raw-root",
+            "/data/eva",
+            "--output-root",
+            "runs/eva",
+            "--seeds",
+            "1",
+        ]
+    )
+
+
 def test_sphinx_exposes_the_project_release_without_network_access() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     conf_path = repo_root / "docs" / "conf.py"
@@ -269,6 +342,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "hest-gene-expression-benchmark",
             "pathorob-robustness-benchmark",
             "croma-encoder-panel",
+            "benchmark-in-house-encoder",
         ),
         "reference.rst": ("api", "cli"),
         "system.rst": ("caching", "outputs", "reporting"),

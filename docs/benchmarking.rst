@@ -16,6 +16,9 @@ Two commands drive them:
 See :doc:`cli` for every command option and :doc:`outputs` for the artifacts each
 run writes.
 
+To compare an externally installed private preset with public presets, follow
+:doc:`benchmark-in-house-encoder`.
+
 .. tip::
 
    Prefer Python? soma ships this as an API — the same curate, run, and score
@@ -120,3 +123,4 @@ benchmarks.
    hest-gene-expression-benchmark
    pathorob-robustness-benchmark
    croma-encoder-panel
+   benchmark-in-house-encoder
