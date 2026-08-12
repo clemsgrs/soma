@@ -30,16 +30,23 @@ explicitly ordered panel with ``--encoders``::
 
    soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
    soma reproduce eva/bach --encoders private-pathology uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach
+   soma reproduce eva --encoders private-pathology uni2 --raw-root /path/to/eva --output-root runs/eva --seeds 1
 
-For one concrete Benchmark, the plural form validates every preset before curation,
-Pipeline construction, extraction, training, or Run writes. If any cell is invalid, soma
-reports every incompatibility in panel order and starts no work. A missing capability means
-you must select a compatible Benchmark or fix the Encoder plugin implementation. After a
-successful preflight, soma executes one ordinary Run at a time in the supplied order and
-writes the Benchmark's canonical cross-encoder Leaderboard automatically. Raw data is
-curated once; ``--curated-dir`` skips curation for the whole panel. ``--encoder`` and
-``--encoders`` are mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
+The plural form resolves a family to all of its concrete Benchmarks, then validates every
+Benchmark × Encoder cell before curation, Pipeline construction, extraction, training, or
+Run writes. If any cell is invalid, soma names its concrete Benchmark and Encoder, reports
+every incompatibility in panel order, and starts no work. A missing capability means you
+must select a compatible Benchmark or fix the Encoder plugin implementation. After a
+successful preflight, soma executes one ordinary Run at a time in canonical Benchmark order
+and supplied Encoder order. Raw data is curated once per concrete Benchmark;
+``--curated-dir`` skips curation for the whole panel. ``--encoder`` and ``--encoders`` are
+mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
 Installed-preset discovery and capability preflight require slide2vec 5.8.0 or newer.
+
+Each concrete Benchmark writes its own canonical cross-encoder Leaderboard beneath its
+member output root—for example ``runs/eva/bach/leaderboards/eva/bach.*``. A family is a
+collection of dataset-, splits-, and task-specific comparisons; soma never combines its
+members into a family-wide rank.
 
 A preflight rejection starts no Run. Once a valid panel has started, a runtime failure is
 different: later encoders still run, and completed Runs remain ordinary valid Runs. If at

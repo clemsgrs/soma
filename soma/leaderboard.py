@@ -1352,6 +1352,8 @@ def write_leaderboard(
         "json": leaderboards_dir / f"{stem}.json",
         "html": leaderboards_dir / f"{stem}.html",
     }
+    for path in paths.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
     paths["csv"].write_text(render_csv(table), encoding="utf-8")
     paths["json"].write_text(render_json(table), encoding="utf-8")
     paths["html"].write_text(render_html(table), encoding="utf-8")

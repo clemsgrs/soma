@@ -207,11 +207,13 @@ def build_cli_rst() -> str:
            sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
            already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
            curation; ``--from-run-dir`` re-scores an existing run without retraining.
-           ``--seeds 1`` is the quickest smoke. For one concrete Benchmark,
-           ``--encoders`` checks the complete ordered panel before curation, Pipeline
-           construction, extraction, training, or Run writes, then writes the canonical
-           cross-encoder Leaderboard. Every incompatibility is reported together. For a
-           missing capability, select a compatible Benchmark or fix the Encoder plugin.
+           ``--seeds 1`` is the quickest smoke. ``--encoders`` resolves a family first and
+           checks the complete ordered concrete-Benchmark × Encoder panel before curation,
+           Pipeline construction, extraction, training, or Run writes. Every
+           incompatibility names its concrete Benchmark and Encoder. A valid panel writes
+           one canonical cross-encoder Leaderboard per concrete Benchmark; ranks are never
+           combined across family members. For a missing capability, select a compatible
+           Benchmark or fix the Encoder plugin.
            It cannot be combined with single-Run ``--from-run-dir`` rescoring. A preflight
            rejection starts no Run. After a valid panel starts, runtime failures do not
            invalidate completed Runs or stop later encoders. soma labels the panel
