@@ -36,6 +36,7 @@ executes one ordinary Run at a time in the supplied order, and writes the Benchm
 canonical cross-encoder Leaderboard automatically. Raw data is curated once;
 ``--curated-dir`` skips curation for the whole panel. ``--encoder`` and ``--encoders`` are
 mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
+Installed-preset discovery and capability preflight require slide2vec 5.8.0 or newer.
 
 ``NAME`` is a registered benchmark (e.g. ``ocelot``, ``eva/bach``) or a family prefix
 (``eva``) that fans out over every member. ``--seeds 1`` is the quickest smoke; the

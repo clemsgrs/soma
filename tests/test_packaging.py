@@ -31,6 +31,12 @@ def test_pyproject_has_publish_ready_metadata():
     assert sdist_targets["only-include"] == ["LICENSE", "README.md", "pyproject.toml", "soma"]
 
 
+def test_slide2vec_minimum_includes_public_encoder_capabilities_api():
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "slide2vec[fm]>=5.8.0" in data["project"]["dependencies"]
+
+
 def test_pypi_distribution_name_keeps_soma_import_package():
     pyproject = Path("pyproject.toml")
     data = tomllib.loads(pyproject.read_text())
