@@ -509,11 +509,15 @@ def _curated_manifest_from_dir(curated_dir: Path):
     )
 
 
+class _MissingReproduceSourceError(ValueError):
+    """The CLI was not given a source from which to obtain a curated Manifest."""
+
+
 def _reproduce_manifest(benchmark, args: argparse.Namespace, *, family_root: str | None = None):
     """Resolve one concrete Benchmark's invariant curated Manifest."""
     curated_dir = getattr(args, "curated_dir", None)
     if curated_dir is None and args.raw_root is None:
-        raise ValueError(
+        raise _MissingReproduceSourceError(
             "reproduce needs --raw-root <dir> (curate from raw), "
             "--curated-dir <dir> (reuse a pre-curated manifest, skip curation), or "
             "--from-run-dir <dir> (re-score an existing run)."
@@ -641,7 +645,7 @@ def _reproduce_one(
     if manifest is None:
         try:
             manifest = _reproduce_manifest(benchmark, args, family_root=family_root)
-        except ValueError as exc:
+        except _MissingReproduceSourceError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
     output_root = _reproduce_output_root(benchmark, args, family_root=family_root)
@@ -798,12 +802,12 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
         benchmark = targets[0]
         try:
             _preflight_reproduce_panel(benchmark, encoders)
-        except Exception as exc:
+        except (KeyError, ValueError) as exc:
             print(f"Error: Encoder panel preflight failed: {exc}", file=sys.stderr)
             return 2
         try:
             manifest = _reproduce_manifest(benchmark, args)
-        except (OSError, ValueError) as exc:
+        except _MissingReproduceSourceError as exc:
             print(f"Error: {benchmark.name}: {exc}", file=sys.stderr)
             return 2
 

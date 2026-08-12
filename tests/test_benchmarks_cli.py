@@ -536,7 +536,7 @@ def test_reproduce_rejects_plural_encoders_with_single_run_rescoring(capsys, tmp
 
 class _PanelBenchmark:
     name = "panel_fixture"
-    facet = Facet(fixed={"protocol": "fixed"}, varied=("encoder",))
+    facet = Facet(fixed={}, varied=("encoder",))
     canonical_seeds = (0, 1)
     primary_metric = "test/accuracy"
     reference_environment: dict[str, str] = {}
@@ -649,6 +649,7 @@ def panel_benchmark():
         yield benchmark, private_name
     finally:
         registry_mod._REGISTRY.pop(benchmark.name, None)
+        encoder_registry._entries.pop(private_name, None)
 
 
 def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
@@ -656,7 +657,6 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
 ):
     benchmark, private_name = panel_benchmark
     run_events: list[tuple] = []
-    leaderboard_requests: list[object] = []
     scores = {private_name: 0.61, "uni2": 0.72}
 
     class FakePipeline:
@@ -664,6 +664,13 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
             self.config = config
 
         def run(self):
+            from soma.output_layout import (
+                create_run_metadata,
+                resolve_managed_output_paths,
+                write_experiment_metadata,
+                write_run_metadata,
+            )
+
             config = self.config
             run_events.append(
                 (
@@ -679,13 +686,24 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
             (config.output_root / "summary.json").write_text(
                 json.dumps({benchmark.primary_metric: scores[config.encoder.name]})
             )
+            run_id = f"{config.encoder.name}-seed-{config.training.seed}"
+            layout = resolve_managed_output_paths(config, run_id=run_id)
+            layout.run_dir.mkdir(parents=True, exist_ok=True)
+            write_experiment_metadata(layout.experiment_dir, layout.experiment)
+            metadata = create_run_metadata(
+                config=config,
+                experiment=layout.experiment,
+                run_dir=layout.run_dir,
+                run_id=run_id,
+                status="completed",
+                summary_metrics={benchmark.primary_metric: scores[config.encoder.name]},
+            ).with_updates(finished_at="2026-08-12T00:00:00+00:00")
+            write_run_metadata(layout.run_dir, metadata)
+            (layout.run_dir / "summary.json").write_text(
+                json.dumps({benchmark.primary_metric: scores[config.encoder.name]})
+            )
 
     monkeypatch.setattr(cli, "Pipeline", FakePipeline)
-    monkeypatch.setattr(
-        cli,
-        "_cmd_leaderboard",
-        lambda args: leaderboard_requests.append(args) or 0,
-    )
     output_root = tmp_path / "runs"
 
     code = _run_cli(
@@ -723,11 +741,17 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
     assert "[REFERENCE SKIPPED]" in captured.out
     assert f"[REFERENCE OK] {benchmark.name} test/accuracy = 0.7200" in captured.out
     assert captured.err == ""
-    assert len(leaderboard_requests) == 1
-    request = leaderboard_requests[0]
-    assert request.name == benchmark.name
-    assert request.root == output_root
-    assert request.vary == ["encoder"]
+    leaderboard_dir = output_root / "leaderboards"
+    assert sorted(path.name for path in leaderboard_dir.iterdir()) == [
+        f"{benchmark.name}.csv",
+        f"{benchmark.name}.html",
+        f"{benchmark.name}.json",
+    ]
+    leaderboard = json.loads((leaderboard_dir / f"{benchmark.name}.json").read_text())
+    assert [row["vary"]["encoder"] for row in leaderboard["rows"]] == [
+        "uni2",
+        private_name,
+    ]
 
 
 def test_reproduce_plural_curated_manifest_skips_curation_for_every_encoder(
@@ -783,6 +807,46 @@ def test_reproduce_plural_curated_manifest_skips_curation_for_every_encoder(
         (private_name, str(curated / "dataset.csv"), str(curated / "splits.csv")),
         ("uni2", str(curated / "dataset.csv"), str(curated / "splits.csv")),
     ]
+
+
+def test_reproduce_singular_does_not_mask_curator_value_errors(
+    monkeypatch, tmp_path, panel_benchmark
+):
+    benchmark, _private_name = panel_benchmark
+    monkeypatch.setattr(
+        cli,
+        "_reproduce_manifest",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("curator defect")),
+    )
+
+    with pytest.raises(ValueError, match="curator defect"):
+        _run_cli(
+            ["reproduce", benchmark.name, "--raw-root", str(tmp_path / "raw")]
+        )
+
+
+def test_reproduce_plural_does_not_mask_unexpected_preflight_errors(
+    monkeypatch, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    monkeypatch.setattr(
+        cli,
+        "_preflight_reproduce_panel",
+        lambda *args: (_ for _ in ()).throw(AssertionError("preflight defect")),
+    )
+
+    with pytest.raises(AssertionError, match="preflight defect"):
+        _run_cli(
+            [
+                "reproduce",
+                benchmark.name,
+                "--encoders",
+                private_name,
+                "uni2",
+                "--raw-root",
+                str(tmp_path / "raw"),
+            ]
+        )
 
 
 def test_reproduce_singular_and_default_keep_existing_calls_without_leaderboard(
