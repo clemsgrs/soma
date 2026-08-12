@@ -179,7 +179,7 @@ def discover_triples(
     """
     root = Path(output_root)
     result: dict[TripleKey, list[Path]] = {}
-    for exp_json in sorted(root.glob("experiments/*/experiment.json")):
+    for exp_json in sorted(root.glob("**/experiments/*/experiment.json")):
         runs_dir = exp_json.parent / "runs"
         if not runs_dir.is_dir():
             continue

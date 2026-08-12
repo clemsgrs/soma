@@ -318,6 +318,24 @@ def test_discover_triples_groups_by_dataset_splits_task(tmp_path: Path):
     assert len(triples) == 2
 
 
+def test_discover_triples_collects_managed_runs_below_seed_roots(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    make_run_dir(
+        _cfg(root / "seed_0", ds, sp, encoder="uni2", seed=0),
+        {"test/accuracy": 0.8},
+    )
+    make_run_dir(
+        _cfg(root / "seed_1", ds, sp, encoder="uni2", seed=1),
+        {"test/accuracy": 0.9},
+    )
+
+    triples = discover_triples(root)
+
+    assert len(triples) == 1
+    assert len(next(iter(triples.values()))) == 2
+
+
 def test_project_leaderboard_rejects_multiple_triples(tmp_path: Path):
     root = tmp_path / "out"
     ds_a = _dataset_csv(tmp_path, "ds_a", "sample_id,image_path,label\ns0,/a.svs,tumor\n")
