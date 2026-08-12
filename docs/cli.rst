@@ -66,13 +66,16 @@ end-to-end curate → configure → run → leaderboard → reproduce story).
    already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
    curation; ``--from-run-dir`` re-scores an existing run without retraining.
    ``--seeds 1`` is the quickest smoke. For one concrete Benchmark,
-   ``--encoders`` runs an ordered panel, preflights it before curation, and writes
-   the canonical cross-encoder Leaderboard. It cannot be combined with single-Run
-   ``--from-run-dir`` rescoring. A preflight rejection starts no Run. After a valid
-   panel starts, runtime failures do not invalidate completed Runs or stop later
-   encoders. soma labels the panel ``PARTIAL`` in command output, writes the ordinary
-   canonical Leaderboard over completed Runs, prints one failure summary, and exits
-   nonzero. If no Run completed, it writes no Leaderboard.
+   ``--encoders`` checks the complete ordered panel before curation, Pipeline
+   construction, extraction, training, or Run writes, then writes the canonical
+   cross-encoder Leaderboard. Every incompatibility is reported together. For a
+   missing capability, select a compatible Benchmark or fix the Encoder plugin.
+   It cannot be combined with single-Run ``--from-run-dir`` rescoring. A preflight
+   rejection starts no Run. After a valid panel starts, runtime failures do not
+   invalidate completed Runs or stop later encoders. soma labels the panel
+   ``PARTIAL`` in command output, writes the ordinary canonical Leaderboard over
+   completed Runs, prints one failure summary, and exits nonzero. If no Run
+   completed, it writes no Leaderboard.
 
 ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
    Render a faceted leaderboard over the completed run dirs under an

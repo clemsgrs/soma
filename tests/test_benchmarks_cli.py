@@ -609,6 +609,18 @@ class _PanelBenchmark:
         return json.loads((Path(run_dir) / "summary.json").read_text())
 
 
+class _DensePanelBenchmark(_PanelBenchmark):
+    """Registered test Benchmark whose ordinary config requires dense patch features."""
+
+    name = "dense_panel_fixture"
+
+    def build_config(self, **axes):
+        from soma.benchmarks import get_benchmark
+
+        self.events.append(("build", axes["encoder"]))
+        return get_benchmark("ocelot").build_config(**axes)
+
+
 @pytest.fixture()
 def panel_benchmark():
     from slide2vec.encoders import TileEncoder, encoder_registry, register_encoder
@@ -680,12 +692,155 @@ def _write_completed_panel_run(config, metric: str, score: float) -> None:
     (layout.run_dir / "summary.json").write_text(json.dumps({metric: score}))
 
 
+def test_reproduce_panel_reports_every_invalid_encoder_before_work(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    from slide2vec.encoders import EncoderProviderDiagnostic
+
+    _pooled_benchmark, pooled_only_name = panel_benchmark
+    benchmark = _DensePanelBenchmark()
+    register_benchmark(benchmark)
+    monkeypatch.setattr(
+        "slide2vec.encoders.list_encoder_provider_diagnostics",
+        lambda: (
+            EncoderProviderDiagnostic(
+                provider_key="private-lab",
+                provider="private_lab.encoders:register",
+                exception_type="ImportError",
+                message="missing private_encoder_runtime",
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "Pipeline",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("invalid panel must not construct a Pipeline")
+        ),
+    )
+    monkeypatch.setattr(
+        "soma.output_layout.write_run_metadata",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid panel must not write a Run")
+        ),
+    )
+
+    try:
+        code = _run_cli(
+            [
+                "reproduce",
+                benchmark.name,
+                "--encoders",
+                "missing-private-preset",
+                "musk",
+                pooled_only_name,
+                "--raw-root",
+                str(tmp_path / "raw"),
+            ]
+        )
+    finally:
+        registry_mod._REGISTRY.pop(benchmark.name, None)
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert captured.out == ""
+    assert captured.err == (
+        "Error: Encoder panel preflight failed for Benchmark "
+        "'dense_panel_fixture':\n"
+        "  1. 'missing-private-preset': preset is unavailable from slide2vec's "
+        "Encoder registry. Check the preset name and that its provider package is "
+        "installed.\n"
+        "     Skipped slide2vec Encoder provider 'private-lab' "
+        "(private_lab.encoders:register): ImportError: missing private_encoder_runtime\n"
+        "  2. 'musk': fixed encoder geometry is incompatible: Encoder 'musk' does not "
+        "support a variable encoder input; its registered input size is 384px, "
+        "so an effective encoder input of 448px (dense window_size=448 aligned to the "
+        "patch multiple) is unsupported. Select a compatible Benchmark or change the "
+        "Encoder plugin implementation.\n"
+        f"  3. '{pooled_only_name}': missing dense capability: Benchmark "
+        "'dense_panel_fixture' requires dense patch features, but slide2vec reports "
+        "dense=False. Select a compatible Benchmark or change the Encoder plugin "
+        "implementation.\n"
+        "No curation, Pipeline, extraction, training, or Run writes started.\n"
+    )
+    assert benchmark.curate_calls == 0
+    assert benchmark.events == [("build", "musk"), ("build", pooled_only_name)]
+
+
+def test_reproduce_panel_uses_slide2vec_public_geometry_validation(
+    monkeypatch, capsys, tmp_path
+):
+    from slide2vec.api import EncoderInputContract
+
+    benchmark = _DensePanelBenchmark()
+    register_benchmark(benchmark)
+    monkeypatch.setattr(
+        EncoderInputContract,
+        "declared_dense",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("literal public geometry rejection")
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "curate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid panel must not curate")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "Pipeline",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("invalid panel must not construct a Pipeline")
+        ),
+    )
+
+    try:
+        code = _run_cli(
+            [
+                "reproduce",
+                benchmark.name,
+                "--encoders",
+                "uni2",
+                "--raw-root",
+                str(tmp_path / "raw"),
+            ]
+        )
+    finally:
+        registry_mod._REGISTRY.pop(benchmark.name, None)
+
+    assert code == 2
+    assert capsys.readouterr().err == (
+        "Error: Encoder panel preflight failed for Benchmark "
+        "'dense_panel_fixture':\n"
+        "  1. 'uni2': fixed encoder geometry is incompatible: "
+        "literal public geometry rejection Select a compatible Benchmark or change "
+        "the Encoder plugin implementation.\n"
+        "No curation, Pipeline, extraction, training, or Run writes started.\n"
+    )
+    assert benchmark.events == [("build", "uni2")]
+
+
 def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
     monkeypatch, capsys, tmp_path, panel_benchmark
 ):
+    from slide2vec.encoders import EncoderProviderDiagnostic
+
     benchmark, private_name = panel_benchmark
     run_events: list[tuple] = []
     scores = {private_name: 0.61, "uni2": 0.72}
+    monkeypatch.setattr(
+        "slide2vec.encoders.list_encoder_provider_diagnostics",
+        lambda: (
+            EncoderProviderDiagnostic(
+                provider_key="unrelated-broken-provider",
+                provider="unrelated.encoders:register",
+                exception_type="RuntimeError",
+                message="unrelated provider failed",
+            ),
+        ),
+    )
 
     class FakePipeline:
         def __init__(self, config):
@@ -746,6 +901,7 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
     assert f"[MEASURED] {benchmark.name} test/accuracy = 0.6100" in captured.out
     assert "[REFERENCE SKIPPED]" in captured.out
     assert f"[REFERENCE OK] {benchmark.name} test/accuracy = 0.7200" in captured.out
+    assert "unrelated-broken-provider" not in captured.out
     assert captured.err == ""
     leaderboard_dir = output_root / "leaderboards"
     assert sorted(path.name for path in leaderboard_dir.iterdir()) == [
@@ -1184,6 +1340,8 @@ def test_reproduce_help_documents_ordered_encoder_panel(capsys, monkeypatch):
     assert code == 0
     assert "--encoders NAME [NAME ...]" in unwrapped
     assert "ordered Encoder panel" in unwrapped
+    assert "complete panel before any work starts" in unwrapped
+    assert "select a compatible Benchmark or fix the Encoder plugin" in unwrapped
     assert "cross-encoder Leaderboard" in unwrapped
 
 
