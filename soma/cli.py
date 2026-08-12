@@ -754,6 +754,23 @@ def _plural_leaderboard_args(benchmark, output_root: Path) -> argparse.Namespace
     )
 
 
+def _panel_runtime_failure_context(exc: RuntimeError) -> str:
+    """Render one runtime failure as a deterministic, single-line diagnostic."""
+    detail = " ".join(str(exc).split()) or "(no error message)"
+    return f"{type(exc).__name__}: {detail}"
+
+
+def _completed_run_dirs(output_root: Path) -> set[Path]:
+    """Return completed Run directories currently visible to a Leaderboard scan."""
+    from soma.leaderboard import discover_triples
+
+    return {
+        run_dir
+        for run_dirs in discover_triples(output_root).values()
+        for run_dir in run_dirs
+    }
+
+
 def _cmd_reproduce(args: argparse.Namespace) -> int:
     from soma.benchmarks import get_benchmark
 
@@ -811,19 +828,56 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
             print(f"Error: {benchmark.name}: {exc}", file=sys.stderr)
             return 2
 
+        output_root = _reproduce_output_root(benchmark, args)
+        completed_before = _completed_run_dirs(output_root)
+        failures: list[tuple[str, str]] = []
+        completed_cells = 0
         for encoder in encoders:
             cell_args = argparse.Namespace(**vars(args))
             cell_args.encoder = encoder
             cell_args.encoders = None
-            code = _reproduce_one(
-                benchmark,
-                cell_args,
-                manifest=manifest,
-            )
+            try:
+                code = _reproduce_one(
+                    benchmark,
+                    cell_args,
+                    manifest=manifest,
+                )
+            except RuntimeError as exc:
+                failures.append((encoder, _panel_runtime_failure_context(exc)))
+                continue
             if code:
                 return code
-        output_root = _reproduce_output_root(benchmark, args)
-        return _cmd_leaderboard(_plural_leaderboard_args(benchmark, output_root))
+            completed_cells += 1
+
+        leaderboard_code = 0
+        completed_during_panel = _completed_run_dirs(output_root) - completed_before
+        if completed_cells or completed_during_panel:
+            if failures:
+                print(
+                    f"PARTIAL Encoder panel: {completed_cells}/{len(encoders)} cells "
+                    "completed; rendering the canonical Leaderboard from completed "
+                    "Runs. Completed Runs remain valid.",
+                    flush=True,
+                )
+            leaderboard_code = _cmd_leaderboard(
+                _plural_leaderboard_args(benchmark, output_root)
+            )
+        elif failures:
+            print(
+                f"Encoder panel: 0/{len(encoders)} cells completed; no Leaderboard "
+                "was written.",
+                flush=True,
+            )
+
+        if failures:
+            print(
+                f"Encoder panel runtime failures ({len(failures)}):",
+                file=sys.stderr,
+            )
+            for encoder, context in failures:
+                print(f"  - {encoder}: {context}", file=sys.stderr)
+            return max(1, leaderboard_code)
+        return leaderboard_code
 
     codes = [
         _reproduce_one(bench, args, family_root=args.name if is_family else None)

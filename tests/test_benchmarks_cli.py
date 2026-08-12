@@ -653,6 +653,33 @@ def panel_benchmark():
         encoder_registry._entries.pop(private_name, None)
 
 
+def _write_completed_panel_run(config, metric: str, score: float) -> None:
+    """Persist the ordinary completed-Run artifacts consumed by the Leaderboard."""
+    from soma.output_layout import (
+        create_run_metadata,
+        resolve_managed_output_paths,
+        write_experiment_metadata,
+        write_run_metadata,
+    )
+
+    config.output_root.mkdir(parents=True, exist_ok=True)
+    (config.output_root / "summary.json").write_text(json.dumps({metric: score}))
+    run_id = f"{config.encoder.name}-seed-{config.training.seed}"
+    layout = resolve_managed_output_paths(config, run_id=run_id)
+    layout.run_dir.mkdir(parents=True, exist_ok=True)
+    write_experiment_metadata(layout.experiment_dir, layout.experiment)
+    metadata = create_run_metadata(
+        config=config,
+        experiment=layout.experiment,
+        run_dir=layout.run_dir,
+        run_id=run_id,
+        status="completed",
+        summary_metrics={metric: score},
+    ).with_updates(finished_at="2026-08-12T00:00:00+00:00")
+    write_run_metadata(layout.run_dir, metadata)
+    (layout.run_dir / "summary.json").write_text(json.dumps({metric: score}))
+
+
 def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
     monkeypatch, capsys, tmp_path, panel_benchmark
 ):
@@ -665,13 +692,6 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
             self.config = config
 
         def run(self):
-            from soma.output_layout import (
-                create_run_metadata,
-                resolve_managed_output_paths,
-                write_experiment_metadata,
-                write_run_metadata,
-            )
-
             config = self.config
             run_events.append(
                 (
@@ -683,25 +703,10 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
                     str(config.output_root),
                 )
             )
-            config.output_root.mkdir(parents=True, exist_ok=True)
-            (config.output_root / "summary.json").write_text(
-                json.dumps({benchmark.primary_metric: scores[config.encoder.name]})
-            )
-            run_id = f"{config.encoder.name}-seed-{config.training.seed}"
-            layout = resolve_managed_output_paths(config, run_id=run_id)
-            layout.run_dir.mkdir(parents=True, exist_ok=True)
-            write_experiment_metadata(layout.experiment_dir, layout.experiment)
-            metadata = create_run_metadata(
+            _write_completed_panel_run(
                 config=config,
-                experiment=layout.experiment,
-                run_dir=layout.run_dir,
-                run_id=run_id,
-                status="completed",
-                summary_metrics={benchmark.primary_metric: scores[config.encoder.name]},
-            ).with_updates(finished_at="2026-08-12T00:00:00+00:00")
-            write_run_metadata(layout.run_dir, metadata)
-            (layout.run_dir / "summary.json").write_text(
-                json.dumps({benchmark.primary_metric: scores[config.encoder.name]})
+                metric=benchmark.primary_metric,
+                score=scores[config.encoder.name],
             )
 
     monkeypatch.setattr(cli, "Pipeline", FakePipeline)
@@ -753,6 +758,232 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
         "uni2",
         private_name,
     ]
+
+
+def test_reproduce_plural_preserves_successful_runs_and_writes_partial_leaderboard(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    requested = [private_name, "uni2", "virchow2"]
+    attempts: list[tuple[str, int, str, str]] = []
+    scores = {private_name: 0.61, "virchow2": 0.75}
+
+    class FakePipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            config = self.config
+            encoder = config.encoder.name
+            attempts.append(
+                (
+                    encoder,
+                    config.training.seed,
+                    str(config.cache.root_dir),
+                    str(config.output_root),
+                )
+            )
+            if encoder == "uni2":
+                raise RuntimeError("CUDA out of memory while extracting tiles")
+
+            _write_completed_panel_run(
+                config=config,
+                metric=benchmark.primary_metric,
+                score=scores[encoder],
+            )
+
+    monkeypatch.setattr(cli, "Pipeline", FakePipeline)
+    output_root = tmp_path / "runs"
+
+    code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoders",
+            *requested,
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--output-root",
+            str(output_root),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert [attempt[:2] for attempt in attempts] == [
+        (private_name, 0),
+        (private_name, 1),
+        ("uni2", 0),
+        ("virchow2", 0),
+        ("virchow2", 1),
+    ]
+    assert {attempt[2] for attempt in attempts} == {
+        str(output_root / "feature_cache")
+    }
+    assert [attempt[3] for attempt in attempts] == [
+        str(output_root / "seed_0"),
+        str(output_root / "seed_1"),
+        str(output_root / "seed_0"),
+        str(output_root / "seed_0"),
+        str(output_root / "seed_1"),
+    ]
+    completed_run_ids = sorted(
+        path.parent.name
+        for path in output_root.glob("**/runs/*/run.yaml")
+    )
+    assert completed_run_ids == [
+        f"{private_name}-seed-0",
+        f"{private_name}-seed-1",
+        "virchow2-seed-0",
+        "virchow2-seed-1",
+    ]
+    leaderboard_path = output_root / "leaderboards" / f"{benchmark.name}.json"
+    leaderboard = json.loads(leaderboard_path.read_text())
+    assert [row["vary"]["encoder"] for row in leaderboard["rows"]] == [
+        "virchow2",
+        private_name,
+    ]
+    assert "PARTIAL Encoder panel: 2/3 cells completed" in captured.out
+    assert "Completed Runs remain valid" in captured.out
+    assert captured.err == (
+        "Encoder panel runtime failures (1):\n"
+        "  - uni2: RuntimeError: CUDA out of memory while extracting tiles\n"
+    )
+
+
+def test_reproduce_plural_reports_all_runtime_failures_without_leaderboard(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    attempts: list[str] = []
+    failures = {
+        private_name: "weights missing\nset MODEL_TOKEN and retry",
+        "uni2": "GPU unavailable",
+    }
+
+    class FailingPipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            encoder = self.config.encoder.name
+            attempts.append(encoder)
+            raise RuntimeError(failures[encoder])
+
+    monkeypatch.setattr(cli, "Pipeline", FailingPipeline)
+    output_root = tmp_path / "runs"
+
+    code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoders",
+            private_name,
+            "uni2",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--output-root",
+            str(output_root),
+            "--seeds",
+            "1",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert attempts == [private_name, "uni2"]
+    assert "Encoder panel: 0/2 cells completed; no Leaderboard was written." in captured.out
+    assert not (output_root / "leaderboards").exists()
+    assert captured.err == (
+        "Encoder panel runtime failures (2):\n"
+        f"  - {private_name}: RuntimeError: weights missing set MODEL_TOKEN and retry\n"
+        "  - uni2: RuntimeError: GPU unavailable\n"
+    )
+
+
+def test_reproduce_plural_projects_a_run_completed_before_its_cell_failed(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+
+    class PartiallyFailingPipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            config = self.config
+            encoder = config.encoder.name
+            if encoder == private_name and config.training.seed == 0:
+                _write_completed_panel_run(
+                    config=config,
+                    metric=benchmark.primary_metric,
+                    score=0.61,
+                )
+                return
+            raise RuntimeError(f"{encoder} seed {config.training.seed} failed")
+
+    monkeypatch.setattr(cli, "Pipeline", PartiallyFailingPipeline)
+    output_root = tmp_path / "runs"
+
+    code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoders",
+            private_name,
+            "uni2",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--output-root",
+            str(output_root),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    leaderboard_path = output_root / "leaderboards" / f"{benchmark.name}.json"
+    leaderboard = json.loads(leaderboard_path.read_text())
+    assert [row["vary"]["encoder"] for row in leaderboard["rows"]] == [private_name]
+    assert "PARTIAL Encoder panel: 0/2 cells completed" in captured.out
+    assert captured.err == (
+        "Encoder panel runtime failures (2):\n"
+        f"  - {private_name}: RuntimeError: {private_name} seed 1 failed\n"
+        "  - uni2: RuntimeError: uni2 seed 0 failed\n"
+    )
+
+
+def test_reproduce_plural_does_not_mask_programming_errors(
+    monkeypatch, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    attempts: list[str] = []
+
+    class DefectivePipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            attempts.append(self.config.encoder.name)
+            raise AssertionError("pipeline defect")
+
+    monkeypatch.setattr(cli, "Pipeline", DefectivePipeline)
+
+    with pytest.raises(AssertionError, match="pipeline defect"):
+        _run_cli(
+            [
+                "reproduce",
+                benchmark.name,
+                "--encoders",
+                private_name,
+                "uni2",
+                "--raw-root",
+                str(tmp_path / "raw"),
+                "--seeds",
+                "1",
+            ]
+        )
+
+    assert attempts == [private_name]
 
 
 def test_reproduce_plural_curated_manifest_skips_curation_for_every_encoder(
