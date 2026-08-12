@@ -724,9 +724,7 @@ def _preflight_config_compatibility(
 ) -> str | None:
     """Return one actionable incompatibility derived from a Benchmark config."""
     from slide2vec.encoders import (
-        encoder_registry,
         resolve_encoder_output,
-        resolve_preprocessing_requirements,
     )
 
     if config.encoder is None or config.encoder.name != capabilities.name:
@@ -771,37 +769,27 @@ def _preflight_config_compatibility(
     from soma.encoders.validation import resolve_preprocessing_config
 
     preprocessing = resolve_preprocessing_config(config.encoder, config.preprocessing)
-    requirements = resolve_preprocessing_requirements(encoder, metadata=metadata)
-    preset_size = int(requirements["tile_size_px"])
-    if feature_kind is not None:
-        patch_h, patch_w = capabilities.patch_size
-        target_size = int(preprocessing.requested_tile_size_px)
-        encoded_size = ((target_size + patch_h - 1) // patch_h) * patch_h
-        window_size = preprocessing.dense_window_size
-        effective_size = encoded_size if window_size is None else min(
-            ((int(window_size) + patch_h - 1) // patch_h) * patch_h,
-            encoded_size,
-        )
-        origin = (
-            f"dense target_size={target_size} padded to {encoded_size}"
-            if window_size is None
-            else f"dense window_size={int(window_size)}"
-        )
-    else:
-        effective_size = int(preprocessing.requested_tile_size_px)
-        origin = f"pooled requested_tile_size_px={effective_size}"
+    from slide2vec.api import EncoderInputContract
 
-    source_encoder = str(requirements["source_encoder"])
-    source_metadata = encoder_registry.info(source_encoder)
-    if effective_size != preset_size and not source_metadata[
-        "supports_variable_input_size"
-    ]:
+    try:
+        if feature_kind is not None:
+            EncoderInputContract.declared_dense(
+                encoder,
+                target_size_px=int(preprocessing.requested_tile_size_px),
+                window_size=preprocessing.dense_window_size,
+            )
+        else:
+            EncoderInputContract.declared_pooled(
+                encoder,
+                requested_tile_size_px=int(preprocessing.requested_tile_size_px),
+                allow_non_recommended_settings=(
+                    config.encoder.allow_non_recommended_settings
+                ),
+            )
+    except ValueError as exc:
         return (
-            f"fixed encoder geometry is incompatible: Encoder {encoder!r} does not "
-            f"support a variable encoder input; its registered input size is "
-            f"{preset_size}px, but Benchmark {benchmark.name!r} requires an effective "
-            f"encoder input of {effective_size}px ({origin}). Select a compatible "
-            "Benchmark or change the Encoder plugin implementation."
+            f"fixed encoder geometry is incompatible: {exc} "
+            "Select a compatible Benchmark or change the Encoder plugin implementation."
         )
     return None
 

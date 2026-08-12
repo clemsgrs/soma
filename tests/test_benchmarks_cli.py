@@ -753,10 +753,10 @@ def test_reproduce_panel_reports_every_invalid_encoder_before_work(
         "     Skipped slide2vec Encoder provider 'private-lab' "
         "(private_lab.encoders:register): ImportError: missing private_encoder_runtime\n"
         "  2. 'musk': fixed encoder geometry is incompatible: Encoder 'musk' does not "
-        "support a variable encoder input; its registered input size is 384px, but "
-        "Benchmark 'dense_panel_fixture' requires an effective encoder input of 448px "
-        "(dense window_size=448). Select a compatible Benchmark or change the Encoder "
-        "plugin implementation.\n"
+        "support a variable encoder input; its registered input size is 384px, "
+        "so an effective encoder input of 448px (dense window_size=448 aligned to the "
+        "patch multiple) is unsupported. Select a compatible Benchmark or change the "
+        "Encoder plugin implementation.\n"
         f"  3. '{pooled_only_name}': missing dense capability: Benchmark "
         "'dense_panel_fixture' requires dense patch features, but slide2vec reports "
         "dense=False. Select a compatible Benchmark or change the Encoder plugin "
@@ -765,6 +765,61 @@ def test_reproduce_panel_reports_every_invalid_encoder_before_work(
     )
     assert benchmark.curate_calls == 0
     assert benchmark.events == [("build", "musk"), ("build", pooled_only_name)]
+
+
+def test_reproduce_panel_uses_slide2vec_public_geometry_validation(
+    monkeypatch, capsys, tmp_path
+):
+    from slide2vec.api import EncoderInputContract
+
+    benchmark = _DensePanelBenchmark()
+    register_benchmark(benchmark)
+    monkeypatch.setattr(
+        EncoderInputContract,
+        "declared_dense",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            ValueError("literal public geometry rejection")
+        ),
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "curate",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("invalid panel must not curate")
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "Pipeline",
+        lambda config: (_ for _ in ()).throw(
+            AssertionError("invalid panel must not construct a Pipeline")
+        ),
+    )
+
+    try:
+        code = _run_cli(
+            [
+                "reproduce",
+                benchmark.name,
+                "--encoders",
+                "uni2",
+                "--raw-root",
+                str(tmp_path / "raw"),
+            ]
+        )
+    finally:
+        registry_mod._REGISTRY.pop(benchmark.name, None)
+
+    assert code == 2
+    assert capsys.readouterr().err == (
+        "Error: Encoder panel preflight failed for Benchmark "
+        "'dense_panel_fixture':\n"
+        "  1. 'uni2': fixed encoder geometry is incompatible: "
+        "literal public geometry rejection Select a compatible Benchmark or change "
+        "the Encoder plugin implementation.\n"
+        "No curation, Pipeline, extraction, training, or Run writes started.\n"
+    )
+    assert benchmark.events == [("build", "uni2")]
 
 
 def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
