@@ -784,7 +784,7 @@ def test_reproduce_plural_preserves_successful_runs_and_writes_partial_leaderboa
                 )
             )
             if encoder == "uni2":
-                raise RuntimeError("CUDA out of memory while extracting tiles")
+                raise FileNotFoundError("encoder weights not found in /models/uni2")
 
             _write_completed_panel_run(
                 config=config,
@@ -843,11 +843,12 @@ def test_reproduce_plural_preserves_successful_runs_and_writes_partial_leaderboa
         "virchow2",
         private_name,
     ]
-    assert "PARTIAL Encoder panel: 2/3 cells completed" in captured.out
+    assert "PARTIAL Encoder panel: 2/3 encoders completed" in captured.out
+    assert "from 4 completed Runs" in captured.out
     assert "Completed Runs remain valid" in captured.out
     assert captured.err == (
         "Encoder panel runtime failures (1):\n"
-        "  - uni2: RuntimeError: CUDA out of memory while extracting tiles\n"
+        "  - uni2: FileNotFoundError: encoder weights not found in /models/uni2\n"
     )
 
 
@@ -892,12 +893,67 @@ def test_reproduce_plural_reports_all_runtime_failures_without_leaderboard(
 
     assert code == 1
     assert attempts == [private_name, "uni2"]
-    assert "Encoder panel: 0/2 cells completed; no Leaderboard was written." in captured.out
+    assert (
+        "Encoder panel: 0/2 encoders completed; no Leaderboard was written."
+        in captured.out
+    )
     assert not (output_root / "leaderboards").exists()
     assert captured.err == (
         "Encoder panel runtime failures (2):\n"
         f"  - {private_name}: RuntimeError: weights missing set MODEL_TOKEN and retry\n"
         "  - uni2: RuntimeError: GPU unavailable\n"
+    )
+
+
+def test_reproduce_plural_isolates_missing_reported_scores(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    attempts: list[str] = []
+    current_encoder = ""
+
+    class ScoredPipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            nonlocal current_encoder
+            current_encoder = self.config.encoder.name
+            attempts.append(current_encoder)
+
+    def score(_run_dir):
+        if current_encoder == "uni2":
+            return {}
+        return {benchmark.primary_metric: 0.61}
+
+    monkeypatch.setattr(cli, "Pipeline", ScoredPipeline)
+    monkeypatch.setattr(benchmark, "score", score)
+    monkeypatch.setattr(cli, "_cmd_leaderboard", lambda _args: 0)
+
+    code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoders",
+            private_name,
+            "uni2",
+            "virchow2",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--output-root",
+            str(tmp_path / "runs"),
+            "--seeds",
+            "1",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert attempts == [private_name, "uni2", "virchow2"]
+    assert captured.err == (
+        "Encoder panel runtime failures (1):\n"
+        f"  - uni2: ReportedScoreError: benchmark {benchmark.name!r} score is missing "
+        f"Reported metric(s): {benchmark.primary_metric!r}.\n"
     )
 
 
@@ -944,7 +1000,8 @@ def test_reproduce_plural_projects_a_run_completed_before_its_cell_failed(
     leaderboard_path = output_root / "leaderboards" / f"{benchmark.name}.json"
     leaderboard = json.loads(leaderboard_path.read_text())
     assert [row["vary"]["encoder"] for row in leaderboard["rows"]] == [private_name]
-    assert "PARTIAL Encoder panel: 0/2 cells completed" in captured.out
+    assert "PARTIAL Encoder panel: 0/2 encoders completed" in captured.out
+    assert "from 1 completed Run" in captured.out
     assert captured.err == (
         "Encoder panel runtime failures (2):\n"
         f"  - {private_name}: RuntimeError: {private_name} seed 1 failed\n"

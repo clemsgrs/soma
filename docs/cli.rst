@@ -70,9 +70,9 @@ end-to-end curate → configure → run → leaderboard → reproduce story).
    the canonical cross-encoder Leaderboard. It cannot be combined with single-Run
    ``--from-run-dir`` rescoring. A preflight rejection starts no Run. After a valid
    panel starts, runtime failures do not invalidate completed Runs or stop later
-   encoders. soma labels any Leaderboard over those completed Runs ``PARTIAL``,
-   prints one failure summary, and exits nonzero. If no Run completed, it writes no
-   Leaderboard.
+   encoders. soma labels the panel ``PARTIAL`` in command output, writes the ordinary
+   canonical Leaderboard over completed Runs, prints one failure summary, and exits
+   nonzero. If no Run completed, it writes no Leaderboard.
 
 ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
    Render a faceted leaderboard over the completed run dirs under an

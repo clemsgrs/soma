@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -150,18 +151,28 @@ def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
     return tuple(range(requested))
 
 
-def _require_reported_scores(benchmark, scores: dict[str, float]) -> dict[str, float]:
+class ReportedScoreError(RuntimeError):
+    """A Benchmark scorer omitted metrics required by its public protocol."""
+
+
+def _require_reported_scores(
+    benchmark,
+    scores: dict[str, float],
+    *,
+    raise_error: bool = False,
+) -> dict[str, float]:
     """Fail one scoring attempt if any required Reported metric is absent."""
     from soma.benchmarks import get_reported_metrics
 
     missing = [metric for metric in get_reported_metrics(benchmark) if metric not in scores]
     if missing:
         names = ", ".join(repr(metric) for metric in missing)
-        print(
-            f"Error: benchmark {benchmark.name!r} score is missing Reported metric(s): "
-            f"{names}.",
-            file=sys.stderr,
+        message = (
+            f"benchmark {benchmark.name!r} score is missing Reported metric(s): {names}."
         )
+        if raise_error:
+            raise ReportedScoreError(message)
+        print(f"Error: {message}", file=sys.stderr)
         sys.exit(2)
     return scores
 
@@ -566,6 +577,7 @@ def _reproduce_one(
     *,
     family_root: str | None = None,
     manifest=None,
+    isolate_runtime_failures: bool = False,
 ) -> int:
     """Curate → run → score one benchmark and report any reference comparison.
 
@@ -669,10 +681,15 @@ def _reproduce_one(
             seed=seed,
             overrides=overrides,
         )
-        Pipeline(config).run()
-        metrics = _require_reported_scores(benchmark, benchmark.score(seed_root))
-        for metric in reported_metrics:
-            measured_values[metric].append(float(metrics[metric]))
+        with _panel_runtime_boundary(isolate_runtime_failures):
+            Pipeline(config).run()
+            metrics = _require_reported_scores(
+                benchmark,
+                benchmark.score(seed_root),
+                raise_error=isolate_runtime_failures,
+            )
+            for metric in reported_metrics:
+                measured_values[metric].append(float(metrics[metric]))
 
     measured = {
         metric: statistics.fmean(values) for metric, values in measured_values.items()
@@ -754,7 +771,26 @@ def _plural_leaderboard_args(benchmark, output_root: Path) -> argparse.Namespace
     )
 
 
-def _panel_runtime_failure_context(exc: RuntimeError) -> str:
+class _PanelCellRuntimeFailure(RuntimeError):
+    """An expected operational failure at a running panel cell's public boundaries."""
+
+    def __init__(self, cause: OSError | RuntimeError | ValueError):
+        super().__init__(str(cause))
+        self.cause = cause
+
+
+@contextmanager
+def _panel_runtime_boundary(enabled: bool):
+    """Type expected Pipeline/scorer failures for plural-panel orchestration only."""
+    try:
+        yield
+    except (OSError, RuntimeError, ValueError) as exc:
+        if enabled:
+            raise _PanelCellRuntimeFailure(exc) from exc
+        raise
+
+
+def _panel_runtime_failure_context(exc: BaseException) -> str:
     """Render one runtime failure as a deterministic, single-line diagnostic."""
     detail = " ".join(str(exc).split()) or "(no error message)"
     return f"{type(exc).__name__}: {detail}"
@@ -831,7 +867,7 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
         output_root = _reproduce_output_root(benchmark, args)
         completed_before = _completed_run_dirs(output_root)
         failures: list[tuple[str, str]] = []
-        completed_cells = 0
+        fully_completed_encoders = 0
         for encoder in encoders:
             cell_args = argparse.Namespace(**vars(args))
             cell_args.encoder = encoder
@@ -841,22 +877,28 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
                     benchmark,
                     cell_args,
                     manifest=manifest,
+                    isolate_runtime_failures=True,
                 )
-            except RuntimeError as exc:
-                failures.append((encoder, _panel_runtime_failure_context(exc)))
+            except _PanelCellRuntimeFailure as exc:
+                failures.append(
+                    (encoder, _panel_runtime_failure_context(exc.cause))
+                )
                 continue
             if code:
                 return code
-            completed_cells += 1
+            fully_completed_encoders += 1
 
         leaderboard_code = 0
         completed_during_panel = _completed_run_dirs(output_root) - completed_before
-        if completed_cells or completed_during_panel:
+        if fully_completed_encoders or completed_during_panel:
             if failures:
+                completed_run_count = len(completed_during_panel)
+                run_label = "Run" if completed_run_count == 1 else "Runs"
                 print(
-                    f"PARTIAL Encoder panel: {completed_cells}/{len(encoders)} cells "
-                    "completed; rendering the canonical Leaderboard from completed "
-                    "Runs. Completed Runs remain valid.",
+                    f"PARTIAL Encoder panel: {fully_completed_encoders}/{len(encoders)} "
+                    f"encoders completed; rendering the canonical Leaderboard from "
+                    f"{completed_run_count} completed {run_label}. Completed Runs remain "
+                    "valid.",
                     flush=True,
                 )
             leaderboard_code = _cmd_leaderboard(
@@ -864,7 +906,7 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
             )
         elif failures:
             print(
-                f"Encoder panel: 0/{len(encoders)} cells completed; no Leaderboard "
+                f"Encoder panel: 0/{len(encoders)} encoders completed; no Leaderboard "
                 "was written.",
                 flush=True,
             )
