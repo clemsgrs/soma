@@ -480,6 +480,358 @@ def test_reproduce_rejects_spacing_flag(capsys):
     assert "unrecognized arguments" in err and "--spacing" in err
 
 
+def test_reproduce_rejects_singular_and_plural_encoder_options(capsys):
+    code = _run_cli(
+        [
+            "reproduce",
+            "ocelot",
+            "--encoder",
+            "uni2",
+            "--encoders",
+            "uni2",
+            "virchow2",
+            "--raw-root",
+            "/data",
+        ]
+    )
+
+    assert code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+def test_reproduce_rejects_duplicate_plural_encoders(capsys):
+    code = _run_cli(
+        [
+            "reproduce",
+            "ocelot",
+            "--encoders",
+            "uni2",
+            "virchow2",
+            "uni2",
+            "--raw-root",
+            "/data",
+        ]
+    )
+
+    assert code == 2
+    assert "duplicate --encoders names: uni2" in capsys.readouterr().err
+
+
+def test_reproduce_rejects_plural_encoders_with_single_run_rescoring(capsys, tmp_path):
+    code = _run_cli(
+        [
+            "reproduce",
+            "ocelot",
+            "--encoders",
+            "uni2",
+            "virchow2",
+            "--from-run-dir",
+            str(tmp_path),
+        ]
+    )
+
+    assert code == 2
+    assert "--encoders cannot be used with --from-run-dir" in capsys.readouterr().err
+
+
+class _PanelBenchmark:
+    name = "panel_fixture"
+    facet = Facet(fixed={"protocol": "fixed"}, varied=("encoder",))
+    canonical_seeds = (0, 1)
+    primary_metric = "test/accuracy"
+    reference_environment: dict[str, str] = {}
+
+    def __init__(self):
+        self.curate_calls = 0
+        self.events: list[tuple[str, str | None]] = []
+
+    def curate(self, raw_root, out_dir):
+        from soma.curation.manifest import CuratedManifest
+
+        self.curate_calls += 1
+        self.events.append(("curate", None))
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dataset_csv = out_dir / "dataset.csv"
+        splits_csv = out_dir / "splits.csv"
+        dataset_csv.write_text("sample_id,image_path,label\nsample,/image.png,1\n")
+        splits_csv.write_text("sample_id,split,fold\nsample,train,0\n")
+        return CuratedManifest(dataset_csv=dataset_csv, splits_csv=splits_csv)
+
+    def build_config(
+        self,
+        *,
+        encoder="uni2",
+        dataset_csv=None,
+        splits_csv=None,
+        output_root=None,
+        seed=None,
+        overrides=None,
+    ):
+        from soma.config import (
+            CacheConfig,
+            EncoderConfig,
+            EvalConfig,
+            PipelineConfig,
+            TaskConfig,
+            TrainingConfig,
+        )
+
+        self.events.append(("build", encoder))
+        return PipelineConfig(
+            dataset_csv=str(dataset_csv or "dataset.csv"),
+            splits_csv=str(splits_csv or "splits.csv"),
+            output_root=Path(output_root or "output/panel"),
+            dataset_type="tile",
+            encoder=EncoderConfig(name=encoder),
+            cache=CacheConfig(**(overrides or {}).get("cache", {})),
+            task=TaskConfig(name="binary_classification"),
+            evaluation=EvalConfig(metrics=["accuracy"]),
+            training=TrainingConfig(seed=0 if seed is None else int(seed)),
+            tags=["panel", encoder],
+        )
+
+    def expected(self, **axes):
+        if axes.get("encoder", "uni2") != "uni2":
+            return []
+        return [
+            ReferenceRow(
+                key={"encoder": "uni2"},
+                metric=self.primary_metric,
+                expected=0.70,
+                tolerance=0.05,
+                source="fixture",
+            )
+        ]
+
+    def score(self, run_dir):
+        return json.loads((Path(run_dir) / "summary.json").read_text())
+
+
+@pytest.fixture()
+def panel_benchmark():
+    from slide2vec.encoders import TileEncoder, encoder_registry, register_encoder
+
+    private_name = "test-private-panel"
+    if private_name not in encoder_registry:
+
+        @register_encoder(
+            private_name,
+            output_variants={"default": {"encode_dim": 3}},
+            default_output_variant="default",
+            input_size=224,
+            supports_variable_input_size=False,
+            supported_spacing_um=0.5,
+            precision="fp32",
+            source="installed-private-fixture",
+        )
+        class PrivatePanelEncoder(TileEncoder):
+            @property
+            def encode_dim(self):
+                return 3
+
+            @property
+            def device(self):
+                raise AssertionError("plural preflight must not construct an Encoder")
+
+            def to(self, device):
+                raise AssertionError("plural preflight must not construct an Encoder")
+
+            def get_transform(self):
+                raise AssertionError("plural preflight must not construct an Encoder")
+
+            def encode_tiles(self, batch):
+                raise AssertionError("plural preflight must not construct an Encoder")
+
+    benchmark = _PanelBenchmark()
+    register_benchmark(benchmark)
+    try:
+        yield benchmark, private_name
+    finally:
+        registry_mod._REGISTRY.pop(benchmark.name, None)
+
+
+def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    run_events: list[tuple] = []
+    leaderboard_requests: list[object] = []
+    scores = {private_name: 0.61, "uni2": 0.72}
+
+    class FakePipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            config = self.config
+            run_events.append(
+                (
+                    config.encoder.name,
+                    config.training.seed,
+                    str(config.dataset_csv),
+                    str(config.splits_csv),
+                    str(config.cache.root_dir),
+                    str(config.output_root),
+                )
+            )
+            config.output_root.mkdir(parents=True, exist_ok=True)
+            (config.output_root / "summary.json").write_text(
+                json.dumps({benchmark.primary_metric: scores[config.encoder.name]})
+            )
+
+    monkeypatch.setattr(cli, "Pipeline", FakePipeline)
+    monkeypatch.setattr(
+        cli,
+        "_cmd_leaderboard",
+        lambda args: leaderboard_requests.append(args) or 0,
+    )
+    output_root = tmp_path / "runs"
+
+    code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoders",
+            private_name,
+            "uni2",
+            "--raw-root",
+            str(tmp_path / "raw"),
+            "--output-root",
+            str(output_root),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert benchmark.curate_calls == 1
+    assert benchmark.events[:3] == [
+        ("build", private_name),
+        ("build", "uni2"),
+        ("curate", None),
+    ]
+    assert [event[:2] for event in run_events] == [
+        (private_name, 0),
+        (private_name, 1),
+        ("uni2", 0),
+        ("uni2", 1),
+    ]
+    assert len({event[2] for event in run_events}) == 1
+    assert len({event[3] for event in run_events}) == 1
+    assert {event[4] for event in run_events} == {str(output_root / "feature_cache")}
+    assert f"[MEASURED] {benchmark.name} test/accuracy = 0.6100" in captured.out
+    assert "[REFERENCE SKIPPED]" in captured.out
+    assert f"[REFERENCE OK] {benchmark.name} test/accuracy = 0.7200" in captured.out
+    assert captured.err == ""
+    assert len(leaderboard_requests) == 1
+    request = leaderboard_requests[0]
+    assert request.name == benchmark.name
+    assert request.root == output_root
+    assert request.vary == ["encoder"]
+
+
+def test_reproduce_plural_curated_manifest_skips_curation_for_every_encoder(
+    monkeypatch, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    curated = tmp_path / "curated"
+    curated.mkdir()
+    (curated / "dataset.csv").write_text(
+        "sample_id,image_path,label\nsample,/image.png,1\n"
+    )
+    (curated / "splits.csv").write_text(
+        "sample_id,split,fold\nsample,train,0\n"
+    )
+    seen: list[tuple[str, str, str]] = []
+
+    class FakePipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            config = self.config
+            seen.append(
+                (config.encoder.name, str(config.dataset_csv), str(config.splits_csv))
+            )
+            config.output_root.mkdir(parents=True, exist_ok=True)
+            (config.output_root / "summary.json").write_text(
+                json.dumps({benchmark.primary_metric: 0.70})
+            )
+
+    monkeypatch.setattr(cli, "Pipeline", FakePipeline)
+    monkeypatch.setattr(cli, "_cmd_leaderboard", lambda args: 0)
+
+    code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoders",
+            private_name,
+            "uni2",
+            "--curated-dir",
+            str(curated),
+            "--output-root",
+            str(tmp_path / "runs"),
+            "--seeds",
+            "1",
+        ]
+    )
+
+    assert code == 0
+    assert benchmark.curate_calls == 0
+    assert seen == [
+        (private_name, str(curated / "dataset.csv"), str(curated / "splits.csv")),
+        ("uni2", str(curated / "dataset.csv"), str(curated / "splits.csv")),
+    ]
+
+
+def test_reproduce_singular_and_default_keep_existing_calls_without_leaderboard(
+    monkeypatch, tmp_path, panel_benchmark
+):
+    benchmark, _private_name = panel_benchmark
+    calls: list[tuple[object, object]] = []
+
+    def capture(bench, args, **kwargs):
+        calls.append((args.encoder, getattr(args, "encoders", None)))
+        return 0
+
+    monkeypatch.setattr(cli, "_reproduce_one", capture)
+    monkeypatch.setattr(
+        cli,
+        "_cmd_leaderboard",
+        lambda args: (_ for _ in ()).throw(
+            AssertionError("singular reproduction must not write a Leaderboard")
+        ),
+    )
+
+    default_code = _run_cli(
+        ["reproduce", benchmark.name, "--raw-root", str(tmp_path / "raw")]
+    )
+    singular_code = _run_cli(
+        [
+            "reproduce",
+            benchmark.name,
+            "--encoder",
+            "uni2",
+            "--raw-root",
+            str(tmp_path / "raw"),
+        ]
+    )
+
+    assert default_code == singular_code == 0
+    assert calls == [(None, None), ("uni2", None)]
+
+
+def test_reproduce_help_documents_ordered_encoder_panel(capsys):
+    code = _run_cli(["reproduce", "--help"])
+    out = capsys.readouterr().out
+
+    assert code == 0
+    assert "--encoders NAME [NAME ...]" in out
+    assert "ordered Encoder panel" in out
+    assert "cross-encoder Leaderboard" in out
+
+
 # --- full-mode shared feature cache across seeds --------------------------------------
 
 

@@ -25,10 +25,17 @@ Reproduce a benchmark
 ---------------------
 
 ``soma reproduce NAME`` curates the data, runs the fixed protocol, and scores the
-result for a single encoder — your choice of any supported
-:doc:`encoder <encoders>`::
+result. Keep the Benchmark's default encoder, select one with ``--encoder``, or run an
+explicitly ordered panel with ``--encoders``::
 
    soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+   soma reproduce eva/bach --encoders private-pathology uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach
+
+For one concrete Benchmark, the plural form resolves the complete panel before curation,
+executes one ordinary Run at a time in the supplied order, and writes the Benchmark's
+canonical cross-encoder Leaderboard automatically. Raw data is curated once;
+``--curated-dir`` skips curation for the whole panel. ``--encoder`` and ``--encoders`` are
+mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
 
 ``NAME`` is a registered benchmark (e.g. ``ocelot``, ``eva/bach``) or a family prefix
 (``eva``) that fans out over every member. ``--seeds 1`` is the quickest smoke; the
@@ -50,12 +57,10 @@ ranked table, comparing them along the axis you pass to ``--vary``. It writes th
 HTML, with any packaged reference shown alongside. Every run sharing one
 ``(dataset, splits, task)`` triple joins the table.
 
-The encoder is the axis ``soma reproduce`` varies, so comparing encoders is one
-reproduce run per encoder under the same output root, then a leaderboard::
+The encoder is the axis ``soma reproduce --encoders`` varies, so the plural command is the
+short path to a local comparison::
 
-   soma reproduce eva/bach --encoder uni2     --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
-   soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
-   soma leaderboard eva/bach --root runs/eva-bach/seed_0 --vary encoder
+   soma reproduce eva/bach --encoders uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
 
 Any other axis — aggregator, decoder, spacing, feature mode — works the same way, but
 you produce the runs yourself with ordinary ``soma <config>`` runs. To compare

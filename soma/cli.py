@@ -509,7 +509,60 @@ def _curated_manifest_from_dir(curated_dir: Path):
     )
 
 
-def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | None = None) -> int:
+def _reproduce_manifest(benchmark, args: argparse.Namespace, *, family_root: str | None = None):
+    """Resolve one concrete Benchmark's invariant curated Manifest."""
+    curated_dir = getattr(args, "curated_dir", None)
+    if curated_dir is None and args.raw_root is None:
+        raise ValueError(
+            "reproduce needs --raw-root <dir> (curate from raw), "
+            "--curated-dir <dir> (reuse a pre-curated manifest, skip curation), or "
+            "--from-run-dir <dir> (re-score an existing run)."
+        )
+
+    sub = benchmark.name.split("/", 1)[1] if family_root else None
+    if curated_dir is not None:
+        curated = Path(curated_dir) / sub if sub else Path(curated_dir)
+        manifest = _curated_manifest_from_dir(curated)
+        print(f"Using pre-curated manifest (skipping curation): {curated}", flush=True)
+        return manifest
+
+    family_raw_root = Path(args.raw_root)
+    shares_family_root = bool(
+        sub and getattr(benchmark, "family_uses_shared_raw_root", False)
+    )
+    raw_root = (
+        family_raw_root
+        if shares_family_root
+        else family_raw_root / sub
+        if sub
+        else family_raw_root
+    )
+    if args.out_dir:
+        out_dir = Path(args.out_dir) / sub if sub else Path(args.out_dir)
+    elif shares_family_root:
+        out_dir = family_raw_root / "curated" / sub
+    else:
+        out_dir = raw_root / "curated"
+    return benchmark.curate(raw_root, out_dir)
+
+
+def _reproduce_output_root(
+    benchmark, args: argparse.Namespace, *, family_root: str | None = None
+) -> Path:
+    """The existing output-root contract for one concrete Benchmark."""
+    sub = benchmark.name.split("/", 1)[1] if family_root else None
+    if args.output_root:
+        return Path(args.output_root) / sub if sub else Path(args.output_root)
+    return Path.cwd() / "soma_reproduce" / benchmark.name
+
+
+def _reproduce_one(
+    benchmark,
+    args: argparse.Namespace,
+    *,
+    family_root: str | None = None,
+    manifest=None,
+) -> int:
     """Curate → run → score one benchmark and report any reference comparison.
 
     ``family_root`` is the family name when this benchmark is one member of a fanned-out
@@ -583,46 +636,15 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
                 print("  (no reference row to key --record on; nothing recorded)")
         return _report_measured_metrics({benchmark.primary_metric: measured, **metrics})
 
-    curated_dir = getattr(args, "curated_dir", None)
-    if curated_dir is None and args.raw_root is None:
-        print(
-            "Error: reproduce needs --raw-root <dir> (curate from raw), "
-            "--curated-dir <dir> (reuse a pre-curated manifest, skip curation), or "
-            "--from-run-dir <dir> (re-score an existing run).",
-            file=sys.stderr,
-        )
-        return 2
-
     import statistics
 
-    # In a fanned-out family each member owns a per-dataset subdirectory so raw roots,
-    # curated manifests, and run outputs never collide.
-    sub = benchmark.name.split("/", 1)[1] if family_root else None
-    if curated_dir is not None:
-        # Fast path: a manifest already exists (curation is deterministic and can cost
-        # minutes), so skip benchmark.curate() and point the pipeline straight at it.
-        curated = Path(curated_dir) / sub if sub else Path(curated_dir)
-        manifest = _curated_manifest_from_dir(curated)
-        print(f"Using pre-curated manifest (skipping curation): {curated}", flush=True)
-    else:
-        family_raw_root = Path(args.raw_root)
-        shares_family_root = bool(
-            sub and getattr(benchmark, "family_uses_shared_raw_root", False)
-        )
-        raw_root = family_raw_root if shares_family_root else (
-            family_raw_root / sub if sub else family_raw_root
-        )
-        if args.out_dir:
-            out_dir = Path(args.out_dir) / sub if sub else Path(args.out_dir)
-        elif shares_family_root:
-            out_dir = family_raw_root / "curated" / sub
-        else:
-            out_dir = raw_root / "curated"
-        manifest = benchmark.curate(raw_root, out_dir)
-    if args.output_root:
-        output_root = Path(args.output_root) / sub if sub else Path(args.output_root)
-    else:
-        output_root = Path.cwd() / "soma_reproduce" / benchmark.name
+    if manifest is None:
+        try:
+            manifest = _reproduce_manifest(benchmark, args, family_root=family_root)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+    output_root = _reproduce_output_root(benchmark, args, family_root=family_root)
     # Feature extraction is seed-independent (the encoder is frozen and the cache key is
     # derived from encoder + tile content, not the seed), so every seed shares one cache
     # root and extraction runs once. --cache-root relocates it (e.g. to fast local storage);
@@ -676,8 +698,77 @@ def _reproduce_one(benchmark, args: argparse.Namespace, *, family_root: str | No
     return _report_measured_metrics(measured)
 
 
+def _preflight_reproduce_panel(benchmark, encoders: list[str]) -> None:
+    """Resolve one concrete Benchmark's healthy Encoder panel before curation."""
+    import tempfile
+
+    from slide2vec.encoders import resolve_encoder_capabilities
+
+    with tempfile.TemporaryDirectory(prefix="soma-reproduce-preflight-") as temp_dir:
+        root = Path(temp_dir)
+        dataset_csv = root / "dataset.csv"
+        splits_csv = root / "splits.csv"
+        dataset_csv.write_text(
+            "sample_id,image_path,label\npreflight,/preflight.png,0\n",
+            encoding="utf-8",
+        )
+        splits_csv.write_text(
+            "sample_id,split,fold\npreflight,train,0\n",
+            encoding="utf-8",
+        )
+        overrides = {
+            "cache": {"enabled": True, "root_dir": str(root / "feature_cache")}
+        }
+        for encoder in encoders:
+            capabilities = resolve_encoder_capabilities(encoder)
+            config = benchmark.build_config(
+                encoder=encoder,
+                dataset_csv=dataset_csv,
+                splits_csv=splits_csv,
+                output_root=root / encoder,
+                seed=benchmark.canonical_seeds[0],
+                overrides=overrides,
+            )
+            if config.encoder is None or config.encoder.name != capabilities.name:
+                resolved = None if config.encoder is None else config.encoder.name
+                raise ValueError(
+                    f"Benchmark builder resolved encoder {resolved!r}, expected "
+                    f"{capabilities.name!r}."
+                )
+
+
+def _plural_leaderboard_args(benchmark, output_root: Path) -> argparse.Namespace:
+    """Request the ordinary canonical Leaderboard with only Encoder varied."""
+    return argparse.Namespace(
+        name=benchmark.name,
+        root=output_root,
+        vary=["encoder"],
+        fix=None,
+        like=None,
+        metric=None,
+        split=None,
+    )
+
+
 def _cmd_reproduce(args: argparse.Namespace) -> int:
     from soma.benchmarks import get_benchmark
+
+    encoders = getattr(args, "encoders", None)
+    if encoders is not None:
+        duplicates = sorted({name for name in encoders if encoders.count(name) > 1})
+        if duplicates:
+            print(
+                f"Error: duplicate --encoders names: {', '.join(duplicates)}.",
+                file=sys.stderr,
+            )
+            return 2
+        if args.from_run_dir is not None:
+            print(
+                "Error: --encoders cannot be used with --from-run-dir; "
+                "re-score one existing Run with --encoder instead.",
+                file=sys.stderr,
+            )
+            return 2
 
     targets = _resolve_reproduce_targets(args.name)
     if not targets:
@@ -695,6 +786,40 @@ def _cmd_reproduce(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if encoders is not None:
+        if is_family:
+            print(
+                "Error: --encoders requires one concrete registered Benchmark, "
+                f"not the {args.name!r} family.",
+                file=sys.stderr,
+            )
+            return 2
+        benchmark = targets[0]
+        try:
+            _preflight_reproduce_panel(benchmark, encoders)
+        except Exception as exc:
+            print(f"Error: Encoder panel preflight failed: {exc}", file=sys.stderr)
+            return 2
+        try:
+            manifest = _reproduce_manifest(benchmark, args)
+        except (OSError, ValueError) as exc:
+            print(f"Error: {benchmark.name}: {exc}", file=sys.stderr)
+            return 2
+
+        for encoder in encoders:
+            cell_args = argparse.Namespace(**vars(args))
+            cell_args.encoder = encoder
+            cell_args.encoders = None
+            code = _reproduce_one(
+                benchmark,
+                cell_args,
+                manifest=manifest,
+            )
+            if code:
+                return code
+        output_root = _reproduce_output_root(benchmark, args)
+        return _cmd_leaderboard(_plural_leaderboard_args(benchmark, output_root))
 
     codes = [
         _reproduce_one(bench, args, family_root=args.name if is_family else None)
@@ -857,7 +982,21 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None, help="Curated manifest dir (default <raw-root>/curated).")
     parser.add_argument("--output-root", type=Path, default=None, help="Where runs are written.")
     parser.add_argument("--cache-root", type=Path, default=None, help="Shared feature-cache root (reused across seeds).")
-    parser.add_argument("--encoder", type=str, default=None, help="Encoder axis (benchmark default if omitted).")
+    encoder_group = parser.add_mutually_exclusive_group()
+    encoder_group.add_argument(
+        "--encoder",
+        type=str,
+        default=None,
+        help="Run one Encoder preset (Benchmark default if omitted).",
+    )
+    encoder_group.add_argument(
+        "--encoders",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="NAME",
+        help="Run an ordered Encoder panel, then write the cross-encoder Leaderboard.",
+    )
     parser.add_argument(
         "--record",
         action="store_true",

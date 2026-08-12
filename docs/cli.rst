@@ -55,7 +55,7 @@ Benchmarking commands
 These drive the registered benchmarks (see :doc:`benchmarking` for the
 end-to-end curate → configure → run → leaderboard → reproduce story).
 
-``soma reproduce NAME [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
+``soma reproduce NAME [--encoder NAME | --encoders NAME [NAME ...]] [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
    Curate → run → score a registered benchmark. When a matching packaged
    reference exists, report its delta and highlight potential drift;
    otherwise, explicitly skip the comparison. Reference comparisons are
@@ -65,7 +65,10 @@ end-to-end curate → configure → run → leaderboard → reproduce story).
    sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
    already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
    curation; ``--from-run-dir`` re-scores an existing run without retraining.
-   ``--seeds 1`` is the quickest smoke.
+   ``--seeds 1`` is the quickest smoke. For one concrete Benchmark,
+   ``--encoders`` runs an ordered panel, preflights it before curation, and writes
+   the canonical cross-encoder Leaderboard. It cannot be combined with single-Run
+   ``--from-run-dir`` rescoring.
 
 ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
    Render a faceted leaderboard over the completed run dirs under an
