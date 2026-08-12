@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 
 import pytest
 
@@ -886,14 +887,16 @@ def test_reproduce_singular_and_default_keep_existing_calls_without_leaderboard(
     assert calls == [(None, None), ("uni2", None)]
 
 
-def test_reproduce_help_documents_ordered_encoder_panel(capsys):
+def test_reproduce_help_documents_ordered_encoder_panel(capsys, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "80")
     code = _run_cli(["reproduce", "--help"])
     out = capsys.readouterr().out
+    unwrapped = " ".join(re.sub(r"-\s*\n\s*", "-", out).split())
 
     assert code == 0
-    assert "--encoders NAME [NAME ...]" in out
-    assert "ordered Encoder panel" in out
-    assert "cross-encoder Leaderboard" in out
+    assert "--encoders NAME [NAME ...]" in unwrapped
+    assert "ordered Encoder panel" in unwrapped
+    assert "cross-encoder Leaderboard" in unwrapped
 
 
 # --- full-mode shared feature cache across seeds --------------------------------------
