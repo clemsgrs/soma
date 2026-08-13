@@ -1,5 +1,5 @@
-Benchmark an in-house encoder
-=============================
+BYO Encoder
+===========
 
 An in-house encoder enters soma as an installed slide2vec preset. Keep the plugin in its
 own package; soma needs only its registered name.

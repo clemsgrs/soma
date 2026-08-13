@@ -8,8 +8,8 @@ the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 CRoMa cohorts
 -------------
 
-The :doc:`CRoMa robustness benchmark <croma-robustness-benchmark>` uses three
-tile cohorts from the PathoROB study. Acquire and decode the pinned sources
+The :doc:`CRoMa <croma-robustness-benchmark>` benchmark uses three tile
+cohorts from the PathoROB study. Acquire and decode the pinned sources
 once::
 
     pip install 'soma-pathology[croma]'

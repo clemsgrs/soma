@@ -1,5 +1,5 @@
-CRoMa robustness benchmark
-==========================
+CRoMa
+=====
 
 The ``croma`` family measures how robust a frozen tile encoder is to
 non-biological variation across medical centers. It runs the CRoMa protocol

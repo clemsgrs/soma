@@ -110,6 +110,9 @@ Included benchmarks
 Each page documents data acquisition, the fixed protocol, reproduction commands,
 and the relevant packaged reference.
 
+All of them accept any installed encoder: see :doc:`BYO Encoder
+<benchmark-in-house-encoder>` to benchmark your own.
+
 .. toctree::
    :maxdepth: 1
    :hidden:
