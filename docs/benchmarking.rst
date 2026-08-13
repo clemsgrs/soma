@@ -104,15 +104,11 @@ Included benchmarks
   detection.
 * :doc:`HEST <hest-gene-expression-benchmark>` evaluates frozen encoders for
   spatial gene-expression prediction.
-* :doc:`PathoROB <pathorob-robustness-benchmark>` evaluates frozen tile
-  encoders for representation robustness across medical centers.
+* :doc:`CRoMa <croma-robustness-benchmark>` evaluates frozen tile encoders
+  for representation robustness across medical centers.
 
 Each page documents data acquisition, the fixed protocol, reproduction commands,
 and the relevant packaged reference.
-
-The :doc:`Croma 0.3 encoder panel audit <croma-encoder-panel>` pins the published
-model names to explicit slide2vec output contracts for reuse by robustness
-benchmarks.
 
 .. toctree::
    :maxdepth: 1
@@ -121,6 +117,5 @@ benchmarks.
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
    hest-gene-expression-benchmark
-   pathorob-robustness-benchmark
-   croma-encoder-panel
+   croma-robustness-benchmark
    benchmark-in-house-encoder

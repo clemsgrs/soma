@@ -8,7 +8,7 @@ Importing this package registers every bundled benchmark, so ``soma list benchma
 This package registers ``ocelot`` (OCELOT 2023 cell detection), the ``eva/<dataset>``
 family (kaiko-ai/eva patch classification, one sub-benchmark per dataset),
 ``detection-benchmark`` (the multi-dataset encoder-ranking harness, issue #246), and
-the HEST and PathoROB benchmark families.
+the HEST and CRoMa benchmark families.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from soma.benchmarks import ocelot as _ocelot  # noqa: F401
 from soma.benchmarks import eva as _eva  # noqa: F401
 from soma.benchmarks import detection_benchmark as _detection_benchmark  # noqa: F401
 from soma.benchmarks import hest as _hest  # noqa: F401
-from soma.benchmarks import pathorob as _pathorob  # noqa: F401
+from soma.benchmarks import croma as _croma  # noqa: F401
 
 # Reproduction report (joins results/<name>.csv to reference/<name>.csv; imported after the
 # benchmarks register so it can read their primary metrics).

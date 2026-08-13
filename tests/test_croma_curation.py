@@ -8,7 +8,7 @@ import pytest
 
 import soma.curation as curation
 from soma.curation.manifest import CuratedManifest, Curator
-from soma.curation.pathorob import curate_pathorob_ri_views
+from soma.curation.croma import curate_croma_views
 
 
 COHORTS = {
@@ -117,11 +117,11 @@ def _write_prepared_tree(raw_root: Path) -> None:
         )
 
 
-def test_curate_pathorob_ri_views_emits_exact_balanced_manifests(tmp_path: Path):
+def test_curate_croma_views_emits_exact_balanced_manifests(tmp_path: Path):
     raw_root = tmp_path / "raw"
     _write_prepared_tree(raw_root)
 
-    manifests = curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+    manifests = curate_croma_views(raw_root, tmp_path / "curated")
 
     assert set(manifests) == set(COHORTS)
     for cohort, spec in COHORTS.items():
@@ -161,7 +161,7 @@ def test_single_view_entry_point_is_a_structural_curator(tmp_path: Path):
     output_dir = tmp_path / "curated-camelyon"
     _write_prepared_tree(raw_root)
 
-    curator = getattr(curation, "curate_pathorob_ri_view")
+    curator = getattr(curation, "curate_croma_view")
     manifest = curator(raw_root, output_dir, cohort="camelyon")
 
     assert isinstance(curator, Curator)
@@ -196,7 +196,7 @@ def test_curator_rejects_row_without_each_required_typed_neighbour(tmp_path: Pat
         ValueError,
         match=f"{target_id}.*same_label_other_center",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_metadata_key_missing_from_source_index(tmp_path: Path):
@@ -210,7 +210,7 @@ def test_curator_rejects_metadata_key_missing_from_source_index(tmp_path: Path):
         ValueError,
         match=r"missing.*\(slide_id, patch_id\).*camelyon-l0-c0-r0",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_source_index_key_that_matches_multiple_rows(tmp_path: Path):
@@ -227,7 +227,7 @@ def test_curator_rejects_source_index_key_that_matches_multiple_rows(tmp_path: P
         ValueError,
         match=r"source_index.csv.*duplicate.*\(slide_id, patch_id\).*camelyon-l0-c0-r0",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_duplicate_metadata_join_key(tmp_path: Path):
@@ -244,7 +244,7 @@ def test_curator_rejects_duplicate_metadata_join_key(tmp_path: Path):
         ValueError,
         match=r"camelyon.csv.*duplicate.*\(slide_id, patch_id\).*camelyon-l0-c0-r0",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_missing_prepared_image(tmp_path: Path):
@@ -259,7 +259,7 @@ def test_curator_rejects_missing_prepared_image(tmp_path: Path):
         ValueError,
         match=r"camelyon-l0-c0-r0.*image.*does not exist",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_sample_id_reused_across_cohorts(tmp_path: Path):
@@ -274,7 +274,7 @@ def test_curator_rejects_sample_id_reused_across_cohorts(tmp_path: Path):
         ValueError,
         match=r"sample_id.*camelyon-l0-c0-r0.*both camelyon and tcga-4x4",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 @pytest.mark.parametrize("field", ["sample_id", "slide_id", "patch_id"])
@@ -296,7 +296,7 @@ def test_curator_rejects_unsafe_identifier(field: str, tmp_path: Path):
         ValueError,
         match=rf"unsafe {field}.*\.\./unsafe",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 @pytest.mark.parametrize(
@@ -323,7 +323,7 @@ def test_curator_rejects_empty_required_metadata_value(
         ValueError,
         match=rf"empty {manifest_field}",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_mismatched_prepared_data_revision(tmp_path: Path):
@@ -338,7 +338,7 @@ def test_curator_rejects_mismatched_prepared_data_revision(tmp_path: Path):
         ValueError,
         match=r"camelyon.*dataset revision.*unknown-revision.*expected b2e762",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 @pytest.mark.parametrize(
@@ -362,7 +362,7 @@ def test_curator_rejects_mismatched_provenance_envelope(
     provenance_path.write_text(json.dumps(provenance))
 
     with pytest.raises(ValueError, match=expected):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_recuration_is_byte_identical_and_preserves_metadata_order(tmp_path: Path):
@@ -374,13 +374,13 @@ def test_recuration_is_byte_identical_and_preserves_metadata_order(tmp_path: Pat
         source_index = pd.read_csv(index_path, dtype=str)
         source_index.iloc[::-1].to_csv(index_path, index=False)
 
-    curate_pathorob_ri_views(raw_root, output_root)
+    curate_croma_views(raw_root, output_root)
     first = {
         path.relative_to(output_root): path.read_bytes()
         for path in sorted(output_root.rglob("*"))
         if path.is_file()
     }
-    curate_pathorob_ri_views(raw_root, output_root)
+    curate_croma_views(raw_root, output_root)
     second = {
         path.relative_to(output_root): path.read_bytes()
         for path in sorted(output_root.rglob("*"))
@@ -407,7 +407,7 @@ def test_curator_rejects_extra_center(tmp_path: Path):
         ValueError,
         match=r"requires exactly 2 labels and 2 centers; found 2 labels and 3 centers",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_wrong_label_and_center_cardinalities(tmp_path: Path):
@@ -428,7 +428,7 @@ def test_curator_rejects_wrong_label_and_center_cardinalities(tmp_path: Path):
         ValueError,
         match=r"requires exactly 2 labels and 2 centers; found 1 labels and 4 centers",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")
 
 
 def test_curator_rejects_duplicate_sample_id_within_cohort(tmp_path: Path):
@@ -443,4 +443,4 @@ def test_curator_rejects_duplicate_sample_id_within_cohort(tmp_path: Path):
         ValueError,
         match=r"camelyon.*duplicate sample_id.*camelyon-l0-c0-r0",
     ):
-        curate_pathorob_ri_views(raw_root, tmp_path / "curated")
+        curate_croma_views(raw_root, tmp_path / "curated")

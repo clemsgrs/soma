@@ -126,7 +126,7 @@ class PreparedPathoROBCohort:
     rows: int
 
 
-def prepare_pathorob(
+def prepare_croma(
     raw_root: str | Path,
     *,
     rebuild: bool = False,
@@ -139,7 +139,7 @@ def prepare_pathorob(
         raise ValueError(f"PathoROB destination {root} is not a directory")
     if root.exists() and any(root.iterdir()):
         try:
-            return validate_prepared_pathorob(root)
+            return validate_prepared_croma(root)
         except (FileNotFoundError, ValueError) as exc:
             if not rebuild:
                 raise ValueError(
@@ -151,7 +151,7 @@ def prepare_pathorob(
     try:
         for spec in PATHOROB_COHORTS:
             _prepare_cohort(staging / spec.name, spec)
-        validate_prepared_pathorob(staging)
+        validate_prepared_croma(staging)
         if root.exists() and not any(root.iterdir()):
             root.rmdir()
         if root.exists():
@@ -171,7 +171,7 @@ def prepare_pathorob(
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return validate_prepared_pathorob(root)
+    return validate_prepared_croma(root)
 
 
 def _prepare_cohort(cohort_root: Path, spec: PathoROBCohortSource) -> None:
@@ -180,7 +180,7 @@ def _prepare_cohort(cohort_root: Path, spec: PathoROBCohortSource) -> None:
     except ImportError:
         raise RuntimeError(
             "Preparing PathoROB data requires pyarrow; install "
-            "soma-pathology[pathorob]."
+            "soma-pathology[croma]."
         ) from None
 
     from huggingface_hub import hf_hub_download
@@ -291,7 +291,7 @@ def _provenance_contract(
         "cohort": spec.name,
         "prepared_at": prepared_at,
         "preparation_tool": {
-            "name": "soma.pathorob.prepare_pathorob",
+            "name": "soma.robustness.prepare_croma",
             "version": tool_version,
         },
         "sources": {
@@ -378,7 +378,7 @@ def _image_extension(image_bytes: bytes, cohort: str, key: tuple[str, str]) -> s
         ) from None
 
 
-def validate_prepared_pathorob(
+def validate_prepared_croma(
     raw_root: str | Path,
 ) -> tuple[PreparedPathoROBCohort, ...]:
     """Validate and return the three pinned prepared PathoROB cohorts."""
@@ -530,7 +530,7 @@ def _validate_provenance(
         )
     if (
         not isinstance(tool, dict)
-        or tool.get("name") != "soma.pathorob.prepare_pathorob"
+        or tool.get("name") != "soma.robustness.prepare_croma"
         or not isinstance(tool.get("version"), str)
         or not tool["version"]
     ):
@@ -558,6 +558,6 @@ __all__ = [
     "PreparedPathoROBCohort",
     "SOURCE_INDEX_COLUMNS",
     "SourceFile",
-    "prepare_pathorob",
-    "validate_prepared_pathorob",
+    "prepare_croma",
+    "validate_prepared_croma",
 ]

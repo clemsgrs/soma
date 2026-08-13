@@ -21,9 +21,9 @@ from soma.curation.manifest import (
 from soma.curation.midog import curate_midog_detection
 from soma.curation.monkey import curate_monkey_detection
 from soma.curation.ocelot import curate_ocelot_detection
-from soma.curation.pathorob import (
-    curate_pathorob_ri_view,
-    curate_pathorob_ri_views,
+from soma.curation.croma import (
+    curate_croma_view,
+    curate_croma_views,
 )
 from soma.curation.segmentation_coverage import (
     summarize_coverage,
@@ -41,8 +41,8 @@ __all__ = [
     "curate_midog_detection",
     "curate_monkey_detection",
     "curate_ocelot_detection",
-    "curate_pathorob_ri_view",
-    "curate_pathorob_ri_views",
+    "curate_croma_view",
+    "curate_croma_views",
     "summarize_coverage",
     "write_coverage_csv",
     "write_manifest",

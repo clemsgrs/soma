@@ -233,24 +233,22 @@ def test_benchmark_page_matches_registry(builder: str, filename: str) -> None:
     assert "TBD" not in generated
 
 
-def test_croma_encoder_panel_page_matches_mapping_and_scopes_compatibility() -> None:
-    generator, docs_dir = _load_reference_generator()
-    generated = generator.build_croma_encoder_panel_rst().strip()
-    checked_in = (docs_dir / "croma-encoder-panel.rst").read_text(
-        encoding="utf-8"
-    ).strip()
+def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:
+    from soma.benchmarks.croma import CROMA_0_3_ENCODER_PANEL
 
-    assert generated == checked_in
-    assert "does not prove exact numerical identity" in generated
-    for unpinned_factor in (
-        "weights and checkpoint revision",
-        "preprocessing",
-        "input geometry",
-        "normalization",
-        "precision",
-        "implementation version",
-    ):
-        assert unpinned_factor in generated
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    page = (docs_dir / "croma-robustness-benchmark.rst").read_text(encoding="utf-8")
+
+    documented = re.findall(
+        r"\* - (\S+)\n     - ``(\S+)``\n     - ``(\S+)``", page
+    )
+    expected = [
+        (published, spec.soma_encoder, spec.output_variant)
+        for published, spec in CROMA_0_3_ENCODER_PANEL.items()
+        if spec.output_variant != "default"
+    ]
+    assert sorted(documented) == sorted(expected)
+    assert "no\nclaim of numerical identity" in page
 
 
 def test_documented_yaml_examples_load_through_public_config_interface() -> None:
@@ -340,8 +338,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
             "hest-gene-expression-benchmark",
-            "pathorob-robustness-benchmark",
-            "croma-encoder-panel",
+            "croma-robustness-benchmark",
             "benchmark-in-house-encoder",
         ),
         "reference.rst": ("api", "cli"),
