@@ -15,10 +15,11 @@ axes (agreed in the HEST reproduction design grill):
   and a ranking survives an extraction-stack change even when absolute values shift. We
   measure **pooled pairwise concordance**: over every ``(dataset, encoder-pair)``, the
   fraction where soma orders the pair the same way the reference does. A pair is
-  **resolvable** when the reference gap exceeds :data:`RESOLVABLE_EPS`; concordance is over
-  resolvable pairs only, so soma is not graded on within-noise coin-flips (a pair the
-  benchmark itself cannot separate). Per-dataset Spearman ρ is reported alongside (coarse
-  at few encoders). Corroborates A rather than replacing it.
+  **resolvable** when the reference separates it under the family's
+  :class:`ResolvabilityPolicy`; concordance is over resolvable pairs only, so soma is not
+  graded on within-noise coin-flips (a pair the benchmark itself cannot separate).
+  Per-dataset Spearman ρ is reported alongside (coarse at few encoders). Corroborates A
+  rather than replacing it.
 
 * **C — drift guard.** ``results/<name>.csv`` is an append-only, provenance-pinned ledger
   (``soma_commit`` / ``slide2vec_version`` / ``date`` per row), so re-running a cell at a
@@ -43,10 +44,56 @@ from soma.benchmarks.registry import (
     load_results,
 )
 
-# An encoder pair is "resolvable" when the published reference separates it by more than this
-# (absolute, on the primary metric). Below it, the benchmark itself cannot call the ordering,
-# so a soma flip is a coin-flip, not a defect — excluded from the concordance.
+# The default resolvability floor: an encoder pair is "resolvable" when the published
+# reference separates it by more than this (absolute, on the primary metric). Below it, the
+# benchmark itself cannot call the ordering, so a soma flip is a coin-flip, not a defect —
+# excluded from the concordance.
 RESOLVABLE_EPS = 0.005
+
+
+@dataclass(frozen=True)
+class ResolvabilityPolicy:
+    """When does the published reference actually separate an encoder pair?
+
+    The rule is the inverse of :func:`math.isclose`, symmetric and independent of metric
+    direction, evaluated on the unrounded reference values::
+
+        resolvable  ⇔  |a − b| > max(abs_floor, rel · max(|a|, |b|))
+
+    The boundary is strict: a gap exactly at the threshold is a tie. With ``rel=0`` this is
+    the plain absolute rule every family historically used. The relative term never *lowers*
+    the bar — ``abs_floor`` guarantees an arbitrarily small gap can't become resolvable just
+    because both values sit near zero (the failure mode of a pure relative rule on a signed
+    scale): ``(0, 0)`` is a tie, ``0`` vs ``ε`` resolves only when ``ε > abs_floor``, and
+    ``−ε`` vs ``+ε`` resolves only when ``2ε > abs_floor`` — opposite signs buy nothing
+    beyond the honest gap magnitude.
+
+    Each benchmark family may declare its own policy (a ``resolvability`` attribute on the
+    benchmark, mirroring ``is_ranking_eligible``); families that declare nothing keep the
+    historical absolute rule they were published under (soma#321).
+    """
+
+    abs_floor: float = RESOLVABLE_EPS
+    rel: float = 0.0
+
+    @classmethod
+    def absolute(cls, eps: float = RESOLVABLE_EPS) -> "ResolvabilityPolicy":
+        """The historical scale-blind rule: ``|a − b| > eps``."""
+        return cls(abs_floor=eps, rel=0.0)
+
+    @classmethod
+    def hybrid(
+        cls, abs_floor: float = RESOLVABLE_EPS, rel: float = 0.02
+    ) -> "ResolvabilityPolicy":
+        """The near-zero-safe hybrid rule (soma#321): absolute floor plus relative guard."""
+        return cls(abs_floor=abs_floor, rel=rel)
+
+    def resolvable(self, a: float, b: float) -> bool:
+        """True when the reference values ``a``/``b`` are meaningfully separated."""
+        return abs(a - b) > max(self.abs_floor, self.rel * max(abs(a), abs(b)))
+
+
+DEFAULT_RESOLVABILITY = ResolvabilityPolicy.absolute()
 
 # The two key columns every family in scope keys on (dataset × encoder grid).
 _DATASET_KEY = "dataset"
@@ -82,11 +129,14 @@ class PairOutcome:
     encoder_low: str
     reference_gap: float  # reference[high] − reference[low]  (> 0 by construction)
     measured_gap: float  # soma measured[high] − measured[low]
+    reference_high_value: float = 0.0  # unrounded reference values feeding the policy
+    reference_low_value: float = 0.0
+    policy: ResolvabilityPolicy = DEFAULT_RESOLVABILITY
 
     @property
     def resolvable(self) -> bool:
-        """True when the reference separates the pair by more than :data:`RESOLVABLE_EPS`."""
-        return self.reference_gap > RESOLVABLE_EPS
+        """True when the reference separates the pair under the family's policy."""
+        return self.policy.resolvable(self.reference_high_value, self.reference_low_value)
 
     @property
     def concordant(self) -> bool:
@@ -160,6 +210,21 @@ def _primary_metric_for(name: str) -> str:
         if registered == name or registered.startswith(f"{name}/"):
             return get_benchmark(registered).primary_metric
     raise KeyError(f"No registered benchmark for family {name!r}.")
+
+
+def _resolvability_for(name: str) -> ResolvabilityPolicy:
+    """The family's declared resolvability policy (read off any registered member).
+
+    Families that declare no ``resolvability`` attribute keep the historical absolute rule
+    they were published under — adopting a different policy is a per-family decision with
+    its own disclosure, never a global switch (soma#321).
+    """
+    for registered in list_benchmarks():
+        if registered == name or registered.startswith(f"{name}/"):
+            policy = getattr(get_benchmark(registered), "resolvability", None)
+            if isinstance(policy, ResolvabilityPolicy):
+                return policy
+    return DEFAULT_RESOLVABILITY
 
 
 def _reference_value(rows: list[ReferenceRow], metric: str) -> dict[tuple[str, str], float]:
@@ -260,6 +325,7 @@ def reproduction_report(name: str, *, metric: str | None = None) -> Reproduction
     so the report grows as ``soma reproduce --record`` fills the ledger.
     """
     metric = metric or _primary_metric_for(name)
+    policy = _resolvability_for(name)
     reference = _reference_value(load_reference(name), metric)
     measurements = _latest_measurements(load_results(name), metric)
 
@@ -313,6 +379,9 @@ def reproduction_report(name: str, *, metric: str | None = None) -> Reproduction
                     encoder_low=low.encoder,
                     reference_gap=high.reference - low.reference,
                     measured_gap=high.measured - low.measured,
+                    reference_high_value=high.reference,
+                    reference_low_value=low.reference,
+                    policy=policy,
                 )
             )
 

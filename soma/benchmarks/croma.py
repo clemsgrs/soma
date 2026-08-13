@@ -25,6 +25,7 @@ from soma.config import (
     RepresentationConfig,
     TrainingConfig,
 )
+from soma.benchmarks.reproduction import ResolvabilityPolicy
 from soma.curation.croma import curate_croma_view
 from soma.curation.manifest import CuratedManifest
 
@@ -153,6 +154,11 @@ class CromaBenchmark:
     reported_metrics = REPORTED_METRICS
     ranking_metrics = RANKING_METRICS
     records_croma_version = True
+    # CRoMa's ranking metrics live on a signed scale that crosses zero, so pair
+    # resolvability uses the near-zero-safe hybrid rule decided in soma#321:
+    # |a−b| > max(0.005, 0.02·max(|a|,|b|)), strict boundary, on unrounded references.
+    # Other families keep the absolute rule they were published under.
+    resolvability = ResolvabilityPolicy.hybrid(abs_floor=0.005, rel=0.02)
     family_uses_shared_raw_root = True
     reference_environment: dict[str, str] = {}
 

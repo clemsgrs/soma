@@ -48,6 +48,34 @@ Each run reports three metrics:
 There is no composite score. DINOv2-B (``dinov2-vitb14``) is the natural-image
 control: it is measured and shown, but never ranked.
 
+Pair resolvability
+------------------
+
+Rank agreement is judged over *resolvable* encoder pairs only — pairs the
+published reference itself separates meaningfully. CRoMa's ranking metrics live
+on a signed scale that crosses zero, where soma's historical scale-blind
+absolute rule and a pure relative rule both misbehave, so this family uses a
+hybrid rule (the inverse of ``math.isclose``)::
+
+   resolvable  ⇔  |a − b| > max(0.005, 0.02 · max(|a|, |b|))
+
+evaluated on the unrounded reference values exported from the Croma results,
+with a strict boundary (a gap exactly at the threshold is a tie). The rule is
+symmetric and independent of metric direction. At and near zero it behaves
+explicitly: ``(0, 0)`` is a tie; ``0`` versus ``ε`` resolves only when
+``ε > 0.005``; ``−ε`` versus ``+ε`` resolves only when ``2ε > 0.005`` —
+opposite signs buy nothing beyond the honest gap magnitude, and an arbitrarily
+small gap can never become resolvable merely because both values sit near
+zero. At ordinary scale the relative term governs, so two encoders 0.005 apart
+at a magnitude of 0.4 are a tie rather than a call.
+
+The floor 0.005 is roughly 0.5–0.75 % of both ranking metrics' observed
+ranges, and the thresholds were fixed from the published reference
+distribution before any soma measurement was recorded (soma#321). One rule
+serves both ranking metrics; ``test/croma_f0`` is a reported diagnostic and is
+never ranked. Other benchmark families keep the absolute rule they were
+published under.
+
 Encoder panel
 -------------
 

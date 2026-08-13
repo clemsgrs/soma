@@ -155,3 +155,83 @@ def test_rankdata_and_spearman_helpers():
     assert reproduction._spearman([1.0, 2.0, 3.0], [3.0, 2.0, 1.0]) == pytest.approx(-1.0)
     assert reproduction._spearman([1.0], [1.0]) is None  # < 2 points
     assert reproduction._spearman([1.0, 1.0], [2.0, 3.0]) is None  # constant ranking
+
+
+# --- ResolvabilityPolicy (soma#321) ----------------------------------------------------
+#
+# The near-zero-safe hybrid rule: |a−b| > max(abs_floor, rel·max(|a|,|b|)), strict boundary,
+# symmetric, direction-independent. Families that declare nothing keep the historical
+# absolute rule they were published under.
+
+from soma.benchmarks.reproduction import (  # noqa: E402
+    DEFAULT_RESOLVABILITY,
+    ResolvabilityPolicy,
+)
+
+HYBRID = ResolvabilityPolicy.hybrid(abs_floor=0.005, rel=0.02)
+
+
+def test_hybrid_zero_versus_zero_is_a_tie():
+    assert not HYBRID.resolvable(0.0, 0.0)
+
+
+def test_hybrid_zero_versus_epsilon_resolves_only_above_the_floor():
+    assert not HYBRID.resolvable(0.0, 0.004)  # ε below the floor: tied
+    assert HYBRID.resolvable(0.0, 0.006)  # ε above the floor: resolvable
+    # A pure relative rule would call 0 vs any ε maximally separated; the floor forbids it.
+    assert not HYBRID.resolvable(0.0, 1e-9)
+
+
+def test_hybrid_opposite_signs_buy_nothing_beyond_the_gap():
+    # −ε vs +ε resolves only when the honest gap 2ε exceeds the floor.
+    assert not HYBRID.resolvable(-0.002, 0.002)  # gap 0.004: tied
+    assert HYBRID.resolvable(-0.003, 0.003)  # gap 0.006: resolvable
+
+
+def test_hybrid_same_sign_near_zero_is_floor_governed():
+    # Real near-zero ltm10 reference cells: −0.002917 vs −0.010655 (gap 0.0077 > floor).
+    assert HYBRID.resolvable(-0.002917, -0.010655)
+    assert not HYBRID.resolvable(-0.002917, -0.004)  # gap ~0.001: tied
+
+
+def test_hybrid_ordinary_scale_is_relative_governed():
+    # Real reference pair rudolfv2 vs rudolfv2-b on tolkach median: gap 0.005058 at scale
+    # 0.41 — above the old absolute rule, below 2 % of scale → tied under the hybrid.
+    assert not HYBRID.resolvable(0.412090, 0.407032)
+    assert HYBRID.resolvable(0.412090, 0.400000)  # gap 0.0121 > 0.02·0.41: resolvable
+
+
+def test_hybrid_boundary_is_strict():
+    # A gap exactly at the threshold is a tie, in both the floor and relative regimes.
+    # (Exactly-representable floats, so the boundary comparison is exact.)
+    assert not HYBRID.resolvable(0.0, 0.005)  # gap == abs_floor
+    exact = ResolvabilityPolicy.hybrid(abs_floor=0.005, rel=0.25)
+    assert not exact.resolvable(0.5, 0.375)  # gap 0.125 == 0.25·0.5
+    assert exact.resolvable(0.5, 0.3749)
+
+
+def test_hybrid_is_symmetric_and_direction_independent():
+    for a, b in [(0.412090, 0.407032), (-0.003, 0.003), (0.0, 0.006)]:
+        assert HYBRID.resolvable(a, b) == HYBRID.resolvable(b, a)
+        assert HYBRID.resolvable(a, b) == HYBRID.resolvable(-a, -b)
+
+
+def test_absolute_policy_matches_the_historical_rule():
+    # rel=0 degenerates to the published scale-blind rule — including the HEST LUNG pair
+    # (gap 0.0098 at scale 0.5685) that the hybrid would demote: it must stay resolvable
+    # under the default so already-published family reports are unchanged.
+    assert DEFAULT_RESOLVABILITY.resolvable(0.5685, 0.5587)
+    assert not HYBRID.resolvable(0.5685, 0.5587)
+    assert not DEFAULT_RESOLVABILITY.resolvable(0.302, 0.300)
+    assert DEFAULT_RESOLVABILITY.resolvable(0.306, 0.300)
+
+
+def test_families_without_a_declared_policy_keep_the_absolute_rule(stub_tables):
+    # hest declares no resolvability attribute → the report runs on the historical rule.
+    assert reproduction._resolvability_for("hest") == DEFAULT_RESOLVABILITY
+    report = reproduction_report("hest", metric=METRIC)
+    assert all(pair.policy == DEFAULT_RESOLVABILITY for pair in report.pairs)
+
+
+def test_croma_family_declares_the_hybrid_policy():
+    assert reproduction._resolvability_for("croma") == HYBRID
