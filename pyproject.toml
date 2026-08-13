@@ -56,7 +56,7 @@ dev = [
     "pytest-cov>=5.0",
     "pyarrow>=17",
 ]
-pathorob = [
+croma = [
     "pyarrow>=17",
 ]
 # Curation-only dependencies for the HEST-Benchmark spatial_expression curator

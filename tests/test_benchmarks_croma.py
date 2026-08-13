@@ -1,4 +1,4 @@
-"""Offline conformance tests for the registered PathoROB benchmark family."""
+"""Offline conformance tests for the registered CRoMa benchmark family."""
 
 import csv
 import json
@@ -26,31 +26,31 @@ from soma.benchmarks.croma import CROMA_0_3_ENCODER_PANEL
 from soma.curation.manifest import CuratedManifest
 
 
-def test_pathorob_family_registers_all_three_cohorts():
-    names = [name for name in list_benchmarks() if name.startswith("pathorob/")]
+def test_croma_family_registers_all_three_cohorts():
+    names = [name for name in list_benchmarks() if name.startswith("croma/")]
 
     assert names == [
-        "pathorob/camelyon",
-        "pathorob/tcga-4x4",
-        "pathorob/tolkach-esca",
+        "croma/camelyon",
+        "croma/tcga-4x4",
+        "croma/tolkach-esca",
     ]
     assert all(isinstance(get_benchmark(name), Benchmark) for name in names)
 
 
-def test_pathorob_family_appears_in_cli_benchmark_listing(capsys):
+def test_croma_family_appears_in_cli_benchmark_listing(capsys):
     cli.main(["list", "benchmarks"])
 
     out = capsys.readouterr().out
-    assert "pathorob/camelyon" in out
-    assert "pathorob/tcga-4x4" in out
-    assert "pathorob/tolkach-esca" in out
+    assert "croma/camelyon" in out
+    assert "croma/tcga-4x4" in out
+    assert "croma/tolkach-esca" in out
 
 
-def test_pathorob_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
+def test_croma_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "soma.benchmarks.pathorob.validate_croma_0_3_encoder_panel", lambda: None
+        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel", lambda: None
     )
-    benchmark = get_benchmark("pathorob/camelyon")
+    benchmark = get_benchmark("croma/camelyon")
 
     config = benchmark.build_config(
         encoder="uni2",
@@ -74,8 +74,8 @@ def test_pathorob_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
     assert config.encoder.output_variant == "default"
 
 
-def test_pathorob_facet_materializes_the_fixed_protocol():
-    facet = get_benchmark("pathorob/camelyon").facet
+def test_croma_facet_materializes_the_fixed_protocol():
+    facet = get_benchmark("croma/camelyon").facet
 
     assert facet.fixed == {
         "dataset": "camelyon",
@@ -90,8 +90,8 @@ def test_pathorob_facet_materializes_the_fixed_protocol():
     assert facet.varied == ("encoder",)
 
 
-def test_pathorob_declares_reported_and_ranking_metric_roles_in_order():
-    benchmark = get_benchmark("pathorob/camelyon")
+def test_croma_declares_reported_and_ranking_metric_roles_in_order():
+    benchmark = get_benchmark("croma/camelyon")
 
     assert get_reported_metrics(benchmark) == (
         "test/croma_median",
@@ -104,13 +104,13 @@ def test_pathorob_declares_reported_and_ranking_metric_roles_in_order():
     )
 
 
-def test_pathorob_validates_panel_pins(tmp_path, monkeypatch):
+def test_croma_validates_panel_pins(tmp_path, monkeypatch):
     validations = []
     monkeypatch.setattr(
-        "soma.benchmarks.pathorob.validate_croma_0_3_encoder_panel",
+        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel",
         lambda: validations.append("validated"),
     )
-    benchmark = get_benchmark("pathorob/camelyon")
+    benchmark = get_benchmark("croma/camelyon")
 
     panel = benchmark.build_config(encoder="uni2", output_root=tmp_path / "panel")
 
@@ -118,14 +118,14 @@ def test_pathorob_validates_panel_pins(tmp_path, monkeypatch):
     assert panel.encoder.output_variant == "default"
 
 
-def test_pathorob_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
+def test_croma_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
     validations = []
     monkeypatch.setattr(
-        "soma.benchmarks.pathorob.validate_croma_0_3_encoder_panel",
+        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel",
         lambda: validations.append("validated"),
     )
 
-    outside = get_benchmark("pathorob/camelyon").build_config(
+    outside = get_benchmark("croma/camelyon").build_config(
         encoder="isight", output_root=tmp_path / "outside"
     )
 
@@ -134,8 +134,8 @@ def test_pathorob_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatc
     assert outside.encoder.output_variant is None
 
 
-def test_pathorob_reference_has_one_external_row_per_cohort_encoder_metric():
-    path = resources.files("soma.benchmarks.reference").joinpath("pathorob.csv")
+def test_croma_reference_has_one_external_row_per_cohort_encoder_metric():
+    path = resources.files("soma.benchmarks.reference").joinpath("croma.csv")
     with path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
@@ -166,8 +166,8 @@ def test_pathorob_reference_has_one_external_row_per_cohort_encoder_metric():
     assert by_key[("tolkach-esca", "mascaret", "test/croma_ltm10")] == 0.009418
 
 
-def test_pathorob_expected_returns_three_ordered_external_rows_for_the_encoder():
-    benchmark = get_benchmark("pathorob/camelyon")
+def test_croma_expected_returns_three_ordered_external_rows_for_the_encoder():
+    benchmark = get_benchmark("croma/camelyon")
 
     rows = benchmark.expected(encoder="rudolfv2-s")
 
@@ -182,7 +182,7 @@ def test_pathorob_expected_returns_three_ordered_external_rows_for_the_encoder()
 
 
 def test_dinov2_b_is_the_only_published_ranking_ineligible_control():
-    benchmark = get_benchmark("pathorob/camelyon")
+    benchmark = get_benchmark("croma/camelyon")
 
     assert benchmark.is_ranking_eligible(encoder="dinov2-vitb14") is False
     assert all(
@@ -232,7 +232,7 @@ def test_rank_agreement_keeps_dino_visible_but_excludes_control_pairs(monkeypatc
         measured=(0.4, 0.1, 0.99),
     )
 
-    report = reproduction_report("pathorob")
+    report = reproduction_report("croma")
 
     assert [cell.encoder for cell in report.cells] == list(encoders)
     assert [(pair.encoder_high, pair.encoder_low) for pair in report.pairs] == [
@@ -249,14 +249,14 @@ def test_reported_only_f0_produces_no_rank_agreement(monkeypatch):
         measured=(0.4, 0.1),
     )
 
-    report = reproduction_report("pathorob", metric="test/croma_f0")
+    report = reproduction_report("croma", metric="test/croma_f0")
 
     assert len(report.cells) == 2
     assert report.pairs == []
     assert report.spearman_by_dataset == {"camelyon": None}
 
 
-def test_pathorob_curates_its_cohort_from_the_prepared_family_root(
+def test_croma_curates_its_cohort_from_the_prepared_family_root(
     tmp_path, monkeypatch
 ):
     calls = []
@@ -267,8 +267,8 @@ def test_pathorob_curates_its_cohort_from_the_prepared_family_root(
             Path(out_dir) / "dataset.csv", Path(out_dir) / "splits.csv"
         )
 
-    monkeypatch.setattr("soma.benchmarks.pathorob.curate_pathorob_ri_view", fake_curate)
-    benchmark = get_benchmark("pathorob/tcga-4x4")
+    monkeypatch.setattr("soma.benchmarks.croma.curate_croma_view", fake_curate)
+    benchmark = get_benchmark("croma/tcga-4x4")
 
     manifest = benchmark.curate(tmp_path / "prepared", tmp_path / "curated")
 
@@ -276,7 +276,7 @@ def test_pathorob_curates_its_cohort_from_the_prepared_family_root(
     assert manifest.dataset_csv == tmp_path / "curated" / "dataset.csv"
 
 
-def test_pathorob_scores_all_three_reported_metrics_from_summary(tmp_path):
+def test_croma_scores_all_three_reported_metrics_from_summary(tmp_path):
     expected = {
         "test/croma_median": 0.31,
         "test/croma_f0": 0.12,
@@ -284,10 +284,10 @@ def test_pathorob_scores_all_three_reported_metrics_from_summary(tmp_path):
     }
     (tmp_path / "summary.json").write_text(json.dumps(expected), encoding="utf-8")
 
-    assert get_benchmark("pathorob/camelyon").score(tmp_path) == expected
+    assert get_benchmark("croma/camelyon").score(tmp_path) == expected
 
 
-def test_pathorob_rescore_renders_three_external_deltas_without_a_gate(
+def test_croma_rescore_renders_three_external_deltas_without_a_gate(
     tmp_path, monkeypatch, capsys
 ):
     (tmp_path / "summary.json").write_text(
@@ -310,7 +310,7 @@ def test_pathorob_rescore_renders_three_external_deltas_without_a_gate(
         cli.main(
             [
                 "reproduce",
-                "pathorob/camelyon",
+                "croma/camelyon",
                 "--encoder",
                 "conch",
                 "--from-run-dir",
@@ -320,16 +320,16 @@ def test_pathorob_rescore_renders_three_external_deltas_without_a_gate(
 
     out = capsys.readouterr().out
     assert exit_info.value.code == 0
-    assert out.count("[MEASURED] pathorob/camelyon test/croma_") == 3
+    assert out.count("[MEASURED] croma/camelyon test/croma_") == 3
     assert out.count("external — context only") == 3
     assert out.count("Δ ") == 3
     assert "REFERENCE OK" not in out
     assert "POTENTIAL DRIFT" not in out
 
 
-def test_pathorob_reference_provenance_pins_release_producer_protocol_and_sources():
+def test_croma_reference_provenance_pins_release_producer_protocol_and_sources():
     path = resources.files("soma.benchmarks.reference").joinpath(
-        "pathorob.provenance.json"
+        "croma.provenance.json"
     )
     provenance = json.loads(path.read_text(encoding="utf-8"))
 
@@ -352,7 +352,7 @@ def test_pathorob_reference_provenance_pins_release_producer_protocol_and_source
     }
 
 
-def _record_pathorob_result(tmp_path, monkeypatch, *, run_croma_version=None):
+def _record_croma_result(tmp_path, monkeypatch, *, run_croma_version=None):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "summary.json").write_text(
@@ -370,7 +370,7 @@ def _record_pathorob_result(tmp_path, monkeypatch, *, run_croma_version=None):
             f"representation_provenance:\n  croma: {run_croma_version}\n",
             encoding="utf-8",
         )
-    ledger = tmp_path / "results" / "pathorob.csv"
+    ledger = tmp_path / "results" / "croma.csv"
     monkeypatch.setattr(registry_mod, "_results_file", lambda _name: ledger)
     monkeypatch.setattr(cli, "_provenance", lambda: ("2026-08-11", "abc123", "5.7.0"))
     monkeypatch.setattr(cli, "_runtime_croma_version", lambda: "0.3.0")
@@ -379,7 +379,7 @@ def _record_pathorob_result(tmp_path, monkeypatch, *, run_croma_version=None):
         cli.main(
             [
                 "reproduce",
-                "pathorob/camelyon",
+                "croma/camelyon",
                 "--encoder",
                 "uni2",
                 "--from-run-dir",
@@ -389,30 +389,30 @@ def _record_pathorob_result(tmp_path, monkeypatch, *, run_croma_version=None):
         )
 
     assert exit_info.value.code == 0
-    return load_results("pathorob")
+    return load_results("croma")
 
 
-def test_pathorob_record_uses_the_run_croma_version(tmp_path, monkeypatch):
-    rows = _record_pathorob_result(tmp_path, monkeypatch, run_croma_version="0.2.9")
+def test_croma_record_uses_the_run_croma_version(tmp_path, monkeypatch):
+    rows = _record_croma_result(tmp_path, monkeypatch, run_croma_version="0.2.9")
 
     assert all(row.croma_version == "0.2.9" for row in rows)
 
 
-def test_pathorob_record_marks_missing_historical_croma_provenance_unknown(
+def test_croma_record_marks_missing_historical_croma_provenance_unknown(
     tmp_path, monkeypatch
 ):
-    rows = _record_pathorob_result(tmp_path, monkeypatch)
+    rows = _record_croma_result(tmp_path, monkeypatch)
 
     assert all(row.croma_version == "unknown" for row in rows)
 
 
-def test_pathorob_record_preserves_rank_precision(tmp_path, monkeypatch):
-    rows = _record_pathorob_result(tmp_path, monkeypatch)
+def test_croma_record_preserves_rank_precision(tmp_path, monkeypatch):
+    rows = _record_croma_result(tmp_path, monkeypatch)
 
     assert [row.measured for row in rows] == [0.123456789, 0.234567891, -0.345678912]
 
 
-def _run_pathorob_family(tmp_path, monkeypatch):
+def _run_croma_family(tmp_path, monkeypatch):
     curated_calls = []
     config_calls = []
 
@@ -427,13 +427,13 @@ def _run_pathorob_family(tmp_path, monkeypatch):
         return object()
 
     monkeypatch.setattr(
-        "soma.benchmarks.pathorob.PathoROBBenchmark.curate", fake_curate
+        "soma.benchmarks.croma.CromaBenchmark.curate", fake_curate
     )
     monkeypatch.setattr(
-        "soma.benchmarks.pathorob.PathoROBBenchmark.build_config", fake_build_config
+        "soma.benchmarks.croma.CromaBenchmark.build_config", fake_build_config
     )
     monkeypatch.setattr(
-        "soma.benchmarks.pathorob.PathoROBBenchmark.score",
+        "soma.benchmarks.croma.CromaBenchmark.score",
         lambda _self, _run_dir: {
             "test/croma_median": 0.31,
             "test/croma_f0": 0.12,
@@ -450,7 +450,7 @@ def _run_pathorob_family(tmp_path, monkeypatch):
         cli.main(
             [
                 "reproduce",
-                "pathorob",
+                "croma",
                 "--raw-root",
                 str(prepared),
                 "--output-root",
@@ -464,8 +464,8 @@ def _run_pathorob_family(tmp_path, monkeypatch):
     return prepared, common_cache, curated_calls, config_calls
 
 
-def test_pathorob_family_uses_the_prepared_family_root(tmp_path, monkeypatch):
-    prepared, _common_cache, curated_calls, _config_calls = _run_pathorob_family(
+def test_croma_family_uses_the_prepared_family_root(tmp_path, monkeypatch):
+    prepared, _common_cache, curated_calls, _config_calls = _run_croma_family(
         tmp_path, monkeypatch
     )
 
@@ -476,10 +476,10 @@ def test_pathorob_family_uses_the_prepared_family_root(tmp_path, monkeypatch):
     ]
 
 
-def test_pathorob_family_passes_one_explicit_cache_root_to_every_cohort(
+def test_croma_family_passes_one_explicit_cache_root_to_every_cohort(
     tmp_path, monkeypatch
 ):
-    _prepared, common_cache, _curated_calls, config_calls = _run_pathorob_family(
+    _prepared, common_cache, _curated_calls, config_calls = _run_croma_family(
         tmp_path, monkeypatch
     )
 

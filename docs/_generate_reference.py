@@ -25,7 +25,6 @@ from soma.benchmarks import (
 )
 from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import ocelot as ocelot_bench
-from soma.benchmarks.croma import CROMA_0_3_ENCODER_PANEL
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
@@ -784,55 +783,6 @@ def build_hest_benchmark_rst() -> str:
     return "\n\n".join(sections).rstrip() + "\n"
 
 
-def build_croma_encoder_panel_rst() -> str:
-    """Generate the Croma 0.3 encoder compatibility table from its pinned mapping."""
-    lines = [
-        "Croma 0.3 encoder panel",
-        "=======================",
-        "",
-        "This compatibility audit translates the 26 tile-model names published with",
-        "`Croma 0.3.0 <https://github.com/clemsgrs/croma/releases/tag/0.3.0>`_ onto",
-        "soma's slide2vec encoder keys. soma validates every row against slide2vec's",
-        "runtime registry metadata without constructing a model or loading weights.",
-        "",
-        "The check proves only that the soma encoder slug is a registered tile encoder and",
-        "that the explicit output variant resolves to the stated feature dimension. The",
-        "``default`` spelling is an explicit lock to that named variant; it is not permission",
-        "to consult a future registry default.",
-        "",
-        ".. list-table::",
-        "   :header-rows: 1",
-        "",
-        "   * - Published model",
-        "     - soma encoder",
-        "     - Output variant",
-        "     - Feature dimension",
-    ]
-    for published_name, spec in CROMA_0_3_ENCODER_PANEL.items():
-        lines.extend(
-            [
-                f"   * - {published_name}",
-                f"     - ``{spec.soma_encoder}``",
-                f"     - ``{spec.output_variant}``",
-                f"     - {spec.dimension}",
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "Limits of this audit",
-            "--------------------",
-            "",
-            "Slug, output-variant, and dimension compatibility **does not prove exact numerical identity**",
-            "with Croma's published embeddings. The weights and checkpoint revision, preprocessing,",
-            "input geometry, normalization, precision, and implementation version remain unpinned and may all",
-            "change the resulting values. This mapping records no extraction identity and makes no numerical",
-            "reproduction claim.",
-        ]
-    )
-    return "\n".join(lines).rstrip() + "\n"
-
-
 def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
     """Write the generated per-benchmark pages to disk."""
     base = Path(directory) if directory is not None else Path(__file__).parent
@@ -841,7 +791,6 @@ def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
         ("ocelot-detection-benchmark.rst", build_ocelot_benchmark_rst),
         ("eva-patch-classification-benchmark.rst", build_eva_benchmark_rst),
         ("hest-gene-expression-benchmark.rst", build_hest_benchmark_rst),
-        ("croma-encoder-panel.rst", build_croma_encoder_panel_rst),
     ):
         target = base / filename
         target.write_text(builder(), encoding="utf-8")

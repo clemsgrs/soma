@@ -1,4 +1,4 @@
-"""Deterministic curators for the three PathoROB Robustness Index views."""
+"""Deterministic curators for the three CRoMa benchmark cohorts (PathoROB tile data)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from soma.curation.manifest import CuratedManifest, write_manifest
 
 
 @dataclass(frozen=True)
-class _RIView:
+class _View:
     metadata_filename: str
     labels: int
     centers: int
@@ -29,14 +29,14 @@ class _RIView:
 
 
 @dataclass(frozen=True)
-class _PreparedRIView:
+class _PreparedView:
     cohort: str
     dataset_rows: list[dict[str, str]]
     provenance: dict[str, Any]
 
 
-_RI_VIEWS = {
-    "camelyon": _RIView(
+_VIEWS = {
+    "camelyon": _View(
         "camelyon.csv",
         2,
         2,
@@ -45,7 +45,7 @@ _RI_VIEWS = {
         "bifold-pathomics/PathoROB-camelyon",
         "b2e762542abbf85dde3f23ec70a2bf1848dcf5c8",
     ),
-    "tcga-4x4": _RIView(
+    "tcga-4x4": _View(
         "tcga_4x4.csv",
         4,
         4,
@@ -54,7 +54,7 @@ _RI_VIEWS = {
         "bifold-pathomics/PathoROB-tcga",
         "6e1dbd4306ebee9759b32503914523e84bddabd0",
     ),
-    "tolkach-esca": _RIView(
+    "tolkach-esca": _View(
         "tolkach_esca_reduced.csv",
         6,
         3,
@@ -69,32 +69,32 @@ _METADATA_REVISION = "6583cf0b0d902c8cc032308262fa3a3befdc0687"
 _MIN_TYPED_NEIGHBOURS = 5
 
 
-def curate_pathorob_ri_view(
+def curate_croma_view(
     raw_root: str | Path,
     output_dir: str | Path,
     *,
     cohort: str,
 ) -> CuratedManifest:
-    """Curate one prepared PathoROB RI view into one Soma Manifest."""
-    view = _get_ri_view(cohort)
-    prepared = _prepare_ri_view(Path(raw_root), cohort, view, sample_id_owners={})
-    return _write_ri_view(prepared, Path(output_dir))
+    """Curate one prepared cohort into one Soma Manifest."""
+    view = _get_view(cohort)
+    prepared = _prepare_view(Path(raw_root), cohort, view, sample_id_owners={})
+    return _write_view(prepared, Path(output_dir))
 
 
-def curate_pathorob_ri_views(
+def curate_croma_views(
     raw_root: str | Path,
     output_root: str | Path,
 ) -> dict[str, CuratedManifest]:
-    """Orchestrate all PathoROB RI curators with family-wide ID validation."""
+    """Orchestrate all cohort curators with family-wide ID validation."""
     raw_root = Path(raw_root)
     output_root = Path(output_root)
     sample_id_owners: dict[str, str] = {}
     prepared_views = [
-        _prepare_ri_view(raw_root, cohort, view, sample_id_owners)
-        for cohort, view in _RI_VIEWS.items()
+        _prepare_view(raw_root, cohort, view, sample_id_owners)
+        for cohort, view in _VIEWS.items()
     ]
     return {
-        prepared.cohort: _write_ri_view(
+        prepared.cohort: _write_view(
             prepared,
             output_root / prepared.cohort,
         )
@@ -102,22 +102,22 @@ def curate_pathorob_ri_views(
     }
 
 
-def _get_ri_view(cohort: str) -> _RIView:
+def _get_view(cohort: str) -> _View:
     try:
-        return _RI_VIEWS[cohort]
+        return _VIEWS[cohort]
     except KeyError:
         raise ValueError(
-            f"Unknown PathoROB RI cohort {cohort!r}; expected one of "
-            f"{list(_RI_VIEWS)}."
+            f"Unknown CRoMa cohort {cohort!r}; expected one of "
+            f"{list(_VIEWS)}."
         ) from None
 
 
-def _prepare_ri_view(
+def _prepare_view(
     raw_root: Path,
     cohort: str,
-    view: _RIView,
+    view: _View,
     sample_id_owners: dict[str, str],
-) -> _PreparedRIView:
+) -> _PreparedView:
     cohort_root = raw_root / cohort
     provenance = _load_and_validate_provenance(cohort_root, cohort, view)
     metadata = pd.read_csv(
@@ -166,14 +166,14 @@ def _prepare_ri_view(
         }
         for row in joined.itertuples(index=False)
     ]
-    return _PreparedRIView(
+    return _PreparedView(
         cohort=cohort,
         dataset_rows=dataset_rows,
         provenance=provenance,
     )
 
 
-def _write_ri_view(prepared: _PreparedRIView, output_dir: Path) -> CuratedManifest:
+def _write_view(prepared: _PreparedView, output_dir: Path) -> CuratedManifest:
     split_rows = [
         {"sample_id": row["sample_id"], "split": "test", "fold": 0}
         for row in prepared.dataset_rows
@@ -203,7 +203,7 @@ def _resolve_image_path(cohort_root: Path, image_path: Any) -> Path:
 def _load_and_validate_provenance(
     cohort_root: Path,
     cohort: str,
-    view: _RIView,
+    view: _View,
 ) -> dict[str, Any]:
     provenance = json.loads((cohort_root / "provenance.json").read_text())
     schema_version = provenance.get("schema_version")
@@ -341,10 +341,10 @@ def _validate_required_metadata_values(
         )
 
 
-def _validate_balance(joined: pd.DataFrame, cohort: str, view: _RIView) -> None:
+def _validate_balance(joined: pd.DataFrame, cohort: str, view: _View) -> None:
     if len(joined) != view.total_rows:
         raise ValueError(
-            f"PathoROB {cohort} RI view requires exactly {view.total_rows} rows; "
+            f"CRoMa {cohort} cohort requires exactly {view.total_rows} rows; "
             f"found {len(joined)}."
         )
 
@@ -352,7 +352,7 @@ def _validate_balance(joined: pd.DataFrame, cohort: str, view: _RIView) -> None:
     num_centers = joined["medical_center"].nunique()
     if num_labels != view.labels or num_centers != view.centers:
         raise ValueError(
-            f"PathoROB {cohort} RI view requires exactly {view.labels} labels and "
+            f"CRoMa {cohort} cohort requires exactly {view.labels} labels and "
             f"{view.centers} centers; found {num_labels} labels and "
             f"{num_centers} centers."
         )
@@ -363,7 +363,7 @@ def _validate_balance(joined: pd.DataFrame, cohort: str, view: _RIView) -> None:
     expected_cells = view.labels * view.centers
     if len(cell_counts) != expected_cells or not cell_counts.eq(view.rows_per_cell).all():
         raise ValueError(
-            f"PathoROB {cohort} RI view requires a {view.labels} label x "
+            f"CRoMa {cohort} cohort requires a {view.labels} label x "
             f"{view.centers} center grid with {view.rows_per_cell} rows per cell."
         )
 

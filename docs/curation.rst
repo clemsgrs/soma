@@ -5,85 +5,42 @@ soma includes small curators for converting known public benchmark layouts into
 the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 :doc:`dataset`.
 
-PathoROB source preparation
----------------------------
+CRoMa cohorts
+-------------
 
-PathoROB preparation is a separate acquisition and decoding step before RI-view
-curation. Install its Parquet dependency, then choose a new destination raw
-root::
+The :doc:`CRoMa robustness benchmark <croma-robustness-benchmark>` uses three
+tile cohorts from the PathoROB study. Acquire and decode the pinned sources
+once::
 
-    pip install 'soma-pathology[pathorob]'
-    soma prepare-pathorob /data/pathorob
+    pip install 'soma-pathology[croma]'
+    soma prepare-croma /data/croma
 
-The equivalent packaged callable is::
+Or from Python::
 
-    from soma.pathorob import prepare_pathorob
+    from soma.robustness import prepare_croma
 
-    prepared = prepare_pathorob("/data/pathorob")
+    prepared = prepare_croma("/data/croma")
 
-The command downloads the exact pinned Hugging Face dataset revisions and
-metadata commit, verifies every available checksum, extracts the encoded tiles,
-and writes::
+The command downloads the exact pinned dataset revisions, verifies every
+checksum, and decodes the tiles. Allow at least 5 GB of free space. The source
+datasets retain their upstream licenses: CC0-1.0 for Camelyon,
+CC-BY-NC-SA-4.0 for TCGA, and CC-BY-SA-4.0 for Tolkach-ESCA.
 
-    /data/pathorob/
-      camelyon/{images/,camelyon.csv,source_index.csv,provenance.json}
-      tcga-4x4/{images/,tcga_4x4.csv,source_index.csv,provenance.json}
-      tolkach-esca/{images/,tolkach_esca_reduced.csv,source_index.csv,provenance.json}
+Curate one cohort, or all three with family-wide sample-ID validation::
 
-The five pinned Parquet shards total about 1.9 GB. Allow at least 5 GB of free
-space for the Hugging Face cache, extracted images, and atomic staging. The
-source datasets retain their upstream licenses: CC0-1.0 for Camelyon,
-CC-BY-NC-SA-4.0 for TCGA, and CC-BY-SA-4.0 for Tolkach-ESCA. The metadata is
-BSD-3-Clause.
+    from soma.curation import curate_croma_view, curate_croma_views
 
-Each source index has literal
-``slide_id,patch_id,sample_id,image_path`` columns. ``provenance.json`` records
-source URLs, revisions, file checksums and sizes, licenses, preparation time,
-and the soma tool version. A complete matching tree is reused unchanged. A
-partial or revision-mismatched destination fails; replace one deliberately only
-after reviewing the destination path::
-
-    soma prepare-pathorob /data/pathorob --rebuild
-
-Preparation never selects RI rows or writes soma Manifests. Pass this prepared
-root to ``curate_pathorob_ri_view`` or ``curate_pathorob_ri_views``; those
-deterministic curators own RI selection, validation, and Manifest writing.
-
-PathoROB Robustness Index views
--------------------------------
-
-``curate_pathorob_ri_view`` is a structural Curator that deterministically
-produces one Manifest for one PathoROB Robustness Index (RI) view from the
-prepared tree above. It independently refuses unknown source repositories or
-revisions. Relative image paths in each source index are resolved from their
-cohort directory.
-
-Curate one view through the standard single-Manifest interface::
-
-    from soma.curation import curate_pathorob_ri_view
-
-    camelyon = curate_pathorob_ri_view(
-        "/path/to/prepared/pathorob",
-        "data/pathorob/camelyon",
+    camelyon = curate_croma_view(
+        "/data/croma",
+        "data/croma/camelyon",
         cohort="camelyon",
     )
+    manifests = curate_croma_views("/data/croma", "data/croma")
 
-For normal use, run the family orchestrator so sample IDs are additionally
-checked across all three views::
-
-    from soma.curation import curate_pathorob_ri_views
-
-    manifests = curate_pathorob_ri_views(
-        "/path/to/prepared/pathorob",
-        "data/pathorob",
-    )
-
-The RI views are fixed, balanced grids: Camelyon has 2 labels x 2 centers x
-5,100 rows (20,400 rows), TCGA-4x4 has 4 x 4 x 360 rows (5,760 rows), and
-Tolkach-ESCA has 6 x 3 x 500 rows (9,000 rows). Camelyon specifically selects
-the 20,400 ``subset == "ID"`` rows from its 22,402 source tiles; Tolkach-ESCA
-is already the stored balanced sample and is never resampled. Every emitted row
-is assigned to ``test``, fold ``0``.
+The cohorts are fixed, balanced label-by-center grids: Camelyon has 20,400
+rows, TCGA-4x4 has 5,760, and Tolkach-ESCA has 9,000. Every emitted row is
+assigned to ``test``, fold ``0``. ``soma reproduce croma`` runs this curation
+for you.
 
 EVA patch-level classification
 ------------------------------

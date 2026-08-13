@@ -17,13 +17,13 @@ import pyarrow.parquet as pq
 import pytest
 
 import soma
-import soma.pathorob as pathorob
-from soma.pathorob import (
+import soma.robustness as croma
+from soma.robustness import (
     PATHOROB_COHORTS,
     PathoROBCohortSource,
     SourceFile,
-    prepare_pathorob,
-    validate_prepared_pathorob,
+    prepare_croma,
+    validate_prepared_croma,
 )
 
 PNG_1X1 = base64.b64decode(
@@ -180,7 +180,7 @@ def _literal_validation_provenance(name: str) -> dict:
         "cohort": name,
         "prepared_at": "2026-08-11T12:00:00+00:00",
         "preparation_tool": {
-            "name": "soma.pathorob.prepare_pathorob",
+            "name": "soma.robustness.prepare_croma",
             "version": "1.9.0",
         },
         "sources": {
@@ -210,7 +210,7 @@ def _literal_validation_provenance(name: str) -> dict:
 
 
 def _write_complete_tree(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pathorob, "PATHOROB_COHORTS", VALIDATION_SOURCES)
+    monkeypatch.setattr(croma, "PATHOROB_COHORTS", VALIDATION_SOURCES)
     for spec in VALIDATION_SOURCES:
         name = spec.name
         cohort_dir = root / name
@@ -312,9 +312,9 @@ def _install_synthetic_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
             )
         )
 
-    monkeypatch.setattr(pathorob, "PATHOROB_COHORTS", tuple(resolved_specs))
+    monkeypatch.setattr(croma, "PATHOROB_COHORTS", tuple(resolved_specs))
     monkeypatch.setattr(
-        pathorob,
+        croma,
         "_preparation_timestamp",
         lambda: "2026-08-11T12:00:00+00:00",
     )
@@ -335,7 +335,7 @@ def _install_synthetic_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
 
-def test_pathorob_sources_are_exactly_pinned():
+def test_croma_sources_are_exactly_pinned():
     actual = tuple(
         {
             "name": source.name,
@@ -360,7 +360,7 @@ def test_complete_prepared_tree_validates(
 ):
     _write_complete_tree(tmp_path, monkeypatch)
 
-    prepared = validate_prepared_pathorob(tmp_path)
+    prepared = validate_prepared_croma(tmp_path)
 
     assert [cohort.name for cohort in prepared] == [
         "camelyon",
@@ -378,7 +378,7 @@ def test_duplicate_slide_patch_key_is_rejected(
         fh.write("camelyon-slide,patch-1,second-sample,images/camelyon-sample.png\n")
 
     with pytest.raises(ValueError, match=r"duplicate.*slide_id.*patch_id"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_source_index_row_with_missing_image_is_rejected(
@@ -388,7 +388,7 @@ def test_source_index_row_with_missing_image_is_rejected(
     (tmp_path / "tcga-4x4" / "images" / "tcga-4x4-sample.png").unlink()
 
     with pytest.raises(FileNotFoundError, match=r"tcga-4x4.*missing image"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_source_index_row_with_invalid_image_is_rejected(
@@ -400,7 +400,7 @@ def test_source_index_row_with_invalid_image_is_rejected(
     )
 
     with pytest.raises(ValueError, match=r"camelyon.*invalid decoded image"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_source_index_requires_literal_contract_columns(
@@ -414,7 +414,7 @@ def test_source_index_requires_literal_contract_columns(
     )
 
     with pytest.raises(ValueError, match=r"tolkach-esca.*source index columns"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_provenance_revision_mismatch_is_rejected(
@@ -427,7 +427,7 @@ def test_provenance_revision_mismatch_is_rejected(
     provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"camelyon.*revision mismatch"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_provenance_schema_version_mismatch_is_rejected(
@@ -440,7 +440,7 @@ def test_provenance_schema_version_mismatch_is_rejected(
     provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"tcga-4x4.*schema_version.*expected 1"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_metadata_revision_mismatch_is_rejected(
@@ -453,7 +453,7 @@ def test_metadata_revision_mismatch_is_rejected(
     provenance_path.write_text(json.dumps(provenance), encoding="utf-8")
 
     with pytest.raises(ValueError, match=r"tolkach-esca.*metadata revision mismatch"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_metadata_content_checksum_mismatch_is_rejected(
@@ -463,7 +463,7 @@ def test_metadata_content_checksum_mismatch_is_rejected(
     (tmp_path / "camelyon" / "camelyon.csv").write_text("tampered metadata\n")
 
     with pytest.raises(ValueError, match=r"camelyon.*metadata checksum mismatch"):
-        validate_prepared_pathorob(tmp_path)
+        validate_prepared_croma(tmp_path)
 
 
 def test_preparation_reuses_complete_matching_tree(
@@ -476,7 +476,7 @@ def test_preparation_reuses_complete_matching_tree(
         if path.is_file()
     }
 
-    prepared = prepare_pathorob(tmp_path)
+    prepared = prepare_croma(tmp_path)
 
     assert [cohort.name for cohort in prepared] == [
         "camelyon",
@@ -496,7 +496,7 @@ def test_preparation_acquires_and_decodes_all_cohorts(
     _install_synthetic_sources(tmp_path, monkeypatch)
     raw_root = tmp_path / "prepared"
 
-    prepared = prepare_pathorob(raw_root)
+    prepared = prepare_croma(raw_root)
 
     assert [cohort.name for cohort in prepared] == [
         "camelyon",
@@ -546,7 +546,7 @@ def test_preparation_acquires_and_decodes_all_cohorts(
         assert provenance["cohort"] == name
         assert provenance["prepared_at"] == "2026-08-11T12:00:00+00:00"
         assert provenance["preparation_tool"] == {
-            "name": "soma.pathorob.prepare_pathorob",
+            "name": "soma.robustness.prepare_croma",
             "version": "9.9.9-test",
         }
         dataset_source = provenance["sources"]["dataset"]
@@ -577,7 +577,7 @@ def test_partial_tree_is_rejected_and_preserved(tmp_path: Path):
     partial.write_text("interrupted")
 
     with pytest.raises(ValueError, match=r"not a complete matching tree.*rebuild"):
-        prepare_pathorob(raw_root)
+        prepare_croma(raw_root)
     assert partial.read_text() == "interrupted"
 
 
@@ -590,7 +590,7 @@ def test_explicit_rebuild_replaces_partial_tree(
     partial.parent.mkdir(parents=True)
     partial.write_text("interrupted")
 
-    prepared = prepare_pathorob(raw_root, rebuild=True)
+    prepared = prepare_croma(raw_root, rebuild=True)
 
     assert [cohort.name for cohort in prepared] == [
         "camelyon",
@@ -600,13 +600,13 @@ def test_explicit_rebuild_replaces_partial_tree(
     assert not partial.exists()
 
 
-def test_prepare_pathorob_cli_validates_existing_tree(
+def test_prepare_croma_cli_validates_existing_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ):
     _write_complete_tree(tmp_path, monkeypatch)
     from soma.cli import main
 
-    main(["prepare-pathorob", str(tmp_path)])
+    main(["prepare-croma", str(tmp_path)])
 
     assert capsys.readouterr().out == (
         f"Prepared PathoROB data under {tmp_path} "

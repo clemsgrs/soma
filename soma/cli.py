@@ -1276,17 +1276,17 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _cmd_prepare_pathorob(args: argparse.Namespace) -> None:
-    from soma.pathorob import prepare_pathorob
+def _cmd_prepare_croma(args: argparse.Namespace) -> None:
+    from soma.robustness import prepare_croma
 
-    prepared = prepare_pathorob(args.raw_root, rebuild=args.rebuild)
+    prepared = prepare_croma(args.raw_root, rebuild=args.rebuild)
     counts = ", ".join(f"{cohort.name}: {cohort.rows}" for cohort in prepared)
     print(f"Prepared PathoROB data under {args.raw_root} ({counts}).")
 
 
-def _build_prepare_pathorob_parser() -> argparse.ArgumentParser:
+def _build_prepare_croma_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="soma prepare-pathorob",
+        prog="soma prepare-croma",
         description="Acquire and decode the pinned PathoROB tile sources.",
     )
     parser.add_argument("raw_root", type=Path, help="Destination prepared-data root.")
@@ -1295,7 +1295,7 @@ def _build_prepare_pathorob_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Deliberately replace a partial or revision-mismatched destination.",
     )
-    parser.set_defaults(func=_cmd_prepare_pathorob)
+    parser.set_defaults(func=_cmd_prepare_croma)
     return parser
 
 
@@ -1303,14 +1303,14 @@ def _print_top_level_help() -> None:
     print(
         "usage: soma CONFIG\n"
         "       soma list {encoders,aggregators,decoders,pixel-classifiers,tasks,benchmarks} [--level {tile,slide,patient}]\n"
-        "       soma prepare-pathorob RAW_ROOT [--rebuild]\n"
+        "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
         "\n"
         "commands:\n"
         "  CONFIG       run a pipeline from a YAML config file\n"
         "  list         list public model/component/benchmark registries\n"
-        "  prepare-pathorob  acquire and decode the pinned PathoROB tile sources\n"
+        "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
         "\n"
@@ -1318,7 +1318,7 @@ def _print_top_level_help() -> None:
         "  soma /path/to/config.yaml\n"
         "  python -m soma /path/to/config.yaml\n"
         "  soma list benchmarks\n"
-        "  soma prepare-pathorob /data/pathorob\n"
+        "  soma prepare-croma /data/croma\n"
         "  soma reproduce ocelot --from-run-dir /runs/ocelot\n"
         "  soma reproduce eva/bach --encoder uni2 --raw-root /data/eva/bach\n"
         "  soma reproduce eva --raw-root /data/eva   # fan out over the eva/<dataset> family\n"
@@ -1377,8 +1377,8 @@ def main(argv: list[str] | None = None) -> None:
         parsed = parser.parse_args(args[1:])
         raise SystemExit(parsed.func(parsed))
 
-    if args[0] == "prepare-pathorob":
-        parser = _build_prepare_pathorob_parser()
+    if args[0] == "prepare-croma":
+        parser = _build_prepare_croma_parser()
         parsed = parser.parse_args(args[1:])
         parsed.func(parsed)
         return
