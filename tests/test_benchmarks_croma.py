@@ -240,6 +240,45 @@ def test_rank_agreement_keeps_dino_visible_but_excludes_control_pairs(monkeypatc
     ]
 
 
+def test_croma_pairs_resolve_under_the_hybrid_rule(monkeypatch):
+    # Real reference values (soma#321 audit): rudolfv2 vs rudolfv2-b on tolkach median sit
+    # 0.005058 apart at scale 0.41 — above the historical absolute rule, below 2 % of
+    # scale → the croma family's hybrid policy calls it a tie. uni2 vs conch (gap 0.1) is
+    # comfortably resolvable.
+    _mock_reproduction_rows(
+        monkeypatch,
+        "test/croma_median",
+        encoders=("rudolfv2", "rudolfv2-b", "conch"),
+        references=(0.412090, 0.407032, 0.3),
+        measured=(0.41, 0.40, 0.31),
+    )
+
+    report = reproduction_report("croma")
+
+    by_pair = {(p.encoder_high, p.encoder_low): p for p in report.pairs}
+    assert not by_pair[("rudolfv2", "rudolfv2-b")].resolvable
+    assert by_pair[("rudolfv2", "conch")].resolvable
+    # The tie is excluded from the headline concordance, not counted against soma.
+    assert report.n_resolvable == 2
+
+
+def test_croma_near_zero_pairs_are_floor_governed(monkeypatch):
+    # ±ε opposite-sign near zero: a pure relative rule would call these maximally
+    # separated; the hybrid floor keeps sub-floor gaps tied.
+    _mock_reproduction_rows(
+        monkeypatch,
+        "test/croma_ltm10",
+        encoders=("uni2", "conch"),
+        references=(0.002, -0.002),
+        measured=(0.001, -0.001),
+    )
+
+    report = reproduction_report("croma", metric="test/croma_ltm10")
+
+    assert len(report.pairs) == 1
+    assert not report.pairs[0].resolvable
+
+
 def test_reported_only_f0_produces_no_rank_agreement(monkeypatch):
     _mock_reproduction_rows(
         monkeypatch,

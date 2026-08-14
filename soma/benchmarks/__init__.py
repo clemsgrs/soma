@@ -46,6 +46,7 @@ from soma.benchmarks.reproduction import (  # noqa: E402
     Cell,
     PairOutcome,
     ReproductionReport,
+    ResolvabilityPolicy,
     reproduction_report,
 )
 
@@ -58,6 +59,7 @@ __all__ = [
     "PairOutcome",
     "ReferenceRow",
     "ReproductionReport",
+    "ResolvabilityPolicy",
     "append_result",
     "expected_rows",
     "get_benchmark",
