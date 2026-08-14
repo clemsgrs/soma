@@ -222,6 +222,7 @@ def test_cli_generator_matches_checked_in_file() -> None:
         ("build_ocelot_benchmark_rst", "ocelot-detection-benchmark.rst"),
         ("build_eva_benchmark_rst", "eva-patch-classification-benchmark.rst"),
         ("build_hest_benchmark_rst", "hest-gene-expression-benchmark.rst"),
+        ("build_croma_benchmark_rst", "croma-robustness-benchmark.rst"),
     ],
 )
 def test_benchmark_page_matches_registry(builder: str, filename: str) -> None:
