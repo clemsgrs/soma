@@ -1,13 +1,30 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 import torch
 
-from scripts.verify_dense_multigpu_parity import Comparison, _compare_gpu_runs
+
+def _load_parity_module():
+    # Import by file path: sibling checkouts (../hs2p) put a regular top-level
+    # `scripts` package on sys.path that shadows soma's namespace `scripts/`.
+    script = Path(__file__).resolve().parents[1] / "scripts" / "verify_dense_multigpu_parity.py"
+    spec = importlib.util.spec_from_file_location("soma_verify_dense_multigpu_parity", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+_parity = _load_parity_module()
+Comparison = _parity.Comparison
+_compare_gpu_runs = _parity._compare_gpu_runs
 
 
 @dataclass(frozen=True)
