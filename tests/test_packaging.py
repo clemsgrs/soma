@@ -34,7 +34,15 @@ def test_pyproject_has_publish_ready_metadata():
 def test_slide2vec_minimum_includes_public_encoder_capabilities_api():
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=5.8.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=5.8.1" in data["project"]["dependencies"]
+
+
+def test_hs2p_minimum_includes_fast_tiling_previews():
+    # hs2p 4.4.2 renders tiling previews in worker processes and draws the grid in
+    # place; 4.4.1 took ~19 s/slide on dense slides, stalling extraction for hours.
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "hs2p>=4.4.2" in data["project"]["dependencies"]
 
 
 def test_pypi_distribution_name_keeps_soma_import_package():
