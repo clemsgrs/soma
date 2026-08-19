@@ -2,7 +2,7 @@
 
 A thin soma driver over hs2p's ``resolve_annotation_masks`` + ``summarize_annotation_coverage``
 (the preprocessing layer owns the scan; see the hs2p > slide2vec > soma hierarchy). Given a
-slide manifest (``sample_id, image_path, mask_path``) and a ``pixel_mapping`` / ``min_coverage``
+slide manifest (``sample_id, image_path, label_mask_path``) and a ``pixel_mapping`` / ``min_coverage``
 (mirroring hs2p's ``masks`` config 1:1), it emits a **wide** CSV — one row per slide with
 ``area_mm2_<class>``, ``frac_<class>``, ``est_tiles_<class>`` columns.
 
@@ -21,7 +21,7 @@ import pandas as pd
 from hs2p.api import resolve_annotation_masks, summarize_annotation_coverage
 from hs2p.wsi.reader import open_slide
 
-REQUIRED_COLUMNS = {"sample_id", "image_path", "mask_path"}
+REQUIRED_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
 _METRICS = ("area_mm2", "frac", "est_tiles")
 
 
@@ -51,7 +51,7 @@ def summarize_coverage(
     """Return a wide coverage DataFrame, one row per manifest slide.
 
     ``manifest`` is a DataFrame or a path to a CSV with at least
-    ``sample_id, image_path, mask_path``.
+    ``sample_id, image_path, label_mask_path``.
     """
     if isinstance(manifest, (str, Path)):
         manifest = pd.read_csv(manifest)
@@ -70,7 +70,7 @@ def summarize_coverage(
         try:
             resolved = resolve_annotation_masks(
                 slide=slide,
-                mask_path=Path(str(record.mask_path)),
+                mask_path=Path(str(record.label_mask_path)),
                 pixel_mapping=pixel_mapping,
                 seg_downsample=seg_downsample,
             )
@@ -123,7 +123,7 @@ def main(argv: list[str] | None = None) -> None:
         prog="soma-segmentation-coverage",
         description="Per-slide per-class annotation coverage summary (informs split authoring).",
     )
-    parser.add_argument("--manifest", required=True, help="slide manifest CSV (sample_id,image_path,mask_path)")
+    parser.add_argument("--manifest", required=True, help="slide manifest CSV (sample_id,image_path,label_mask_path)")
     parser.add_argument("--masks-config", required=True, help="JSON/YAML with masks.pixel_mapping + masks.min_coverage")
     parser.add_argument("--out", required=True, help="output coverage CSV path")
     parser.add_argument("--tile-size-px", type=int, required=True)

@@ -1471,10 +1471,10 @@ def train_one_segmentation_fold(
     # cohort is uniform by construction; cached reads the sidecar and asserts uniformity.
     if is_live:
         for record in all_records:
-            if record.image_path is None or record.mask_path is None:
+            if record.image_path is None or record.label_mask_path is None:
                 raise ValueError(
                     f"live segmentation sample '{record.sample_id}' needs both image_path "
-                    "and mask_path (the live path re-encodes from the raw tiles)."
+                    "and label_mask_path (the live path re-encodes from the raw tiles)."
                 )
         geometry = feature_store.geometry
         ref_feature_dim = feature_store.feature_dim
@@ -2880,7 +2880,7 @@ class Pipeline:
     ) -> None:
         self._config = config
         # The load-time validator keyed on dataset_type selects the right manifest loader
-        # (segmentation -> mask_path, detection -> points_path, else -> label); each loader
+        # (segmentation -> label_mask_path, detection -> points_path, else -> label); each loader
         # fail-fast validates its supervision column and exposes the samples/sample_ids
         # surface Splits needs.
         self._dataset = load_manifest(config.dataset_csv, config.dataset_type)

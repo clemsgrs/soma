@@ -54,13 +54,13 @@ def _build_run(root: Path, sample_ids: list[str]) -> tuple[SegmentationManifest,
         img_path = images_dir / f"{sid}.png"
         Image.fromarray(img).save(img_path)
         mask = rng.integers(0, NUM_CLASSES, size=(TARGET, TARGET), dtype=np.uint8)
-        mask_path = masks_dir / f"{sid}.png"
-        Image.fromarray(mask, mode="L").save(mask_path)
-        rows.append((sid, str(img_path), str(mask_path)))
+        label_mask_path = masks_dir / f"{sid}.png"
+        Image.fromarray(mask, mode="L").save(label_mask_path)
+        rows.append((sid, str(img_path), str(label_mask_path)))
 
     manifest_csv = root / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,mask_path\n"
+        "sample_id,image_path,label_mask_path\n"
         + "\n".join(f"{sid},{img},{mask}" for sid, img, mask in rows)
         + "\n"
     )

@@ -19,7 +19,7 @@ cache directory, while the key, the completeness decision, the missing set and t
 signatures stay here.
 
 Splits stay slide-level and user-provided; the ROI manifest (one row per sampled tile, with
-its parent slide's ``image_path``/``mask_path`` + a ``region_x``/``region_y`` origin) and the
+its parent slide's ``image_path``/``label_mask_path`` + a ``region_x``/``region_y`` origin) and the
 ROI splits (each ROI inherits its parent slide's split/fold) are *derived* here — soma never
 creates splits. The ROI manifest is a coordinate manifest, not a tile dump: no pixels are
 written to disk, the grids are the only cached artifact.
@@ -118,13 +118,15 @@ def sample_slide_rois(
 
     coords_by_slide: dict[str, list[tuple[int, int]]] = {}
     for sid, record in dataset.samples.items():
-        if record.mask_path is None:
-            raise ValueError(f"slide '{sid}' has no mask_path; a slide-manifest row needs one.")
+        if record.label_mask_path is None:
+            raise ValueError(f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one.")
+        # The annotation raster drives ROI sampling (per-class coverage), so it is the
+        # sampling mask hs2p sees here.
         result = tile_slide(
             SlideSpec(
                 sample_id=sid,
                 image_path=record.image_path,
-                mask_path=record.mask_path,
+                mask_path=record.label_mask_path,
                 spacing_at_level_0=record.spacing_at_level_0,
             ),
             tiling=tiling,
@@ -150,7 +152,7 @@ def build_roi_manifest(
     """Write the derived ROI coordinate manifest + ROI splits CSVs; return their paths.
 
     One ROI row per sampled tile (``sample_id = <slide>__x<X>_y<Y>``) carrying its parent
-    ``slide_id`` alongside that slide's ``image_path``/``mask_path`` and a
+    ``slide_id`` alongside that slide's ``image_path``/``label_mask_path`` and a
     ``region_x``/``region_y`` origin. The ``slide_id`` column is what makes the ROI →
     (slide, x, y) mapping a *recorded* fact rather than something recovered by splitting
     the ROI id apart later — it is the ROI's address in slide2vec's per-slide dense
@@ -188,7 +190,8 @@ def build_roi_manifest(
                     "sample_id": roi_id,
                     "slide_id": slide_id,
                     "image_path": str(record.image_path),
-                    "mask_path": str(record.mask_path),
+                    "mask_path": "" if record.mask_path is None else str(record.mask_path),
+                    "label_mask_path": str(record.label_mask_path),
                     "spacing_at_level_0": record.spacing_at_level_0,
                     "region_x": int(x),
                     "region_y": int(y),
@@ -204,6 +207,7 @@ def build_roi_manifest(
             "slide_id",
             "image_path",
             "mask_path",
+            "label_mask_path",
             "spacing_at_level_0",
             "region_x",
             "region_y",

@@ -289,7 +289,7 @@ def test_extract_targets_rejects_out_of_range_label(tmp_path: Path):
     Image.fromarray(np.array([[0, 1], [2, 0]], dtype=np.uint8)).save(path)  # label 2 with C=2
     geom = compute_dense_geometry(target_size=2, patch_size=1)
     head = SegmentationHead(num_classes=2, geometry=geom, ignore_index=255)
-    record = SampleRecord(sample_id="s0", image_path=path, label=None, mask_path=path)
+    record = SampleRecord(sample_id="s0", image_path=path, label=None, label_mask_path=path)
     with pytest.raises(ValueError, match=r"label value\(s\) \[2\] outside"):
         head.extract_targets(record)
 
@@ -321,7 +321,7 @@ def test_extract_targets_applies_label_remap_for_roi(monkeypatch):
     head = SegmentationHead(num_classes=4, geometry=geom, ignore_index=255, label_remap=lut)
     record = SampleRecord(
         sample_id="roi0", image_path=Path("/fake.tif"), label=None,
-        mask_path=Path("/fake_mask.tif"), region=(0, 0),
+        label_mask_path=Path("/fake_mask.tif"), region=(0, 0),
     )
     head._spacing_um = 0.5  # ROI path requires a read spacing
     out = head.extract_targets(record)
@@ -352,7 +352,7 @@ def test_extract_targets_remaps_background_free_vocabulary_for_roi(monkeypatch):
     head = SegmentationHead(num_classes=2, geometry=geom, ignore_index=255, label_remap=lut)
     record = SampleRecord(
         sample_id="roi0", image_path=Path("/fake.tif"), label=None,
-        mask_path=Path("/fake_mask.tif"), region=(0, 0),
+        label_mask_path=Path("/fake_mask.tif"), region=(0, 0),
     )
     head._spacing_um = 0.5
     out = head.extract_targets(record)

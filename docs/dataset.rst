@@ -15,13 +15,16 @@ Dataset format
 
 ``dataset.csv``
   | Required columns: ``sample_id``, ``image_path``, ``label``.
-  | Optional columns: ``mask_path`` (pre-computed tissue mask), ``patient_id`` (required for ``dataset_type="patient"``).
+  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``).
   | Any additional columns are carried along as per-sample metadata.
 
 Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)
 replace the scalar ``label`` with a per-sample supervision file:
 
-- **Segmentation** uses ``mask_path`` — a per-sample label mask.
+- **Segmentation** uses ``label_mask_path`` — a per-sample label mask. It is distinct
+  from ``mask_path`` (the optional tissue mask): a segmentation row may carry both.
+  Segmentation manifests written before soma 1.11 used ``mask_path`` for the label
+  mask; the loader rejects those explicitly — regenerate them with their curator.
 - **Detection** uses ``points_path`` — a per-sample point file
   (:class:`soma.dataset.DetectionManifest`), a CSV of object centroids with
   ``x, y, class`` columns (headerless ``x,y,class`` — OCELOT's format — or a

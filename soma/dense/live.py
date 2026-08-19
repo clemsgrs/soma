@@ -72,7 +72,7 @@ class LiveSegmentationSource:
         """No-op coverage hook (name-compatible with ``DenseFeatureStore``).
 
         There is nothing cached to cover — the live path re-encodes from each record's
-        ``image_path``/``mask_path``, which the fold validates against the records
+        ``image_path``/``label_mask_path``, which the fold validates against the records
         directly (it needs the records, not just the ids).
         """
         return None

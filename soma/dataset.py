@@ -25,13 +25,16 @@ GENES_FILENAME = "genes.json"
 
 
 REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
+# ``mask_path`` is the optional precomputed *tissue* mask (a tile-sampling aid, valid for
+# every dataset_type); ``label_mask_path`` is segmentation's per-pixel supervision raster.
 # ``points_path`` (detection's per-sample point file) and ``spacing_at_level_0`` (the
 # optional caller declaration for the source image's level-0 spacing) are recognized
-# typed columns, like ``mask_path``. Other detection columns — ``source_wsi`` / ``tile_x``
+# typed columns too. Other detection columns — ``source_wsi`` / ``tile_x``
 # / ``tile_y`` (tile origin, retained for deferred WSI stitching) — carry no typed
 # ``SampleRecord`` field and surface via ``metadata`` rather than being dropped.
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "mask_path",
+    "label_mask_path",
     "patient_id",
     "group_id",
     "points_path",
@@ -122,6 +125,11 @@ def _optional_text_column(row: pd.Series, column: str) -> str | None:
     return str(value) if column in row.index and pd.notna(value) else None
 
 
+def _optional_path_column(row: pd.Series, column: str) -> Path | None:
+    text = _optional_text_column(row, column)
+    return Path(text) if text is not None else None
+
+
 def _is_valid_split_name(name: str) -> bool:
     """A split name is valid if it is 'train', 'tune', or starts with 'test'."""
     return name in ("train", "tune") or name.startswith("test")
@@ -134,7 +142,10 @@ class SampleRecord:
     sample_id: str
     image_path: Path
     label: str | int | None  # None for segmentation/detection (supervision is dense)
+    # Optional precomputed tissue mask (tile-sampling aid, never trained on). Any task.
     mask_path: Path | None = None
+    # Segmentation: the per-pixel supervision raster. Not a tissue mask.
+    label_mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
     patient_id: str | None = None
     # Literal non-independence group from the manifest. Optional for every task;
@@ -144,7 +155,7 @@ class SampleRecord:
     # Extraction resolves and persists the authoritative source spacing separately.
     spacing_at_level_0: float | None = None
     # Slide-manifest segmentation: an ROI's (x, y) top-left in level-0 pixel space.
-    # image_path/mask_path then point at the parent *slide* (+ annotation slide), and
+    # image_path/label_mask_path then point at the parent *slide* (+ annotation slide), and
     # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
     region: tuple[int, int] | None = None
     # Slide-manifest segmentation: the parent slide this ROI was sampled from. Recorded
@@ -164,7 +175,7 @@ class SampleRecord:
 class Dataset:
     """Loads a dataset from a CSV with columns: sample_id, image_path, label.
 
-    Optional columns: mask_path. Extra columns become metadata.
+    Optional columns: mask_path (precomputed tissue mask). Extra columns become metadata.
     """
 
     def __init__(self, dataset_csv: str | Path) -> None:
@@ -176,7 +187,7 @@ class Dataset:
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
-            raise ValueError("Use 'mask_path' instead of 'tissue_mask_path'.")
+            raise ValueError("Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'.")
         for col in REQUIRED_DATASET_COLUMNS:
             if col not in df.columns:
                 msg = f"Required column '{col}' not found. Available: {list(df.columns)}"
@@ -208,11 +219,6 @@ class Dataset:
         samples: dict[str, SampleRecord] = {}
         for _, row in df.iterrows():
             sid = str(row["sample_id"])
-            mask_path = (
-                Path(str(row["mask_path"]))
-                if "mask_path" in row.index and pd.notna(row.get("mask_path"))
-                else None
-            )
             patient_id = _optional_text_column(row, "patient_id")
             group_id = _optional_text_column(row, "group_id")
             metadata = {c: row[c] for c in meta_columns}
@@ -220,7 +226,7 @@ class Dataset:
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
                 label=row["label"],
-                mask_path=mask_path,
+                mask_path=_optional_path_column(row, "mask_path"),
                 patient_id=patient_id,
                 group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
@@ -281,19 +287,20 @@ class Dataset:
         return record_map
 
 
-REQUIRED_SEGMENTATION_COLUMNS = {"sample_id", "image_path", "mask_path"}
+REQUIRED_SEGMENTATION_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
 
 
 class SegmentationManifest:
-    """Loads a segmentation dataset CSV: sample_id, image_path, mask_path (required).
+    """Loads a segmentation dataset CSV: sample_id, image_path, label_mask_path (required).
 
     Unlike :class:`Dataset`, ``label`` is NOT required — the supervision signal is
-    the per-pixel ``mask_path`` raster, not a scalar label (a separate loader rather
-    than relaxing :class:`Dataset`, whose ``label`` requirement guards every other
-    task). ``label`` and ``patient_id`` are optional; extra columns become metadata.
-    ``mask_path`` must be present and non-null for every row. Exposes the same
-    ``samples``/``sample_ids`` surface as :class:`Dataset`, so :class:`Splits` works
-    against it unchanged.
+    the per-pixel ``label_mask_path`` raster, not a scalar label (a separate loader
+    rather than relaxing :class:`Dataset`, whose ``label`` requirement guards every
+    other task). ``label_mask_path`` must be present and non-null for every row.
+    ``mask_path`` keeps its usual meaning — an optional precomputed *tissue* mask —
+    so a segmentation row can carry both. ``label`` and ``patient_id`` are optional;
+    extra columns become metadata. Exposes the same ``samples``/``sample_ids`` surface
+    as :class:`Dataset`, so :class:`Splits` works against it unchanged.
     """
 
     def __init__(self, dataset_csv: str | Path) -> None:
@@ -305,7 +312,17 @@ class SegmentationManifest:
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
-            raise ValueError("Use 'mask_path' instead of 'tissue_mask_path'.")
+            raise ValueError("Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'.")
+        if "label_mask_path" not in df.columns and "mask_path" in df.columns:
+            # Pre-rename segmentation manifests carried the supervision raster as
+            # ``mask_path``. Never reinterpret it silently as a tissue mask: say what
+            # happened. Manifests are reproducible from their curator, so regenerate.
+            raise ValueError(
+                "Segmentation manifest has 'mask_path' but no 'label_mask_path': this looks "
+                "like a pre-rename segmentation manifest (soma < 1.11 used 'mask_path' for "
+                "the supervision raster; it now means an optional tissue mask). Regenerate "
+                "it with its curator, or rename the column to 'label_mask_path'."
+            )
         for col in REQUIRED_SEGMENTATION_COLUMNS:
             if col not in df.columns:
                 raise ValueError(
@@ -314,10 +331,10 @@ class SegmentationManifest:
         if df["sample_id"].duplicated().any():
             dupes = df["sample_id"][df["sample_id"].duplicated()].tolist()
             raise ValueError(f"Duplicate sample_id values: {dupes}")
-        if df["mask_path"].isna().any():
-            missing = df.loc[df["mask_path"].isna(), "sample_id"].tolist()
+        if df["label_mask_path"].isna().any():
+            missing = df.loc[df["label_mask_path"].isna(), "sample_id"].tolist()
             raise ValueError(
-                f"mask_path is required for every segmentation sample; missing for: {missing}"
+                f"label_mask_path is required for every segmentation sample; missing for: {missing}"
             )
         # sample_id / patient_id become cache filenames; reject path-traversal ids.
         unsafe_ids = sorted({str(s) for s in df["sample_id"] if not is_filename_safe_id(s)})
@@ -356,8 +373,9 @@ class SegmentationManifest:
             samples[sid] = SampleRecord(
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
-                label=label,  # optional for segmentation; supervision is the mask
-                mask_path=Path(str(row["mask_path"])),
+                label=label,  # optional for segmentation; supervision is label_mask_path
+                mask_path=_optional_path_column(row, "mask_path"),
+                label_mask_path=Path(str(row["label_mask_path"])),
                 patient_id=patient_id,
                 group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
@@ -388,8 +406,9 @@ class DetectionManifest:
 
     The detection counterpart of :class:`SegmentationManifest` (design §3): the
     supervision is a per-sample point file (``points_path``, level-0 ``x,y,class``),
-    not a scalar ``label`` (optional) or a mask. Optional columns include
-    ``spacing_at_level_0`` (the source image's optional µm/px declaration), ``source_wsi`` /
+    not a scalar ``label`` (optional) or a mask. Optional columns include ``mask_path``
+    (precomputed tissue mask), ``spacing_at_level_0`` (the source image's optional µm/px
+    declaration), ``source_wsi`` /
     ``tile_x`` / ``tile_y`` (retained now for deferred WSI stitching), ``label``,
     ``patient_id``. ``points_path`` must be present and non-null for every row. Exposes
     the same ``samples`` / ``sample_ids`` surface as :class:`Dataset`, so
@@ -448,6 +467,7 @@ class DetectionManifest:
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
                 label=label,  # optional for detection; supervision is the points
+                mask_path=_optional_path_column(row, "mask_path"),
                 points_path=Path(str(row["points_path"])),
                 patient_id=patient_id,
                 group_id=group_id,
@@ -583,6 +603,7 @@ class SpatialExpressionManifest:
                 sample_id=sid,
                 image_path=Path(str(row["image_path"])),
                 label=None,  # supervision is the vector target, not a scalar label
+                mask_path=_optional_path_column(row, "mask_path"),
                 patient_id=patient_id,
                 group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
@@ -621,7 +642,7 @@ def load_manifest(
 
     This is the single load-time validator keyed on ``dataset_type``: each loader
     fail-fast validates its required supervision column (``label`` for classification,
-    ``mask_path`` for segmentation, ``points_path`` for detection, ``target_index`` for
+    ``label_mask_path`` for segmentation, ``points_path`` for detection, ``target_index`` for
     spatial_expression) at construction time, so a malformed Manifest is rejected with a
     clear message before any expensive run.
     """

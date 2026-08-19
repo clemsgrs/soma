@@ -33,7 +33,7 @@ def _manifest(n=2) -> pd.DataFrame:
         {
             "sample_id": [f"slide{i}" for i in range(n)],
             "image_path": [f"/fake/slide{i}.tif" for i in range(n)],
-            "mask_path": [f"/fake/slide{i}_mask.tif" for i in range(n)],
+            "label_mask_path": [f"/fake/slide{i}_mask.tif" for i in range(n)],
         }
     )
 
@@ -74,7 +74,7 @@ def test_summarize_coverage_preserves_none_est_tiles(stub_hs2p):
 
 def test_summarize_coverage_requires_manifest_columns(stub_hs2p):
     bad = pd.DataFrame({"sample_id": ["s0"], "image_path": ["/fake/s0.tif"]})
-    with pytest.raises(ValueError, match="mask_path"):
+    with pytest.raises(ValueError, match="label_mask_path"):
         cov.summarize_coverage(
             bad,
             pixel_mapping=PIXEL_MAPPING,

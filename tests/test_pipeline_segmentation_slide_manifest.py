@@ -54,7 +54,7 @@ PIXEL_MAPPING = {"background": 0, "tumor": 1}
 def _write_slide_manifest(root: Path, slide_ids: list[str]) -> tuple[Path, Path]:
     manifest = root / "slides.csv"
     manifest.write_text(
-        "sample_id,image_path,mask_path\n"
+        "sample_id,image_path,label_mask_path\n"
         + "\n".join(f"{sid},/fake/{sid}.tif,/fake/{sid}_mask.tif" for sid in slide_ids)
         + "\n"
     )
@@ -241,7 +241,7 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
 
     roi_df = pd.read_csv(roi_manifests[0])
     assert len(roi_df) == 8  # 4 slides x 2 coords
-    assert set(roi_df.columns) >= {"sample_id", "image_path", "mask_path", "region_x", "region_y"}
+    assert set(roi_df.columns) >= {"sample_id", "image_path", "label_mask_path", "region_x", "region_y"}
     assert set(roi_df["region_x"]) == {0, TARGET}
 
 
@@ -279,7 +279,7 @@ def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
 
     slides = tmp_path / "slides.csv"
     slides.write_text(
-        "sample_id,image_path,mask_path,spacing_at_level_0\n"
+        "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
         "s0,/fake/s0.tif,/fake/s0_mask.tif,0.25\n"
     )
     splits = tmp_path / "splits.csv"
@@ -313,7 +313,7 @@ def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monke
 
     manifest = tmp_path / "rois.csv"
     manifest.write_text(
-        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
         "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
     )
     model = _patch_dense_model(monkeypatch)
@@ -339,7 +339,7 @@ def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypa
 
     manifest = tmp_path / "slides.csv"
     manifest.write_text(
-        "sample_id,image_path,mask_path,spacing_at_level_0\n"
+        "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
         "s0,/fake/s0.tif,/fake/s0_mask.tif,0.25\n"
     )
     captured: list[SlideSpec] = []
@@ -424,7 +424,7 @@ def test_extract_targets_reads_mask_region_when_record_has_region(tmp_path: Path
     head = SegmentationHead(num_classes=NUM_CLASSES, geometry=geometry, spacing_um=0.5)
     record = SampleRecord(
         sample_id="s0__x64_y0", image_path=Path("/fake/s0.tif"), label=None,
-        mask_path=Path("/fake/s0_mask.tif"), region=(64, 0),
+        label_mask_path=Path("/fake/s0_mask.tif"), region=(64, 0),
     )
     targets = head.extract_targets(record)
     assert tuple(targets["mask"].shape) == (TARGET, TARGET)
@@ -474,7 +474,7 @@ def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path,
     # A manifest of ROI rows (region origins) for one slide.
     roi_manifest = tmp_path / "roi_manifest.csv"
     roi_manifest.write_text(
-        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
         "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
         "s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
     )
@@ -517,7 +517,7 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
 
     roi_manifest = tmp_path / "roi_manifest.csv"
     roi_manifest.write_text(
-        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
         "s0__x1_y2__x0_y0,s0__x1_y2,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
     )
     dataset = SegmentationManifest(roi_manifest)
@@ -551,7 +551,7 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     # Two slides, two ROIs each.
     roi_manifest = tmp_path / "roi_manifest.csv"
     roi_manifest.write_text(
-        "sample_id,slide_id,image_path,mask_path,region_x,region_y\n"
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
         "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
         "s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
         "s1__x0_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,0,0\n"

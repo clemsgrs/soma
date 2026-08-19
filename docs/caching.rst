@@ -46,8 +46,9 @@ complete cache hit does not load the foundation encoder.
 - Feature reuse keys include sample identity
   ``(sample_id, image_path, mask_path)`` plus encoder/preprocessing/execution
   settings.
-- Sample identity uses ``sample_id``, ``image_path``, and ``mask_path``. Replace
-  files in place only after deleting the affected cache.
+- Sample identity uses ``sample_id``, ``image_path``, and ``mask_path`` (the tissue
+  mask; a segmentation row's ``label_mask_path`` does not shape features and is not
+  part of it). Replace files in place only after deleting the affected cache.
 - By default, feature cache validation checks metadata identity and payload
   existence. Dense grids also validate their per-sample sidecar metadata
   (feature dimension, grid shape, target/encoded geometry, and — for

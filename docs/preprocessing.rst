@@ -171,7 +171,8 @@ changes only *which* tiles enter each slide's bag.
 
 How it works:
 
-- Each dataset row's ``mask_path`` is the multi-class annotation raster; ``pixel_mapping``
+- Each dataset row's ``mask_path`` is the multi-class annotation raster (on a classification
+  dataset ``mask_path`` is the tile-*sampling* mask, whatever its classes); ``pixel_mapping``
   names the classes (it must include ``background``). Tiles are kept by **per-class**
   ``min_coverage`` over the annotation mask — binary tissue filtering is bypassed, so the
   tissue threshold (``preprocessing.min_coverage.tissue``) does not gate annotation bags.

@@ -3,7 +3,7 @@
 Each item is ``(grid (d, h, w), targets {"mask": (H, W)}, sample_id)``: the grid is
 loaded from a :class:`~soma.dense.DenseFeatureSource`, and ``targets`` come from the
 injected ``target_fn`` (the ``SegmentationHead.extract_targets``, a later slice,
-which loads ``mask_path``) — mirroring how :class:`SampleDataset` defers target
+which loads ``label_mask_path``) — mirroring how :class:`SampleDataset` defers target
 semantics to the head.
 
 The mask stays at the supervision ``target_size`` (e.g. 512); the head crops/resizes
@@ -31,7 +31,7 @@ class SegmentationDataset(Dataset):
     """Dataset pairing dense ``(d, h, w)`` grids with dense mask targets.
 
     Args:
-        records: SampleRecords (with ``mask_path``) for this split.
+        records: SampleRecords (with ``label_mask_path``) for this split.
         feature_store: DenseFeatureSource for loading cached dense grids.
         target_fn: Callable mapping a SampleRecord to its targets dict, which must
             contain a ``"mask"`` tensor of shape ``(H, W)`` (the head's
@@ -94,7 +94,7 @@ class LiveSegmentationDataset(Dataset):
     crops the decoded logits back to it).
 
     Args:
-        records: SampleRecords (with ``image_path`` and ``mask_path``) for this split.
+        records: SampleRecords (with ``image_path`` and ``label_mask_path``) for this split.
         geometry: The run's :class:`DenseGridGeometry` (target/encoded size + pad).
         preprocessor: The public kit's serializable CPU item preprocessor. It owns
             normalization, geometry validation, and padding after Soma augmentation.
@@ -136,8 +136,8 @@ class LiveSegmentationDataset(Dataset):
         from soma.dense.reader import read_image_at_spacing, read_mask_at_spacing
 
         record = self._records[idx]
-        if record.mask_path is None:
-            raise ValueError(f"segmentation sample '{record.sample_id}' has no mask_path")
+        if record.label_mask_path is None:
+            raise ValueError(f"segmentation sample '{record.sample_id}' has no label_mask_path")
         # Read both at the same spacing so they register against the dense grid.
         image_array = read_image_at_spacing(
             record.image_path,
@@ -146,7 +146,7 @@ class LiveSegmentationDataset(Dataset):
             tolerance=self._tolerance,
         )
         mask_array = read_mask_at_spacing(
-            record.mask_path,
+            record.label_mask_path,
             spacing_um=self._spacing_um,
             backend=self._backend,
             tolerance=self._tolerance,

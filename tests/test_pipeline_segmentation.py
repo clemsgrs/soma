@@ -47,13 +47,13 @@ def _build_dense_run(
     for sid in sample_ids:
         write_dense_grid(dense_dir, sid, torch.randn(FEATURE_DIM, *geom.grid_shape), meta)
         mask = rng.integers(0, NUM_CLASSES, size=(TARGET, TARGET), dtype=np.uint8)
-        mask_path = masks_dir / f"{sid}.png"
-        Image.fromarray(mask).save(mask_path)
-        rows.append((sid, f"{sid}.jpg", str(mask_path)))
+        label_mask_path = masks_dir / f"{sid}.png"
+        Image.fromarray(mask).save(label_mask_path)
+        rows.append((sid, f"{sid}.jpg", str(label_mask_path)))
 
     manifest_csv = root / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,mask_path\n"
+        "sample_id,image_path,label_mask_path\n"
         + "\n".join(f"{sid},{img},{mask}" for sid, img, mask in rows)
         + "\n"
     )

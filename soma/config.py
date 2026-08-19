@@ -873,7 +873,7 @@ class MasksConfig:
 
     Mirrors hs2p's ``masks`` config 1:1 and is forwarded untouched into hs2p annotation
     sampling (design — segmentation ingestion §5/§8). Its presence selects the slide-manifest
-    input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), mask_path (annotation
+    input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), label_mask_path (annotation
     WSI))`` and soma samples ROIs from each slide, instead of the pre-cropped tile manifest.
 
     * ``pixel_mapping`` — class name → mask pixel value; must be non-empty with unique pixel
