@@ -38,7 +38,7 @@ def _write_mask(path: Path, *, size: int = _TARGET) -> None:
 
 
 def _mask_target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
-    arr = np.array(Image.open(record.mask_path))
+    arr = np.array(Image.open(record.label_mask_path))
     return {"mask": torch.from_numpy(arr).long()}
 
 
@@ -48,10 +48,10 @@ def _build(tmp_path: Path, n: int = 3) -> tuple[SegmentationManifest, DenseFeatu
     for i in range(n):
         sid = f"s{i}"
         _write_grid(store_dir, sid)
-        mask_path = tmp_path / f"{sid}_mask.png"
-        _write_mask(mask_path)
+        label_mask_path = tmp_path / f"{sid}_mask.png"
+        _write_mask(label_mask_path)
         rows.append(
-            {"sample_id": sid, "image_path": f"/tiles/{sid}.png", "mask_path": str(mask_path)}
+            {"sample_id": sid, "image_path": f"/tiles/{sid}.png", "label_mask_path": str(label_mask_path)}
         )
     csv = tmp_path / "seg.csv"
     pd.DataFrame(rows).to_csv(csv, index=False)
@@ -68,13 +68,13 @@ def test_manifest_loads_without_label(tmp_path: Path):
     assert sorted(manifest.sample_ids) == ["s0", "s1"]
     rec = manifest.samples["s0"]
     assert rec.label is None  # segmentation has no scalar label
-    assert rec.mask_path == tmp_path / "s0_mask.png"
+    assert rec.label_mask_path == tmp_path / "s0_mask.png"
 
 
 def test_manifest_requires_mask_path_column(tmp_path: Path):
     csv = tmp_path / "seg.csv"
     pd.DataFrame([{"sample_id": "s0", "image_path": "/a.png"}]).to_csv(csv, index=False)
-    with pytest.raises(ValueError, match="Required column 'mask_path'"):
+    with pytest.raises(ValueError, match="Required column 'label_mask_path'"):
         SegmentationManifest(csv)
 
 
@@ -82,18 +82,18 @@ def test_manifest_rejects_null_mask_path(tmp_path: Path):
     csv = tmp_path / "seg.csv"
     pd.DataFrame(
         [
-            {"sample_id": "s0", "image_path": "/a.png", "mask_path": "/m0.png"},
-            {"sample_id": "s1", "image_path": "/b.png", "mask_path": None},
+            {"sample_id": "s0", "image_path": "/a.png", "label_mask_path": "/m0.png"},
+            {"sample_id": "s1", "image_path": "/b.png", "label_mask_path": None},
         ]
     ).to_csv(csv, index=False)
-    with pytest.raises(ValueError, match="mask_path is required"):
+    with pytest.raises(ValueError, match="label_mask_path is required"):
         SegmentationManifest(csv)
 
 
 def test_manifest_rejects_unsafe_sample_id(tmp_path: Path):
     csv = tmp_path / "seg.csv"
     pd.DataFrame(
-        [{"sample_id": "../escape", "image_path": "/a.png", "mask_path": "/m.png"}]
+        [{"sample_id": "../escape", "image_path": "/a.png", "label_mask_path": "/m.png"}]
     ).to_csv(csv, index=False)
     with pytest.raises(ValueError, match="Unsafe sample_id"):
         SegmentationManifest(csv)
@@ -102,7 +102,7 @@ def test_manifest_rejects_unsafe_sample_id(tmp_path: Path):
 def test_manifest_keeps_optional_label(tmp_path: Path):
     csv = tmp_path / "seg.csv"
     pd.DataFrame(
-        [{"sample_id": "s0", "image_path": "/a.png", "mask_path": "/m.png", "label": "tumor"}]
+        [{"sample_id": "s0", "image_path": "/a.png", "label_mask_path": "/m.png", "label": "tumor"}]
     ).to_csv(csv, index=False)
     assert SegmentationManifest(csv).samples["s0"].label == "tumor"
 

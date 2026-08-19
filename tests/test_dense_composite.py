@@ -208,7 +208,7 @@ def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
         rows.append((sid, f"{sid}.jpg", str(masks_dir / f"{sid}.png")))
     manifest_csv = tmp_path / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
+        "sample_id,image_path,label_mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
     )
     splits_csv = tmp_path / "splits.csv"
     assign = {ids[0]: "train", ids[1]: "train", ids[2]: "tune", ids[3]: "test"}
@@ -294,7 +294,7 @@ def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
         rows.append((sid, f"{sid}.jpg", str(masks_dir / f"{sid}.png")))
     manifest_csv = tmp_path / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
+        "sample_id,image_path,label_mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
     )
     splits_csv = tmp_path / "splits.csv"
     assign = {ids[0]: "train", ids[1]: "train", ids[2]: "tune", ids[3]: "test"}

@@ -4,9 +4,9 @@ Like the EVA and OCELOT curators, this emits Soma's unified Manifest
 (``dataset.csv`` + ``splits.csv`` + ``summary.json``) from locally prepared raw data and
 **does not download anything** (see ``data/beetle/download.sh``).
 
-BEETLE is a *segmentation* dataset, so the supervision column is ``mask_path``: one row per
+BEETLE is a *segmentation* dataset, so the supervision column is ``label_mask_path``: one row per
 development WSI pairs the slide (``image_path``) with its multiresolution annotation raster
-(``mask_path``). No tiles are materialized here — soma runs hs2p annotation sampling over
+(``label_mask_path``). No tiles are materialized here — soma runs hs2p annotation sampling over
 these slides at train time (``masks:`` / ``sampling:`` in ``examples/segmentation_beetle.yaml``)
 to derive ROIs, so the cached slide-manifest path is the sole BEETLE recipe.
 
@@ -84,7 +84,7 @@ def select_subset(rows: list[dict], n: int | None) -> list[dict]:
 
 
 def build_dataset_rows(rows: list[dict], beetle_root: Path) -> list[dict]:
-    """One unified-schema dataset row per slide (supervision column = ``mask_path``)."""
+    """One unified-schema dataset row per slide (supervision column = ``label_mask_path``)."""
     dataset_rows: list[dict] = []
     for r in rows:
         wsi = (beetle_root / r["wsi_path"]).resolve()
@@ -93,7 +93,7 @@ def build_dataset_rows(rows: list[dict], beetle_root: Path) -> list[dict]:
             {
                 "sample_id": r["name"],
                 "image_path": str(wsi),
-                "mask_path": str(mask),
+                "label_mask_path": str(mask),
                 "patient_id": r["patient_id"],
                 "source": r["source"],
                 "specimen_type": r["specimen_type"],

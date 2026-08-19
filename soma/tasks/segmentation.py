@@ -147,10 +147,10 @@ class SegmentationHead(TaskHead):
         return upsampled[:, :, top : top + height, left : left + width]
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
-        if record.mask_path is None:
-            raise ValueError(f"segmentation sample '{record.sample_id}' has no mask_path")
+        if record.label_mask_path is None:
+            raise ValueError(f"segmentation sample '{record.sample_id}' has no label_mask_path")
         if record.region is not None:
-            # Slide-manifest ROI: mask_path is the whole-slide annotation raster; read the
+            # Slide-manifest ROI: label_mask_path is the whole-slide annotation raster; read the
             # ROI's window at the run's spacing/target_size so it registers to the grid.
             if self._spacing_um is None:
                 raise ValueError(
@@ -159,7 +159,7 @@ class SegmentationHead(TaskHead):
                 )
             _, _, target_h, target_w = self._crop_box
             array = read_mask_region_at_spacing(
-                record.mask_path,
+                record.label_mask_path,
                 location=record.region,
                 size=(target_w, target_h),
                 spacing_um=self._spacing_um,
@@ -170,7 +170,7 @@ class SegmentationHead(TaskHead):
             # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
             # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
             array = read_mask_at_spacing(
-                record.mask_path,
+                record.label_mask_path,
                 spacing_um=self._spacing_um,
                 backend=self._backend,
                 tolerance=self._tolerance,

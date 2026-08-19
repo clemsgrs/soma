@@ -62,7 +62,7 @@ def build() -> nbformat.NotebookNode:
             "## ⚠️ Scaffolding (not soma API)\n"
             "\n"
             "As in the dense walkthrough, dense supervision lives in per-sample files, not a\n"
-            "scalar `label`: `dataset.csv` carries `sample_id, image_path, mask_path`, where\n"
+            "scalar `label`: `dataset.csv` carries `sample_id, image_path, label_mask_path`, where\n"
             "the mask is an integer-class raster the same size as the ROI.\n"
             "\n"
             "We fabricate small **224 px ROI tiles** (the dense flow consumes fixed-size\n"
@@ -123,7 +123,7 @@ def build() -> nbformat.NotebookNode:
             "\n"
             "seg_csv = WORK / 'seg.csv'\n"
             "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
-            "              'mask_path': [str(MASKS / f'{s}.png') for s in ids]}).to_csv(seg_csv, index=False)\n"
+            "              'label_mask_path': [str(MASKS / f'{s}.png') for s in ids]}).to_csv(seg_csv, index=False)\n"
             "print('segmentation manifest:')\n"
             "print(pd.read_csv(seg_csv).head(3).to_string(index=False))"
         ),

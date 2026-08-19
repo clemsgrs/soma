@@ -74,7 +74,7 @@ def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
 def _make_segmentation_config(tmp_path: Path, **overrides) -> PipelineConfig:
     dataset_csv = _write_csv(
         tmp_path / "segmentation_dataset.csv",
-        "sample_id,image_path,mask_path\ns0,/slides/s0.png,/masks/s0.png\n",
+        "sample_id,image_path,label_mask_path\ns0,/slides/s0.png,/masks/s0.png\n",
     )
     splits_csv = _write_csv(
         tmp_path / "segmentation_splits.csv",

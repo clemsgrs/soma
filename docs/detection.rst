@@ -70,7 +70,7 @@ supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
      - Tile / ROI image.
    * - ``points_path``
      - yes
-     - Per-sample point file (replaces seg's ``mask_path``).
+     - Per-sample point file (replaces seg's ``label_mask_path``).
    * - ``spacing_at_level_0``
      - no
      - Finite positive µm/px declaration for the source image's level-0 pixels. Required

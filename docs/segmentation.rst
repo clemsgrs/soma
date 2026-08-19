@@ -25,7 +25,8 @@ Every dense path shares the same front half and output machinery; this is the co
 new dense task plugs into.
 
 * **Manifest** — ``dataset_type: segmentation`` uses :class:`soma.dataset.SegmentationManifest`.
-  The supervision is a per-sample **mask raster** (``mask_path``), not a scalar ``label``.
+  The supervision is a per-sample **mask raster** (``label_mask_path``), not a scalar
+  ``label``. ``mask_path`` keeps its usual meaning (optional tissue mask).
 * **Spacing-aware mask reader** — masks are read at the run's spacing and registered
   against the token grids extracted at the same spacing (:mod:`soma.dense.reader`). The
   annotation vocabulary (``pixel_mapping``, per-class ``min_coverage``, the

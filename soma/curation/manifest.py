@@ -10,9 +10,10 @@ Protocol names that shared shape without ever being subclassed.
 
 Unified schema:
 
-* ``dataset.csv`` — ``sample_id``, ``image_path``, then **exactly one** supervision
-  column selected by ``dataset_type`` (:data:`SUPERVISION_COLUMN`): ``label`` for
-  classification, ``mask_path`` for segmentation, ``points_path`` for detection,
+* ``dataset.csv`` — ``sample_id``, ``image_path``, an optional ``mask_path`` (precomputed
+  tissue mask, valid for every dataset_type), then **exactly one** supervision column
+  selected by ``dataset_type`` (:data:`SUPERVISION_COLUMN`): ``label`` for
+  classification, ``label_mask_path`` for segmentation, ``points_path`` for detection,
   ``target_index`` for spatial_expression. Optional recognized columns ``patient_id`` and
   ``spacing_at_level_0`` follow; any further columns are preserved verbatim as per-sample
   metadata.
@@ -47,13 +48,14 @@ from soma.dataset import (
 
 # dataset_type -> the single supervision column its Manifest carries. The task families
 # are mutually exclusive: classification is a scalar ``label``, segmentation a per-pixel
-# ``mask_path`` raster, detection a per-sample ``points_path`` file, and
+# ``label_mask_path`` raster, detection a per-sample ``points_path`` file, and
 # spatial_expression a ``target_index`` row-key into a sidecar target matrix (a vector).
+# ``mask_path`` is NOT supervision: it is the optional precomputed tissue mask.
 SUPERVISION_COLUMN: dict[str, str] = {
     "tile": "label",
     "slide": "label",
     "patient": "label",
-    "segmentation": "mask_path",
+    "segmentation": "label_mask_path",
     "detection": "points_path",
     "spatial_expression": "target_index",
 }
@@ -62,7 +64,9 @@ SUPERVISION_COLUMN: dict[str, str] = {
 _ALL_SUPERVISION_COLUMNS = frozenset(SUPERVISION_COLUMN.values())
 
 # Fixed leading columns and the recognized optional columns, in canonical order.
+# ``mask_path`` (tissue mask) sits right after ``image_path``, before the supervision column.
 _LEADING_COLUMNS = ("sample_id", "image_path")
+_OPTIONAL_LEADING_COLUMNS = ("mask_path",)
 _OPTIONAL_COLUMNS = ("patient_id", "spacing_at_level_0")
 _SPLITS_COLUMNS = ("sample_id", "split", "fold")
 
@@ -109,7 +113,7 @@ def supervision_column_for(dataset_type: str) -> str:
 
 
 def _ordered_dataset_columns(columns: Sequence[str], supervision: str) -> list[str]:
-    leading = [*_LEADING_COLUMNS, supervision]
+    leading = [*_LEADING_COLUMNS, *(c for c in _OPTIONAL_LEADING_COLUMNS if c in columns), supervision]
     optional = [c for c in _OPTIONAL_COLUMNS if c in columns]
     seen = set(leading) | set(optional)
     extras = [c for c in columns if c not in seen]
@@ -137,7 +141,8 @@ def write_manifest(
             :data:`SUPERVISION_COLUMN`.
         dataset_rows: One mapping per sample. Each must contain ``sample_id``,
             ``image_path`` and the supervision column for ``dataset_type``; may also
-            carry ``patient_id`` / ``spacing_at_level_0`` and arbitrary metadata columns. Rows
+            carry ``mask_path`` (precomputed tissue mask), ``patient_id`` /
+            ``spacing_at_level_0`` and arbitrary metadata columns. Rows
             are written in the given order; columns are reordered to the canonical layout.
         split_rows: One mapping per (sample, fold) with ``sample_id`` + ``split`` and an
             optional ``fold`` (defaults to ``0`` when omitted, per the single-fold rule).

@@ -1177,17 +1177,17 @@ def _synthetic_dense_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     for sample_id, scale in scales.items():
         grid = torch.randn(feature_dim, *geom.grid_shape) * scale
         write_dense_grid(dense_dir, sample_id, grid, meta)
-        mask_path = masks_dir / f"{sample_id}.png"
+        label_mask_path = masks_dir / f"{sample_id}.png"
         Image.fromarray(
             rng.integers(
                 0, _DENSE_CLASSES, size=(_DENSE_TARGET, _DENSE_TARGET), dtype=np.uint8
             )
-        ).save(mask_path)
-        rows.append((sample_id, f"{sample_id}.jpg", str(mask_path)))
+        ).save(label_mask_path)
+        rows.append((sample_id, f"{sample_id}.jpg", str(label_mask_path)))
 
     manifest_csv = tmp_path / "manifest.csv"
     manifest_csv.write_text(
-        "sample_id,image_path,mask_path\n"
+        "sample_id,image_path,label_mask_path\n"
         + "\n".join(f"{s},{i},{m}" for s, i, m in rows)
         + "\n",
         encoding="utf-8",

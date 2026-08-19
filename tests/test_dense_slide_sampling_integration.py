@@ -54,18 +54,18 @@ def _make_fixture(root: Path) -> tuple[Path, Path]:
     mask = np.zeros((size, size), np.uint8)
     mask[0:128, 0:128] = 1  # tumor label
     slide_path = root / "slide.tif"
-    mask_path = root / "mask.tif"
+    label_mask_path = root / "mask.tif"
     _write_pyramidal_tiff(slide_path, image, photometric="rgb")
-    _write_pyramidal_tiff(mask_path, mask, photometric="minisblack")
-    return slide_path, mask_path
+    _write_pyramidal_tiff(label_mask_path, mask, photometric="minisblack")
+    return slide_path, label_mask_path
 
 
-def _segmentation_manifest(root: Path, slide_path: Path, mask_path: Path):
+def _segmentation_manifest(root: Path, slide_path: Path, label_mask_path: Path):
     from soma.dataset import SegmentationManifest
 
     manifest = root / "slides.csv"
     manifest.write_text(
-        "sample_id,image_path,mask_path\n" f"s0,{slide_path},{mask_path}\n",
+        "sample_id,image_path,label_mask_path\n" f"s0,{slide_path},{label_mask_path}\n",
         encoding="utf-8",
     )
     return SegmentationManifest(manifest)
@@ -75,8 +75,8 @@ def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
     """Real hs2p 4.1.1 merged-mode sampling: no AttributeError, non-empty ROI coords."""
     from soma.dense_slide_extraction import sample_slide_rois
 
-    slide_path, mask_path = _make_fixture(tmp_path)
-    dataset = _segmentation_manifest(tmp_path, slide_path, mask_path)
+    slide_path, label_mask_path = _make_fixture(tmp_path)
+    dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
     masks = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0})
     sampling = SamplingConfig(strategy="joint", output_mode="merged")
     preprocessing = PreprocessingConfig(
@@ -105,8 +105,8 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
     from soma.dense.reader import read_mask_region_at_spacing
     from soma.dense_slide_extraction import sample_slide_rois
 
-    slide_path, mask_path = _make_fixture(tmp_path)
-    dataset = _segmentation_manifest(tmp_path, slide_path, mask_path)
+    slide_path, label_mask_path = _make_fixture(tmp_path)
+    dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
     masks = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0})
     sampling = SamplingConfig(strategy="joint", output_mode="merged")
     preprocessing = PreprocessingConfig(
@@ -124,7 +124,7 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
     # Read the label window registered to the first sampled ROI.
     x, y = coords[0]
     region = read_mask_region_at_spacing(
-        mask_path,
+        label_mask_path,
         location=(x, y),
         size=(TARGET, TARGET),
         spacing_um=SPACING_UM,
@@ -138,7 +138,7 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
     union_labels = set()
     for x, y in coords:
         win = read_mask_region_at_spacing(
-            mask_path,
+            label_mask_path,
             location=(x, y),
             size=(TARGET, TARGET),
             spacing_um=SPACING_UM,

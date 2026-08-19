@@ -616,3 +616,24 @@ def test_dense_missing_sample_ids_treats_missing_pt_as_missing(tmp_path: Path):
     victim = dataset.sample_ids[1]
     resolve_dense_cache(**kw).feature_path_for_id(victim).unlink()
     assert resolve_dense_cache(**kw).missing_sample_ids() == [victim]
+
+
+def test_dense_cache_identity_ignores_label_mask_path(tmp_path: Path):
+    # Per-sample cache identity is (sample_id, image_path, mask_path, spacing): the tissue
+    # mask shapes tiling, the segmentation supervision raster does not. Re-pointing
+    # label_mask_path must not re-key the dense cache; re-pointing mask_path must.
+    from soma.cache import _sample_identity_payload
+    from soma.dataset import SegmentationManifest
+
+    def manifest(name: str, *, mask: str, label_mask: str) -> SegmentationManifest:
+        csv_path = tmp_path / f"{name}.csv"
+        pd.DataFrame(
+            [{"sample_id": "s1", "image_path": "/tiles/s1.png", "mask_path": mask, "label_mask_path": label_mask}]
+        ).to_csv(csv_path, index=False)
+        return SegmentationManifest(csv_path)
+
+    base = _sample_identity_payload(manifest("a", mask="/t/s1.png", label_mask="/m/s1.png"))
+    other_label = _sample_identity_payload(manifest("b", mask="/t/s1.png", label_mask="/m2/s1.png"))
+    other_tissue = _sample_identity_payload(manifest("c", mask="/t2/s1.png", label_mask="/m/s1.png"))
+    assert base == other_label
+    assert base != other_tissue

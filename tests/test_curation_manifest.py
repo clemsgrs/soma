@@ -132,7 +132,7 @@ def test_write_manifest_supervision_column_by_dataset_type(tmp_path: Path):
     seg = write_manifest(
         tmp_path / "seg",
         dataset_type="segmentation",
-        dataset_rows=[{"sample_id": "s0", "image_path": "/a.tif", "mask_path": "/m.tif"}],
+        dataset_rows=[{"sample_id": "s0", "image_path": "/a.tif", "label_mask_path": "/m.tif"}],
         split_rows=[{"sample_id": "s0", "split": "test"}],
         summary={},
     )
@@ -143,7 +143,7 @@ def test_write_manifest_supervision_column_by_dataset_type(tmp_path: Path):
         split_rows=[{"sample_id": "s0", "split": "test"}],
         summary={},
     )
-    assert list(pd.read_csv(seg.dataset_csv).columns)[:3] == ["sample_id", "image_path", "mask_path"]
+    assert list(pd.read_csv(seg.dataset_csv).columns)[:3] == ["sample_id", "image_path", "label_mask_path"]
     assert list(pd.read_csv(det.dataset_csv).columns)[:3] == ["sample_id", "image_path", "points_path"]
 
 
@@ -152,7 +152,7 @@ def test_write_manifest_rejects_missing_supervision_column(tmp_path: Path):
         write_manifest(
             tmp_path / "out",
             dataset_type="segmentation",
-            dataset_rows=[{"sample_id": "s0", "image_path": "/a.tif"}],  # no mask_path
+            dataset_rows=[{"sample_id": "s0", "image_path": "/a.tif"}],  # no label_mask_path
             split_rows=[{"sample_id": "s0", "split": "test"}],
             summary={},
         )
@@ -164,11 +164,51 @@ def test_write_manifest_rejects_two_supervision_columns(tmp_path: Path):
             tmp_path / "out",
             dataset_type="tile",
             dataset_rows=[
-                {"sample_id": "s0", "image_path": "/a.png", "label": 1, "mask_path": "/m.tif"}
+                {"sample_id": "s0", "image_path": "/a.png", "label": 1, "label_mask_path": "/m.tif"}
             ],
             split_rows=[{"sample_id": "s0", "split": "test"}],
             summary={},
         )
+
+
+def test_write_manifest_accepts_tissue_mask_path_for_every_dataset_type(tmp_path: Path):
+    # mask_path is the optional tissue mask, not supervision: it sits right after
+    # image_path and is valid beside label / label_mask_path / points_path alike.
+    for dtype, supervision, value in [
+        ("slide", "label", 1),
+        ("segmentation", "label_mask_path", "/m.tif"),
+        ("detection", "points_path", "/p.csv"),
+    ]:
+        out = write_manifest(
+            tmp_path / dtype,
+            dataset_type=dtype,
+            dataset_rows=[
+                {"sample_id": "s0", "image_path": "/a.tif", supervision: value, "mask_path": "/t.tif"}
+            ],
+            split_rows=[{"sample_id": "s0", "split": "test"}],
+            summary={},
+        )
+        df = pd.read_csv(out.dataset_csv)
+        assert list(df.columns)[:4] == ["sample_id", "image_path", "mask_path", supervision]
+        record = next(iter(load_manifest(out.dataset_csv, dtype).samples.values()))
+        assert record.mask_path == Path("/t.tif")
+
+
+def test_segmentation_loader_rejects_pre_rename_manifest(tmp_path: Path):
+    # A stale manifest carrying the supervision raster as mask_path must fail loud
+    # naming the rename, never be reinterpreted as a tissue-mask row missing supervision.
+    stale = tmp_path / "stale.csv"
+    stale.write_text("sample_id,image_path,mask_path\ns0,/a.tif,/m.tif\n")
+    with pytest.raises(ValueError, match="pre-rename segmentation manifest"):
+        SegmentationManifest(stale)
+
+
+def test_segmentation_row_carries_both_tissue_and_label_masks(tmp_path: Path):
+    seg = tmp_path / "seg.csv"
+    seg.write_text("sample_id,image_path,mask_path,label_mask_path\ns0,/a.tif,/t.tif,/m.tif\n")
+    record = SegmentationManifest(seg).samples["s0"]
+    assert record.mask_path == Path("/t.tif")
+    assert record.label_mask_path == Path("/m.tif")
 
 
 def test_write_manifest_rejects_unknown_dataset_type(tmp_path: Path):
@@ -214,7 +254,7 @@ def test_load_manifest_selects_loader_by_dataset_type(tmp_path: Path):
     assert isinstance(load_manifest(ds, "slide"), Dataset)
 
     seg = tmp_path / "seg.csv"
-    seg.write_text("sample_id,image_path,mask_path\ns0,/a.tif,/m.tif\n")
+    seg.write_text("sample_id,image_path,label_mask_path\ns0,/a.tif,/m.tif\n")
     assert isinstance(load_manifest(seg, "segmentation"), SegmentationManifest)
 
     det = tmp_path / "det.csv"
@@ -223,10 +263,10 @@ def test_load_manifest_selects_loader_by_dataset_type(tmp_path: Path):
 
 
 def test_load_manifest_rejects_malformed_supervision_column(tmp_path: Path):
-    # A segmentation manifest missing mask_path is rejected fail-fast with a clear message.
+    # A segmentation manifest missing label_mask_path is rejected fail-fast with a clear message.
     bad = tmp_path / "bad.csv"
     bad.write_text("sample_id,image_path,label\ns0,/a.tif,1\n")
-    with pytest.raises(ValueError, match="mask_path"):
+    with pytest.raises(ValueError, match="label_mask_path"):
         load_manifest(bad, "segmentation")
 
 
@@ -234,7 +274,7 @@ def test_load_manifest_rejects_malformed_supervision_column(tmp_path: Path):
     ("dataset_type", "supervision_column", "supervision_value"),
     [
         ("tile", "label", 1),
-        ("segmentation", "mask_path", "/m.png"),
+        ("segmentation", "label_mask_path", "/m.png"),
         ("detection", "points_path", "/p.csv"),
         ("spatial_expression", "target_index", 0),
     ],
@@ -272,7 +312,7 @@ def test_manifest_round_trips_typed_source_spacing(
     ("dataset_type", "supervision_column", "supervision_value"),
     [
         ("tile", "label", "1"),
-        ("segmentation", "mask_path", "/m.png"),
+        ("segmentation", "label_mask_path", "/m.png"),
         ("detection", "points_path", "/p.csv"),
         ("spatial_expression", "target_index", "0"),
     ],
@@ -300,7 +340,7 @@ def test_load_manifest_rejects_invalid_source_spacing(
     ("dataset_type", "supervision_column", "supervision_value"),
     [
         ("tile", "label", "1"),
-        ("segmentation", "mask_path", "/m.png"),
+        ("segmentation", "label_mask_path", "/m.png"),
         ("detection", "points_path", "/p.csv"),
         ("spatial_expression", "target_index", "0"),
     ],
@@ -364,7 +404,7 @@ def test_all_curators_emit_identical_core_schema(tmp_path: Path):
     for manifest, supervision in [
         (eva, "label"),
         (ocelot, "points_path"),
-        (beetle, "mask_path"),
+        (beetle, "label_mask_path"),
     ]:
         ds = pd.read_csv(manifest.dataset_csv)
         assert list(ds.columns)[:3] == ["sample_id", "image_path", supervision]
@@ -381,7 +421,7 @@ def test_beetle_curator_emits_dataset_csv_not_manifest_csv(tmp_path: Path):
     assert manifest.dataset_csv == out / "dataset.csv"
     assert (out / "dataset.csv").exists()
     assert not (out / "manifest.csv").exists()  # the old shape is retired
-    # Loads through the segmentation loader (mask_path supervision).
+    # Loads through the segmentation loader (label_mask_path supervision).
     seg = SegmentationManifest(manifest.dataset_csv)
     assert set(seg.sample_ids) == {"slide_0", "slide_1", "slide_2"}
 
@@ -434,7 +474,7 @@ def test_spatial_expression_supervision_column():
     assert SUPERVISION_COLUMN["tile"] == "label"
     assert SUPERVISION_COLUMN["slide"] == "label"
     assert SUPERVISION_COLUMN["patient"] == "label"
-    assert SUPERVISION_COLUMN["segmentation"] == "mask_path"
+    assert SUPERVISION_COLUMN["segmentation"] == "label_mask_path"
     assert SUPERVISION_COLUMN["detection"] == "points_path"
 
 
