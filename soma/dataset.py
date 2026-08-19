@@ -144,8 +144,6 @@ class SampleRecord:
     label: str | int | None  # None for segmentation/detection (supervision is dense)
     # Optional precomputed tissue mask (tile-sampling aid, never trained on). Any task.
     mask_path: Path | None = None
-    # Segmentation: the per-pixel supervision raster. Not a tissue mask.
-    label_mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
     patient_id: str | None = None
     # Literal non-independence group from the manifest. Optional for every task;
@@ -170,6 +168,9 @@ class SampleRecord:
     # not sample identity, and array-valued fields have no scalar truth value.
     target: "np.ndarray | None" = field(default=None, compare=False)
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Segmentation: the per-pixel supervision raster. Not a tissue mask. Appended last
+    # so positional SampleRecord(...) calls written before it existed keep their meaning.
+    label_mask_path: Path | None = None
 
 
 class Dataset:
