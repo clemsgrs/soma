@@ -149,6 +149,26 @@ class FeatureCacheResolution(BaseCacheResolution):
 
 
 @dataclass(frozen=True)
+class RoiSamplingCacheResolution(BaseCacheResolution):
+    """Resolved ``roi_sampling`` cache entry: per-slide hit/miss plus the loaded coords.
+
+    ``coords_by_id`` holds the hits only — each value is the slide's list of level-0
+    integer ``(x, y)`` ROI origins, possibly empty (a cached zero-ROI answer). A slide
+    absent from it is a miss: its coords artifact was missing or failed to load.
+    ``complete`` (and ``reused``) mean every slide hit.
+    """
+
+    coords_dir: Path
+    cache_ids: tuple[str, ...]
+    cache_stem_by_id: dict[str, str]
+    coords_by_id: dict[str, list[tuple[int, int]]]
+
+    @property
+    def miss_sample_ids(self) -> list[str]:
+        return [cache_id for cache_id in self.cache_ids if cache_id not in self.coords_by_id]
+
+
+@dataclass(frozen=True)
 class TilingCacheResolution(BaseCacheResolution):
     process_list_path: Path
     artifacts_dir: Path

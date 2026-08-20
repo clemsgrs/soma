@@ -15,6 +15,7 @@ from soma.cache._types import (
     BaseCacheResolution,
     CacheValidationResult,
     FeatureCacheResolution,
+    RoiSamplingCacheResolution,
     TilingCacheResolution,
 )
 from soma.cache.keys import (
@@ -23,10 +24,12 @@ from soma.cache.keys import (
     _sample_cache_stem,
     _sample_identity_payload,
     _sample_stems_for_kind,
+    _sample_stems_for_roi_sampling,
     _sample_stems_for_tiling,
     build_dense_cache_key,
     build_hierarchical_cache_key,
     build_patient_cache_key,
+    build_roi_sampling_cache_key,
     build_slide_cache_key,
     resolve_output_dtype,
     build_tile_cache_key,
@@ -37,6 +40,7 @@ from soma.cache.keys import (
     preprocessing_backend_provenance,
     preprocessing_signature,
     probe_resolved_backends,
+    roi_sampling_identity_signature,
     sample_identity_signature,
 )
 from soma.cache.io import (
@@ -55,6 +59,13 @@ from soma.cache.io import (
     resolve_tiling_cache_root,
     write_cache_payload,
     write_feature_payload,
+)
+from soma.cache.roi_sampling import (
+    COORDS_DIR_NAME,
+    _build_roi_sampling_cache_metadata,
+    _load_coords_artifact,
+    resolve_roi_sampling_cache,
+    write_roi_sampling_coords,
 )
 from soma.cache.tiling import (
     _build_tiling_cache_metadata,
