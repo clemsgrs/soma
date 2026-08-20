@@ -30,6 +30,7 @@ from __future__ import annotations
 import csv
 import logging
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -101,8 +102,14 @@ def sample_slide_rois(
     masks: MasksConfig,
     sampling: SamplingConfig,
     preprocessing: PreprocessingConfig,
+    sample_ids: Collection[str] | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
-    """Run hs2p annotation sampling per slide; return level-0 ROI coords by slide id."""
+    """Run hs2p annotation sampling per slide; return level-0 ROI coords by slide id.
+
+    ``sample_ids`` restricts sampling to that subset of the manifest's slides (manifest
+    order preserved) — the roi_sampling cache's partial-miss path samples only the
+    missing slides without touching the hits. ``None`` (the default) samples every slide.
+    """
     from hs2p import SlideSpec, tile_slide
     from hs2p.configs.resolvers import _resolve_sampling_spec_from_masks
     from hs2p.wsi.types import CoordinateOutputMode
@@ -112,12 +119,20 @@ def sample_slide_rois(
             f"slide-manifest dense extraction supports output_mode='merged' only, got "
             f"{sampling.output_mode!r} (per_annotation extraction is deferred — soma #86)."
         )
+    wanted: set[str] | None = None
+    if sample_ids is not None:
+        wanted = {str(sample_id) for sample_id in sample_ids}
+        unknown = sorted(wanted - set(dataset.samples))
+        if unknown:
+            raise ValueError(f"sample_ids not in the slide manifest: {unknown}")
     tiling = _build_tiling_config(preprocessing, sampling)
     spec = _resolve_sampling_spec_from_masks(masks, tiling=tiling)
     strategy = _STRATEGY_MAP[sampling.strategy]
 
     coords_by_slide: dict[str, list[tuple[int, int]]] = {}
     for sid, record in dataset.samples.items():
+        if wanted is not None and sid not in wanted:
+            continue
         if record.label_mask_path is None:
             raise ValueError(f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one.")
         # The annotation raster drives ROI sampling (per-class coverage), so it is the
