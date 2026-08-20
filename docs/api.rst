@@ -255,3 +255,25 @@ same protocol the CLI drives, so results are directly comparable:
 compare against, and ``benchmark.score(run_dir)`` alone re-scores an existing run
 without retraining (the ``--from-run-dir`` fast path). See :doc:`benchmarking`
 for the CLI equivalents and :doc:`outputs` for the artifacts each run writes.
+
+The one-call equivalent is ``soma.benchmarks.run_benchmark``, the importable
+orchestration behind ``soma reproduce`` itself: the canonical-seed loop, the
+reference-row tolerance status, provenance stamping (git commit, slide2vec/croma
+versions), and the results-ledger append, byte-identical to the CLI. Its keywords
+mirror the CLI flags, plus ``results_root`` so an external repository can append
+``MeasuredRow`` rows to its own committed ledger instead of the in-package one:
+
+.. code-block:: python
+
+   from soma.benchmarks import run_benchmark
+
+   run_benchmark(
+       "eva/bach",
+       encoder="uni2",
+       raw_root="/path/to/eva/bach",
+       output_root="runs/eva-bach",
+       record=True,
+       # host the results ledger outside the soma checkout:
+       # appends to <results_root>/eva.csv with full provenance
+       results_root="/path/to/leaderboard-repo/results",
+   )
