@@ -50,6 +50,14 @@ from soma.benchmarks.reproduction import (  # noqa: E402
     reproduction_report,
 )
 
+# Importable reproduce orchestration (issue #370): the same seed-loop / reference /
+# provenance / record guarantees `soma reproduce` provides, callable as an API — with a
+# parameterizable results root so an external repo can host its own committed ledger.
+from soma.benchmarks.run import (  # noqa: E402
+    ReportedScoreError,
+    run_benchmark,
+)
+
 __all__ = [
     "RESOLVABLE_EPS",
     "Benchmark",
@@ -58,6 +66,7 @@ __all__ = [
     "MeasuredRow",
     "PairOutcome",
     "ReferenceRow",
+    "ReportedScoreError",
     "ReproductionReport",
     "ResolvabilityPolicy",
     "append_result",
@@ -71,5 +80,6 @@ __all__ = [
     "register_benchmark",
     "reproduced_rows",
     "reproduction_report",
+    "run_benchmark",
     "score_from_summary",
 ]

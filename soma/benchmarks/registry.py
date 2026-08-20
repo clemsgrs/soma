@@ -333,15 +333,30 @@ def _results_file(name: str) -> Path:
     return Path(str(resources.files("soma.benchmarks.results").joinpath(f"{name}.csv")))
 
 
-def load_results(name: str) -> list[MeasuredRow]:
+def _resolve_results_file(name: str, results_root: str | Path | None) -> Path:
+    """The ledger file for ``name``: ``<results_root>/<name>.csv``, or the in-package table.
+
+    ``results_root`` is the seam that lets an external repository host its own committed
+    ledger (issue #370): the soma checkout stops being the only place a reproduced number
+    can land, while the schema and append-only discipline stay identical.
+    """
+    if results_root is None:
+        return _results_file(name)
+    return Path(results_root) / f"{name}.csv"
+
+
+def load_results(
+    name: str, *, results_root: str | Path | None = None
+) -> list[MeasuredRow]:
     """Load ``results/<name>.csv`` into :class:`MeasuredRow` objects (``[]`` if absent).
 
     Unlike :func:`load_reference`, a missing file is **not** an error: a benchmark may carry
     a reference band with no reproduced measurement recorded yet. Every column left of
     ``metric`` is a key column (same convention as the reference table); blank ``std`` /
-    ``n_seeds`` cells become ``None``.
+    ``n_seeds`` cells become ``None``. ``results_root`` reads a ledger hosted outside the
+    soma checkout (``<results_root>/<name>.csv``) instead of the in-package table.
     """
-    path = _results_file(name)
+    path = _resolve_results_file(name, results_root)
     if not path.is_file():
         return []
     with path.open(newline="") as handle:
@@ -376,14 +391,21 @@ def load_results(name: str) -> list[MeasuredRow]:
     return rows
 
 
-def reproduced_rows(name: str, *, metric: str | None = None, **axes: Any) -> list[MeasuredRow]:
+def reproduced_rows(
+    name: str,
+    *,
+    metric: str | None = None,
+    results_root: str | Path | None = None,
+    **axes: Any,
+) -> list[MeasuredRow]:
     """Measured rows for ``name`` matching ``axes`` (and ``metric`` if given), in file order.
 
     The results table is an append-only ledger, so several rows may share a key (the same
     cell reproduced at different commits). Rows keep file order — callers wanting the latest
-    reproduction of a cell take the last match.
+    reproduction of a cell take the last match. ``results_root`` selects a ledger hosted
+    outside the soma checkout (see :func:`load_results`).
     """
-    rows = [r for r in load_results(name) if r.matches(axes)]
+    rows = [r for r in load_results(name, results_root=results_root) if r.matches(axes)]
     if metric is not None:
         rows = [r for r in rows if r.metric == metric]
     return rows
@@ -394,15 +416,23 @@ def _format_measure(value: float | None) -> str:
     return "" if value is None else f"{value:.12g}"
 
 
-def append_result(name: str, row: MeasuredRow, *, key_order: list[str] | None = None) -> Path:
+def append_result(
+    name: str,
+    row: MeasuredRow,
+    *,
+    key_order: list[str] | None = None,
+    results_root: str | Path | None = None,
+) -> Path:
     """Append ``row`` to ``results/<name>.csv`` (created with a header if absent). Returns path.
 
     Append-only: existing rows are never rewritten, so a cell reproduced at a new commit
     adds a row rather than overwriting history. On a fresh file the header is the row's key
     columns (``key_order`` if given, else the row's key insertion order) followed by the
     canonical value columns; an existing file reuses its own header verbatim.
+    ``results_root`` appends to a ledger hosted outside the soma checkout
+    (``<results_root>/<name>.csv``) instead of the in-package table.
     """
-    path = _results_file(name)
+    path = _resolve_results_file(name, results_root)
     columns = list(key_order) if key_order is not None else list(row.key)
     header = columns + list(_RESULT_VALUE_COLUMNS)
     exists = path.is_file()
