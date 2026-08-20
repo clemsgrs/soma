@@ -8,9 +8,8 @@ from the `croma library <https://clemsgrs.github.io/croma/>`_
 Robustness Index with a distance-aware, tail-sensitive robustness margin.
 
 The three tile cohorts come from the `PathoROB study
-<https://arxiv.org/abs/2507.17845>`_: ``croma/camelyon``, ``croma/tcga-4x4``,
-and ``croma/tolkach-esca``. The protocol is fixed and task-free; the encoder
-is the only varied axis.
+<https://arxiv.org/abs/2507.17845>`_: ``croma/camelyon``, ``croma/tcga-4x4``, and ``croma/tolkach-esca``.
+The protocol is fixed and task-free; the encoder is the only varied axis.
 
 Run it
 ------
@@ -86,17 +85,13 @@ output, except:
      - ``cls_patch_mean``
 
 soma validates this mapping against the slide2vec registry at configuration
-time.
+time; it checks names, output variants, and feature dimensions, and makes no
+claim of numerical identity with the published embeddings.
 
 Results
 -------
 
-The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the
-``dinov2-vitb14`` control across all three cohorts. Values are rounded to
-three decimals. An encoder would be flagged in red if its soma value deviated
-from the published value by more than 0.005; none does — across all 36
-recorded values the largest deviation is below 0.001, and soma reproduces
-every published pair ordering.
+The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Values are rounded to three decimals. A soma value would be shown in red if it deviated from the published value by more than 0.005; none does — across all 36 recorded values the largest deviation is 0.0007, and soma reproduces every published pair ordering.
 
 **CRoMa median** (``test/croma_median``) — ranking metric:
 
