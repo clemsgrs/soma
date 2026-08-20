@@ -31,117 +31,117 @@ Tile-level encoders
    :header-rows: 1
 
    * - Preset
+     - Model
      - Output dim
      - Spacing
-     - Notes
    * - ``lunit``
+     - `Lunit ViT-S/8 <https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino>`_
      - 384
      - ``0.5``
-     - Kang et al. (2023)
    * - ``prost40m``
+     - `Prost40M <https://huggingface.co/waticlems/Prost40M>`_
      - 384
      - ``0.5``
-     - Grisi et al. (2026)
    * - ``rudolfv2-s``
+     - `RudolfV 2-S <https://huggingface.co/Aignostics/RudolfV-2-S>`_
      - 384 / 768
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Milbich et al. (2026)
    * - ``conch``
+     - `CONCH <https://huggingface.co/MahmoodLab/conch>`_
      - 512
      - ``0.5``
-     - Lu et al. (2024)
    * - ``phikon``
+     - `Phikon <https://huggingface.co/owkin/phikon>`_
      - 768
      - ``0.5``
-     - Filiot et al. (2023)
    * - ``conchv15``
+     - `CONCHv1.5 <https://huggingface.co/MahmoodLab/TITAN>`_
      - 768
      - ``0.5``
-     - Lu et al. (2024)
    * - ``hibou-b``
+     - `Hibou-B <https://huggingface.co/histai/hibou-b>`_
      - 768
      - ``0.5``
-     - Nechaev et al. (2024)
    * - ``h0-mini``
+     - `H0-mini <https://huggingface.co/bioptimus/H0-mini>`_
      - 768 / 1536
      - ``0.5``
-     - Filiot et al. (2024)
    * - ``rudolfv2-b``
+     - `RudolfV 2-B <https://huggingface.co/Aignostics/RudolfV-2-B>`_
      - 768 / 1536
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Milbich et al. (2026)
    * - ``phikonv2``
+     - `Phikon-v2 <https://huggingface.co/owkin/phikon-v2>`_
      - 1024
      - ``0.5``
-     - Filiot et al. (2024)
    * - ``hibou-l``
+     - `Hibou-L <https://huggingface.co/histai/hibou-L>`_
      - 1024
      - ``0.5``
-     - Nechaev et al. (2024)
    * - ``uni``
+     - `UNI <https://huggingface.co/MahmoodLab/UNI>`_
      - 1024
      - ``0.5``
-     - Chen et al. (2024)
    * - ``musk``
+     - `MUSK <https://huggingface.co/xiangjx/musk>`_
      - 1024 / 2048
      - ``0.25``, ``0.5``, ``1.0``
-     - Xiang et al. (2024)
    * - ``gpfm``
+     - `GPFM <https://huggingface.co/majiabo/GPFM>`_
      - 1024
      - ``0.5``
-     - Ma et al. (2024)
    * - ``mstar``
+     - `mSTAR <https://huggingface.co/Wangyh/mSTAR>`_
      - 1024
      - ``0.5``
-     - Wang et al. (2024)
    * - ``isight``
+     - `iSight <https://huggingface.co/nirschl-lab/iSight>`_
      - 1024
      - ``0.5``
-     - Huang et al. (2026)
    * - ``phaet``
+     - `Phaet <https://huggingface.co/wearewaiv/phaet>`_
      - 1024
      - ``0.5``
-     - Waiv (2026)
    * - ``virchow``
+     - `Virchow <https://huggingface.co/paige-ai/Virchow>`_
      - 1280 / 2560
      - ``0.5``
-     - Vorontsov et al. (2024)
    * - ``virchow2``
+     - `Virchow2 <https://huggingface.co/paige-ai/Virchow2>`_
      - 1280 / 2560
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Zimmermann et al. (2024)
    * - ``uni2``
+     - `UNI2 <https://huggingface.co/MahmoodLab/UNI2-h>`_
      - 1536
      - ``0.5``
-     - Chen et al. (2024)
    * - ``gigapath``
+     - `GigaPath <https://huggingface.co/prov-gigapath/prov-gigapath>`_
      - 1536
      - ``0.5``
-     - Xu et al. (2024)
    * - ``h-optimus-0``
+     - `H-Optimus-0 <https://huggingface.co/bioptimus/H-optimus-0>`_
      - 1536
      - ``0.5``
-     - Saillard et al. (2024)
    * - ``h-optimus-1``
+     - `H-Optimus-1 <https://huggingface.co/bioptimus/H-optimus-1>`_
      - 1536
      - ``0.5``
-     - Saillard et al. (2024)
    * - ``rudolfv2``
+     - `RudolfV 2 <https://huggingface.co/Aignostics/RudolfV-2>`_
      - 1536 / 3072
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Milbich et al. (2026)
    * - ``mascaret``
+     - `Mascaret <https://huggingface.co/wearewaiv/mascaret>`_
      - 1536
      - ``0.5``
-     - Waiv (2026)
    * - ``midnight``
+     - `Midnight <https://huggingface.co/kaiko-ai/midnight>`_
      - 3072
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
-     - Karasikov et al. (2025)
    * - ``genbio-pathfm``
+     - `GenBio-PathFM <https://huggingface.co/genbio-ai/genbio-pathfm>`_
      - 4608
      - ``0.5``
-     - GenBio AI (2024)
 
 Natural-image control
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -153,13 +153,13 @@ how much pathology pretraining actually contributes.
    :header-rows: 1
 
    * - Preset
+     - Model
      - Output dim
      - Spacing
-     - Notes
    * - ``dinov2-vitb14``
+     - `DINOv2 ViT-B/14 <https://huggingface.co/timm/vit_base_patch14_dinov2.lvd142m>`_
      - 768
      - ``0.5``
-     - Oquab et al. (2024)
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~
@@ -168,29 +168,29 @@ Slide-level encoders
    :header-rows: 1
 
    * - Preset
+     - Model
      - Tile encoder
      - Output dim
-     - Notes
    * - ``gigapath-slide``
+     - `GigaPath <https://huggingface.co/prov-gigapath/prov-gigapath>`_
      - ``gigapath``
      - 768
-     - Xu et al. (2024)
    * - ``titan``
+     - `TITAN <https://huggingface.co/MahmoodLab/TITAN>`_
      - ``conchv15``
      - 768
-     - Ding et al. (2024)
    * - ``prism``
+     - `PRISM <https://huggingface.co/paige-ai/Prism>`_
      - ``virchow`` (``cls_patch_mean``)
      - 1280
-     - Shaikovski et al. (2024)
    * - ``prism2``
+     - `PRISM2 <https://huggingface.co/paige-ai/Prism2>`_
      - ``virchow2`` (``cls``)
      - 2560 (``base``) / 3072 (``diagnostic``)
-     - Vorontsov et al. (2026)
    * - ``moozy-slide``
+     - `MOOZY <https://huggingface.co/AtlasAnalyticsLab/MOOZY>`_
      - ``lunit``
      - 768
-     - Kotp et al. (2026)
 
 Patient-level encoders
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -199,13 +199,13 @@ Patient-level encoders
    :header-rows: 1
 
    * - Preset
+     - Model
      - Tile encoder
      - Output dim
-     - Notes
    * - ``moozy``
+     - `MOOZY <https://huggingface.co/AtlasAnalyticsLab/MOOZY>`_
      - ``lunit``
      - 768
-     - Kotp et al. (2026)
 
 Compatibility is enforced by the code and by ``PipelineConfig`` validation.
 Use this page to choose a valid starting point, then let the runtime validate
