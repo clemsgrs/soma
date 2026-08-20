@@ -498,7 +498,10 @@ def test_reference_scaffold_shape(dataset, metric):
     assert all(r["metric"] == metric for r in rows)
     for row in external:
         assert row["url"].strip().startswith("http")
-        assert "TODO" in row["source"]  # clearly-marked placeholder, no invented numbers
+        # Filled non-gating guidance: a real published number with a snapshot date.
+        assert float(row["expected"]) > 0 and "TODO" not in row["source"]
+        assert "Snapshotted" in row["source"]
+    # The gate row stays a clearly-marked placeholder until the local sweep measures it.
     assert "TODO" in gate[0]["source"]
 
 
