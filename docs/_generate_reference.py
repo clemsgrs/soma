@@ -794,35 +794,42 @@ _CROMA_METRICS = (
 _CROMA_CONTROL = "dinov2-vitb14"
 
 
-def _croma_cells_table(report) -> str:
-    """Measured-vs-published ``list-table`` for one croma metric (6-dp, signed delta)."""
+def _croma_cells_table(report, tolerance: float) -> str:
+    """Measured-vs-published ``list-table`` for one croma metric (3-dp, no delta).
+
+    A soma value that deviates from its published reference by more than
+    ``tolerance`` renders through the ``:red:`` role; the role definition is
+    emitted by :func:`_croma_results_section` only when at least one cell
+    needs it.
+    """
     lines = [
         ".. list-table::",
         "   :header-rows: 1",
-        "   :widths: 22 28 18 18 14",
+        "   :widths: 25 35 20 20",
         "",
         "   * - Cohort",
         "     - Encoder",
         "     - soma",
         "     - published",
-        "     - Δ",
     ]
     for cell in report.cells:
         control = " (control)" if cell.encoder == _CROMA_CONTROL else ""
+        measured = f"{cell.measured:.3f}"
+        if abs(cell.delta) > tolerance:
+            measured = f":red:`{measured}`"
         lines.extend(
             [
                 f"   * - {cell.dataset}",
                 f"     - ``{cell.encoder}``{control}",
-                f"     - {cell.measured:+.6f}",
-                f"     - {cell.reference:+.6f}",
-                f"     - {cell.delta:+.6f}",
+                f"     - {measured}",
+                f"     - {cell.reference:.3f}",
             ]
         )
     return "\n".join(lines)
 
 
-def _croma_results_section() -> str:
-    """The measured campaign: 36 cells, rank agreement, and flip census from the ledger."""
+def _croma_results_section(tolerance: float) -> str:
+    """The measured campaign, rendered from the ledger at three decimals."""
     reports = {
         metric: reproduction_report("croma", metric=metric)
         for metric, _, _ in _CROMA_METRICS
@@ -835,77 +842,67 @@ def _croma_results_section() -> str:
             "to record soma scores next to the published CRoMa references."
         )
 
-    parts: list[str] = []
-    all_deltas: list[float] = []
-    for metric, label, ranks in _CROMA_METRICS:
-        report = reports[metric]
-        if not report.cells:
-            continue
-        all_deltas.extend(abs(cell.delta) for cell in report.cells)
-        role = "Ranking metric" if ranks else "Reported diagnostic (never ranked)"
-        parts.append(f"**{label}** (``{metric}``) — {role}:\n\n" + _croma_cells_table(report))
+    cells = [cell for report in reports.values() for cell in report.cells]
+    encoders = sorted({cell.encoder for cell in cells})
+    panel = ", ".join(f"``{e}``" for e in encoders if e != _CROMA_CONTROL)
+    if _CROMA_CONTROL in encoders:
+        panel += f", and the ``{_CROMA_CONTROL}`` control"
+    n_cohorts = len({cell.dataset for cell in cells})
+    cohorts = "all three cohorts" if n_cohorts == 3 else f"{n_cohorts} cohorts"
 
-    # Rank agreement over the two Ranking metrics (pathology encoders only — the control
-    # and F(0) are excluded upstream by ranking eligibility and metric roles).
-    rank_lines: list[str] = []
+    flagged = [cell for cell in cells if abs(cell.delta) > tolerance]
     flip_lines: list[str] = []
     for metric, label, ranks in _CROMA_METRICS:
         if not ranks:
             continue
-        report = reports[metric]
-        if not report.pairs:
-            continue
-        spearman = ", ".join(
-            f"{dataset} ρ = {value:+.2f}" if value is not None else f"{dataset} ρ = n/a"
-            for dataset, value in report.spearman_by_dataset.items()
-        )
-        rank_lines.append(
-            f"* **{label}**: {report.n_resolvable_concordant}/{report.n_resolvable} "
-            f"resolvable pairs concordant "
-            f"({len(report.pairs)} pairs total); {spearman}."
-        )
-        for pair in report.pairs:
+        for pair in reports[metric].pairs:
             if not pair.concordant:
-                status = "resolvable" if pair.resolvable else "unresolved (within noise)"
                 flip_lines.append(
                     f"* {label}, {pair.dataset}: published ranks ``{pair.encoder_high}`` "
-                    f"above ``{pair.encoder_low}`` (gap {pair.reference_gap:+.4f}); soma "
-                    f"reverses it (gap {pair.measured_gap:+.4f}) — {status}."
+                    f"above ``{pair.encoder_low}``; soma reverses it."
                 )
-    if rank_lines:
-        parts.append(
-            "Rank agreement (pathology encoders, under the pair-resolvability rule "
-            "above):\n\n" + "\n".join(rank_lines)
+
+    intro = (
+        f"The recorded panel covers {panel} across {cohorts}. "
+        "Values are rounded to three decimals."
+    )
+    if flagged:
+        intro += (
+            f" A soma value is shown in red when it deviates from the published "
+            f"value by more than {tolerance:g}."
         )
-        parts.append(
-            "Ranking flips:\n\n" + "\n".join(flip_lines)
-            if flip_lines
-            else "No ranking flips: soma reproduces every published pair ordering."
+    else:
+        intro += (
+            f" A soma value would be shown in red if it deviated from the "
+            f"published value by more than {tolerance:g}; none does — across all "
+            f"{len(cells)} recorded values the largest deviation is "
+            f"{max(abs(cell.delta) for cell in cells):.4f}"
         )
-    if all_deltas:
-        parts.append(
-            f"Across all {len(all_deltas)} recorded cells the largest absolute "
-            f"deviation from the published value is **{max(all_deltas):.6f}**."
+        intro += (
+            ", and soma reproduces every published pair ordering."
+            if not flip_lines
+            else "."
         )
 
-    # Provenance, straight from the ledger rows.
-    rows = load_results("croma")
-    if rows:
-        commits = sorted({row.soma_commit for row in rows if row.soma_commit})
-        s2v = sorted({row.slide2vec_version for row in rows if row.slide2vec_version})
-        croma_versions = sorted({row.croma_version for row in rows if row.croma_version})
-        dates = sorted({row.date for row in rows if row.date})
+    parts: list[str] = []
+    if flagged:
         parts.append(
-            "Every ledger row is provenance-pinned — soma commit "
-            + ", ".join(f"``{c}``" for c in commits)
-            + "; slide2vec "
-            + ", ".join(s2v)
-            + "; croma "
-            + ", ".join(croma_versions)
-            + "; recorded "
-            + ", ".join(dates)
-            + "."
+            ".. raw:: html\n\n"
+            "   <style>.red { color: #d32f2f; font-weight: 600; }</style>\n\n"
+            ".. role:: red"
         )
+    parts.append(intro)
+    for metric, label, ranks in _CROMA_METRICS:
+        report = reports[metric]
+        if not report.cells:
+            continue
+        role = "ranking metric" if ranks else "diagnostic, never ranked"
+        parts.append(
+            f"**{label}** (``{metric}``) — {role}:\n\n"
+            + _croma_cells_table(report, tolerance)
+        )
+    if flip_lines:
+        parts.append("Ranking flips:\n\n" + "\n".join(flip_lines))
     return "\n\n".join(parts)
 
 
@@ -943,10 +940,9 @@ def build_croma_benchmark_rst() -> str:
         "CRoMa\n=====",
         "The ``croma`` family measures how robust a frozen tile encoder is to\n"
         "non-biological variation across medical centers. It runs the CRoMa protocol\n"
-        "from the `croma library <https://clemsgrs.github.io/croma/>`_, which\n"
-        "consolidates PathoROB's Robustness Index and introduces CRoMa, a\n"
-        "distance-aware, tail-sensitive robustness margin that supersedes it\n"
-        "(`paper <https://arxiv.org/abs/2607.25497>`_).",
+        "from the `croma library <https://clemsgrs.github.io/croma/>`_\n"
+        "(`paper <https://arxiv.org/abs/2607.25497>`_), which supersedes PathoROB's\n"
+        "Robustness Index with a distance-aware, tail-sensitive robustness margin.",
         "The three tile cohorts come from the `PathoROB study\n"
         "<https://arxiv.org/abs/2507.17845>`_: " + cohort_list + ".\n"
         "The protocol is fixed and task-free; the encoder is the only varied axis.",
@@ -972,31 +968,6 @@ def build_croma_benchmark_rst() -> str:
         "  diagnostic, lower is better.\n\n"
         "There is no composite score. DINOv2-B (``dinov2-vitb14``) is the natural-image\n"
         "control: it is measured and shown, but never ranked.",
-        "Pair resolvability\n------------------\n\n"
-        "Rank agreement is judged over *resolvable* encoder pairs only — pairs the\n"
-        "published reference itself separates meaningfully. CRoMa's ranking metrics live\n"
-        "on a signed scale that crosses zero, where soma's historical scale-blind\n"
-        "absolute rule and a pure relative rule both misbehave, so this family uses a\n"
-        "hybrid rule (the inverse of ``math.isclose``)::\n\n"
-        f"   resolvable  ⇔  |a − b| > max({policy.abs_floor:g}, "
-        f"{policy.rel:g} · max(|a|, |b|))\n\n"
-        "evaluated on the unrounded reference values exported from the Croma results,\n"
-        "with a strict boundary (a gap exactly at the threshold is a tie). The rule is\n"
-        "symmetric and independent of metric direction. At and near zero it behaves\n"
-        "explicitly: ``(0, 0)`` is a tie; ``0`` versus ``ε`` resolves only when\n"
-        f"``ε > {policy.abs_floor:g}``; ``−ε`` versus ``+ε`` resolves only when\n"
-        f"``2ε > {policy.abs_floor:g}`` —\n"
-        "opposite signs buy nothing beyond the honest gap magnitude, and an arbitrarily\n"
-        "small gap can never become resolvable merely because both values sit near\n"
-        "zero. At ordinary scale the relative term governs, so two encoders 0.005 apart\n"
-        "at a magnitude of 0.4 are a tie rather than a call.\n\n"
-        f"The floor {policy.abs_floor:g} is roughly 0.5–0.75 % of both ranking metrics' "
-        "observed\n"
-        "ranges, and the thresholds were fixed from the published reference\n"
-        "distribution before any soma measurement was recorded (soma#321). One rule\n"
-        "serves both ranking metrics; ``test/croma_f0`` is a reported diagnostic and is\n"
-        "never ranked. Other benchmark families keep the absolute rule they were\n"
-        "published under.",
         "Encoder panel\n-------------\n\n"
         f"The published panel covers {len(croma_bench.CROMA_0_3_ENCODER_PANEL)} encoders: "
         f"{len(croma_bench.CROMA_0_3_ENCODER_PANEL) - 1} pathology foundation models and "
@@ -1008,23 +979,7 @@ def build_croma_benchmark_rst() -> str:
         "soma validates this mapping against the slide2vec registry at configuration\n"
         "time; it checks names, output variants, and feature dimensions, and makes no\n"
         "claim of numerical identity with the published embeddings.",
-        "Results\n-------\n\n" + _croma_results_section(),
-        "Campaign notes\n--------------\n\n"
-        "The recorded panel is the pinned reproduction campaign (soma#319): four\n"
-        "encoders — ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14``\n"
-        "control — across all three cohorts, produced with::\n\n"
-        "   soma prepare-croma /var/tmp/croma-data\n"
-        "   soma reproduce croma --raw-root /var/tmp/croma-data \\\n"
-        "     --output-root /var/tmp/croma-runs --cache-root /var/tmp/croma-cache \\\n"
-        "     --encoders conchv15 dinov2-vitb14 h0-mini uni --record\n\n"
-        "Runs executed on shared-cluster GPU nodes (an RTX 3080 Ti node, completed on\n"
-        "an RTX 2080 Ti node after a pre-emption; extraction is deterministic, and the\n"
-        "interrupted cohort was re-extracted and re-scored from scratch on the second\n"
-        "node). Single canonical seed — extraction and CRoMa scoring are\n"
-        "seed-independent. Limitations: the remaining panel encoders are unmeasured\n"
-        "here (the published table covers them); rank agreement is over the three\n"
-        "pathology encoders only, so Spearman is coarse; F(0) is reported but never\n"
-        "ranked; nothing gates — every value renders next to its published reference.",
+        "Results\n-------\n\n" + _croma_results_section(policy.abs_floor),
         "See :doc:`benchmarking` for the shared benchmark workflow.",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
