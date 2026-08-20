@@ -29,6 +29,7 @@ from soma.curation.segmentation_coverage import (
     summarize_coverage,
     write_coverage_csv,
 )
+from soma.curation.tile_detection import tile_detection_manifest
 
 __all__ = [
     "SUPERVISION_COLUMN",
@@ -44,6 +45,7 @@ __all__ = [
     "curate_croma_view",
     "curate_croma_views",
     "summarize_coverage",
+    "tile_detection_manifest",
     "write_coverage_csv",
     "write_manifest",
 ]

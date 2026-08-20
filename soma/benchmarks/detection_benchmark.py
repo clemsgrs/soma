@@ -9,7 +9,10 @@ It generalizes ``examples/ocelot/campaign.py``'s resumable driver from one datas
 three-dataset sweep, but replaces the tune-select -> test-confirm flow with a **full-ranking
 protocol**: for every ``(encoder, dataset, replicate)`` the decoder trains on ``train``,
 every per-encoder knob (detection threshold, matching radius, val-best checkpoint) is frozen
-on ``tune``, then the cell is scored on ``test`` with those frozen knobs. There is **no
+on ``tune``, then the cell is scored on ``test`` with those frozen knobs. For tiled datasets,
+the final detection threshold is selected on stitched ROIs; checkpoint selection remains a
+per-tile tune proxy which can choose a different epoch because overlap copies reweight some
+objects, and this approximation is disclosed in each cell's metrics. There is **no
 winner pick** — all encoders are ranked by their mean test metric, and the tune ranks are
 reported alongside as a stability signal.
 
@@ -38,6 +41,7 @@ Design axioms this module enforces *structurally*:
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -52,8 +56,8 @@ from soma.benchmarks.registry import (
 )
 from soma.config import PipelineConfig, load_config
 from soma.curation.manifest import CuratedManifest
-from soma.detection.froc import score_monkey_froc
-from soma.detection.matching import detection_counts, reduce_f1
+from soma.detection.froc import patch_area_mm2, score_monkey_froc
+from soma.detection.matching import detection_counts, match_assignment, reduce_f1
 from soma.detection.midog_f1 import midog_f1
 
 __all__ = [
@@ -146,7 +150,11 @@ class DatasetSpec:
     (Hungarian one-to-one for MIDOG, greedy-by-confidence for OCELOT/MONKEY). ``tolerance``
     is the reader's spacing tolerance surfaced in the committed config (MIDOG relaxes it to
     0.10 for its mixed scanners). ``test_source`` records whether the reported test split is
-    a local held-out carve or the official test set.
+    a local held-out carve or the official test set. ``stitch_to_roi`` marks datasets whose
+    fixed tiles are folded back to parent ROIs before operating-point selection and scoring;
+    for those, ``tile_px`` / ``tile_overlap_px`` are the curate-time tiling geometry — the
+    single source the curator uses, cross-checked against the committed config's
+    ``requested_tile_size_px`` in ``build_config``.
     """
 
     name: str
@@ -158,6 +166,9 @@ class DatasetSpec:
     tolerance: float | None
     test_source: str
     config_file: str
+    stitch_to_roi: bool = False
+    tile_px: int | None = None
+    tile_overlap_px: int | None = None
 
 
 DATASETS: dict[str, DatasetSpec] = {
@@ -182,6 +193,11 @@ DATASETS: dict[str, DatasetSpec] = {
         tolerance=0.10,
         test_source="local_holdout",
         config_file="midog.yaml",
+        stitch_to_roi=True,
+        # OCELOT's proven fixed geometry (1024² supervision tiles); overlap >= one mitotic-
+        # figure diameter so every object is fully centred in at least one tile.
+        tile_px=1024,
+        tile_overlap_px=128,
     ),
     "monkey": DatasetSpec(
         name="monkey",
@@ -193,6 +209,10 @@ DATASETS: dict[str, DatasetSpec] = {
         tolerance=None,
         test_source="local_holdout",
         config_file="monkey.yaml",
+        # MONKEY's curator still references whole WSIs in place; its WSI -> fixed-tile
+        # curation step is pending (#375), after which it stitches like MIDOG. Until that
+        # lands no MONKEY cell can extract, so the flag documents the intended protocol.
+        stitch_to_roi=True,
     ),
 }
 
@@ -352,6 +372,151 @@ def _per_image_arrays(
         gt_class.append(np.asarray(s.gt_class, dtype=np.int64).reshape(-1))
         area.append(0.0 if s.area_mm2 is None else float(s.area_mm2))
     return pred_xy, pred_score, pred_class, gt_xy, gt_class, area
+
+
+def _greedy_point_nms(
+    xy: np.ndarray, scores: np.ndarray, classes: np.ndarray, min_distance: float
+) -> np.ndarray:
+    """Per-class greedy NMS over a point list — the same rule as the within-tile peak NMS
+    (:func:`soma.detection.peaks.extract_peaks`): keep the highest score first, drop any
+    later same-class point within ``min_distance``. Returns the kept row indices (ascending).
+
+    A uniform spatial hash (cell size ``min_distance``) keeps this O(n): a point can only
+    conflict with kept points in its own or an adjacent cell, and kept points within a cell
+    are ≥ ``min_distance`` apart so each cell holds O(1) of them. This matters for the
+    per-ROI threshold sweep, which stitches every tune candidate peak (threshold 0) at once —
+    a naive pairwise loop there is quadratic in tens of thousands of points.
+    """
+    if xy.shape[0] == 0:
+        return np.zeros((0,), dtype=np.int64)
+    md = float(min_distance)
+    md_sq = md * md
+    inv = 1.0 / md
+    kept: list[int] = []
+    cells: dict[tuple[int, int, int], list[int]] = {}  # (class, cell_x, cell_y) -> kept indices
+    for i in np.argsort(-scores, kind="stable"):
+        c = int(classes[i])
+        x, y = float(xy[i, 0]), float(xy[i, 1])
+        cx, cy = math.floor(x * inv), math.floor(y * inv)
+        conflict = False
+        for gx in (cx - 1, cx, cx + 1):
+            for gy in (cy - 1, cy, cy + 1):
+                for j in cells.get((c, gx, gy), ()):
+                    if (x - float(xy[j, 0])) ** 2 + (y - float(xy[j, 1])) ** 2 < md_sq:
+                        conflict = True
+                        break
+                if conflict:
+                    break
+            if conflict:
+                break
+        if not conflict:
+            kept.append(int(i))
+            cells.setdefault((c, cx, cy), []).append(int(i))
+    return np.sort(np.asarray(kept, dtype=np.int64))
+
+
+def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) -> list[SamplePrediction]:
+    """Fold per-tile detections back to their parent ROI for the native per-ROI metric.
+
+    A tiled dataset (MIDOG/MONKEY) carries ``source_wsi`` / ``tile_x`` / ``tile_y`` per
+    sample (:class:`~soma.dataset.DetectionManifest` reserves these). Each tile's points are
+    already in the tile's level-0 (pixel) frame, so adding the tile origin lifts them into
+    ROI coordinates; we then **dedup GT overlap copies** (exact coordinate — the same
+    annotation in two overlapping tiles lands at the same ROI coordinate) and **NMS the
+    prediction overlap duplicates** (the head's radius, per class), re-match at the ROI level
+    to set honest ``matched`` flags, and emit one :class:`SamplePrediction` per ROI. Datasets
+    with no tile origins (e.g. OCELOT ships fixed patches) pass through unchanged, so the
+    scorers see per-ROI samples for tiled datasets and per-image samples otherwise.
+    """
+    records = manifest.samples
+    has_origin = [("source_wsi" in records[s.sample_id].metadata) for s in samples]
+    if not any(has_origin):
+        return list(samples)
+    if not all(has_origin):
+        raise ValueError(
+            "mixed manifest: some samples carry a source_wsi tile origin and some do not; "
+            "a tiled detection manifest must be uniformly tiled."
+        )
+
+    groups: dict[str, dict] = {}
+    for s in samples:
+        md = records[s.sample_id].metadata
+        roi = str(md["source_wsi"])
+        x0, y0 = float(md["tile_x"]), float(md["tile_y"])
+        roi_w, roi_h = md.get("roi_width"), md.get("roi_height")
+        if (roi_w is None) != (roi_h is None):
+            raise ValueError(
+                f"ROI {roi!r} must provide both roi_width and roi_height, or neither."
+            )
+        dims = None if roi_w is None else (int(roi_w), int(roi_h))
+        if dims is not None and (dims[0] <= 0 or dims[1] <= 0):
+            raise ValueError(f"ROI {roi!r} has invalid dimensions {dims}.")
+        g = groups.setdefault(
+            roi,
+            {"pxy": [], "psc": [], "pcl": [], "gt": {}, "meta": md, "dims": dims,
+             "tile_sid": str(s.sample_id)},
+        )
+        if g["dims"] != dims:
+            raise ValueError(
+                f"ROI {roi!r} has inconsistent ROI dimensions across tiles: "
+                f"{g['dims']} vs {dims}."
+            )
+        for (x, y), sc, cl in zip(s.pred_xy, s.pred_score, s.pred_class):
+            lifted = (x + x0, y + y0)
+            if dims is not None and not (0 <= lifted[0] < dims[0] and 0 <= lifted[1] < dims[1]):
+                continue
+            g["pxy"].append(lifted)
+            g["psc"].append(float(sc))
+            g["pcl"].append(int(cl))
+        for (x, y), cl in zip(s.gt_xy, s.gt_class):
+            g["gt"][(round(x + x0, 3), round(y + y0, 3), int(cl))] = None
+
+    out: list[SamplePrediction] = []
+    for roi, g in groups.items():
+        # Stitched coordinates live in the level-0 (source-pixel) frame, while the head's
+        # radii are target-frame pixels; scale by effective/source so the NMS and match
+        # radii mean the same physical distance in both frames (identity when extraction
+        # preserved the pixels, i.e. source == effective — the tiled-dataset norm).
+        spacing = head.spacing_for_sample(g["tile_sid"])
+        frame_scale = spacing.effective_spacing_um / spacing.source_spacing_um
+
+        pxy = np.asarray(g["pxy"], dtype=np.float64).reshape(-1, 2)
+        psc = np.asarray(g["psc"], dtype=np.float64).reshape(-1)
+        pcl = np.asarray(g["pcl"], dtype=np.int64).reshape(-1)
+        keep = _greedy_point_nms(pxy, psc, pcl, head.nms_distance_px * frame_scale)
+        pxy, psc, pcl = pxy[keep], psc[keep], pcl[keep]
+
+        gt = list(g["gt"].keys())
+        gxy = np.asarray([(x, y) for x, y, _ in gt], dtype=np.float64).reshape(-1, 2)
+        gcl = np.asarray([c for _, _, c in gt], dtype=np.int64).reshape(-1)
+
+        matched = np.zeros(pxy.shape[0], dtype=bool)
+        for m in match_assignment(
+            pxy, pcl, psc, gxy, gcl,
+            num_classes=head.num_classes, delta=head.delta_px * frame_scale,
+            method=head.matching,
+        ):
+            if m.pairs.shape[0]:
+                matched[m.pairs[:, 0]] = True
+
+        # ROI area for the FROC per-mm² axis: ROI dims are source pixels, so the source
+        # spacing converts them (MIDOG's F1 ignores area, MONKEY's FROC uses it).
+        roi_w, roi_h = g["meta"].get("roi_width"), g["meta"].get("roi_height")
+        area = (
+            patch_area_mm2(int(roi_w), int(roi_h), spacing.source_spacing_um)
+            if roi_w is not None and roi_h is not None
+            else None
+        )
+        out.append(
+            SamplePrediction(
+                sample_id=roi,
+                pred_xy=pxy.tolist(), pred_score=psc.tolist(), pred_class=pcl.tolist(),
+                gt_xy=gxy.tolist(), gt_class=gcl.tolist(),
+                matched=matched.tolist(), area_mm2=area,
+            )
+        )
+    out.sort(key=lambda s: s.sample_id)
+    return out
 
 
 def _score_ocelot_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:
@@ -856,15 +1021,35 @@ class DetectionBenchmark:
     def curate(
         self, raw_root: str | Path, out_dir: str | Path, *, dataset: str
     ) -> CuratedManifest:
-        """Curate one of the three raw datasets into a soma detection Manifest (delegates)."""
+        """Curate one raw dataset into the run-ready soma detection Manifest."""
         if dataset == "ocelot":
             from soma.curation.ocelot import curate_ocelot_detection
 
             return curate_ocelot_detection(raw_root, out_dir)
         if dataset == "midog":
             from soma.curation.midog import curate_midog_detection
+            from soma.curation.tile_detection import tile_detection_manifest
 
-            return curate_midog_detection(raw_root, out_dir)
+            out = Path(out_dir)
+            spec = dataset_spec("midog")
+            roi_manifest = curate_midog_detection(
+                raw_root,
+                out / "roi",
+                annotations_json=Path(raw_root) / "MIDOG2022_training_enriched.json",
+                force_spacing_at_level_0=spec.spacing_um,
+            )
+            tile_detection_manifest(
+                roi_manifest.dataset_csv.parent,
+                out,
+                tile_size=spec.tile_px,
+                overlap=spec.tile_overlap_px,
+                target_spacing=spec.spacing_um,
+            )
+            return CuratedManifest(
+                dataset_csv=out / "dataset.csv",
+                splits_csv=out / "splits.csv",
+                summary_json=out / "summary.json",
+            )
         if dataset == "monkey":
             from soma.curation.monkey import curate_monkey_detection
 
@@ -908,7 +1093,18 @@ class DetectionBenchmark:
         if overrides:
             for section, values in overrides.items():
                 merged.setdefault(section, {}).update(values)
-        return load_config(config_path, overrides=merged)
+        cfg = load_config(config_path, overrides=merged)
+        spec = dataset_spec(dataset)
+        if (
+            spec.tile_px is not None
+            and int(cfg.preprocessing.requested_tile_size_px) != spec.tile_px
+        ):
+            raise ValueError(
+                f"{spec.config_file} declares requested_tile_size_px "
+                f"{cfg.preprocessing.requested_tile_size_px} but the {dataset} curator "
+                f"tiles at {spec.tile_px}; the supervision size must equal the tile size."
+            )
+        return cfg
 
     def expected(self, *, dataset: str | None = None, **axes: Any) -> list[ReferenceRow]:
         """Reference rows for one dataset's scaffold matching ``axes`` (banner matches any).
