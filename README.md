@@ -194,4 +194,4 @@ Full documentation is hosted at **https://clemsgrs.github.io/soma**.
 
 ## License
 
-This repository is available under [AGPL-3.0](LICENSE).
+This repository is available under [Apache-2.0](LICENSE).

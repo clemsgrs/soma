@@ -61,8 +61,8 @@ def test_release_metadata_matches_license_and_verified_python_support():
     license_text = Path("LICENSE").read_text(encoding="utf-8")
     classifiers = set(data["project"]["classifiers"])
 
-    assert "GNU AFFERO GENERAL PUBLIC LICENSE" in license_text
-    assert "License :: OSI Approved :: GNU Affero General Public License v3" in classifiers
+    assert "Apache License" in license_text
+    assert "License :: OSI Approved :: Apache Software License" in classifiers
 
     python_classifiers = {
         classifier.rsplit("::", maxsplit=1)[-1].strip()
