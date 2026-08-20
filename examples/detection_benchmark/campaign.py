@@ -263,12 +263,54 @@ def collect_stability_samples(
     return out
 
 
+def collect_robustness(
+    out_root: str | Path, data_root: str | Path, roster: Sequence[RosterEntry], datasets: Sequence[str]
+) -> dict[str, dict]:
+    """Stratify each dataset's persisted test predictions by its usable metadata axes (#248).
+
+    Pure re-aggregation over every replicate's ``predictions.json`` plus the curated
+    manifest's ``scanner`` / ``tumor_type`` (or fallback ``domain``) columns; datasets with
+    no usable axis or no persisted predictions are simply absent from the result.
+    """
+    from soma.benchmarks.detection_benchmark import resolve_stratify_maps, stratify_robustness
+
+    out: dict[str, dict] = {}
+    for dataset in datasets:
+        csv_path = dataset_csv_for(data_root, dataset)
+        if not csv_path.is_file():
+            continue
+        axes = resolve_stratify_maps(csv_path)
+        if not axes:
+            continue
+        encoder_samples: dict[str, list] = {}
+        for entry in roster:
+            replicates = [
+                preds.samples
+                for path in sorted(
+                    (Path(out_root) / dataset / entry.name).glob("replicate_*/predictions.json")
+                )
+                if (preds := read_cell_predictions(path)).samples
+            ]
+            if replicates:
+                encoder_samples[entry.name] = replicates
+        if not encoder_samples:
+            continue
+        out[dataset] = {
+            column: stratify_robustness(
+                dataset, encoder_samples, group_of_sample, stratify_by=column
+            )
+            for column, group_of_sample in axes.items()
+        }
+    return out
+
+
 def aggregate_and_report(
     out_root: str | Path,
     *,
     roster: Sequence[RosterEntry] = DEFAULT_ROSTER,
     datasets: Sequence[str] = DATASET_ORDER,
     seeds: Sequence[int] = DEFAULT_SEEDS,
+    data_root: str | Path | None = None,
     git_sha: str | None = None,
     n_boot: int = 1000,
     write: bool = True,
@@ -281,10 +323,14 @@ def aggregate_and_report(
     """
     cells = collect_cells(out_root, roster, datasets)
     stability = collect_stability_samples(out_root, roster, datasets)
+    robustness = (
+        collect_robustness(out_root, data_root, roster, datasets) if data_root is not None else {}
+    )
     report = build_ranking_report(
         cells,
         roster=roster,
         stability_samples=stability or None,
+        robustness=robustness or None,
         git_sha=git_sha,
         replicate_policy={"single_fold_seeds": list(seeds)},
         n_boot=n_boot,
@@ -399,7 +445,8 @@ def run_rank(
             train_cell(enc, ds, rid, axis, data_root, out_root)
         score_cell_isolated(enc, ds, rid, axis, data_root, out_root)
     return aggregate_and_report(
-        out_root, roster=roster, datasets=datasets, seeds=seeds, git_sha=git_sha
+        out_root, roster=roster, datasets=datasets, seeds=seeds, data_root=data_root,
+        git_sha=git_sha,
     )
 
 

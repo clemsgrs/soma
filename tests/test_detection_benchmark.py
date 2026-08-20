@@ -39,8 +39,10 @@ from soma.benchmarks.detection_benchmark import (
     rank_encoders,
     read_cell_predictions,
     replicate_plan,
+    resolve_stratify_maps,
     score_dataset_points,
     select_subsets,
+    stratify_robustness,
     write_cell_predictions,
 )
 
@@ -775,3 +777,119 @@ def test_driver_aggregate_skips_unscored_pairs(tmp_path: Path):
     _fabricate_scored_cell(m, out, "ocelot", "virchow2", 0, "seeds", 0.7)  # only one encoder scored
     report = m.aggregate_and_report(out, roster=roster, datasets=["ocelot"], write=False)
     assert {c["encoder"] for c in report["cells"]} == {"virchow2"}  # uni2 has no metrics → skipped
+
+
+# --- robustness stratification (#248) ------------------------------------------------
+
+
+def _strat_sample(sid: str, matched: bool = True) -> SamplePrediction:
+    """One-GT sample: a matching prediction (TP -> per-sample F1 1.0) or none (FN -> 0.0)."""
+    if matched:
+        return SamplePrediction(sid, [[100.0, 100.0]], [0.9], [0], [[101.0, 100.0]], [0], [True])
+    return SamplePrediction(sid, [], [], [], [[101.0, 100.0]], [0], [])
+
+
+def test_stratify_robustness_per_group_means_and_spread():
+    groups = {"s0": "scannerA", "s1": "scannerA", "s2": "scannerB", "s3": "scannerB"}
+    robust = [[_strat_sample(s) for s in groups] for _ in range(2)]  # perfect on both groups
+    brittle = [  # perfect on scannerA, all-FN on scannerB
+        [_strat_sample(s, matched=groups[s] == "scannerA") for s in groups] for _ in range(2)
+    ]
+    block = stratify_robustness(
+        "midog", {"robust": robust, "brittle": brittle}, groups, stratify_by="scanner"
+    )
+    assert block["stratify_by"] == "scanner" and block["metric_name"] == "f1"
+    assert block["group_sizes"] == {"scannerA": 2, "scannerB": 2}
+    r = block["per_encoder"]["robust"]
+    assert r["per_group"]["scannerA"]["mean"] == pytest.approx(1.0)
+    assert r["per_group"]["scannerB"]["mean"] == pytest.approx(1.0)
+    assert r["spread"] == pytest.approx(0.0)
+    b = block["per_encoder"]["brittle"]
+    assert b["per_group"]["scannerA"]["mean"] == pytest.approx(1.0)
+    assert b["per_group"]["scannerB"]["mean"] == pytest.approx(0.0)
+    assert b["spread"] == pytest.approx(1.0)
+    assert b["best_group"] == "scannerA" and b["worst_group"] == "scannerB"
+    assert b["per_group"]["scannerA"]["per_replicate"] == [1.0, 1.0]
+
+
+def test_stratify_robustness_unmapped_sample_raises():
+    samples = [[_strat_sample("s0"), _strat_sample("s9")]]
+    with pytest.raises(ValueError, match="no 'scanner' group"):
+        stratify_robustness("midog", {"e": samples}, {"s0": "A"}, stratify_by="scanner")
+
+
+def test_resolve_stratify_maps_prefers_dedicated_axes(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,scanner,tumor_type,domain\nr1,S1,T1,T1\nr2,S2,T2,T2\n")
+    axes = resolve_stratify_maps(p)
+    # Both dedicated axes usable -> scanner headline + tumor_type secondary, no derived domain.
+    assert set(axes) == {"scanner", "tumor_type"}
+    assert axes["scanner"] == {"r1": "S1", "r2": "S2"}
+
+
+def test_resolve_stratify_maps_falls_back_to_domain(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    # scanner single-valued and tumor_type blank on one row -> both unusable; domain works.
+    p.write_text("sample_id,scanner,tumor_type,domain\nr1,S1,T1,d1\nr2,S1,,d2\n")
+    axes = resolve_stratify_maps(p)
+    assert set(axes) == {"domain"}
+    assert axes["domain"] == {"r1": "d1", "r2": "d2"}
+
+
+def test_resolve_stratify_maps_single_group_yields_nothing(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,scanner,domain\nr1,S1,d1\nr2,S1,d1\n")
+    assert resolve_stratify_maps(p) == {}
+
+
+def test_resolve_stratify_maps_keys_tiled_rows_by_parent_roi(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,source_wsi,scanner\nr1_t0,r1,S1\nr1_t1,r1,S1\nr2_t0,r2,S2\n")
+    assert resolve_stratify_maps(p)["scanner"] == {"r1": "S1", "r2": "S2"}
+
+
+def test_resolve_stratify_maps_rejects_inconsistent_roi(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,source_wsi,scanner\nr1_t0,r1,S1\nr1_t1,r1,S2\nr2_t0,r2,S2\n")
+    with pytest.raises(ValueError, match="inconsistent 'scanner'"):
+        resolve_stratify_maps(p)
+
+
+def test_report_carries_robustness_block():
+    cell = Cell(
+        encoder="a", dataset="midog", metric_name="f1", per_replicate=(0.5,), mean=0.5,
+        std=0.0, n_replicates=1, replicate_axis="seeds", test_source="local_holdout",
+    )
+    block = {"midog": {"scanner": {"stratify_by": "scanner"}}}
+    report = build_ranking_report([cell], roster=(RosterEntry("a"),), robustness=block)
+    assert report["robustness"] == block
+    # Omitting it keeps the empty-block schema.
+    assert build_ranking_report([cell], roster=(RosterEntry("a"),))["robustness"] == {}
+
+
+def test_driver_collect_robustness_from_disk(tmp_path: Path):
+    m = _load_driver()
+    out, data = tmp_path / "out", tmp_path / "data"
+    cur = data / "midog" / "curated"
+    cur.mkdir(parents=True)
+    (cur / "dataset.csv").write_text("sample_id,source_wsi,scanner\nr1_t0,r1,S1\nr2_t0,r2,S2\n")
+    # Stitched predictions are per-ROI (r1/r2). virchow2 is robust; uni2 fails on S2.
+    for enc, s2_matched in (("virchow2", True), ("uni2", False)):
+        for rid in (0, 1):
+            cd = m.cell_dir(out, "midog", enc, rid)
+            cd.mkdir(parents=True)
+            samples = [_strat_sample("r1"), _strat_sample("r2", matched=s2_matched)]
+            write_cell_predictions(
+                cd / "predictions.json",
+                CellPredictions(enc, "midog", rid, "f1", 0.25, samples),
+            )
+    rob = m.collect_robustness(
+        out, data, (RosterEntry("virchow2"), RosterEntry("uni2")), ["midog"]
+    )
+    scanner = rob["midog"]["scanner"]
+    assert scanner["per_encoder"]["virchow2"]["spread"] == pytest.approx(0.0)
+    assert scanner["per_encoder"]["uni2"]["spread"] == pytest.approx(1.0)
+    assert scanner["per_encoder"]["uni2"]["worst_group"] == "S2"
+    assert scanner["per_encoder"]["uni2"]["per_group"]["S1"]["per_replicate"] == [1.0, 1.0]
+    # No usable axis (or no curated manifest) -> dataset simply absent.
+    assert m.collect_robustness(out, tmp_path / "nowhere", (RosterEntry("virchow2"),), ["midog"]) == {}

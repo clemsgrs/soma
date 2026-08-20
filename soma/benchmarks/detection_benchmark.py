@@ -40,6 +40,7 @@ Design axioms this module enforces *structurally*:
 
 from __future__ import annotations
 
+import csv
 import json
 import math
 from dataclasses import dataclass, field
@@ -79,6 +80,8 @@ __all__ = [
     "aggregate_rank",
     "rank_consistency",
     "bootstrap_rank_stability",
+    "resolve_stratify_maps",
+    "stratify_robustness",
     "select_subsets",
     "build_ranking_report",
     "DetectionBenchmark",
@@ -901,6 +904,120 @@ def reference_bands(datasets: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
+# --- robustness stratification (#248) ------------------------------------------------
+
+# Stratification axes in preference order. ``scanner`` is the headline (MIDOG's role in the
+# three-axes-of-shift design is the scanner-domain axis) with ``tumor_type`` the secondary
+# cut; ``domain`` is the curator's derived tumor-or-scanner fallback, used only when
+# neither dedicated column is usable.
+_STRATIFY_AXES = ("scanner", "tumor_type")
+_STRATIFY_FALLBACK = "domain"
+
+
+def _stratify_values(dataset_csv: str | Path, column: str) -> dict[str, str]:
+    """Per-ROI values of ``column`` from a curated manifest, or ``{}`` if unusable.
+
+    Rows of a tiled manifest are keyed by their parent ``source_wsi`` (all tiles of an ROI
+    carry the parent's metadata; an inconsistent ROI raises); untiled rows by ``sample_id``.
+    A column is unusable — mapped to ``{}`` — when it is absent or any row leaves it blank,
+    so a partially annotated axis can never silently stratify a subset of the cohort.
+    """
+    with Path(dataset_csv).open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows or column not in rows[0]:
+        return {}
+    out: dict[str, str] = {}
+    for row in rows:
+        value = (row.get(column) or "").strip()
+        if not value:
+            return {}
+        key = (row.get("source_wsi") or "").strip() or str(row["sample_id"])
+        if key in out and out[key] != value:
+            raise ValueError(
+                f"ROI {key!r} carries inconsistent {column!r} values across its manifest "
+                f"rows: {out[key]!r} vs {value!r}."
+            )
+        out[key] = value
+    return out
+
+
+def resolve_stratify_maps(dataset_csv: str | Path) -> dict[str, dict[str, str]]:
+    """The usable stratification axes of a curated manifest, as ``column -> sample -> group``.
+
+    Prefers the dedicated ``scanner`` / ``tumor_type`` columns (both are returned when both
+    are usable — scanner is the headline, tumor type the secondary cut) and falls back to
+    the curator's derived ``domain`` only when neither is. An axis needs at least two
+    distinct groups to stratify anything; single-group axes are dropped.
+    """
+    axes = {
+        column: values
+        for column in _STRATIFY_AXES
+        if len(set((values := _stratify_values(dataset_csv, column)).values())) >= 2
+    }
+    if axes:
+        return axes
+    fallback = _stratify_values(dataset_csv, _STRATIFY_FALLBACK)
+    return {_STRATIFY_FALLBACK: fallback} if len(set(fallback.values())) >= 2 else {}
+
+
+def stratify_robustness(
+    dataset: str,
+    encoder_samples: dict[str, Sequence[Sequence[SamplePrediction]]],
+    group_of_sample: dict[str, str],
+    *,
+    stratify_by: str,
+) -> dict[str, Any]:
+    """Stratify each encoder's native metric by ``group_of_sample`` — pure re-aggregation.
+
+    ``encoder_samples`` maps each encoder to its per-replicate persisted test predictions
+    (the ``predictions.json`` cache); every sample is re-scored inside its group with the
+    dataset's own native scorer, no retraining and nothing on the GPU. The per-encoder
+    ``spread`` (best group mean − worst group mean) is the robustness number: which
+    encoders detect *robustly* across groups, not just best on average.
+    """
+    spec = dataset_spec(dataset)
+    group_sizes: dict[str, int] = {}
+    per_encoder: dict[str, Any] = {}
+    for encoder, replicates in encoder_samples.items():
+        per_group_values: dict[str, list[float]] = {}
+        for samples in replicates:
+            missing = sorted({s.sample_id for s in samples} - set(group_of_sample))
+            if missing:
+                raise ValueError(
+                    f"{len(missing)} scored {dataset} sample(s) have no {stratify_by!r} "
+                    f"group (e.g. {missing[:3]}); the stratification map must cover every "
+                    f"scored sample."
+                )
+            buckets: dict[str, list[SamplePrediction]] = {}
+            for s in samples:
+                buckets.setdefault(group_of_sample[s.sample_id], []).append(s)
+            for group, subset in buckets.items():
+                value = score_dataset_points(dataset, subset, spec=spec)[spec.metric_name]
+                per_group_values.setdefault(group, []).append(float(value))
+                group_sizes.setdefault(group, len(subset))
+        per_group = {
+            group: {
+                "mean": float(np.mean(values)),
+                "std": float(np.std(values)),
+                "per_replicate": values,
+            }
+            for group, values in sorted(per_group_values.items())
+        }
+        means = {group: stats["mean"] for group, stats in per_group.items()}
+        per_encoder[encoder] = {
+            "per_group": per_group,
+            "spread": max(means.values()) - min(means.values()),
+            "best_group": max(means, key=means.get),  # type: ignore[arg-type]
+            "worst_group": min(means, key=means.get),  # type: ignore[arg-type]
+        }
+    return {
+        "stratify_by": stratify_by,
+        "metric_name": spec.metric_name,
+        "group_sizes": dict(sorted(group_sizes.items())),
+        "per_encoder": per_encoder,
+    }
+
+
 # --- the ranking report --------------------------------------------------------------
 
 
@@ -909,6 +1026,7 @@ def build_ranking_report(
     *,
     roster: Sequence[RosterEntry] = DEFAULT_ROSTER,
     stability_samples: dict[str, dict[str, list[SamplePrediction]]] | None = None,
+    robustness: dict[str, Any] | None = None,
     git_sha: str | None = None,
     replicate_policy: dict[str, Any] | None = None,
     n_boot: int = 1000,
@@ -923,8 +1041,9 @@ def build_ranking_report(
 
     Schema: ``config`` · unpooled ``cells`` (each carries its own ``metric_name``) ·
     ``ranking`` (``per_dataset`` test **and** tune ranks + ``rank_consistency`` +
-    bootstrap ``stability``) · ``robustness: {}`` (deferred to #248) · ``reference_bands`` ·
-    frozen ``selections``.
+    bootstrap ``stability``) · ``robustness`` (dataset -> axis -> the
+    :func:`stratify_robustness` block, ``{}`` when the driver supplies none) ·
+    ``reference_bands`` · frozen ``selections``.
     """
     names = roster_names(roster)
     datasets = [d for d in DATASET_ORDER if any(c.dataset == d for c in cells)]
@@ -973,7 +1092,7 @@ def build_ranking_report(
             "rank_consistency": consistency,
             "stability": stability,
         },
-        "robustness": {},  # DEFERRED to #248 (leave the key, populate later).
+        "robustness": robustness or {},
         "reference_bands": reference_bands(datasets),
         "selections": selections,
     }
