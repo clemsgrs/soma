@@ -42,6 +42,10 @@ Tile-level encoders
      - 384
      - ``0.5``
      - Grisi et al. (2026)
+   * - ``rudolfv2-s``
+     - 384 / 768
+     - ``0.25``, ``0.5``, ``1.0``, ``2.0``
+     - Milbich et al. (2026)
    * - ``conch``
      - 512
      - ``0.5``
@@ -62,6 +66,10 @@ Tile-level encoders
      - 768 / 1536
      - ``0.5``
      - Filiot et al. (2024)
+   * - ``rudolfv2-b``
+     - 768 / 1536
+     - ``0.25``, ``0.5``, ``1.0``, ``2.0``
+     - Milbich et al. (2026)
    * - ``phikonv2``
      - 1024
      - ``0.5``
@@ -86,13 +94,21 @@ Tile-level encoders
      - 1024
      - ``0.5``
      - Wang et al. (2024)
+   * - ``isight``
+     - 1024
+     - ``0.5``
+     - Huang et al. (2026)
+   * - ``phaet``
+     - 1024
+     - ``0.5``
+     - Waiv (2026)
    * - ``virchow``
      - 1280 / 2560
      - ``0.5``
      - Vorontsov et al. (2024)
    * - ``virchow2``
      - 1280 / 2560
-     - ``0.5``, ``1.0``, ``2.0``
+     - ``0.25``, ``0.5``, ``1.0``, ``2.0``
      - Zimmermann et al. (2024)
    * - ``uni2``
      - 1536
@@ -110,6 +126,14 @@ Tile-level encoders
      - 1536
      - ``0.5``
      - Saillard et al. (2024)
+   * - ``rudolfv2``
+     - 1536 / 3072
+     - ``0.25``, ``0.5``, ``1.0``, ``2.0``
+     - Milbich et al. (2026)
+   * - ``mascaret``
+     - 1536
+     - ``0.5``
+     - Waiv (2026)
    * - ``midnight``
      - 3072
      - ``0.25``, ``0.5``, ``1.0``, ``2.0``
@@ -159,6 +183,10 @@ Slide-level encoders
      - ``virchow`` (``cls_patch_mean``)
      - 1280
      - Shaikovski et al. (2024)
+   * - ``prism2``
+     - ``virchow2`` (``cls``)
+     - 2560 (``base``) / 3072 (``diagnostic``)
+     - Vorontsov et al. (2026)
    * - ``moozy-slide``
      - ``lunit``
      - 768
