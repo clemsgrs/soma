@@ -444,6 +444,63 @@ def build_tiling_cache_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
+def build_roi_sampling_cache_key(
+    *,
+    preprocessing: PreprocessingConfig,
+) -> str:
+    """Directory key for the ``roi_sampling`` cache kind.
+
+    Hashes exactly ``{artifact_kind, preprocessing}`` — the canonical preprocessing
+    signature reused wholesale (it already folds the annotation-sampling projection,
+    colors excluded, when a masks block is active). Deliberately **no**
+    ``SCHEMA_VERSION`` (this kind is born without the unused constant — #364 removes
+    it from the rest of the layer on its own cache-busting schedule) and no engine
+    version (consistent with the tiling key: an hs2p sampling-behavior change requires
+    manual invalidation).
+    """
+    payload = {
+        "artifact_kind": "roi_sampling",
+        "preprocessing": preprocessing_signature(preprocessing),
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
+def roi_sampling_identity_signature(
+    *,
+    sample_id: str,
+    image_path: Path | str,
+    label_mask_path: Path | str | None,
+    spacing_at_level_0: float | None = None,
+) -> str:
+    """Per-slide identity stem for the ``roi_sampling`` cache kind.
+
+    Styled after :func:`sample_identity_signature` but with this kind's own field set:
+    the mask in the identity is the **annotation raster** (``label_mask_path``) — the
+    file sampling actually reads — not the tissue mask. Path+spacing based, never
+    content-hashed, consistent with every other soma cache.
+    """
+    payload = {
+        "sample_id": str(sample_id),
+        "image_path": str(image_path),
+        "label_mask_path": str(label_mask_path) if label_mask_path is not None else None,
+        "spacing_at_level_0": spacing_at_level_0,
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
+
+
+def _sample_stems_for_roi_sampling(dataset: Any) -> dict[str, str]:
+    """Duck-typed over ``samples``/``sample_ids`` so :class:`SegmentationManifest` fits."""
+    return {
+        sample_id: roi_sampling_identity_signature(
+            sample_id=sample.sample_id,
+            image_path=sample.image_path,
+            label_mask_path=sample.label_mask_path,
+            spacing_at_level_0=sample.spacing_at_level_0,
+        )
+        for sample_id, sample in sorted(dataset.samples.items())
+    }
+
+
 def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
     return {
         sample_id: sample_identity_signature(
