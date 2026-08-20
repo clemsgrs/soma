@@ -3235,11 +3235,58 @@ class Pipeline:
 
         preprocessing = self._resolve_preprocessing()
         sampling = self._config.preprocessing.sampling or SamplingConfig()
+        masks = self._config.preprocessing.masks
 
-        logger.info("Sampling segmentation ROIs from %d slides...", len(self._dataset.sample_ids))
-        coords_by_slide = sample_slide_rois(
-            self._dataset, masks=self._config.preprocessing.masks, sampling=sampling, preprocessing=preprocessing
-        )
+        cache_config = self._config.cache
+        if cache_config.root_dir is None:
+            cache_config = replace(cache_config, root_dir=Path(self._config.output_root) / "feature_cache")
+
+        # Cross-run ROI sampling reuse (#365): resolve the roi_sampling cache before
+        # sampling, run hs2p only over the missing slide set, publish the fresh per-slide
+        # coords (zero-ROI outcomes included, so they hit next launch), and merge. Splits
+        # are structurally excluded from the cache — the ROI manifest/splits are re-derived
+        # below every launch from coords + the run's splits CSV, so a splits edit never
+        # re-samples and never reads stale splits. Cache disabled ⇒ sample everything,
+        # no cache I/O, exactly as before.
+        if cache_config.enabled:
+            from soma.cache import (
+                resolve_cache_root,
+                resolve_roi_sampling_cache,
+                write_roi_sampling_coords,
+            )
+
+            cache_resolution = resolve_roi_sampling_cache(
+                cache_root=resolve_cache_root(cache_config, feature_dir=run_dir / "features"),
+                dataset=self._dataset,
+                preprocessing=preprocessing,
+            )
+            miss_ids = cache_resolution.miss_sample_ids
+            logger.info(
+                "Sampling segmentation ROIs: %d slide(s) from cache, %d slide(s) to sample.",
+                len(cache_resolution.coords_by_id),
+                len(miss_ids),
+            )
+            fresh: dict[str, list[tuple[int, int]]] = {}
+            if miss_ids:
+                fresh = sample_slide_rois(
+                    self._dataset,
+                    masks=masks,
+                    sampling=sampling,
+                    preprocessing=preprocessing,
+                    sample_ids=miss_ids,
+                )
+                write_roi_sampling_coords(
+                    cache_resolution=cache_resolution, coords_by_sample_id=fresh
+                )
+            merged = {**cache_resolution.coords_by_id, **fresh}
+        else:
+            logger.info("Sampling segmentation ROIs from %d slides...", len(self._dataset.sample_ids))
+            merged = sample_slide_rois(
+                self._dataset, masks=masks, sampling=sampling, preprocessing=preprocessing
+            )
+        # Manifest row order follows the slide manifest regardless of the hit/miss mix,
+        # so a warm relaunch derives a byte-identical ROI manifest.
+        coords_by_slide = {sid: merged[sid] for sid in self._dataset.sample_ids}
         roi_dir = run_dir / "segmentation_rois"
         roi_manifest_csv, roi_splits_csv = build_roi_manifest(
             self._dataset, self._config.splits_csv, coords_by_slide, out_dir=roi_dir
@@ -3251,13 +3298,10 @@ class Pipeline:
             tune_is_test=self._config.training.tune_is_test,
         )
 
-        cache_config = self._config.cache
-        if cache_config.root_dir is None:
-            cache_config = replace(cache_config, root_dir=Path(self._config.output_root) / "feature_cache")
         extractor = SlideManifestDenseExtractor(
             roi_dataset,
             self._config.encoder,
-            masks=self._config.preprocessing.masks,
+            masks=masks,
             sampling=sampling,
             preprocessing=preprocessing,
             execution=self._config.execution,

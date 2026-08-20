@@ -536,6 +536,201 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
 
 
 # --------------------------------------------------------------------------- #
+# Cached ROI sampling (#365): a warm relaunch never re-pays hs2p sampling.
+# --------------------------------------------------------------------------- #
+
+
+class _CountingSampler:
+    """Counting stand-in for ``sample_slide_rois`` that honours the slide-id filter.
+
+    Records which slide ids each call sampled, so the tests can assert "sampling is
+    not re-paid" as an external behaviour: zero calls on a full hit, only the
+    added/changed slides on a partial hit.
+    """
+
+    def __init__(self, coords_for=None) -> None:
+        self.calls: list[list[str]] = []
+        self._coords_for = coords_for or _coords_for
+
+    def __call__(self, dataset, *, masks, sampling, preprocessing, sample_ids=None):
+        ids = list(dataset.sample_ids) if sample_ids is None else [str(s) for s in sample_ids]
+        self.calls.append(sorted(ids))
+        return {sid: self._coords_for(sid) for sid in ids}
+
+
+def _install_counting_sampler(monkeypatch, sampler: _CountingSampler) -> None:
+    import soma.dense_slide_extraction as dse
+
+    _patch_extraction(monkeypatch)
+    monkeypatch.setattr(dse, "sample_slide_rois", sampler)
+
+
+def _launch(tmp_path: Path, manifest: Path, splits: Path, run_name: str, *, cache_enabled: bool = True):
+    """Drive the context builder as one launch (a fresh Pipeline, its own run dir)."""
+    from dataclasses import replace
+
+    from soma.config import CacheConfig
+    from soma.pipeline import Pipeline
+
+    cfg = _config(tmp_path, manifest, splits, masks=None)
+    if not cache_enabled:
+        cfg = replace(cfg, cache=CacheConfig(enabled=False))
+    pipeline = Pipeline(cfg)
+    return pipeline._build_slide_manifest_dense_context(run_dir=tmp_path / "out" / run_name)
+
+
+def _roi_csv_bytes(tmp_path: Path, run_name: str) -> tuple[bytes, bytes]:
+    roi_dir = tmp_path / "out" / run_name / "segmentation_rois"
+    return (
+        (roi_dir / "roi_manifest.csv").read_bytes(),
+        (roi_dir / "roi_splits.csv").read_bytes(),
+    )
+
+
+def test_slide_manifest_relaunch_skips_sampling_and_reproduces_manifest(
+    tmp_path: Path, monkeypatch, caplog
+):
+    """Second launch with an unchanged config: zero sampler calls, byte-identical
+    ROI manifest + ROI splits derived from cached coords, and a hits-vs-sampled log."""
+    import logging
+
+    sampler = _CountingSampler()
+    _install_counting_sampler(monkeypatch, sampler)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    _launch(tmp_path, manifest, splits, "run1")
+    assert sampler.calls == [["s0", "s1", "s2", "s3"]]
+
+    with caplog.at_level(logging.INFO, logger="soma.pipeline"):
+        _launch(tmp_path, manifest, splits, "run2")
+    assert sampler.calls == [["s0", "s1", "s2", "s3"]]  # no new calls
+
+    assert _roi_csv_bytes(tmp_path, "run1") == _roi_csv_bytes(tmp_path, "run2")
+    assert any(
+        "4 slide(s) from cache" in message and "0 slide(s) to sample" in message
+        for message in caplog.messages
+    )
+
+
+def test_slide_manifest_partial_miss_samples_only_new_and_changed(tmp_path: Path, monkeypatch):
+    """Adding a slide samples only that slide; re-annotating one (new label raster)
+    re-samples only that slide. Hit slides are untouched."""
+    sampler = _CountingSampler()
+    _install_counting_sampler(monkeypatch, sampler)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+    _launch(tmp_path, manifest, splits, "run1")
+
+    # s1 points at a new annotation raster; s4 is a brand-new slide.
+    manifest.write_text(
+        "sample_id,image_path,label_mask_path\n"
+        "s0,/fake/s0.tif,/fake/s0_mask.tif\n"
+        "s1,/fake/s1.tif,/fake/s1_mask_v2.tif\n"
+        "s2,/fake/s2.tif,/fake/s2_mask.tif\n"
+        "s3,/fake/s3.tif,/fake/s3_mask.tif\n"
+        "s4,/fake/s4.tif,/fake/s4_mask.tif\n"
+    )
+    splits.write_text(
+        "sample_id,split,fold\n"
+        "s0,train,0\ns1,train,0\ns2,tune,0\ns3,test,0\ns4,train,0\n"
+    )
+    _launch(tmp_path, manifest, splits, "run2")
+
+    assert sampler.calls == [["s0", "s1", "s2", "s3"], ["s1", "s4"]]
+
+    import pandas as pd
+
+    roi_df = pd.read_csv(tmp_path / "out" / "run2" / "segmentation_rois" / "roi_manifest.csv")
+    assert len(roi_df) == 10  # 5 slides x 2 coords: cached + fresh merged
+    assert set(roi_df["slide_id"]) == {"s0", "s1", "s2", "s3", "s4"}
+
+
+def test_slide_manifest_zero_roi_slide_is_cached_and_contributes_no_rows(
+    tmp_path: Path, monkeypatch
+):
+    """A slide that sampled zero ROIs is a cache hit on relaunch (not re-sampled) and
+    contributes no manifest rows, exactly as on the fresh launch."""
+    sampler = _CountingSampler(
+        coords_for=lambda sid: [] if sid == "s1" else _coords_for(sid)
+    )
+    _install_counting_sampler(monkeypatch, sampler)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    _launch(tmp_path, manifest, splits, "run1")
+    _launch(tmp_path, manifest, splits, "run2")
+    assert sampler.calls == [["s0", "s1", "s2", "s3"]]  # s1's [] answer hit the cache
+
+    import pandas as pd
+
+    for run_name in ("run1", "run2"):
+        roi_df = pd.read_csv(
+            tmp_path / "out" / run_name / "segmentation_rois" / "roi_manifest.csv"
+        )
+        assert len(roi_df) == 6  # 3 slides x 2 coords; s1 contributes none
+        assert "s1" not in set(roi_df["slide_id"])
+    assert _roi_csv_bytes(tmp_path, "run1") == _roi_csv_bytes(tmp_path, "run2")
+
+
+def test_slide_manifest_cache_disabled_samples_everything_without_cache_io(
+    tmp_path: Path, monkeypatch
+):
+    """cache.enabled=false: every launch samples every slide; no roi_sampling cache
+    directory is ever created."""
+    sampler = _CountingSampler()
+    _install_counting_sampler(monkeypatch, sampler)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    _launch(tmp_path, manifest, splits, "run1", cache_enabled=False)
+    _launch(tmp_path, manifest, splits, "run2", cache_enabled=False)
+
+    all_slides = ["s0", "s1", "s2", "s3"]
+    assert sampler.calls == [all_slides, all_slides]
+    assert not list((tmp_path / "out").rglob("roi_sampling"))
+
+
+def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, monkeypatch):
+    """The sampler's slide-id filter tiles only the requested slides, in manifest order."""
+    from soma.dataset import SegmentationManifest
+    from soma.dense_slide_extraction import sample_slide_rois
+
+    manifest = tmp_path / "slides.csv"
+    manifest.write_text(
+        "sample_id,image_path,label_mask_path\n"
+        "s0,/fake/s0.tif,/fake/s0_mask.tif\n"
+        "s1,/fake/s1.tif,/fake/s1_mask.tif\n"
+        "s2,/fake/s2.tif,/fake/s2_mask.tif\n"
+    )
+    tiled: list[str] = []
+
+    def _tile_slide(slide, **kwargs):
+        tiled.append(slide.sample_id)
+        return {
+            None: SimpleNamespace(
+                tiles=SimpleNamespace(
+                    x=np.asarray([0], dtype=np.int64),
+                    y=np.asarray([0], dtype=np.int64),
+                )
+            )
+        }
+
+    monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
+    common = dict(
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET, requested_spacing_um=0.5
+        ),
+    )
+    dataset = SegmentationManifest(manifest)
+
+    coords = sample_slide_rois(dataset, sample_ids=["s2", "s0"], **common)
+    assert tiled == ["s0", "s2"]  # manifest order, s1 untouched
+    assert coords == {"s0": [(0, 0)], "s2": [(0, 0)]}
+
+    with pytest.raises(ValueError, match="not in the slide manifest"):
+        sample_slide_rois(dataset, sample_ids=["nope"], **common)
+
+
+# --------------------------------------------------------------------------- #
 # Resumable dense extraction (#140): encode only the missing ROIs.
 # --------------------------------------------------------------------------- #
 
