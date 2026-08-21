@@ -14,9 +14,12 @@ import json
 import sys
 from importlib import resources
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
+from PIL import Image
 
 from soma.benchmarks import get_benchmark
 from soma.benchmarks.detection_benchmark import (
@@ -36,8 +39,10 @@ from soma.benchmarks.detection_benchmark import (
     rank_encoders,
     read_cell_predictions,
     replicate_plan,
+    resolve_stratify_maps,
     score_dataset_points,
     select_subsets,
+    stratify_robustness,
     write_cell_predictions,
 )
 
@@ -99,6 +104,65 @@ def test_midog_config_carries_relaxed_tolerance():
 def test_unknown_dataset_raises():
     with pytest.raises(KeyError):
         get_benchmark("detection-benchmark").build_config(encoder="uni2", dataset="pannuke")
+
+
+def test_midog_benchmark_curate_emits_nominal_tiled_manifest(tmp_path: Path):
+    raw = tmp_path / "raw"
+    images = raw / "images"
+    images.mkdir(parents=True)
+    Image.new("RGB", (1920, 1024), (127, 127, 127)).save(images / "001.png")
+    (raw / "MIDOG2022_training_enriched.json").write_text(
+        json.dumps(
+            {
+                "categories": [{"id": 1, "name": "mitotic figure"}],
+                "images": [
+                    {
+                        "id": 1,
+                        "file_name": "001.png",
+                        "width": 1920,
+                        "height": 1024,
+                        "patient_id": "p1",
+                        "tumortype": "breast",
+                        "spacing": 0.23,
+                    }
+                ],
+                "annotations": [
+                    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [925, 75, 975, 125]}
+                ],
+            }
+        )
+    )
+    out = tmp_path / "curated"
+
+    manifest = DetectionBenchmark().curate(raw, out, dataset="midog")
+
+    assert manifest.dataset_csv == out / "dataset.csv"
+    assert manifest.splits_csv == out / "splits.csv"
+    assert manifest.summary_json == out / "summary.json"
+    assert all(
+        (out / "roi" / name).is_file()
+        for name in ("dataset.csv", "splits.csv", "summary.json")
+    )
+    roi = pd.read_csv(out / "roi" / "dataset.csv")
+    assert roi["spacing_at_level_0"].tolist() == [0.25]
+
+    tiled = pd.read_csv(manifest.dataset_csv).sort_values("tile_x")
+    assert tiled[["tile_x", "tile_y"]].astype(int).values.tolist() == [[0, 0], [896, 0]]
+    assert tiled["source_wsi"].tolist() == ["midog_001", "midog_001"]
+    assert tiled[["roi_width", "roi_height"]].astype(int).values.tolist() == [
+        [1920, 1024], [1920, 1024]
+    ]
+    assert tiled["spacing_at_level_0"].tolist() == [0.25, 0.25]
+    assert [Image.open(path).size for path in tiled["image_path"]] == [(1024, 1024), (1024, 1024)]
+    locals_ = [pd.read_csv(path).values.tolist() for path in tiled["points_path"]]
+    assert locals_ == [[[950.0, 100.0, 0.0]], [[54.0, 100.0, 0.0]]]
+
+    summary = json.loads(manifest.summary_json.read_text())
+    assert {k: summary[k] for k in ("tile_size", "overlap", "spacing_at_level_0")} == {
+        "tile_size": 1024,
+        "overlap": 128,
+        "spacing_at_level_0": 0.25,
+    }
 
 
 # --- replicate abstraction -----------------------------------------------------------
@@ -434,7 +498,10 @@ def test_reference_scaffold_shape(dataset, metric):
     assert all(r["metric"] == metric for r in rows)
     for row in external:
         assert row["url"].strip().startswith("http")
-        assert "TODO" in row["source"]  # clearly-marked placeholder, no invented numbers
+        # Filled non-gating guidance: a real published number with a snapshot date.
+        assert float(row["expected"]) > 0 and "TODO" not in row["source"]
+        assert "Snapshotted" in row["source"]
+    # The gate row stays a clearly-marked placeholder until the local sweep measures it.
     assert "TODO" in gate[0]["source"]
 
 
@@ -505,6 +572,123 @@ def test_driver_skip_guards(tmp_path: Path):
     # summary.json is written once, at the end of the run — the honest completion marker.
     run.joinpath("summary.json").write_text("{}")
     assert m.training_done(out, "ocelot", "uni2", 0)
+
+
+def test_roi_threshold_sweep_uses_stitched_predictions_and_restores_head(monkeypatch):
+    m = _load_driver()
+    from soma.dense import DenseSampleSpacing
+
+    spacing = DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.25)
+    head = SimpleNamespace(
+        score_threshold=[0.25],
+        num_classes=1,
+        delta_px=30.0,
+        nms_distance_px=30.0,
+        matching="hungarian",
+        spacing_for_sample=lambda sid: spacing,
+    )
+    manifest = SimpleNamespace(
+        samples={
+            "roi_t0": SimpleNamespace(
+                metadata={
+                    "source_wsi": "roi", "tile_x": 0, "tile_y": 0,
+                    "roi_width": 512, "roi_height": 512,
+                }
+            ),
+            "roi_t1": SimpleNamespace(
+                metadata={
+                    "source_wsi": "roi", "tile_x": 100, "tile_y": 0,
+                    "roi_width": 512, "roi_height": 512,
+                }
+            ),
+        }
+    )
+    tiles = [
+        SamplePrediction(
+            "roi_t0",
+            pred_xy=[[100.0, 100.0], [300.0, 300.0]], pred_score=[0.9, 0.8], pred_class=[0, 0],
+            gt_xy=[[100.0, 100.0]], gt_class=[0], matched=[True, False],
+        ),
+        SamplePrediction(
+            "roi_t1",
+            pred_xy=[[0.0, 100.0]], pred_score=[0.1], pred_class=[0],
+            gt_xy=[[0.0, 100.0]], gt_class=[0], matched=[True],
+        ),
+    ]
+    observed_thresholds = []
+
+    def decode(*_args):
+        observed_thresholds.append(head.score_threshold)
+        from soma.benchmarks.detection_benchmark import stitch_tiles_to_rois
+
+        return stitch_tiles_to_rois(tiles, manifest, head)
+
+    monkeypatch.setattr(m, "_decode_split_points", decode)
+
+    from soma.detection.matching import sweep_score_thresholds
+
+    tile_threshold = sweep_score_thresholds(
+        [np.asarray(s.pred_xy) for s in tiles],
+        [np.asarray(s.pred_class) for s in tiles],
+        [np.asarray(s.pred_score) for s in tiles],
+        [np.asarray(s.gt_xy) for s in tiles],
+        [np.asarray(s.gt_class) for s in tiles],
+        num_classes=1,
+        delta=30.0,
+        method="hungarian",
+    )
+
+    threshold = m._sweep_thresholds_on_rois(object(), object(), head, object(), manifest)
+
+    assert tile_threshold == [0.1]  # overlap copy wins on the old per-tile surrogate
+    assert threshold == [0.9]
+    assert observed_thresholds == [0.0]
+    assert head.score_threshold == [0.25]
+
+
+def test_score_cell_persists_roi_threshold_and_checkpoint_proxy(tmp_path: Path, monkeypatch):
+    m = _load_driver()
+    sample = lambda sid: SamplePrediction(  # noqa: E731
+        sid, [[10.0, 10.0]], [0.9], [0], [[10.0, 10.0]], [0], [True]
+    )
+    tune = CellPredictions("uni2", "midog", 2, "f1", 0.25, [sample("tune_roi")])
+    test = CellPredictions("uni2", "midog", 2, "f1", 0.25, [sample("test_roi")])
+    monkeypatch.setattr(m, "_decode_cell_points", lambda *a, **k: (tune, test, [0.73]))
+
+    out = tmp_path / "out"
+    m.score_cell("uni2", "midog", 2, "seeds", tmp_path / "data", out)
+
+    metrics = json.loads((m.cell_dir(out, "midog", "uni2", 2) / "metrics.json").read_text())
+    assert metrics == {
+        "test": {"f1": 1.0},
+        "tune": {"f1": 1.0},
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [0.73],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy",
+    }
+
+
+def test_score_cell_marks_ocelot_selection_as_native_sample_frame(tmp_path: Path, monkeypatch):
+    m = _load_driver()
+    sample = SamplePrediction(
+        "image",
+        pred_xy=[[10.0, 10.0], [20.0, 20.0]], pred_score=[0.9, 0.8], pred_class=[0, 1],
+        gt_xy=[[10.0, 10.0], [20.0, 20.0]], gt_class=[0, 1], matched=[True, True],
+    )
+    predictions = CellPredictions("uni2", "ocelot", 0, "mean_f1", 0.2, [sample])
+    monkeypatch.setattr(
+        m, "_decode_cell_points", lambda *a, **k: (predictions, predictions, [0.6, 0.7])
+    )
+
+    out = tmp_path / "out"
+    m.score_cell("uni2", "ocelot", 0, "seeds", tmp_path / "data", out)
+
+    metrics = json.loads((m.cell_dir(out, "ocelot", "uni2", 0) / "metrics.json").read_text())
+    assert metrics["score_threshold_selection_frame"] == "sample_native"
+    assert metrics["checkpoint_selection_frame"] == "sample_native"
 
 
 def test_rank_scores_out_of_process(tmp_path: Path, monkeypatch):
@@ -596,3 +780,119 @@ def test_driver_aggregate_skips_unscored_pairs(tmp_path: Path):
     _fabricate_scored_cell(m, out, "ocelot", "virchow2", 0, "seeds", 0.7)  # only one encoder scored
     report = m.aggregate_and_report(out, roster=roster, datasets=["ocelot"], write=False)
     assert {c["encoder"] for c in report["cells"]} == {"virchow2"}  # uni2 has no metrics → skipped
+
+
+# --- robustness stratification (#248) ------------------------------------------------
+
+
+def _strat_sample(sid: str, matched: bool = True) -> SamplePrediction:
+    """One-GT sample: a matching prediction (TP -> per-sample F1 1.0) or none (FN -> 0.0)."""
+    if matched:
+        return SamplePrediction(sid, [[100.0, 100.0]], [0.9], [0], [[101.0, 100.0]], [0], [True])
+    return SamplePrediction(sid, [], [], [], [[101.0, 100.0]], [0], [])
+
+
+def test_stratify_robustness_per_group_means_and_spread():
+    groups = {"s0": "scannerA", "s1": "scannerA", "s2": "scannerB", "s3": "scannerB"}
+    robust = [[_strat_sample(s) for s in groups] for _ in range(2)]  # perfect on both groups
+    brittle = [  # perfect on scannerA, all-FN on scannerB
+        [_strat_sample(s, matched=groups[s] == "scannerA") for s in groups] for _ in range(2)
+    ]
+    block = stratify_robustness(
+        "midog", {"robust": robust, "brittle": brittle}, groups, stratify_by="scanner"
+    )
+    assert block["stratify_by"] == "scanner" and block["metric_name"] == "f1"
+    assert block["group_sizes"] == {"scannerA": 2, "scannerB": 2}
+    r = block["per_encoder"]["robust"]
+    assert r["per_group"]["scannerA"]["mean"] == pytest.approx(1.0)
+    assert r["per_group"]["scannerB"]["mean"] == pytest.approx(1.0)
+    assert r["spread"] == pytest.approx(0.0)
+    b = block["per_encoder"]["brittle"]
+    assert b["per_group"]["scannerA"]["mean"] == pytest.approx(1.0)
+    assert b["per_group"]["scannerB"]["mean"] == pytest.approx(0.0)
+    assert b["spread"] == pytest.approx(1.0)
+    assert b["best_group"] == "scannerA" and b["worst_group"] == "scannerB"
+    assert b["per_group"]["scannerA"]["per_replicate"] == [1.0, 1.0]
+
+
+def test_stratify_robustness_unmapped_sample_raises():
+    samples = [[_strat_sample("s0"), _strat_sample("s9")]]
+    with pytest.raises(ValueError, match="no 'scanner' group"):
+        stratify_robustness("midog", {"e": samples}, {"s0": "A"}, stratify_by="scanner")
+
+
+def test_resolve_stratify_maps_prefers_dedicated_axes(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,scanner,tumor_type,domain\nr1,S1,T1,T1\nr2,S2,T2,T2\n")
+    axes = resolve_stratify_maps(p)
+    # Both dedicated axes usable -> scanner headline + tumor_type secondary, no derived domain.
+    assert set(axes) == {"scanner", "tumor_type"}
+    assert axes["scanner"] == {"r1": "S1", "r2": "S2"}
+
+
+def test_resolve_stratify_maps_falls_back_to_domain(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    # scanner single-valued and tumor_type blank on one row -> both unusable; domain works.
+    p.write_text("sample_id,scanner,tumor_type,domain\nr1,S1,T1,d1\nr2,S1,,d2\n")
+    axes = resolve_stratify_maps(p)
+    assert set(axes) == {"domain"}
+    assert axes["domain"] == {"r1": "d1", "r2": "d2"}
+
+
+def test_resolve_stratify_maps_single_group_yields_nothing(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,scanner,domain\nr1,S1,d1\nr2,S1,d1\n")
+    assert resolve_stratify_maps(p) == {}
+
+
+def test_resolve_stratify_maps_keys_tiled_rows_by_parent_roi(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,source_wsi,scanner\nr1_t0,r1,S1\nr1_t1,r1,S1\nr2_t0,r2,S2\n")
+    assert resolve_stratify_maps(p)["scanner"] == {"r1": "S1", "r2": "S2"}
+
+
+def test_resolve_stratify_maps_rejects_inconsistent_roi(tmp_path: Path):
+    p = tmp_path / "dataset.csv"
+    p.write_text("sample_id,source_wsi,scanner\nr1_t0,r1,S1\nr1_t1,r1,S2\nr2_t0,r2,S2\n")
+    with pytest.raises(ValueError, match="inconsistent 'scanner'"):
+        resolve_stratify_maps(p)
+
+
+def test_report_carries_robustness_block():
+    cell = Cell(
+        encoder="a", dataset="midog", metric_name="f1", per_replicate=(0.5,), mean=0.5,
+        std=0.0, n_replicates=1, replicate_axis="seeds", test_source="local_holdout",
+    )
+    block = {"midog": {"scanner": {"stratify_by": "scanner"}}}
+    report = build_ranking_report([cell], roster=(RosterEntry("a"),), robustness=block)
+    assert report["robustness"] == block
+    # Omitting it keeps the empty-block schema.
+    assert build_ranking_report([cell], roster=(RosterEntry("a"),))["robustness"] == {}
+
+
+def test_driver_collect_robustness_from_disk(tmp_path: Path):
+    m = _load_driver()
+    out, data = tmp_path / "out", tmp_path / "data"
+    cur = data / "midog" / "curated"
+    cur.mkdir(parents=True)
+    (cur / "dataset.csv").write_text("sample_id,source_wsi,scanner\nr1_t0,r1,S1\nr2_t0,r2,S2\n")
+    # Stitched predictions are per-ROI (r1/r2). virchow2 is robust; uni2 fails on S2.
+    for enc, s2_matched in (("virchow2", True), ("uni2", False)):
+        for rid in (0, 1):
+            cd = m.cell_dir(out, "midog", enc, rid)
+            cd.mkdir(parents=True)
+            samples = [_strat_sample("r1"), _strat_sample("r2", matched=s2_matched)]
+            write_cell_predictions(
+                cd / "predictions.json",
+                CellPredictions(enc, "midog", rid, "f1", 0.25, samples),
+            )
+    rob = m.collect_robustness(
+        out, data, (RosterEntry("virchow2"), RosterEntry("uni2")), ["midog"]
+    )
+    scanner = rob["midog"]["scanner"]
+    assert scanner["per_encoder"]["virchow2"]["spread"] == pytest.approx(0.0)
+    assert scanner["per_encoder"]["uni2"]["spread"] == pytest.approx(1.0)
+    assert scanner["per_encoder"]["uni2"]["worst_group"] == "S2"
+    assert scanner["per_encoder"]["uni2"]["per_group"]["S1"]["per_replicate"] == [1.0, 1.0]
+    # No usable axis (or no curated manifest) -> dataset simply absent.
+    assert m.collect_robustness(out, tmp_path / "nowhere", (RosterEntry("virchow2"),), ["midog"]) == {}

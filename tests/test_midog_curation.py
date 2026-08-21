@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from soma.curation import Curator, curate_midog_detection
 from soma.curation.midog import (
@@ -28,9 +29,12 @@ from soma.dataset import DetectionManifest, Splits
 def _write_midog_raw(raw_root: Path, images: list[dict]) -> Path:
     """Write a synthetic MIDOG 2022 COCO layout under ``raw_root``.
 
-    ``images`` is a list of specs, each with ``file_name`` and optional
-    ``tumortype`` / ``scanner`` / ``patient_id`` / ``spacing`` and a ``boxes`` list of
-    ``(x, y, w, h, category_id)`` COCO boxes.
+    ``images`` is a list of specs, each with ``file_name``, optional ``width`` / ``height``
+    (default 100), optional ``tumortype`` / ``scanner`` / ``patient_id`` / ``spacing`` and a
+    ``boxes`` list of ``(x, y, w, h, category_id)`` where ``(x, y)`` is the top-left and
+    ``w, h`` the box extent. Boxes are written to the JSON as MIDOG **corner** boxes
+    ``[x, y, x+w, y+h]`` (``xyxy``, the curator's real convention); the xyxy centre equals
+    the xywh centre so centre assertions are unchanged.
     """
     images_dir = raw_root / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
@@ -39,14 +43,18 @@ def _write_midog_raw(raw_root: Path, images: list[dict]) -> Path:
     ann_id = 1
     for image_id, spec in enumerate(images, start=1):
         (images_dir / spec["file_name"]).write_bytes(b"")  # never decoded here
-        entry = {"id": image_id, "file_name": spec["file_name"], "width": 100, "height": 100}
+        entry = {
+            "id": image_id, "file_name": spec["file_name"],
+            "width": spec.get("width", 100), "height": spec.get("height", 100),
+        }
         for key in ("tumortype", "scanner", "patient_id", "spacing"):
             if key in spec:
                 entry[key] = spec[key]
         coco_images.append(entry)
         for (x, y, w, h, category_id) in spec.get("boxes", []):
             coco_annotations.append(
-                {"id": ann_id, "image_id": image_id, "category_id": category_id, "bbox": [x, y, w, h]}
+                {"id": ann_id, "image_id": image_id, "category_id": category_id,
+                 "bbox": [x, y, x + w, y + h]}  # corner box (xyxy)
             )
             ann_id += 1
     coco = {
@@ -281,3 +289,50 @@ def test_recuration_is_byte_identical(tmp_path: Path):
     curate_midog_detection(raw, other, spacing_at_level_0=0.5)
     for name in ("splits.csv", "summary.json"):
         assert (other / name).read_bytes() == before[name], f"{name} differs across dirs"
+
+
+def test_bbox_format_guard_rejects_corner_boxes_read_as_xywh(tmp_path: Path):
+    # MIDOG ships ~50px corner boxes [x1,y1,x2,y2]; on a real (large) ROI the far corner is a
+    # ~thousands-px coordinate, so reading them as COCO xywh treats that coordinate as the box
+    # width -> absurd sizes. Default (xyxy) curation proceeds; forcing xywh must fail loudly.
+    raw = _write_midog_raw(
+        tmp_path / "raw",
+        [{"file_name": "001.png", "patient_id": "p1", "width": 4000, "height": 4000, "boxes": [
+            (500, 500, 50, 50, 1), (1000, 1000, 50, 50, 1), (2000, 2000, 50, 50, 1)]}],
+    )
+    with pytest.raises(ValueError, match="implausible median side"):
+        curate_midog_detection(raw, tmp_path / "bad", bbox_format="xywh")
+    # The curator default is xyxy, so no bbox_format need be passed for real MIDOG data.
+    curate_midog_detection(raw, tmp_path / "ok")
+    assert (tmp_path / "ok" / "dataset.csv").is_file()
+
+
+def test_bbox_bounds_guard_catches_small_image_misread(tmp_path: Path):
+    # The median-side guard alone can miss a wrong format on a small image (the far corner is
+    # a small number). The per-centre in-bounds check is the backstop: a 40px corner box on a
+    # 200px image read as xywh puts the centre 45px outside the image -> gross-OOB raise.
+    raw = _write_midog_raw(
+        tmp_path / "raw",
+        [{"file_name": "001.png", "patient_id": "p1", "width": 200, "height": 200,
+          "boxes": [(150, 150, 40, 40, 1)]}],  # xyxy [150,150,190,190]; xywh centre (245,245)
+    )
+    with pytest.raises(ValueError, match="outside their image"):
+        curate_midog_detection(raw, tmp_path / "bad", bbox_format="xywh")
+    curate_midog_detection(raw, tmp_path / "ok")  # xyxy centre (170,170) is in-bounds
+    assert (tmp_path / "ok" / "dataset.csv").is_file()
+
+
+def test_edge_annotation_clamped_and_counted(tmp_path: Path):
+    # A genuine sub-pixel edge overhang (centre a hair past an edge) is clamped into the frame
+    # and counted, not rejected — mirrors MIDOG's single edge mitosis.
+    raw = _write_midog_raw(
+        tmp_path / "raw",
+        [{"file_name": "001.png", "patient_id": "p1", "width": 100, "height": 100,
+          "boxes": [(-3, 40, 2, 4, 1)]}],  # xyxy [-3,40,-1,44] -> centre (-2, 42), 2px past left
+    )
+    out = tmp_path / "curated"
+    curate_midog_detection(raw, out)
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["num_edge_clamped"] == 1
+    pts = pd.read_csv(out / "points" / "midog_001.csv")
+    assert (pts["x"] >= 0).all() and (pts["y"] >= 0).all()  # clamped into frame
