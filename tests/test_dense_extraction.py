@@ -395,3 +395,33 @@ def test_constructor_rejects_an_unencodable_recipe(tmp_path: Path, kwargs, match
     dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
     with pytest.raises(ValueError, match=match):
         _extractor(dataset, tmp_path, **kwargs)
+
+
+# --- cross-process extraction lock ---------------------------------------------------
+
+
+def test_extract_lock_is_a_noop_without_the_env(monkeypatch):
+    from soma.dense_extraction import DENSE_EXTRACT_LOCK_ENV, _dense_extract_lock
+
+    monkeypatch.delenv(DENSE_EXTRACT_LOCK_ENV, raising=False)
+    with _dense_extract_lock():
+        pass  # nothing created, nothing locked
+
+
+def test_extract_lock_serializes_holders(tmp_path: Path, monkeypatch):
+    import fcntl
+
+    from soma.dense_extraction import DENSE_EXTRACT_LOCK_ENV, _dense_extract_lock
+
+    lock_path = tmp_path / "locks" / "extract.lock"
+    monkeypatch.setenv(DENSE_EXTRACT_LOCK_ENV, str(lock_path))
+    with _dense_extract_lock():
+        assert lock_path.is_file()
+        # A second taker cannot acquire the lock while the burst is live.
+        with open(lock_path, "w") as probe:
+            with pytest.raises(OSError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    # Released on exit: the probe now succeeds.
+    with open(lock_path, "w") as probe:
+        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(probe, fcntl.LOCK_UN)

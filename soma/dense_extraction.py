@@ -20,6 +20,8 @@ patch-aligned windows and blends the token grids.
 from __future__ import annotations
 
 import logging
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 from slide2vec.api import DenseImageOptions, ImageSpec, Model
@@ -48,6 +50,47 @@ from soma.slide2vec_adapter import build_execution_options
 logger = logging.getLogger(__name__)
 
 _PAD_MODES = {"reflect", "constant", "zero", "replicate"}
+
+# Env var naming a lock file that serializes dense-extraction bursts across processes.
+DENSE_EXTRACT_LOCK_ENV = "SOMA_DENSE_EXTRACT_LOCK"
+
+
+@contextmanager
+def _dense_extract_lock():
+    """Hold an exclusive cross-process lock over the extraction burst, if configured.
+
+    Extraction is the memory-heaviest stage soma runs: encoder weights plus spawned
+    loader workers plus a sustained dirty-page write burst into the feature cache. On a
+    shared node whose container carries a memory cap, two concurrent extractions can push
+    the cgroup over the cap and get OOM-killed — while training (read-mostly, clean page
+    cache) coexists fine. Pointing :data:`DENSE_EXTRACT_LOCK_ENV` at a lock file shared
+    by every run on the node makes each process hold an exclusive ``flock`` for the
+    duration of its burst, so at most one extraction runs at a time; unset (the default)
+    this is a no-op. The wait is blocking and logged, and the lock releases before
+    training starts, so serialization costs idle time only while another burst is live.
+    """
+    lock_path = os.environ.get(DENSE_EXTRACT_LOCK_ENV)
+    if not lock_path:
+        yield
+        return
+    import fcntl
+
+    path = Path(lock_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            logger.info(
+                "Waiting for the dense-extraction lock at %s (another extraction is running)",
+                path,
+            )
+            print(f"… waiting for dense-extraction lock: {path}")
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 class DenseTileFeatureExtractor:
@@ -275,42 +318,43 @@ class DenseTileFeatureExtractor:
                 return DenseFeatureStore(payload_dir)
             records = [record for record in records if record.sample_id in wanted]
 
-        model = Model.from_preset(
-            self._encoder.name,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-        )
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
-            encoder_name=self._encoder.name,
-            output_dir=out_root,
-            num_gpus=self._execution.num_gpus,
-            save_tile_embeddings=True,
-            # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved value,
-            # so the on-disk grid is cast to exactly the dtype folded into the cache key
-            # above (key and storage can never drift).
-            output_dtype=dense_dtype,
-        )
-        logger.info(
-            "Encoding %d tiles into dense grids with '%s' at target_size=%s, patch=%s -> grid %s",
-            len(records),
-            self._encoder.name,
-            self._target_size,
-            patch_size,
-            geometry.grid_shape,
-        )
-        artifacts = model.embed_images_dense(
-            [
-                ImageSpec(
-                    sample_id=str(record.sample_id),
-                    image_path=record.image_path,
-                    spacing_at_level_0=record.spacing_at_level_0,
-                )
-                for record in records
-            ],
-            dense=self._dense_options(),
-            execution=execution,
-        )
+        with _dense_extract_lock():
+            model = Model.from_preset(
+                self._encoder.name,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            )
+            execution = build_execution_options(
+                self._encoder,
+                execution=self._execution,
+                encoder_name=self._encoder.name,
+                output_dir=out_root,
+                num_gpus=self._execution.num_gpus,
+                save_tile_embeddings=True,
+                # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved
+                # value, so the on-disk grid is cast to exactly the dtype folded into the
+                # cache key above (key and storage can never drift).
+                output_dtype=dense_dtype,
+            )
+            logger.info(
+                "Encoding %d tiles into dense grids with '%s' at target_size=%s, patch=%s -> grid %s",
+                len(records),
+                self._encoder.name,
+                self._target_size,
+                patch_size,
+                geometry.grid_shape,
+            )
+            artifacts = model.embed_images_dense(
+                [
+                    ImageSpec(
+                        sample_id=str(record.sample_id),
+                        image_path=record.image_path,
+                        spacing_at_level_0=record.spacing_at_level_0,
+                    )
+                    for record in records
+                ],
+                dense=self._dense_options(),
+                execution=execution,
+            )
 
         if cache_resolution is not None and artifacts:
             cache_resolution = record_feature_dim(
