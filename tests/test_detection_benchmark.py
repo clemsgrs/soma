@@ -896,3 +896,57 @@ def test_driver_collect_robustness_from_disk(tmp_path: Path):
     assert scanner["per_encoder"]["uni2"]["per_group"]["S1"]["per_replicate"] == [1.0, 1.0]
     # No usable axis (or no curated manifest) -> dataset simply absent.
     assert m.collect_robustness(out, tmp_path / "nowhere", (RosterEntry("virchow2"),), ["midog"]) == {}
+
+
+# --- recorded-OCELOT merge driver (#375) ---------------------------------------------
+
+MERGER = REPO_ROOT / "examples" / "detection_benchmark" / "report_with_recorded_ocelot.py"
+
+
+def _load_merger():
+    spec = importlib.util.spec_from_file_location("db_recorded_merge", MERGER)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_recorded_ocelot_merge_builds_cross_dataset_report(tmp_path: Path):
+    m2 = _load_merger()
+    out = tmp_path / "out"
+    # Two fresh midog cells on disk (roster encoders, one seed each).
+    for enc, f1 in (("virchow2", 0.6), ("dinov2-vitb14", 0.4)):
+        cd = out / "midog" / enc / "replicate_0"
+        cd.mkdir(parents=True)
+        (cd / "metrics.json").write_text(json.dumps({"test": {"f1": f1}}))
+    report = m2.build_full_report(out, datasets=["midog"])
+
+    # Both datasets ranked; ocelot's ranking is the full recorded 7-encoder table.
+    per_dataset = report["ranking"]["per_dataset"]
+    assert set(per_dataset) == {"midog", "ocelot"}
+    ocelot_rank = {r["encoder"]: r["rank"] for r in per_dataset["ocelot"]["test"]}
+    assert len(ocelot_rank) == 7
+    assert ocelot_rank["genbio-pathfm"] == 1
+    assert ocelot_rank["dinov2-vitb14"] == 7
+
+    # The cross-dataset pair correlates over the encoders present in both.
+    pair = report["ranking"]["rank_consistency"]["pairs"]["ocelot|midog"]
+    assert pair["n"] == 2
+    assert pair["spearman"] == pytest.approx(1.0)  # virchow2 > dinov2 on both
+
+    # Recorded cells are labeled as such, and provenance is carried in config.
+    ocelot_cells = [c for c in report["cells"] if c["dataset"] == "ocelot"]
+    assert len(ocelot_cells) == 7
+    assert all(c["test_source"] == "local_holdout:recorded@54601e4" for c in ocelot_cells)
+    assert all(c["per_replicate"] == [] for c in ocelot_cells)
+    assert report["config"]["recorded_cells"]["ocelot"]["git_sha"] == "54601e4"
+
+    # Stability/robustness never cover the recorded dataset.
+    assert "ocelot" not in report["ranking"]["stability"]
+    assert "ocelot" not in report["robustness"]
+
+
+def test_recorded_ocelot_merge_refuses_ocelot_from_disk(tmp_path: Path):
+    m2 = _load_merger()
+    with pytest.raises(ValueError, match="recorded"):
+        m2.build_full_report(tmp_path, datasets=["ocelot", "midog"])
