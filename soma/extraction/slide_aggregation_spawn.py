@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 import queue as py_queue
 import tempfile
+import time
 from pathlib import Path
 from typing import Callable
 
 import torch
 
 from soma.extraction.orchestration import _aggregate_tiles
+
+# How long to keep draining the result queue after every worker process has
+# exited, before treating missing "result" messages as a failure.
+RESULT_DRAIN_GRACE_SECONDS = 30.0
 
 
 def _aggregate_slide_shard_worker(
@@ -162,10 +167,25 @@ def spawn_slide_aggregation_workers(
     completed_workers = 0
     written_ids: set[str] = set()
     feature_dim: int | None = None
+    # Once every worker process has exited, allow a short grace period for
+    # in-flight queue messages before deciding results are missing.
+    workers_exited_at: float | None = None
     while completed_workers < num_workers:
         try:
             message = result_queue.get(timeout=0.2)
         except py_queue.Empty:
+            # A worker that dies before sending "result" would otherwise leave
+            # this loop polling forever with the failure invisible: join(0)
+            # re-raises the worker's exception (or reports its signal/exit code).
+            if not process_ctx.join(timeout=0):
+                continue
+            if workers_exited_at is None:
+                workers_exited_at = time.monotonic()
+            if time.monotonic() - workers_exited_at > RESULT_DRAIN_GRACE_SECONDS:
+                raise RuntimeError(
+                    f"slide-aggregation workers all exited but only "
+                    f"{completed_workers}/{num_workers} reported results"
+                )
             continue
         if not isinstance(message, dict):
             continue
