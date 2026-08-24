@@ -32,9 +32,11 @@ def test_pyproject_has_publish_ready_metadata():
 
 
 def test_slide2vec_minimum_includes_public_encoder_capabilities_api():
+    # slide2vec 5.8.2 patches TITAN's remote code so slide aggregation survives fp16
+    # tile features and bounded ALiBi bias memory; 5.8.1 crashed or OOM'd from ~20k tiles.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=5.8.1" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=5.8.2" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_includes_fast_tiling_previews():
