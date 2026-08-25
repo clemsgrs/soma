@@ -396,6 +396,33 @@ def test_sweep_thresholds_picks_separating_value():
     assert 0.2 < thr[0] <= 0.9
 
 
+def test_sweep_thresholds_survives_junk_dominated_candidate_pool():
+    # Threshold-0 decoding floods the pool with near-zero junk peaks (MIDOG regression):
+    # with quantile-only candidates every quantile lands in the junk mass, the mid-range
+    # where F1 peaks is never evaluated, and the sweep freezes a near-zero threshold.
+    # 40 images, one GT + one well-scored true peak each, plus 500 junk peaks per image
+    # far from GT with scores <= 0.01. True-peak scores spread over [0.5, 0.9]; the
+    # junk-range optimum (keep everything) and the max-score bracket (keep one peak)
+    # are both far worse than any mid-range cut.
+    rng_scores = np.linspace(0.5, 0.9, 40)
+    pred_xy, pred_cls, pred_score, gt_xy, gt_cls = [], [], [], [], []
+    for k, true_score in enumerate(rng_scores):
+        junk_xy = np.stack(
+            [1000.0 + 5.0 * np.arange(500), np.full(500, 1000.0 + k)], axis=1
+        )
+        junk_scores = np.linspace(1e-4, 0.01, 500)
+        pred_xy.append(np.concatenate([[[5.0, 5.0]], junk_xy]))
+        pred_cls.append(np.zeros(501, dtype=np.int64))
+        pred_score.append(np.concatenate([[true_score], junk_scores]))
+        gt_xy.append(np.array([[5.0, 5.0]]))
+        gt_cls.append(np.array([0]))
+    thr = sweep_score_thresholds(
+        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0
+    )
+    # Any threshold in (0.01, 0.5] keeps all 40 true peaks and no junk -> F1 = 1.0.
+    assert 0.01 < thr[0] <= 0.5
+
+
 def test_sweep_thresholds_suppresses_all_false_positive_class():
     # A class with GT but whose only predictions are far-away false positives: the best
     # operating point emits nothing, so the chosen threshold must drop every prediction.
