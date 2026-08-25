@@ -80,6 +80,9 @@ training:
   monitor_mode: max
   batch_size: 1
   gradient_accumulation: 8
-  num_workers: 4
+  # Epochs are CPU-bound on dense-grid deserialization (the fp16 grids sit in the ZFS
+  # ARC after epoch 1, so disk is not the limit). 8 workers ≈ half the node's cores,
+  # sized for two concurrent trainings; persistent workers skip the per-epoch respawn.
+  num_workers: 8
   pin_memory: true
-  persistent_workers: false
+  persistent_workers: true
