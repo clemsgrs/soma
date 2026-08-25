@@ -306,15 +306,26 @@ def sweep_score_thresholds(
 ) -> list[float]:
     """Pick the per-class score threshold maximizing dataset-global per-class F1.
 
-    Run on the **tune** split: for each class, the candidate thresholds are quantiles
-    of that class's predicted scores; at each candidate, predictions below it are
-    dropped (all images), the chosen ``method`` is re-run, and the threshold with the
-    best pooled F1 is frozen. Returns a length-``C`` list applied unchanged at test.
+    Run on the **tune** split: for each class the candidate grid unions three sources —
+    quantiles of that class's predicted scores, a uniform grid over the observed score
+    range, and quantiles of the scores of predictions lying within ``delta`` of a
+    same-class GT point. At each candidate, predictions below it are dropped (all
+    images), the chosen ``method`` is re-run, and the threshold with the best pooled F1
+    is frozen. Returns a length-``C`` list applied unchanged at test.
+
+    Score quantiles alone starve when the candidate pool is decoded at threshold 0 and
+    junk local maxima dominate it (MIDOG-style heatmaps yield hundreds of near-zero
+    peaks per tile): every quantile then lands in the junk mass, the mid-range where F1
+    peaks is never evaluated, and the sweep freezes a near-zero threshold that floods
+    test with false positives. The uniform grid covers the value range regardless of
+    where the probability mass sits, and the GT-anchored quantiles target the scores
+    where the F1 curve actually breaks.
 
     Tuning each class independently is exact for the dataset-global metric because the
     per-class F1 only depends on that class's own predictions (class-aware matching).
     """
     n_images = len(per_image_pred_xy)
+    delta_sq = float(delta) * float(delta)
     thresholds: list[float] = []
     for c in range(int(num_classes)):
         # Gather this class's scores across all tune images for candidate thresholds.
@@ -329,16 +340,40 @@ def sweep_score_thresholds(
         if class_scores.size == 0:
             thresholds.append(0.0)
             continue
+        # Scores of this class's predictions within delta of a same-class GT point: the
+        # potential true positives whose scores are the F1 curve's breakpoints.
+        near_gt_scores: list[np.ndarray] = []
+        for i in range(n_images):
+            cls_i = np.asarray(per_image_pred_class[i]).reshape(-1).astype(np.int64)
+            sel = cls_i == c
+            if not np.any(sel):
+                continue
+            gcls = np.asarray(per_image_gt_class[i]).reshape(-1).astype(np.int64)
+            gxy = np.asarray(per_image_gt_xy[i], dtype=np.float64).reshape(-1, 2)[gcls == c]
+            if gxy.shape[0] == 0:
+                continue
+            xy_i = np.asarray(per_image_pred_xy[i], dtype=np.float64).reshape(-1, 2)[sel]
+            sc_i = np.asarray(per_image_pred_score[i], dtype=np.float64).reshape(-1)[sel]
+            d_sq = ((xy_i[:, None, :] - gxy[None, :, :]) ** 2).sum(axis=2).min(axis=1)
+            near_gt_scores.append(sc_i[d_sq <= delta_sq])
         quantiles = np.linspace(0.0, 1.0, int(num_candidates))
-        candidates = np.unique(np.quantile(class_scores, quantiles))
+        lo, hi = float(class_scores.min()), float(class_scores.max())
+        grids = [
+            np.quantile(class_scores, quantiles),
+            np.linspace(lo, hi, int(num_candidates)),
+        ]
+        near = (
+            np.concatenate(near_gt_scores) if near_gt_scores else np.zeros((0,))
+        )
+        if near.size:
+            grids.append(np.quantile(near, quantiles))
+        candidates = np.unique(np.concatenate(grids))
         # Bracket the observed scores (candidates are ascending): a just-below-min option
         # keeps everything, a just-above-max option suppresses the class entirely (keep is
         # ``score >= thr``). The latter lets a class whose tune predictions are all false
         # positives pick the zero-FP operating point instead of being forced to emit its
         # top peak.
-        candidates = np.concatenate(
-            [[float(class_scores.min()) - 1e-6], candidates, [float(class_scores.max()) + 1e-6]]
-        )
+        candidates = np.concatenate([[lo - 1e-6], candidates, [hi + 1e-6]])
 
         best_thr, best_f1 = float(candidates[0]), -1.0
         for thr in candidates:
