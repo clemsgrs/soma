@@ -17,12 +17,18 @@ import pytest
 import torch
 from PIL import Image
 
-from soma.config import DecoderConfig, EvalConfig, TaskConfig, TrainingConfig
+from soma.config import (
+    DecoderConfig,
+    EvalConfig,
+    PatientOOFConfig,
+    TaskConfig,
+    TrainingConfig,
+)
 from soma.dataset import SegmentationManifest, Splits
 from soma.dense import DenseFeatureStore
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
-from soma.pipeline import train_one_segmentation_fold
+from soma.pipeline import train, train_one_segmentation_fold
 
 NUM_CLASSES = 2
 TARGET = 8
@@ -37,6 +43,7 @@ def _build_dense_run(
     grid_spacing_um: float | None = None,
     num_classes: int = NUM_CLASSES,
     train_count: int = 2,
+    patient_ids: list[str] | None = None,
 ) -> tuple[SegmentationManifest, Splits, DenseFeatureStore]:
     dense_dir = root / "dense"
     masks_dir = root / "masks"
@@ -63,11 +70,21 @@ def _build_dense_run(
         rows.append((sid, f"{sid}.jpg", str(label_mask_path)))
 
     manifest_csv = root / "manifest.csv"
-    manifest_csv.write_text(
-        "sample_id,image_path,label_mask_path\n"
-        + "\n".join(f"{sid},{img},{mask}" for sid, img, mask in rows)
-        + "\n"
-    )
+    if patient_ids is None:
+        manifest_csv.write_text(
+            "sample_id,image_path,label_mask_path\n"
+            + "\n".join(f"{sid},{img},{mask}" for sid, img, mask in rows)
+            + "\n"
+        )
+    else:
+        manifest_csv.write_text(
+            "sample_id,image_path,label_mask_path,patient_id\n"
+            + "\n".join(
+                f"{sid},{img},{mask},{patient_id}"
+                for (sid, img, mask), patient_id in zip(rows, patient_ids, strict=True)
+            )
+            + "\n"
+        )
     splits_csv = root / "splits.csv"
     split_assign = {
         sid: (
@@ -191,6 +208,165 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     assert raster.max() < NUM_CLASSES
     # Overlays are fail-soft: the cached-feature fixture has no real source tiles.
     assert not (fold / "pred_overlays" / "test" / "s3.png").exists()
+
+
+def test_selected_checkpoint_exports_additive_tune_patient_confusion(tmp_path: Path):
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits, store = _build_dense_run(
+        tmp_path,
+        sample_ids,
+        num_classes=4,
+        patient_ids=["p0", "p0", "p1", "p2"],
+    )
+    fold_dir = tmp_path / "fold"
+
+    train_one_segmentation_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=fold_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(
+            metrics=["mean_dice"],
+            patient_oof=PatientOOFConfig(
+                arm="uniform",
+                spacing_exception_patient_ids=["p0", "p1", "p2"],
+                expected_patient_count=4,
+                expected_spacing_sensitivity_patient_count=1,
+            ),
+        ),
+        fold=0,
+    )
+
+    payload = __import__("json").loads((fold_dir / "patient_confusions_tune.json").read_text())
+    assert payload["arm"] == "uniform"
+    assert payload["fold"] == 0
+    assert payload["class_mapping"] == {
+        "0": "class_0",
+        "1": "class_1",
+        "2": "class_2",
+        "3": "class_3",
+    }
+    assert len(payload["patients"]) == 1
+    patient = payload["patients"][0]
+    assert patient["patient_id"] == "p1"
+    assert patient["contributing_slides"] == ["s2"]
+    assert patient["contributing_rois"] == ["s2"]
+    assert patient["annotated_pixel_count"] == TARGET * TARGET
+    assert len(patient["confusion_matrix"]) == 4
+    assert all(len(row) == 4 for row in patient["confusion_matrix"])
+    assert sum(sum(row) for row in patient["confusion_matrix"]) == TARGET * TARGET
+
+
+def test_patient_oof_export_rejects_tune_roi_without_patient_metadata(tmp_path: Path):
+    manifest, splits, store = _build_dense_run(
+        tmp_path, ["s0", "s1", "s2", "s3"], num_classes=4
+    )
+
+    with pytest.raises(ValueError, match="requires patient_id.*tune ROI"):
+        train_one_segmentation_fold(
+            feature_store=store,
+            dataset=manifest,
+            fold_split=splits.folds[0],
+            task=TaskConfig(name="segmentation", params={"num_classes": 4}),
+            training=TrainingConfig(epochs=1, batch_size=2),
+            fold_dir=tmp_path / "fold",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            evaluation=EvalConfig(
+                metrics=["mean_dice"],
+                patient_oof=PatientOOFConfig(
+                    arm="uniform",
+                    spacing_exception_patient_ids=["coarse_a", "coarse_b", "coarse_c"],
+                    expected_patient_count=4,
+                    expected_spacing_sensitivity_patient_count=1,
+                ),
+            ),
+            fold=0,
+        )
+
+
+def _run_patient_oof_cv(tmp_path: Path):
+    sample_ids = ["s0", "s1", "s2", "s3", "external"]
+    manifest, _, store = _build_dense_run(
+        tmp_path,
+        sample_ids,
+        num_classes=4,
+        patient_ids=["p0", "p1", "p2", "p3", "p_external"],
+    )
+    split_rows = [
+        # Fold 0 holds out p0/p1 for tune. The external patient is never development tune.
+        (0, "s0", "tune"),
+        (0, "s1", "tune"),
+        (0, "s2", "train"),
+        (0, "s3", "test"),
+        (0, "external", "test_external"),
+        # Fold 1 holds out p2/p3, completing four unique development patients.
+        (1, "s0", "train"),
+        (1, "s1", "test"),
+        (1, "s2", "tune"),
+        (1, "s3", "tune"),
+        (1, "external", "test_external"),
+    ]
+    splits_path = tmp_path / "cv_splits.csv"
+    splits_path.write_text(
+        "sample_id,split,fold\n"
+        + "\n".join(f"{sample},{split},{fold}" for fold, sample, split in split_rows)
+        + "\n"
+    )
+    splits = Splits(splits_path, manifest)
+    run_dir = tmp_path / "run"
+    evaluation = EvalConfig(
+        metrics=["mean_dice"],
+        patient_oof=PatientOOFConfig(
+            arm="uniform",
+            spacing_exception_patient_ids=["p0", "p1", "p2"],
+            expected_patient_count=4,
+            expected_spacing_sensitivity_patient_count=1,
+        ),
+    )
+    train_kwargs = {
+        "feature_store": store,
+        "dataset": manifest,
+        "splits": splits,
+        "dataset_type": "segmentation",
+        "task": TaskConfig(name="segmentation", params={"num_classes": 4}),
+        "training": TrainingConfig(epochs=1, batch_size=2),
+        "run_dir": run_dir,
+        "decoder": DecoderConfig(name="lightweight_conv"),
+        "evaluation": evaluation,
+    }
+
+    return train(**train_kwargs), run_dir, train_kwargs
+
+
+def test_train_collects_complete_tune_oof_report(tmp_path: Path) -> None:
+    result, run_dir, _ = _run_patient_oof_cv(tmp_path)
+
+    report = json.loads((run_dir / "patient_oof_report.json").read_text())
+    assert report["coverage"] == {
+        "status": "complete",
+        "expected_patient_count": 4,
+        "observed_patient_count": 4,
+        "exactly_once": True,
+    }
+    assert report["spacing_sensitivity"]["patient_count"] == 1
+    assert report["bootstrap"]["seed"] == 0
+    assert report["bootstrap"]["draws"] == 10_000
+    assert result.summary["oof/fold_macro_class_dice"] == report[
+        "fold_macro_class_dice"
+    ]
+    assert (run_dir / "fold_0" / "patient_confusions_tune.json").is_file()
+
+
+def test_train_rejects_missing_fold_patient_evidence_on_resume(tmp_path: Path) -> None:
+    _, run_dir, train_kwargs = _run_patient_oof_cv(tmp_path)
+    missing_path = run_dir / "fold_1" / "patient_confusions_tune.json"
+    missing_path.unlink()
+
+    with pytest.raises(ValueError, match="requires every fold artifact.*fold_1"):
+        train(**train_kwargs)
 
 
 def test_segmentation_fold_requires_num_classes(tmp_path: Path):

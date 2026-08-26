@@ -18,6 +18,7 @@ from soma.config import (
     HeatmapConfig,
     MasksConfig,
     NormalizationConfig,
+    PatientOOFConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
@@ -25,6 +26,7 @@ from soma.config import (
     SamplingConfig,
     TaskConfig,
     TrainingConfig,
+    config_yaml_dict,
 )
 from soma.output_layout import (
     ExperimentSpec,
@@ -150,6 +152,30 @@ def test_canonical_experiment_payload_omits_default_roi_batch_sampling(tmp_path:
 
     assert "roi_batch_sampling" not in payload["training"]
     assert "roi_draws_per_epoch" not in payload["training"]
+
+
+def test_patient_oof_reporting_is_identity_neutral_but_persisted(tmp_path: Path):
+    ordinary = _make_pipeline_config(tmp_path)
+    patient_oof = _make_pipeline_config(
+        tmp_path,
+        evaluation=EvalConfig(
+            patient_oof=PatientOOFConfig(
+                arm="class_conditioned",
+                spacing_exception_patient_ids=["coarse_a", "coarse_b", "coarse_c"],
+            )
+        ),
+    )
+
+    assert "patient_oof" not in canonical_experiment_payload(ordinary)["evaluation"]
+    assert build_experiment_spec(patient_oof).experiment_id == build_experiment_spec(
+        ordinary
+    ).experiment_id
+    assert config_yaml_dict(patient_oof)["evaluation"]["patient_oof"] == {
+        "arm": "class_conditioned",
+        "spacing_exception_patient_ids": ["coarse_a", "coarse_b", "coarse_c"],
+        "expected_patient_count": 527,
+        "expected_spacing_sensitivity_patient_count": 524,
+    }
 
 
 def test_pipeline_config_rejects_roi_batch_sampling_outside_cached_segmentation(

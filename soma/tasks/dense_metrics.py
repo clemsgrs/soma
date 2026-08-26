@@ -28,6 +28,8 @@ __all__ = [
     "cross_entropy_dice_loss",
     "segmentation_loss",
     "dense_confusion_counts",
+    "dense_confusion_matrices",
+    "reduce_confusion_matrix_dice",
     "reduce_dice_iou",
 ]
 
@@ -267,10 +269,67 @@ def dense_confusion_counts(
     return counts
 
 
+def dense_confusion_matrices(
+    logits: Tensor,
+    mask: Tensor,
+    *,
+    num_classes: int,
+    ignore_index: int,
+) -> Tensor:
+    """Per-image full confusion matrices with rows=true and columns=predicted.
+
+    Returns integer ``(B, C, C)`` matrices. They are additive across ROIs, slides,
+    patients, and folds; ignored pixels contribute nowhere.
+    """
+    _validate_dense_shapes(logits, mask, num_classes)
+    pred = logits.argmax(dim=1)
+    valid = mask != ignore_index
+    matrices = torch.zeros(
+        logits.shape[0],
+        num_classes,
+        num_classes,
+        dtype=torch.long,
+        device=logits.device,
+    )
+    for batch_index in range(logits.shape[0]):
+        encoded = mask[batch_index][valid[batch_index]] * num_classes + pred[batch_index][
+            valid[batch_index]
+        ]
+        matrices[batch_index] = torch.bincount(
+            encoded, minlength=num_classes * num_classes
+        ).reshape(num_classes, num_classes)
+    return matrices
+
+
 def _nanmean_to_float(x: Tensor) -> float:
     """Mean over non-NaN entries; 0.0 if all entries are NaN (fully undefined)."""
     value = torch.nanmean(x)
     return 0.0 if torch.isnan(value) else float(value)
+
+
+def _dice_from_areas(intersection: Tensor, predicted: Tensor, target: Tensor) -> Tensor:
+    denominator = predicted + target
+    return torch.where(
+        denominator > 0,
+        2.0 * intersection / denominator,
+        torch.nan,
+    )
+
+
+def reduce_confusion_matrix_dice(matrix: Tensor) -> tuple[float, tuple[float, ...]]:
+    """Compute micro and per-class Dice from one additive ``(C, C)`` matrix."""
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(f"confusion matrix must be square, got {tuple(matrix.shape)}")
+    values = matrix.to(dtype=torch.float64)
+    true_positive = values.diag()
+    per_class = _dice_from_areas(
+        true_positive,
+        values.sum(dim=0),
+        values.sum(dim=1),
+    ).nan_to_num(nan=0.0)
+    total = values.sum()
+    micro = float(true_positive.sum() / total) if bool(total > 0) else 0.0
+    return micro, tuple(float(value) for value in per_class)
 
 
 def reduce_dice_iou(
@@ -291,14 +350,14 @@ def reduce_dice_iou(
     target = counts[..., 2].float()
     denom = pred + target
     union = pred + target - inter
-    dice = torch.where(denom > 0, 2.0 * inter / denom, torch.nan)  # (N, C)
+    dice = _dice_from_areas(inter, pred, target)  # (N, C)
     iou = torch.where(union > 0, inter / union, torch.nan)
 
     # Dataset-global per class: counts summed over images, then one Dice/IoU per
     # class (the paper's "DSC computed separately for each category"). NOT a
     # per-image average of per-image Dice — those diverge when image sizes vary.
-    g_inter, g_denom, g_union = inter.sum(0), denom.sum(0), union.sum(0)
-    per_class_dice = torch.where(g_denom > 0, 2.0 * g_inter / g_denom, torch.nan)
+    g_inter, g_union = inter.sum(0), union.sum(0)
+    per_class_dice = _dice_from_areas(g_inter, pred.sum(0), target.sum(0))
 
     if aggregation == "per_image_macro":
         mean_dice = _nanmean_to_float(torch.nanmean(dice, dim=1))

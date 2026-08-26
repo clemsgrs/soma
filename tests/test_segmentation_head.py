@@ -15,6 +15,7 @@ from soma.tasks import task_registry
 from soma.tasks.dense_metrics import (
     cross_entropy_dice_loss,
     dense_confusion_counts,
+    dense_confusion_matrices,
     focal_tversky_loss,
     reduce_dice_iou,
     segmentation_loss,
@@ -53,6 +54,25 @@ def test_dice_iou_exact_values_with_ignore_and_absent_class():
     assert out["dice_class_0"] == pytest.approx(2 / 3)
     assert out["dice_class_1"] == pytest.approx(2 / 3)
     assert out["dice_class_2"] == 0.0  # fully undefined -> reported 0.0
+
+
+def test_full_confusion_matrix_is_exact_and_excludes_ignore_pixels():
+    pred = torch.tensor([[[0, 2, 2], [1, 3, 3]]])
+    logits = F.one_hot(pred, 4).permute(0, 3, 1, 2).float()
+    mask = torch.tensor([[[0, 1, 2], [3, 255, 0]]])
+
+    matrix = dense_confusion_matrices(
+        logits, mask, num_classes=4, ignore_index=255
+    )
+
+    assert matrix.tolist() == [
+        [
+            [1, 0, 0, 1],
+            [0, 0, 1, 0],
+            [0, 0, 1, 0],
+            [0, 1, 0, 0],
+        ]
+    ]
 
 
 def test_per_class_dice_is_dataset_global_not_per_image_mean():
