@@ -52,6 +52,9 @@ def _training_identity(config: PipelineConfig) -> dict[str, Any]:
     # emitting the key unconditionally would re-mint every legacy experiment_id.
     if config.training.checkpoint_selection == "best":
         training.pop("checkpoint_selection", None)
+    if config.training.roi_batch_sampling is None:
+        training.pop("roi_batch_sampling", None)
+        training.pop("roi_draws_per_epoch", None)
     return training
 
 

@@ -14,13 +14,17 @@ from pathlib import Path
 import copy
 import math
 from numbers import Integral, Real
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from hs2p import PreviewConfig
 from hs2p.configs import TilingConfig
 
 from soma.evaluation.metrics import resolve_metrics
+
+
+RoiBatchSamplingStrategy = Literal["uniform", "class_conditioned"]
+ROI_BATCH_SAMPLING_STRATEGIES = frozenset({"uniform", "class_conditioned"})
 
 
 def _default_preview_config() -> PreviewConfig:
@@ -1080,6 +1084,15 @@ class TrainingConfig:
     and forbid per-encoder tuning. It is orthogonal to ``allow_missing_tune``: one
     says which checkpoint is evaluated, the other where the diagnostic tune split
     comes from, and neither implies the other.
+
+    ``roi_batch_sampling`` is an opt-in cached-segmentation training-batch
+    contract, separate from ``preprocessing.sampling`` (which creates ROI
+    coordinates before extraction). ``uniform`` traverses a shuffled ROI
+    collection; ``class_conditioned`` allocates every batch equally across the
+    four requested classes and weights eligible ROI selection by requested-class
+    annotated-pixel count. ``roi_draws_per_epoch`` fixes the common draw budget
+    for controlled arm comparisons. Selection never alters a chosen mask: the
+    ordinary segmentation loss still consumes every annotated pixel in the ROI.
     """
 
     seed: int = 0
@@ -1099,6 +1112,11 @@ class TrainingConfig:
     monitor: str = "tune_loss"
     monitor_mode: str = "min"
     batch_size: int = 1
+    # Explicit cached-segmentation training-batch contract.  This is intentionally
+    # separate from preprocessing.sampling, which creates ROI coordinates before
+    # feature extraction.
+    roi_batch_sampling: RoiBatchSamplingStrategy | None = None
+    roi_draws_per_epoch: int | None = None
     gradient_accumulation: int = 1
     tune_is_test: bool = False
     allow_missing_tune: bool = False
@@ -1119,6 +1137,34 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
         if self.batch_size < 1:
             raise ValueError("TrainingConfig.batch_size must be >= 1")
+        if (
+            self.roi_batch_sampling is not None
+            and self.roi_batch_sampling not in ROI_BATCH_SAMPLING_STRATEGIES
+        ):
+            raise ValueError(
+                "TrainingConfig.roi_batch_sampling must be null, 'uniform', or "
+                f"'class_conditioned', got {self.roi_batch_sampling!r}."
+            )
+        if self.roi_batch_sampling == "class_conditioned" and self.batch_size % 4 != 0:
+            raise ValueError(
+                "Class-conditioned ROI batch_size must be divisible by four, "
+                f"got {self.batch_size}."
+            )
+        if self.roi_draws_per_epoch is not None and self.roi_draws_per_epoch < 1:
+            raise ValueError("TrainingConfig.roi_draws_per_epoch must be >= 1 or null.")
+        if self.roi_draws_per_epoch is not None and self.roi_batch_sampling is None:
+            raise ValueError(
+                "TrainingConfig.roi_draws_per_epoch requires an explicit "
+                "roi_batch_sampling strategy."
+            )
+        if (
+            self.roi_draws_per_epoch is not None
+            and self.roi_draws_per_epoch % self.batch_size != 0
+        ):
+            raise ValueError(
+                "TrainingConfig.roi_draws_per_epoch must contain whole batches "
+                f"of batch_size={self.batch_size}, got {self.roi_draws_per_epoch}."
+            )
         if self.gradient_accumulation < 1:
             raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
         if self.patience is not None and self.patience < 1:
@@ -1303,6 +1349,17 @@ class PipelineConfig:
             raise ValueError(
                 f"Invalid dataset_type {self.dataset_type!r}. "
                 f"Must be one of: {sorted(_valid_dataset_types)}"
+            )
+        if self.training.roi_batch_sampling is not None and not (
+            self.dataset_type == "segmentation"
+            and self.feature_mode == "cached"
+            and self.decoder is not None
+            and self.pixel_classifier is None
+        ):
+            raise ValueError(
+                "training.roi_batch_sampling is only supported for cached neural "
+                "segmentation with a decoder; other task and data paths would silently "
+                "ignore the requested training-batch contract."
             )
         if self.representation is not None:
             if self.dataset_type != "tile":

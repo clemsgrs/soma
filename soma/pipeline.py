@@ -454,15 +454,28 @@ def _make_loaders(
     training: TrainingConfig,
     feature_store: FeatureStore,
     target_fn,
+    *,
+    train_batch_sampler=None,
 ) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
     """Create train, tune, and per-split test DataLoaders with a common pattern."""
     loader_kwargs = _loader_kwargs(training)
-    train_loader = DataLoader(
-        dataset_cls(train_items, feature_store, target_fn),
-        shuffle=True,
-        collate_fn=collate_fn,
-        **loader_kwargs,
-    )
+    train_dataset = dataset_cls(train_items, feature_store, target_fn)
+    if train_batch_sampler is None:
+        train_loader = DataLoader(
+            train_dataset,
+            shuffle=True,
+            collate_fn=collate_fn,
+            **loader_kwargs,
+        )
+    else:
+        sampler_loader_kwargs = dict(loader_kwargs)
+        sampler_loader_kwargs.pop("batch_size")
+        train_loader = DataLoader(
+            train_dataset,
+            batch_sampler=train_batch_sampler,
+            collate_fn=collate_fn,
+            **sampler_loader_kwargs,
+        )
     tune_loader = DataLoader(
         dataset_cls(tune_items, feature_store, target_fn),
         shuffle=False,
@@ -479,6 +492,50 @@ def _make_loaders(
         for split_name, items in test_items_by_split.items()
     }
     return train_loader, tune_loader, test_loaders
+
+
+def _segmentation_roi_batch_sampler(
+    records: list[SampleRecord],
+    target_fn,
+    *,
+    num_classes: int,
+    training: TrainingConfig,
+    fold: int,
+):
+    """Build the explicit cached-grid training-batch contract, when requested."""
+    if training.roi_batch_sampling is None:
+        return None
+    if num_classes != 4:
+        raise ValueError(
+            "Explicit ROI batch sampling currently requires exactly four segmentation "
+            f"classes, got {num_classes}."
+        )
+
+    from soma.training.segmentation_roi_sampler import SegmentationRoiBatchSampler
+
+    class_pixel_counts = []
+    for record in records:
+        mask = target_fn(record)["mask"]
+        class_pixel_counts.append(
+            [int((mask == class_index).sum().item()) for class_index in range(4)]
+        )
+
+    draws_per_epoch = training.roi_draws_per_epoch
+    if draws_per_epoch is None:
+        draws_per_epoch = (len(records) // training.batch_size) * training.batch_size
+        if draws_per_epoch == 0:
+            raise ValueError(
+                "Explicit ROI batch sampling needs at least one whole training batch; "
+                f"got {len(records)} ROIs and batch_size={training.batch_size}."
+            )
+    return SegmentationRoiBatchSampler(
+        sample_ids=[record.sample_id for record in records],
+        class_pixel_counts=class_pixel_counts,
+        batch_size=training.batch_size,
+        draws_per_epoch=draws_per_epoch,
+        strategy=training.roi_batch_sampling,
+        seed=training.seed + fold,
+    )
 
 
 def _make_live_loaders(
@@ -1561,6 +1618,20 @@ def train_one_segmentation_fold(
         )
 
     seg_collate = functools.partial(segmentation_collate_fn, target_dtypes=head.target_dtypes)
+    roi_batch_sampler = None
+    if training.roi_batch_sampling is not None:
+        if is_live:
+            raise ValueError(
+                "Explicit ROI batch sampling is a cached-grid training contract; "
+                "feature_mode='live' is unsupported."
+            )
+        roi_batch_sampler = _segmentation_roi_batch_sampler(
+            train_records,
+            target_fn,
+            num_classes=num_classes,
+            training=training,
+            fold=fold,
+        )
     # Model + loaders (the remaining live/cached fork). Live wraps the shared frozen
     # encoder so each step re-encodes the augmented tiles; cached consumes pre-extracted
     # grids. The trainer, eval, and checkpoint reload paths below are identical.
@@ -1585,6 +1656,7 @@ def train_one_segmentation_fold(
             SegmentationDataset, seg_collate,
             train_records, tune_records, test_records_by_split,
             training, feature_store, target_fn,
+            train_batch_sampler=roi_batch_sampler,
         )
 
     summary = _format_fold_summary(
@@ -1614,6 +1686,11 @@ def train_one_segmentation_fold(
         num_folds=num_folds,
     )
     train_result = trainer.fit()
+    if roi_batch_sampler is not None:
+        (fold_dir / "roi_batch_sampling.json").write_text(
+            json.dumps(roi_batch_sampler.audit(), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     checkpoint = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import pytest
 import yaml
 
 from soma.config import (
@@ -141,6 +142,28 @@ def test_canonical_experiment_payload_omits_default_checkpoint_selection(tmp_pat
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
     assert "checkpoint_selection" not in payload["training"]
+
+
+def test_canonical_experiment_payload_omits_default_roi_batch_sampling(tmp_path: Path):
+    """An opt-out run keeps its legacy experiment identity payload."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "roi_batch_sampling" not in payload["training"]
+    assert "roi_draws_per_epoch" not in payload["training"]
+
+
+def test_pipeline_config_rejects_roi_batch_sampling_outside_cached_segmentation(
+    tmp_path: Path,
+):
+    with pytest.raises(ValueError, match="cached neural segmentation"):
+        _make_pipeline_config(
+            tmp_path,
+            training=TrainingConfig(
+                batch_size=4,
+                roi_batch_sampling="class_conditioned",
+                roi_draws_per_epoch=8,
+            ),
+        )
 
 
 def test_build_experiment_spec_distinguishes_checkpoint_selection(tmp_path: Path):

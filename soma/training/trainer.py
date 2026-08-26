@@ -200,6 +200,10 @@ class Trainer:
                 render_panel()
 
             for epoch in range(self._config.epochs):
+                batch_sampler = getattr(self._train_loader, "batch_sampler", None)
+                set_epoch = getattr(batch_sampler, "set_epoch", None)
+                if callable(set_epoch):
+                    set_epoch(epoch)
                 current_subtitle = f"epoch {epoch + 1}/{self._config.epochs} | train"
                 current_status = "training epoch in progress"
                 current_batch_progress = None
