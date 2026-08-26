@@ -6,6 +6,9 @@
 
 run:
   output_root: runs
+  # Optional shared-storage destination for recoverable checkpoint/fold bundles.
+  # Active training continues under output_root; mirror failures are retried and non-fatal.
+  mirror_root: null
   seed: 0
   tags:
     - baseline
@@ -121,6 +124,9 @@ training:
   # Cached segmentation only. null keeps ordinary shuffled loading; explicit
   # 'uniform' and 'class_conditioned' arms use one audited training-batch contract.
   roi_batch_sampling: null
+  # Relative requested-class weights for class_conditioned sampling, ordered 0..K-1.
+  # null requests all modeled classes equally.
+  class_request_ratios: null
   # Fixed ROI selections per epoch for an explicit arm; must contain whole batches.
   roi_draws_per_epoch: null
   gradient_accumulation: 1

@@ -54,7 +54,11 @@ def _training_identity(config: PipelineConfig) -> dict[str, Any]:
         training.pop("checkpoint_selection", None)
     if config.training.roi_batch_sampling is None:
         training.pop("roi_batch_sampling", None)
+        training.pop("class_request_ratios", None)
         training.pop("roi_draws_per_epoch", None)
+    elif config.training.class_request_ratios is None:
+        # Preserve identities for the historical equal-request policy.
+        training.pop("class_request_ratios", None)
     return training
 
 

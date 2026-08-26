@@ -14,6 +14,9 @@
 
 run:
   output_root: data/beetle/runs/segmentation_beetle_phikon
+  # For node-local training, point output_root at the local disk and set mirror_root to
+  # the corresponding shared-storage recovery root.
+  mirror_root: null
   seed: 0
   tags:
     - beetle

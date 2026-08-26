@@ -101,6 +101,7 @@ Full config reference
 
    run:
      output_root: runs
+     mirror_root: null
      seed: 0
      tags:
        - baseline
@@ -216,6 +217,9 @@ Full config reference
      # Cached segmentation only. null keeps ordinary shuffled loading; explicit
      # 'uniform' and 'class_conditioned' arms use one audited training-batch contract.
      roi_batch_sampling: null
+     # Relative requested-class weights for class_conditioned sampling, ordered 0..K-1.
+     # null requests all modeled classes equally.
+     class_request_ratios: null
      # Fixed ROI selections per epoch for an explicit arm; must contain whole batches.
      roi_draws_per_epoch: null
      gradient_accumulation: 1

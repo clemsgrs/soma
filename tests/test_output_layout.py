@@ -139,6 +139,16 @@ def test_canonical_experiment_payload_omits_seed(tmp_path: Path):
     assert "seed" not in payload_a["training"]
 
 
+def test_mirror_root_does_not_change_experiment_identity(tmp_path: Path):
+    local_only = _make_pipeline_config(tmp_path)
+    mirrored = _make_pipeline_config(tmp_path, mirror_root=tmp_path / "shared")
+
+    assert canonical_experiment_payload(mirrored) == canonical_experiment_payload(local_only)
+    assert build_experiment_spec(mirrored).experiment_id == build_experiment_spec(
+        local_only
+    ).experiment_id
+
+
 def test_canonical_experiment_payload_omits_default_checkpoint_selection(tmp_path: Path):
     """Guarded identity: the default `best` must not perturb legacy experiment ids."""
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
@@ -151,7 +161,51 @@ def test_canonical_experiment_payload_omits_default_roi_batch_sampling(tmp_path:
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
     assert "roi_batch_sampling" not in payload["training"]
+    assert "class_request_ratios" not in payload["training"]
     assert "roi_draws_per_epoch" not in payload["training"]
+
+
+def test_null_class_request_ratios_preserve_the_legacy_sampling_identity(tmp_path: Path):
+    config = _make_segmentation_config(
+        tmp_path,
+        training=TrainingConfig(
+            batch_size=4,
+            roi_batch_sampling="class_conditioned",
+            roi_draws_per_epoch=8,
+        ),
+    )
+
+    assert "class_request_ratios" not in canonical_experiment_payload(config)[
+        "training"
+    ]
+
+
+def test_explicit_class_request_ratios_define_experiment_identity(tmp_path: Path):
+    equal = _make_segmentation_config(
+        tmp_path,
+        training=TrainingConfig(
+            batch_size=4,
+            roi_batch_sampling="class_conditioned",
+            class_request_ratios=[1, 1],
+            roi_draws_per_epoch=8,
+        ),
+    )
+    weighted = _make_segmentation_config(
+        tmp_path,
+        training=TrainingConfig(
+            batch_size=4,
+            roi_batch_sampling="class_conditioned",
+            class_request_ratios=[1, 2],
+            roi_draws_per_epoch=8,
+        ),
+    )
+
+    assert canonical_experiment_payload(equal)["training"][
+        "class_request_ratios"
+    ] == [1, 1]
+    assert build_experiment_spec(equal).experiment_id != build_experiment_spec(
+        weighted
+    ).experiment_id
 
 
 def test_patient_oof_reporting_is_identity_neutral_but_persisted(tmp_path: Path):

@@ -71,21 +71,33 @@ auto-concatenate at token-grid resolution (``concat_resolution: grid``).
 Training-batch ROI sampling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Cached four-class segmentation runs can opt into an explicit training-batch contract
+Cached segmentation runs can opt into an explicit training-batch contract
 with ``training.roi_batch_sampling``. This is distinct from
 ``preprocessing.sampling``: preprocessing chooses ROI coordinates before feature
 extraction, while training-batch sampling chooses among the already-cached ROI grids.
 
-``uniform`` traverses a shuffled ROI collection. ``class_conditioned`` requires a batch
-size divisible by four and gives each class the same number of target requests in every
-batch. For each request, eligible ROIs are weighted by their annotated-pixel count for
-that requested class. This controls **requested classes**, not pixels: cross-entropy and
-soft Dice still consume every annotated pixel in each selected ROI, so the method is not
-pixel-balanced training.
+``uniform`` traverses a shuffled ROI collection. ``class_conditioned`` follows
+``class_request_ratios`` over the task's arbitrary ``K`` class indices; null ratios mean
+equal relative weight. Ratios need not sum to one, batch size need not be divisible by
+``K``, and a zero ratio excludes a class from requests. For each request, eligible ROIs
+are weighted by their annotated-pixel count for that class. A positively weighted class
+with no training-fold support is an error rather than a silent policy change.
+The relative-ratio convention follows MONAI's
+`RandCropByLabelClasses <https://monai.readthedocs.io/en/stable/transforms.html#randcropbylabelclasses>`_;
+soma deliberately fails on an unsupported requested class instead of renormalizing it.
+
+This controls **requested classes**, not pixels: cross-entropy and soft Dice still
+consume every annotated pixel in each selected ROI, so the method is not pixel-balanced
+training. Class requests are apportioned deterministically over the epoch's draw budget;
+individual batches are only exactly proportional when their size permits it.
 
 Set the same ``roi_draws_per_epoch``, batch size, seed, and all other loader/training
-settings in both arms. Each fold writes ``roi_batch_sampling.json`` with the requested
-class, selected ROI, and actual four-class pixel counts for every draw and epoch.
+settings in both arms. A draw is one ROI index placed in one loader batch, so an explicit
+sampling epoch is a fixed optimization/sampling horizon rather than a unique pass over
+the dataset. Leave ``roi_draws_per_epoch`` null to use the largest whole-batch budget no
+larger than the training ROI count. Each fold writes ``roi_batch_sampling.json`` with
+the configured ratios, requested class, selected ROI, realized class-pixel exposure,
+unique ROI coverage, and repeat counts for every epoch.
 
 .. code-block:: yaml
 
@@ -93,6 +105,7 @@ class, selected ROI, and actual four-class pixel counts for every draw and epoch
      batch_size: 16
      roi_draws_per_epoch: 1024
      roi_batch_sampling: class_conditioned  # or uniform for the control arm
+     class_request_ratios: [1, 1, 2, 0]
 
 .. code-block:: yaml
 

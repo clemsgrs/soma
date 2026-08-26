@@ -274,6 +274,11 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
+        mirror_root=(
+            Path(run_data["mirror_root"])
+            if run_data.get("mirror_root") is not None
+            else None
+        ),
         resume=bool(run_data.get("resume", False)),
         run_id=run_data.get("run_id"),
     )
@@ -1131,11 +1136,12 @@ class TrainingConfig:
     ``roi_batch_sampling`` is an opt-in cached-segmentation training-batch
     contract, separate from ``preprocessing.sampling`` (which creates ROI
     coordinates before extraction). ``uniform`` traverses a shuffled ROI
-    collection; ``class_conditioned`` allocates every batch equally across the
-    four requested classes and weights eligible ROI selection by requested-class
-    annotated-pixel count. ``roi_draws_per_epoch`` fixes the common draw budget
-    for controlled arm comparisons. Selection never alters a chosen mask: the
-    ordinary segmentation loss still consumes every annotated pixel in the ROI.
+    collection; ``class_conditioned`` follows ``class_request_ratios`` over the
+    task's class indices and weights eligible ROI selection by requested-class
+    annotated-pixel count. Null ratios request every modeled class equally.
+    ``roi_draws_per_epoch`` fixes the common draw budget for controlled arm
+    comparisons. Selection never alters a chosen mask: the ordinary segmentation
+    loss still consumes every annotated pixel in the ROI.
     """
 
     seed: int = 0
@@ -1159,6 +1165,7 @@ class TrainingConfig:
     # separate from preprocessing.sampling, which creates ROI coordinates before
     # feature extraction.
     roi_batch_sampling: RoiBatchSamplingStrategy | None = None
+    class_request_ratios: list[float] | None = None
     roi_draws_per_epoch: int | None = None
     gradient_accumulation: int = 1
     tune_is_test: bool = False
@@ -1188,11 +1195,34 @@ class TrainingConfig:
                 "TrainingConfig.roi_batch_sampling must be null, 'uniform', or "
                 f"'class_conditioned', got {self.roi_batch_sampling!r}."
             )
-        if self.roi_batch_sampling == "class_conditioned" and self.batch_size % 4 != 0:
-            raise ValueError(
-                "Class-conditioned ROI batch_size must be divisible by four, "
-                f"got {self.batch_size}."
-            )
+        if self.class_request_ratios is not None:
+            if self.roi_batch_sampling != "class_conditioned":
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios requires "
+                    "roi_batch_sampling='class_conditioned'."
+                )
+            if not self.class_request_ratios:
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios must not be empty."
+                )
+            invalid_ratios = [
+                value
+                for value in self.class_request_ratios
+                if isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ]
+            if invalid_ratios:
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios must contain finite, "
+                    f"non-negative numbers, got {invalid_ratios[0]!r}."
+                )
+            if sum(float(value) for value in self.class_request_ratios) <= 0:
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios must contain at least "
+                    "one positive value."
+                )
         if self.roi_draws_per_epoch is not None and self.roi_draws_per_epoch < 1:
             raise ValueError("TrainingConfig.roi_draws_per_epoch must be >= 1 or null.")
         if self.roi_draws_per_epoch is not None and self.roi_batch_sampling is None:
@@ -1339,6 +1369,8 @@ class PipelineConfig:
             applied after ``normalization``. Defaults to ``none``.
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
+        mirror_root: Optional shared-storage root for recoverable artifact bundles.
+            This operational destination does not change experiment identity.
         resume: When True, reuse the latest existing run dir for this experiment
             instead of minting a fresh one, and skip folds that already wrote
             ``metrics.json`` (issue #244). Ignored when ``run_id`` is set.
@@ -1371,6 +1403,7 @@ class PipelineConfig:
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
+    mirror_root: Path | None = None
     # Run-lifecycle directives (issue #244) — not part of experiment identity.
     resume: bool = False
     run_id: str | None = None
@@ -1858,6 +1891,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             "output_root": _normalize_yaml_value(config.output_root),
             "seed": config.training.seed,
             "tags": _normalize_yaml_value(config.tags),
+            "mirror_root": _normalize_yaml_value(config.mirror_root),
         },
         "data": {
             "dataset_csv": _normalize_yaml_value(config.dataset_csv),
