@@ -9,6 +9,7 @@ streaming ``_tune``), checkpoint reload, and ``_evaluate_segmentation``. No enco
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +31,12 @@ FEATURE_DIM = 4
 
 
 def _build_dense_run(
-    root: Path, sample_ids: list[str], *, grid_spacing_um: float | None = None
+    root: Path,
+    sample_ids: list[str],
+    *,
+    grid_spacing_um: float | None = None,
+    num_classes: int = NUM_CLASSES,
+    train_count: int = 2,
 ) -> tuple[SegmentationManifest, Splits, DenseFeatureStore]:
     dense_dir = root / "dense"
     masks_dir = root / "masks"
@@ -46,7 +52,12 @@ def _build_dense_run(
     rng = np.random.default_rng(0)
     for sid in sample_ids:
         write_dense_grid(dense_dir, sid, torch.randn(FEATURE_DIM, *geom.grid_shape), meta)
-        mask = rng.integers(0, NUM_CLASSES, size=(TARGET, TARGET), dtype=np.uint8)
+        if num_classes == 4:
+            mask = np.repeat(np.arange(4, dtype=np.uint8), TARGET * TARGET // 4).reshape(
+                TARGET, TARGET
+            )
+        else:
+            mask = rng.integers(0, num_classes, size=(TARGET, TARGET), dtype=np.uint8)
         label_mask_path = masks_dir / f"{sid}.png"
         Image.fromarray(mask).save(label_mask_path)
         rows.append((sid, f"{sid}.jpg", str(label_mask_path)))
@@ -58,8 +69,16 @@ def _build_dense_run(
         + "\n"
     )
     splits_csv = root / "splits.csv"
-    # 4 samples: 2 train, 1 tune, 1 test, single fold.
-    split_assign = {sample_ids[0]: "train", sample_ids[1]: "train", sample_ids[2]: "tune", sample_ids[3]: "test"}
+    split_assign = {
+        sid: (
+            "train"
+            if index < train_count
+            else "tune"
+            if index == train_count
+            else "test"
+        )
+        for index, sid in enumerate(sample_ids)
+    }
     splits_csv.write_text(
         "sample_id,split,fold\n"
         + "\n".join(f"{sid},{split},0" for sid, split in split_assign.items())
@@ -70,6 +89,70 @@ def _build_dense_run(
     splits = Splits(splits_csv, manifest)
     store = DenseFeatureStore(dense_dir)
     return manifest, splits, store
+
+
+@pytest.mark.parametrize(
+    ("strategy", "expected_requests", "expected_rois"),
+    [
+        (
+            "uniform",
+            [None, None, None, None, None, None, None, None],
+            ["s3", "s1", "s7", "s5", "s4", "s2", "s0", "s6"],
+        ),
+        (
+            "class_conditioned",
+            [3, 1, 0, 2, 0, 3, 1, 2],
+            ["s4", "s0", "s1", "s7", "s1", "s7", "s4", "s2"],
+        ),
+    ],
+)
+def test_cached_segmentation_fold_writes_exact_roi_batch_sampling_audit(
+    tmp_path: Path,
+    strategy: str,
+    expected_requests: list[int | None],
+    expected_rois: list[str],
+):
+    sample_ids = [f"s{i}" for i in range(10)]
+    manifest, splits, store = _build_dense_run(
+        tmp_path,
+        sample_ids,
+        num_classes=4,
+        train_count=8,
+    )
+    fold_dir = tmp_path / "fold"
+
+    train_one_segmentation_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
+        training=TrainingConfig(
+            epochs=1,
+            batch_size=4,
+            roi_batch_sampling=strategy,
+            roi_draws_per_epoch=8,
+            seed=11,
+        ),
+        fold_dir=fold_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice"]),
+    )
+
+    audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
+    epoch = audit["epochs"][0]
+    assert {
+        "strategy": audit["strategy"],
+        "draws_per_epoch": audit["draws_per_epoch"],
+        "requested_classes": [row["requested_class"] for row in epoch["selections"]],
+        "selected_rois": [row["selected_roi"] for row in epoch["selections"]],
+        "actual_class_pixel_counts": epoch["actual_class_pixel_counts"],
+    } == {
+        "strategy": strategy,
+        "draws_per_epoch": 8,
+        "requested_classes": expected_requests,
+        "selected_rois": expected_rois,
+        "actual_class_pixel_counts": [128, 128, 128, 128],
+    }
 
 
 def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):

@@ -68,6 +68,32 @@ encoder emits, set by ``preprocessing.feature_kind`` (see :doc:`decoders`). Mult
 :doc:`composite <encoders/composite>` runs are supported on the decoder path and
 auto-concatenate at token-grid resolution (``concat_resolution: grid``).
 
+Training-batch ROI sampling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Cached four-class segmentation runs can opt into an explicit training-batch contract
+with ``training.roi_batch_sampling``. This is distinct from
+``preprocessing.sampling``: preprocessing chooses ROI coordinates before feature
+extraction, while training-batch sampling chooses among the already-cached ROI grids.
+
+``uniform`` traverses a shuffled ROI collection. ``class_conditioned`` requires a batch
+size divisible by four and gives each class the same number of target requests in every
+batch. For each request, eligible ROIs are weighted by their annotated-pixel count for
+that requested class. This controls **requested classes**, not pixels: cross-entropy and
+soft Dice still consume every annotated pixel in each selected ROI, so the method is not
+pixel-balanced training.
+
+Set the same ``roi_draws_per_epoch``, batch size, seed, and all other loader/training
+settings in both arms. Each fold writes ``roi_batch_sampling.json`` with the requested
+class, selected ROI, and actual four-class pixel counts for every draw and epoch.
+
+.. code-block:: yaml
+
+   training:
+     batch_size: 16
+     roi_draws_per_epoch: 1024
+     roi_batch_sampling: class_conditioned  # or uniform for the control arm
+
 .. code-block:: yaml
 
    data:
