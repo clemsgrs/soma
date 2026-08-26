@@ -32,6 +32,12 @@ realized pixel and ROI exposure remain diagnostics, not balancing claims.
 development folds only. The official external evaluation set is used once for the chosen
 arm.
 
+**Publication evidence**: the curated Manifest and checksums, completed hardware
+preflight, locked encoder provenance, resolved arm configs, run/environment metadata,
+ten decoder checkpoints, histories and sampler audits, recovery manifests, generic fold
+confusion evidence, the project OOF/bootstrap report, and the development arm-selection
+record. The gated encoder weights and large feature cache are referenced, not distributed.
+
 **Patient bootstrap**: resample independent patients with replacement and recompute Dice
 from summed confusion matrices. The publication protocol fixes the seed and number of
 replicates; those values are project policy, not soma defaults.

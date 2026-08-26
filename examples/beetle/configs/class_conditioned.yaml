@@ -1,0 +1,9 @@
+# Equal-request class-conditioned training-batch sampling arm. Merged with base.yaml.
+run:
+  output_root: data/beetle/runs/class_conditioned
+  mirror_root: data/beetle/recovery/class_conditioned
+  tags: [beetle, project_protocol, virchow2, class_conditioned]
+
+training:
+  roi_batch_sampling: class_conditioned
+  class_request_ratios: [1, 1, 1, 1]

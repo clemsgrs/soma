@@ -1,0 +1,97 @@
+# Common scientific recipe. `launch.py` combines it with exactly one arm overlay and
+# replaces the batch token from a completed hardware preflight.
+run:
+  seed: 0
+
+data:
+  dataset_csv: data/beetle/curated_slide_manifest/dataset.csv
+  splits_csv: data/beetle/curated_slide_manifest/splits.csv
+  dataset_type: segmentation
+  feature_mode: cached
+
+preprocessing:
+  backend: auto
+  requested_tile_size_px: 512
+  requested_spacing_um: 0.5
+  tolerance: 0.05
+  feature_kind: patch_features
+  dense_window_size: 224
+  dense_window_overlap: 0.5
+  masks:
+    pixel_mapping:
+      background: 0
+      other: 1
+      non_invasive_epithelium: 2
+      invasive_epithelium: 3
+      necrosis: 4
+    min_coverage:
+      other: 0.05
+      non_invasive_epithelium: 0.05
+      invasive_epithelium: 0.05
+      necrosis: 0.05
+  sampling:
+    strategy: joint
+    output_mode: merged
+
+execution:
+  precision: fp16
+
+cache:
+  enabled: true
+  root_dir: "${BEETLE_ENCODER_CACHE_ID}"
+  reuse_policy: strict
+  validate_payloads: true
+  dtype: fp16
+
+encoder:
+  name: virchow2
+  precision: fp16
+  batch_size: 8
+  adaptive_batching: true
+  output_variant: cls
+
+decoder:
+  name: lightweight_conv
+  params:
+    hidden_dim: 256
+    num_upsample_blocks: 2
+    num_groups: 32
+
+task:
+  name: segmentation
+  params:
+    num_classes: 4
+
+evaluation:
+  metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]
+  save_segmentation_overlays: false
+  save_segmentation_probabilities: false
+  save_segmentation_confusion_evidence: true
+  holdout_test: true
+
+training:
+  method: gradient
+  epochs: 30
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: adam
+  scheduler: cosine
+  checkpoint_selection: best
+  patience: 8
+  monitor: dataset_global_mean_dice
+  monitor_mode: max
+  batch_size: "${BEETLE_CAMPAIGN_BATCH_SIZE}"
+  roi_draws_per_epoch: null
+  gradient_accumulation: 1
+  num_workers: 4
+
+augmentation:
+  horizontal_flip: 0.0
+  vertical_flip: 0.0
+  rotation_degrees: 0.0
+  translate: 0.0
+  scale: 0.0
+  brightness: 0.0
+  contrast: 0.0
+  saturation: 0.0
+  hue: 0.0
