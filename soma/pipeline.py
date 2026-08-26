@@ -1737,8 +1737,16 @@ def train_one_segmentation_fold(
         artifact_mirror.checkpoint_improved(
             fold=fold,
             epoch=epoch,
-            fold_dir=fold_dir,
-            checkpoint_path=checkpoint_path,
+            artifacts={
+                "best_model.pt": checkpoint_path,
+                "training_history.json": fold_dir / "training_history.json",
+                "sampler_audit.json": fold_dir / "sampler_audit.json",
+            },
+            restore_files=[
+                "best_model.pt",
+                "training_history.json",
+                "sampler_audit.json",
+            ],
         )
 
     trainer = Trainer(

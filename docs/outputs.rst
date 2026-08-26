@@ -110,17 +110,20 @@ treated as immutable once the run completes.
 Recoverable shared-storage mirrors
 ----------------------------------
 
-Long-running segmentation jobs can keep active outputs on node-local storage while
+Long-running jobs can keep active outputs on node-local storage while
 publishing recovery bundles to shared storage by setting ``run.mirror_root``. The
 mirror destination preserves the managed run path beneath that root. Leaving the
 setting ``null`` is a no-op and does not change experiment identity.
 
-Every improved checkpoint is first captured in an immutable local spool with the
-resolved ``config.yaml``, training history to that epoch, sampler audit, checkpoint,
-and a ``manifest.json`` containing each file's SHA-256 digest and byte size. A completed
-fold is captured the same way with all of its artifacts. Shared copies are staged beside
-their final destination, verified, and exposed by one atomic rename, so a partial copy
-does not look complete.
+Every improved checkpoint is first captured in an immutable local spool. The task
+integration supplies the checkpoint artifacts and declares which files reconstruct its
+active fold; the recovery module does not prescribe model or audit filenames. The
+resolved ``config.yaml`` and a ``manifest.json`` containing each file's SHA-256 digest
+and byte size accompany the snapshot. The segmentation integration currently supplies
+its model checkpoint, training history, and sampler audit. A completed fold is captured
+the same way with all of its artifacts. Shared copies are staged beside their final
+destination, verified, and exposed by one atomic rename, so a partial copy does not look
+complete.
 
 ``recovery/mirror_state.json`` records pending and verified publications plus failed
 attempts. Mirror errors never change a healthy local training result. Later checkpoint

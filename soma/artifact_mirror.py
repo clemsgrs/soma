@@ -11,8 +11,9 @@ import shutil
 import stat
 import tempfile
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import yaml
 
@@ -385,11 +386,28 @@ def _install_checkpoint_set(
                 dirs_exist_ok=True,
                 copy_function=os.link,
             )
-        relatives = [
-            "best_model.pt",
-            "training_history.json",
-            "sampler_audit.json",
-        ]
+        raw_restore_files = manifest.get("restore_files")
+        if raw_restore_files is None:
+            # Schema-v1 bundles written before task-supplied checkpoint snapshots.
+            raw_restore_files = [
+                "best_model.pt",
+                "training_history.json",
+                "sampler_audit.json",
+            ]
+        if not isinstance(raw_restore_files, list) or not raw_restore_files:
+            raise OSError("checkpoint manifest has no restorable fold artifacts")
+        relatives = [str(relative) for relative in raw_restore_files]
+        for relative in relatives:
+            relative_path = Path(relative)
+            if (
+                relative_path.is_absolute()
+                or ".." in relative_path.parts
+                or relative not in manifest["files"]
+                or relative == "config.yaml"
+            ):
+                raise OSError(
+                    f"checkpoint manifest has an unsafe restore file: {relative!r}"
+                )
         if include_config:
             relatives.append("config.yaml")
         for relative in relatives:
@@ -748,18 +766,36 @@ class ArtifactMirror:
         *,
         fold: int,
         epoch: int,
-        fold_dir: Path,
-        checkpoint_path: Path,
+        artifacts: Mapping[str, Path],
+        restore_files: Sequence[str],
     ) -> None:
-        """Spool and attempt publication of one improved best checkpoint."""
+        """Spool and publish a caller-described, restorable checkpoint snapshot."""
         try:
-            fold_dir = Path(fold_dir)
             sources = {
-                "best_model.pt": Path(checkpoint_path),
-                "config.yaml": self.run_dir / "config.yaml",
-                "training_history.json": fold_dir / "training_history.json",
-                "sampler_audit.json": fold_dir / "sampler_audit.json",
+                str(relative): Path(source)
+                for relative, source in artifacts.items()
             }
+            if not sources or "config.yaml" in sources:
+                raise ValueError(
+                    "checkpoint artifacts must be non-empty and must not override "
+                    "the run config.yaml"
+                )
+            for relative in sources:
+                relative_path = Path(relative)
+                if relative_path.is_absolute() or ".." in relative_path.parts:
+                    raise ValueError(
+                        f"unsafe checkpoint artifact name: {relative!r}"
+                    )
+            restore = [str(relative) for relative in restore_files]
+            if not restore or len(set(restore)) != len(restore):
+                raise ValueError("restore_files must be a non-empty unique sequence")
+            unknown_restore = sorted(set(restore) - set(sources))
+            if unknown_restore:
+                raise ValueError(
+                    "restore_files reference unknown checkpoint artifacts: "
+                    f"{unknown_restore}"
+                )
+            sources["config.yaml"] = self.run_dir / "config.yaml"
             spool = (
                 self.spool_dir / "checkpoints" / f"fold_{fold}" / f"epoch_{epoch:04d}"
             )
@@ -770,6 +806,7 @@ class ArtifactMirror:
                 epoch=epoch,
                 sources=sources.items(),
                 preserve_collision=True,
+                manifest_metadata={"restore_files": restore},
             )
             self._register(spool)
             self.retry_pending()
@@ -851,6 +888,7 @@ class ArtifactMirror:
         epoch: int | None,
         sources: Iterable[tuple[str, Path]],
         preserve_collision: bool,
+        manifest_metadata: Mapping[str, Any] | None = None,
     ) -> Path:
         if not preserve_collision and _verified_bundle(spool):
             return spool
@@ -872,6 +910,13 @@ class ArtifactMirror:
                 "epoch": epoch,
                 "files": _manifest_files(staging),
             }
+            if manifest_metadata is not None:
+                overlap = set(manifest) & set(manifest_metadata)
+                if overlap:
+                    raise ValueError(
+                        f"manifest metadata cannot override reserved keys: {sorted(overlap)}"
+                    )
+                manifest.update(manifest_metadata)
             (staging / "manifest.json").write_text(
                 json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
             )
