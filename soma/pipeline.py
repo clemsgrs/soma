@@ -45,7 +45,6 @@ from soma.config import (
     NormalizationConfig,
     PipelineConfig,
     PixelClassifierConfig,
-    PatientOOFConfig,
     PreprocessingConfig,
     ProjectionConfig,
     RepresentationConfig,
@@ -408,30 +407,6 @@ def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
             seen.add(record.patient_id)
             patient_ids.append(record.patient_id)
     return patient_ids
-
-
-def _expected_oof_patient_ids(dataset, splits: Splits) -> tuple[str, ...]:
-    patient_ids: set[str] = set()
-    missing: list[str] = []
-    for fold_idx, fold_split in enumerate(splits.folds):
-        if not fold_split.tune:
-            raise ValueError(
-                f"patient OOF export requires held-out tune samples in fold {fold_idx}"
-            )
-        for sample_id in fold_split.tune:
-            record = dataset.samples[sample_id]
-            if record.patient_id is None:
-                missing.append(record.sample_id)
-            else:
-                patient_ids.add(record.patient_id)
-    if missing:
-        raise ValueError(
-            "patient OOF export requires patient_id for every development sample; "
-            f"missing for: {sorted(missing)}"
-        )
-    if not patient_ids:
-        raise ValueError("patient OOF export found no expected development patients")
-    return tuple(sorted(patient_ids))
 
 
 def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, SampleRecord]:
@@ -1461,21 +1436,21 @@ def _segmentation_label_remap(masks: "MasksConfig | None", num_classes: int, ign
     return lut
 
 
-def _segmentation_oof_class_mapping(
+def _segmentation_class_vocabulary(
     masks: "MasksConfig | None", num_classes: int
-) -> dict[int, str]:
-    """Resolve the exact class-index vocabulary recorded beside OOF matrices."""
+) -> tuple[str, ...]:
+    """Resolve the class-index vocabulary recorded beside confusion matrices."""
     if masks is None:
-        return {index: f"class_{index}" for index in range(num_classes)}
+        return tuple(f"class_{index}" for index in range(num_classes))
     names = list(masks.pixel_mapping)
     if "background" in masks.pixel_mapping and len(names) == num_classes + 1:
         names = [name for name in names if name != "background"]
     if len(names) != num_classes:
         raise ValueError(
-            "patient OOF class mapping disagrees with segmentation num_classes: "
+            "segmentation class vocabulary disagrees with num_classes: "
             f"{names} vs {num_classes}"
         )
-    return dict(enumerate(names))
+    return tuple(names)
 
 
 def train_one_segmentation_fold(
@@ -1773,9 +1748,9 @@ def train_one_segmentation_fold(
         model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir,
         save_segmentation_overlays=evaluation.save_segmentation_overlays,
         save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
-        patient_oof=evaluation.patient_oof,
+        save_confusion_evidence=evaluation.save_segmentation_confusion_evidence,
         fold=fold,
-        class_mapping=_segmentation_oof_class_mapping(masks, num_classes),
+        class_vocabulary=_segmentation_class_vocabulary(masks, num_classes),
     )
     test_reports = {
         split_name: _evaluate_segmentation(
@@ -2508,7 +2483,6 @@ def train(
     test_digest: str | None = None,
     overwrite_test: bool = False,
     run_id: str | None = None,
-    expected_oof_patient_ids: tuple[str, ...] | None = None,
     artifact_mirror: ArtifactMirror | None = None,
     resume_completed_folds: bool = False,
 ) -> PipelineResult:
@@ -2567,6 +2541,12 @@ def train(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     evaluation = evaluation or EvalConfig()
+    if evaluation.save_segmentation_confusion_evidence:
+        if dataset_type != "segmentation" or pixel_classifier is not None:
+            raise ValueError(
+                "save_segmentation_confusion_evidence requires neural segmentation "
+                "with a selected checkpoint"
+            )
     include_tune_in_summary = evaluation.holdout_test
 
     single_fold = splits.num_folds == 1
@@ -2739,45 +2719,29 @@ def train(
     summary = _aggregate_fold_metrics_from_disk(
         run_dir, single_fold=single_fold, include_tune=include_tune_in_summary
     )
-    if evaluation.patient_oof is not None:
-        if dataset_type != "segmentation":
-            raise ValueError("evaluation.patient_oof is supported only for segmentation")
-        from soma.evaluation.patient_oof import (
-            aggregate_patient_oof_files,
-            write_oof_report,
+    if evaluation.save_segmentation_confusion_evidence:
+        from soma.evaluation.confusion_evidence import (
+            load_confusion_records,
+            validate_confusion_records,
         )
-
         evidence_paths = [
-            _fold_dir(fold_idx) / "patient_confusions_tune.json"
+            _fold_dir(fold_idx) / "confusion_evidence_tune.json"
             for fold_idx in range(splits.num_folds)
         ]
         missing_evidence = [str(path) for path in evidence_paths if not path.is_file()]
         if missing_evidence:
             raise ValueError(
-                "patient OOF aggregation requires every fold artifact; missing: "
+                "confusion evidence export requires every fold artifact; missing: "
                 f"{missing_evidence}"
             )
-        expected_patients = expected_oof_patient_ids or _expected_oof_patient_ids(
-            dataset, splits
-        )
-        oof_report = aggregate_patient_oof_files(
-            evidence_paths,
-            expected_patient_ids=expected_patients,
-            spacing_exception_patient_ids=(
-                evaluation.patient_oof.spacing_exception_patient_ids
-            ),
-            bootstrap_draws=10_000,
-            bootstrap_seed=0,
-            expected_patient_count=evaluation.patient_oof.expected_patient_count,
-            expected_spacing_sensitivity_patient_count=(
-                evaluation.patient_oof.expected_spacing_sensitivity_patient_count
-            ),
-        )
-        write_oof_report(run_dir / "patient_oof_report.json", oof_report)
-        summary["oof/fold_macro_class_dice"] = oof_report.fold_macro_class_dice
-        summary["oof/pooled_micro_dice"] = oof_report.pooled.micro_dice
-        for class_index, dice in enumerate(oof_report.pooled.dice_per_class):
-            summary[f"oof/dice_class_{class_index}"] = dice
+        for fold_idx, (path, fold_split) in enumerate(
+            zip(evidence_paths, splits.folds, strict=True)
+        ):
+            validate_confusion_records(
+                load_confusion_records(path),
+                expected_sample_ids=fold_split.tune,
+                fold=fold_idx,
+            )
     _save_summary(summary, run_dir / "summary.json")
 
     return PipelineResult(
@@ -3198,11 +3162,6 @@ class Pipeline:
                 test_digest=test_identity_digest(self._config),
                 overwrite_test=self._config.evaluation.overwrite_test,
                 run_id=layout.run_id,
-                expected_oof_patient_ids=(
-                    _expected_oof_patient_ids(self._dataset, self._splits)
-                    if self._config.evaluation.patient_oof is not None
-                    else None
-                ),
                 artifact_mirror=artifact_mirror,
                 resume_completed_folds=bool(self._config.resume or self._config.run_id),
             )
@@ -3916,9 +3875,9 @@ def _evaluate_segmentation(
     output_dir: Path | None = None,
     save_segmentation_overlays: bool = True,
     save_segmentation_probabilities: bool = False,
-    patient_oof: PatientOOFConfig | None = None,
+    save_confusion_evidence: bool = False,
     fold: int | None = None,
-    class_mapping: dict[int, str] | None = None,
+    class_vocabulary: tuple[str, ...] | None = None,
 ) -> EvaluationReport:
     """Streaming dense evaluation: accumulate compact per-image confusion counts.
 
@@ -3935,20 +3894,17 @@ def _evaluate_segmentation(
     carries ``predictions=[]``: the dense artifacts live on disk, not in the report.
     """
     head = model.task_head
-    patient_accumulator = None
-    if patient_oof is not None:
-        if dataset is None or output_dir is None:
-            raise ValueError("patient OOF export requires dataset and output_dir metadata")
+    confusion_records = None
+    if save_confusion_evidence:
+        if output_dir is None:
+            raise ValueError("confusion evidence export requires output_dir")
         if fold is None:
-            raise ValueError("patient OOF export requires explicit fold metadata")
-        from soma.evaluation.patient_oof import PatientConfusionAccumulator
-
-        patient_accumulator = PatientConfusionAccumulator(
-            arm=patient_oof.arm,
-            fold=fold,
-            class_mapping=class_mapping
-            or {index: f"class_{index}" for index in range(head.num_classes)},
-        )
+            raise ValueError("confusion evidence export requires explicit fold metadata")
+        confusion_records = []
+        if class_vocabulary is None:
+            class_vocabulary = tuple(
+                f"class_{index}" for index in range(head.num_classes)
+            )
     writer = (
         DenseArtifactWriter(
             head=head,
@@ -3969,8 +3925,9 @@ def _evaluate_segmentation(
     def _capture_batch(batch, logits, stat_row) -> None:
         if writer is not None:
             writer(batch, logits, stat_row)
-        if patient_accumulator is None:
+        if confusion_records is None:
             return
+        from soma.evaluation.confusion_evidence import SegmentationConfusionRecord
         from soma.tasks.dense_metrics import dense_confusion_matrices
 
         matrices = dense_confusion_matrices(
@@ -3980,31 +3937,28 @@ def _evaluate_segmentation(
             ignore_index=head.ignore_index,
         ).detach().cpu()
         for sample_id, matrix in zip(batch.sample_ids, matrices, strict=True):
-            if sample_id not in dataset.samples:
-                raise ValueError(
-                    f"patient OOF export cannot resolve tune ROI '{sample_id}' in the dataset"
+            confusion_records.append(
+                SegmentationConfusionRecord(
+                    sample_id=sample_id,
+                    fold=fold,
+                    class_vocabulary=class_vocabulary,
+                    confusion_matrix=matrix.tolist(),
                 )
-            record = dataset.samples[sample_id]
-            patient_accumulator.add(
-                patient_id=record.patient_id,
-                slide_id=record.slide_id or record.sample_id,
-                roi_id=record.sample_id,
-                confusion_matrix=matrix,
             )
 
-    callback = _capture_batch if writer is not None or patient_accumulator is not None else None
+    callback = _capture_batch if writer is not None or confusion_records is not None else None
     stat_rows, _, _ = accumulate_dense_stats(
         model, loader, device, on_batch_output=callback
     )
     metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
     if writer is not None:
         writer.finalize()
-    if patient_accumulator is not None:
-        from soma.evaluation.patient_oof import write_patient_confusion_records
+    if confusion_records is not None:
+        from soma.evaluation.confusion_evidence import write_confusion_records
 
-        write_patient_confusion_records(
-            output_dir / f"patient_confusions_{split_name}.json",
-            patient_accumulator.records(),
+        write_confusion_records(
+            output_dir / f"confusion_evidence_{split_name}.json",
+            confusion_records,
         )
     return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
 

@@ -24,7 +24,7 @@ run:
     - phikon
 
 data:
-  dataset_csv: data/beetle/curated_slide_manifest/manifest.csv
+  dataset_csv: data/beetle/curated_slide_manifest/dataset.csv
   splits_csv: data/beetle/curated_slide_manifest/splits.csv
   dataset_type: segmentation
   feature_mode: cached
@@ -84,6 +84,8 @@ evaluation:
     - mean_dice
     - mean_iou
     - dice_per_class
+  # Project reporting pools these selected-checkpoint sample matrices by patient.
+  save_segmentation_confusion_evidence: true
 
 training:
   epochs: 30

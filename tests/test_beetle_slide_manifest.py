@@ -165,6 +165,7 @@ def test_beetle_config_encodes_recipe():
     assert cfg.encoder.name == "phikon"
     assert cfg.decoder.name == "lightweight_conv"
     assert cfg.evaluation.metrics == ["mean_dice", "mean_iou", "dice_per_class"]
+    assert cfg.evaluation.save_segmentation_confusion_evidence is True
     assert cfg.preprocessing.sampling.output_mode == "merged"
 
 
