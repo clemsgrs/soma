@@ -15,6 +15,38 @@ _Avoid_: including foundation-model encoding itself under Modeling.
 **Custom experimentation**:
 Exploring combinations of preprocessing, encoding, downstream modeling, and training choices to find or understand a strong workflow for a research task. Unlike Benchmarking, several choices may change together.
 
+**Protocol-locked validation**:
+A fresh evaluation whose cohort, splits, model recipe, selection rule, and reported outcomes are fixed before execution, with the resulting artifacts serving as the evidence. A prior incomplete run may inform expectations but is not one of the reported results.
+_Avoid_: "exact reproduction" when the original executable state or artifacts are unavailable; promoting a Pilot result into the validation evidence.
+
+**Pilot result**:
+An exploratory result that can motivate or sanity-check a later Protocol-locked validation but lacks the complete provenance or artifacts required for reporting as validation evidence.
+_Avoid_: treating a remembered metric or an artifact-incomplete run as a Measured row.
+
+**Fold-selected cross-validation**:
+Cross-validation in which each held-out development fold both selects its fold model's checkpoint and supplies that fold's reported performance. The resulting estimate is useful for organizer-aligned comparison but optimistic relative to evaluation on unseen data.
+_Avoid_: calling the held-out development fold a test set when a separate external evaluation set exists.
+
+**Development selection rule**:
+A criterion fixed before execution that chooses one candidate arm using development-fold results only. An external evaluation set measures the chosen arm and never participates in choosing it.
+_Avoid_: selecting an arm after comparing external evaluation scores.
+
+**Fold-macro class Dice**:
+For each development fold, compute each class Dice from confusion counts pooled over that fold's annotated pixels, average the requested class values equally, then average those fold values equally.
+_Avoid_: weighting classes by pixel prevalence; averaging per-region Dice; conflating it with overall micro Dice.
+
+**Class-conditioned ROI sampling**:
+A training sampler that draws a requested class according to configured relative ratios over an arbitrary class vocabulary, then chooses an eligible ROI in proportion to that ROI's requested-class pixel count. It balances requested-class opportunities over a fixed draw budget; actual class-pixel exposure and repeated-ROI exposure are measured rather than assumed equal.
+_Avoid_: "pixel-balanced sampling"; claiming equal loss contribution across classes.
+
+**Spacing-aware no-upsample inference**:
+Inference in which each image or ROI inherits verified source spacing, applies the model geometry's tolerance, and never synthesizes finer-resolution tissue pixels. Predictions are mapped back to the supplied image's exact dimensions when required by the output contract.
+_Avoid_: assuming flat PNGs have no physical scale; upsampling a coarser ROI to satisfy the training spacing.
+
+**Grouped confusion bootstrap**:
+An uncertainty procedure that stores additive confusion matrices at the finest available sample level, groups them by the declared independent unit, resamples those groups with replacement, and recomputes the metric from each replicate's summed matrix. The interval is conditional on the fixed predictions.
+_Avoid_: resampling correlated child samples independently; bootstrapping only fold aggregates; describing the interval as model-selection uncertainty.
+
 **Benchmarking**:
 The controlled comparison of one pipeline component on a single dataset: vary that component while holding the rest of the protocol fixed, then measure its effect on downstream performance. Foundation-model encoders are the most common comparison axis, but preprocessing, aggregation, decoding, or task-head choices can be studied the same way; a published Benchmark is a special case.
 
@@ -23,7 +55,7 @@ A *published* evaluation dataset paired with a canonical protocol and recorded e
 _Avoid_: calling any single run or any user dataset a "benchmark"; reserve the noun for the published, expected-numbers-annotated instance.
 
 **Protocol**:
-The recipe a Benchmark encodes *as code* in its `soma/benchmarks/<name>.py` module: curation entry, config construction (load a committed YAML when static, or compute it — e.g. EVA's dataset×encoder grid), the metric/scorer (soma's `summary.json` headline by default, or a benchmark-specific one like OCELOT's greedy matcher), the expected reference table, and the tolerance. Low-code where the recipe is static, more code where it computes or scores specially.
+The recipe a Benchmark provider encodes *as code*: curation entry, config construction, metric or scorer, expected reference table, and tolerance. soma owns the provider interface and runner; named providers and their assets are project code outside the installable package.
 
 **Reproduction**:
 Re-running a Benchmark's canonical protocol and checking the resulting metric lands within the recorded tolerance of its expected number. The pass/fail validation that soma's engine produces competitive, stable results.
@@ -36,7 +68,7 @@ _Avoid_: "results table", "comparison" (a comparison is the on-demand N-run `com
 A Leaderboard row backed by an actual Run — its metric comes from that run's `summary.json`.
 
 **Reference row**:
-A Leaderboard row backed by no run — a published number a Benchmark carries (e.g. the kaiko-ai/eva leaderboard values in `soma/benchmarks/reference/eva.csv`). A Reproduction is a Measured row landing next to its Reference row, with the tolerance check reading both. Two shapes: a **broad** reference (one config-agnostic scalar, e.g. OCELOT's official-challenge band) renders as a threshold banner the whole Leaderboard is read against; a **keyed** reference (indexed by config axes, e.g. EVA's per-encoder numbers) renders as aligned rows, one per matching config. Comes in two **kinds** (below).
+A Leaderboard row backed by no run — a published number supplied by a Benchmark provider. A Reproduction is a Measured row landing next to its Reference row, with the tolerance check reading both. Two shapes: a **broad** reference (one config-agnostic scalar) renders as a threshold banner the whole Leaderboard is read against; a **keyed** reference (indexed by config axes) renders as aligned rows, one per matching config. Comes in two **kinds** (below).
 
 **Gate row**:
 A Reference row `soma reproduce` **tolerance-checks** — the checkable target, printed `PASS`/`FAIL` with the delta. The default kind.
@@ -79,7 +111,7 @@ The canonical on-disk schema soma consumes, identical across all task types: a `
 _Avoid_: `manifest.csv` (the retired BEETLE name — the file is always `dataset.csv`); "dataset" for the files (a `Dataset` is the loaded object, a Manifest is the on-disk schema).
 
 **Curator / Curation**:
-Curation turns a *raw* public dataset into a Manifest. A Curator is a **deterministic function** `(raw_root, out_dir, **params) -> CuratedManifest`, typed by a structural `Protocol` — not a class hierarchy, because curators are dataset-specific adapters, not interchangeable components. Deterministic so re-curating the same raw data yields byte-identical files and a stable dataset identity.
+Curation turns a *raw* dataset into a Manifest. A Curator is a **deterministic function** `(raw_root, out_dir, **params) -> CuratedManifest`, typed by a structural `Protocol` — not a class hierarchy, because curators are dataset-specific adapters, not interchangeable components. soma owns the Manifest contract and writer; concrete Curators live with their dataset or project protocol. Deterministic so re-curating the same raw data yields byte-identical files and a stable dataset identity.
 _Avoid_: a `Curator` base class; "swappable curator" (curators are not interchangeable).
 
 ### Extraction geometry

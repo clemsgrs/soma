@@ -1,4 +1,4 @@
-"""Curator for the BEETLE breast-cancer segmentation challenge (slide-manifest path).
+"""Project curator for the BEETLE breast-cancer segmentation challenge.
 
 Like the EVA and OCELOT curators, this emits Soma's unified Manifest
 (``dataset.csv`` + ``splits.csv`` + ``summary.json``) from locally prepared raw data and
@@ -7,7 +7,8 @@ Like the EVA and OCELOT curators, this emits Soma's unified Manifest
 BEETLE is a *segmentation* dataset, so the supervision column is ``label_mask_path``: one row per
 development WSI pairs the slide (``image_path``) with its multiresolution annotation raster
 (``label_mask_path``). No tiles are materialized here — soma runs hs2p annotation sampling over
-these slides at train time (``masks:`` / ``sampling:`` in ``examples/segmentation_beetle.yaml``)
+these slides at train time (``masks:`` / ``sampling:`` in
+``examples/beetle/configs/segmentation.yaml``)
 to derive ROIs, so the cached slide-manifest path is the sole BEETLE recipe.
 
 Splits preserve BEETLE's predefined CV folds (soma never partitions; the curator verifies that
@@ -15,7 +16,8 @@ all slides from one patient share a fold, and sampled ROIs inherit their parent 
 For fold ``k``: a slide whose
 ``validation_fold == k`` is ``test``, ``== (k+1) % n_folds`` is ``tune``, else ``train``.
 
-Run as ``python -m soma.curation.beetle`` (or via ``examples/make_beetle_manifest.py``).
+Run as ``python -m examples.beetle.curate`` (or via
+``examples/make_beetle_manifest.py``).
 """
 
 from __future__ import annotations
@@ -579,8 +581,8 @@ def curate_beetle_slide_manifest(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="python -m soma.curation.beetle",
-        description="Curate the BEETLE development slides into a Soma segmentation Manifest.",
+        prog="python -m examples.beetle.curate",
+        description="Curate the BEETLE development slides into a soma segmentation Manifest.",
     )
     parser.add_argument(
         "--beetle-root",

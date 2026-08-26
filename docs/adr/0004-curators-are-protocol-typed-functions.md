@@ -8,3 +8,5 @@ Chosen against symmetry with the encoder / aggregator / decoder ABCs: those earn
 
 - Fixes the schema drift: one `dataset.csv` (retire BEETLE's `manifest.csv`), `splits.csv` always with `fold`, always a `summary.json`, one writer instead of three.
 - Determinism is a stated contract (all curators already satisfy it): re-curating the same raw data yields byte-identical files → stable dataset identity → a Leaderboard that does not fragment on re-curate.
+- ADR 0010 clarifies placement: soma ships the Manifest contract, writer, and Protocol;
+  concrete dataset Curators live with their project or external provider.
