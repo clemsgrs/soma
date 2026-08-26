@@ -274,6 +274,11 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
         augmentation=AugmentationConfig(**data.get("augmentation", {})),
         tags=list(run_data.get("tags", [])),
+        mirror_root=(
+            Path(run_data["mirror_root"])
+            if run_data.get("mirror_root") is not None
+            else None
+        ),
         resume=bool(run_data.get("resume", False)),
         run_id=run_data.get("run_id"),
     )
@@ -1364,6 +1369,8 @@ class PipelineConfig:
             applied after ``normalization``. Defaults to ``none``.
         heatmaps: Attention heatmap rendering settings.
         tags: Free-form labels attached to the experiment metadata.
+        mirror_root: Optional shared-storage root for recoverable artifact bundles.
+            This operational destination does not change experiment identity.
         resume: When True, reuse the latest existing run dir for this experiment
             instead of minting a fresh one, and skip folds that already wrote
             ``metrics.json`` (issue #244). Ignored when ``run_id`` is set.
@@ -1396,6 +1403,7 @@ class PipelineConfig:
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
     augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
     tags: list[str] = field(default_factory=list)
+    mirror_root: Path | None = None
     # Run-lifecycle directives (issue #244) — not part of experiment identity.
     resume: bool = False
     run_id: str | None = None
@@ -1883,6 +1891,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             "output_root": _normalize_yaml_value(config.output_root),
             "seed": config.training.seed,
             "tags": _normalize_yaml_value(config.tags),
+            "mirror_root": _normalize_yaml_value(config.mirror_root),
         },
         "data": {
             "dataset_csv": _normalize_yaml_value(config.dataset_csv),

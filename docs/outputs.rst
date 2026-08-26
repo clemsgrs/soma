@@ -106,3 +106,37 @@ Run directory vs cache
 
 The run directory stores the outcome of one specific experiment and should be
 treated as immutable once the run completes.
+
+Recoverable shared-storage mirrors
+----------------------------------
+
+Long-running jobs can keep active outputs on node-local storage while
+publishing recovery bundles to shared storage by setting ``run.mirror_root``. The
+mirror destination preserves the managed run path beneath that root. Leaving the
+setting ``null`` is a no-op and does not change experiment identity.
+
+Every improved checkpoint is first captured in an immutable local spool. The task
+integration supplies the checkpoint artifacts and declares which files reconstruct its
+active fold; the recovery module does not prescribe model or audit filenames. The
+resolved ``config.yaml`` and a ``manifest.json`` containing each file's SHA-256 digest
+and byte size accompany the snapshot. The segmentation integration currently supplies
+its model checkpoint, training history, and sampler audit. A completed fold is captured
+the same way with all of its artifacts. Shared copies are staged beside their final
+destination, verified, and exposed by one atomic rename, so a partial copy does not look
+complete.
+
+``recovery/mirror_state.json`` records pending and verified publications plus failed
+attempts. Mirror errors never change a healthy local training result. Later checkpoint
+or fold events—and a resumed run—retry the immutable local spools. Existing shared
+bundles are reused only when their verified manifest exactly matches the local source;
+a self-consistent but foreign or stale bundle is repaired. If a restarted fold emits
+different content for an already-used epoch number, a content-addressed sibling preserves
+both immutable improvements instead of overwriting either one.
+
+If node-local run storage is lost, a pinned resume restores verified checkpoint spools and
+completed-fold artifacts from the corresponding mirror before checking which folds remain.
+A bare ``resume: true`` can do the same when exactly one recipe-compatible mirrored run
+exists for the experiment. It fails loudly when several compatible runs exist so the user
+can select one with ``run_id`` rather than letting recovery guess. Restored completed folds
+are checksum-verified and skipped without retraining; incomplete folds retain every
+restored checkpoint bundle as recovery evidence before training continues.

@@ -6,6 +6,9 @@
 
 run:
   output_root: runs
+  # Optional shared-storage destination for recoverable checkpoint/fold bundles.
+  # Active training continues under output_root; mirror failures are retried and non-fatal.
+  mirror_root: null
   seed: 0
   tags:
     - baseline

@@ -215,6 +215,20 @@ def test_drift_guard_noop_when_no_saved_config(tmp_path: Path):
     _guard_resume_config_drift(tmp_path / "fresh", _make_config(tmp_path, run_id="fresh"))
 
 
+def test_drift_guard_allows_changing_operational_mirror_root(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    original = _make_config(tmp_path, mirror_root=tmp_path / "shared-a")
+    save_config(original, run_dir / "config.yaml")
+
+    resumed = replace(
+        original,
+        mirror_root=tmp_path / "shared-b",
+        resume=True,
+    )
+
+    _guard_resume_config_drift(run_dir, resumed)
+
+
 # --------------------------------------------------------------------------- #
 # end-to-end resume (CPU synthetic pipeline)
 # --------------------------------------------------------------------------- #
