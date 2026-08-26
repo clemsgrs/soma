@@ -272,7 +272,26 @@ class Trainer:
                     selected_epoch = epoch
                     selected_tune_metrics = tune_metrics
                     patience_counter = 0
-                    _save_checkpoint(self._model, self._optimizer, epoch, tune_loss, checkpoint_path)
+                    selection: dict[str, str | float] = {
+                        "strategy": self._config.checkpoint_selection,
+                    }
+                    if not select_last:
+                        selection.update(
+                            {
+                                "monitor": self._config.monitor,
+                                "mode": self._config.monitor_mode,
+                                "value": float(monitor_value),
+                            }
+                        )
+                    _save_checkpoint(
+                        self._model,
+                        self._optimizer,
+                        epoch,
+                        tune_loss,
+                        checkpoint_path,
+                        tune_metrics=tune_metrics,
+                        selection=selection,
+                    )
                     if self._on_checkpoint_improved is not None:
                         self._on_checkpoint_improved(checkpoint_path, history, epoch)
                     status = f"new selected checkpoint saved at epoch {epoch + 1}"
@@ -632,13 +651,21 @@ def _save_checkpoint(
     epoch: int,
     tune_loss: float,
     path: Path,
+    *,
+    tune_metrics: dict[str, float],
+    selection: dict[str, str | float],
 ) -> None:
+    """Save model state plus self-describing tune/selection evidence."""
     torch.save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch,
             "tune_loss": tune_loss,
+            "tune_metrics": {
+                name: float(value) for name, value in tune_metrics.items()
+            },
+            "selection": dict(selection),
         },
         path,
     )
