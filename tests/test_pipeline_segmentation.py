@@ -172,6 +172,42 @@ def test_cached_segmentation_fold_writes_exact_roi_batch_sampling_audit(
     }
 
 
+def test_cached_sampler_counts_arbitrary_classes_and_forwards_request_ratios(
+    tmp_path: Path,
+):
+    sample_ids = [f"s{i}" for i in range(6)]
+    manifest, splits, store = _build_dense_run(
+        tmp_path,
+        sample_ids,
+        num_classes=3,
+        train_count=4,
+    )
+    fold_dir = tmp_path / "fold"
+
+    train_one_segmentation_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
+        training=TrainingConfig(
+            epochs=1,
+            batch_size=4,
+            roi_batch_sampling="class_conditioned",
+            class_request_ratios=[1, 2, 1],
+            roi_draws_per_epoch=4,
+            seed=11,
+        ),
+        fold_dir=fold_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice"]),
+    )
+
+    audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
+    assert audit["classes"] == [0, 1, 2]
+    assert audit["class_request_ratios"] == [1.0, 2.0, 1.0]
+    assert audit["epochs"][0]["target_request_counts"] == [1, 2, 1]
+
+
 def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     sample_ids = ["s0", "s1", "s2", "s3"]
     manifest, splits, store = _build_dense_run(tmp_path, sample_ids)
