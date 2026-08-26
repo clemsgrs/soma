@@ -1,8 +1,9 @@
 """Benchmark registry: ``name -> Benchmark`` plus the protocol-as-code interface.
 
-A published **Benchmark** is a named, registered *code* object (ADR 0002) — not a folder
-convention under ``examples/``. Registration makes ``soma list benchmarks`` and
-``soma reproduce <name>`` structural: they enumerate and drive the registry directly, so a
+A Built-in **Benchmark** is a named, registered *code* object (ADR 0002). Published
+Benchmarks may instead be represented by Project protocols unless maintainers explicitly
+promote them (ADR 0010). Registration makes ``soma list benchmarks`` and ``soma
+reproduce <name>`` structural: they enumerate and drive the registry directly, so a
 benchmark cannot silently drift from a doc someone forgot to write.
 
 A Benchmark is *thin*: it wires an existing curator, a committed config (or a builder), a

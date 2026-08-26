@@ -5,6 +5,11 @@ installable `soma` package supplies reusable mechanisms; this bundle owns the da
 layout, cohort assertions, fold policy, experiment configs, reporting, and submission
 rules.
 
+BEETLE is not yet a Benchmark because its official manuscript remains under review. A
+published, sufficiently fixed evaluation contract with reference evidence may make it a
+Benchmark, but this repository will continue to treat it as a side project unless
+maintainers separately promote it to a Built-in Benchmark.
+
 Curate the strict development cohort:
 
 ```bash
