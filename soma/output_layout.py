@@ -63,6 +63,10 @@ def _evaluation_identity(config: PipelineConfig) -> dict[str, Any]:
     # ``overwrite_test`` is an operational clobber-guard flag (issue #247), not part of
     # what the experiment *is* — toggling it must never mint a new experiment_id.
     evaluation.pop("overwrite_test", None)
+    # Patient OOF is selected-checkpoint evidence reporting, not training state. Keep its
+    # fully resolved protocol in config.yaml for provenance, but do not re-mint an ordinary
+    # experiment when reporting is absent or enabled (issue #386).
+    evaluation.pop("patient_oof", None)
     return evaluation
 
 
