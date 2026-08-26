@@ -69,6 +69,7 @@ VALID_METRICS: dict[str, set[str]] = {
     },
     "segmentation": {
         "mean_dice",
+        "dataset_global_mean_dice",
         "mean_iou",
         "dice_per_class",
     },

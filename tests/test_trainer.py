@@ -310,6 +310,20 @@ class TestCheckpointSelection:
         assert checkpoint["epoch"] == self.EPOCHS - 1
         assert _states_match(checkpoint["model_state_dict"], model.state_dict())
 
+    def test_last_selection_checkpoint_metadata_names_strategy(self, tmp_path: Path):
+        _, result = self._fit(tmp_path, patience=None, checkpoint_selection="last")
+
+        checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+        assert (checkpoint["selection"], checkpoint["tune_metrics"]) == (
+            {"strategy": "last"},
+            {
+                "auroc": 0.0,
+                "balanced_accuracy": 0.0,
+                "auprc": 0.38333333333333336,
+                "f1": 0.0,
+            },
+        )
+
 
 class TestTrainerWithEmbeddingModel:
     def test_fit_with_embedding_model(self, tmp_path: Path):

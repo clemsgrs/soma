@@ -53,7 +53,9 @@ class SegmentationHead(TaskHead):
             false negatives more (recall-oriented for small structures), ``gamma > 1``
             focuses on hard, low-overlap classes (focal-Tversky).
         metrics: Metric names (validated against the ``segmentation`` family);
-            empty uses the default ``[mean_dice, mean_iou]``.
+            empty uses the default ``[mean_dice, mean_iou]``. Request
+            ``dataset_global_mean_dice`` explicitly to sum counts over the split
+            before averaging class Dice.
     """
 
     target_dtypes = {"mask": torch.long}
@@ -227,21 +229,28 @@ class SegmentationHead(TaskHead):
 
         The single reduce+filter path shared by ``compute_metrics`` and the
         streaming evaluator, so a batched (concatenated-logits) and a streamed
-        (concatenated-counts) evaluation cannot drift. ``counts`` must keep the
-        per-image axis — summing it to ``(C, 3)`` would silently switch the
-        per-image-macro monitor metric to dataset-global.
+        (concatenated-counts) evaluation cannot drift. ``counts`` keeps the
+        per-image axis so legacy ``mean_dice`` remains per-image macro while
+        ``dataset_global_mean_dice`` can sum the same rows before reduction.
         """
-        full = reduce_dice_iou(counts, num_classes=self.num_classes)
+        per_image_metrics = reduce_dice_iou(counts, num_classes=self.num_classes)
         # Honor the configured metric selection (like the scalar heads). "dice_per_class"
         # expands to the per-class breakdown; otherwise only the requested scalars.
         selected: dict[str, float] = {}
         if "mean_dice" in self.metrics:
-            selected["mean_dice"] = full["mean_dice"]
+            selected["mean_dice"] = per_image_metrics["mean_dice"]
+        if "dataset_global_mean_dice" in self.metrics:
+            dataset_global = reduce_dice_iou(
+                counts,
+                num_classes=self.num_classes,
+                aggregation="dataset_global",
+            )
+            selected["dataset_global_mean_dice"] = dataset_global["mean_dice"]
         if "mean_iou" in self.metrics:
-            selected["mean_iou"] = full["mean_iou"]
+            selected["mean_iou"] = per_image_metrics["mean_iou"]
         if "dice_per_class" in self.metrics:
             for c in range(self.num_classes):
-                selected[f"dice_class_{c}"] = full[f"dice_class_{c}"]
+                selected[f"dice_class_{c}"] = per_image_metrics[f"dice_class_{c}"]
         return selected
 
     def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:

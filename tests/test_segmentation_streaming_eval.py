@@ -50,6 +50,31 @@ class _FixedLogitsModel(nn.Module):
         return SegmentationModelOutput(logits=logits)
 
 
+class _SteeredSegmentationHead(SegmentationHead):
+    """Drive one deterministic parameter step while retaining real dense metrics."""
+
+    def compute_loss(self, raw_output, targets):
+        return -raw_output[:, 1].mean()
+
+
+class _FlippingSegmentationModel(nn.Module):
+    """Predict class 0 until one SGD step moves ``signal`` above zero."""
+
+    def __init__(self, task_head: SegmentationHead) -> None:
+        super().__init__()
+        self.task_head = task_head
+        self.signal = nn.Parameter(torch.tensor(-1.5))
+
+    def forward(self, X: torch.Tensor) -> SegmentationModelOutput:
+        class_0 = torch.zeros(
+            (X.shape[0], X.shape[-2], X.shape[-1]),
+            dtype=X.dtype,
+            device=X.device,
+        )
+        class_1 = self.signal.expand_as(class_0)
+        return SegmentationModelOutput(logits=torch.stack([class_0, class_1], dim=1))
+
+
 def _make_trainer(head, items, logits_in_order, tmp_path) -> Trainer:
     loader = DataLoader(
         items,
@@ -89,6 +114,107 @@ def test_tune_streams_per_image_macro_not_dataset_global(tmp_path):
     assert metrics["mean_dice"] != pytest.approx(1 / 3)  # NOT dataset-global
     assert "mean_iou" in metrics
     assert torch.isfinite(torch.tensor(avg_loss))
+
+
+def test_dataset_global_mean_dice_sums_counts_before_class_macro():
+    # Three-class fixture with class 2 absent from the entire dataset:
+    #   A: one perfect class-0 pixel -> per-image macro Dice 1.0
+    #   B: 100 class-0 pixels all predicted class 1 -> per-image macro Dice 0.0
+    # Legacy mean_dice = (1 + 0) / 2 = 0.5.
+    # Dataset-global class Dice = [2 / 102, 0, undefined], so the existing
+    # skip-absent-class convention gives dataset_global_mean_dice = 1 / 102.
+    counts = torch.tensor(
+        [
+            [[1, 1, 1], [0, 0, 0], [0, 0, 0]],
+            [[0, 0, 100], [0, 100, 0], [0, 0, 0]],
+        ]
+    )
+    geom = compute_dense_geometry(target_size=2, patch_size=1)
+    head = SegmentationHead(
+        num_classes=3,
+        geometry=geom,
+        metrics=["mean_dice", "dataset_global_mean_dice"],
+    )
+
+    metrics = head.finalize_eval_metrics(counts)
+
+    assert metrics == {
+        "mean_dice": pytest.approx(0.5),
+        "dataset_global_mean_dice": pytest.approx(1 / 102),
+    }
+
+
+def _fit_with_dataset_global_monitor(tmp_path):
+    geom = compute_dense_geometry(target_size=2, patch_size=1)
+    head = _SteeredSegmentationHead(
+        num_classes=2,
+        geometry=geom,
+        metrics=["dataset_global_mean_dice"],
+    )
+    grid = torch.zeros(1, 2, 2)
+    mask = torch.zeros(2, 2, dtype=torch.long)
+    loader = DataLoader(
+        [(grid, {"mask": mask}, "sample")],
+        batch_size=1,
+        collate_fn=partial(segmentation_collate_fn, target_dtypes=head.target_dtypes),
+    )
+    trainer = Trainer(
+        model=_FlippingSegmentationModel(head),
+        train_loader=loader,
+        tune_loader=loader,
+        config=TrainingConfig(
+            epochs=5,
+            learning_rate=1.0,
+            optimizer="sgd",
+            scheduler="none",
+            patience=1,
+            monitor="dataset_global_mean_dice",
+            monitor_mode="max",
+        ),
+        fold_dir=tmp_path,
+        device=torch.device("cpu"),
+    )
+
+    return trainer.fit()
+
+
+def test_dataset_global_mean_dice_is_recorded_in_training_history(tmp_path):
+    result = _fit_with_dataset_global_monitor(tmp_path)
+
+    assert [log.tune_metrics for log in result.history] == [
+        {"dataset_global_mean_dice": pytest.approx(1.0)},
+        {"dataset_global_mean_dice": pytest.approx(0.0)},
+    ]
+
+
+def test_dataset_global_mean_dice_selects_checkpoint(tmp_path):
+    result = _fit_with_dataset_global_monitor(tmp_path)
+
+    assert (result.selected_epoch, result.selected_tune_metrics) == (
+        0,
+        {"dataset_global_mean_dice": pytest.approx(1.0)},
+    )
+
+
+def test_dataset_global_mean_dice_drives_early_stopping(tmp_path):
+    result = _fit_with_dataset_global_monitor(tmp_path)
+
+    assert len(result.history) == 2
+
+
+def test_dataset_global_monitor_is_named_in_checkpoint_metadata(tmp_path):
+    result = _fit_with_dataset_global_monitor(tmp_path)
+
+    checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+    assert checkpoint["selection"] == {
+        "strategy": "best",
+        "monitor": "dataset_global_mean_dice",
+        "mode": "max",
+        "value": pytest.approx(1.0),
+    }
+    assert checkpoint["tune_metrics"] == {
+        "dataset_global_mean_dice": pytest.approx(1.0)
+    }
 
 
 def test_tune_selects_streaming_path_for_segmentation_head():

@@ -44,7 +44,8 @@ new dense task plugs into.
   identical extraction).
 * **Dense metrics** — evaluation streams compact per-image confusion counts (full
   ``(N, C, H, W)`` logits would OOM across a cohort); the head accumulates ``dense_stats``
-  rows and finalizes ``mean_dice`` / ``mean_iou`` (:mod:`soma.tasks.dense_metrics`).
+  rows and finalizes ``mean_dice`` / ``mean_iou`` plus explicitly requested global
+  reductions (:mod:`soma.tasks.dense_metrics`).
 * **Prediction artifacts** — each fold writes ``metrics.json`` plus the
   prediction-raster / overlay / CSV artifacts per split.
 
@@ -62,6 +63,36 @@ analogue of an :doc:`aggregator <aggregators>`). For each tile:
    recall-oriented for small structures, ``gamma > 1`` is focal-Tversky on hard classes).
 4. At evaluation, predictions are argmaxed per pixel and scored with ``mean_dice`` /
    ``mean_iou``.
+
+Dice reduction and checkpoint selection
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``mean_dice`` retains soma's established per-sample macro reduction: compute class
+Dice within each sample, average the classes defined in that sample, then average the
+sample values. It remains the default so existing configurations, results, and
+experiment identities do not change.
+
+``dataset_global_mean_dice`` first sums the integer confusion counts over the complete
+split, computes one Dice value per class, and averages those class values equally. A
+class absent from both predictions and targets over the complete split is undefined and
+excluded from the class average, matching the existing segmentation absent-class
+convention. This reduction is independent of the number of classes and weights larger
+samples more heavily through their pixel counts.
+
+Use the dataset-global reduction for BEETLE decoder-checkpoint parity. Request it as an
+evaluation metric and select it in maximum mode:
+
+.. code-block:: yaml
+
+   evaluation:
+     metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]
+   training:
+     monitor: dataset_global_mean_dice
+     monitor_mode: max
+
+Both names are written separately in per-epoch training history. The selected checkpoint
+also stores the complete tune metrics and its selection monitor, mode, and value, so the
+two reductions cannot be mistaken for each other after training.
 
 The decoder is **input-agnostic**: it consumes whatever dense ``(d, grid)`` grid the
 encoder emits, set by ``preprocessing.feature_kind`` (see :doc:`decoders`). Multi-encoder
