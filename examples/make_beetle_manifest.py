@@ -1,7 +1,7 @@
 """Thin shim for the BEETLE slide-manifest curator.
 
-The curator now lives in :mod:`soma.curation.beetle` (invokable as
-``python -m soma.curation.beetle``); it emits Soma's unified Manifest
+The curator lives with the BEETLE project protocol in :mod:`examples.beetle.curate`
+(invokable as ``python -m examples.beetle.curate``); it emits soma's unified Manifest
 (``dataset.csv`` + ``splits.csv`` + ``summary.json``). This file is kept so the historical
 ``python examples/make_beetle_manifest.py`` entry point still works.
 
@@ -20,7 +20,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from soma.curation.beetle import main
+from examples.beetle.curate import main
 
 if __name__ == "__main__":
     main()

@@ -1,12 +1,12 @@
-"""Dataset curation utilities.
+"""Manifest curation interfaces and legacy packaged providers.
 
-Every curator emits the same unified Manifest (``dataset.csv`` + ``splits.csv`` +
-``summary.json``) via the shared :func:`~soma.curation.manifest.write_manifest`. Curators
-are Protocol-typed, deterministic functions with **no base class** (ADR 0004); the shared
-contract lives in :mod:`soma.curation.manifest`.
+Every curator emits the same unified Manifest through
+:func:`~soma.curation.manifest.write_manifest`. Curators are Protocol-typed,
+deterministic functions with **no base class** (ADR 0004). New concrete dataset
+providers live outside the installable package (ADR 0010); the remaining named exports
+are compatibility debt pending staged migration.
 """
 
-from soma.curation.beetle import curate_beetle_slide_manifest
 from soma.curation.eva import (
     curate_eva_patch_dataset,
     curate_eva_patch_datasets,
@@ -35,7 +35,6 @@ __all__ = [
     "SUPERVISION_COLUMN",
     "CuratedManifest",
     "Curator",
-    "curate_beetle_slide_manifest",
     "curate_eva_patch_dataset",
     "curate_eva_patch_datasets",
     "curate_hest",

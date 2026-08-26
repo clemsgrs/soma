@@ -6,7 +6,7 @@
 # and trains a lightweight conv decoder + parameter-free SegmentationHead.
 #
 # The dataset_csv / splits_csv are the SLIDE-LEVEL manifest + splits emitted by
-#   python examples/make_beetle_manifest.py
+#   python -m examples.beetle.curate
 # (one row per WSI: sample_id, image_path (WSI), label_mask_path (annotation raster); splits
 # carry BEETLE's predefined CV folds, slide-level — soma never partitions, ROIs inherit).
 # Those artifacts carry absolute paths and live under data/beetle/ (gitignored); point

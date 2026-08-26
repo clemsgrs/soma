@@ -10,11 +10,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from examples.beetle.curate import curate_beetle_slide_manifest
 from soma.curation import (
     SUPERVISION_COLUMN,
     CuratedManifest,
     Curator,
-    curate_beetle_slide_manifest,
     curate_eva_patch_dataset,
     curate_ocelot_detection,
     write_manifest,

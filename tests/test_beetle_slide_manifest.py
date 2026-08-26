@@ -1,7 +1,7 @@
 """Config-validation tests for the BEETLE slide-manifest segmentation deliverable (#93).
 
 These are config-only (no slide/mask I/O): they assert the tracked example config
-``examples/segmentation_beetle.yaml`` loads through soma's loader and encodes the
+``examples/beetle/configs/segmentation.yaml`` loads through soma's loader and encodes the
 BEETLE recipe — the masks ``pixel_mapping`` (BEETLE's raw vocabulary),
 the 5%% min-coverage rule, 512 px @ 0.5 µm/px spacing-aware, phikon sliding-224 dense
 window, lightweight_conv decoder, num_classes=4, and the three metrics — and that the
@@ -18,12 +18,12 @@ import pandas as pd
 import pytest
 from PIL import Image, TiffImagePlugin
 
+from examples.beetle.curate import curate_beetle_slide_manifest
 from soma.config import load_config
-from soma.curation.beetle import curate_beetle_slide_manifest
 from soma.dense.reader import build_label_remap
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BEETLE_CONFIG = REPO_ROOT / "examples" / "segmentation_beetle.yaml"
+BEETLE_CONFIG = REPO_ROOT / "examples" / "beetle" / "configs" / "segmentation.yaml"
 
 # BEETLE's pixel -> soma class contract (255 = ignore).
 EXPECTED_REMAP = {1: 0, 2: 1, 3: 2, 4: 3, 0: 255}
