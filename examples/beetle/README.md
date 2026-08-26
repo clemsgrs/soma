@@ -34,7 +34,7 @@ folds have completed:
 
 ```bash
 python -m examples.beetle.report_oof \
-  --dataset-csv data/beetle/runs/uniform/segmentation_rois/roi_manifest.csv \
+  --sample-patient-csv data/beetle/metadata/sample_to_patient.csv \
   --uniform data/beetle/runs/uniform/fold_{0,1,2,3,4}/confusion_evidence_tune.json \
   --class-conditioned data/beetle/runs/class_conditioned/fold_{0,1,2,3,4}/confusion_evidence_tune.json \
   --output data/beetle/reports/oof_report.json
@@ -46,6 +46,10 @@ spacing-sensitivity cohorts, removes the three declared native-spacing exception
 for the sensitivity view, and computes percentile intervals from 10,000 whole-patient
 bootstrap draws with seed 0.
 
+`sample_to_patient.csv` is derived BEETLE report metadata with `sample_id` and
+`patient_id` columns. It is not Soma's canonical dataset Manifest and is not used to
+define training samples or splits.
+
 ### Migration from the earlier patient OOF artifact
 
 `evaluation.patient_oof` has been replaced by the identity-neutral boolean
@@ -53,6 +57,9 @@ bootstrap draws with seed 0.
 patient IDs, cohort sizes, spacing exceptions, or bootstrap settings. The former
 per-fold `patient_confusions_tune.json` and run-level `patient_oof_report.json` are
 replaced by per-fold `confusion_evidence_tune.json` plus the project-owned report command
-above. Existing runs must be re-evaluated from their selected checkpoints to create the
-new per-sample evidence; the former patient-grouped artifacts are not implicitly
-converted because they cannot recover the sample-level sufficient statistics.
+above. To migrate an existing completed run, enable the new boolean and resume the same
+pinned run. Soma reloads each fold's selected checkpoint and evaluates only the effective
+held-out split to create the missing evidence; it does not retrain, rewrite training
+history, or treat this operational export flag as training identity. The former
+patient-grouped artifacts are not converted because they cannot recover sample-level
+sufficient statistics.

@@ -16,7 +16,7 @@ from typing import Mapping, Sequence
 import numpy as np
 import torch
 
-from soma.tasks.dense_metrics import reduce_confusion_matrix_dice
+from soma.tasks.dense_metrics import reduce_confusion_matrices_dice
 
 
 ConfusionMatrix = tuple[tuple[int, ...], ...]
@@ -95,17 +95,7 @@ def write_confusion_records(
     path: str | Path, records: Sequence[SegmentationConfusionRecord]
 ) -> None:
     """Write one fold's selected-checkpoint sample confusion evidence."""
-    if not records:
-        raise ValueError("confusion evidence must contain at least one sample record")
-    fold = records[0].fold
-    vocabulary = tuple(records[0].class_vocabulary)
-    if any(record.fold != fold for record in records):
-        raise ValueError("one confusion evidence artifact must contain exactly one fold")
-    if any(tuple(record.class_vocabulary) != vocabulary for record in records):
-        raise ValueError("confusion evidence records disagree on class_vocabulary")
-    sample_ids = [record.sample_id for record in records]
-    if len(set(sample_ids)) != len(sample_ids):
-        raise ValueError("confusion evidence contains duplicate sample_id records")
+    _validate_record_collection(records)
     payload = {
         "schema_version": 1,
         "records": [record.to_dict() for record in records],
@@ -121,9 +111,16 @@ def load_confusion_records(path: str | Path) -> list[SegmentationConfusionRecord
     records = [
         SegmentationConfusionRecord.from_dict(value) for value in payload["records"]
     ]
+    _validate_record_collection(records)
+    return records
+
+
+def _validate_record_collection(
+    records: Sequence[SegmentationConfusionRecord],
+) -> None:
+    """Validate the invariants carried by one fold artifact."""
     if not records:
         raise ValueError("confusion evidence must contain at least one sample record")
-    # Reuse the cross-record validation without rewriting the artifact.
     fold = records[0].fold
     vocabulary = tuple(records[0].class_vocabulary)
     if any(record.fold != fold for record in records):
@@ -132,7 +129,23 @@ def load_confusion_records(path: str | Path) -> list[SegmentationConfusionRecord
         raise ValueError("confusion evidence records disagree on class_vocabulary")
     if len({record.sample_id for record in records}) != len(records):
         raise ValueError("confusion evidence contains duplicate sample_id records")
-    return records
+
+
+def confusion_dice_from_matrices(
+    matrices: Sequence[Sequence[Sequence[int]]] | np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Recompute per-class and mean Dice independently for ``(..., K, K)`` matrices."""
+    values = np.asarray(matrices)
+    if values.ndim < 2 or values.shape[-2] == 0 or values.shape[-2] != values.shape[-1]:
+        raise ValueError(
+            "confusion matrices must be non-empty and square on their last two "
+            f"dimensions, got {values.shape}"
+        )
+    if not np.issubdtype(values.dtype, np.integer) or np.any(values < 0):
+        raise ValueError("confusion_matrix entries must be non-negative integers")
+    _, per_class = reduce_confusion_matrices_dice(torch.as_tensor(values))
+    per_class_values = per_class.cpu().numpy()
+    return per_class_values, per_class_values.mean(axis=-1)
 
 
 def validate_confusion_records(
@@ -196,13 +209,13 @@ def aggregate_confusion_matrices(
         _validated_matrix(matrix, num_classes=int(first.shape[0])) for matrix in matrices
     ]
     matrix = np.sum(np.asarray(validated, dtype=np.int64), axis=0)
-    _, dice_per_class = reduce_confusion_matrix_dice(torch.as_tensor(matrix))
+    dice_per_class, mean_dice = confusion_dice_from_matrices(matrix)
     return ConfusionMetrics(
         confusion_matrix=tuple(
             tuple(int(entry) for entry in row) for row in matrix.tolist()
         ),
         dice_per_class=tuple(float(value) for value in dice_per_class),
-        mean_dice=float(np.mean(dice_per_class)),
+        mean_dice=float(mean_dice),
     )
 
 
@@ -212,6 +225,7 @@ __all__ = [
     "SegmentationConfusionRecord",
     "aggregate_confusion_matrices",
     "aggregate_confusion_records",
+    "confusion_dice_from_matrices",
     "load_confusion_records",
     "validate_confusion_records",
     "write_confusion_records",

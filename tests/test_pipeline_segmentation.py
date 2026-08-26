@@ -288,7 +288,7 @@ def test_selected_checkpoint_exports_one_confusion_per_tune_sample(tmp_path: Pat
     assert sum(sum(row) for row in record["confusion_matrix"]) == TARGET * TARGET
 
 
-def _run_confusion_evidence_cv(tmp_path: Path):
+def _run_confusion_evidence_cv(tmp_path: Path, *, save_evidence: bool = True):
     sample_ids = ["s0", "s1", "s2", "s3", "external"]
     manifest, _, store = _build_dense_run(
         tmp_path,
@@ -319,7 +319,7 @@ def _run_confusion_evidence_cv(tmp_path: Path):
     run_dir = tmp_path / "run"
     evaluation = EvalConfig(
         metrics=["mean_dice"],
-        save_segmentation_confusion_evidence=True,
+        save_segmentation_confusion_evidence=save_evidence,
     )
     train_kwargs = {
         "feature_store": store,
@@ -351,13 +351,76 @@ def test_train_validates_complete_fold_confusion_evidence(tmp_path: Path) -> Non
     assert {record["fold"] for record in fold_1["records"]} == {1}
 
 
-def test_train_rejects_missing_fold_confusion_evidence_on_resume(tmp_path: Path) -> None:
-    _, run_dir, train_kwargs = _run_confusion_evidence_cv(tmp_path)
-    missing_path = run_dir / "fold_1" / "confusion_evidence_tune.json"
-    missing_path.unlink()
+def test_resume_regenerates_missing_evidence_from_selected_checkpoints_only(
+    tmp_path: Path,
+) -> None:
+    _, run_dir, train_kwargs = _run_confusion_evidence_cv(
+        tmp_path, save_evidence=False
+    )
+    histories = {
+        fold: (run_dir / f"fold_{fold}" / "training_history.json").read_bytes()
+        for fold in range(2)
+    }
+    checkpoints = {
+        fold: hashlib.sha256(
+            (run_dir / f"fold_{fold}" / "best_model.pt").read_bytes()
+        ).hexdigest()
+        for fold in range(2)
+    }
+    train_kwargs["evaluation"] = replace(
+        train_kwargs["evaluation"],
+        save_segmentation_confusion_evidence=True,
+    )
+    train_kwargs["resume_completed_folds"] = True
 
-    with pytest.raises(ValueError, match="requires every fold artifact.*fold_1"):
-        train(**train_kwargs)
+    resumed = train(**train_kwargs)
+
+    assert resumed.fold_results == []
+    for fold in range(2):
+        fold_dir = run_dir / f"fold_{fold}"
+        assert (fold_dir / "confusion_evidence_tune.json").is_file()
+        assert (fold_dir / "training_history.json").read_bytes() == histories[fold]
+        assert hashlib.sha256((fold_dir / "best_model.pt").read_bytes()).hexdigest() == (
+            checkpoints[fold]
+        )
+
+
+def test_tune_is_test_validates_evidence_against_effective_held_out_split(
+    tmp_path: Path,
+) -> None:
+    sample_ids = ["train_a", "train_b", "held_a", "held_b"]
+    manifest, _, store = _build_dense_run(tmp_path, sample_ids, num_classes=3)
+    splits_path = tmp_path / "test_only_splits.csv"
+    splits_path.write_text(
+        "sample_id,split,fold\n"
+        "train_a,train,0\n"
+        "train_b,train,0\n"
+        "held_a,test,0\n"
+        "held_b,test,0\n"
+    )
+    splits = Splits(splits_path, manifest, tune_is_test=True)
+    run_dir = tmp_path / "run"
+
+    train(
+        feature_store=store,
+        dataset=manifest,
+        splits=splits,
+        dataset_type="segmentation",
+        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
+        training=TrainingConfig(epochs=1, batch_size=2, tune_is_test=True),
+        run_dir=run_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(
+            metrics=["mean_dice"],
+            save_segmentation_confusion_evidence=True,
+        ),
+    )
+
+    payload = json.loads((run_dir / "confusion_evidence_tune.json").read_text())
+    assert [record["sample_id"] for record in payload["records"]] == [
+        "held_a",
+        "held_b",
+    ]
 
 
 def test_segmentation_fold_requires_num_classes(tmp_path: Path):

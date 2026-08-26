@@ -29,6 +29,7 @@ __all__ = [
     "segmentation_loss",
     "dense_confusion_counts",
     "dense_confusion_matrices",
+    "reduce_confusion_matrices_dice",
     "reduce_confusion_matrix_dice",
     "reduce_dice_iou",
 ]
@@ -316,20 +317,36 @@ def _dice_from_areas(intersection: Tensor, predicted: Tensor, target: Tensor) ->
     )
 
 
-def reduce_confusion_matrix_dice(matrix: Tensor) -> tuple[float, tuple[float, ...]]:
-    """Compute micro and per-class Dice from one additive ``(C, C)`` matrix."""
-    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
-        raise ValueError(f"confusion matrix must be square, got {tuple(matrix.shape)}")
+def reduce_confusion_matrices_dice(matrix: Tensor) -> tuple[Tensor, Tensor]:
+    """Compute micro and per-class Dice for arbitrary ``(..., C, C)`` matrices."""
+    if matrix.ndim < 2 or matrix.shape[-2] != matrix.shape[-1]:
+        raise ValueError(
+            "confusion matrices must be square on their last two dimensions, "
+            f"got {tuple(matrix.shape)}"
+        )
     values = matrix.to(dtype=torch.float64)
-    true_positive = values.diag()
+    true_positive = values.diagonal(dim1=-2, dim2=-1)
     per_class = _dice_from_areas(
         true_positive,
-        values.sum(dim=0),
-        values.sum(dim=1),
+        values.sum(dim=-2),
+        values.sum(dim=-1),
     ).nan_to_num(nan=0.0)
-    total = values.sum()
-    micro = float(true_positive.sum() / total) if bool(total > 0) else 0.0
-    return micro, tuple(float(value) for value in per_class)
+    total = values.sum(dim=(-2, -1))
+    micro = torch.where(
+        total > 0,
+        true_positive.sum(dim=-1) / total,
+        torch.zeros_like(total),
+    )
+    return micro, per_class
+
+
+def reduce_confusion_matrix_dice(matrix: Tensor) -> tuple[float, tuple[float, ...]]:
+    """Compute micro and per-class Dice from one additive ``(C, C)`` matrix."""
+    if matrix.ndim != 2:
+        raise ValueError(f"confusion matrix must be square, got {tuple(matrix.shape)}")
+    micro, per_class = reduce_confusion_matrices_dice(matrix)
+    micro_value = float(micro)
+    return micro_value, tuple(float(value) for value in per_class)
 
 
 def reduce_dice_iou(

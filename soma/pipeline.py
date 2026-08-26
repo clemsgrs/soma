@@ -1471,6 +1471,7 @@ def train_one_segmentation_fold(
     projection: ProjectionConfig | None = None,
     encoder_identity: str = "",
     artifact_mirror: ArtifactMirror | None = None,
+    _selected_checkpoint_evidence_only: bool = False,
 ) -> FoldResult:
     """Train and evaluate a single dense-segmentation fold.
 
@@ -1599,10 +1600,19 @@ def train_one_segmentation_fold(
 
     # Feature adaptor (issue #286), fit BEFORE the decoder is constructed from the Support
     # ROIs' grid positions and nothing else — "K means K". Cached only (asserted above).
-    feature_adaptor = (
-        None
-        if is_live
-        else _fit_feature_adaptor(
+    if is_live:
+        feature_adaptor = None
+    elif _selected_checkpoint_evidence_only:
+        # Construct the checkpoint-compatible module shape without re-fitting Support
+        # statistics; strict state-dict loading below restores the selected fit exactly.
+        feature_adaptor = build_feature_adaptor(
+            normalization,
+            projection,
+            num_features=ref_feature_dim,
+            encoder_identity=encoder_identity,
+        )
+    else:
+        feature_adaptor = _fit_feature_adaptor(
             normalization,
             projection,
             support_features=_SupportGrids(feature_store, train_records),
@@ -1611,7 +1621,6 @@ def train_one_segmentation_fold(
             encoder_identity=encoder_identity,
             fold_dir=fold_dir,
         )
-    )
     # The dim rewire: with a projection active the frozen `d -> target_dim` map composes
     # *ahead of* the decoder's own learnable 1x1 projection conv, so the decoder is simply
     # built against `target_dim`. Its body is untouched — and since that 1x1 is the
@@ -1635,7 +1644,7 @@ def train_one_segmentation_fold(
 
     seg_collate = functools.partial(segmentation_collate_fn, target_dtypes=head.target_dtypes)
     roi_batch_sampler = None
-    if training.roi_batch_sampling is not None:
+    if training.roi_batch_sampling is not None and not _selected_checkpoint_evidence_only:
         if is_live:
             raise ValueError(
                 "Explicit ROI batch sampling is a cached-grid training contract; "
@@ -1691,6 +1700,38 @@ def train_one_segmentation_fold(
         if is_live
         else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
+
+    if _selected_checkpoint_evidence_only:
+        checkpoint_path = fold_dir / "best_model.pt"
+        if not checkpoint_path.is_file():
+            raise ValueError(
+                "cannot regenerate confusion evidence because the selected checkpoint "
+                f"is missing: {checkpoint_path}"
+            )
+        checkpoint = torch.load(checkpoint_path, weights_only=True, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(device)
+        model.eval()
+        tune_report = _evaluate_segmentation(
+            model,
+            tune_loader,
+            "tune",
+            device,
+            dataset=dataset,
+            output_dir=fold_dir,
+            save_segmentation_overlays=False,
+            save_segmentation_probabilities=False,
+            save_confusion_evidence=True,
+            write_dense_artifacts=False,
+            fold=fold,
+            class_vocabulary=_segmentation_class_vocabulary(masks, num_classes),
+        )
+        return FoldResult(
+            fold=fold,
+            train_result=None,
+            tune_report=tune_report,
+            test_reports={},
+        )
 
     def on_checkpoint_improved(
         checkpoint_path: Path, history: list, epoch: int
@@ -2612,6 +2653,35 @@ def train(
         # fold still counts. Gated to multi-fold: a single fold owns run_dir itself and
         # has no partial-run to preserve.
         if (not single_fold or resume_completed_folds) and fold_was_complete:
+            evidence_path = fold_dir / "confusion_evidence_tune.json"
+            if (
+                evaluation.save_segmentation_confusion_evidence
+                and dataset_type == "segmentation"
+                and not evidence_path.is_file()
+            ):
+                logger.info(
+                    "Fold %d is trained but missing confusion evidence; "
+                    "evaluating its selected checkpoint without retraining.",
+                    fold_idx,
+                )
+                train_one_segmentation_fold(
+                    feature_store=feature_store,
+                    dataset=dataset,
+                    fold_split=fold_split,
+                    task=task,
+                    decoder=decoder,
+                    evaluation=evaluation,
+                    training=training,
+                    fold_dir=fold_dir,
+                    preprocessing=preprocessing,
+                    masks=masks,
+                    fold=fold_idx,
+                    num_folds=splits.num_folds,
+                    normalization=normalization,
+                    projection=projection,
+                    encoder_identity=encoder_identity,
+                    _selected_checkpoint_evidence_only=True,
+                )
             logger.info(
                 "Fold %d already complete (found %s); skipping (resume).",
                 fold_idx,
@@ -2737,9 +2807,18 @@ def train(
         for fold_idx, (path, fold_split) in enumerate(
             zip(evidence_paths, splits.folds, strict=True)
         ):
+            effective_plan = plan_dense_fold(
+                dataset=dataset,
+                fold_split=fold_split,
+                training=training,
+                fold_label=f"Fold {fold_idx}",
+                holdout_test=evaluation.holdout_test,
+            )
             validate_confusion_records(
                 load_confusion_records(path),
-                expected_sample_ids=fold_split.tune,
+                expected_sample_ids=tuple(
+                    record.sample_id for record in effective_plan.tune_records
+                ),
                 fold=fold_idx,
             )
     _save_summary(summary, run_dir / "summary.json")
@@ -2951,12 +3030,18 @@ def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
     # Round-trip the current config through YAML so both sides are the same primitive
     # shapes (tuples→lists, Paths→str) and compare cleanly.
     current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
-    # Shared-storage routing is operational: a resume may deliberately repoint a pending
-    # local spool after an outage without changing the recipe that produced its artifacts.
+    # Shared-storage routing and selected-checkpoint evidence export are operational: a
+    # resume may repoint a pending spool or regenerate evidence without changing the
+    # training recipe that produced its checkpoint. ``patient_oof`` is the retired
+    # project-shaped predecessor accepted here only so those checkpoints can migrate.
     for payload in (saved, current):
         run = payload.get("run")
         if isinstance(run, dict):
             run.pop("mirror_root", None)
+        evaluation = payload.get("evaluation")
+        if isinstance(evaluation, dict):
+            evaluation.pop("save_segmentation_confusion_evidence", None)
+            evaluation.pop("patient_oof", None)
     if saved == current:
         return
     differing = sorted(
@@ -3876,6 +3961,7 @@ def _evaluate_segmentation(
     save_segmentation_overlays: bool = True,
     save_segmentation_probabilities: bool = False,
     save_confusion_evidence: bool = False,
+    write_dense_artifacts: bool = True,
     fold: int | None = None,
     class_vocabulary: tuple[str, ...] | None = None,
 ) -> EvaluationReport:
@@ -3919,7 +4005,7 @@ def _evaluate_segmentation(
             backend=getattr(head, "_backend", "auto"),
             tolerance=getattr(head, "_tolerance", 0.05),
         )
-        if output_dir is not None
+        if output_dir is not None and write_dense_artifacts
         else None
     )
     def _capture_batch(batch, logits, stat_row) -> None:

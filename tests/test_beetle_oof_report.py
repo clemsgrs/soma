@@ -31,7 +31,7 @@ def _record(sample_id: str, fold: int, matrix) -> SegmentationConfusionRecord:
 
 
 def _write_five_fold_fixture(root: Path) -> tuple[Path, dict[str, list[Path]]]:
-    dataset_csv = root / "dataset.csv"
+    sample_patient_csv = root / "sample_patient.csv"
     rows = ["sample_id,patient_id"]
     for patient_index in range(5):
         rows.extend(
@@ -40,7 +40,7 @@ def _write_five_fold_fixture(root: Path) -> tuple[Path, dict[str, list[Path]]]:
                 f"p{patient_index}_b,p{patient_index}",
             ]
         )
-    dataset_csv.write_text("\n".join(rows) + "\n")
+    sample_patient_csv.write_text("\n".join(rows) + "\n")
 
     evidence_by_arm: dict[str, list[Path]] = {}
     for arm in BEETLE_ARMS:
@@ -56,24 +56,29 @@ def _write_five_fold_fixture(root: Path) -> tuple[Path, dict[str, list[Path]]]:
             )
             paths.append(path)
         evidence_by_arm[arm] = paths
-    return dataset_csv, evidence_by_arm
+    return sample_patient_csv, evidence_by_arm
 
 
-def test_beetle_report_pools_each_held_out_patient_once_per_arm(tmp_path: Path) -> None:
-    dataset_csv, evidence_by_arm = _write_five_fold_fixture(tmp_path)
+@pytest.fixture(scope="module")
+def beetle_report(tmp_path_factory: pytest.TempPathFactory) -> dict:
+    sample_patient_csv, evidence_by_arm = _write_five_fold_fixture(
+        tmp_path_factory.mktemp("beetle_oof")
+    )
     cohort = BeetleCohort(
         primary_patient_count=5,
         sensitivity_patient_count=2,
         spacing_exception_patient_ids=("p2", "p3", "p4"),
     )
 
-    report = assemble_beetle_oof_report(
+    return assemble_beetle_oof_report(
         evidence_by_arm=evidence_by_arm,
-        dataset_csv=dataset_csv,
+        sample_patient_csv=sample_patient_csv,
         cohort=cohort,
     )
 
-    assert report["protocol"] == {
+
+def test_beetle_report_records_the_fixed_protocol(beetle_report: dict) -> None:
+    assert beetle_report["protocol"] == {
         "folds": 5,
         "arms": list(BEETLE_ARMS),
         "bootstrap_seed": BOOTSTRAP_SEED,
@@ -81,30 +86,44 @@ def test_beetle_report_pools_each_held_out_patient_once_per_arm(tmp_path: Path) 
         "bootstrap_unit": "patient",
         "confidence_interval": "percentile_95",
     }
+
+
+def test_beetle_report_pools_each_held_out_patient_once_per_arm(
+    beetle_report: dict,
+) -> None:
     for arm in BEETLE_ARMS:
-        arm_report = report["arms"][arm]
-        assert arm_report["coverage"] == {
+        assert beetle_report["arms"][arm]["coverage"] == {
             "expected_patient_count": 5,
             "observed_patient_count": 5,
             "patient_ids": ["p0", "p1", "p2", "p3", "p4"],
             "folds": [0, 1, 2, 3, 4],
             "exactly_once": True,
         }
-        assert arm_report["primary"]["patient_count"] == 5
-        assert arm_report["primary"]["fold_macro_class_dice"] == 1.0
-        assert arm_report["primary"]["bootstrap"]["percentile_95_ci"] == {
+
+
+def test_beetle_report_recomputes_primary_metrics_and_patient_intervals(
+    beetle_report: dict,
+) -> None:
+    for arm in BEETLE_ARMS:
+        primary = beetle_report["arms"][arm]["primary"]
+        assert primary["patient_count"] == 5
+        assert primary["fold_macro_class_dice"] == 1.0
+        assert primary["bootstrap"]["percentile_95_ci"] == {
             "mean_dice": [1.0, 1.0],
             "dice_per_class": {
                 "negative": [1.0, 1.0],
                 "positive": [1.0, 1.0],
             },
         }
-        assert arm_report["spacing_sensitivity"]["patient_count"] == 2
-        assert arm_report["spacing_sensitivity"]["excluded_patient_ids"] == [
-            "p2",
-            "p3",
-            "p4",
-        ]
+
+
+def test_beetle_report_owns_the_spacing_sensitivity_subset(
+    beetle_report: dict,
+) -> None:
+    for arm in BEETLE_ARMS:
+        sensitivity = beetle_report["arms"][arm]["spacing_sensitivity"]
+        assert sensitivity["patient_count"] == 2
+        assert sensitivity["excluded_patient_ids"] == ["p2", "p3", "p4"]
 
 
 def test_patient_bootstrap_resamples_whole_grouped_patient_matrices() -> None:

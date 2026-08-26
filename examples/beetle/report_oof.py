@@ -22,6 +22,7 @@ from soma.evaluation import (
     ConfusionMetrics,
     SegmentationConfusionRecord,
     aggregate_confusion_matrices,
+    confusion_dice_from_matrices,
     load_confusion_records,
 )
 
@@ -80,11 +81,13 @@ class BootstrapResult:
     percentile_95_ci: Mapping[str, tuple[float, float]]
 
 
-def _read_sample_to_patient(dataset_csv: str | Path) -> dict[str, str]:
-    with Path(dataset_csv).open(newline="", encoding="utf-8") as handle:
+def _read_sample_to_patient(sample_patient_csv: str | Path) -> dict[str, str]:
+    with Path(sample_patient_csv).open(newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     if not rows or "sample_id" not in rows[0] or "patient_id" not in rows[0]:
-        raise ValueError("BEETLE report dataset.csv requires sample_id and patient_id")
+        raise ValueError(
+            "BEETLE sample-to-patient metadata requires sample_id and patient_id"
+        )
     mapping: dict[str, str] = {}
     for row in rows:
         sample_id = str(row["sample_id"]).strip()
@@ -92,7 +95,9 @@ def _read_sample_to_patient(dataset_csv: str | Path) -> dict[str, str]:
         if not sample_id or not patient_id:
             raise ValueError("BEETLE report requires non-empty sample_id and patient_id")
         if sample_id in mapping:
-            raise ValueError(f"BEETLE dataset.csv repeats sample_id {sample_id!r}")
+            raise ValueError(
+                f"BEETLE sample-to-patient metadata repeats sample_id {sample_id!r}"
+            )
         mapping[sample_id] = patient_id
     return mapping
 
@@ -148,19 +153,6 @@ def group_sample_confusions(
     ]
 
 
-def _metrics_from_matrix(matrix: np.ndarray) -> tuple[tuple[float, ...], float]:
-    diagonal = np.diag(matrix).astype(np.float64)
-    denominator = matrix.sum(axis=0) + matrix.sum(axis=1)
-    dice = np.divide(
-        2.0 * diagonal,
-        denominator,
-        out=np.zeros_like(diagonal),
-        where=denominator > 0,
-    )
-    values = tuple(float(value) for value in dice)
-    return values, float(np.mean(dice))
-
-
 def patient_bootstrap(
     records: Sequence[PatientConfusionRecord],
 ) -> BootstrapResult:
@@ -169,17 +161,20 @@ def patient_bootstrap(
         raise ValueError("BEETLE patient bootstrap requires at least one patient")
     matrices = np.asarray([record.confusion_matrix for record in records], dtype=np.int64)
     rng = np.random.default_rng(BOOTSTRAP_SEED)
-    values: dict[str, list[float]] = {"mean_dice": []}
-    values.update(
-        {f"dice_class_{index}": [] for index in range(matrices.shape[1])}
+    pooled = np.empty(
+        (BOOTSTRAP_DRAWS, matrices.shape[1], matrices.shape[2]), dtype=np.int64
     )
-    for _ in range(BOOTSTRAP_DRAWS):
+    for draw in range(BOOTSTRAP_DRAWS):
         indices = rng.integers(0, len(records), size=len(records))
-        per_class, mean_dice = _metrics_from_matrix(matrices[indices].sum(axis=0))
-        values["mean_dice"].append(mean_dice)
-        for index, dice in enumerate(per_class):
-            values[f"dice_class_{index}"].append(dice)
-    replicates = {name: tuple(samples) for name, samples in values.items()}
+        pooled[draw] = matrices[indices].sum(axis=0)
+    per_class, mean_dice = confusion_dice_from_matrices(pooled)
+    replicates = {"mean_dice": tuple(float(value) for value in mean_dice)}
+    replicates.update(
+        {
+            f"dice_class_{index}": tuple(float(value) for value in per_class[:, index])
+            for index in range(matrices.shape[1])
+        }
+    )
     intervals = {
         name: tuple(float(value) for value in np.percentile(samples, [2.5, 97.5]))
         for name, samples in replicates.items()
@@ -250,14 +245,14 @@ def _cohort_payload(records: Sequence[PatientConfusionRecord]) -> dict:
 def assemble_beetle_oof_report(
     *,
     evidence_by_arm: Mapping[str, Sequence[str | Path]],
-    dataset_csv: str | Path,
+    sample_patient_csv: str | Path,
     cohort: BeetleCohort | None = None,
 ) -> dict:
     """Build BEETLE's two-arm five-fold primary and sensitivity report."""
     cohort = cohort or BeetleCohort()
     if set(evidence_by_arm) != set(BEETLE_ARMS):
         raise ValueError(f"BEETLE report requires arms {list(BEETLE_ARMS)}")
-    sample_to_patient = _read_sample_to_patient(dataset_csv)
+    sample_to_patient = _read_sample_to_patient(sample_patient_csv)
     patients_by_arm: dict[str, list[PatientConfusionRecord]] = {}
     for arm in BEETLE_ARMS:
         paths = list(evidence_by_arm[arm])
@@ -334,7 +329,12 @@ def assemble_beetle_oof_report(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dataset-csv", type=Path, required=True)
+    parser.add_argument(
+        "--sample-patient-csv",
+        type=Path,
+        required=True,
+        help="Derived BEETLE metadata with sample_id and patient_id columns",
+    )
     parser.add_argument("--uniform", type=Path, nargs=5, required=True)
     parser.add_argument("--class-conditioned", type=Path, nargs=5, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -344,7 +344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "uniform": args.uniform,
             "class_conditioned": args.class_conditioned,
         },
-        dataset_csv=args.dataset_csv,
+        sample_patient_csv=args.sample_patient_csv,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
