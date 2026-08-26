@@ -1025,48 +1025,6 @@ class SubgroupConfig:
 
 
 @dataclass(frozen=True)
-class PatientOOFConfig:
-    """Opt-in patient-additive segmentation evidence from held-out tune predictions.
-
-    ``arm`` is required provenance: separate sampling arms use separate run directories
-    and independently recomputable artifacts. ``spacing_exception_patient_ids`` names
-    exactly three patients omitted only from the derived, evaluation-only sensitivity
-    result. The expected sizes default to the publication cohorts (527 full, 524
-    sensitivity); tiny offline fixtures may declare proportionally smaller sizes, still
-    differing by exactly three. Bootstrap behavior is protocol-fixed at seed 0 and
-    10,000 patient-level draws.
-    """
-
-    arm: str
-    spacing_exception_patient_ids: list[str]
-    expected_patient_count: int = 527
-    expected_spacing_sensitivity_patient_count: int = 524
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.arm, str) or not self.arm.strip():
-            raise ValueError("evaluation.patient_oof.arm must be a non-empty string")
-        exceptions = [str(patient) for patient in self.spacing_exception_patient_ids]
-        if len(exceptions) != 3 or len(set(exceptions)) != 3:
-            raise ValueError(
-                "evaluation.patient_oof.spacing_exception_patient_ids must contain "
-                "exactly three unique patient IDs"
-            )
-        expected = int(self.expected_patient_count)
-        sensitivity = int(self.expected_spacing_sensitivity_patient_count)
-        if expected <= 0 or sensitivity <= 0 or expected - sensitivity != 3:
-            raise ValueError(
-                "evaluation.patient_oof expected sizes must be positive and differ by "
-                f"exactly three patients, got {expected} and {sensitivity}"
-            )
-        object.__setattr__(self, "arm", self.arm.strip())
-        object.__setattr__(self, "spacing_exception_patient_ids", exceptions)
-        object.__setattr__(self, "expected_patient_count", expected)
-        object.__setattr__(
-            self, "expected_spacing_sensitivity_patient_count", sensitivity
-        )
-
-
-@dataclass(frozen=True)
 class EvalConfig:
     """Evaluation metrics and subgroup analysis configuration.
 
@@ -1080,6 +1038,8 @@ class EvalConfig:
     ``(C, H, W)`` softmax sidecar under ``probs/`` — opt-in because it is
     ~C×/precision× larger than the always-written argmax raster, and unlocks
     post-hoc soft-Dice/calibration/entropy/ensembling without re-running inference;
+    ``save_segmentation_confusion_evidence`` writes arbitrary-class per-sample
+    confusion matrices from the selected checkpoint for downstream grouping;
     ``save_detection_overlays`` writes the detection point overlays;
     ``save_detection_heatmaps`` writes the colormap overlays and the npz sidecar.
     ``holdout_test`` skips *all* test-split work (no test inference, no
@@ -1102,11 +1062,11 @@ class EvalConfig:
     subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
     save_segmentation_overlays: bool = True
     save_segmentation_probabilities: bool = False
+    save_segmentation_confusion_evidence: bool = False
     save_detection_overlays: bool = True
     save_detection_heatmaps: bool = False
     holdout_test: bool = False
     overwrite_test: bool = False
-    patient_oof: PatientOOFConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -2016,21 +1976,6 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
     evaluation_data = data.get("evaluation", {})
     subgroup_data = evaluation_data.get("subgroups", {})
     columns = subgroup_data.get("columns", []) if subgroup_data else []
-    patient_oof_data = evaluation_data.get("patient_oof")
-    patient_oof = None
-    if patient_oof_data is not None:
-        if not isinstance(patient_oof_data, dict):
-            raise TypeError("evaluation.patient_oof must be a mapping")
-        patient_oof = PatientOOFConfig(
-            arm=patient_oof_data.get("arm", ""),
-            spacing_exception_patient_ids=patient_oof_data.get(
-                "spacing_exception_patient_ids", []
-            ),
-            expected_patient_count=patient_oof_data.get("expected_patient_count", 527),
-            expected_spacing_sensitivity_patient_count=patient_oof_data.get(
-                "expected_spacing_sensitivity_patient_count", 524
-            ),
-        )
     return EvalConfig(
         metrics=evaluation_data.get("metrics", []),
         subgroups=SubgroupConfig(columns=columns),
@@ -2038,9 +1983,11 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
         save_segmentation_probabilities=bool(
             evaluation_data.get("save_segmentation_probabilities", False)
         ),
+        save_segmentation_confusion_evidence=bool(
+            evaluation_data.get("save_segmentation_confusion_evidence", False)
+        ),
         save_detection_overlays=bool(evaluation_data.get("save_detection_overlays", True)),
         save_detection_heatmaps=bool(evaluation_data.get("save_detection_heatmaps", False)),
         holdout_test=bool(evaluation_data.get("holdout_test", False)),
         overwrite_test=bool(evaluation_data.get("overwrite_test", False)),
-        patient_oof=patient_oof,
     )

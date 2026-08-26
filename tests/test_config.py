@@ -14,7 +14,6 @@ from soma.config import (
     EvalConfig,
     ExecutionConfig,
     MasksConfig,
-    PatientOOFConfig,
     NormalizationConfig,
     PipelineConfig,
     PreprocessingConfig,
@@ -1353,13 +1352,10 @@ def test_evaluation_holdout_test_roundtrip(tmp_path: Path):
     assert loaded.evaluation.holdout_test is True
 
 
-def test_patient_oof_config_roundtrip_preserves_arm_and_spacing_exceptions(tmp_path: Path):
+def test_segmentation_confusion_evidence_config_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
         evaluation=EvalConfig(
-            patient_oof=PatientOOFConfig(
-                arm="class_conditioned",
-                spacing_exception_patient_ids=["coarse_a", "coarse_b", "coarse_c"],
-            )
+            save_segmentation_confusion_evidence=True,
         )
     )
     yaml_path = tmp_path / "config.yaml"
@@ -1367,7 +1363,7 @@ def test_patient_oof_config_roundtrip_preserves_arm_and_spacing_exceptions(tmp_p
     save_config(cfg, yaml_path)
     loaded = load_config(yaml_path)
 
-    assert loaded.evaluation.patient_oof == cfg.evaluation.patient_oof
+    assert loaded.evaluation.save_segmentation_confusion_evidence is True
 
 
 def test_evaluation_subgroups_roundtrip(tmp_path: Path):

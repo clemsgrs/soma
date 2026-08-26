@@ -20,11 +20,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
     EncoderConfig,
+    EvalConfig,
     PipelineConfig,
     PreprocessingConfig,
     TaskConfig,
@@ -223,6 +225,31 @@ def test_drift_guard_allows_changing_operational_mirror_root(tmp_path: Path):
     resumed = replace(
         original,
         mirror_root=tmp_path / "shared-b",
+        resume=True,
+    )
+
+    _guard_resume_config_drift(run_dir, resumed)
+
+
+def test_drift_guard_allows_migrating_patient_oof_to_confusion_evidence(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    original = _make_config(tmp_path)
+    save_config(original, run_dir / "config.yaml")
+    saved_path = run_dir / "config.yaml"
+    saved = yaml.safe_load(saved_path.read_text())
+    saved["evaluation"].pop("save_segmentation_confusion_evidence", None)
+    saved["evaluation"]["patient_oof"] = {
+        "arm": "legacy",
+        "spacing_exception_patient_ids": ["legacy_exception"],
+        "expected_patient_count": 12,
+        "expected_spacing_sensitivity_patient_count": 11,
+    }
+    saved_path.write_text(yaml.safe_dump(saved))
+    resumed = replace(
+        original,
+        evaluation=EvalConfig(save_segmentation_confusion_evidence=True),
         resume=True,
     )
 

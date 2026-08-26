@@ -23,7 +23,6 @@ from PIL import Image
 from soma.config import (
     DecoderConfig,
     EvalConfig,
-    PatientOOFConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -251,13 +250,12 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     assert not (fold / "pred_overlays" / "test" / "s3.png").exists()
 
 
-def test_selected_checkpoint_exports_additive_tune_patient_confusion(tmp_path: Path):
+def test_selected_checkpoint_exports_one_confusion_per_tune_sample(tmp_path: Path):
     sample_ids = ["s0", "s1", "s2", "s3"]
     manifest, splits, store = _build_dense_run(
         tmp_path,
         sample_ids,
-        num_classes=4,
-        patient_ids=["p0", "p0", "p1", "p2"],
+        num_classes=3,
     )
     fold_dir = tmp_path / "fold"
 
@@ -265,78 +263,37 @@ def test_selected_checkpoint_exports_additive_tune_patient_confusion(tmp_path: P
         feature_store=store,
         dataset=manifest,
         fold_split=splits.folds[0],
-        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
+        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
         training=TrainingConfig(epochs=1, batch_size=2),
         fold_dir=fold_dir,
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(
             metrics=["mean_dice"],
-            patient_oof=PatientOOFConfig(
-                arm="uniform",
-                spacing_exception_patient_ids=["p0", "p1", "p2"],
-                expected_patient_count=4,
-                expected_spacing_sensitivity_patient_count=1,
-            ),
+            save_segmentation_confusion_evidence=True,
         ),
         fold=0,
     )
 
     payload = __import__("json").loads(
-        (fold_dir / "patient_confusions_tune.json").read_text()
+        (fold_dir / "confusion_evidence_tune.json").read_text()
     )
-    assert payload["arm"] == "uniform"
-    assert payload["fold"] == 0
-    assert payload["class_mapping"] == {
-        "0": "class_0",
-        "1": "class_1",
-        "2": "class_2",
-        "3": "class_3",
-    }
-    assert len(payload["patients"]) == 1
-    patient = payload["patients"][0]
-    assert patient["patient_id"] == "p1"
-    assert patient["contributing_slides"] == ["s2"]
-    assert patient["contributing_rois"] == ["s2"]
-    assert patient["annotated_pixel_count"] == TARGET * TARGET
-    assert len(patient["confusion_matrix"]) == 4
-    assert all(len(row) == 4 for row in patient["confusion_matrix"])
-    assert sum(sum(row) for row in patient["confusion_matrix"]) == TARGET * TARGET
+    assert payload["schema_version"] == 1
+    assert len(payload["records"]) == 1
+    record = payload["records"][0]
+    assert record["sample_id"] == "s2"
+    assert record["fold"] == 0
+    assert record["class_vocabulary"] == ["class_0", "class_1", "class_2"]
+    assert len(record["confusion_matrix"]) == 3
+    assert all(len(row) == 3 for row in record["confusion_matrix"])
+    assert sum(sum(row) for row in record["confusion_matrix"]) == TARGET * TARGET
 
 
-def test_patient_oof_export_rejects_tune_roi_without_patient_metadata(tmp_path: Path):
-    manifest, splits, store = _build_dense_run(
-        tmp_path, ["s0", "s1", "s2", "s3"], num_classes=4
-    )
-
-    with pytest.raises(ValueError, match="requires patient_id.*tune ROI"):
-        train_one_segmentation_fold(
-            feature_store=store,
-            dataset=manifest,
-            fold_split=splits.folds[0],
-            task=TaskConfig(name="segmentation", params={"num_classes": 4}),
-            training=TrainingConfig(epochs=1, batch_size=2),
-            fold_dir=tmp_path / "fold",
-            decoder=DecoderConfig(name="lightweight_conv"),
-            evaluation=EvalConfig(
-                metrics=["mean_dice"],
-                patient_oof=PatientOOFConfig(
-                    arm="uniform",
-                    spacing_exception_patient_ids=["coarse_a", "coarse_b", "coarse_c"],
-                    expected_patient_count=4,
-                    expected_spacing_sensitivity_patient_count=1,
-                ),
-            ),
-            fold=0,
-        )
-
-
-def _run_patient_oof_cv(tmp_path: Path):
+def _run_confusion_evidence_cv(tmp_path: Path, *, save_evidence: bool = True):
     sample_ids = ["s0", "s1", "s2", "s3", "external"]
     manifest, _, store = _build_dense_run(
         tmp_path,
         sample_ids,
-        num_classes=4,
-        patient_ids=["p0", "p1", "p2", "p3", "p_external"],
+        num_classes=3,
     )
     split_rows = [
         # Fold 0 holds out p0/p1 for tune. The external patient is never development tune.
@@ -362,19 +319,14 @@ def _run_patient_oof_cv(tmp_path: Path):
     run_dir = tmp_path / "run"
     evaluation = EvalConfig(
         metrics=["mean_dice"],
-        patient_oof=PatientOOFConfig(
-            arm="uniform",
-            spacing_exception_patient_ids=["p0", "p1", "p2"],
-            expected_patient_count=4,
-            expected_spacing_sensitivity_patient_count=1,
-        ),
+        save_segmentation_confusion_evidence=save_evidence,
     )
     train_kwargs = {
         "feature_store": store,
         "dataset": manifest,
         "splits": splits,
         "dataset_type": "segmentation",
-        "task": TaskConfig(name="segmentation", params={"num_classes": 4}),
+        "task": TaskConfig(name="segmentation", params={"num_classes": 3}),
         "training": TrainingConfig(epochs=1, batch_size=2),
         "run_dir": run_dir,
         "decoder": DecoderConfig(name="lightweight_conv"),
@@ -384,32 +336,91 @@ def _run_patient_oof_cv(tmp_path: Path):
     return train(**train_kwargs), run_dir, train_kwargs
 
 
-def test_train_collects_complete_tune_oof_report(tmp_path: Path) -> None:
-    result, run_dir, _ = _run_patient_oof_cv(tmp_path)
+def test_train_validates_complete_fold_confusion_evidence(tmp_path: Path) -> None:
+    _, run_dir, _ = _run_confusion_evidence_cv(tmp_path)
 
-    report = json.loads((run_dir / "patient_oof_report.json").read_text())
-    assert report["coverage"] == {
-        "status": "complete",
-        "expected_patient_count": 4,
-        "observed_patient_count": 4,
-        "exactly_once": True,
-    }
-    assert report["spacing_sensitivity"]["patient_count"] == 1
-    assert report["bootstrap"]["seed"] == 0
-    assert report["bootstrap"]["draws"] == 10_000
-    assert (
-        result.summary["oof/fold_macro_class_dice"] == report["fold_macro_class_dice"]
+    fold_0 = json.loads(
+        (run_dir / "fold_0" / "confusion_evidence_tune.json").read_text()
     )
-    assert (run_dir / "fold_0" / "patient_confusions_tune.json").is_file()
+    fold_1 = json.loads(
+        (run_dir / "fold_1" / "confusion_evidence_tune.json").read_text()
+    )
+    assert [record["sample_id"] for record in fold_0["records"]] == ["s0", "s1"]
+    assert [record["sample_id"] for record in fold_1["records"]] == ["s2", "s3"]
+    assert {record["fold"] for record in fold_0["records"]} == {0}
+    assert {record["fold"] for record in fold_1["records"]} == {1}
 
 
-def test_train_rejects_missing_fold_patient_evidence_on_resume(tmp_path: Path) -> None:
-    _, run_dir, train_kwargs = _run_patient_oof_cv(tmp_path)
-    missing_path = run_dir / "fold_1" / "patient_confusions_tune.json"
-    missing_path.unlink()
+def test_resume_regenerates_missing_evidence_from_selected_checkpoints_only(
+    tmp_path: Path,
+) -> None:
+    _, run_dir, train_kwargs = _run_confusion_evidence_cv(
+        tmp_path, save_evidence=False
+    )
+    histories = {
+        fold: (run_dir / f"fold_{fold}" / "training_history.json").read_bytes()
+        for fold in range(2)
+    }
+    checkpoints = {
+        fold: hashlib.sha256(
+            (run_dir / f"fold_{fold}" / "best_model.pt").read_bytes()
+        ).hexdigest()
+        for fold in range(2)
+    }
+    train_kwargs["evaluation"] = replace(
+        train_kwargs["evaluation"],
+        save_segmentation_confusion_evidence=True,
+    )
+    train_kwargs["resume_completed_folds"] = True
 
-    with pytest.raises(ValueError, match="requires every fold artifact.*fold_1"):
-        train(**train_kwargs)
+    resumed = train(**train_kwargs)
+
+    assert resumed.fold_results == []
+    for fold in range(2):
+        fold_dir = run_dir / f"fold_{fold}"
+        assert (fold_dir / "confusion_evidence_tune.json").is_file()
+        assert (fold_dir / "training_history.json").read_bytes() == histories[fold]
+        assert hashlib.sha256((fold_dir / "best_model.pt").read_bytes()).hexdigest() == (
+            checkpoints[fold]
+        )
+
+
+def test_tune_is_test_validates_evidence_against_effective_held_out_split(
+    tmp_path: Path,
+) -> None:
+    sample_ids = ["train_a", "train_b", "held_a", "held_b"]
+    manifest, _, store = _build_dense_run(tmp_path, sample_ids, num_classes=3)
+    splits_path = tmp_path / "test_only_splits.csv"
+    splits_path.write_text(
+        "sample_id,split,fold\n"
+        "train_a,train,0\n"
+        "train_b,train,0\n"
+        "held_a,test,0\n"
+        "held_b,test,0\n"
+    )
+    splits = Splits(splits_path, manifest, tune_is_test=True)
+    run_dir = tmp_path / "run"
+
+    train(
+        feature_store=store,
+        dataset=manifest,
+        splits=splits,
+        dataset_type="segmentation",
+        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
+        training=TrainingConfig(epochs=1, batch_size=2, tune_is_test=True),
+        run_dir=run_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(
+            metrics=["mean_dice"],
+            save_segmentation_confusion_evidence=True,
+        ),
+    )
+
+    payload = json.loads((run_dir / "confusion_evidence_tune.json").read_text())
+    assert [record["sample_id"] for record in payload["records"]] == [
+        "held_a",
+        "held_b",
+    ]
 
 
 def test_segmentation_fold_requires_num_classes(tmp_path: Path):

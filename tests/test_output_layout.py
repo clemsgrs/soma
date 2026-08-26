@@ -18,7 +18,6 @@ from soma.config import (
     HeatmapConfig,
     MasksConfig,
     NormalizationConfig,
-    PatientOOFConfig,
     PipelineConfig,
     PixelClassifierConfig,
     PreprocessingConfig,
@@ -208,28 +207,24 @@ def test_explicit_class_request_ratios_define_experiment_identity(tmp_path: Path
     ).experiment_id
 
 
-def test_patient_oof_reporting_is_identity_neutral_but_persisted(tmp_path: Path):
+def test_segmentation_confusion_evidence_is_identity_neutral_but_persisted(tmp_path: Path):
     ordinary = _make_pipeline_config(tmp_path)
-    patient_oof = _make_pipeline_config(
+    with_evidence = _make_pipeline_config(
         tmp_path,
         evaluation=EvalConfig(
-            patient_oof=PatientOOFConfig(
-                arm="class_conditioned",
-                spacing_exception_patient_ids=["coarse_a", "coarse_b", "coarse_c"],
-            )
+            save_segmentation_confusion_evidence=True,
         ),
     )
 
-    assert "patient_oof" not in canonical_experiment_payload(ordinary)["evaluation"]
-    assert build_experiment_spec(patient_oof).experiment_id == build_experiment_spec(
+    assert "save_segmentation_confusion_evidence" not in canonical_experiment_payload(
+        ordinary
+    )["evaluation"]
+    assert build_experiment_spec(with_evidence).experiment_id == build_experiment_spec(
         ordinary
     ).experiment_id
-    assert config_yaml_dict(patient_oof)["evaluation"]["patient_oof"] == {
-        "arm": "class_conditioned",
-        "spacing_exception_patient_ids": ["coarse_a", "coarse_b", "coarse_c"],
-        "expected_patient_count": 527,
-        "expected_spacing_sensitivity_patient_count": 524,
-    }
+    assert config_yaml_dict(with_evidence)["evaluation"][
+        "save_segmentation_confusion_evidence"
+    ] is True
 
 
 def test_pipeline_config_rejects_roi_batch_sampling_outside_cached_segmentation(

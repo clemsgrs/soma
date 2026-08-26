@@ -7,14 +7,15 @@ from soma.evaluation.metrics import (
     resolve_metrics,
 )
 from soma.evaluation.report import EvaluationReport, SamplePrediction
-from soma.evaluation.patient_oof import (
-    BootstrapResult,
+from soma.evaluation.confusion_evidence import (
     ConfusionMetrics,
-    OOFReport,
-    PatientConfusionRecord,
-    SpacingSensitivityResult,
-    aggregate_patient_oof,
-    aggregate_patient_oof_files,
+    SegmentationConfusionRecord,
+    aggregate_confusion_matrices,
+    aggregate_confusion_records,
+    confusion_dice_from_matrices,
+    load_confusion_records,
+    validate_confusion_records,
+    write_confusion_records,
 )
 
 __all__ = [
@@ -24,11 +25,12 @@ __all__ = [
     "resolve_metrics",
     "EvaluationReport",
     "SamplePrediction",
-    "BootstrapResult",
     "ConfusionMetrics",
-    "OOFReport",
-    "PatientConfusionRecord",
-    "SpacingSensitivityResult",
-    "aggregate_patient_oof",
-    "aggregate_patient_oof_files",
+    "SegmentationConfusionRecord",
+    "aggregate_confusion_matrices",
+    "aggregate_confusion_records",
+    "confusion_dice_from_matrices",
+    "load_confusion_records",
+    "validate_confusion_records",
+    "write_confusion_records",
 ]
