@@ -174,17 +174,6 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
         """Plan requests while keeping cumulative exposure close to the ratios."""
         assert self._request_probabilities is not None
         probabilities = self._request_probabilities
-        per_batch = probabilities * self._batch_size
-        # Preserve the historical request/RNG sequence whenever each batch can
-        # represent the ratios exactly (including the old equal K=4 batches).
-        if np.allclose(per_batch, np.rint(per_batch), rtol=0.0, atol=1e-12):
-            counts = np.rint(per_batch).astype(np.int64)
-            for _ in range(len(self)):
-                batch = np.repeat(np.arange(self._num_classes), counts)
-                rng.shuffle(batch)
-                yield [int(class_index) for class_index in batch]
-            return
-
         assigned = np.zeros(self._num_classes, dtype=np.int64)
         priority = rng.permutation(self._num_classes)
         rank = np.empty(self._num_classes, dtype=np.int64)

@@ -136,12 +136,12 @@ def _explicit_sampler(*, seed: int = 13) -> SegmentationRoiBatchSampler:
     )
 
 
-def test_class_conditioned_selection_is_exact_and_pixel_count_weighted() -> None:
+def test_class_conditioned_selection_has_deterministic_weighted_draws() -> None:
     sampler = _explicit_sampler()
 
     batches = list(sampler)
 
-    assert batches == [[3, 2, 1, 1], [0, 3, 3, 1]]
+    assert batches == [[1, 3, 1, 2], [3, 1, 1, 3]]
 
 
 def test_sampler_audit_records_requests_selected_rois_and_actual_pixels() -> None:
@@ -153,18 +153,18 @@ def test_sampler_audit_records_requests_selected_rois_and_actual_pixels() -> Non
     assert epoch == {
         "epoch": 0,
         "target_request_counts": [2, 2, 2, 2],
-        "actual_class_pixel_counts": [14, 20, 16, 33],
-        "unique_roi_count": 4,
-        "roi_draw_counts": {"a": 1, "b": 3, "c": 1, "d": 3},
+        "actual_class_pixel_counts": [8, 25, 16, 33],
+        "unique_roi_count": 3,
+        "roi_draw_counts": {"b": 4, "c": 1, "d": 3},
         "selections": [
-            {"requested_class": 3, "selected_roi": "d", "actual_class_pixel_counts": [0, 0, 3, 11]},
-            {"requested_class": 2, "selected_roi": "c", "actual_class_pixel_counts": [0, 5, 7, 0]},
             {"requested_class": 1, "selected_roi": "b", "actual_class_pixel_counts": [2, 5, 0, 0]},
-            {"requested_class": 0, "selected_roi": "b", "actual_class_pixel_counts": [2, 5, 0, 0]},
-            {"requested_class": 0, "selected_roi": "a", "actual_class_pixel_counts": [8, 0, 0, 0]},
             {"requested_class": 3, "selected_roi": "d", "actual_class_pixel_counts": [0, 0, 3, 11]},
+            {"requested_class": 0, "selected_roi": "b", "actual_class_pixel_counts": [2, 5, 0, 0]},
+            {"requested_class": 2, "selected_roi": "c", "actual_class_pixel_counts": [0, 5, 7, 0]},
             {"requested_class": 2, "selected_roi": "d", "actual_class_pixel_counts": [0, 0, 3, 11]},
             {"requested_class": 1, "selected_roi": "b", "actual_class_pixel_counts": [2, 5, 0, 0]},
+            {"requested_class": 0, "selected_roi": "b", "actual_class_pixel_counts": [2, 5, 0, 0]},
+            {"requested_class": 3, "selected_roi": "d", "actual_class_pixel_counts": [0, 0, 3, 11]},
         ],
     }
 
