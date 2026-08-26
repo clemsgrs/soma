@@ -399,7 +399,9 @@ def test_all_curators_emit_identical_core_schema(tmp_path: Path):
     )
     ocelot = curate_ocelot_detection(_make_ocelot_raw(tmp_path / "oce_raw"), tmp_path / "oce")
     overview, beetle_root = _make_beetle_raw(tmp_path / "beetle_raw")
-    beetle = curate_beetle_slide_manifest(overview, beetle_root, tmp_path / "beetle")
+    beetle = curate_beetle_slide_manifest(
+        overview, beetle_root, tmp_path / "beetle", slides=3
+    )
 
     for manifest, supervision in [
         (eva, "label"),
@@ -416,11 +418,14 @@ def test_all_curators_emit_identical_core_schema(tmp_path: Path):
 def test_beetle_curator_emits_dataset_csv_not_manifest_csv(tmp_path: Path):
     overview, beetle_root = _make_beetle_raw(tmp_path / "beetle_raw")
     out = tmp_path / "beetle"
-    manifest = curate_beetle_slide_manifest(overview, beetle_root, out)
+    manifest = curate_beetle_slide_manifest(overview, beetle_root, out, slides=3)
 
     assert manifest.dataset_csv == out / "dataset.csv"
     assert (out / "dataset.csv").exists()
     assert not (out / "manifest.csv").exists()  # the old shape is retired
+    assert json.loads(manifest.summary_json.read_text())["cohort"]["kind"] == (
+        "non_publication_smoke_subset"
+    )
     # Loads through the segmentation loader (label_mask_path supervision).
     seg = SegmentationManifest(manifest.dataset_csv)
     assert set(seg.sample_ids) == {"slide_0", "slide_1", "slide_2"}

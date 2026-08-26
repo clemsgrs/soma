@@ -5,8 +5,8 @@ The curator now lives in :mod:`soma.curation.beetle` (invokable as
 (``dataset.csv`` + ``splits.csv`` + ``summary.json``). This file is kept so the historical
 ``python examples/make_beetle_manifest.py`` entry point still works.
 
-    python examples/make_beetle_manifest.py               # all dev WSIs with image+mask on disk
-    python examples/make_beetle_manifest.py --slides 4    # tiny subset (smoke)
+    python examples/make_beetle_manifest.py               # strict full 587-slide/527-patient cohort
+    python examples/make_beetle_manifest.py --slides 4    # writes non_publication_smoke_manifest/
     python examples/make_beetle_manifest.py --coverage    # also run the (slow) coverage scan
 """
 
