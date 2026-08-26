@@ -15,6 +15,10 @@ _Avoid_: including foundation-model encoding itself under Modeling.
 **Custom experimentation**:
 Exploring combinations of preprocessing, encoding, downstream modeling, and training choices to find or understand a strong workflow for a research task. Unlike Benchmarking, several choices may change together.
 
+**Project protocol**:
+A project-owned protocol bundle outside soma's installed interface. It may describe a provisional study or a published Benchmark that maintainers have not chosen to promote, and may live in this repository or an external provider package.
+_Avoid_: calling an under-review study a Benchmark; "Benchmark candidate" unless promotion is actually intended.
+
 **Protocol-locked validation**:
 A fresh evaluation whose cohort, splits, model recipe, selection rule, and reported outcomes are fixed before execution, with the resulting artifacts serving as the evidence. A prior incomplete run may inform expectations but is not one of the reported results.
 _Avoid_: "exact reproduction" when the original executable state or artifacts are unavailable; promoting a Pilot result into the validation evidence.
@@ -51,11 +55,15 @@ _Avoid_: resampling correlated child samples independently; bootstrapping only f
 The controlled comparison of one pipeline component on a single dataset: vary that component while holding the rest of the protocol fixed, then measure its effect on downstream performance. Foundation-model encoders are the most common comparison axis, but preprocessing, aggregation, decoding, or task-head choices can be studied the same way; a published Benchmark is a special case.
 
 **Benchmark**:
-A *published* evaluation dataset paired with a canonical protocol and recorded expected metrics, reproducible within a stated tolerance. A Benchmark is the pinned, annotated special case of Benchmarking — the same flow plus a fixed recipe and a checkable expected result.
+A *published* evaluation dataset paired with a sufficiently fixed public protocol and recorded expected metrics, reproducible within a stated tolerance. Publication and a stable contract make a Benchmark eligible for built-in support; they do not put it in soma automatically.
 _Avoid_: calling any single run or any user dataset a "benchmark"; reserve the noun for the published, expected-numbers-annotated instance.
 
-**Protocol**:
-The recipe a Benchmark provider encodes *as code*: curation entry, config construction, metric or scorer, expected reference table, and tolerance. soma owns the provider interface and runner; named providers and their assets are project code outside the installable package.
+**Built-in Benchmark**:
+A Benchmark that maintainers have explicitly chosen to register, distribute, and support as part of soma. Its provider ships in the wheel; its curator, reference data, and other protocol assets ship there when the protocol requires them.
+_Avoid_: assuming every published Benchmark must be built in; treating publication as the promotion decision.
+
+**Benchmark protocol**:
+The fixed recipe a Benchmark provider encodes *as code*: curation entry, config construction, metric or scorer, expected reference table, and tolerance. soma owns the provider interface and runner; a Project protocol may supply the provider, while a Built-in Benchmark bundles it inside soma.
 
 **Reproduction**:
 Re-running a Benchmark's canonical protocol and checking the resulting metric lands within the recorded tolerance of its expected number. The pass/fail validation that soma's engine produces competitive, stable results.
@@ -111,7 +119,7 @@ The canonical on-disk schema soma consumes, identical across all task types: a `
 _Avoid_: `manifest.csv` (the retired BEETLE name — the file is always `dataset.csv`); "dataset" for the files (a `Dataset` is the loaded object, a Manifest is the on-disk schema).
 
 **Curator / Curation**:
-Curation turns a *raw* dataset into a Manifest. A Curator is a **deterministic function** `(raw_root, out_dir, **params) -> CuratedManifest`, typed by a structural `Protocol` — not a class hierarchy, because curators are dataset-specific adapters, not interchangeable components. soma owns the Manifest contract and writer; concrete Curators live with their dataset or project protocol. Deterministic so re-curating the same raw data yields byte-identical files and a stable dataset identity.
+Curation turns a *raw* dataset into a Manifest. A Curator is a **deterministic function** `(raw_root, out_dir, **params) -> CuratedManifest`, typed by a structural `Protocol` — not a class hierarchy, because curators are dataset-specific adapters, not interchangeable components. soma owns the Manifest contract and writer; a concrete Curator lives with its owning Project protocol or Built-in Benchmark. Deterministic so re-curating the same raw data yields byte-identical files and a stable dataset identity.
 _Avoid_: a `Curator` base class; "swappable curator" (curators are not interchangeable).
 
 ### Extraction geometry

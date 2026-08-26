@@ -1,8 +1,9 @@
 """First-class, registered foundation-model benchmarks (ADR 0002).
 
-A published :class:`~soma.benchmarks.registry.Benchmark` is a named entry in a registry
-that ships *inside* the ``soma`` wheel — not a folder convention under ``examples/``.
-Importing this package registers every bundled benchmark, so ``soma list benchmarks`` and
+A Built-in :class:`~soma.benchmarks.registry.Benchmark` is a named entry in a registry
+that ships *inside* the ``soma`` wheel. A published Benchmark may instead be represented
+by a Project protocol unless maintainers explicitly promote it (ADR 0010). Importing this
+package registers every bundled benchmark, so ``soma list benchmarks`` and
 ``soma reproduce <name>`` drive the registry directly.
 
 This package registers ``ocelot`` (OCELOT 2023 cell detection), the ``eva/<dataset>``

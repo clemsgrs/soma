@@ -1,10 +1,10 @@
-"""Manifest curation interfaces and legacy packaged providers.
+"""Manifest curation interfaces, reusable machinery, and Built-in Benchmark Curators.
 
 Every curator emits the same unified Manifest through
 :func:`~soma.curation.manifest.write_manifest`. Curators are Protocol-typed,
-deterministic functions with **no base class** (ADR 0004). New concrete dataset
-providers live outside the installable package (ADR 0010); the remaining named exports
-are compatibility debt pending staged migration.
+deterministic functions with **no base class** (ADR 0004). A concrete Curator lives with
+its owning Project protocol or Built-in Benchmark (ADR 0010); the interface itself does
+not determine package placement.
 """
 
 from soma.curation.eva import (

@@ -3,6 +3,11 @@
 This project bundle owns the scientific protocol for the BEETLE rebuttal experiment.
 It uses soma's generic Manifest, segmentation, sampling, evaluation, prediction, and
 artifact-publication mechanisms without adding BEETLE policy to the Python package.
+The official manuscript is still under review, so the authoritative evaluation contract
+may change: this is a Project protocol, not yet a Benchmark. A published, sufficiently
+fixed evaluation contract with reference evidence may make BEETLE a Benchmark and
+eligible for promotion to a Built-in Benchmark, but promotion would be a separate
+decision.
 
 ## Project language
 
