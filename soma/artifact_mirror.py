@@ -617,6 +617,9 @@ def restore_run_from_mirror(config: PipelineConfig, *, num_folds: int) -> str | 
         else None
     )
     had_local_recovery_path = pinned_local_run is not None and pinned_local_run.is_dir()
+    completed_local_run = pinned_local_run is not None and _completed_local_run(
+        pinned_local_run, num_folds=num_folds
+    )
 
     mirror_runs_dir = (
         Path(config.mirror_root).resolve()
@@ -663,6 +666,13 @@ def restore_run_from_mirror(config: PipelineConfig, *, num_folds: int) -> str | 
         checkpoint_bundles = _compatible_mirror_bundles(
             mirror_run_dir, config, kind="checkpoints"
         )
+        if completed_local_run and pinned_local_run is not None:
+            # Probe the mirror above so traversal failures remain observable, but a
+            # completed local run is authoritative. In particular, never let a
+            # self-consistent foreign mirror replace its recovery spool;
+            # ArtifactMirror.retry_pending() reconciles the mirror from local bytes.
+            _resolve_restore_errors(pinned_local_run)
+            return None
 
         for _, fold_bundle in fold_bundles:
             _materialize_fold(fold_bundle, local_run_dir, num_folds=num_folds)
@@ -706,6 +716,15 @@ def restore_run_from_mirror(config: PipelineConfig, *, num_folds: int) -> str | 
         raise OSError(
             "mirror recovery failed and no local run is available to resume"
         ) from exc
+
+
+def _completed_local_run(run_dir: Path, *, num_folds: int) -> bool:
+    if num_folds == 1:
+        return (run_dir / "metrics.json").is_file()
+    return all(
+        (run_dir / f"fold_{fold}" / "metrics.json").is_file()
+        for fold in range(num_folds)
+    )
 
 
 class ArtifactMirror:

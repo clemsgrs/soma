@@ -617,6 +617,12 @@ def test_foreign_valid_mirror_bundle_is_repaired_from_local_spool(tmp_path: Path
     mirrored_checkpoint = next(
         (mirrored_run / "recovery" / "checkpoints").rglob("best_model.pt")
     )
+    local_checkpoint = next(
+        (first.run_dir / "recovery" / "spool" / "checkpoints").rglob(
+            "best_model.pt"
+        )
+    )
+    authoritative_local_bytes = local_checkpoint.read_bytes()
     mirrored_checkpoint.write_bytes(b"corrupt")
     foreign_manifest_path = mirrored_checkpoint.parent / "manifest.json"
     foreign_manifest = json.loads(foreign_manifest_path.read_text())
@@ -631,6 +637,7 @@ def test_foreign_valid_mirror_bundle_is_repaired_from_local_spool(tmp_path: Path
     local_checkpoint = next(
         (third.run_dir / "recovery" / "spool" / "checkpoints").rglob("best_model.pt")
     )
+    assert local_checkpoint.read_bytes() == authoritative_local_bytes
     assert mirrored_checkpoint.read_bytes() == local_checkpoint.read_bytes()
     repaired_manifest = json.loads(
         (mirrored_checkpoint.parent / "manifest.json").read_text()
