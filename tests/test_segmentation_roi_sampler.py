@@ -10,9 +10,21 @@ from soma.config import TrainingConfig
 from soma.training.segmentation_roi_sampler import SegmentationRoiBatchSampler
 
 
-def test_class_conditioned_batch_size_must_be_divisible_by_four() -> None:
-    with pytest.raises(ValueError, match="divisible by four"):
-        TrainingConfig(batch_size=6, roi_batch_sampling="class_conditioned")
+def test_class_conditioned_sampling_supports_arbitrary_k_and_batch_size() -> None:
+    sampler = SegmentationRoiBatchSampler(
+        sample_ids=["a", "b", "c"],
+        class_pixel_counts=[[4, 1, 0], [0, 4, 1], [1, 0, 4]],
+        batch_size=4,
+        draws_per_epoch=8,
+        strategy="class_conditioned",
+        class_request_ratios=[1, 2, 1],
+        seed=3,
+    )
+
+    batches = list(sampler)
+
+    assert [len(batch) for batch in batches] == [4, 4]
+    assert sampler.audit()["epochs"][0]["target_request_counts"] == [2, 4, 2]
 
 
 def test_roi_draw_budget_must_be_whole_batches() -> None:
@@ -21,6 +33,37 @@ def test_roi_draw_budget_must_be_whole_batches() -> None:
             batch_size=4,
             roi_batch_sampling="uniform",
             roi_draws_per_epoch=6,
+        )
+
+
+def test_training_config_accepts_class_request_ratios() -> None:
+    config = TrainingConfig(
+        batch_size=5,
+        roi_batch_sampling="class_conditioned",
+        class_request_ratios=[1, 2, 0.5],
+    )
+
+    assert config.class_request_ratios == [1, 2, 0.5]
+
+
+@pytest.mark.parametrize(
+    "ratios", [[-1, 1], [float("nan"), 1], [True, 1], [None, 1], [0, 0]]
+)
+def test_training_config_rejects_invalid_class_request_ratios(
+    ratios: list[object],
+) -> None:
+    with pytest.raises(ValueError, match="class_request_ratios"):
+        TrainingConfig(
+            roi_batch_sampling="class_conditioned",
+            class_request_ratios=ratios,
+        )
+
+
+def test_class_request_ratios_require_conditioned_sampling() -> None:
+    with pytest.raises(ValueError, match="requires.*class_conditioned"):
+        TrainingConfig(
+            roi_batch_sampling="uniform",
+            class_request_ratios=[1, 1],
         )
 
 
@@ -60,6 +103,22 @@ def test_class_conditioned_batches_request_each_class_equally(
     }
 
 
+def test_null_ratios_request_arbitrary_classes_equally_over_the_epoch() -> None:
+    sampler = SegmentationRoiBatchSampler(
+        sample_ids=["a", "b", "c"],
+        class_pixel_counts=[[4, 1, 1], [1, 4, 1], [1, 1, 4]],
+        batch_size=4,
+        draws_per_epoch=8,
+        strategy="class_conditioned",
+        seed=0,
+    )
+
+    list(sampler)
+
+    assert sampler.audit()["class_request_ratios"] == [1.0, 1.0, 1.0]
+    assert sampler.audit()["epochs"][0]["target_request_counts"] == [3, 2, 3]
+
+
 def _explicit_sampler(*, seed: int = 13) -> SegmentationRoiBatchSampler:
     return SegmentationRoiBatchSampler(
         sample_ids=["a", "b", "c", "d", "e"],
@@ -95,6 +154,8 @@ def test_sampler_audit_records_requests_selected_rois_and_actual_pixels() -> Non
         "epoch": 0,
         "target_request_counts": [2, 2, 2, 2],
         "actual_class_pixel_counts": [14, 20, 16, 33],
+        "unique_roi_count": 4,
+        "roi_draw_counts": {"a": 1, "b": 3, "c": 1, "d": 3},
         "selections": [
             {"requested_class": 3, "selected_roi": "d", "actual_class_pixel_counts": [0, 0, 3, 11]},
             {"requested_class": 2, "selected_roi": "c", "actual_class_pixel_counts": [0, 5, 7, 0]},
@@ -144,3 +205,42 @@ def test_uniform_and_conditioned_arms_have_identical_draw_budgets() -> None:
     assert [len(batch) for batch in uniform_batches] == [4, 4]
     assert [len(batch) for batch in conditioned_batches] == [4, 4]
     assert sorted(index for batch in uniform_batches for index in batch) == list(range(8))
+
+
+def test_zero_ratio_allows_an_unsupported_class() -> None:
+    sampler = SegmentationRoiBatchSampler(
+        sample_ids=["a", "b"],
+        class_pixel_counts=[[4, 1, 0], [1, 4, 0]],
+        batch_size=4,
+        draws_per_epoch=4,
+        strategy="class_conditioned",
+        class_request_ratios=[1, 1, 0],
+    )
+
+    list(sampler)
+
+    assert sampler.audit()["epochs"][0]["target_request_counts"] == [2, 2, 0]
+
+
+def test_positive_ratio_rejects_an_unsupported_class() -> None:
+    with pytest.raises(ValueError, match=r"missing classes \[2\]"):
+        SegmentationRoiBatchSampler(
+            sample_ids=["a", "b"],
+            class_pixel_counts=[[4, 1, 0], [1, 4, 0]],
+            batch_size=4,
+            draws_per_epoch=4,
+            strategy="class_conditioned",
+            class_request_ratios=[1, 1, 0.1],
+        )
+
+
+def test_ratio_count_must_match_k() -> None:
+    with pytest.raises(ValueError, match="one value per class"):
+        SegmentationRoiBatchSampler(
+            sample_ids=["a"],
+            class_pixel_counts=[[1, 1, 1]],
+            batch_size=1,
+            draws_per_epoch=1,
+            strategy="class_conditioned",
+            class_request_ratios=[1, 1],
+        )

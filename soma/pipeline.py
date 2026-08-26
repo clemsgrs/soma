@@ -530,19 +530,15 @@ def _segmentation_roi_batch_sampler(
     """Build the explicit cached-grid training-batch contract, when requested."""
     if training.roi_batch_sampling is None:
         return None
-    if num_classes != 4:
-        raise ValueError(
-            "Explicit ROI batch sampling currently requires exactly four segmentation "
-            f"classes, got {num_classes}."
-        )
 
     from soma.training.segmentation_roi_sampler import SegmentationRoiBatchSampler
 
     class_pixel_counts = []
     for record in records:
-        mask = target_fn(record)["mask"]
+        mask = target_fn(record)["mask"].reshape(-1)
+        annotated = mask[(mask >= 0) & (mask < num_classes)].to(torch.int64)
         class_pixel_counts.append(
-            [int((mask == class_index).sum().item()) for class_index in range(4)]
+            torch.bincount(annotated, minlength=num_classes).tolist()
         )
 
     draws_per_epoch = training.roi_draws_per_epoch
@@ -559,6 +555,7 @@ def _segmentation_roi_batch_sampler(
         batch_size=training.batch_size,
         draws_per_epoch=draws_per_epoch,
         strategy=training.roi_batch_sampling,
+        class_request_ratios=training.class_request_ratios,
         seed=training.seed + fold,
     )
 

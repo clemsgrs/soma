@@ -1131,11 +1131,12 @@ class TrainingConfig:
     ``roi_batch_sampling`` is an opt-in cached-segmentation training-batch
     contract, separate from ``preprocessing.sampling`` (which creates ROI
     coordinates before extraction). ``uniform`` traverses a shuffled ROI
-    collection; ``class_conditioned`` allocates every batch equally across the
-    four requested classes and weights eligible ROI selection by requested-class
-    annotated-pixel count. ``roi_draws_per_epoch`` fixes the common draw budget
-    for controlled arm comparisons. Selection never alters a chosen mask: the
-    ordinary segmentation loss still consumes every annotated pixel in the ROI.
+    collection; ``class_conditioned`` follows ``class_request_ratios`` over the
+    task's class indices and weights eligible ROI selection by requested-class
+    annotated-pixel count. Null ratios request every modeled class equally.
+    ``roi_draws_per_epoch`` fixes the common draw budget for controlled arm
+    comparisons. Selection never alters a chosen mask: the ordinary segmentation
+    loss still consumes every annotated pixel in the ROI.
     """
 
     seed: int = 0
@@ -1159,6 +1160,7 @@ class TrainingConfig:
     # separate from preprocessing.sampling, which creates ROI coordinates before
     # feature extraction.
     roi_batch_sampling: RoiBatchSamplingStrategy | None = None
+    class_request_ratios: list[float] | None = None
     roi_draws_per_epoch: int | None = None
     gradient_accumulation: int = 1
     tune_is_test: bool = False
@@ -1188,11 +1190,34 @@ class TrainingConfig:
                 "TrainingConfig.roi_batch_sampling must be null, 'uniform', or "
                 f"'class_conditioned', got {self.roi_batch_sampling!r}."
             )
-        if self.roi_batch_sampling == "class_conditioned" and self.batch_size % 4 != 0:
-            raise ValueError(
-                "Class-conditioned ROI batch_size must be divisible by four, "
-                f"got {self.batch_size}."
-            )
+        if self.class_request_ratios is not None:
+            if self.roi_batch_sampling != "class_conditioned":
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios requires "
+                    "roi_batch_sampling='class_conditioned'."
+                )
+            if not self.class_request_ratios:
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios must not be empty."
+                )
+            invalid_ratios = [
+                value
+                for value in self.class_request_ratios
+                if isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(float(value))
+                or float(value) < 0
+            ]
+            if invalid_ratios:
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios must contain finite, "
+                    f"non-negative numbers, got {invalid_ratios[0]!r}."
+                )
+            if sum(float(value) for value in self.class_request_ratios) <= 0:
+                raise ValueError(
+                    "TrainingConfig.class_request_ratios must contain at least "
+                    "one positive value."
+                )
         if self.roi_draws_per_epoch is not None and self.roi_draws_per_epoch < 1:
             raise ValueError("TrainingConfig.roi_draws_per_epoch must be >= 1 or null.")
         if self.roi_draws_per_epoch is not None and self.roi_batch_sampling is None:
