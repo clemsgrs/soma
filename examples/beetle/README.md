@@ -34,7 +34,7 @@ folds have completed:
 
 ```bash
 python -m examples.beetle.report_oof \
-  --sample-patient-csv data/beetle/metadata/sample_to_patient.csv \
+  --sample-patient-csv data/beetle/runs/uniform/segmentation_rois/roi_manifest.csv \
   --uniform data/beetle/runs/uniform/fold_{0,1,2,3,4}/confusion_evidence_tune.json \
   --class-conditioned data/beetle/runs/class_conditioned/fold_{0,1,2,3,4}/confusion_evidence_tune.json \
   --output data/beetle/reports/oof_report.json
@@ -46,9 +46,11 @@ spacing-sensitivity cohorts, removes the three declared native-spacing exception
 for the sensitivity view, and computes percentile intervals from 10,000 whole-patient
 bootstrap draws with seed 0.
 
-`sample_to_patient.csv` is derived BEETLE report metadata with `sample_id` and
-`patient_id` columns. It is not Soma's canonical dataset Manifest and is not used to
-define training samples or splits.
+The `--sample-patient-csv` source is the run-generated ROI metadata written during
+dense extraction; the reporter reads only its `sample_id` and `patient_id` columns.
+The backing file retains Soma's historical `roi_manifest.csv` filename, but here it is
+strictly sample-to-patient report metadata: it neither defines training samples/splits
+nor acts as the canonical dataset Manifest.
 
 ### Migration from the earlier patient OOF artifact
 
