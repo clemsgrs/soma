@@ -33,6 +33,7 @@ from rich.table import Table
 from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
+from soma.artifact_mirror import ArtifactMirror, restore_run_from_mirror
 from soma.decoders.registry import build_decoder_for_grid
 from soma.config import (
     AggregatorConfig,
@@ -1497,6 +1498,7 @@ def train_one_segmentation_fold(
     normalization: NormalizationConfig | None = None,
     projection: ProjectionConfig | None = None,
     encoder_identity: str = "",
+    artifact_mirror: ArtifactMirror | None = None,
 ) -> FoldResult:
     """Train and evaluate a single dense-segmentation fold.
 
@@ -1717,6 +1719,28 @@ def train_one_segmentation_fold(
         if is_live
         else torch.device("cuda" if torch.cuda.is_available() else "cpu")
     )
+
+    def on_checkpoint_improved(
+        checkpoint_path: Path, history: list, epoch: int
+    ) -> None:
+        if artifact_mirror is None:
+            return
+        _save_training_history(history, fold_dir / "training_history.json")
+        sampler_audit = (
+            roi_batch_sampler.audit()
+            if roi_batch_sampler is not None
+            else {"strategy": "standard", "epochs": []}
+        )
+        (fold_dir / "sampler_audit.json").write_text(
+            json.dumps(sampler_audit, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        artifact_mirror.checkpoint_improved(
+            fold=fold,
+            epoch=epoch,
+            fold_dir=fold_dir,
+            checkpoint_path=checkpoint_path,
+        )
+
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -1726,6 +1750,7 @@ def train_one_segmentation_fold(
         device=device,
         fold=fold,
         num_folds=num_folds,
+        on_checkpoint_improved=on_checkpoint_improved,
     )
     train_result = trainer.fit()
     if roi_batch_sampler is not None:
@@ -2479,6 +2504,8 @@ def train(
     overwrite_test: bool = False,
     run_id: str | None = None,
     expected_oof_patient_ids: tuple[str, ...] | None = None,
+    artifact_mirror: ArtifactMirror | None = None,
+    resume_completed_folds: bool = False,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
 
@@ -2535,6 +2562,7 @@ def train(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     evaluation = evaluation or EvalConfig()
+    include_tune_in_summary = evaluation.holdout_test
 
     single_fold = splits.num_folds == 1
 
@@ -2592,17 +2620,20 @@ def train(
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
         fold_dir = _fold_dir(fold_idx)
+        fold_was_complete = (fold_dir / "metrics.json").exists()
         # Resume fold-skip guard (issue #244): a fold that already wrote metrics.json is
         # complete, so on a relaunch into the same run dir we skip retraining it. The
         # summary is rebuilt from every fold's metrics.json on disk below, so a skipped
         # fold still counts. Gated to multi-fold: a single fold owns run_dir itself and
         # has no partial-run to preserve.
-        if not single_fold and (fold_dir / "metrics.json").exists():
+        if (not single_fold or resume_completed_folds) and fold_was_complete:
             logger.info(
                 "Fold %d already complete (found %s); skipping (resume).",
                 fold_idx,
                 fold_dir / "metrics.json",
             )
+            if artifact_mirror is not None:
+                artifact_mirror.fold_completed(fold=fold_idx, fold_dir=fold_dir)
             continue
         if training.method == "ridge_pca_probe":
             # Closed-form Ridge+PCA probe (HEST spatial_expression): a sibling per-fold
@@ -2655,6 +2686,7 @@ def train(
                 normalization=normalization,
                 projection=projection,
                 encoder_identity=encoder_identity,
+                artifact_mirror=(None if fold_was_complete else artifact_mirror),
             )
         elif dataset_type == "detection":
             result = train_one_detection_fold(
@@ -2693,12 +2725,14 @@ def train(
                 encoder_identity=encoder_identity,
             )
         fold_results.append(result)
+        if artifact_mirror is not None and not fold_was_complete:
+            artifact_mirror.fold_completed(fold=fold_idx, fold_dir=fold_dir)
 
     # Aggregate from every fold's metrics.json on disk, not just this session's
     # fold_results — so a resumed run (some folds skipped above) still summarizes all
     # folds. For a fresh run every fold is on disk, so this equals the in-memory path.
     summary = _aggregate_fold_metrics_from_disk(
-        run_dir, single_fold=single_fold, include_tune=evaluation.holdout_test
+        run_dir, single_fold=single_fold, include_tune=include_tune_in_summary
     )
     if evaluation.patient_oof is not None:
         if dataset_type != "segmentation":
@@ -2948,6 +2982,12 @@ def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
     # Round-trip the current config through YAML so both sides are the same primitive
     # shapes (tuples→lists, Paths→str) and compare cleanly.
     current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
+    # Shared-storage routing is operational: a resume may deliberately repoint a pending
+    # local spool after an outage without changing the recipe that produced its artifacts.
+    for payload in (saved, current):
+        run = payload.get("run")
+        if isinstance(run, dict):
+            run.pop("mirror_root", None)
     if saved == current:
         return
     differing = sorted(
@@ -3067,7 +3107,10 @@ class Pipeline:
 
     def run(self) -> PipelineResult:
         """Run the full pipeline: save config → load features → train all folds → summarize."""
-        layout = resolve_managed_output_paths(self._config)
+        restored_run_id = restore_run_from_mirror(
+            self._config, num_folds=self._splits.num_folds
+        )
+        layout = resolve_managed_output_paths(self._config, run_id=restored_run_id)
         layout.output_root.mkdir(parents=True, exist_ok=True)
         layout.experiment_dir.mkdir(parents=True, exist_ok=True)
         (layout.experiment_dir / "runs").mkdir(parents=True, exist_ok=True)
@@ -3079,6 +3122,14 @@ class Pipeline:
         # corrupt the aggregate. Runs before save_config overwrites the record.
         _guard_resume_config_drift(layout.run_dir, self._config)
         save_config(self._config, layout.run_dir / "config.yaml")
+        artifact_mirror: ArtifactMirror | None = None
+        if self._config.mirror_root is not None:
+            relative_run_dir = layout.run_dir.relative_to(layout.output_root)
+            artifact_mirror = ArtifactMirror(
+                run_dir=layout.run_dir,
+                mirror_run_dir=Path(self._config.mirror_root) / relative_run_dir,
+            )
+            artifact_mirror.retry_pending()
 
         with _RunRecorder(layout, self._config) as recorder:
             source_context = self._get_feature_source_context(run_dir=layout.run_dir)
@@ -3147,6 +3198,8 @@ class Pipeline:
                     if self._config.evaluation.patient_oof is not None
                     else None
                 ),
+                artifact_mirror=artifact_mirror,
+                resume_completed_folds=bool(self._config.resume or self._config.run_id),
             )
 
             if self._config.heatmaps.enabled:

@@ -101,6 +101,7 @@ Full config reference
 
    run:
      output_root: runs
+     mirror_root: null
      seed: 0
      tags:
        - baseline

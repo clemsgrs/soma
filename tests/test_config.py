@@ -39,8 +39,21 @@ def test_preprocessing_config_is_frozen():
 
 def test_pipeline_config_is_frozen():
     cfg = _make_pipeline_config()
+    assert cfg.mirror_root is None
     with pytest.raises(FrozenInstanceError):
         cfg.output_root = "other"
+
+
+def test_mirror_root_roundtrips_as_an_optional_run_setting(tmp_path: Path):
+    cfg = _make_pipeline_config(mirror_root=tmp_path / "shared-mirror")
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(cfg, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert saved["run"]["mirror_root"] == str(tmp_path / "shared-mirror")
+    assert loaded.mirror_root == tmp_path / "shared-mirror"
 
 
 # --- Default values ---
