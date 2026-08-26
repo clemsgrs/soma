@@ -85,6 +85,10 @@ with no training-fold support is an error rather than a silent policy change.
 The relative-ratio convention follows MONAI's
 `RandCropByLabelClasses <https://monai.readthedocs.io/en/stable/transforms.html#randcropbylabelclasses>`_;
 soma deliberately fails on an unsupported requested class instead of renormalizing it.
+Only the arbitrary-class relative-ratio convention is borrowed from that transform.
+Despite MONAI's transform name, soma does not choose a crop centre or make a sub-crop:
+it selects one already-cached ROI index, and the decoder receives that ROI's complete
+feature grid and mask.
 
 This controls **requested classes**, not pixels: cross-entropy and soft Dice still
 consume every annotated pixel in each selected ROI, so the method is not pixel-balanced

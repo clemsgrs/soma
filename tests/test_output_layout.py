@@ -165,7 +165,7 @@ def test_canonical_experiment_payload_omits_default_roi_batch_sampling(tmp_path:
     assert "roi_draws_per_epoch" not in payload["training"]
 
 
-def test_null_class_request_ratios_preserve_the_legacy_sampling_identity(tmp_path: Path):
+def test_null_class_request_ratios_are_explicit_in_sampling_identity(tmp_path: Path):
     config = _make_segmentation_config(
         tmp_path,
         training=TrainingConfig(
@@ -175,9 +175,9 @@ def test_null_class_request_ratios_preserve_the_legacy_sampling_identity(tmp_pat
         ),
     )
 
-    assert "class_request_ratios" not in canonical_experiment_payload(config)[
-        "training"
-    ]
+    assert canonical_experiment_payload(config)["training"][
+        "class_request_ratios"
+    ] is None
 
 
 def test_explicit_class_request_ratios_define_experiment_identity(tmp_path: Path):
