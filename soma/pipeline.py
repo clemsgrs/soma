@@ -71,7 +71,6 @@ from soma.evaluation.dense_artifacts import DenseArtifactWriter
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
-from soma.encoders.validation import resolve_preprocessing_config
 from soma.output_layout import (
     create_run_metadata,
     has_successful_run,
@@ -83,7 +82,7 @@ from soma.output_layout import (
     write_experiment_metadata,
     write_run_metadata,
 )
-from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
+from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 from soma.tasks.classification import BranchAwareClassificationHead
 from soma.tasks.registry import task_registry
 from soma.tasks.detection import DetectionHead
@@ -3210,7 +3209,7 @@ class Pipeline:
                 recorder.complete(result.summary)
                 return result
 
-            preprocessing = self._resolve_preprocessing()
+            preprocessing = resolve_pipeline_preprocessing(self._config)
             Console().print(
                 _build_run_summary_panel(
                     encoder=self._config.encoder,
@@ -3323,7 +3322,7 @@ class Pipeline:
             raise ValueError(
                 "PipelineConfig.encoder is required when feature_dir is not provided."
             )
-        preprocessing = self._resolve_preprocessing()
+        preprocessing = resolve_pipeline_preprocessing(self._config)
 
         cache_config = self._config.cache
         if cache_config.root_dir is None:
@@ -3384,7 +3383,9 @@ class Pipeline:
         # re-encode (augmented) tiles each step. Built before the fold loop so the
         # backbone loads once and is shared across folds.
         if self._config.feature_mode == "live":
-            return self._build_live_segmentation_source()
+            from soma.dense.live import build_live_segmentation_source
+
+            return build_live_segmentation_source(self._config)
 
         if self._feature_dir is not None:
             return self._cache_backed_dense_source(
@@ -3413,7 +3414,7 @@ class Pipeline:
         # Resolve preprocessing so requested_spacing_um defaults to the encoder's
         # supported spacing (without overriding an explicit value); the dense read is
         # spacing-aware (hs2p). requested_tile_size_px stays the supervision size.
-        preprocessing = self._resolve_preprocessing()
+        preprocessing = resolve_pipeline_preprocessing(self._config)
         # The dense supervision size (tile/mask size) drives the pad-to-patch
         # geometry. Reuse the existing tile-size knob — a segmentation tile is an
         # image of this size — rather than duplicating it on the decoder config.
@@ -3502,7 +3503,7 @@ class Pipeline:
                 "(feature_dir is not supported here)."
             )
 
-        preprocessing = self._resolve_preprocessing()
+        preprocessing = resolve_pipeline_preprocessing(self._config)
         sampling = self._config.preprocessing.sampling or SamplingConfig()
         masks = self._config.preprocessing.masks
 
@@ -3607,7 +3608,7 @@ class Pipeline:
         from soma.dense_extraction import DenseTileFeatureExtractor
 
         composite = self._config.composite
-        preprocessing = self._resolve_preprocessing()
+        preprocessing = resolve_pipeline_preprocessing(self._config)
         target_size = preprocessing.requested_tile_size_px
         if target_size is None:
             raise ValueError(
@@ -3678,163 +3679,6 @@ class Pipeline:
             concat_grid_size=composite.concat_grid_size,
             member_norms=[m.member_norm or "none" for m in composite.encoders],
         )
-
-    @staticmethod
-    def _resolve_composite_spacing(composite: "CompositeConfig") -> float:
-        """Members' shared supported µm/px, for the requested_spacing_um auto-default.
-
-        v1 reads every member at one spacing, so this succeeds only when all members
-        advertise the *same* single supported spacing; a member with multiple supported
-        spacings, or members that disagree, must be pinned via
-        ``preprocessing.requested_spacing_um``.
-        """
-        from slide2vec.encoders.registry import resolve_preprocessing_requirements
-
-        per_member: dict[str, float] = {}
-        for member in composite.encoders:
-            spacing = resolve_preprocessing_requirements(member.name)["spacing_um"]
-            if isinstance(spacing, (list, tuple)):
-                if len(spacing) != 1:
-                    raise ValueError(
-                        f"composite member '{member.name}' supports multiple spacings "
-                        f"{list(spacing)}; set preprocessing.requested_spacing_um explicitly."
-                    )
-                spacing = spacing[0]
-            per_member[member.name] = float(spacing)
-        unique = sorted(set(per_member.values()))
-        if len(unique) != 1:
-            raise ValueError(
-                "composite members do not share a single supported spacing "
-                f"({per_member}); set preprocessing.requested_spacing_um explicitly "
-                "(v1 reads every member at the same µm/px)."
-            )
-        return unique[0]
-
-    def _build_live_segmentation_source(self) -> "LiveSegmentationSource":
-        """Prepare one public DenseEncodeKit and share it across every fold.
-
-        Soma owns the augmented-pixel handoff. slide2vec owns the dense normalization,
-        resolved geometry, padding, precision/device transfer, frozen encoding,
-        windowing/attention mode, and output dtype behind the public kit boundary.
-        """
-        from slide2vec import DenseImageOptions, ExecutionOptions, Model
-
-        from soma.dense.live import LiveSegmentationSource
-        from soma.encoders.validation import resolve_encoder_precision
-
-        if self._config.encoder is None:
-            raise ValueError(
-                "PipelineConfig.encoder is required for feature_mode='live' segmentation."
-            )
-        preprocessing = self._resolve_preprocessing()
-        target_size = preprocessing.requested_tile_size_px
-        if target_size is None:
-            raise ValueError(
-                "feature_mode='live' segmentation requires preprocessing.requested_tile_size_px "
-                "(the mask/tile supervision size)."
-            )
-        if preprocessing.requested_spacing_um is None:
-            raise ValueError(
-                "feature_mode='live' segmentation requires a spacing — set "
-                "preprocessing.requested_spacing_um or use an encoder that advertises a "
-                "single supported_spacing_um."
-            )
-
-        model = Model.from_preset(
-            self._config.encoder.name,
-            output_variant=self._config.encoder.output_variant,
-            allow_non_recommended_settings=self._config.encoder.allow_non_recommended_settings,
-        )
-        precision = resolve_encoder_precision(
-            self._config.encoder, encoder_name=self._config.encoder.name
-        )
-        window_size = preprocessing.dense_window_size
-        overlap = float(preprocessing.dense_window_overlap)
-        from soma.dense.sliding import describe_dense_mode
-
-        # print, not logger: always visible regardless of logging config (same as the
-        # cached extractor's announcement) so the resolved mode is never silent.
-        print(f"Live segmentation dense mode: {describe_dense_mode(window_size, overlap)}")
-        feature_kind = preprocessing.feature_kind or "patch_features"
-        dense = DenseImageOptions(
-            target_size=int(target_size),
-            spacing_um=float(preprocessing.requested_spacing_um),
-            tolerance=float(preprocessing.tolerance),
-            backend=preprocessing.backend,
-            pad_mode="reflect",
-            image_pad_value=None,
-            window_size=window_size,
-            overlap=overlap,
-            feature_kind=feature_kind,
-            attention_blocks=(
-                tuple(preprocessing.attention.blocks)
-                if feature_kind == "cls_attention"
-                else (-1,)
-            ),
-            attention_include_registers=(
-                bool(preprocessing.attention.include_registers)
-                if feature_kind == "cls_attention"
-                else False
-            ),
-        )
-        kit = model.prepare_dense_encoder(
-            dense=dense,
-            execution=ExecutionOptions(
-                num_gpus=self._config.execution.num_gpus,
-                precision=precision,
-                output_dtype="fp32",
-            ),
-        )
-        # Model.feature_dim is the pooled/backbone width and is not authoritative for
-        # alternate dense outputs such as CLS attention. Probe only the public tensor
-        # boundary so the decoder is built for the kit's actual resolved grid channels.
-        probe_pixels = torch.zeros(
-            (3, *kit.geometry.target_size), dtype=torch.uint8, device="cpu"
-        )
-        probe_batch = torch.stack([kit.preprocessor()(probe_pixels)])
-        probe_grid = kit.encode(probe_batch)
-        if probe_grid.ndim != 4 or tuple(int(v) for v in probe_grid.shape[-2:]) != tuple(
-            int(v) for v in kit.geometry.grid_shape
-        ):
-            raise ValueError(
-                "DenseEncodeKit returned an invalid probe grid: expected "
-                f"(B, d, {kit.geometry.grid_shape[0]}, {kit.geometry.grid_shape[1]}), "
-                f"got {tuple(probe_grid.shape)}."
-            )
-        return LiveSegmentationSource(
-            kit=kit,
-            device=model.device,
-            feature_dim=int(probe_grid.shape[1]),
-            augmentation=self._config.augmentation,
-            spacing_um=float(preprocessing.requested_spacing_um),
-            backend=preprocessing.backend,
-            tolerance=float(preprocessing.tolerance),
-        )
-
-    def _resolve_preprocessing(self) -> "PreprocessingConfig":
-        """Resolve preprocessing config, injecting HIPT-specific overrides if needed."""
-        if self._config.dataset_type == "tile":
-            # Tile-dataset pipelines have no WSI tiling step; preprocessing is irrelevant.
-            return PreprocessingConfig()
-        preprocessing = derive_preprocessing_for_aggregator(
-            self._config.preprocessing,
-            self._config.aggregator,
-        )
-        if self._config.encoder is not None:
-            preprocessing = resolve_preprocessing_config(
-                self._config.encoder,
-                preprocessing,
-            )
-        elif self._config.composite is not None and preprocessing.requested_spacing_um is None:
-            # Composite runs have no single encoder to feed into resolve_preprocessing_config,
-            # but v1 still reads every member at one shared spacing. Resolve that default
-            # here so extraction, run summary, and dense-fold spacing guards agree.
-            preprocessing = replace(
-                preprocessing,
-                requested_spacing_um=self._resolve_composite_spacing(self._config.composite),
-            )
-        return preprocessing
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers

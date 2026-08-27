@@ -1610,9 +1610,9 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        pipeline = Pipeline(config, feature_dir=feature_dir)
+        from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
-        resolved = pipeline._resolve_preprocessing()
+        resolved = resolve_pipeline_preprocessing(config)
 
         assert resolved.requested_tile_size_px == 224
         assert resolved.read_tile_size_px == 224

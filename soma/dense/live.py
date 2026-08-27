@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from soma.config import AugmentationConfig
+from soma.config import AugmentationConfig, PipelineConfig
 from soma.dense.geometry import DenseGridGeometry
 
 
@@ -76,3 +76,106 @@ class LiveSegmentationSource:
         directly (it needs the records, not just the ids).
         """
         return None
+
+
+def build_live_segmentation_source(config: PipelineConfig) -> LiveSegmentationSource:
+    """Prepare the public dense encoder kit from a resolved pipeline config.
+
+    This config-only seam is shared by training and post-hoc checkpoint inference.  It
+    deliberately does not construct :class:`~soma.pipeline.Pipeline`, because rebuilding
+    an encoder for an external image cohort must not require loading the development
+    Dataset or Splits referenced by the saved run config.
+    """
+    import torch
+    from slide2vec import DenseImageOptions, ExecutionOptions, Model
+
+    from soma.dense.sliding import describe_dense_mode
+    from soma.encoders.validation import resolve_encoder_precision
+    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+
+    if config.encoder is None:
+        raise ValueError(
+            "PipelineConfig.encoder is required for feature_mode='live' segmentation."
+        )
+    preprocessing = resolve_pipeline_preprocessing(config)
+    target_size = preprocessing.requested_tile_size_px
+    if target_size is None:
+        raise ValueError(
+            "feature_mode='live' segmentation requires preprocessing.requested_tile_size_px "
+            "(the mask/tile supervision size)."
+        )
+    if preprocessing.requested_spacing_um is None:
+        raise ValueError(
+            "feature_mode='live' segmentation requires a spacing — set "
+            "preprocessing.requested_spacing_um or use an encoder that advertises a "
+            "single supported_spacing_um."
+        )
+
+    model = Model.from_preset(
+        config.encoder.name,
+        output_variant=config.encoder.output_variant,
+        allow_non_recommended_settings=config.encoder.allow_non_recommended_settings,
+    )
+    precision = resolve_encoder_precision(
+        config.encoder, encoder_name=config.encoder.name
+    )
+    window_size = preprocessing.dense_window_size
+    overlap = float(preprocessing.dense_window_overlap)
+    print(f"Live segmentation dense mode: {describe_dense_mode(window_size, overlap)}")
+    feature_kind = preprocessing.feature_kind or "patch_features"
+    dense = DenseImageOptions(
+        target_size=int(target_size),
+        spacing_um=float(preprocessing.requested_spacing_um),
+        tolerance=float(preprocessing.tolerance),
+        backend=preprocessing.backend,
+        pad_mode="reflect",
+        image_pad_value=None,
+        window_size=window_size,
+        overlap=overlap,
+        feature_kind=feature_kind,
+        attention_blocks=(
+            tuple(preprocessing.attention.blocks)
+            if feature_kind == "cls_attention"
+            else (-1,)
+        ),
+        attention_include_registers=(
+            bool(preprocessing.attention.include_registers)
+            if feature_kind == "cls_attention"
+            else False
+        ),
+    )
+    kit = model.prepare_dense_encoder(
+        dense=dense,
+        execution=ExecutionOptions(
+            num_gpus=config.execution.num_gpus,
+            precision=precision,
+            output_dtype="fp32",
+        ),
+    )
+    # Probe the public tensor boundary because alternate dense outputs need not have the
+    # backbone's pooled feature width.
+    probe_pixels = torch.zeros(
+        (3, *kit.geometry.target_size), dtype=torch.uint8, device="cpu"
+    )
+    probe_batch = torch.stack([kit.preprocessor()(probe_pixels)])
+    probe_grid = kit.encode(probe_batch)
+    if probe_grid.ndim != 4 or tuple(int(v) for v in probe_grid.shape[-2:]) != tuple(
+        int(v) for v in kit.geometry.grid_shape
+    ):
+        raise ValueError(
+            "DenseEncodeKit returned an invalid probe grid: expected "
+            f"(B, d, {kit.geometry.grid_shape[0]}, {kit.geometry.grid_shape[1]}), "
+            f"got {tuple(probe_grid.shape)}."
+        )
+    return LiveSegmentationSource(
+        kit=kit,
+        device=model.device,
+        feature_dim=int(probe_grid.shape[1]),
+        augmentation=config.augmentation,
+        spacing_um=float(preprocessing.requested_spacing_um),
+        backend=preprocessing.backend,
+        tolerance=float(preprocessing.tolerance),
+    )
+
+
+__all__ = ["LiveSegmentationSource", "build_live_segmentation_source"]

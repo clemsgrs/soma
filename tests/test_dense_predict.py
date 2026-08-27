@@ -21,6 +21,16 @@ from soma.dense.predict import (  # noqa: E402
     SlidingWindowSegmentationPredictor,
     _hann2d,
 )
+from soma.dense.live import build_live_segmentation_source  # noqa: E402
+from soma.config import (  # noqa: E402
+    AugmentationConfig,
+    DecoderConfig,
+    EncoderConfig,
+    ExecutionConfig,
+    PipelineConfig,
+    PreprocessingConfig,
+    TaskConfig,
+)
 
 PATCH = 16
 TILE = 64
@@ -91,6 +101,72 @@ def _predictor(models, *, spacing_um=None):
 
 def _geom():
     return compute_dense_geometry(target_size=TILE, patch_size=PATCH)
+
+
+def test_build_live_segmentation_source_prepares_public_dense_kit(monkeypatch):
+    """Inference can rebuild a live source from a saved config without loading a Dataset."""
+
+    class _Kit:
+        geometry = SimpleNamespace(
+            target_size=(8, 8),
+            patch_size=(4, 4),
+            encoded_size=(8, 8),
+            grid_shape=(2, 2),
+            pad=(0, 0, 0, 0),
+            crop_box=(0, 0, 8, 8),
+        )
+
+        @staticmethod
+        def preprocessor():
+            return _preprocessor
+
+        @staticmethod
+        def encode(batch):
+            return torch.zeros((batch.shape[0], 7, 2, 2), dtype=torch.float32)
+
+    prepared = {}
+
+    class _Model:
+        device = torch.device("cpu")
+
+        def prepare_dense_encoder(self, *, dense, execution):
+            prepared["dense"] = dense
+            prepared["execution"] = execution
+            return _Kit()
+
+    import slide2vec
+
+    monkeypatch.setattr(
+        slide2vec.Model,
+        "from_preset",
+        lambda *args, **kwargs: _Model(),
+    )
+    config = PipelineConfig(
+        dataset_csv="development.csv",
+        splits_csv="development_splits.csv",
+        output_root="runs",
+        dataset_type="segmentation",
+        encoder=EncoderConfig(name="virchow2", precision="fp32", output_variant="cls"),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=8,
+            requested_spacing_um=0.5,
+            dense_window_size=8,
+            feature_kind="patch_features",
+        ),
+        aggregator=None,
+        execution=ExecutionConfig(num_gpus=1, precision="fp32"),
+        augmentation=AugmentationConfig(),
+    )
+
+    source = build_live_segmentation_source(config)
+
+    assert source.feature_dim == 7
+    assert source.spacing_um == 0.5
+    assert source.geometry.target_size == (8, 8)
+    assert prepared["dense"].target_size == 8
+    assert prepared["dense"].spacing_um == 0.5
 
 
 # --- pure window math ---------------------------------------------------------------

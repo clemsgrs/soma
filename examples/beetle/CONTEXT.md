@@ -32,11 +32,29 @@ realized pixel and ROI exposure remain diagnostics, not balancing claims.
 development folds only. The official external evaluation set is used once for the chosen
 arm.
 
+**External submission**: average the selected arm's five fold-checkpoint pixel
+probabilities, map every ROI prediction back to its exact supplied dimensions, translate
+class indices to the organizer's labels 1 through 4, then validate the exact 170-name
+grayscale-PNG set before writing one flat ZIP.
+
+**External ROI sidecar**: the paper-lead-supplied, schema-v1 ROI-to-WSI map that declares
+each flat PNG's filename, source WSI, patient, native spacing, width, and height. It is the
+authoritative physical-scale and grouping provenance for External inference; image names
+are never parsed to recover patients or source slides.
+
+**External patient report**: an optional, label-gated report over 54 independent patients.
+It groups all nested ROI confusion matrices through the External sidecar and reuses the
+same fixed patient bootstrap as development reporting. Submission generation and
+validation never require this report or the sequestered labels.
+
 **Publication evidence**: the curated Manifest and checksums, completed hardware
 preflight, locked encoder provenance, resolved arm configs, run/environment metadata,
 ten decoder checkpoints, histories and sampler audits, recovery manifests, generic fold
 confusion evidence, the project OOF/bootstrap report, and the development arm-selection
-record. The gated encoder weights and large feature cache are referenced, not distributed.
+record; plus the validated External ROI sidecar, 170 submission PNGs, flat ZIP, and
+submission audit. The External patient report joins the evidence only if the paper lead
+supplies sequestered labels. The gated encoder weights and large feature cache are
+referenced, not distributed.
 
 **Patient bootstrap**: resample independent patients with replacement and recompute Dice
 from summed confusion matrices. The publication protocol fixes the seed and number of
