@@ -133,6 +133,84 @@ dataset-global mean class Dice
 values and chooses exactly one (uniform is the predeclared exact-tie fallback). The
 External evaluation set is used only after this file exists.
 
+## 5. Build and validate the External submission
+
+The paper lead supplies the External ROI directory and a reviewed schema-v1
+ROI-to-WSI sidecar. The sidecar is JSON with exactly 170 rows:
+
+```json
+{
+  "schema_version": 1,
+  "rois": [
+    {
+      "roi_filename": "<exact organizer PNG basename>",
+      "patient_id": "<independent patient ID>",
+      "source_wsi": "<source WSI ID>",
+      "native_spacing_um": 0.5,
+      "width": 2048,
+      "height": 1536
+    }
+  ]
+}
+```
+
+Do not infer spacing, WSI identity, or patient identity from a filename. Run inference
+only after `arm_selection.json` exists, against that arm's completed run directory:
+
+```bash
+python -m examples.beetle.external_submission infer \
+  --selection data/beetle/reports/arm_selection.json \
+  --run-dir <selected-arm-run> \
+  --protocol-resolution data/beetle/resolved/protocol_resolution.json \
+  --roi-dir data/beetle/external/rois \
+  --roi-sidecar data/beetle/external/roi_to_wsi.json \
+  --output-dir data/beetle/external/submission_pngs \
+  --audit data/beetle/external/submission_audit.json \
+  --zip data/beetle/external/submission.zip
+```
+
+The run must carry `beetle` and selected-arm tags and contain
+`fold_0/best_model.pt` through `fold_4/best_model.pt`. The command loads one shared
+frozen encoder plus all five decoders and averages their per-pixel softmaxes. The protocol
+resolution is revalidated against `encoder_lock.json`, including the weight digest and
+immutable local Hub binding, before the encoder loads in offline mode. Each flat
+ROI inherits native spacing from the sidecar. Inputs within the run tolerance stay
+native; finer inputs outside tolerance may be area-downsampled; coarser inputs always
+stay native and are never upsampled. Predictions are mapped back to the exact sidecar
+width and height.
+
+The generated masks are single-channel grayscale uint8 PNGs in the organizer vocabulary:
+`1=other`, `2=non-invasive epithelium`, `3=invasive epithelium`, `4=necrosis`.
+Validation requires exactly the sidecar's 170 basenames, checks dimensions, type, and
+labels, and writes a deterministic ZIP whose entries have no directory prefix. To
+revalidate existing masks without inference:
+
+```bash
+python -m examples.beetle.external_submission validate \
+  --roi-sidecar data/beetle/external/roi_to_wsi.json \
+  --output-dir data/beetle/external/submission_pngs \
+  --zip data/beetle/external/submission.zip
+```
+
+`submission_audit.json` records the selected arm, five checkpoint digests, every ROI's
+spacing decision and native/output dimensions, and the ZIP digest. It explicitly records
+that hidden labels were not used.
+
+Only after the submission predictions are fixed, if the paper lead supplies the
+sequestered masks, compute the 54-patient confusion/bootstrap report:
+
+```bash
+python -m examples.beetle.external_submission evaluate \
+  --roi-sidecar data/beetle/external/roi_to_wsi.json \
+  --predictions-dir data/beetle/external/submission_pngs \
+  --labels-dir <paper-lead-supplied-label-directory> \
+  --output data/beetle/reports/external_report.json
+```
+
+All nested ROIs are grouped by the sidecar's `patient_id`; the report uses the same
+seed-0, 10,000-draw whole-patient bootstrap as the development report. Hidden labels and
+metrics are neither fabricated nor required to infer, validate, or ZIP the submission.
+
 ## Offline smoke
 
 The complete development chain is executable without WSIs, gated weights, CUDA, or a
@@ -166,4 +244,7 @@ Publication evidence consists of the curated Manifest and checksums; hardware pr
 encoder lock and protocol resolution; both resolved configs; dependency/GPU/run metadata;
 cache metadata (not the cache payload); all ten decoder checkpoints; histories; sampler
 audits; recovery manifests and hashes; generic fold confusion evidence; the two-arm OOF
-and bootstrap report; and the arm-selection file. Do not redistribute Virchow2 weights.
+and bootstrap report; the arm-selection file; validated External ROI sidecar; all 170
+submission PNGs; the flat submission ZIP; and `submission_audit.json`. If sequestered
+labels are supplied, include `external_report.json`; otherwise it is absent by design and
+submission generation remains complete. Do not redistribute Virchow2 weights.

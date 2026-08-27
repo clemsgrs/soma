@@ -236,12 +236,12 @@ def test_composite_spacing_auto_defaults_from_shared_member_spacing():
     # conch + h0-mini both advertise 0.5 µm/px → auto-default resolves to 0.5 (no explicit
     # preprocessing.requested_spacing_um needed). Mismatched/multi-spacing members must pin.
     from soma.config import CompositeConfig, EncoderMemberConfig
-    from soma.pipeline import Pipeline
+    from soma.preprocessing.resolution import resolve_composite_spacing
 
     comp = CompositeConfig(
         encoders=[EncoderMemberConfig(name="conch"), EncoderMemberConfig(name="h0-mini")]
     )
-    assert Pipeline._resolve_composite_spacing(comp) == 0.5
+    assert resolve_composite_spacing(comp) == 0.5
 
 
 def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
@@ -253,7 +253,7 @@ def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
         PreprocessingConfig,
         TaskConfig,
     )
-    from soma.pipeline import Pipeline
+    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
     cfg = PipelineConfig(
         dataset_csv="data.csv",
@@ -267,10 +267,7 @@ def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
         ),
         task=TaskConfig(name="segmentation", params={"num_classes": 2}),
     )
-    pipeline = object.__new__(Pipeline)
-    pipeline._config = cfg
-
-    assert pipeline._resolve_preprocessing().requested_spacing_um == 0.5
+    assert resolve_pipeline_preprocessing(cfg).requested_spacing_um == 0.5
 
 
 def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):

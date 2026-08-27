@@ -431,7 +431,9 @@ def test_build_live_source_probes_feature_width_through_public_kit(tmp_path: Pat
             dense_window_overlap=0.0,
         ),
     )
-    source = Pipeline(config)._build_live_segmentation_source()
+    from soma.dense.live import build_live_segmentation_source
+
+    source = build_live_segmentation_source(config)
 
     assert probe_shapes == [(PATCH, PATCH)] * 4
     assert source.feature_dim == encoder.encode_dim
@@ -451,7 +453,7 @@ def test_build_live_source_forwards_output_variant_and_attention_recipe(tmp_path
         PipelineConfig,
         PreprocessingConfig,
     )
-    from soma.pipeline import Pipeline
+    from soma.dense.live import build_live_segmentation_source
 
     _build_run(tmp_path, ["s0", "s1", "s2", "s3"])
     calls = {}
@@ -500,7 +502,7 @@ def test_build_live_source_forwards_output_variant_and_attention_recipe(tmp_path
         ),
     )
 
-    source = Pipeline(config)._build_live_segmentation_source()
+    source = build_live_segmentation_source(config)
 
     assert calls["preset"] == (
         "uni",

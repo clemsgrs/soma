@@ -31,6 +31,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from examples.beetle.protocol import PIXEL_MAPPING
 from soma.curation.manifest import CuratedManifest, write_manifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -39,13 +40,6 @@ _DEFAULT_BEETLE_ROOT = _REPO_ROOT / "data" / "beetle"
 # BEETLE pixel vocabulary (label_map.json): name -> raw mask pixel value. This is the
 # masks.pixel_mapping the soma config carries; "background" (0, unannotated) is the ignore
 # label. Kept here so the manifest's coverage scan uses the same class scheme as training.
-PIXEL_MAPPING = {
-    "background": 0,
-    "other": 1,
-    "non_invasive_epithelium": 2,
-    "invasive_epithelium": 3,
-    "necrosis": 4,
-}
 ANNOTATED_FRACTION_MIN = 0.05  # >=5% annotated to keep a tile
 CANONICAL_MPP = 0.5
 CROP_SIZE = 512
@@ -117,7 +111,11 @@ def read_dev_rows(overview_csv: Path) -> list[dict]:
     Local-file validation is deliberately separate: publication validates all rows, while the
     explicit smoke mode first selects its bounded rows and validates only those files.
     """
-    rows = [dict(r) for r in csv.DictReader(overview_csv.open()) if r["split"] == "development"]
+    rows = [
+        dict(r)
+        for r in csv.DictReader(overview_csv.open())
+        if r["split"] == "development"
+    ]
     if not rows:
         raise RuntimeError(f"No development rows found in {overview_csv}")
 
@@ -132,7 +130,9 @@ def read_dev_rows(overview_csv: Path) -> list[dict]:
     return rows
 
 
-def _validate_local_files(rows: list[dict], beetle_root: Path, *, publication: bool) -> None:
+def _validate_local_files(
+    rows: list[dict], beetle_root: Path, *, publication: bool
+) -> None:
     """Require every selected WSI + mask pairing before any manifest is written."""
 
     def has(rel: str) -> bool:
@@ -144,7 +144,9 @@ def _validate_local_files(rows: list[dict], beetle_root: Path, *, publication: b
         if not has(row["wsi_path"]) or not has(row["annotation_mask_path"])
     ]
     if missing:
-        cohort = "primary cohort" if publication else "selected non-publication smoke subset"
+        cohort = (
+            "primary cohort" if publication else "selected non-publication smoke subset"
+        )
         raise ValueError(
             "BEETLE development rows are missing local WSI or annotation file(s): "
             f"{missing}. The {cohort} must be locally complete."
@@ -210,7 +212,9 @@ def build_dataset_rows(
                 "source": r["source"],
                 "specimen_type": r["specimen_type"],
                 "validation_fold": r["validation_fold"],
-                "spacing_at_level_0": measured_spacing if measured_spacing is not None else "",
+                "spacing_at_level_0": (
+                    measured_spacing if measured_spacing is not None else ""
+                ),
                 "read_policy": (
                     _NATIVE_LEVEL_0_READ_POLICY
                     if measured_spacing is not None
@@ -329,14 +333,18 @@ def _read_level_0_tiff_spacing(path: Path) -> float:
     return round((x_spacing + y_spacing) / 2, 9)
 
 
-def _measure_native_spacing_exceptions(rows: list[dict], beetle_root: Path) -> dict[str, float]:
+def _measure_native_spacing_exceptions(
+    rows: list[dict], beetle_root: Path
+) -> dict[str, float]:
     """Validate authoritative exception identities and measure their local level-0 spacing."""
     rows_by_id = {row["name"]: row for row in rows}
     if len(rows_by_id) != len(rows):
         raise ValueError("BEETLE development slide names must be unique.")
     missing = sorted(set(_NATIVE_LEVEL_0_EXCEPTIONS) - set(rows_by_id))
     if missing:
-        raise ValueError(f"BEETLE native-spacing exception slide(s) are missing: {missing}.")
+        raise ValueError(
+            f"BEETLE native-spacing exception slide(s) are missing: {missing}."
+        )
 
     for sample_id, expected in _NATIVE_LEVEL_0_EXCEPTIONS.items():
         row = rows_by_id[sample_id]
@@ -359,7 +367,9 @@ def _measure_native_spacing_exceptions(rows: list[dict], beetle_root: Path) -> d
             )
 
     measured = {
-        sample_id: _read_level_0_tiff_spacing(beetle_root / rows_by_id[sample_id]["wsi_path"])
+        sample_id: _read_level_0_tiff_spacing(
+            beetle_root / rows_by_id[sample_id]["wsi_path"]
+        )
         for sample_id in _NATIVE_LEVEL_0_EXCEPTIONS
     }
     unexpected = {
@@ -403,7 +413,9 @@ def _validate_native_spacing_policy(dataset_rows: list[dict]) -> None:
             )
             or row["in_native_spacing_sensitivity_subset"]
         ):
-            raise ValueError(f"Invalid native-spacing read policy metadata for {sample_id!r}.")
+            raise ValueError(
+                f"Invalid native-spacing read policy metadata for {sample_id!r}."
+            )
 
 
 def _validate_sensitivity_subset(dataset_rows: list[dict]) -> None:
@@ -424,7 +436,10 @@ def _validate_sensitivity_subset(dataset_rows: list[dict]) -> None:
 
 def _write_coverage(dataset_csv: Path, out_path: Path) -> None:
     """Per-slide per-class annotation coverage (soma.curation.segmentation_coverage)."""
-    from soma.curation.segmentation_coverage import summarize_coverage, write_coverage_csv
+    from soma.curation.segmentation_coverage import (
+        summarize_coverage,
+        write_coverage_csv,
+    )
 
     min_cov = {k: ANNOTATED_FRACTION_MIN for k in PIXEL_MAPPING if k != "background"}
     coverage = summarize_coverage(
@@ -478,7 +493,9 @@ def curate_beetle_slide_manifest(
     chosen = select_subset(rows, slides)
     _validate_local_files(chosen, beetle_root, publication=is_full_cohort)
     native_spacings = (
-        _measure_native_spacing_exceptions(chosen, beetle_root) if is_full_cohort else {}
+        _measure_native_spacing_exceptions(chosen, beetle_root)
+        if is_full_cohort
+        else {}
     )
     dataset_rows = build_dataset_rows(
         chosen,
@@ -497,9 +514,13 @@ def curate_beetle_slide_manifest(
         if row["read_policy"] == _NATIVE_LEVEL_0_READ_POLICY
     }
     excluded_sample_ids = [
-        sample_id for sample_id in _NATIVE_LEVEL_0_EXCEPTIONS if sample_id in exception_rows
+        sample_id
+        for sample_id in _NATIVE_LEVEL_0_EXCEPTIONS
+        if sample_id in exception_rows
     ]
-    excluded_patient_ids = [exception_rows[sample_id]["patient_id"] for sample_id in excluded_sample_ids]
+    excluded_patient_ids = [
+        exception_rows[sample_id]["patient_id"] for sample_id in excluded_sample_ids
+    ]
     sensitivity_rows = [
         row for row in dataset_rows if row["in_native_spacing_sensitivity_subset"]
     ]
@@ -513,7 +534,9 @@ def curate_beetle_slide_manifest(
         "num_patients": len({row["patient_id"] for row in dataset_rows}),
         "cohort": {
             "kind": (
-                "primary_full_cohort" if is_full_cohort else "non_publication_smoke_subset"
+                "primary_full_cohort"
+                if is_full_cohort
+                else "non_publication_smoke_subset"
             ),
             "num_slides": len(dataset_rows),
             "num_patients": len({row["patient_id"] for row in dataset_rows}),
@@ -545,7 +568,9 @@ def curate_beetle_slide_manifest(
                 "native_spacing_sensitivity": {
                     "intended_use": "evaluation_only",
                     "num_slides": len(sensitivity_rows),
-                    "num_patients": len({row["patient_id"] for row in sensitivity_rows}),
+                    "num_patients": len(
+                        {row["patient_id"] for row in sensitivity_rows}
+                    ),
                     "excluded_sample_ids": excluded_sample_ids,
                     "excluded_patient_ids": excluded_patient_ids,
                 }
@@ -559,7 +584,9 @@ def curate_beetle_slide_manifest(
         "annotated_fraction_min": ANNOTATED_FRACTION_MIN,
         "canonical_mpp": CANONICAL_MPP,
         "crop_size": CROP_SIZE,
-        "cv_folds": sorted({int(r["validation_fold"].replace("fold", "")) for r in dataset_rows}),
+        "cv_folds": sorted(
+            {int(r["validation_fold"].replace("fold", "")) for r in dataset_rows}
+        ),
         "slides_per_fold": dict(Counter(r["validation_fold"] for r in dataset_rows)),
         "slides_per_source": dict(Counter(r["source"] for r in dataset_rows)),
     }
@@ -605,7 +632,9 @@ def main(argv: list[str] | None = None) -> None:
             "with --slides: <beetle-root>/non_publication_smoke_manifest)"
         ),
     )
-    parser.add_argument("--slides", type=int, default=None, help="cap dev WSIs (balanced across folds)")
+    parser.add_argument(
+        "--slides", type=int, default=None, help="cap dev WSIs (balanced across folds)"
+    )
     parser.add_argument(
         "--coverage",
         action="store_true",

@@ -14,11 +14,10 @@ import yaml
 
 from examples.beetle import launch
 from examples.beetle.launch import resolve_arm_configs
-from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES
+from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES, PIXEL_MAPPING
 from examples.beetle.select_arm import main as select_main, select_development_arm
 from examples.beetle.smoke import run_offline_smoke
 from soma.config import AugmentationConfig, load_config
-
 
 REPOSITORY = "paige-ai/Virchow2"
 REVISION = "3158645804b69e3f3bc4439d4116edddf0840a72"
@@ -30,14 +29,11 @@ EXPECTED_BATCH_SIZE_CANDIDATES = (16, 8, 4)
 
 
 @pytest.fixture
-def local_encoder_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, str]:
+def local_encoder_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, str]:
     snapshot = (
-        tmp_path
-        / "hf"
-        / "hub"
-        / "models--paige-ai--Virchow2"
-        / "snapshots"
-        / REVISION
+        tmp_path / "hf" / "hub" / "models--paige-ai--Virchow2" / "snapshots" / REVISION
     )
     snapshot.mkdir(parents=True)
     weight_bytes = b"offline Virchow2 test fixture; not model weights"
@@ -107,7 +103,9 @@ def _write_completed_preflight(
 
 
 def test_encoder_lock_records_the_exact_published_virchow2_object() -> None:
-    lock = json.loads(Path("examples/beetle/encoder_lock.json").read_text(encoding="utf-8"))
+    lock = json.loads(
+        Path("examples/beetle/encoder_lock.json").read_text(encoding="utf-8")
+    )
 
     assert lock == {
         "repository": REPOSITORY,
@@ -148,6 +146,8 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
         assert config.preprocessing.feature_kind == "patch_features"
         assert config.preprocessing.dense_window_size == 224
         assert config.preprocessing.dense_window_overlap == 0.5
+        assert config.preprocessing.masks is not None
+        assert config.preprocessing.masks.pixel_mapping == PIXEL_MAPPING
         assert config.decoder is not None
         assert config.decoder.name == "lightweight_conv"
         assert config.decoder.params == {
@@ -186,7 +186,9 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
 def test_arm_overlays_contain_only_sampling_and_output_identity() -> None:
     config_dir = Path("examples/beetle/configs")
 
-    assert yaml.safe_load((config_dir / "uniform.yaml").read_text(encoding="utf-8")) == {
+    assert yaml.safe_load(
+        (config_dir / "uniform.yaml").read_text(encoding="utf-8")
+    ) == {
         "run": {
             "output_root": "data/beetle/runs/uniform",
             "mirror_root": "data/beetle/recovery/uniform",
@@ -256,7 +258,13 @@ def test_launch_binds_offline_hub_to_the_validated_immutable_snapshot(
     )
 
     launch.main(
-        ["run", "--preflight", str(preflight), "--output-dir", str(tmp_path / "resolved")]
+        [
+            "run",
+            "--preflight",
+            str(preflight),
+            "--output-dir",
+            str(tmp_path / "resolved"),
+        ]
     )
 
     assert [command for command, _ in calls] == [
@@ -275,10 +283,7 @@ def test_launch_binds_offline_hub_to_the_validated_immutable_snapshot(
         assert call["env"]["TRANSFORMERS_OFFLINE"] == "1"
         runtime_hub = Path(call["env"]["HF_HUB_CACHE"])
         bound_snapshot = (
-            runtime_hub
-            / "models--paige-ai--Virchow2"
-            / "snapshots"
-            / REVISION
+            runtime_hub / "models--paige-ai--Virchow2" / "snapshots" / REVISION
         )
         assert bound_snapshot.resolve() == local_encoder_snapshot[0].resolve()
         resolved_runtime_files = {
@@ -364,7 +369,9 @@ def test_pinned_single_arm_launch_rejects_scientific_recipe_overrides(
         tmp_path / "preflight.json", local_encoder_snapshot
     )
     calls: list[object] = []
-    monkeypatch.setattr(launch.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        launch.subprocess, "run", lambda *args, **kwargs: calls.append(args)
+    )
 
     with pytest.raises(SystemExit):
         launch.main(
@@ -402,12 +409,15 @@ def test_launch_uses_absolute_config_paths_from_a_non_repository_cwd(
         lambda command, **kwargs: calls.append(command),
     )
 
-    launch.main(
-        ["run", "--preflight", str(preflight), "--output-dir", "resolved"]
-    )
+    launch.main(["run", "--preflight", str(preflight), "--output-dir", "resolved"])
 
     assert calls == [
-        [sys.executable, "-m", "soma", str((caller / "resolved/uniform.yaml").resolve())],
+        [
+            sys.executable,
+            "-m",
+            "soma",
+            str((caller / "resolved/uniform.yaml").resolve()),
+        ],
         [
             sys.executable,
             "-m",
@@ -429,7 +439,9 @@ def test_launch_ignores_mutable_source_main_and_keeps_runtime_main_locked(
         tmp_path / "preflight.json", local_encoder_snapshot
     )
     calls: list[object] = []
-    monkeypatch.setattr(launch.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        launch.subprocess, "run", lambda *args, **kwargs: calls.append(args)
+    )
     source_main = snapshot.parent.parent / "refs" / "main"
     if source_main_state == "moved":
         source_main.write_text("f" * 40 + "\n", encoding="utf-8")
@@ -437,7 +449,13 @@ def test_launch_ignores_mutable_source_main_and_keeps_runtime_main_locked(
         source_main.unlink()
 
     launch.main(
-        ["run", "--preflight", str(preflight), "--output-dir", str(tmp_path / "resolved")]
+        [
+            "run",
+            "--preflight",
+            str(preflight),
+            "--output-dir",
+            str(tmp_path / "resolved"),
+        ]
     )
 
     runtime_main = (
@@ -463,7 +481,9 @@ def test_launch_rehashes_weights_and_rejects_snapshot_drift_before_spawning_soma
         tmp_path / "preflight.json", local_encoder_snapshot
     )
     calls: list[object] = []
-    monkeypatch.setattr(launch.subprocess, "run", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(
+        launch.subprocess, "run", lambda *args, **kwargs: calls.append(args)
+    )
     (snapshot / WEIGHT_FILE).write_bytes(b"drifted after preflight")
 
     with pytest.raises(ValueError, match="snapshot weight checksum does not match"):
@@ -528,9 +548,10 @@ def test_selector_uses_uniform_as_the_exact_tie_fallback(tmp_path: Path) -> None
 
     selection = select_development_arm(report)
 
-    assert selection["arms"]["uniform"]["mean"] == selection["arms"][
-        "class_conditioned"
-    ]["mean"]
+    assert (
+        selection["arms"]["uniform"]["mean"]
+        == selection["arms"]["class_conditioned"]["mean"]
+    )
     assert selection["tie_breaker"] == "uniform"
     assert selection["selected_arm"] == "uniform"
 
@@ -581,7 +602,9 @@ def test_complete_offline_smoke_exercises_the_publication_chain(
         assert len(artifacts["sampling_audits"]) == 5
         assert len(artifacts["recovery_fold_manifests"]) == 5
         assert len(artifacts["recovery_checkpoint_manifests"]) == 5
-        assert all(Path(path).is_file() for paths in artifacts.values() for path in paths)
+        assert all(
+            Path(path).is_file() for paths in artifacts.values() for path in paths
+        )
     report = json.loads(Path(manifest["oof_report"]).read_text())
     assert report["protocol"]["bootstrap_draws"] == 10_000
     assert set(report["arms"]) == {"uniform", "class_conditioned"}

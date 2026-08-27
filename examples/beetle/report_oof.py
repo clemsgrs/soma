@@ -188,7 +188,10 @@ def patient_bootstrap(
     )
 
 
-def _metrics_payload(metrics: ConfusionMetrics, vocabulary: Sequence[str]) -> dict:
+def confusion_metrics_payload(
+    metrics: ConfusionMetrics, vocabulary: Sequence[str]
+) -> dict:
+    """Serialize confusion-derived metrics for every BEETLE report."""
     return {
         "confusion_matrix": [list(row) for row in metrics.confusion_matrix],
         "dice_per_class": {
@@ -199,7 +202,10 @@ def _metrics_payload(metrics: ConfusionMetrics, vocabulary: Sequence[str]) -> di
     }
 
 
-def _bootstrap_payload(result: BootstrapResult, vocabulary: Sequence[str]) -> dict:
+def bootstrap_summary_payload(
+    result: BootstrapResult, vocabulary: Sequence[str]
+) -> dict:
+    """Serialize the shared fixed-patient-bootstrap summary."""
     intervals = {
         "mean_dice": list(result.percentile_95_ci["mean_dice"]),
         "dice_per_class": {
@@ -232,14 +238,14 @@ def _cohort_payload(records: Sequence[PatientConfusionRecord]) -> dict:
         "patient_count": len(records),
         "class_vocabulary": list(vocabulary),
         "folds": {
-            str(fold): _metrics_payload(metrics, vocabulary)
+            str(fold): confusion_metrics_payload(metrics, vocabulary)
             for fold, metrics in fold_metrics.items()
         },
-        "pooled": _metrics_payload(pooled, vocabulary),
+        "pooled": confusion_metrics_payload(pooled, vocabulary),
         "fold_macro_class_dice": float(
             np.mean([metrics.mean_dice for metrics in fold_metrics.values()])
         ),
-        "bootstrap": _bootstrap_payload(bootstrap, vocabulary),
+        "bootstrap": bootstrap_summary_payload(bootstrap, vocabulary),
     }
 
 
@@ -365,6 +371,8 @@ __all__ = [
     "BootstrapResult",
     "PatientConfusionRecord",
     "assemble_beetle_oof_report",
+    "bootstrap_summary_payload",
+    "confusion_metrics_payload",
     "group_sample_confusions",
     "main",
     "patient_bootstrap",
