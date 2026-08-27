@@ -18,6 +18,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 from examples.beetle.curate import FULL_COHORT_PATIENTS
+from examples.beetle.protocol import ARM_NAMES, NUM_FOLDS
 from soma.evaluation import (
     ConfusionMetrics,
     SegmentationConfusionRecord,
@@ -27,8 +28,8 @@ from soma.evaluation import (
 )
 
 
-BEETLE_ARMS = ("uniform", "class_conditioned")
-BEETLE_FOLDS = 5
+BEETLE_ARMS = ARM_NAMES
+BEETLE_FOLDS = NUM_FOLDS
 BOOTSTRAP_SEED = 0
 BOOTSTRAP_DRAWS = 10_000
 NATIVE_SPACING_EXCEPTION_PATIENT_IDS = (

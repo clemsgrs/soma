@@ -1,0 +1,8 @@
+{
+  "repository": "paige-ai/Virchow2",
+  "revision": "3158645804b69e3f3bc4439d4116edddf0840a72",
+  "weight_file": "model.safetensors",
+  "weight_sha256": "8d6cea947eb2418c3b0dff48cfb9b238e47744ab0dfca21b2b0637b140769b4b",
+  "patch_size": 14,
+  "feature_channels": 1280
+}

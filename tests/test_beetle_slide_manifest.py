@@ -1,10 +1,10 @@
 """Config-validation tests for the BEETLE slide-manifest segmentation deliverable (#93).
 
 These are config-only (no slide/mask I/O): they assert the tracked example config
-``examples/beetle/configs/segmentation.yaml`` loads through soma's loader and encodes the
+the resolved two-arm BEETLE templates load through soma's loader and encode the
 BEETLE recipe — the masks ``pixel_mapping`` (BEETLE's raw vocabulary),
-the 5%% min-coverage rule, 512 px @ 0.5 µm/px spacing-aware, phikon sliding-224 dense
-window, lightweight_conv decoder, num_classes=4, and the three metrics — and that the
+the 5%% min-coverage rule, 512 px @ 0.5 µm/px spacing-aware, Virchow2 sliding-224 dense
+window, lightweight_conv decoder, num_classes=4, and the requested metrics — and that the
 derived raw-pixel → class-index remap matches BEETLE's pixel→class contract exactly.
 """
 
@@ -23,7 +23,7 @@ from soma.config import load_config
 from soma.dense.reader import build_label_remap
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BEETLE_CONFIG = REPO_ROOT / "examples" / "beetle" / "configs" / "segmentation.yaml"
+BEETLE_CONFIG = REPO_ROOT / "examples" / "beetle" / "configs" / "base.yaml"
 
 # BEETLE's pixel -> soma class contract (255 = ignore).
 EXPECTED_REMAP = {1: 0, 2: 1, 3: 2, 4: 3, 0: 255}
@@ -132,15 +132,19 @@ def _full_cohort(root: Path) -> tuple[Path, Path, list[dict[str, str]]]:
     return overview, root, rows
 
 
+def _load_beetle_config():
+    return load_config(BEETLE_CONFIG, overrides={"training": {"batch_size": 4}})
+
+
 def test_beetle_config_loads_and_validates():
-    cfg = load_config(BEETLE_CONFIG)
+    cfg = _load_beetle_config()
     assert cfg.dataset_type == "segmentation"
     assert cfg.task.name == "segmentation"
     assert cfg.task.params["num_classes"] == 4
 
 
 def test_beetle_config_encodes_masks_contract():
-    cfg = load_config(BEETLE_CONFIG)
+    cfg = _load_beetle_config()
     masks = cfg.preprocessing.masks
     assert masks is not None
     # masks.pixel_mapping is the BEETLE raw vocabulary; must include background (unannotated).
@@ -155,22 +159,27 @@ def test_beetle_config_encodes_masks_contract():
 
 
 def test_beetle_config_encodes_recipe():
-    cfg = load_config(BEETLE_CONFIG)
+    cfg = _load_beetle_config()
     pp = cfg.preprocessing
     assert pp.requested_tile_size_px == 512
     assert pp.requested_spacing_um == 0.5
-    # phikon native-224 sliding window @ 0.5 overlap.
+    # Virchow2 native-224 sliding window @ 0.5 overlap.
     assert pp.dense_window_size == 224
     assert pp.dense_window_overlap == 0.5
-    assert cfg.encoder.name == "phikon"
+    assert cfg.encoder.name == "virchow2"
     assert cfg.decoder.name == "lightweight_conv"
-    assert cfg.evaluation.metrics == ["mean_dice", "mean_iou", "dice_per_class"]
+    assert cfg.evaluation.metrics == [
+        "mean_dice",
+        "dataset_global_mean_dice",
+        "mean_iou",
+        "dice_per_class",
+    ]
     assert cfg.evaluation.save_segmentation_confusion_evidence is True
     assert cfg.preprocessing.sampling.output_mode == "merged"
 
 
 def test_beetle_remap_matches_curation_contract():
-    cfg = load_config(BEETLE_CONFIG)
+    cfg = _load_beetle_config()
     lut, num_classes = build_label_remap(cfg.preprocessing.masks.pixel_mapping, ignore_index=255)
     assert num_classes == 4
     raw = np.array(sorted(EXPECTED_REMAP), dtype=np.int64)

@@ -7,9 +7,9 @@ Like the EVA and OCELOT curators, this emits Soma's unified Manifest
 BEETLE is a *segmentation* dataset, so the supervision column is ``label_mask_path``: one row per
 development WSI pairs the slide (``image_path``) with its multiresolution annotation raster
 (``label_mask_path``). No tiles are materialized here — soma runs hs2p annotation sampling over
-these slides at train time (``masks:`` / ``sampling:`` in
-``examples/beetle/configs/segmentation.yaml``)
-to derive ROIs, so the cached slide-manifest path is the sole BEETLE recipe.
+these slides at train time (``masks:`` / preprocessing ``sampling:`` in
+``examples/beetle/configs/base.yaml``, combined with one minimal arm overlay) to derive
+ROIs, so the cached slide-manifest path is the sole BEETLE recipe.
 
 Splits preserve BEETLE's predefined CV folds (soma never partitions; the curator verifies that
 all slides from one patient share a fold, and sampled ROIs inherit their parent slide's split).

@@ -1,0 +1,9 @@
+# Uniform training-batch sampling arm. Merged with base.yaml by launch.py.
+run:
+  output_root: data/beetle/runs/uniform
+  mirror_root: data/beetle/recovery/uniform
+  tags: [beetle, project_protocol, virchow2, uniform]
+
+training:
+  roi_batch_sampling: uniform
+  class_request_ratios: null
