@@ -50,8 +50,8 @@ def _write_five_fold_fixture(root: Path) -> tuple[Path, dict[str, list[Path]]]:
             write_confusion_records(
                 path,
                 [
-                    _record(f"p{fold}_a", fold, ((2, 0), (0, 1))),
                     _record(f"p{fold}_b", fold, ((1, 0), (0, 2))),
+                    _record(f"p{fold}_a", fold, ((2, 0), (0, 1))),
                 ],
             )
             paths.append(path)
@@ -99,6 +99,27 @@ def test_beetle_report_pools_each_held_out_patient_once_per_arm(
             "folds": [0, 1, 2, 3, 4],
             "exactly_once": True,
         }
+
+
+def test_beetle_report_serializes_exact_patient_confusion_evidence(
+    beetle_report: dict,
+) -> None:
+    expected = [
+        {
+            "patient_id": f"p{fold}",
+            "fold": fold,
+            "sample_ids": [f"p{fold}_a", f"p{fold}_b"],
+            "annotated_pixels": 6,
+            "class_vocabulary": ["negative", "positive"],
+            "confusion_matrix": [[3, 0], [0, 3]],
+        }
+        for fold in range(5)
+    ]
+
+    assert {
+        arm: beetle_report["arms"][arm]["patient_confusions"]
+        for arm in BEETLE_ARMS
+    } == {arm: expected for arm in BEETLE_ARMS}
 
 
 def test_beetle_report_recomputes_primary_metrics_and_patient_intervals(
