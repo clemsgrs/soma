@@ -142,6 +142,25 @@ class SegmentationHead(TaskHead):
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
 
+    @property
+    def target_identity(self) -> dict[str, object]:
+        """Exact mask-read/remap contract used to key reusable ROI populations."""
+        return {
+            "num_classes": self.num_classes,
+            "ignore_index": self.ignore_index,
+            "encoded_size": list(self._encoded_size),
+            "crop_box": list(self._crop_box),
+            "spacing_um": self._spacing_um,
+            "spacing_policy": self._spacing_policy,
+            "backend": self._backend,
+            "tolerance": self._tolerance,
+            "label_remap": (
+                None
+                if self._label_remap is None
+                else [int(value) for value in self._label_remap.tolist()]
+            ),
+        }
+
     def forward(self, X: Tensor) -> Tensor:
         """Decoder logits ``(B, C, h', w')`` -> target-res logits ``(B, C, H, W)``.
 

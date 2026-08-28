@@ -19,11 +19,20 @@ class DenseFoldPlan:
 
     @property
     def all_records(self) -> list[SampleRecord]:
-        return [
+        records = [
             *self.train_records,
             *self.tune_records,
             *(record for records in self.test_records_by_split.values() for record in records),
         ]
+        unique_by_id: dict[str, SampleRecord] = {}
+        for record in records:
+            previous = unique_by_id.setdefault(record.sample_id, record)
+            if previous != record:
+                raise ValueError(
+                    f"dense fold contains conflicting records for sample_id "
+                    f"{record.sample_id!r}"
+                )
+        return list(unique_by_id.values())
 
 
 def plan_dense_fold(

@@ -160,6 +160,21 @@ def test_cached_segmentation_fold_writes_exact_roi_batch_sampling_audit(
     )
 
     audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
+    population = json.loads(
+        (fold_dir / "segmentation_roi_population.json").read_text()
+    )
+    assert Path(population["cache_path"]).is_relative_to(
+        fold_dir / "segmentation_roi_population"
+    )
+    assert {
+        "roi_count": population["roi_count"],
+        "num_classes": population["num_classes"],
+        "class_pixel_totals": population["class_pixel_totals"],
+    } == {
+        "roi_count": 10,
+        "num_classes": 4,
+        "class_pixel_totals": [160, 160, 160, 160],
+    }
     epoch = audit["epochs"][0]
     assert {
         "strategy": audit["strategy"],
@@ -288,7 +303,12 @@ def test_selected_checkpoint_exports_one_confusion_per_tune_sample(tmp_path: Pat
     assert sum(sum(row) for row in record["confusion_matrix"]) == TARGET * TARGET
 
 
-def _run_confusion_evidence_cv(tmp_path: Path, *, save_evidence: bool = True):
+def _run_confusion_evidence_cv(
+    tmp_path: Path,
+    *,
+    save_evidence: bool = True,
+    roi_batch_sampling: str | None = None,
+):
     sample_ids = ["s0", "s1", "s2", "s3", "external"]
     manifest, _, store = _build_dense_run(
         tmp_path,
@@ -327,13 +347,82 @@ def _run_confusion_evidence_cv(tmp_path: Path, *, save_evidence: bool = True):
         "splits": splits,
         "dataset_type": "segmentation",
         "task": TaskConfig(name="segmentation", params={"num_classes": 3}),
-        "training": TrainingConfig(epochs=1, batch_size=2),
+        "training": TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            roi_batch_sampling=roi_batch_sampling,
+            roi_draws_per_epoch=2 if roi_batch_sampling is not None else None,
+        ),
         "run_dir": run_dir,
         "decoder": DecoderConfig(name="lightweight_conv"),
         "evaluation": evaluation,
     }
 
     return train(**train_kwargs), run_dir, train_kwargs
+
+
+def test_multifold_population_provenance_is_fold_local(tmp_path: Path) -> None:
+    _, run_dir, _ = _run_confusion_evidence_cv(
+        tmp_path,
+        roi_batch_sampling="class_conditioned",
+    )
+
+    for fold in range(2):
+        provenance = json.loads(
+            (run_dir / f"fold_{fold}" / "segmentation_roi_population.json").read_text()
+        )
+        assert provenance["artifact_kind"] == "segmentation_roi_population"
+        assert Path(provenance["cache_path"]).is_relative_to(
+            run_dir / "segmentation_roi_population"
+        )
+
+
+def test_tune_is_test_multifold_reuses_one_unique_roi_population(tmp_path: Path) -> None:
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, _, store = _build_dense_run(tmp_path, sample_ids, num_classes=3)
+    splits_path = tmp_path / "tune_is_test_cv.csv"
+    splits_path.write_text(
+        "sample_id,split,fold\n"
+        "s0,train,0\n"
+        "s1,train,0\n"
+        "s2,test,0\n"
+        "s3,test,0\n"
+        "s0,test,1\n"
+        "s1,test,1\n"
+        "s2,train,1\n"
+        "s3,train,1\n"
+    )
+    run_dir = tmp_path / "run"
+
+    train(
+        feature_store=store,
+        dataset=manifest,
+        splits=Splits(splits_path, manifest, tune_is_test=True),
+        dataset_type="segmentation",
+        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
+        training=TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            tune_is_test=True,
+            roi_batch_sampling="class_conditioned",
+            roi_draws_per_epoch=2,
+        ),
+        run_dir=run_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice"]),
+        roi_population_cache_root=tmp_path / "population_cache",
+    )
+
+    populations = [
+        json.loads(
+            (run_dir / f"fold_{fold}" / "segmentation_roi_population.json").read_text()
+        )
+        for fold in range(2)
+    ]
+    assert {population["cache_key"] for population in populations} == {
+        populations[0]["cache_key"]
+    }
+    assert [population["roi_count"] for population in populations] == [4, 4]
 
 
 def test_train_validates_complete_fold_confusion_evidence(tmp_path: Path) -> None:
@@ -533,6 +622,13 @@ def test_pipeline_mirrors_verified_checkpoint_and_completed_fold_bundles(
 
     result = Pipeline(config, feature_dir=tmp_path / "dense").run()
 
+    population = json.loads(
+        (result.run_dir / "segmentation_roi_population.json").read_text()
+    )
+    assert Path(population["cache_path"]).is_relative_to(
+        config.output_root / "feature_cache" / "segmentation_roi_population"
+    )
+
     local_recovery = result.run_dir / "recovery"
     mirrored_run = config.mirror_root / result.run_dir.relative_to(config.output_root)
     checkpoint_spools = sorted(
@@ -552,6 +648,9 @@ def test_pipeline_mirrors_verified_checkpoint_and_completed_fold_bundles(
         "training_history.json",
         "sampler_audit.json",
     } <= set(json.loads((checkpoint_bundles[0] / "manifest.json").read_text())["files"])
+    assert "segmentation_roi_population.json" in json.loads(
+        (fold_bundle / "manifest.json").read_text()
+    )["files"]
 
     for local_bundle, mirrored_bundle in [
         (checkpoint_spools[0], checkpoint_bundles[0]),
