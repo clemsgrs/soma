@@ -11,9 +11,15 @@ data:
 
 preprocessing:
   backend: auto
+  # BEETLE masks are sparse pyramidal TIFFs. CuCIM can silently decode their
+  # intermediate sparse levels as background, so mask reads are pinned separately.
+  mask_backend: openslide
   requested_tile_size_px: 512
   requested_spacing_um: 0.5
-  tolerance: 0.05
+  spacing_policy: native_if_coarser
+  # Relative band: accepts the observed ~0.525 µm/px cohort; only the three
+  # declared 0.657476464 µm/px TCGA slides require native-spacing fallback.
+  tolerance: 0.1
   feature_kind: patch_features
   dense_window_size: 224
   dense_window_overlap: 0.5

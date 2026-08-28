@@ -147,6 +147,15 @@ def test_identity_digest(config: PipelineConfig) -> str:
     ).hexdigest()
 
 
+def _preprocessing_identity(config: PipelineConfig) -> dict[str, Any]:
+    preprocessing = asdict(config.preprocessing)
+    if config.preprocessing.spacing_policy == "strict":
+        # Preserve identities minted before this opt-in policy existed. Non-strict
+        # spacing can change the pixels seen by the model and must remain explicit.
+        preprocessing.pop("spacing_policy")
+    return preprocessing
+
+
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_path = Path(config.dataset_csv).resolve()
     splits_path = Path(config.splits_csv).resolve()
@@ -162,7 +171,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "splits": {"checksum": splits_digest},
             "dataset_type": config.dataset_type,
             "feature_mode": config.feature_mode,
-            "preprocessing": asdict(config.preprocessing),
+            "preprocessing": _preprocessing_identity(config),
             "cache": {
                 "enabled": config.cache.enabled,
                 "reuse_policy": config.cache.reuse_policy,
@@ -195,7 +204,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         },
         "dataset_type": config.dataset_type,
         "feature_mode": config.feature_mode,
-        "preprocessing": asdict(config.preprocessing),
+        "preprocessing": _preprocessing_identity(config),
         "cache": {
             "enabled": config.cache.enabled,
             "reuse_policy": config.cache.reuse_policy,

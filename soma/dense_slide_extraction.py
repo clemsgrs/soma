@@ -84,7 +84,7 @@ def sampling_signature(
     Different ``min_coverage``/strategy/spacing/tile-size ⇒ different ROIs ⇒ a distinct
     cache, even when two specs happen to yield colliding coordinates.
     """
-    return {
+    signature = {
         "pixel_mapping": dict(masks.pixel_mapping),
         "min_coverage": dict(masks.min_coverage),
         "colors": None if masks.colors is None else {k: (None if v is None else list(v)) for k, v in masks.colors.items()},
@@ -94,6 +94,11 @@ def sampling_signature(
         "tile_size_px": list(normalize_hw(int(preprocessing.requested_tile_size_px), name="tile_size_px")),
         "overlap": float(preprocessing.overlap),
     }
+    if preprocessing.spacing_policy != "strict":
+        # Preserve legacy strict cache identities; only the opt-in behavior
+        # needs an additional discriminator.
+        signature["spacing_policy"] = str(preprocessing.spacing_policy)
+    return signature
 
 
 def sample_slide_rois(
@@ -125,8 +130,6 @@ def sample_slide_rois(
         unknown = sorted(wanted - set(dataset.samples))
         if unknown:
             raise ValueError(f"sample_ids not in the slide manifest: {unknown}")
-    tiling = _build_tiling_config(preprocessing, sampling)
-    spec = _resolve_sampling_spec_from_masks(masks, tiling=tiling)
     strategy = _STRATEGY_MAP[sampling.strategy]
 
     coords_by_slide: dict[str, list[tuple[int, int]]] = {}
@@ -135,6 +138,14 @@ def sample_slide_rois(
             continue
         if record.label_mask_path is None:
             raise ValueError(f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one.")
+        effective_preprocessing = replace(
+            preprocessing,
+            requested_spacing_um=preprocessing.effective_spacing_um(
+                record.spacing_at_level_0
+            ),
+        )
+        tiling = _build_tiling_config(effective_preprocessing, sampling)
+        spec = _resolve_sampling_spec_from_masks(masks, tiling=tiling)
         # The annotation raster drives ROI sampling (per-class coverage), so it is the
         # sampling mask hs2p sees here.
         result = tile_slide(
@@ -420,34 +431,44 @@ class SlideManifestDenseExtractor:
             # above (key and storage can never drift).
             output_dtype=dense_dtype,
         )
-        dense = DenseOptions(
-            spacing_um=self._spacing_um,
-            target_size=int(self._target_size[0]),
-            tolerance=float(self._preprocessing.tolerance),
-            backend=self._preprocessing.backend,
-            pad_mode=self._pad_mode,
-            # window_size=None ⇒ one whole-region forward; a smaller window slides the
-            # encoder over patch-aligned windows of each padded ROI and blends the grids.
-            # Sliding is required for encoders that only accept their native input size.
-            window_size=self._window_size,
-            overlap=self._overlap,
-            feature_kind=self._feature_kind,
-            attention_blocks=self._attention_blocks,
-            attention_include_registers=self._attention_include_registers,
-        )
-        artifacts = model.embed_regions_dense(
-            [
+        regions_by_effective_spacing: dict[float, list[SlideRegions]] = defaultdict(list)
+        for slide_id, coords in coords_by_slide.items():
+            effective_spacing = self._preprocessing.effective_spacing_um(
+                spacing_by_slide[slide_id]
+            )
+            regions_by_effective_spacing[effective_spacing].append(
                 SlideRegions(
                     sample_id=slide_id,
                     image_path=image_path_by_slide[slide_id],
                     coordinates=coords,
                     spacing_at_level_0=spacing_by_slide[slide_id],
                 )
-                for slide_id, coords in coords_by_slide.items()
-            ],
-            dense=dense,
-            execution=execution,
-        )
+            )
+
+        artifacts = []
+        for effective_spacing, regions in regions_by_effective_spacing.items():
+            dense = DenseOptions(
+                spacing_um=effective_spacing,
+                target_size=int(self._target_size[0]),
+                tolerance=float(self._preprocessing.tolerance),
+                backend=self._preprocessing.backend,
+                pad_mode=self._pad_mode,
+                # window_size=None ⇒ one whole-region forward; a smaller window slides the
+                # encoder over patch-aligned windows of each padded ROI and blends the grids.
+                # Sliding is required for encoders that only accept their native input size.
+                window_size=self._window_size,
+                overlap=self._overlap,
+                feature_kind=self._feature_kind,
+                attention_blocks=self._attention_blocks,
+                attention_include_registers=self._attention_include_registers,
+            )
+            artifacts.extend(
+                model.embed_regions_dense(
+                    regions,
+                    dense=dense,
+                    execution=execution,
+                )
+            )
 
         if cache_resolution is not None and artifacts:
             cache_resolution = record_feature_dim(

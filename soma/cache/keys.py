@@ -127,6 +127,10 @@ def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
         "ref_tile_size_px": config.ref_tile_size_px,
         "a_t": config.a_t,
     }
+    if config.spacing_policy != "strict":
+        # Keep the historical strict payload byte-stable while separating the
+        # opt-in policy, whose ROI coordinates can differ on coarse slides.
+        signature["spacing_policy"] = config.spacing_policy
     annotation = annotation_sampling_signature(config)
     if annotation is not None:
         # Injected only when a masks block is active — keeps tissue-only keys byte-stable.

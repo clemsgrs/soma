@@ -76,15 +76,22 @@ def _validated_preflight(
     scope = payload.get("scope")
     if scope != "campaign" and not (allow_offline_smoke and scope == "offline_smoke"):
         raise ValueError("BEETLE production launch requires a campaign hardware preflight")
-    if tuple(payload.get("batch_size_candidates", ())) != BATCH_SIZE_CANDIDATES:
+    candidates = payload.get("batch_size_candidates")
+    if (
+        not isinstance(candidates, list)
+        or not candidates
+        or any(
+            isinstance(candidate, bool) or not isinstance(candidate, int) or candidate <= 0
+            for candidate in candidates
+        )
+        or any(left <= right for left, right in zip(candidates, candidates[1:]))
+    ):
         raise ValueError(
-            "BEETLE hardware preflight must try batch sizes in protocol order "
-            f"{list(BATCH_SIZE_CANDIDATES)}"
+            "BEETLE decoder batch-size candidates must be positive integers in "
+            "strictly descending order"
         )
     attempts = payload.get("batch_size_attempts")
-    if not isinstance(attempts, list) or [row.get("batch_size") for row in attempts] != list(
-        BATCH_SIZE_CANDIDATES
-    ):
+    if not isinstance(attempts, list) or [row.get("batch_size") for row in attempts] != candidates:
         raise ValueError("BEETLE hardware preflight must record one ordered result per batch")
     passing = [int(row["batch_size"]) for row in attempts if row.get("passed") is True]
     if not passing:

@@ -250,6 +250,25 @@ def test_sampling_determining_knob_changes_the_directory_key(tmp_path: Path):
     assert key_512 != key_256
 
 
+def test_native_spacing_policy_changes_the_directory_key_without_busting_strict():
+    from soma.cache import preprocessing_signature
+
+    strict = _preprocessing()
+    native = PreprocessingConfig(
+        requested_tile_size_px=512,
+        spacing_policy="native_if_coarser",
+        masks=strict.masks,
+        sampling=strict.sampling,
+    )
+
+    assert "spacing_policy" not in preprocessing_signature(strict)
+    assert preprocessing_signature(native)["spacing_policy"] == "native_if_coarser"
+    assert build_roi_sampling_cache_key(preprocessing=strict) == "951f3d2cc58d3c5f"
+    assert build_roi_sampling_cache_key(preprocessing=strict) != build_roi_sampling_cache_key(
+        preprocessing=native
+    )
+
+
 def test_min_coverage_change_changes_the_directory_key(tmp_path: Path):
     base = _preprocessing()
     changed = PreprocessingConfig(

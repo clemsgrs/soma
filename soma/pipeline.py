@@ -1570,25 +1570,34 @@ def train_one_segmentation_fold(
     # Masks are read spacing-aware (hs2p) at the same µm/px the dense grids were
     # extracted at, so the target registers against the features. None ⇒ flat read.
     mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    # Cached path: the grids were extracted at a fixed spacing recorded in the sidecar.
-    # Reading masks at a different spacing would silently shift/scale the supervision
-    # against the features — fail loud. (Live reads image+mask at one spacing each step,
-    # so it registers by construction and needs no cross-check.)
+    # Cached path: every grid records its actual read spacing. Under an explicit
+    # native-if-coarser policy that value may differ per source, so validate each record
+    # against the same effective-spacing rule the extractor and mask head use.
     if not is_live:
-        grid_spacing_um = feature_store.spacing_um(ref_id)
-        if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
-            raise ValueError(
-                f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
-                f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px); "
-                "the mask would misregister against the features. Re-extract the grids at the "
-                "mask spacing, or set preprocessing.requested_spacing_um to match the grids."
+        for record in all_records:
+            expected_spacing_um = (
+                preprocessing.effective_spacing_um(record.spacing_at_level_0)
+                if preprocessing is not None
+                and preprocessing.requested_spacing_um is not None
+                else mask_spacing_um
             )
+            grid_spacing_um = feature_store.spacing_um(record.sample_id)
+            if not _dense_spacings_match(grid_spacing_um, expected_spacing_um):
+                raise ValueError(
+                    f"segmentation sample '{record.sample_id}' mask read-spacing "
+                    f"({expected_spacing_um} µm/px) does not match its cached dense-grid "
+                    f"spacing ({grid_spacing_um} µm/px); the mask would misregister "
+                    "against the features."
+                )
     head = SegmentationHead(
         num_classes=num_classes,
         geometry=geometry,
         metrics=evaluation.metrics,
         spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
-        backend=preprocessing.backend if preprocessing is not None else "auto",
+        spacing_policy=(
+            preprocessing.spacing_policy if preprocessing is not None else "strict"
+        ),
+        backend=preprocessing.mask_backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         label_remap=_segmentation_label_remap(
             masks, num_classes, int(seg_params.get("ignore_index", 255))
@@ -2290,21 +2299,31 @@ def train_one_pixel_classifier_fold(
             )
     # Masks read at the same µm/px the grids were extracted at (else misregistration).
     mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    grid_spacing_um = feature_store.spacing_um(ref_id)
-    if not _dense_spacings_match(grid_spacing_um, mask_spacing_um):
-        raise ValueError(
-            f"segmentation mask read-spacing ({mask_spacing_um} µm/px) does not match the "
-            f"spacing the cached dense grids were extracted at ({grid_spacing_um} µm/px); "
-            "the mask would misregister against the features. Re-extract the grids at the "
-            "mask spacing, or set preprocessing.requested_spacing_um to match the grids."
+    for record in all_records:
+        expected_spacing_um = (
+            preprocessing.effective_spacing_um(record.spacing_at_level_0)
+            if preprocessing is not None
+            and preprocessing.requested_spacing_um is not None
+            else mask_spacing_um
         )
+        grid_spacing_um = feature_store.spacing_um(record.sample_id)
+        if not _dense_spacings_match(grid_spacing_um, expected_spacing_um):
+            raise ValueError(
+                f"segmentation sample '{record.sample_id}' mask read-spacing "
+                f"({expected_spacing_um} µm/px) does not match its cached dense-grid "
+                f"spacing ({grid_spacing_um} µm/px); the mask would misregister "
+                "against the features."
+            )
 
     head = SegmentationHead(
         num_classes=num_classes,
         geometry=geometry,
         metrics=evaluation.metrics,
         spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
-        backend=preprocessing.backend if preprocessing is not None else "auto",
+        spacing_policy=(
+            preprocessing.spacing_policy if preprocessing is not None else "strict"
+        ),
+        backend=preprocessing.mask_backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         label_remap=_segmentation_label_remap(
             masks, num_classes, int(seg_params.get("ignore_index", 255))

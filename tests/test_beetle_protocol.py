@@ -144,6 +144,9 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
         assert REVISION in str(config.cache.root_dir)
         assert str(local_encoder_snapshot[0]) in path.read_text(encoding="utf-8")
         assert config.preprocessing.feature_kind == "patch_features"
+        assert config.preprocessing.spacing_policy == "native_if_coarser"
+        assert config.preprocessing.tolerance == pytest.approx(0.1)
+        assert config.preprocessing.mask_backend == "openslide"
         assert config.preprocessing.dense_window_size == 224
         assert config.preprocessing.dense_window_overlap == 0.5
         assert config.preprocessing.masks is not None
@@ -240,6 +243,31 @@ def test_resolution_uses_the_largest_passing_preflight_batch(
 
     with pytest.raises(ValueError, match="largest passing batch size is 4"):
         resolve_arm_configs(preflight_path=preflight, output_dir=tmp_path / "resolved")
+
+
+def test_resolution_accepts_configurable_descending_decoder_batch_candidates(
+    tmp_path: Path, local_encoder_snapshot: tuple[Path, str]
+) -> None:
+    preflight = _write_completed_preflight(
+        tmp_path / "preflight.json", local_encoder_snapshot
+    )
+    payload = json.loads(preflight.read_text())
+    payload["batch_size_candidates"] = [64, 32, 16, 8, 4]
+    payload["batch_size_attempts"] = [
+        {"batch_size": candidate, "passed": True}
+        for candidate in payload["batch_size_candidates"]
+    ]
+    payload["selected_batch_size"] = 64
+    preflight.write_text(json.dumps(payload), encoding="utf-8")
+
+    paths = resolve_arm_configs(
+        preflight_path=preflight,
+        output_dir=tmp_path / "resolved",
+    )
+
+    assert {
+        arm: load_config(path).training.batch_size for arm, path in paths.items()
+    } == {"uniform": 64, "class_conditioned": 64}
 
 
 def test_launch_binds_offline_hub_to_the_validated_immutable_snapshot(

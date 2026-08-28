@@ -245,6 +245,58 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     assert set(roi_df["region_x"]) == {0, TARGET}
 
 
+def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
+    tmp_path: Path, monkeypatch
+):
+    from dataclasses import replace
+
+    from soma.pipeline import Pipeline
+    import soma.tasks.segmentation as segmod
+
+    _patch_extraction(monkeypatch)
+    manifest = tmp_path / "slides.csv"
+    manifest.write_text(
+        "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
+        "s0,/fake/s0.tif,/fake/s0_mask.tif,0.5\n"
+        "s1,/fake/s1.tif,/fake/s1_mask.tif,0.5\n"
+        "s2,/fake/s2.tif,/fake/s2_mask.tif,0.5\n"
+        "s3,/fake/s3.tif,/fake/s3_mask.tif,0.657476464\n"
+    )
+    splits = tmp_path / "slide_splits.csv"
+    splits.write_text(
+        "sample_id,split,fold\n"
+        "s0,train,0\n"
+        "s1,train,0\n"
+        "s2,tune,0\n"
+        "s3,test,0\n"
+    )
+    observed: dict[str, set[float]] = {}
+    observed_backends: set[str] = set()
+
+    def _fake_mask(path, *, location, size, spacing_um, backend, tolerance):
+        observed.setdefault(Path(path).stem, set()).add(spacing_um)
+        observed_backends.add(backend)
+        return np.zeros((size[1], size[0]), dtype=np.int64)
+
+    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake_mask)
+    config = _config(tmp_path, manifest, splits, masks=None)
+    config = replace(
+        config,
+        preprocessing=replace(
+            config.preprocessing,
+            spacing_policy="native_if_coarser",
+            backend="auto",
+            mask_backend="openslide",
+        ),
+    )
+
+    Pipeline(config).run()
+
+    assert observed["s0_mask"] == {0.5}
+    assert observed["s3_mask"] == {0.657476464}
+    assert observed_backends == {"openslide"}
+
+
 def test_slide_manifest_propagates_slide_splits_to_rois(tmp_path: Path, monkeypatch):
     """Every ROI inherits its parent slide's split/fold — no split creation."""
     _patch_extraction(monkeypatch)
@@ -332,6 +384,41 @@ def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monke
     assert model.calls[0]["execution"].num_gpus == 2
 
 
+def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
+    tmp_path: Path, monkeypatch
+):
+    from soma.config import EncoderConfig
+    from soma.dataset import SegmentationManifest
+    from soma.dense_slide_extraction import SlideManifestDenseExtractor
+
+    manifest = tmp_path / "rois.csv"
+    manifest.write_text(
+        "sample_id,slide_id,image_path,label_mask_path,spacing_at_level_0,region_x,region_y\n"
+        "ordinary__x0_y0,ordinary,/fake/ordinary.tif,/fake/ordinary_mask.tif,0.5,0,0\n"
+        "coarse__x0_y0,coarse,/fake/coarse.tif,/fake/coarse_mask.tif,0.657476464,0,0\n"
+    )
+    model = _patch_dense_model(monkeypatch)
+    SlideManifestDenseExtractor(
+        SegmentationManifest(manifest),
+        EncoderConfig(name=ENCODER),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+            tolerance=0.05,
+            spacing_policy="native_if_coarser",
+        ),
+    ).run(feature_dir=tmp_path / "features")
+
+    assert [
+        (call["regions"], call["dense"].spacing_um) for call in model.calls
+    ] == [
+        ([("ordinary", [(0, 0)])], 0.5),
+        ([("coarse", [(0, 0)])], 0.657476464),
+    ]
+
+
 def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypatch):
     from hs2p import SlideSpec
     from soma.dataset import SegmentationManifest
@@ -370,6 +457,47 @@ def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypa
     assert captured[0].spacing_at_level_0 == 0.25
 
 
+def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(
+    tmp_path: Path, monkeypatch
+):
+    from soma.dataset import SegmentationManifest
+    from soma.dense_slide_extraction import sample_slide_rois
+
+    manifest = tmp_path / "slides.csv"
+    manifest.write_text(
+        "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
+        "ordinary,/fake/ordinary.tif,/fake/ordinary_mask.tif,0.5\n"
+        "coarse,/fake/coarse.tif,/fake/coarse_mask.tif,0.657476464\n"
+    )
+    observed: list[tuple[str, float]] = []
+
+    def _tile_slide(slide, **kwargs):
+        observed.append((slide.sample_id, kwargs["tiling"].requested_spacing_um))
+        return {
+            None: SimpleNamespace(
+                tiles=SimpleNamespace(
+                    x=np.asarray([0], dtype=np.int64),
+                    y=np.asarray([0], dtype=np.int64),
+                )
+            )
+        }
+
+    monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
+    sample_slide_rois(
+        SegmentationManifest(manifest),
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=TARGET,
+            requested_spacing_um=0.5,
+            tolerance=0.05,
+            spacing_policy="native_if_coarser",
+        ),
+    )
+
+    assert observed == [("ordinary", 0.5), ("coarse", 0.657476464)]
+
+
 # --------------------------------------------------------------------------- #
 # Cache key folds the sampling spec.
 # --------------------------------------------------------------------------- #
@@ -402,6 +530,46 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
     assert _key(None) == _key(None)
 
 
+def test_spacing_policy_changes_sampling_cache_key():
+    from soma.cache.keys import build_dense_cache_key
+    from soma.config import EncoderConfig
+    from soma.dense_slide_extraction import sampling_signature
+
+    enc = EncoderConfig(name=ENCODER)
+    strict = PreprocessingConfig(
+        requested_tile_size_px=TARGET,
+        requested_spacing_um=0.5,
+        spacing_policy="strict",
+    )
+    native = PreprocessingConfig(
+        requested_tile_size_px=TARGET,
+        requested_spacing_um=0.5,
+        spacing_policy="native_if_coarser",
+    )
+    masks = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.1})
+    sampling = SamplingConfig(strategy="joint", output_mode="merged")
+
+    def _key(preprocessing):
+        return build_dense_cache_key(
+            tile_encoder_name=ENCODER,
+            target_size=(TARGET, TARGET),
+            patch_size=(PATCH, PATCH),
+            pad_mode="reflect",
+            execution=enc,
+            preprocessing=preprocessing,
+            window_size=None,
+            overlap=0.0,
+            sampling_signature=sampling_signature(masks, sampling, preprocessing),
+        )
+
+    strict_signature = sampling_signature(masks, sampling, strict)
+    native_signature = sampling_signature(masks, sampling, native)
+
+    assert "spacing_policy" not in strict_signature
+    assert native_signature["spacing_policy"] == "native_if_coarser"
+    assert _key(strict) != _key(native)
+
+
 # --------------------------------------------------------------------------- #
 # Region-aware mask target read.
 # --------------------------------------------------------------------------- #
@@ -431,6 +599,48 @@ def test_extract_targets_reads_mask_region_when_record_has_region(tmp_path: Path
     assert captured["location"] == (64, 0)
     assert captured["size"] == (TARGET, TARGET)
     assert captured["spacing_um"] == 0.5
+
+
+def test_extract_targets_uses_native_spacing_for_a_coarser_roi(
+    tmp_path: Path, monkeypatch
+):
+    from soma.dense.geometry import compute_dense_geometry
+    from soma.dataset import SampleRecord
+    from soma.tasks.segmentation import SegmentationHead
+    import soma.tasks.segmentation as segmod
+
+    captured = {}
+
+    def _fake(path, *, location, size, spacing_um, backend, tolerance):
+        captured.update(location=location, size=size, spacing_um=spacing_um)
+        return np.zeros((size[1], size[0]), dtype=np.int64)
+
+    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake)
+    geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
+    head = SegmentationHead(
+        num_classes=NUM_CLASSES,
+        geometry=geometry,
+        spacing_um=0.5,
+        spacing_policy="native_if_coarser",
+        tolerance=0.05,
+    )
+    record = SampleRecord(
+        sample_id="coarse__x64_y0",
+        image_path=Path("/fake/coarse.tif"),
+        label=None,
+        label_mask_path=Path("/fake/coarse_mask.tif"),
+        spacing_at_level_0=0.657476464,
+        region=(64, 0),
+    )
+
+    targets = head.extract_targets(record)
+
+    assert tuple(targets["mask"].shape) == (TARGET, TARGET)
+    assert captured == {
+        "location": (64, 0),
+        "size": (TARGET, TARGET),
+        "spacing_um": 0.657476464,
+    }
 
 
 # --------------------------------------------------------------------------- #
