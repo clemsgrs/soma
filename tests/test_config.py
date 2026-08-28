@@ -90,6 +90,37 @@ def test_preprocessing_config_defaults():
     assert cfg.preview.mask_overlay_alpha == pytest.approx(0.5)
 
 
+def test_preprocessing_config_exposes_opt_in_native_if_coarser_spacing_policy():
+    assert PreprocessingConfig().spacing_policy == "strict"
+    assert (
+        PreprocessingConfig(spacing_policy="native_if_coarser").spacing_policy
+        == "native_if_coarser"
+    )
+
+
+def test_preprocessing_config_rejects_unknown_spacing_policy():
+    with pytest.raises(ValueError, match="spacing_policy"):
+        PreprocessingConfig(spacing_policy="silently_upsample")
+
+
+def test_native_if_coarser_resolves_one_effective_spacing_rule():
+    fallback = PreprocessingConfig(
+        requested_spacing_um=0.5,
+        tolerance=0.05,
+        spacing_policy="native_if_coarser",
+    )
+    strict = PreprocessingConfig(
+        requested_spacing_um=0.5,
+        tolerance=0.05,
+        spacing_policy="strict",
+    )
+
+    assert fallback.effective_spacing_um(None) == 0.5
+    assert fallback.effective_spacing_um(0.51) == 0.5
+    assert fallback.effective_spacing_um(0.657476464) == 0.657476464
+    assert strict.effective_spacing_um(0.657476464) == 0.5
+
+
 def test_preprocessing_dense_window_defaults_to_whole():
     cfg = PreprocessingConfig()
     assert cfg.dense_window_size is None

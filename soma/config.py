@@ -17,6 +17,8 @@ from numbers import Integral, Real
 from typing import Any, Literal
 
 import yaml
+
+from soma.spacing import resolve_effective_spacing_um
 from hs2p import PreviewConfig
 from hs2p.configs import TilingConfig
 
@@ -330,6 +332,8 @@ class PreprocessingConfig:
     mask_backend: str = "auto"
     requested_tile_size_px: int | None = None
     requested_spacing_um: float | None = None
+    # Handling for sources coarser than requested; see the preprocessing guide.
+    spacing_policy: str = "strict"
     requested_region_size_px: int | None = None
     region_tile_multiple: int | None = None
     read_tile_size_px: int | None = None
@@ -377,6 +381,11 @@ class PreprocessingConfig:
     sampling: SamplingConfig | None = None
 
     def __post_init__(self) -> None:
+        if self.spacing_policy not in {"strict", "native_if_coarser"}:
+            raise ValueError(
+                "spacing_policy must be 'strict' or 'native_if_coarser', got "
+                f"{self.spacing_policy!r}"
+            )
         _valid_feature_kinds = {None, "patch_features", "cls_attention"}
         if self.feature_kind not in _valid_feature_kinds:
             raise ValueError(
@@ -459,6 +468,19 @@ class PreprocessingConfig:
                 "explicitly or use an encoder advertising a single supported spacing."
             )
         return TilingConfig(**self.tiling_values())
+
+    def effective_spacing_um(self, spacing_at_level_0: float | None) -> float:
+        """Resolve the spacing this sample may be read at without synthesizing pixels."""
+        if self.requested_spacing_um is None:
+            raise ValueError(
+                "requested_spacing_um must be resolved before selecting an effective spacing"
+            )
+        return resolve_effective_spacing_um(
+            requested_spacing_um=self.requested_spacing_um,
+            spacing_at_level_0=spacing_at_level_0,
+            tolerance=self.tolerance,
+            policy=self.spacing_policy,
+        )
 
     @property
     def independent_sampling(self) -> bool:

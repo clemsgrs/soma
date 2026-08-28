@@ -26,40 +26,26 @@ supplies its reported development prediction.
 The shared `configs/base.yaml` intentionally contains
 `${BEETLE_CAMPAIGN_BATCH_SIZE}` and is not runnable as-is. Each arm YAML is a minimal
 overlay containing only sampling and arm-identifying output metadata. On the selected
-node, preflight batch sizes in order `16`, `8`, `4`, then write the largest passing size
-to a JSON record. The record must have this shape:
+CUDA node, run the production gate with a descending list sized for that GPU:
 
-```json
-{
-  "schema_version": 1,
-  "status": "completed",
-  "scope": "campaign",
-  "batch_size_candidates": [16, 8, 4],
-  "batch_size_attempts": [
-    {"batch_size": 16, "passed": false},
-    {"batch_size": 8, "passed": true},
-    {"batch_size": 4, "passed": true}
-  ],
-  "selected_batch_size": 8,
-  "same_batch_every_arm_and_fold": true,
-  "encoder": {
-    "repository": "paige-ai/Virchow2",
-    "revision": "3158645804b69e3f3bc4439d4116edddf0840a72",
-    "weight_file": "model.safetensors",
-    "weight_sha256": "8d6cea947eb2418c3b0dff48cfb9b238e47744ab0dfca21b2b0637b140769b4b",
-    "patch_size": 14,
-    "feature_channels": 1280,
-    "weight_checksum_verified": true,
-    "snapshot_path": "/absolute/hf/hub/models--paige-ai--Virchow2/snapshots/3158645804b69e3f3bc4439d4116edddf0840a72"
-  }
-}
+```bash
+python -m examples.beetle.preflight \
+  --snapshot-path <hf-cache>/models--paige-ai--Virchow2/snapshots/3158645804b69e3f3bc4439d4116edddf0840a72 \
+  --dataset-csv data/beetle/curated_slide_manifest/dataset.csv \
+  --splits-csv data/beetle/curated_slide_manifest/splits.csv \
+  --batch-size-candidates 64 32 16 8 4 \
+  --device cuda:0 \
+  --output data/beetle/hardware_preflight.json
 ```
 
-The production preflight must obtain the repository revision from the pinned local
-snapshot and compute the file digest itself (for example, with `sha256sum`). Keep the
-gated weights local. `encoder_lock.json` records the expected identity; the resolver
-requires the snapshot's Timm `config.json`, hashes the actual weight file in
-`snapshot_path`, and rejects a revision, checksum, geometry, or batch-choice mismatch.
+The candidate list is configurable, positive, and strictly descending. Each decoder
+candidate performs complete optimizer steps; the largest passing batch is recorded and
+frozen across both arms and all folds. The encoder extraction batch remains the separately
+recorded protocol value. The command obtains the repository revision from the pinned local
+snapshot and computes the weight digest itself. Keep the gated weights local.
+`encoder_lock.json` records the expected identity; the resolver requires the snapshot's
+Timm `config.json`, hashes the actual weight file in `snapshot_path`, and rejects a
+revision, checksum, geometry, or batch-choice mismatch.
 It creates an isolated, weight-free Hub view
 whose sole `main` snapshot is a symlink to that validated local object. `launch run`
 forces Hugging Face and Transformers offline against that view, so a moving repository
@@ -91,6 +77,21 @@ lightweight-convolutional-decoder recipe and the same 30-epoch Adam/cosine sched
 The cache namespace includes the locked encoder revision and weight digest, and each
 resolved YAML records the validated local snapshot. Only training-batch sampling and
 arm-identifying output metadata differ between arms.
+
+Populate and validate the shared dense cache before decoder training:
+
+```bash
+python -m examples.beetle.extract_cache \
+  --config data/beetle/resolved/uniform.yaml \
+  --work-dir data/beetle/cache_extraction \
+  --output data/beetle/cache_extraction.json
+```
+
+Rerun the same command with a separate work directory and audit output to prove that ROI
+sampling and dense extraction resume from the completed shared cache. The two audits must
+match on config digest, feature directory, slide/ROI counts, geometry, and bytes; only the
+work directory may differ. The completion audit enumerates tensor/sidecar coverage and
+leaves the large per-file payload digest as an explicit companion-manifest step.
 
 The preflight-selected decoder batch size is frozen across all ten arm/fold runs. Soma's
 base seed 0 yields fold seeds 0 through 4. Resume through the pinned launcher so the
@@ -174,10 +175,12 @@ The run must carry `beetle` and selected-arm tags and contain
 frozen encoder plus all five decoders and averages their per-pixel softmaxes. The protocol
 resolution is revalidated against `encoder_lock.json`, including the weight digest and
 immutable local Hub binding, before the encoder loads in offline mode. Each flat
-ROI inherits native spacing from the sidecar. Inputs within the run tolerance stay
-native; finer inputs outside tolerance may be area-downsampled; coarser inputs always
-stay native and are never upsampled. Predictions are mapped back to the exact sidecar
-width and height.
+ROI inherits native spacing from the sidecar. The locked recipe uses a 10% relative
+tolerance around 0.5 µm/px. Inputs within that tolerance stay native; finer inputs
+outside tolerance may be area-downsampled; coarser inputs always stay native and are
+never upsampled. Annotation-mask reads are pinned to OpenSlide because CuCIM can decode
+sparse intermediate TIFF pyramid levels as background. Predictions are mapped back to
+the exact sidecar width and height.
 
 The generated masks are single-channel grayscale uint8 PNGs in the organizer vocabulary:
 `1=other`, `2=non-invasive epithelium`, `3=invasive epithelium`, `4=necrosis`.

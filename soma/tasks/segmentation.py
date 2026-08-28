@@ -19,6 +19,7 @@ from torch import Tensor
 
 from soma.dense.reader import load_mask, read_mask_at_spacing, read_mask_region_at_spacing
 from soma.evaluation.metrics import resolve_metrics
+from soma.spacing import resolve_effective_spacing_um
 from soma.tasks.base import TaskHead
 from soma.tasks.dense_metrics import (
     dense_confusion_counts,
@@ -79,6 +80,7 @@ class SegmentationHead(TaskHead):
         tversky_gamma: float = 1.0,
         metrics: list[str] | None = None,
         spacing_um: float | None = None,
+        spacing_policy: str = "strict",
         backend: str = "auto",
         tolerance: float = 0.05,
         label_remap: "np.ndarray | None" = None,
@@ -118,6 +120,12 @@ class SegmentationHead(TaskHead):
         # When set, masks are read spacing-aware (hs2p) at this µm/px to register
         # against the dense grid; None falls back to a flat page-0 load_mask read.
         self._spacing_um = float(spacing_um) if spacing_um is not None else None
+        if spacing_policy not in {"strict", "native_if_coarser"}:
+            raise ValueError(
+                "spacing_policy must be 'strict' or 'native_if_coarser', got "
+                f"{spacing_policy!r}"
+            )
+        self._spacing_policy = spacing_policy
         self._backend = backend
         self._tolerance = float(tolerance)
         # Optional raw-pixel → class-index LUT (slide-manifest masks carry the dataset's
@@ -151,6 +159,16 @@ class SegmentationHead(TaskHead):
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
         if record.label_mask_path is None:
             raise ValueError(f"segmentation sample '{record.sample_id}' has no label_mask_path")
+        effective_spacing = (
+            resolve_effective_spacing_um(
+                requested_spacing_um=self._spacing_um,
+                spacing_at_level_0=record.spacing_at_level_0,
+                tolerance=self._tolerance,
+                policy=self._spacing_policy,
+            )
+            if self._spacing_um is not None
+            else None
+        )
         if record.region is not None:
             # Slide-manifest ROI: label_mask_path is the whole-slide annotation raster; read the
             # ROI's window at the run's spacing/target_size so it registers to the grid.
@@ -164,7 +182,7 @@ class SegmentationHead(TaskHead):
                 record.label_mask_path,
                 location=record.region,
                 size=(target_w, target_h),
-                spacing_um=self._spacing_um,
+                spacing_um=effective_spacing,
                 backend=self._backend,
                 tolerance=self._tolerance,
             )
@@ -173,7 +191,7 @@ class SegmentationHead(TaskHead):
             # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
             array = read_mask_at_spacing(
                 record.label_mask_path,
-                spacing_um=self._spacing_um,
+                spacing_um=effective_spacing,
                 backend=self._backend,
                 tolerance=self._tolerance,
             )
