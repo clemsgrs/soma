@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -86,6 +87,24 @@ def test_cache_backed_dense_sources_share_training_contract(tmp_path: Path):
         "parent_dataset_csv": str(tmp_path / "slides.csv"),
         "parent_splits_csv": str(tmp_path / "slide_splits.csv"),
     }
+
+
+def test_cache_backed_source_preserves_store_spacing_field_compatibility(tmp_path: Path):
+    """The adapter must preserve slide2vec's ROI-sidecar spacing vocabulary."""
+    sample_id = "slide_a__x0_y0"
+    _write_source_grid(tmp_path, sample_id)
+    sidecar = tmp_path / "dense_embeddings" / f"{sample_id}.meta.json"
+    metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+    metadata.pop("spacing_um")
+    metadata["declared_spacing_um"] = 0.5
+    sidecar.write_text(json.dumps(metadata), encoding="utf-8")
+
+    source = CacheBackedDenseSource(
+        DenseFeatureStore(tmp_path),
+        provenance=DenseSourceProvenance(kind="slide_manifest_dense_cache"),
+    )
+
+    assert source.spacing_um(sample_id) == 0.5
 
 
 def test_dense_store_reads_resolved_spacing_not_the_requested_declaration(tmp_path: Path):
