@@ -109,6 +109,7 @@ def test_plan_dense_fold_uses_single_test_split_as_tune_when_tune_is_test():
     assert {name: _ids(records) for name, records in plan.test_records_by_split.items()} == {
         "test": ["heldout_a", "heldout_b"],
     }
+    assert _ids(plan.all_records) == ["train", "heldout_a", "heldout_b"]
 
 
 def test_plan_dense_fold_rejects_tune_is_test_with_multiple_test_splits():

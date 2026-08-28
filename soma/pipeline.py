@@ -16,6 +16,7 @@ import csv
 import functools
 import inspect
 import math
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -34,6 +35,7 @@ from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
 from soma.artifact_mirror import ArtifactMirror, restore_run_from_mirror
+from soma.cache import resolve_cache_root
 from soma.decoders.registry import build_decoder_for_grid
 from soma.config import (
     AggregatorConfig,
@@ -496,7 +498,7 @@ def _make_loaders(
 
 def _segmentation_roi_batch_sampler(
     records: list[SampleRecord],
-    target_fn,
+    population,
     *,
     num_classes: int,
     training: TrainingConfig,
@@ -508,13 +510,7 @@ def _segmentation_roi_batch_sampler(
 
     from soma.training.segmentation_roi_sampler import SegmentationRoiBatchSampler
 
-    class_pixel_counts = []
-    for record in records:
-        mask = target_fn(record)["mask"].reshape(-1)
-        annotated = mask[(mask >= 0) & (mask < num_classes)].to(torch.int64)
-        class_pixel_counts.append(
-            torch.bincount(annotated, minlength=num_classes).tolist()
-        )
+    selected_population = population.subset([record.sample_id for record in records])
 
     draws_per_epoch = training.roi_draws_per_epoch
     if draws_per_epoch is None:
@@ -526,7 +522,7 @@ def _segmentation_roi_batch_sampler(
             )
     return SegmentationRoiBatchSampler(
         sample_ids=[record.sample_id for record in records],
-        class_pixel_counts=class_pixel_counts,
+        class_pixel_counts=selected_population.class_pixel_counts,
         batch_size=training.batch_size,
         draws_per_epoch=draws_per_epoch,
         strategy=training.roi_batch_sampling,
@@ -1470,6 +1466,9 @@ def train_one_segmentation_fold(
     projection: ProjectionConfig | None = None,
     encoder_identity: str = "",
     artifact_mirror: ArtifactMirror | None = None,
+    roi_population_cache_root: str | Path | None = None,
+    roi_source_fingerprint_cache: dict[str, dict[str, object]] | None = None,
+    roi_resolved_backend_cache: dict[tuple[str, str, bool], str] | None = None,
     _selected_checkpoint_evidence_only: bool = False,
 ) -> FoldResult:
     """Train and evaluate a single dense-segmentation fold.
@@ -1658,9 +1657,31 @@ def train_one_segmentation_fold(
                 "Explicit ROI batch sampling is a cached-grid training contract; "
                 "feature_mode='live' is unsupported."
             )
+        from soma.training.segmentation_roi_population import (
+            resolve_segmentation_roi_population,
+        )
+
+        roi_population = resolve_segmentation_roi_population(
+            (
+                Path(roi_population_cache_root)
+                if roi_population_cache_root is not None
+                else fold_dir / "segmentation_roi_population"
+            ),
+            all_records,
+            target_fn,
+            num_classes=num_classes,
+            target_identity=head.target_identity,
+            workers=max(1, min(8, os.cpu_count() or 1)),
+            source_fingerprint_cache=roi_source_fingerprint_cache,
+            resolved_backend_cache=roi_resolved_backend_cache,
+        )
+        (fold_dir / "segmentation_roi_population.json").write_text(
+            json.dumps(roi_population.provenance(), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
         roi_batch_sampler = _segmentation_roi_batch_sampler(
             train_records,
-            target_fn,
+            roi_population,
             num_classes=num_classes,
             training=training,
             fold=fold,
@@ -2544,6 +2565,7 @@ def train(
     run_id: str | None = None,
     artifact_mirror: ArtifactMirror | None = None,
     resume_completed_folds: bool = False,
+    roi_population_cache_root: str | Path | None = None,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
 
@@ -2599,6 +2621,8 @@ def train(
 
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    if roi_population_cache_root is None:
+        roi_population_cache_root = run_dir / "segmentation_roi_population"
     evaluation = evaluation or EvalConfig()
     if evaluation.save_segmentation_confusion_evidence:
         if dataset_type != "segmentation" or pixel_classifier is not None:
@@ -2619,6 +2643,8 @@ def train(
     pending_folds = [
         i for i in range(splits.num_folds) if not (_fold_dir(i) / "metrics.json").exists()
     ]
+    roi_source_fingerprint_cache: dict[str, dict[str, object]] = {}
+    roi_resolved_backend_cache: dict[tuple[str, str, bool], str] = {}
 
     # Test-results clobber guard (issue #247). Experiment identity is test-invariant, so a
     # run dir may be re-scored against several test sets. Reserve the test-identity slot
@@ -2760,6 +2786,9 @@ def train(
                 projection=projection,
                 encoder_identity=encoder_identity,
                 artifact_mirror=(None if fold_was_complete else artifact_mirror),
+                roi_population_cache_root=roi_population_cache_root,
+                roi_source_fingerprint_cache=roi_source_fingerprint_cache,
+                roi_resolved_backend_cache=roi_resolved_backend_cache,
             )
         elif dataset_type == "detection":
             result = train_one_detection_fold(
@@ -3242,6 +3271,16 @@ class Pipeline:
                 )
             )
 
+            roi_population_cache_root = (
+                resolve_cache_root(
+                    self._config.cache,
+                    feature_dir=layout.run_dir / "features",
+                    output_root=self._config.output_root,
+                )
+                / "segmentation_roi_population"
+                if self._config.cache.enabled
+                else layout.run_dir / "segmentation_roi_population"
+            )
             result = train(
                 feature_store=store,
                 dataset=training_dataset,
@@ -3267,6 +3306,7 @@ class Pipeline:
                 run_id=layout.run_id,
                 artifact_mirror=artifact_mirror,
                 resume_completed_folds=bool(self._config.resume or self._config.run_id),
+                roi_population_cache_root=roi_population_cache_root,
             )
 
             if self._config.heatmaps.enabled:
