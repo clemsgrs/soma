@@ -150,8 +150,7 @@ class CacheBackedDenseSource:
         return self._store.spacing(sample_id)
 
     def spacing_um(self, sample_id: str) -> float | None:
-        value = self.metadata(sample_id).get("spacing_um")
-        return None if value is None else float(value)
+        return self._store.spacing_um(sample_id)
 
     def validate_coverage(self, sample_ids: list[str]) -> None:
         self._store.validate_coverage(sample_ids)
