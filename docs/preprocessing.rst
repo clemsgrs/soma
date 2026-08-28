@@ -25,6 +25,9 @@ Key knobs
    * - ``requested_spacing_um``
      - Microns per pixel for tiling
      - Coarse vs fine biological context
+   * - ``spacing_policy``
+     - How to handle a source coarser than the requested spacing
+     - Use ``native_if_coarser`` to forbid synthetic upsampling
    * - ``requested_region_size_px``
      - Region size for hierarchical pipelines
      - HIPT-style runs
@@ -63,6 +66,22 @@ leaves unset, and the resulting ``TilingConfig`` is what the pooled path, the
 slide-manifest ROI sampler and the feature-cache key all read — so a run's cache key
 cannot describe a geometry the run did not use, and a knob hs2p adds does not become
 a setting soma users silently cannot reach.
+
+Coarser source spacing
+----------------------
+
+``spacing_policy`` controls what happens when a manifest's declared
+``spacing_at_level_0`` is coarser than ``requested_spacing_um`` beyond the configured
+relative ``tolerance``. The default, ``strict``, preserves the requested spacing and lets
+the reader reject a request that would require forbidden upsampling.
+``native_if_coarser`` instead uses the declared level-0 spacing for that sample. Sources
+within tolerance still use the requested spacing, and samples without a declared native
+spacing retain the requested value.
+
+The effective per-sample spacing is applied consistently to image extraction and
+annotation-mask reads so targets remain registered to dense feature grids. The non-default
+policy participates in ROI and feature-cache identities, and the effective spacing is
+recorded in cache sidecars and run provenance.
 
 Segmentation slide-manifest sampling
 ------------------------------------

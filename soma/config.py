@@ -332,9 +332,7 @@ class PreprocessingConfig:
     mask_backend: str = "auto"
     requested_tile_size_px: int | None = None
     requested_spacing_um: float | None = None
-    # Physical-scale policy for sources coarser than ``requested_spacing_um``.
-    # ``strict`` preserves the request and lets the reader reject forbidden upsampling;
-    # ``native_if_coarser`` explicitly falls back to declared level-0 spacing instead.
+    # Handling for sources coarser than requested; see the preprocessing guide.
     spacing_policy: str = "strict"
     requested_region_size_px: int | None = None
     region_tile_multiple: int | None = None
