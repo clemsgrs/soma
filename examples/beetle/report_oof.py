@@ -70,6 +70,7 @@ class PatientConfusionRecord:
 
     patient_id: str
     fold: int
+    sample_ids: tuple[str, ...]
     class_vocabulary: tuple[str, ...]
     confusion_matrix: tuple[tuple[int, ...], ...]
 
@@ -124,6 +125,7 @@ def group_sample_confusions(
 
     matrices: dict[str, list[tuple[tuple[int, ...], ...]]] = {}
     patient_folds: dict[str, set[int]] = {}
+    patient_sample_ids: dict[str, list[str]] = {}
     for record in records:
         patient_id = str(sample_to_patient.get(record.sample_id, "")).strip()
         if not patient_id:
@@ -132,6 +134,7 @@ def group_sample_confusions(
             )
         matrices.setdefault(patient_id, []).append(record.confusion_matrix)
         patient_folds.setdefault(patient_id, set()).add(record.fold)
+        patient_sample_ids.setdefault(patient_id, []).append(record.sample_id)
 
     leaking = {
         patient_id: sorted(folds)
@@ -145,6 +148,7 @@ def group_sample_confusions(
         PatientConfusionRecord(
             patient_id=patient_id,
             fold=next(iter(patient_folds[patient_id])),
+            sample_ids=tuple(sorted(patient_sample_ids[patient_id])),
             class_vocabulary=vocabulary,
             confusion_matrix=aggregate_confusion_matrices(
                 matrices[patient_id]
@@ -305,6 +309,21 @@ def assemble_beetle_oof_report(
                 f"{len(sensitivity)}"
             )
         arm_payloads[arm] = {
+            "patient_confusions": [
+                {
+                    "patient_id": record.patient_id,
+                    "fold": record.fold,
+                    "sample_ids": list(record.sample_ids),
+                    "annotated_pixels": sum(
+                        sum(row) for row in record.confusion_matrix
+                    ),
+                    "class_vocabulary": list(record.class_vocabulary),
+                    "confusion_matrix": [
+                        list(row) for row in record.confusion_matrix
+                    ],
+                }
+                for record in patients
+            ],
             "coverage": {
                 "expected_patient_count": cohort.primary_patient_count,
                 "observed_patient_count": len(patients),
