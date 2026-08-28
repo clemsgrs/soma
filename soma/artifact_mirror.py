@@ -117,11 +117,9 @@ def _resume_recipe(payload: dict[str, Any]) -> dict[str, Any]:
         run.pop("run_id", None)
     evaluation = normalized.get("evaluation")
     if isinstance(evaluation, dict):
-        # Evidence export is an operational selected-checkpoint pass. The retired
-        # patient-shaped block is tolerated only so verified legacy checkpoints can
-        # be restored and migrated to dataset-neutral evidence.
+        # Evidence export is an operational selected-checkpoint pass, not part of the
+        # training recipe that produced the checkpoint.
         evaluation.pop("save_segmentation_confusion_evidence", None)
-        evaluation.pop("patient_oof", None)
     return normalized
 
 

@@ -231,29 +231,18 @@ def test_drift_guard_allows_changing_operational_mirror_root(tmp_path: Path):
     _guard_resume_config_drift(run_dir, resumed)
 
 
-def test_drift_guard_allows_migrating_patient_oof_to_confusion_evidence(
-    tmp_path: Path,
-) -> None:
+def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     original = _make_config(tmp_path)
     save_config(original, run_dir / "config.yaml")
     saved_path = run_dir / "config.yaml"
     saved = yaml.safe_load(saved_path.read_text())
-    saved["evaluation"].pop("save_segmentation_confusion_evidence", None)
-    saved["evaluation"]["patient_oof"] = {
-        "arm": "legacy",
-        "spacing_exception_patient_ids": ["legacy_exception"],
-        "expected_patient_count": 12,
-        "expected_spacing_sensitivity_patient_count": 11,
-    }
+    saved["evaluation"]["patient_oof"] = {"arm": "legacy"}
     saved_path.write_text(yaml.safe_dump(saved))
-    resumed = replace(
-        original,
-        evaluation=EvalConfig(save_segmentation_confusion_evidence=True),
-        resume=True,
-    )
+    resumed = replace(original, resume=True)
 
-    _guard_resume_config_drift(run_dir, resumed)
+    with pytest.raises(ValueError, match="evaluation"):
+        _guard_resume_config_drift(run_dir, resumed)
 
 
 # --------------------------------------------------------------------------- #

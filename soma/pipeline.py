@@ -3079,8 +3079,7 @@ def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
     current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
     # Shared-storage routing and selected-checkpoint evidence export are operational: a
     # resume may repoint a pending spool or regenerate evidence without changing the
-    # training recipe that produced its checkpoint. ``patient_oof`` is the retired
-    # project-shaped predecessor accepted here only so those checkpoints can migrate.
+    # training recipe that produced its checkpoint.
     for payload in (saved, current):
         run = payload.get("run")
         if isinstance(run, dict):
@@ -3088,7 +3087,6 @@ def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
         evaluation = payload.get("evaluation")
         if isinstance(evaluation, dict):
             evaluation.pop("save_segmentation_confusion_evidence", None)
-            evaluation.pop("patient_oof", None)
     if saved == current:
         return
     differing = sorted(

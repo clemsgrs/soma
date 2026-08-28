@@ -6,17 +6,17 @@ from pathlib import Path
 from soma.artifact_mirror import ArtifactMirror, _install_checkpoint_set, _resume_recipe
 
 
-def test_resume_recipe_ignores_confusion_evidence_migration_settings() -> None:
-    legacy = {
-        "evaluation": {
-            "patient_oof": {"arm": "legacy", "expected_patient_count": 12}
-        }
-    }
-    migrated = {
-        "evaluation": {"save_segmentation_confusion_evidence": True}
-    }
+def test_resume_recipe_ignores_operational_evidence_export_setting() -> None:
+    with_export = {"evaluation": {"save_segmentation_confusion_evidence": True}}
+    without_export = {"evaluation": {}}
 
-    assert _resume_recipe(legacy) == _resume_recipe(migrated) == {"evaluation": {}}
+    assert _resume_recipe(with_export) == _resume_recipe(without_export) == {"evaluation": {}}
+
+
+def test_resume_recipe_treats_other_evaluation_settings_as_recipe() -> None:
+    payload = {"evaluation": {"patient_oof": {"arm": "legacy"}}}
+
+    assert _resume_recipe(payload) == payload
 
 
 def _write_checkpoint_inputs(run_dir: Path, *, checkpoint: bytes, epoch: int) -> Path:
