@@ -1,16 +1,24 @@
 from __future__ import annotations
 
+import inspect
 import json
+import os
 from pathlib import Path
+import shutil
 
-from soma.artifact_mirror import ArtifactMirror, _install_checkpoint_set, _resume_recipe
+import pytest
+
+from soma.artifact_mirror import ArtifactMirror, _resume_recipe
+from soma.training.trainer import Trainer
 
 
 def test_resume_recipe_ignores_operational_evidence_export_setting() -> None:
     with_export = {"evaluation": {"save_segmentation_confusion_evidence": True}}
     without_export = {"evaluation": {}}
 
-    assert _resume_recipe(with_export) == _resume_recipe(without_export) == {"evaluation": {}}
+    assert _resume_recipe(with_export) == _resume_recipe(without_export) == {
+        "evaluation": {}
+    }
 
 
 def test_resume_recipe_treats_other_evaluation_settings_as_recipe() -> None:
@@ -19,113 +27,151 @@ def test_resume_recipe_treats_other_evaluation_settings_as_recipe() -> None:
     assert _resume_recipe(payload) == payload
 
 
-def _write_checkpoint_inputs(run_dir: Path, *, checkpoint: bytes, epoch: int) -> Path:
-    fold_dir = run_dir / "fold_0"
-    fold_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
-    (fold_dir / "best_model.pt").write_bytes(checkpoint)
-    (fold_dir / "training_history.json").write_text(
-        json.dumps({"epochs": [{"epoch": epoch}]}), encoding="utf-8"
-    )
-    (fold_dir / "sampler_audit.json").write_text(
-        json.dumps({"strategy": "class_conditioned", "epochs": [epoch]}),
-        encoding="utf-8",
-    )
-    return fold_dir
-
-
-def test_same_epoch_different_checkpoint_content_is_preserved(tmp_path: Path) -> None:
+def test_completed_fold_is_published_directly_with_verified_manifest(
+    tmp_path: Path,
+) -> None:
     run_dir = tmp_path / "local" / "run"
-    mirror_run_dir = tmp_path / "shared" / "run"
-    fold_dir = _write_checkpoint_inputs(run_dir, checkpoint=b"attempt-one", epoch=0)
-    mirror = ArtifactMirror(run_dir=run_dir, mirror_run_dir=mirror_run_dir)
-
-    mirror.checkpoint_improved(
-        fold=0,
-        epoch=0,
-        artifacts={
-            "best_model.pt": fold_dir / "best_model.pt",
-            "training_history.json": fold_dir / "training_history.json",
-            "sampler_audit.json": fold_dir / "sampler_audit.json",
-        },
-        restore_files=[
-            "best_model.pt",
-            "training_history.json",
-            "sampler_audit.json",
-        ],
-    )
-    _write_checkpoint_inputs(run_dir, checkpoint=b"attempt-two", epoch=0)
-    mirror.checkpoint_improved(
-        fold=0,
-        epoch=0,
-        artifacts={
-            "best_model.pt": fold_dir / "best_model.pt",
-            "training_history.json": fold_dir / "training_history.json",
-            "sampler_audit.json": fold_dir / "sampler_audit.json",
-        },
-        restore_files=[
-            "best_model.pt",
-            "training_history.json",
-            "sampler_audit.json",
-        ],
-    )
-
-    local_checkpoints = sorted(
-        path.read_bytes()
-        for path in (run_dir / "recovery" / "spool" / "checkpoints").rglob(
-            "best_model.pt"
-        )
-    )
-    mirrored_checkpoints = sorted(
-        path.read_bytes()
-        for path in (mirror_run_dir / "recovery" / "checkpoints").rglob(
-            "best_model.pt"
-        )
-    )
-    state = json.loads((run_dir / "recovery" / "mirror_state.json").read_text())
-
-    assert local_checkpoints == mirrored_checkpoints == [b"attempt-one", b"attempt-two"]
-    assert len(state["entries"]) == 2
-    assert all(entry["status"] == "verified" for entry in state["entries"].values())
-
-
-def test_checkpoint_snapshot_accepts_task_supplied_artifacts(tmp_path: Path) -> None:
-    run_dir = tmp_path / "local" / "run"
-    mirror_run_dir = tmp_path / "shared" / "run"
     fold_dir = run_dir / "fold_0"
     fold_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
-    (fold_dir / "weights.bin").write_bytes(b"weights")
-    (fold_dir / "optimizer.json").write_text("{}", encoding="utf-8")
-    mirror = ArtifactMirror(run_dir=run_dir, mirror_run_dir=mirror_run_dir)
+    (fold_dir / "metrics.json").write_text('{"dice": 0.75}', encoding="utf-8")
+    (fold_dir / "best_model.pt").write_bytes(b"selected-checkpoint")
+    mirror_run_dir = tmp_path / "shared" / "run"
 
-    mirror.checkpoint_improved(
-        fold=0,
-        epoch=2,
-        artifacts={
-            "weights.bin": fold_dir / "weights.bin",
-            "optimizer.json": fold_dir / "optimizer.json",
-        },
-        restore_files=["weights.bin", "optimizer.json"],
-    )
+    ArtifactMirror(
+        run_dir=run_dir, mirror_run_dir=mirror_run_dir
+    ).fold_completed(fold=0, fold_dir=fold_dir)
 
-    bundle = next((mirror_run_dir / "recovery" / "checkpoints").rglob("epoch_*"))
+    bundle = mirror_run_dir / "recovery" / "folds" / "fold_0"
     manifest = json.loads((bundle / "manifest.json").read_text())
-    assert manifest["restore_files"] == ["weights.bin", "optimizer.json"]
-    assert set(manifest["files"]) == {
-        "config.yaml",
-        "optimizer.json",
-        "weights.bin",
+    assert manifest == {
+        "schema_version": 1,
+        "kind": "fold",
+        "fold": 0,
+        "files": {
+            "best_model.pt": {
+                "sha256": (
+                    "411a6035c7d6e222474a08b93c7f4f75"
+                    "d5ce6263652a1787c2e852242b8438a4"
+                ),
+                "size": 19,
+            },
+            "config.yaml": {
+                "sha256": (
+                    "93764599da0d274d1cbbbed0c41825ae"
+                    "fbe8ab3720ebbc2cfc8c38f041fb2b8a"
+                ),
+                "size": 15,
+            },
+            "metrics.json": {
+                "sha256": (
+                    "84877ca75a1b504bd8b28c30e7e006cc"
+                    "f98c2331626af1fad8d77b3d968a4ccf"
+                ),
+                "size": 14,
+            },
+        },
     }
-    restored_run = tmp_path / "restored" / "run"
-    restored_fold = restored_run / "fold_0"
-    _install_checkpoint_set(
-        bundle,
-        restored_run,
-        restored_fold,
-        manifest,
-        fold=0,
-        include_config=False,
+    assert (bundle / "best_model.pt").read_bytes() == b"selected-checkpoint"
+    assert not (run_dir / "recovery").exists()
+
+
+def test_trainer_has_no_per_improvement_publication_hook() -> None:
+    assert "on_checkpoint_improved" not in inspect.signature(Trainer).parameters
+
+
+def _completed_run(tmp_path: Path) -> tuple[Path, Path, ArtifactMirror]:
+    run_dir = tmp_path / "local" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
+    (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
+    mirror_run_dir = tmp_path / "shared" / "run"
+    return (
+        run_dir,
+        mirror_run_dir,
+        ArtifactMirror(run_dir=run_dir, mirror_run_dir=mirror_run_dir),
     )
-    assert (restored_fold / "weights.bin").read_bytes() == b"weights"
-    assert (restored_fold / "optimizer.json").read_text() == "{}"
+
+
+def _shared_storage_outage(mirror_run_dir: Path):
+    real_copy2 = shutil.copy2
+
+    def fail_shared_copy(source, destination, *args, **kwargs):
+        if Path(destination).is_relative_to(mirror_run_dir):
+            raise OSError("shared storage unavailable")
+        return real_copy2(source, destination, *args, **kwargs)
+
+    return fail_shared_copy
+
+
+def test_outage_does_not_interrupt_fold_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, mirror_run_dir, mirror = _completed_run(tmp_path)
+    monkeypatch.setattr(
+        "soma.artifact_mirror.shutil.copy2",
+        _shared_storage_outage(mirror_run_dir),
+    )
+    mirror.fold_completed(fold=0, fold_dir=run_dir)
+
+    bundle = mirror_run_dir / "recovery" / "folds" / "fold_0"
+    assert not bundle.exists()
+    assert not (run_dir / "recovery" / "mirror_state.json").exists()
+
+
+def test_retry_publishes_a_completed_fold_after_an_outage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, mirror_run_dir, mirror = _completed_run(tmp_path)
+    monkeypatch.setattr(
+        "soma.artifact_mirror.shutil.copy2",
+        _shared_storage_outage(mirror_run_dir),
+    )
+    mirror.fold_completed(fold=0, fold_dir=run_dir)
+    monkeypatch.undo()
+    mirror.retry_pending()
+
+    bundle = mirror_run_dir / "recovery" / "folds" / "fold_0"
+    assert (bundle / "manifest.json").is_file()
+
+
+def test_retry_does_not_rehash_an_already_published_fold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir, _, mirror = _completed_run(tmp_path)
+    mirror.fold_completed(fold=0, fold_dir=run_dir)
+    rehashed: list[Path] = []
+
+    def record_rehash(path: Path) -> str:
+        rehashed.append(path)
+        return ""
+
+    monkeypatch.setattr("soma.artifact_mirror._sha256", record_rehash)
+    mirror.retry_pending()
+
+    assert rehashed == []
+
+
+def test_interrupted_publish_never_exposes_a_completed_fold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_dir = tmp_path / "local" / "run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
+    (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
+    mirror_run_dir = tmp_path / "shared" / "run"
+    destination = mirror_run_dir / "recovery" / "folds" / "fold_0"
+    real_replace = os.replace
+
+    def interrupt_final_swap(source, target, *args, **kwargs):
+        if Path(target) == destination:
+            raise OSError("interrupted before atomic publication")
+        return real_replace(source, target, *args, **kwargs)
+
+    monkeypatch.setattr("soma.artifact_mirror.os.replace", interrupt_final_swap)
+    ArtifactMirror(
+        run_dir=run_dir, mirror_run_dir=mirror_run_dir
+    ).fold_completed(fold=0, fold_dir=run_dir)
+
+    assert not destination.exists()
+    assert not list(destination.parent.glob(".fold_0.tmp.*"))

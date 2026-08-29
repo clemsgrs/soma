@@ -165,20 +165,11 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
             mirrored_run / "recovery" / "folds" / f"fold_{fold}" / "manifest.json"
             for fold in range(NUM_FOLDS)
         ]
-        checkpoint_manifests = [
-            next(
-                (mirrored_run / "recovery" / "checkpoints" / f"fold_{fold}").glob(
-                    "epoch_*/manifest.json"
-                )
-            )
-            for fold in range(NUM_FOLDS)
-        ]
         evidence_by_arm[arm] = evidence
         arm_artifacts[arm] = {
             "confusion_evidence": [str(path) for path in evidence],
             "sampling_audits": [str(path) for path in audits],
             "recovery_fold_manifests": [str(path) for path in fold_manifests],
-            "recovery_checkpoint_manifests": [str(path) for path in checkpoint_manifests],
         }
 
     report = assemble_beetle_oof_report(

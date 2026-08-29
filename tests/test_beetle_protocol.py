@@ -629,7 +629,7 @@ def test_complete_offline_smoke_exercises_the_publication_chain(
         assert len(artifacts["confusion_evidence"]) == 5
         assert len(artifacts["sampling_audits"]) == 5
         assert len(artifacts["recovery_fold_manifests"]) == 5
-        assert len(artifacts["recovery_checkpoint_manifests"]) == 5
+        assert "recovery_checkpoint_manifests" not in artifacts
         assert all(
             Path(path).is_file() for paths in artifacts.values() for path in paths
         )
