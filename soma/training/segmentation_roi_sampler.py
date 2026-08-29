@@ -24,7 +24,9 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
     columns in ``class_pixel_counts``. Each request draws an eligible ROI with
     probability proportional to that ROI's annotated-pixel count for the
     requested class. The selected ROI remains intact; its full mask is consumed
-    by the ordinary segmentation loss.
+    by the ordinary segmentation loss. A null draw budget rounds the ROI
+    population down to whole effective optimization batches, but yielded batches
+    always contain the physical ``batch_size``.
     """
 
     def __init__(
@@ -33,15 +35,28 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
         sample_ids: Sequence[str],
         class_pixel_counts: Sequence[Sequence[int]],
         batch_size: int,
-        draws_per_epoch: int,
+        draws_per_epoch: int | None,
         strategy: RoiBatchSamplingStrategy,
         class_request_ratios: Sequence[float] | None = None,
+        gradient_accumulation: int = 1,
         seed: int = 0,
     ) -> None:
         self._sample_ids = tuple(str(sample_id) for sample_id in sample_ids)
         raw_counts = np.asarray(class_pixel_counts)
         self._batch_size = int(batch_size)
-        self._draws_per_epoch = int(draws_per_epoch)
+        self._gradient_accumulation = int(gradient_accumulation)
+        if self._batch_size < 1:
+            raise ValueError("batch_size must be >= 1.")
+        if self._gradient_accumulation < 1:
+            raise ValueError("gradient_accumulation must be >= 1.")
+        self._effective_batch_size = self._batch_size * self._gradient_accumulation
+        uses_default_draw_budget = draws_per_epoch is None
+        self._draws_per_epoch = (
+            (len(self._sample_ids) // self._effective_batch_size)
+            * self._effective_batch_size
+            if uses_default_draw_budget
+            else int(draws_per_epoch)
+        )
         self._strategy = str(strategy)
         self._seed = int(seed)
         self._epoch = 0
@@ -70,9 +85,13 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
             raise ValueError("class_pixel_counts cannot contain negative values.")
         if len(set(self._sample_ids)) != len(self._sample_ids):
             raise ValueError("sample_ids must be unique for an auditable ROI population.")
-        if self._batch_size < 1:
-            raise ValueError("batch_size must be >= 1.")
         if self._draws_per_epoch < 1:
+            if uses_default_draw_budget:
+                raise ValueError(
+                    "Explicit ROI batch sampling needs at least one whole effective "
+                    f"training batch; got {len(self._sample_ids)} ROIs and "
+                    f"effective_batch_size={self._effective_batch_size}."
+                )
             raise ValueError("draws_per_epoch must be >= 1.")
         if self._draws_per_epoch % self._batch_size != 0:
             raise ValueError("draws_per_epoch must be divisible by batch_size.")
@@ -196,10 +215,14 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
     def audit(self) -> dict[str, object]:
         """Return a JSON-serializable audit of every generated epoch."""
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "strategy": self._strategy,
             "batch_size": self._batch_size,
             "draws_per_epoch": self._draws_per_epoch,
+            "physical_batch_size": self._batch_size,
+            "gradient_accumulation": self._gradient_accumulation,
+            "effective_batch_size": self._effective_batch_size,
+            "resolved_draws_per_epoch": self._draws_per_epoch,
             "classes": list(range(self._num_classes)),
             "class_request_ratios": (
                 None
