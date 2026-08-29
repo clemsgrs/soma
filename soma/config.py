@@ -1122,8 +1122,11 @@ class TrainingConfig:
     task's class indices and weights eligible ROI selection by requested-class
     annotated-pixel count. Null ratios request every modeled class equally.
     ``roi_draws_per_epoch`` fixes the common draw budget for controlled arm
-    comparisons. Selection never alters a chosen mask: the ordinary segmentation
-    loss still consumes every annotated pixel in the ROI.
+    comparisons. When it is null, cached segmentation rounds the training ROI
+    population down to whole effective batches (``batch_size *
+    gradient_accumulation``), while the loader still emits physical
+    ``batch_size`` batches. Selection never alters a chosen mask: the ordinary
+    segmentation loss still consumes every annotated pixel in the ROI.
     """
 
     seed: int = 0

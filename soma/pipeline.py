@@ -512,19 +512,12 @@ def _segmentation_roi_batch_sampler(
 
     selected_population = population.subset([record.sample_id for record in records])
 
-    draws_per_epoch = training.roi_draws_per_epoch
-    if draws_per_epoch is None:
-        draws_per_epoch = (len(records) // training.batch_size) * training.batch_size
-        if draws_per_epoch == 0:
-            raise ValueError(
-                "Explicit ROI batch sampling needs at least one whole training batch; "
-                f"got {len(records)} ROIs and batch_size={training.batch_size}."
-            )
     return SegmentationRoiBatchSampler(
         sample_ids=[record.sample_id for record in records],
         class_pixel_counts=selected_population.class_pixel_counts,
         batch_size=training.batch_size,
-        draws_per_epoch=draws_per_epoch,
+        gradient_accumulation=training.gradient_accumulation,
+        draws_per_epoch=training.roi_draws_per_epoch,
         strategy=training.roi_batch_sampling,
         class_request_ratios=training.class_request_ratios,
         seed=training.seed + fold,

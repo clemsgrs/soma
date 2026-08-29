@@ -119,7 +119,9 @@ training:
   # Relative requested-class weights for class_conditioned sampling, ordered 0..K-1.
   # null requests all modeled classes equally.
   class_request_ratios: null
-  # Fixed ROI selections per epoch for an explicit arm; must contain whole batches.
+  # Fixed ROI selections per epoch for an explicit arm; must contain whole physical
+  # loader batches. null rounds the training ROI count down to whole optimization
+  # batches (batch_size * gradient_accumulation).
   roi_draws_per_epoch: null
   gradient_accumulation: 1
   tune_is_test: false

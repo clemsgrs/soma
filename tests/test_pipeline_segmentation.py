@@ -191,6 +191,50 @@ def test_cached_segmentation_fold_writes_exact_roi_batch_sampling_audit(
     }
 
 
+def test_cached_segmentation_default_roi_budget_reaches_sampler_audit(
+    tmp_path: Path,
+) -> None:
+    sample_ids = [f"s{i}" for i in range(12)]
+    manifest, splits, store = _build_dense_run(
+        tmp_path,
+        sample_ids,
+        train_count=10,
+    )
+    fold_dir = tmp_path / "fold"
+
+    train_one_segmentation_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+        training=TrainingConfig(
+            epochs=1,
+            batch_size=2,
+            gradient_accumulation=4,
+            roi_batch_sampling="uniform",
+        ),
+        fold_dir=fold_dir,
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice"]),
+    )
+
+    audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
+
+    assert {
+        "physical_batch_size": audit["physical_batch_size"],
+        "gradient_accumulation": audit["gradient_accumulation"],
+        "effective_batch_size": audit["effective_batch_size"],
+        "resolved_draws_per_epoch": audit["resolved_draws_per_epoch"],
+        "draw_count": len(audit["epochs"][0]["selections"]),
+    } == {
+        "physical_batch_size": 2,
+        "gradient_accumulation": 4,
+        "effective_batch_size": 8,
+        "resolved_draws_per_epoch": 8,
+        "draw_count": 8,
+    }
+
+
 def test_cached_sampler_counts_arbitrary_classes_and_forwards_request_ratios(
     tmp_path: Path,
 ):
