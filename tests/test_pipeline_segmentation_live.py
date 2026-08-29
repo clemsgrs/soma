@@ -484,6 +484,7 @@ def test_build_live_source_forwards_output_variant_and_attention_recipe(tmp_path
         calls["preset"] = (name, kwargs)
         return PublicModel()
 
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(Model, "from_preset", from_preset)
     config = PipelineConfig(
         dataset_csv=str(tmp_path / "manifest.csv"),
@@ -506,7 +507,11 @@ def test_build_live_source_forwards_output_variant_and_attention_recipe(tmp_path
 
     assert calls["preset"] == (
         "uni",
-        {"output_variant": "tokens", "allow_non_recommended_settings": False},
+        {
+            "output_variant": "tokens",
+            "allow_non_recommended_settings": False,
+            "device": "cpu",
+        },
     )
     assert calls["dense"].feature_kind == "cls_attention"
     assert calls["dense"].attention_blocks == (-1, -2)

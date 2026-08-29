@@ -169,6 +169,48 @@ def test_build_live_segmentation_source_prepares_public_dense_kit(monkeypatch):
     assert prepared["dense"].spacing_um == 0.5
 
 
+def test_build_live_segmentation_source_requests_indexed_cuda_device(monkeypatch):
+    """Live encoding names the active CUDA device explicitly at the slide2vec boundary."""
+
+    class ProbeComplete(Exception):
+        pass
+
+    requested = {}
+
+    def from_preset(*args, **kwargs):
+        requested["device"] = kwargs.get("device")
+        raise ProbeComplete
+
+    import slide2vec
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 2)
+    monkeypatch.setattr(slide2vec.Model, "from_preset", from_preset)
+    config = PipelineConfig(
+        dataset_csv="development.csv",
+        splits_csv="development_splits.csv",
+        output_root="runs",
+        dataset_type="segmentation",
+        encoder=EncoderConfig(name="virchow2", precision="fp32", output_variant="cls"),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=8,
+            requested_spacing_um=0.5,
+            dense_window_size=8,
+            feature_kind="patch_features",
+        ),
+        aggregator=None,
+        execution=ExecutionConfig(num_gpus=1, precision="fp32"),
+        augmentation=AugmentationConfig(),
+    )
+
+    with pytest.raises(ProbeComplete):
+        build_live_segmentation_source(config)
+
+    assert requested["device"] == "cuda:2"
+
+
 # --- pure window math ---------------------------------------------------------------
 
 
