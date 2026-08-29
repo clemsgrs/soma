@@ -14,7 +14,7 @@ from soma.training.segmentation_roi_sampler import SegmentationRoiBatchSampler
     ("physical_batch_size", "gradient_accumulation"),
     [(64, 1), (32, 2), (16, 4), (8, 8)],
 )
-def test_default_draw_budget_uses_effective_batch_while_emitting_physical_batches(
+def test_default_draw_budget_uses_effective_batch(
     physical_batch_size: int,
     gradient_accumulation: int,
 ) -> None:
@@ -28,12 +28,8 @@ def test_default_draw_budget_uses_effective_batch_while_emitting_physical_batche
         strategy="uniform",
     )
 
-    batches = list(sampler)
     audit = sampler.audit()
 
-    assert [len(batch) for batch in batches] == [physical_batch_size] * (
-        64 // physical_batch_size
-    )
     assert {
         "physical_batch_size": audit["physical_batch_size"],
         "gradient_accumulation": audit["gradient_accumulation"],
@@ -45,6 +41,35 @@ def test_default_draw_budget_uses_effective_batch_while_emitting_physical_batche
         "effective_batch_size": 64,
         "resolved_draws_per_epoch": 64,
     }
+
+
+@pytest.mark.parametrize(
+    ("physical_batch_size", "gradient_accumulation", "expected_batch_lengths"),
+    [
+        (64, 1, [64]),
+        (32, 2, [32, 32]),
+        (16, 4, [16, 16, 16, 16]),
+        (8, 8, [8, 8, 8, 8, 8, 8, 8, 8]),
+    ],
+)
+def test_default_draw_budget_emits_physical_batches(
+    physical_batch_size: int,
+    gradient_accumulation: int,
+    expected_batch_lengths: list[int],
+) -> None:
+    sample_ids = [f"roi-{index}" for index in range(70)]
+    sampler = SegmentationRoiBatchSampler(
+        sample_ids=sample_ids,
+        class_pixel_counts=[[1, 1] for _ in sample_ids],
+        batch_size=physical_batch_size,
+        gradient_accumulation=gradient_accumulation,
+        draws_per_epoch=None,
+        strategy="uniform",
+    )
+
+    batches = list(sampler)
+
+    assert [len(batch) for batch in batches] == expected_batch_lengths
 
 
 def test_class_conditioned_sampling_supports_arbitrary_k_and_batch_size() -> None:

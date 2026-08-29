@@ -217,6 +217,8 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
         return {
             "schema_version": 3,
             "strategy": self._strategy,
+            # Preserve the schema-v2 names for audit consumers while schema v3
+            # makes the physical and resolved meanings explicit.
             "batch_size": self._batch_size,
             "draws_per_epoch": self._draws_per_epoch,
             "physical_batch_size": self._batch_size,
