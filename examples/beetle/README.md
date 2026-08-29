@@ -214,6 +214,45 @@ All nested ROIs are grouped by the sidecar's `patient_id`; the report uses the s
 seed-0, 10,000-draw whole-patient bootstrap as the development report. Hidden labels and
 metrics are neither fabricated nor required to infer, validate, or ZIP the submission.
 
+## 6. Assemble and validate the publication handoff
+
+After both arms, the OOF report, the arm selection, and the External submission exist,
+collect the compact handoff archive for the paper lead:
+
+```bash
+python -m examples.beetle.acceptance assemble \
+  --uniform-run-dir <uniform-run> \
+  --class-conditioned-run-dir <class-conditioned-run> \
+  --resolved-dir data/beetle/resolved \
+  --hardware-preflight data/beetle/hardware_preflight.json \
+  --oof-report data/beetle/reports/oof_report.json \
+  --selection data/beetle/reports/arm_selection.json \
+  --roi-sidecar data/beetle/external/roi_to_wsi.json \
+  --masks-dir data/beetle/external/submission_pngs \
+  --submission-zip data/beetle/external/submission.zip \
+  --submission-audit data/beetle/external/submission_audit.json \
+  --archive-dir data/beetle/handoff
+```
+
+The archive contains a generated README, both resolved arm configs, encoder and
+environment provenance, all ten decoder checkpoints, histories, sampler audits, the
+development report and arm selection, the validated External submission, and
+`artifact_manifest.json` with a sha256 and size for every file. The gated Virchow2
+weights and the dense feature cache are excluded and their absence is asserted.
+Pass `--external-report` only after the paper lead supplies sequestered labels.
+
+After unpacking, one command proves completeness and integrity; a second writes the
+final acceptance report (JSON plus text), which maps every artifact group to the
+reviewer request and records the public Soma commit. The report is produced even for
+a failing archive and then lists exactly what is missing or mismatched:
+
+```bash
+python -m examples.beetle.acceptance validate --archive-dir data/beetle/handoff
+python -m examples.beetle.acceptance report \
+  --archive-dir data/beetle/handoff \
+  --output-dir data/beetle/reports/acceptance
+```
+
 ## Offline smoke
 
 The complete development chain is executable without WSIs, gated weights, CUDA, or a
