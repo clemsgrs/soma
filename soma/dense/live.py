@@ -115,6 +115,11 @@ def build_live_segmentation_source(config: PipelineConfig) -> LiveSegmentationSo
         config.encoder.name,
         output_variant=config.encoder.output_variant,
         allow_non_recommended_settings=config.encoder.allow_non_recommended_settings,
+        device=(
+            f"cuda:{torch.cuda.current_device()}"
+            if torch.cuda.is_available()
+            else "cpu"
+        ),
     )
     precision = resolve_encoder_precision(
         config.encoder, encoder_name=config.encoder.name
