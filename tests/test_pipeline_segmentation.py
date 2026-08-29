@@ -308,6 +308,7 @@ def _run_confusion_evidence_cv(
     *,
     save_evidence: bool = True,
     roi_batch_sampling: str | None = None,
+    holdout_test: bool = False,
 ):
     sample_ids = ["s0", "s1", "s2", "s3", "external"]
     manifest, _, store = _build_dense_run(
@@ -340,6 +341,7 @@ def _run_confusion_evidence_cv(
     evaluation = EvalConfig(
         metrics=["mean_dice"],
         save_segmentation_confusion_evidence=save_evidence,
+        holdout_test=holdout_test,
     )
     train_kwargs = {
         "feature_store": store,
@@ -375,6 +377,41 @@ def test_multifold_population_provenance_is_fold_local(tmp_path: Path) -> None:
         assert Path(provenance["cache_path"]).is_relative_to(
             run_dir / "segmentation_roi_population"
         )
+
+
+def test_holdout_multifold_resolves_one_full_population_and_subsets_per_fold(
+    tmp_path: Path,
+) -> None:
+    _, run_dir, _ = _run_confusion_evidence_cv(
+        tmp_path,
+        roi_batch_sampling="class_conditioned",
+        holdout_test=True,
+    )
+
+    populations = [
+        json.loads(
+            (run_dir / f"fold_{fold}" / "segmentation_roi_population.json").read_text()
+        )
+        for fold in range(2)
+    ]
+    cache_entries = list((run_dir / "segmentation_roi_population").glob("*/population.json"))
+
+    assert len(cache_entries) == 1
+    assert json.loads(cache_entries[0].read_text())["sample_ids"] == [
+        "s0",
+        "s1",
+        "s2",
+        "s3",
+        "external",
+    ]
+    assert [population["roi_count"] for population in populations] == [3, 3]
+    assert [population["class_pixel_totals"] for population in populations] == [
+        [66, 56, 70],
+        [71, 58, 63],
+    ]
+    assert {population["cache_key"] for population in populations} == {
+        populations[0]["cache_key"]
+    }
 
 
 def test_tune_is_test_multifold_reuses_one_unique_roi_population(tmp_path: Path) -> None:

@@ -1448,6 +1448,84 @@ def _segmentation_class_vocabulary(
     return tuple(names)
 
 
+def _build_segmentation_head(
+    *,
+    task: TaskConfig,
+    evaluation: EvalConfig,
+    preprocessing: PreprocessingConfig | None,
+    masks: "MasksConfig | None",
+    geometry,
+) -> SegmentationHead:
+    """Build the fold-independent segmentation target contract."""
+    seg_params = dict(task.params)
+    num_classes = seg_params.pop("num_classes", None)
+    if num_classes is None:
+        raise ValueError(
+            "dataset_type='segmentation' requires task.params.num_classes "
+            "(the number of segmentation classes)."
+        )
+    num_classes = int(num_classes)
+    mask_spacing_um = (
+        preprocessing.requested_spacing_um if preprocessing is not None else None
+    )
+    return SegmentationHead(
+        num_classes=num_classes,
+        geometry=geometry,
+        metrics=evaluation.metrics,
+        spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
+        spacing_policy=(
+            preprocessing.spacing_policy if preprocessing is not None else "strict"
+        ),
+        backend=preprocessing.mask_backend if preprocessing is not None else "auto",
+        tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
+        label_remap=_segmentation_label_remap(
+            masks, num_classes, int(seg_params.get("ignore_index", 255))
+        ),
+        **seg_params,
+    )
+
+
+def _segmentation_run_records(
+    dataset: SegmentationManifest, splits: Splits
+) -> list[SampleRecord]:
+    """Return every ROI named by the run's folds, once, in manifest order."""
+    sample_ids = {
+        sample_id
+        for fold_split in splits.folds
+        for sample_id in (
+            *fold_split.train,
+            *fold_split.tune,
+            *(sample_id for ids in fold_split.tests.values() for sample_id in ids),
+        )
+    }
+    return [record for sample_id, record in dataset.samples.items() if sample_id in sample_ids]
+
+
+def _resolve_segmentation_roi_population(
+    *,
+    cache_root: str | Path,
+    records: list[SampleRecord],
+    head: SegmentationHead,
+    source_fingerprint_cache: dict[str, dict[str, object]] | None,
+    resolved_backend_cache: dict[tuple[str, str, bool], str] | None,
+) -> "SegmentationRoiPopulation":
+    """Resolve one population with the run's shared cache policy."""
+    from soma.training.segmentation_roi_population import (
+        resolve_segmentation_roi_population,
+    )
+
+    return resolve_segmentation_roi_population(
+        cache_root,
+        records,
+        head.extract_targets,
+        num_classes=head.num_classes,
+        target_identity=head.target_identity,
+        workers=max(1, min(8, os.cpu_count() or 1)),
+        source_fingerprint_cache=source_fingerprint_cache,
+        resolved_backend_cache=resolved_backend_cache,
+    )
+
+
 def train_one_segmentation_fold(
     feature_store: "DenseFeatureSource | LiveSegmentationSource",
     dataset: SegmentationManifest,
@@ -1467,6 +1545,7 @@ def train_one_segmentation_fold(
     encoder_identity: str = "",
     artifact_mirror: ArtifactMirror | None = None,
     roi_population_cache_root: str | Path | None = None,
+    resolved_roi_population: "SegmentationRoiPopulation | None" = None,
     roi_source_fingerprint_cache: dict[str, dict[str, object]] | None = None,
     roi_resolved_backend_cache: dict[tuple[str, str, bool], str] | None = None,
     _selected_checkpoint_evidence_only: bool = False,
@@ -1527,17 +1606,6 @@ def train_one_segmentation_fold(
     is_live = isinstance(feature_store, LiveSegmentationSource)
     _validate_dense_feature_adaptor(normalization, projection, feature_store=feature_store)
 
-    # num_classes is the single source — from task.params (no dataset auto-inject,
-    # since segmentation has no scalar labels). Fed to BOTH decoder and head.
-    seg_params = dict(task.params)
-    num_classes = seg_params.pop("num_classes", None)
-    if num_classes is None:
-        raise ValueError(
-            "dataset_type='segmentation' requires task.params.num_classes "
-            "(the number of segmentation classes)."
-        )
-    num_classes = int(num_classes)
-
     # Geometry + feature_dim source (the first inline live/cached fork). Live computes
     # a single geometry from patch_size + target_size (no per-sample sidecar), so the
     # cohort is uniform by construction; cached reads the sidecar and asserts uniformity.
@@ -1588,21 +1656,14 @@ def train_one_segmentation_fold(
                     f"spacing ({grid_spacing_um} µm/px); the mask would misregister "
                     "against the features."
                 )
-    head = SegmentationHead(
-        num_classes=num_classes,
+    head = _build_segmentation_head(
+        task=task,
+        evaluation=evaluation,
+        preprocessing=preprocessing,
+        masks=masks,
         geometry=geometry,
-        metrics=evaluation.metrics,
-        spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
-        spacing_policy=(
-            preprocessing.spacing_policy if preprocessing is not None else "strict"
-        ),
-        backend=preprocessing.mask_backend if preprocessing is not None else "auto",
-        tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
-        label_remap=_segmentation_label_remap(
-            masks, num_classes, int(seg_params.get("ignore_index", 255))
-        ),
-        **seg_params,
     )
+    num_classes = head.num_classes
     target_fn = head.extract_targets
 
     # Feature adaptor (issue #286), fit BEFORE the decoder is constructed from the Support
@@ -1657,23 +1718,20 @@ def train_one_segmentation_fold(
                 "Explicit ROI batch sampling is a cached-grid training contract; "
                 "feature_mode='live' is unsupported."
             )
-        from soma.training.segmentation_roi_population import (
-            resolve_segmentation_roi_population,
-        )
-
-        roi_population = resolve_segmentation_roi_population(
-            (
-                Path(roi_population_cache_root)
-                if roi_population_cache_root is not None
-                else fold_dir / "segmentation_roi_population"
-            ),
-            all_records,
-            target_fn,
-            num_classes=num_classes,
-            target_identity=head.target_identity,
-            workers=max(1, min(8, os.cpu_count() or 1)),
-            source_fingerprint_cache=roi_source_fingerprint_cache,
-            resolved_backend_cache=roi_resolved_backend_cache,
+        if resolved_roi_population is None:
+            resolved_roi_population = _resolve_segmentation_roi_population(
+                cache_root=(
+                    Path(roi_population_cache_root)
+                    if roi_population_cache_root is not None
+                    else fold_dir / "segmentation_roi_population"
+                ),
+                records=all_records,
+                head=head,
+                source_fingerprint_cache=roi_source_fingerprint_cache,
+                resolved_backend_cache=roi_resolved_backend_cache,
+            )
+        roi_population = resolved_roi_population.subset(
+            [record.sample_id for record in all_records]
         )
         (fold_dir / "segmentation_roi_population.json").write_text(
             json.dumps(roi_population.provenance(), indent=2, sort_keys=True),
@@ -2643,6 +2701,7 @@ def train(
     pending_folds = [
         i for i in range(splits.num_folds) if not (_fold_dir(i) / "metrics.json").exists()
     ]
+    run_roi_population = None
     roi_source_fingerprint_cache: dict[str, dict[str, object]] = {}
     roi_resolved_backend_cache: dict[tuple[str, str, bool], str] = {}
 
@@ -2769,6 +2828,28 @@ def train(
                 num_folds=splits.num_folds,
             )
         elif dataset_type == "segmentation":
+            if (
+                training.roi_batch_sampling is not None
+                and decoder is not None
+                and not isinstance(feature_store, LiveSegmentationSource)
+                and run_roi_population is None
+            ):
+                run_records = _segmentation_run_records(dataset, splits)
+                run_geometry = feature_store.geometry(run_records[0].sample_id)
+                run_head = _build_segmentation_head(
+                    task=task,
+                    evaluation=evaluation,
+                    preprocessing=preprocessing,
+                    masks=masks,
+                    geometry=run_geometry,
+                )
+                run_roi_population = _resolve_segmentation_roi_population(
+                    cache_root=roi_population_cache_root,
+                    records=run_records,
+                    head=run_head,
+                    source_fingerprint_cache=roi_source_fingerprint_cache,
+                    resolved_backend_cache=roi_resolved_backend_cache,
+                )
             result = train_one_segmentation_fold(
                 feature_store=feature_store,
                 dataset=dataset,
@@ -2787,6 +2868,7 @@ def train(
                 encoder_identity=encoder_identity,
                 artifact_mirror=(None if fold_was_complete else artifact_mirror),
                 roi_population_cache_root=roi_population_cache_root,
+                resolved_roi_population=run_roi_population,
                 roi_source_fingerprint_cache=roi_source_fingerprint_cache,
                 roi_resolved_backend_cache=roi_resolved_backend_cache,
             )
