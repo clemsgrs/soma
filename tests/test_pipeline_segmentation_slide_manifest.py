@@ -255,12 +255,12 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     provenance = json.loads(provenance_files[0].read_text(encoding="utf-8"))
     assert provenance["kind"] == "slide_manifest_dense_cache"
     assert provenance["parent_dataset_csv"] == str(manifest)
-    assert Path(provenance["dataset_csv"]).name == "roi_manifest.csv"
+    assert Path(provenance["dataset_csv"]).name == "dataset.csv"
     assert "splits_csv" not in provenance
     assert "parent_splits_csv" not in provenance
 
     # Extraction publishes only the derived ROI dataset; splits are projected in memory.
-    roi_manifests = list((tmp_path / "out").rglob("roi_manifest.csv"))
+    roi_manifests = list((tmp_path / "out").rglob("segmentation_rois/dataset.csv"))
     assert roi_manifests, "ROI manifest not written"
     import pandas as pd
 
@@ -833,7 +833,7 @@ def _launch(
 
 def _roi_csv_bytes(tmp_path: Path, run_name: str) -> bytes:
     roi_dir = tmp_path / "out" / run_name / "segmentation_rois"
-    return (roi_dir / "roi_manifest.csv").read_bytes()
+    return (roi_dir / "dataset.csv").read_bytes()
 
 
 def test_slide_manifest_relaunch_skips_sampling_and_reproduces_manifest(
@@ -883,7 +883,7 @@ def test_slide_manifest_partial_miss_samples_only_new_and_changed(tmp_path: Path
 
     import pandas as pd
 
-    roi_df = pd.read_csv(tmp_path / "out" / "run2" / "segmentation_rois" / "roi_manifest.csv")
+    roi_df = pd.read_csv(tmp_path / "out" / "run2" / "segmentation_rois" / "dataset.csv")
     assert len(roi_df) == 10  # 5 slides x 2 coords: cached + fresh merged
     assert set(roi_df["slide_id"]) == {"s0", "s1", "s2", "s3", "s4"}
 
@@ -904,7 +904,7 @@ def test_slide_manifest_zero_roi_slide_is_cached_and_contributes_no_rows(
     import pandas as pd
 
     for run_name in ("run1", "run2"):
-        roi_df = pd.read_csv(tmp_path / "out" / run_name / "segmentation_rois" / "roi_manifest.csv")
+        roi_df = pd.read_csv(tmp_path / "out" / run_name / "segmentation_rois" / "dataset.csv")
         assert len(roi_df) == 6  # 3 slides x 2 coords; s1 contributes none
         assert "s1" not in set(roi_df["slide_id"])
     assert _roi_csv_bytes(tmp_path, "run1") == _roi_csv_bytes(tmp_path, "run2")

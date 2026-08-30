@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 from pathlib import Path
+from typing import Callable
 
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import (
@@ -47,15 +48,15 @@ class FeatureExtractor:
         self._execution = execution
         self._cache = cache
         self._output_root = Path(output_root).resolve()
-        self._route = self._resolve_route()
+        self._extract_impl = self._resolve_extractor()
 
-    def _resolve_route(self) -> str:
+    def _resolve_extractor(self) -> Callable[[], FeatureExtractionResult]:
         if type(self._dataset) is TileDataset or isinstance(
             self._dataset, SpatialExpressionManifest
         ):
-            return "given_image"
+            return self._extract_given_images
         if type(self._dataset) is Dataset:
-            return "pooled"
+            return self._extract_pooled
         if isinstance(self._dataset, SegmentationManifest):
             region_flags = [
                 record.region is not None and record.slide_id is not None
@@ -68,15 +69,19 @@ class FeatureExtractor:
                         "require region_x/region_y, slide_id, and preprocessing.masks on "
                         "every sample."
                     )
-                return "dense_regions"
-            return "annotation_rois" if self._preprocessing.masks is not None else "dense_image"
+                return self._extract_dense_regions
+            return (
+                self._extract_annotation_rois
+                if self._preprocessing.masks is not None
+                else self._extract_dense_images
+            )
         if isinstance(self._dataset, DetectionManifest):
             if self._preprocessing.masks is not None:
                 raise TypeError(
                     "Unsupported dataset/config combination: annotation sampling is only "
                     "defined for SegmentationManifest inputs."
                 )
-            return "dense_image"
+            return self._extract_dense_images
         raise TypeError(
             "Unsupported dataset/config combination for persistent extraction: "
             f"dataset={type(self._dataset).__name__}."
@@ -85,20 +90,7 @@ class FeatureExtractor:
     def extract(self) -> FeatureExtractionResult:
         self._output_root.mkdir(parents=True, exist_ok=True)
         (self._output_root / "extraction_provenance.json").unlink(missing_ok=True)
-        if self._route == "given_image":
-            return self._extract_given_images()
-        if self._route == "dense_image":
-            return self._extract_dense_images()
-        if self._route == "annotation_rois":
-            return self._extract_annotation_rois()
-        if self._route == "pooled":
-            return self._extract_pooled()
-        if self._route == "dense_regions":
-            return self._extract_dense_regions()
-        raise TypeError(
-            "Unsupported dataset/config combination for persistent extraction: "
-            f"dataset={type(self._dataset).__name__}."
-        )
+        return self._extract_impl()
 
     def _dense_preprocessing(self) -> PreprocessingConfig:
         """Resolve only missing dense geometry, preserving explicit cache identities."""
@@ -205,9 +197,13 @@ class FeatureExtractor:
 
         preprocessing = self._dense_preprocessing()
         if preprocessing.requested_tile_size_px is None:
-            raise ValueError("Dense extraction requires preprocessing.requested_tile_size_px.")
+            raise ValueError(
+                "Dense extraction requires preprocessing.requested_tile_size_px."
+            )
         if preprocessing.requested_spacing_um is None:
-            raise ValueError("Dense extraction requires preprocessing.requested_spacing_um.")
+            raise ValueError(
+                "Dense extraction requires preprocessing.requested_spacing_um."
+            )
         extractor = _DenseImageExtractor(
             self._dataset,
             self._encoder,
@@ -297,9 +293,13 @@ class FeatureExtractor:
                 sampling=sampling,
                 preprocessing=preprocessing,
             )
-        coords_by_slide = {sample_id: merged[sample_id] for sample_id in self._dataset.sample_ids}
+        coords_by_slide = {
+            sample_id: merged[sample_id] for sample_id in self._dataset.sample_ids
+        }
         zero_sample_ids = tuple(
-            sample_id for sample_id in self._dataset.sample_ids if not coords_by_slide[sample_id]
+            sample_id
+            for sample_id in self._dataset.sample_ids
+            if not coords_by_slide[sample_id]
         )
         effective_csv = build_roi_dataset(
             self._dataset,

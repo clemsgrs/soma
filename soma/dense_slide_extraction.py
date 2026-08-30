@@ -188,7 +188,7 @@ def build_roi_dataset(
 ) -> Path:
     """Persist the deterministic effective ROI dataset without depending on splits."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = out_dir / "roi_manifest.csv"
+    manifest_path = out_dir / "dataset.csv"
     rows: list[dict] = []
     for slide_id in dataset.sample_ids:
         record = dataset.samples[slide_id]
@@ -395,6 +395,9 @@ class _SlideRegionExtractor:
                     f"{spacing_by_slide[slide_id]} vs {record.spacing_at_level_0}."
                 )
             spacing_by_slide[slide_id] = record.spacing_at_level_0
+
+        if not coords_by_slide:
+            return DenseFeatureStore(out_root, payload_stems=payload_stems)
 
         # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
         model = Model.from_preset(

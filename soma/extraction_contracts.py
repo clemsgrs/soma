@@ -15,7 +15,9 @@ from soma.dataset import (
     SpatialExpressionManifest,
 )
 
-FeatureDataset = Dataset | SegmentationManifest | DetectionManifest | SpatialExpressionManifest
+FeatureDataset = (
+    Dataset | SegmentationManifest | DetectionManifest | SpatialExpressionManifest
+)
 
 
 @runtime_checkable

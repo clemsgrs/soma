@@ -131,9 +131,9 @@ def build() -> nbformat.NotebookNode:
         md(
             "## 2. Encode each tile to a vector\n"
             "\n"
-            "This is where the tile path diverges from slide-level. There is no tissue\n"
+            "This is where Given geometry diverges from slide-level. There is no tissue\n"
             "masking and no tiling — the inputs are already tiles — so the explicit\n"
-            "**`TileDataset`** type selects the tile path in `FeatureExtractor`. We pass no\n"
+            "**`TileDataset`** type selects Given geometry in `FeatureExtractor`. We pass no\n"
             "`PreprocessingConfig`. It loads each `image_path`, applies the encoder's\n"
             "transform, and writes **one 1-D vector per tile**.\n"
             "\n"

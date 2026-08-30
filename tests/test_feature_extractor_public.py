@@ -115,7 +115,10 @@ def test_tile_dataset_extracts_through_canonical_result(
     assert result.source.available_samples == ["s0"]
     assert torch.equal(result.source.load("s0"), torch.tensor([1.0, 2.0]))
     assert result.artifacts.feature_dir == tmp_path / "output/features/image_embeddings"
-    assert result.artifacts.provenance_json == tmp_path / "output/extraction_provenance.json"
+    assert (
+        result.artifacts.provenance_json
+        == tmp_path / "output/extraction_provenance.json"
+    )
     assert result.artifacts.provenance_json.is_file()
 
 
@@ -132,7 +135,9 @@ def test_spatial_expression_extracts_through_canonical_result(
         encoding="utf-8",
     )
     np.save(tmp_path / "targets.npy", np.asarray([[1.5, 2.5]], dtype=np.float32))
-    (tmp_path / "genes.json").write_text(json.dumps(["GENE_A", "GENE_B"]), encoding="utf-8")
+    (tmp_path / "genes.json").write_text(
+        json.dumps(["GENE_A", "GENE_B"]), encoding="utf-8"
+    )
     dataset = SpatialExpressionManifest(dataset_csv)
 
     class SpatialBoundaryModel:
@@ -230,7 +235,33 @@ def test_splits_project_rejects_unresolved_roi_ancestry(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="Unresolved split ancestry.*missing"):
-        Splits(splits_csv, Dataset(parent_csv)).project(SegmentationManifest(effective_csv))
+        Splits(splits_csv, Dataset(parent_csv)).project(
+            SegmentationManifest(effective_csv)
+        )
+
+
+def test_splits_project_rejects_unassigned_sample_without_ancestry(
+    tmp_path: Path,
+) -> None:
+    from soma import Dataset, SegmentationManifest, Splits
+
+    parent_csv = tmp_path / "parents.csv"
+    parent_csv.write_text(
+        "sample_id,image_path,label\ns0,s0.svs,0\n",
+        encoding="utf-8",
+    )
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text("sample_id,split\ns0,test\n", encoding="utf-8")
+    effective_csv = tmp_path / "effective.csv"
+    effective_csv.write_text(
+        "sample_id,image_path,label_mask_path\n" "orphan,orphan.png,mask.png\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Unresolved split ancestry.*orphan"):
+        Splits(splits_csv, Dataset(parent_csv)).project(
+            SegmentationManifest(effective_csv)
+        )
 
 
 def test_splits_project_rejects_conflicting_direct_and_parent_assignments(
@@ -256,7 +287,9 @@ def test_splits_project_rejects_conflicting_direct_and_parent_assignments(
     )
 
     with pytest.raises(ValueError, match="Conflicting split ancestry.*roi"):
-        Splits(splits_csv, Dataset(parent_csv)).project(SegmentationManifest(effective_csv))
+        Splits(splits_csv, Dataset(parent_csv)).project(
+            SegmentationManifest(effective_csv)
+        )
 
 
 def test_given_image_segmentation_extracts_dense_source(
@@ -308,7 +341,9 @@ def test_given_image_segmentation_extracts_dense_source(
             ]
 
     monkeypatch.setattr("soma.dense_extraction.Model", DenseBoundaryModel)
-    monkeypatch.setattr("soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16))
+    monkeypatch.setattr(
+        "soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
+    )
 
     result = FeatureExtractor(
         dataset,
@@ -326,7 +361,10 @@ def test_given_image_segmentation_extracts_dense_source(
     assert result.source.available_samples == ["s0"]
     assert tuple(result.source.load("s0").shape) == (3, 2, 2)
     assert result.source.spacing("s0").source_spacing_um == 0.5
-    assert result.artifacts.feature_dir == tmp_path / "output/features/dense_image_embeddings"
+    assert (
+        result.artifacts.feature_dir
+        == tmp_path / "output/features/dense_image_embeddings"
+    )
 
 
 def test_given_image_detection_selects_dense_extraction(
@@ -427,7 +465,9 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
             ]
 
     monkeypatch.setattr("soma.dense_extraction.Model", CacheIdentityModel)
-    monkeypatch.setattr("soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16))
+    monkeypatch.setattr(
+        "soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
+    )
     encoder = EncoderConfig(name="phikon", precision="fp32")
     preprocessing = PreprocessingConfig(
         requested_tile_size_px=32,
@@ -496,7 +536,9 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
             return cls()
 
         def embed_regions_dense(self, regions, *, dense, execution):
-            assert [(item.sample_id, item.coordinates) for item in regions] == [("s0", [(0, 0)])]
+            assert [(item.sample_id, item.coordinates) for item in regions] == [
+                ("s0", [(0, 0)])
+            ]
             grid = np.arange(16, dtype=np.float32).reshape(4, 2, 2)
             return [
                 write_dense_region(
@@ -547,13 +589,76 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
     assert (roi.slide_id, roi.region) == ("s0", (0, 0))
     assert result.provenance.zero_roi_sample_ids == ("s1",)
     assert result.source.available_samples == ["s0__x0_y0"]
-    assert result.artifacts.dataset_csv == tmp_path / "output/segmentation_rois/roi_manifest.csv"
+    assert (
+        result.artifacts.dataset_csv
+        == tmp_path / "output/segmentation_rois/dataset.csv"
+    )
     expected_csv = (
         "sample_id,slide_id,image_path,mask_path,label_mask_path,patient_id,"
         "spacing_at_level_0,region_x,region_y\n"
         "s0__x0_y0,s0,s0.svs,,s0-mask.tif,,,0,0\n"
     )
     assert result.artifacts.dataset_csv.read_text(encoding="utf-8") == expected_csv
+
+
+def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from soma import (
+        CacheConfig,
+        EncoderConfig,
+        MasksConfig,
+        PreprocessingConfig,
+        SegmentationManifest,
+    )
+
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "hs2p.tile_slide",
+        lambda _slide, **_kwargs: {
+            None: SimpleNamespace(
+                tiles=SimpleNamespace(
+                    x=np.asarray([], dtype=np.int64),
+                    y=np.asarray([], dtype=np.int64),
+                )
+            )
+        },
+    )
+
+    class EncoderMustNotLoad:
+        @classmethod
+        def from_preset(cls, _name: str, **_kwargs):
+            raise AssertionError("all-zero ROI extraction must not load the encoder")
+
+    monkeypatch.setattr("soma.dense_slide_extraction.Model", EncoderMustNotLoad)
+    result = FeatureExtractor(
+        SegmentationManifest(dataset_csv),
+        EncoderConfig(name="phikon", precision="fp32"),
+        preprocessing=PreprocessingConfig(
+            requested_tile_size_px=32,
+            requested_spacing_um=0.5,
+            masks=MasksConfig(
+                pixel_mapping={"background": 0, "tumor": 1},
+                min_coverage={"tumor": 0.0},
+            ),
+        ),
+        cache=CacheConfig(enabled=False),
+        output_root=tmp_path / "output",
+    ).extract()
+
+    assert result.dataset.sample_ids == []
+    assert result.source.available_samples == []
+    assert result.source.feature_dim == 0
+    assert result.provenance.zero_roi_sample_ids == ("s0",)
+    assert (
+        result.artifacts.dataset_csv
+        == tmp_path / "output/segmentation_rois/dataset.csv"
+    )
 
 
 def test_partial_tile_extraction_resumes_only_missing_and_publishes_on_completion(

@@ -3376,7 +3376,10 @@ class Pipeline:
 
     def _get_feature_source_context(self, *, run_dir: Path) -> _FeatureSourceContext:
         is_dense = self._config.dataset_type in ("segmentation", "detection")
-        annotation_sampled = self._config.preprocessing.masks is not None
+        annotation_sampled = (
+            self._config.dataset_type == "segmentation"
+            and self._config.preprocessing.masks is not None
+        )
         if annotation_sampled and self._feature_dir is not None:
             raise ValueError(
                 "feature_dir is not supported for annotation-sampled segmentation; "

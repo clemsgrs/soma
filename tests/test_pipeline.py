@@ -1267,6 +1267,30 @@ class TestTrain:
 
 
 class TestPipeline:
+    def test_pooled_mask_config_can_read_preextracted_features(self, tmp_path: Path):
+        from soma.config import MasksConfig
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "output",
+            dataset_type="slide",
+            preprocessing=PreprocessingConfig(
+                masks=MasksConfig(
+                    pixel_mapping={"tumor": 1},
+                    min_coverage={"tumor": 0.5},
+                )
+            ),
+            task=TaskConfig(name="binary_classification"),
+        )
+
+        context = Pipeline(config, feature_dir=feature_dir)._get_feature_source_context(
+            run_dir=tmp_path / "run"
+        )
+
+        assert context.feature_store.feature_dir == feature_dir
+
     def test_run_single_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output"

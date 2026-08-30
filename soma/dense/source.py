@@ -124,6 +124,9 @@ class CacheBackedDenseSource:
 
     @property
     def feature_dim(self) -> int:
+        """Channel dimension, or zero when extraction produced no samples."""
+        if not self.available_samples:
+            return 0
         return int(self._store.feature_dim)
 
     @property

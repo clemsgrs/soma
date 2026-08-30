@@ -864,10 +864,15 @@ class Splits:
                         f"slide_id '{record.slide_id}'={sorted(inherited)}."
                     )
                 locations = direct or inherited
-                if not locations and record.slide_id is not None:
+                if not locations:
+                    detail = (
+                        f"slide_id '{record.slide_id}' has no assignment"
+                        if record.slide_id is not None
+                        else "the sample has no direct assignment or slide_id"
+                    )
                     raise ValueError(
                         f"Unresolved split ancestry for sample '{sample_id}' in fold "
-                        f"{fold_index}: slide_id '{record.slide_id}' has no assignment."
+                        f"{fold_index}: {detail}."
                     )
                 if locations:
                     selected[sample_id] = locations
