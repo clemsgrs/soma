@@ -16,7 +16,9 @@ import pytest
 
 import soma.benchmarks.run as run_mod
 from soma.benchmarks import (
+    BenchmarkRunResult,
     MeasuredRow,
+    MetricResult,
     append_result,
     load_results,
     reproduced_rows,
@@ -167,6 +169,80 @@ def test_run_benchmark_runs_canonical_seed_loop_by_default(
     # Every seed shares ONE feature-cache root (extraction runs once per encoder).
     roots = {kw["overrides"]["cache"]["root_dir"] for kw in ledger_benchmark.built}
     assert roots == {str(tmp_path / "out" / "feature_cache")}
+
+
+def test_run_benchmark_can_return_the_completed_measurements(
+    tmp_path, ledger_benchmark, stub_pipeline
+):
+    result = run_benchmark(
+        ledger_benchmark.name,
+        encoder="fixture-encoder",
+        raw_root=tmp_path / "raw",
+        output_root=tmp_path / "out",
+        return_result=True,
+    )
+
+    assert result == BenchmarkRunResult(
+        status=0,
+        metrics=(
+            MetricResult(
+                metric="test/accuracy",
+                measured=0.71,
+                std=0.0,
+                n_seeds=3,
+            ),
+        ),
+        seed_roots=tuple(tmp_path / "out" / f"seed_{seed}" for seed in (0, 1, 2)),
+    )
+
+
+def test_run_benchmark_rescore_result_has_one_seed_and_no_spread(
+    tmp_path, ledger_benchmark
+):
+    run_dir = _run_dir_with_summary(tmp_path, 0.71)
+
+    result = run_benchmark(
+        ledger_benchmark.name,
+        encoder="fixture-encoder",
+        from_run_dir=run_dir,
+        return_result=True,
+    )
+
+    assert result == BenchmarkRunResult(
+        status=0,
+        metrics=(MetricResult("test/accuracy", 0.71, None, 1),),
+        seed_roots=(run_dir,),
+    )
+
+
+def test_run_benchmark_rescore_seed_roots_are_the_resolved_run_dir(
+    tmp_path, ledger_benchmark
+):
+    # Point from_run_dir at a PARENT of the actual run dir; the returned evidence
+    # location must be the resolved run dir (where the summary lives), not the argument.
+    nested = tmp_path / "runs" / "sweep_a"
+    nested.mkdir(parents=True)
+    _run_dir_with_summary(nested, 0.71)
+
+    result = run_benchmark(
+        ledger_benchmark.name,
+        encoder="fixture-encoder",
+        from_run_dir=tmp_path,
+        return_result=True,
+    )
+
+    assert result.seed_roots == (nested,)
+
+
+def test_run_benchmark_missing_source_returns_structured_status(
+    capsys, ledger_benchmark
+):
+    result = run_benchmark(
+        ledger_benchmark.name, encoder="fixture-encoder", return_result=True
+    )
+
+    assert result == BenchmarkRunResult(status=2, metrics=(), seed_roots=())
+    assert "reproduce needs --raw-root" in capsys.readouterr().err
 
 
 def test_run_benchmark_seeds_runs_the_first_n_canonical_style_seeds(

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -50,6 +51,48 @@ def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
 
 class ReportedScoreError(RuntimeError):
     """A Benchmark scorer omitted metrics required by its public protocol."""
+
+
+@dataclass(frozen=True)
+class MetricResult:
+    """One Reported metric aggregated across a benchmark's completed seeds.
+
+    The measurement half of the ledger's :class:`MeasuredRow` (same measured/std/n_seeds
+    semantics, minus the reference key and provenance columns) — keep the two in step.
+    Mirroring the ledger convention, ``std`` is ``None`` for a ``from_run_dir`` re-score
+    (a single historical run has no seed spread) and ``0.0`` for a single-seed loop.
+    """
+
+    metric: str
+    measured: float
+    std: float | None
+    n_seeds: int
+
+
+@dataclass(frozen=True)
+class BenchmarkRunResult:
+    """Measurements and evidence locations produced by :func:`run_benchmark`.
+
+    ``seed_roots`` holds the per-seed output roots of a canonical-seed run; for a
+    ``from_run_dir`` re-score it holds the single resolved run directory that was scored.
+    """
+
+    status: int
+    metrics: tuple[MetricResult, ...]
+    seed_roots: tuple[Path, ...]
+
+
+def _run_return(
+    status: int,
+    *,
+    return_result: bool,
+    metrics: tuple[MetricResult, ...] = (),
+    seed_roots: tuple[Path, ...] = (),
+) -> int | BenchmarkRunResult:
+    """Project the outcome to the CLI int status unless a structured result was asked for."""
+    if not return_result:
+        return status
+    return BenchmarkRunResult(status=status, metrics=metrics, seed_roots=seed_roots)
 
 
 def _require_reported_scores(
@@ -497,7 +540,8 @@ def _reproduce_one(
     resolve_manifest=None,
     recorded_croma_version: Callable[..., str] | None = None,
     results_root: str | Path | None = None,
-) -> int:
+    return_result: bool = False,
+) -> int | BenchmarkRunResult:
     """Curate → run → score one benchmark and report any reference comparison.
 
     ``family_root`` is the family name when this benchmark is one member of a fanned-out
@@ -577,7 +621,18 @@ def _reproduce_one(
                     )
             else:
                 print("  (no reference row to key --record on; nothing recorded)")
-        return _report_measured_metrics({benchmark.primary_metric: measured, **metrics})
+        status = _report_measured_metrics({benchmark.primary_metric: measured, **metrics})
+        return _run_return(
+            status,
+            return_result=return_result,
+            metrics=tuple(
+                MetricResult(
+                    metric=metric, measured=float(metrics[metric]), std=None, n_seeds=1
+                )
+                for metric in reported_metrics
+            ),
+            seed_roots=(_resolve_run_dir(args.from_run_dir),),
+        )
 
     import statistics
 
@@ -586,7 +641,7 @@ def _reproduce_one(
             manifest = resolve_manifest(benchmark, args, family_root=family_root)
         except _MissingReproduceSourceError as exc:
             print(f"Error: {exc}", file=sys.stderr)
-            return 2
+            return _run_return(2, return_result=return_result)
     output_root = _reproduce_output_root(benchmark, args, family_root=family_root)
     # Feature extraction is seed-independent (the encoder is frozen and the cache key is
     # derived from encoder + tile content, not the seed), so every seed shares one cache
@@ -599,8 +654,10 @@ def _reproduce_one(
 
     pipeline_cls = pipeline_cls or _pipeline_cls()
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
+    seed_roots: list[Path] = []
     for seed in seeds:
         seed_root = output_root / f"seed_{seed}"
+        seed_roots.append(seed_root)
         config = benchmark.build_config(
             **axes,
             dataset_csv=manifest.dataset_csv,
@@ -622,19 +679,21 @@ def _reproduce_one(
     measured = {
         metric: statistics.fmean(values) for metric, values in measured_values.items()
     }
+    spread = {
+        metric: statistics.stdev(values) if len(values) > 1 else 0.0
+        for metric, values in measured_values.items()
+    }
     if getattr(args, "record", False):
         # Key off the gate row, or the external row for an external-only benchmark (hest).
         record_row = _record_reference_row(benchmark, axes, row)
         if record_row is not None:
             key_axes = _record_axes(benchmark, axes, seed_root)
             for metric in reported_metrics:
-                values = measured_values[metric]
-                std = statistics.stdev(values) if len(values) > 1 else 0.0
                 _record_result(
                     benchmark,
                     record_row,
                     measured[metric],
-                    std=std,
+                    std=spread[metric],
                     n_seeds=len(seeds),
                     # seed_root is the last seed's output; every seed shares the varied
                     # axes, so it identifies the cell for every Reported metric.
@@ -647,7 +706,21 @@ def _reproduce_one(
                 )
         else:
             print("  (no reference row to key --record on; nothing recorded)")
-    return _report_measured_metrics(measured)
+    status = _report_measured_metrics(measured)
+    return _run_return(
+        status,
+        return_result=return_result,
+        metrics=tuple(
+            MetricResult(
+                metric=metric,
+                measured=measured[metric],
+                std=spread[metric],
+                n_seeds=len(measured_values[metric]),
+            )
+            for metric in reported_metrics
+        ),
+        seed_roots=tuple(seed_roots),
+    )
 
 
 def run_benchmark(
@@ -663,7 +736,8 @@ def run_benchmark(
     out_dir: str | Path | None = None,
     output_root: str | Path | None = None,
     cache_root: str | Path | None = None,
-) -> int:
+    return_result: bool = False,
+) -> int | BenchmarkRunResult:
     """Reproduce one registered benchmark exactly as ``soma reproduce`` does (issue #370).
 
     The importable counterpart of the CLI's reproduce path, carrying the same guarantees:
@@ -686,9 +760,10 @@ def run_benchmark(
     the CLI flags of the same name (``from_run_dir`` re-scores an existing run with no
     training; one of ``raw_root`` / ``curated_dir`` / ``from_run_dir`` must be given).
 
-    Returns the CLI's exit status (``0`` success, ``2`` usage/protocol error) and prints
-    the same report to stdout/stderr; like the CLI, a scorer omitting a required Reported
-    metric terminates via ``SystemExit``.
+    By default, returns the CLI's exit status (``0`` success, ``2`` usage/protocol error).
+    Pass ``return_result=True`` to receive the aggregated Reported metrics and seed output
+    roots as a :class:`BenchmarkRunResult`. Both modes print the same report; like the CLI,
+    a scorer omitting a required Reported metric terminates via ``SystemExit``.
     """
     benchmark = get_benchmark(name)
     options = SimpleNamespace(
@@ -702,4 +777,9 @@ def run_benchmark(
         cache_root=cache_root,
         record=record,
     )
-    return _reproduce_one(benchmark, options, results_root=results_root)
+    return _reproduce_one(
+        benchmark,
+        options,
+        results_root=results_root,
+        return_result=return_result,
+    )
