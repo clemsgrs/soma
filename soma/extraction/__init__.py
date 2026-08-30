@@ -1,10 +1,12 @@
 """Feature extraction package: tiling, encoding, and aggregation."""
 
 import gc  # noqa: F401 — exposed so tests can patch soma.extraction.gc.collect
-from slide2vec import Model  # noqa: F401 — exposed so tests can patch soma.extraction.Model.from_preset
+from slide2vec import (
+    Model,
+)  # noqa: F401 — exposed so tests can patch soma.extraction.Model.from_preset
 
 from soma.extraction.extractor import (
-    FeatureExtractor,
+    _PooledFeatureExtractor,
     _validate_runtime,
     # modules imported by extractor (exposed for patching in tests)
     torch,
@@ -23,9 +25,22 @@ from soma.extraction.extractor import (
     _release_parent_cuda_state,
     _run_with_coordinates,
 )
+from soma.extraction.facade import FeatureExtractor
+from soma.extraction_contracts import (
+    ExtractionArtifacts,
+    FeatureExtractionResult,
+    FeatureProvenance,
+    FeatureSource,
+    PooledFeatureSource,
+)
 
 __all__ = [
     "FeatureExtractor",
+    "ExtractionArtifacts",
+    "FeatureExtractionResult",
+    "FeatureProvenance",
+    "FeatureSource",
+    "PooledFeatureSource",
     "_validate_runtime",
     "_aggregate_patients",
     "_aggregate_tiles",

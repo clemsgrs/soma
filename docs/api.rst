@@ -66,16 +66,17 @@ heads or aggregators against the same encoder output:
        cache=cache,
        output_root="output",
    )
-   store = extractor.extract()
+   features = extractor.extract()
+   effective_splits = splits.project(features.dataset)
    task = TaskConfig(name="binary_classification")
    training = TrainingConfig(epochs=50, learning_rate=1e-4)
    abmil_aggregator = AggregatorConfig(name="abmil", params={"hidden_dim": 256})
    clam_aggregator = AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128})
 
    abmil_result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=effective_splits,
        task=task,
        training=training,
        aggregator=abmil_aggregator,
@@ -83,19 +84,121 @@ heads or aggregators against the same encoder output:
    )
 
    clam_result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=effective_splits,
        task=task,
        training=training,
        aggregator=clam_aggregator,
        run_dir="output/clam_sb/uni2",
    )
 
-The returned ``FeatureStore`` can be reused across experiments as long as the
-upstream preprocessing and encoder settings do not change. ``extract()``
-defaults to ``<output_root>/features/<encoder>``; a supplied ``feature_dir``
-must be relative to ``output_root``.
+``extract()`` takes no arguments and returns an immutable result containing the
+feature source, the effective dataset indexed by that source, provenance, and
+artifact paths. The source can be reused across experiments as long as the
+upstream dataset, preprocessing, and encoder settings do not change. Cache and
+artifact locations are fixed by constructor configuration.
+
+Dense features over given images
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Use the task-specific manifest type to select dense extraction. Geometry remains
+part of ``PreprocessingConfig``:
+
+.. code-block:: python
+
+   from soma import (
+       CacheConfig,
+       EncoderConfig,
+       FeatureExtractor,
+       PreprocessingConfig,
+       SegmentationManifest,
+   )
+
+   dataset = SegmentationManifest("segmentation.csv")
+   features = FeatureExtractor(
+       dataset,
+       EncoderConfig(name="phikon", batch_size=64),
+       preprocessing=PreprocessingConfig(
+           requested_tile_size_px=224,
+           requested_spacing_um=0.5,
+       ),
+       cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
+       output_root="output/dense",
+   ).extract()
+
+   grid = features.source.load("roi_001")  # float32: (feature_dim, grid_h, grid_w)
+   geometry = features.source.geometry("roi_001")
+
+``EncoderConfig.batch_size`` controls encoder inference batches. It is distinct
+from ``TrainingConfig.batch_size``, which controls downstream training batches.
+
+Annotation-sampled whole slides
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A segmentation manifest containing whole-slide image and annotation paths becomes
+an annotation-sampled extraction when masks and sampling are configured. The result's
+dataset is the persisted ROI manifest; parent-slide splits are projected explicitly:
+
+.. code-block:: python
+
+   from soma import (
+       CacheConfig,
+       EncoderConfig,
+       FeatureExtractor,
+       MasksConfig,
+       PreprocessingConfig,
+       SamplingConfig,
+       SegmentationManifest,
+       Splits,
+   )
+
+   slides = SegmentationManifest("slides.csv")
+   slide_splits = Splits("splits.csv", slides)
+   features = FeatureExtractor(
+       slides,
+       EncoderConfig(name="phikon"),
+       preprocessing=PreprocessingConfig(
+           requested_tile_size_px=512,
+           requested_spacing_um=0.5,
+           masks=MasksConfig(
+               pixel_mapping={"background": 0, "tumor": 1},
+               min_coverage={"tumor": 0.1},
+           ),
+           sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+       ),
+       cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
+       output_root="output/annotation-rois",
+   ).extract()
+
+   roi_splits = slide_splits.project(features.dataset)
+   print(features.artifacts.dataset_csv)
+   print(features.provenance.zero_roi_sample_ids)
+
+Slides with no sampled ROI are not represented by fake samples or empty tensors.
+They are recorded in provenance, while the sampling cache preserves the zero outcome
+for identical reruns.
+
+Breaking-change migration
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. list-table::
+   :header-rows: 1
+
+   * - Before
+     - Now
+   * - ``TileFeatureExtractor(...).run(feature_dir)``
+     - ``FeatureExtractor(TileDataset(...), ..., output_root=...).extract()``
+   * - ``DenseTileFeatureExtractor(...).run(feature_dir)``
+     - ``FeatureExtractor(SegmentationManifest(...) or DetectionManifest(...), ...).extract()``
+   * - ``SlideManifestDenseExtractor`` or private pipeline ROI orchestration
+     - ``FeatureExtractor(SegmentationManifest(...), preprocessing=PreprocessingConfig(masks=..., sampling=...), ...).extract()``
+   * - ``FeatureExtractor.preprocess()`` then ``FeatureExtractor.run(...)``
+     - Configure the constructor fully, then call argument-free ``extract()``
+   * - Extractor returns a feature store
+     - Use ``result.source``; ``result.dataset`` is the exact indexed dataset
+   * - Persist a derived ROI split CSV
+     - Use ``original_splits.project(result.dataset)`` in memory
 
 Train with explicit evaluation settings
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -114,9 +217,9 @@ Subgroup columns are included in the run outputs and summarized in the report:
    )
 
    result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=effective_splits,
        task=task,
        training=training,
        aggregator=aggregator,
@@ -197,9 +300,9 @@ documented in :doc:`outputs`:
    heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
 
    result = train(
-       feature_store=store,
-       dataset=dataset,
-       splits=splits,
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=effective_splits,
        task=task,
        training=training,
        aggregator=aggregator,

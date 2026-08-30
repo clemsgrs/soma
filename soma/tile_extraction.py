@@ -1,4 +1,4 @@
-"""TileFeatureExtractor — encodes individual tile images into 1D feature vectors.
+"""Private tile-image extraction engine for pooled feature vectors.
 
 The Given-geometry entry point (ADR 0006): the dataset rows are *pre-cropped images*
 that soma never asked for at any particular size — a public patch benchmark (BACH, CRC,
@@ -52,7 +52,7 @@ def _drop_stale_payloads(features_dir: Path, sample_ids: list[str]) -> None:
             path.unlink(missing_ok=True)
 
 
-class TileFeatureExtractor:
+class _TileFeatureExtractor:
     """Encode individual tile images into 1D feature vectors using a tile encoder.
 
     This is the entry point for ``dataset_type="tile"`` pipelines: each sample's

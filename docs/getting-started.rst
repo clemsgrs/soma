@@ -97,9 +97,10 @@ store.
        output_root="output",
    ).extract()
 
-soma derives the feature-store path from ``output_root`` and the encoder name,
-here ``output/features/phikon``. A supplied ``feature_dir`` must be relative to
-``output_root``, for example ``extract("features/phikon-ablation")``.
+The immutable result contains ``source`` (the reusable feature reader), ``dataset``
+(the exact samples indexed by that source), ``provenance``, and ``artifacts``.
+``extract()`` takes no arguments; ``output_root`` and ``CacheConfig`` fully determine
+the artifact and cache locations.
 
 These values match ``phikon``'s native configuration. See :doc:`preprocessing`
 and :doc:`encoders` for every option.
@@ -131,9 +132,9 @@ task head. ``EvalConfig`` selects how its predictions are scored.
    training = TrainingConfig(epochs=5, learning_rate=1e-4, seed=0)
 
    result = train(
-       feature_store=features,
-       dataset=dataset,
-       splits=splits,
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=splits.project(features.dataset),
        dataset_type="slide",
        aggregator=aggregator,
        task=task,

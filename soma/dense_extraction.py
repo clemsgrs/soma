@@ -1,4 +1,4 @@
-"""DenseTileFeatureExtractor — dense ``(d, h, w)`` grids over caller-supplied images.
+"""Private dense-image extraction engine over caller-supplied images.
 
 The Given-image counterpart of :class:`soma.dense_slide_extraction.DenseSlideFeatureExtractor`:
 where that one names ROI coordinates inside a slide, this one names whole pre-cropped
@@ -93,7 +93,7 @@ def _dense_extract_lock():
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-class DenseTileFeatureExtractor:
+class _DenseImageExtractor:
     """Encode tile images into dense ``(d, h, w)`` grids (``dataset_type="segmentation"``).
 
     Args:

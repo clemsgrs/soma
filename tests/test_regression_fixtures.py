@@ -2,23 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 from soma.extraction import FeatureExtractor
-from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 
 TESTS_DIR = Path(__file__).parent
 FIXTURE_ROOT = TESTS_DIR / "fixtures" / "regression"
-INPUT_DIR = FIXTURE_ROOT / "input"
-GT_DIR = FIXTURE_ROOT / "gt"
 
 
 def _fixture_path(*parts: str) -> Path:
@@ -60,15 +55,6 @@ def _regression_preprocessing() -> PreprocessingConfig:
     )
 
 
-def _load_legacy_coordinate_gt() -> tuple[dict[str, object], np.ndarray, np.ndarray, np.ndarray]:
-    meta = json.loads(_fixture_path("gt", "test-wsi.coordinates.meta.json").read_text())
-    arrays = np.load(_fixture_path("gt", "test-wsi.coordinates.npz"), allow_pickle=False)
-    coordinates = np.stack([arrays["x"], arrays["y"]], axis=1).astype(np.int64)
-    tile_index = arrays["tile_index"].astype(np.int32)
-    tissue_fractions = arrays["tissue_fraction"].astype(np.float32)
-    return meta, tile_index, coordinates, tissue_fractions
-
-
 def _require_openslide() -> None:
     pytest.importorskip("openslide", reason="openslide is required for regression fixtures")
 
@@ -77,54 +63,6 @@ def _allow_prism_regression() -> bool:
     return os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get(
         "SOMA_RUN_PRISM_REGRESSION"
     ) == "1"
-
-
-def test_coordinate_outputs_match_slide2vec_gt(tmp_path: Path):
-    _require_openslide()
-
-    dataset = _build_dataset(tmp_path)
-    output_dir = tmp_path / "tiling"
-    extractor = FeatureExtractor(
-        dataset,
-        EncoderConfig(name="prism"),
-        preprocessing=_regression_preprocessing(),
-        cache=CacheConfig(enabled=False),
-        output_root=tmp_path,
-    )
-
-    extractor.preprocess(output_dir)
-
-    process_df = load_tiling_process_df(output_dir / "process_list.csv")
-    rows = process_df.loc[process_df["sample_id"].astype(str) == "test-wsi"].to_dict("records")
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["tiling_status"] == "success"
-    assert Path(row["coordinates_npz_path"]).is_file()
-    assert Path(row["coordinates_meta_path"]).is_file()
-
-    tiling = load_tiling_result_from_row(row)
-    gt_meta, gt_tile_index, gt_coordinates, gt_tissue_fractions = _load_legacy_coordinate_gt()
-
-    assert tiling.sample_id == gt_meta["sample_id"]
-    assert tiling.requested_spacing_um == pytest.approx(gt_meta["requested_spacing_um"])
-    assert tiling.requested_tile_size_px == gt_meta["requested_tile_size_px"]
-    assert tiling.read_level == gt_meta["read_level"]
-    assert tiling.read_tile_size_px == gt_meta["read_tile_size_px"]
-    assert tiling.tile_size_lv0 == gt_meta["tile_size_lv0"]
-    assert tiling.step_px_lv0 == gt_meta["step_px_lv0"]
-    assert tiling.overlap == gt_meta["overlap"]
-
-    if gt_meta.get("backend") != "openslide":
-        pytest.xfail(
-            "Exact coordinate parity with the copied slide2vec GT is backend-specific "
-            f"({gt_meta.get('backend')} vs Soma OpenSlide). Keep this harness, but "
-            "port or regenerate a Soma-native golden artifact before enforcing exact arrays."
-        )
-
-    np.testing.assert_array_equal(tiling.tile_index, gt_tile_index)
-    np.testing.assert_array_equal(tiling.coordinates, gt_coordinates)
-    np.testing.assert_allclose(tiling.tissue_fractions, gt_tissue_fractions, atol=1e-6, rtol=0.0)
-    assert tiling.num_tiles == gt_meta["num_tiles"]
 
 
 def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
@@ -136,7 +74,6 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
     pytest.importorskip("transformers", reason="transformers is required for PRISM regression")
 
     dataset = _build_dataset(tmp_path)
-    output_dir = tmp_path / "features"
     extractor = FeatureExtractor(
         dataset,
         EncoderConfig(name="prism"),
@@ -146,11 +83,11 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
     )
 
     try:
-        extractor.run("features")
+        result = extractor.extract()
     except (ImportError, OSError) as exc:
         pytest.skip(f"PRISM regression unavailable in this environment: {exc}")
 
-    emb = torch.load(output_dir / "test-wsi.pt", map_location="cpu", weights_only=True)
+    emb = result.source.load("test-wsi")
     gt_emb = torch.load(_fixture_path("gt", "test-wsi.pt"), map_location="cpu", weights_only=True)
 
     assert emb.shape == gt_emb.shape

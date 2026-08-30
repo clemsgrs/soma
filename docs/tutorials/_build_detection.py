@@ -29,7 +29,7 @@ def build() -> nbformat.NotebookNode:
             "token grid:\n"
             "\n"
             "```\n"
-            "Dataset(+points) -> DenseTileFeatureExtractor -> train (decoder + head) -> evaluate\n"
+            "DetectionManifest -> FeatureExtractor -> train (decoder + head) -> evaluate\n"
             "```\n"
             "\n"
             "The encoder emits a **token grid per tile**, and a **decoder** smooths it into\n"
@@ -96,10 +96,6 @@ def build() -> nbformat.NotebookNode:
             "\n"
             "img_paths = [str(ROIS / f'{s}.tif') for s in ids]\n"
             "\n"
-            "# Feature extraction only needs the images; supervision lives in the point manifest.\n"
-            "extract_csv = WORK / 'extract.csv'\n"
-            "pd.DataFrame({'sample_id': ids, 'image_path': img_paths, 'label': 0}).to_csv(extract_csv, index=False)\n"
-            "\n"
             "det_csv = WORK / 'det.csv'\n"
             "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
             "              'points_path': [str(POINTS / f'{s}.csv') for s in ids]}).to_csv(det_csv, index=False)\n"
@@ -108,24 +104,28 @@ def build() -> nbformat.NotebookNode:
         md(
             "## 1. Extract dense token grids\n"
             "\n"
-            "`DenseTileFeatureExtractor` reads each ROI at `spacing_um` and runs the frozen\n"
+            "`FeatureExtractor` reads each ROI at the requested spacing and runs the frozen\n"
             "encoder to produce a `(feature_dim, gh, gw)` grid per sample, stored in a\n"
             "`DenseFeatureStore`. With phikon at 224 px and patch-16 that's a 14×14 grid."
         ),
         code(
             "from soma import (\n"
-            "    Dataset, DenseTileFeatureExtractor, EncoderConfig, CacheConfig,\n"
+            "    DetectionManifest, FeatureExtractor, EncoderConfig, CacheConfig,\n"
+            "    PreprocessingConfig,\n"
             ")\n"
             "\n"
-            "extractor = DenseTileFeatureExtractor(\n"
-            "    Dataset(extract_csv),\n"
+            "det_manifest = DetectionManifest(det_csv)\n"
+            "extractor = FeatureExtractor(\n"
+            "    det_manifest,\n"
             "    EncoderConfig(name='phikon'),\n"
-            "    target_size=SIZE,\n"
-            "    spacing_um=SPACING,\n"
-            "    backend='openslide',\n"
+            "    preprocessing=PreprocessingConfig(\n"
+            "        requested_tile_size_px=SIZE, requested_spacing_um=SPACING,\n"
+            "        backend='openslide',\n"
+            "    ),\n"
             "    cache=CacheConfig(enabled=False),\n"
+            "    output_root=str(WORK / 'dense'),\n"
             ")\n"
-            "dense_store = extractor.run(str(WORK / 'dense'))\n"
+            "dense_store = extractor.extract().source\n"
             "print('dense grids for', len(dense_store.available_samples), 'ROIs')"
         ),
         md(
@@ -138,13 +138,11 @@ def build() -> nbformat.NotebookNode:
             "dense counterpart of `Dataset`."
         ),
         code(
-            "from soma.dataset import DetectionManifest\n"
             "from soma import (\n"
             "    Splits, DecoderConfig, TaskConfig, TrainingConfig, EvalConfig,\n"
             "    PreprocessingConfig, train,\n"
             ")\n"
             "\n"
-            "det_manifest = DetectionManifest(det_csv)\n"
             "det_splits = Splits(splits_csv, det_manifest)\n"
             "\n"
             "det_result = train(\n"
@@ -199,7 +197,11 @@ def build() -> nbformat.NotebookNode:
         ),
     ]
     nb = new_notebook(cells=cells)
-    nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
+    nb.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
     nb.metadata["language_info"] = {"name": "python"}
     nb.metadata["nbsphinx"] = {"orphan": True}
     return nb

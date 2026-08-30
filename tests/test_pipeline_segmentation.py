@@ -671,7 +671,10 @@ def test_pipeline_uses_segmentation_manifest(tmp_path: Path):
     pipeline = Pipeline(_seg_pipeline_config(tmp_path), feature_dir=tmp_path / "dense")
     assert isinstance(pipeline.dataset, SegmentationManifest)
     assert (
-        pipeline._get_feature_store(run_dir=tmp_path / "out").feature_dim == FEATURE_DIM
+        pipeline._get_feature_source_context(
+            run_dir=tmp_path / "out"
+        ).feature_store.feature_dim
+        == FEATURE_DIM
     )
 
 

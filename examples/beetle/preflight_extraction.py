@@ -20,18 +20,17 @@ from soma.config import (
     PreprocessingConfig,
     SamplingConfig,
 )
+from soma import FeatureExtractor
 from soma.dataset import SegmentationManifest
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.reader import build_label_remap
 from soma.dense_slide_extraction import (
-    SlideManifestDenseExtractor,
-    build_roi_manifest,
+    build_roi_dataset,
     sample_slide_rois,
 )
 from soma.tasks.segmentation import SegmentationHead
 
 from examples.beetle.curate import _NATIVE_LEVEL_0_EXCEPTIONS
-
 
 COARSE_READ_POLICY = "native_level_0_no_upsample"
 EXPECTED_COARSE_SLIDES = 3
@@ -148,9 +147,7 @@ def _representative_coordinates(
         preprocessing=preprocessing,
         sample_ids=coarse_ids,
     )
-    missing_eligible = [
-        sample_id for sample_id, coords in coarse_coords.items() if not coords
-    ]
+    missing_eligible = [sample_id for sample_id, coords in coarse_coords.items() if not coords]
     if missing_eligible:
         raise ValueError(
             "BEETLE native-spacing exceptions have no annotation-eligible ROI with the "
@@ -193,7 +190,7 @@ def _run_precision(
     masks: MasksConfig,
     sampling: SamplingConfig,
 ):
-    extractor = SlideManifestDenseExtractor(
+    result = FeatureExtractor(
         roi_dataset,
         EncoderConfig(
             name="virchow2",
@@ -202,8 +199,6 @@ def _run_precision(
             adaptive_batching=True,
             output_variant="cls",
         ),
-        masks=masks,
-        sampling=sampling,
         preprocessing=preprocessing,
         execution=ExecutionConfig(
             num_gpus=1,
@@ -217,9 +212,10 @@ def _run_precision(
             validate_payloads=True,
             dtype=precision,
         ),
-    )
-    store = extractor.run(feature_dir=output_dir / f"features_{precision}")
-    del extractor
+        output_root=output_dir / f"features_{precision}",
+    ).extract()
+    store = result.source
+    del result
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -327,10 +323,11 @@ def _validate_sidecar(
             raise ValueError(
                 f"BEETLE native-spacing representative {record.sample_id} was not read at level 0"
             )
-        if metadata.get("read_size") != [512, 512] or metadata.get("output_size") != [512, 512]:
-            raise ValueError(
-                f"BEETLE native-spacing representative {record.sample_id} was resized"
-            )
+        if metadata.get("read_size") != [512, 512] or metadata.get("output_size") != [
+            512,
+            512,
+        ]:
+            raise ValueError(f"BEETLE native-spacing representative {record.sample_id} was resized")
 
 
 def _parity(fp16: torch.Tensor, fp32: torch.Tensor) -> ParityStatistics:
@@ -386,8 +383,8 @@ def run_representative_extraction_parity(
         sampling=sampling,
         preprocessing=preprocessing,
     )
-    roi_manifest, _roi_splits = build_roi_manifest(
-        dataset, splits_csv, coords_by_slide, out_dir=output_dir / "representative_rois"
+    roi_manifest = build_roi_dataset(
+        dataset, coords_by_slide, out_dir=output_dir / "representative_rois"
     )
     roi_dataset = SegmentationManifest(roi_manifest)
 
@@ -488,9 +485,7 @@ def run_representative_extraction_parity(
             "overlap",
             "feature_kind",
         )
-        geometry = {
-            field: metadata_by_precision["fp16"].get(field) for field in geometry_fields
-        }
+        geometry = {field: metadata_by_precision["fp16"].get(field) for field in geometry_fields}
         fp32_geometry = {
             field: metadata_by_precision["fp32"].get(field) for field in geometry_fields
         }
@@ -518,7 +513,7 @@ def run_representative_extraction_parity(
         representatives.append(
             RepresentativeExtraction(
                 sample_id=str(record.slide_id),
-                kind="native_spacing_exception" if record.slide_id in coarse_ids else "ordinary",
+                kind=("native_spacing_exception" if record.slide_id in coarse_ids else "ordinary"),
                 selection="annotation_eligible_roi",
                 roi_id=record.sample_id,
                 region=[int(record.region[0]), int(record.region[1])],

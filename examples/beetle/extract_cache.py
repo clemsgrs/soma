@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
 from typing import Sequence
 
+from soma import FeatureExtractor
 from soma.config import load_config
-from soma.pipeline import Pipeline
+from soma.dataset import load_manifest
+from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
 
 def _sha256(path: Path) -> str:
@@ -30,16 +33,29 @@ def extract_verified_cache(
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pipeline = Pipeline(load_config(config_path))
-    context = pipeline._build_slide_manifest_dense_context(run_dir=work_dir)
-    store = context.feature_store
-    roi_ids = list(context.dataset.sample_ids)
+    config = load_config(config_path)
+    dataset = load_manifest(config.dataset_csv, config.dataset_type)
+    if config.encoder is None:
+        raise ValueError("BEETLE extraction requires a single encoder configuration.")
+    cache = config.cache
+    if cache.root_dir is None:
+        cache = replace(cache, root_dir=Path(config.output_root) / "feature_cache")
+    extraction = FeatureExtractor(
+        dataset,
+        config.encoder,
+        resolve_pipeline_preprocessing(config),
+        execution=config.execution,
+        cache=cache,
+        output_root=work_dir,
+    ).extract()
+    store = extraction.source
+    roi_ids = list(extraction.dataset.sample_ids)
     store.validate_coverage(roi_ids)
     slides_with_rois = sorted(
-        {str(record.slide_id) for record in context.dataset.samples.values()}
+        {str(record.slide_id) for record in extraction.dataset.samples.values()}
     )
-    parent_ids = list(pipeline.dataset.sample_ids)
-    zero_roi_slides = sorted(set(parent_ids) - set(slides_with_rois))
+    parent_ids = list(dataset.sample_ids)
+    zero_roi_slides = list(extraction.provenance.zero_roi_sample_ids)
     feature_dir = Path(store.feature_dir).resolve()
     tensors = sorted(feature_dir.rglob("*.pt"))
     sidecars = sorted(feature_dir.rglob("*.meta.json"))
@@ -69,9 +85,7 @@ def extract_verified_cache(
         "payload_hashes_pending": True,
     }
     temporary = output_path.with_name(f".{output_path.name}.tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(output_path)
     return payload
 

@@ -44,7 +44,6 @@ from soma.extraction import FeatureExtractor
 from soma.features import FeatureStore
 from soma.pipeline import Pipeline, train
 from soma.tasks import task_registry
-from soma.tile_extraction import TileFeatureExtractor
 from soma.training.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 
 

@@ -187,7 +187,9 @@ class Dataset:
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
-            raise ValueError("Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'.")
+            raise ValueError(
+                "Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'."
+            )
         for col in REQUIRED_DATASET_COLUMNS:
             if col not in df.columns:
                 msg = f"Required column '{col}' not found. Available: {list(df.columns)}"
@@ -287,6 +289,15 @@ class Dataset:
         return record_map
 
 
+class TileDataset(Dataset):
+    """Scalar-supervised pre-cropped images with Given encoder geometry.
+
+    The distinct type is intentionally behavior-free: it prevents persistent extraction
+    from guessing whether a generic ``Dataset`` row names a whole slide or a tile by
+    inspecting paths, pixels, or CSV columns.
+    """
+
+
 REQUIRED_SEGMENTATION_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
 
 
@@ -312,7 +323,9 @@ class SegmentationManifest:
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
-            raise ValueError("Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'.")
+            raise ValueError(
+                "Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'."
+            )
         if "label_mask_path" not in df.columns and "mask_path" in df.columns:
             # Pre-rename segmentation manifests carried the supervision raster as
             # ``mask_path``. Never reinterpret it silently as a tissue mask: say what
@@ -637,7 +650,7 @@ class SpatialExpressionManifest:
 
 def load_manifest(
     dataset_csv: str | Path, dataset_type: str
-) -> "Dataset | SegmentationManifest | DetectionManifest | SpatialExpressionManifest":
+) -> "Dataset | TileDataset | SegmentationManifest | DetectionManifest | SpatialExpressionManifest":
     """Load + validate a ``dataset.csv`` with the loader selected by ``dataset_type``.
 
     This is the single load-time validator keyed on ``dataset_type``: each loader
@@ -652,6 +665,8 @@ def load_manifest(
         return DetectionManifest(dataset_csv)
     if dataset_type == "spatial_expression":
         return SpatialExpressionManifest(dataset_csv)
+    if dataset_type == "tile":
+        return TileDataset(dataset_csv)
     return Dataset(dataset_csv)
 
 
@@ -774,12 +789,8 @@ class Splits:
     def _build_folds(self, df: pd.DataFrame) -> list[FoldSplit]:
         folds = []
         for fold_idx, group in sorted(df.groupby("fold")):
-            train_ids = tuple(
-                str(s) for s in group.loc[group["split"] == "train", "sample_id"]
-            )
-            tune_ids = tuple(
-                str(s) for s in group.loc[group["split"] == "tune", "sample_id"]
-            )
+            train_ids = tuple(str(s) for s in group.loc[group["split"] == "train", "sample_id"])
+            tune_ids = tuple(str(s) for s in group.loc[group["split"] == "tune", "sample_id"])
             tests: dict[str, tuple[str, ...]] = {
                 split_name: tuple(
                     str(s) for s in group.loc[group["split"] == split_name, "sample_id"]
@@ -815,6 +826,88 @@ class Splits:
     def num_folds(self) -> int:
         return len(self._folds)
 
+    def project(self, dataset: "Dataset") -> "Splits":
+        """Project assignments onto an effective dataset.
+
+        Existing sample IDs retain their own assignment. A derived ROI that has no direct
+        assignment inherits exactly one hop through its explicit ``slide_id``. No sample-id
+        parsing or generic parent convention participates in the projection.
+        """
+
+        projected_folds: list[FoldSplit] = []
+        for fold_index, fold in enumerate(self._folds):
+            source_locations: dict[str, set[tuple[str, str | None]]] = {}
+
+            def record_location(
+                sample_ids: tuple[str, ...], kind: str, name: str | None = None
+            ) -> None:
+                for sample_id in sample_ids:
+                    source_locations.setdefault(sample_id, set()).add((kind, name))
+
+            record_location(fold.train, "train")
+            record_location(fold.tune, "tune")
+            for test_name, sample_ids in fold.tests.items():
+                record_location(sample_ids, "test", test_name)
+
+            selected: dict[str, set[tuple[str, str | None]]] = {}
+            for sample_id, record in dataset.samples.items():
+                direct = source_locations.get(sample_id, set())
+                inherited = (
+                    source_locations.get(str(record.slide_id), set())
+                    if record.slide_id is not None
+                    else set()
+                )
+                if direct and inherited and direct != inherited:
+                    raise ValueError(
+                        f"Conflicting split ancestry for sample '{sample_id}' in fold "
+                        f"{fold_index}: direct={sorted(direct)}, "
+                        f"slide_id '{record.slide_id}'={sorted(inherited)}."
+                    )
+                locations = direct or inherited
+                if not locations:
+                    detail = (
+                        f"slide_id '{record.slide_id}' has no assignment"
+                        if record.slide_id is not None
+                        else "the sample has no direct assignment or slide_id"
+                    )
+                    raise ValueError(
+                        f"Unresolved split ancestry for sample '{sample_id}' in fold "
+                        f"{fold_index}: {detail}."
+                    )
+                if locations:
+                    selected[sample_id] = locations
+
+            ordered_ids = list(dataset.sample_ids)
+            projected_folds.append(
+                FoldSplit(
+                    train=tuple(
+                        sample_id
+                        for sample_id in ordered_ids
+                        if ("train", None) in selected.get(sample_id, set())
+                    ),
+                    tune=tuple(
+                        sample_id
+                        for sample_id in ordered_ids
+                        if ("tune", None) in selected.get(sample_id, set())
+                    ),
+                    tests={
+                        test_name: tuple(
+                            sample_id
+                            for sample_id in ordered_ids
+                            if ("test", test_name) in selected.get(sample_id, set())
+                        )
+                        for test_name in fold.tests
+                    },
+                    test_from_tune=fold.test_from_tune,
+                )
+            )
+
+        projected = object.__new__(Splits)
+        projected._path = self._path
+        projected._tune_is_test = self._tune_is_test
+        projected._folds = projected_folds
+        return projected
+
     def validate_no_patient_leakage(self, dataset: "Dataset") -> None:
         """Validate that no patient appears in more than one split within any fold.
 
@@ -836,9 +929,7 @@ class Splits:
             patient_splits: dict[str, set[str]] = {}
             # Skip the synthesized test entry: it mirrors tune by construction,
             # so counting it would flag every tune patient as leaked.
-            test_items = (
-                [] if fold_split.test_from_tune else list(fold_split.tests.items())
-            )
+            test_items = [] if fold_split.test_from_tune else list(fold_split.tests.items())
             all_splits = [
                 ("train", fold_split.train),
                 ("tune", fold_split.tune),
@@ -850,15 +941,10 @@ class Splits:
                     if pid is None:
                         continue
                     patient_splits.setdefault(pid, set()).add(split_name)
-            leaked = {
-                pid: splits
-                for pid, splits in patient_splits.items()
-                if len(splits) > 1
-            }
+            leaked = {pid: splits for pid, splits in patient_splits.items() if len(splits) > 1}
             if leaked:
                 details = "; ".join(
-                    f"patient '{pid}' in {sorted(splits)}"
-                    for pid, splits in sorted(leaked.items())
+                    f"patient '{pid}' in {sorted(splits)}" for pid, splits in sorted(leaked.items())
                 )
                 raise ValueError(
                     f"Patient leakage detected in fold {fold_idx}: {details}. "

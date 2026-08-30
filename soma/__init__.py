@@ -38,7 +38,9 @@ from soma.dataset import (
     FoldSplit,
     SampleRecord,
     SegmentationManifest,
+    SpatialExpressionManifest,
     Splits,
+    TileDataset,
 )
 from soma.decoders import list_decoders
 from soma.dense import (
@@ -47,8 +49,14 @@ from soma.dense import (
     DenseFeatureStore,
     DenseSourceProvenance,
 )
-from soma.dense_extraction import DenseTileFeatureExtractor
-from soma.extraction import FeatureExtractor
+from soma.extraction import (
+    ExtractionArtifacts,
+    FeatureExtractionResult,
+    FeatureExtractor,
+    FeatureProvenance,
+    FeatureSource,
+    PooledFeatureSource,
+)
 from soma.features import FeatureStore
 from soma.pixel_classifiers import list_pixel_classifiers
 from soma.pipeline import (
@@ -64,7 +72,6 @@ from soma.preprocessing import (
     save_overlay_preview,
     write_coordinate_preview,
 )
-from soma.tile_extraction import TileFeatureExtractor
 from soma.dense.live import LiveSegmentationSource
 from soma.training.model import (
     EmbeddingModel,
@@ -116,16 +123,21 @@ __all__ = [
     "FoldSplit",
     "SampleRecord",
     "SegmentationManifest",
+    "SpatialExpressionManifest",
     "DetectionManifest",
     "Splits",
+    "TileDataset",
     "FeatureExtractor",
+    "ExtractionArtifacts",
+    "FeatureExtractionResult",
+    "FeatureProvenance",
+    "FeatureSource",
+    "PooledFeatureSource",
     "FeatureStore",
     "CacheBackedDenseSource",
     "DenseFeatureSource",
-    "TileFeatureExtractor",
     "DenseFeatureStore",
     "DenseSourceProvenance",
-    "DenseTileFeatureExtractor",
     "FoldResult",
     "Pipeline",
     "PipelineResult",

@@ -116,7 +116,7 @@ ten generic evidence files to the project reporter:
 
 ```bash
 python -m examples.beetle.report_oof \
-  --sample-patient-csv <uniform-run>/segmentation_rois/roi_manifest.csv \
+  --sample-patient-csv <uniform-run>/segmentation_rois/dataset.csv \
   --uniform <uniform-run>/fold_{0,1,2,3,4}/confusion_evidence_tune.json \
   --class-conditioned <class-conditioned-run>/fold_{0,1,2,3,4}/confusion_evidence_tune.json \
   --output data/beetle/reports/oof_report.json

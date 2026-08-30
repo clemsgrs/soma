@@ -220,28 +220,23 @@ def _locate_checkpoint(run_dir: Path) -> Path:
 def resolve_dense_cache_dir(
     cfg: PipelineConfig, manifest: DetectionManifest
 ) -> Path | None:
-    """Resolve the exact dense-image cache directory described by ``cfg``."""
-    from soma.dense_extraction import DenseTileFeatureExtractor
+    """Prepare and return the exact dense-image cache directory described by ``cfg``."""
+    from soma import FeatureExtractor
     from soma.encoders.validation import resolve_preprocessing_config
 
     preprocessing = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
     cache = cfg.cache
     if cache.root_dir is None:
         cache = replace(cache, root_dir=Path(cfg.output_root) / "feature_cache")
-    extractor = DenseTileFeatureExtractor(
+    extraction = FeatureExtractor(
         manifest,
         cfg.encoder,
-        target_size=int(preprocessing.requested_tile_size_px),
-        spacing_um=float(preprocessing.requested_spacing_um),
-        backend=preprocessing.backend,
-        tolerance=float(preprocessing.tolerance),
-        window_size=preprocessing.dense_window_size,
-        overlap=float(preprocessing.dense_window_overlap),
+        preprocessing,
         execution=cfg.execution,
         cache=cache,
-        preprocessing=preprocessing,
-    )
-    return extractor.cache_dir()
+        output_root=Path(cfg.output_root) / "rescore_extraction",
+    ).extract()
+    return extraction.artifacts.feature_dir.parent
 
 
 def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> dict:

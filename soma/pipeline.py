@@ -3375,81 +3375,73 @@ class Pipeline:
         return result
 
     def _get_feature_source_context(self, *, run_dir: Path) -> _FeatureSourceContext:
-        if self._config.dataset_type in ("segmentation", "detection"):
-            return self._get_dense_feature_source_context(run_dir=run_dir)
-        return _FeatureSourceContext(
-            feature_store=self._get_feature_store(run_dir=run_dir),
-            dataset=self._dataset,
-            splits=self._splits,
+        is_dense = self._config.dataset_type in ("segmentation", "detection")
+        annotation_sampled = (
+            self._config.dataset_type == "segmentation"
+            and self._config.preprocessing.masks is not None
         )
-
-    def _get_feature_store(self, *, run_dir: Path):
-        if self._config.dataset_type in ("segmentation", "detection"):
-            return self._get_dense_feature_source_context(run_dir=run_dir).feature_store
-        if self._feature_dir is not None:
-            return FeatureStore(self._feature_dir)
-
-        if self._config.dataset_type in ("tile", "spatial_expression"):
-            # spatial_expression (HEST) reuses the tile path: each spot is one PNG tile
-            # encoded to a 1-D feature vector, cached once and reused across folds.
-            if self._config.encoder is None:
-                raise ValueError(
-                    f"PipelineConfig.encoder is required for "
-                    f"dataset_type={self._config.dataset_type!r} when feature_dir is not "
-                    "provided."
-                )
-            from soma.tile_extraction import TileFeatureExtractor
-
-            cache_config = self._config.cache
-            if cache_config.root_dir is None:
-                cache_config = replace(
-                    cache_config,
-                    root_dir=Path(self._config.output_root) / "feature_cache",
-                )
-            extractor = TileFeatureExtractor(
-                self._dataset,
-                self._config.encoder,
-                execution=self._config.execution,
-                cache=cache_config,
-            )
-            try:
-                return extractor.run(feature_dir=run_dir / "features")
-            finally:
-                _release_parent_cuda_state()
-
-        # Slide pipeline path
-        if self._config.encoder is None:
+        if annotation_sampled and self._feature_dir is not None:
             raise ValueError(
-                "PipelineConfig.encoder is required when feature_dir is not provided."
+                "feature_dir is not supported for annotation-sampled segmentation; "
+                "FeatureExtractor owns the effective ROI dataset and cache identity."
             )
-        preprocessing = resolve_pipeline_preprocessing(self._config)
+        if annotation_sampled and self._config.feature_mode == "live":
+            raise NotImplementedError(
+                "Live extraction over annotation-sampled segmentation ROIs is outside "
+                "the persistent FeatureExtractor contract."
+            )
+        if annotation_sampled and self._config.composite is not None:
+            raise NotImplementedError(
+                "Multi-encoder extraction over annotation-sampled segmentation ROIs is "
+                "not implemented."
+            )
+        if self._feature_dir is not None:
+            from soma.dense import DenseFeatureStore
 
+            source = (
+                self._cache_backed_dense_source(
+                    DenseFeatureStore(self._feature_dir),
+                    kind="dense_cache",
+                    dataset_csv=self._config.dataset_csv,
+                )
+                if is_dense
+                else FeatureStore(self._feature_dir)
+            )
+            return _FeatureSourceContext(
+                feature_store=source,
+                dataset=self._dataset,
+                splits=self._splits,
+            )
+
+        # Live re-encoding and multi-encoder composition are intentionally outside the
+        # single-encoder persistent extraction interface.
+        if is_dense and (self._config.feature_mode == "live" or self._config.composite is not None):
+            return _FeatureSourceContext(
+                feature_store=self._get_dense_source(run_dir=run_dir),
+                dataset=self._dataset,
+                splits=self._splits,
+            )
+
+        if self._config.encoder is None:
+            raise ValueError("PipelineConfig.encoder is required when feature_dir is not provided.")
         cache_config = self._config.cache
         if cache_config.root_dir is None:
             cache_config = replace(
                 cache_config,
                 root_dir=Path(self._config.output_root) / "feature_cache",
             )
-        extractor = FeatureExtractor(
+        extraction = FeatureExtractor(
             self._dataset,
             self._config.encoder,
-            preprocessing,
+            resolve_pipeline_preprocessing(self._config),
             output_root=run_dir,
             execution=self._config.execution,
             cache=cache_config,
-        )
-        try:
-            return extractor.run(feature_dir="features")
-        finally:
-            _release_parent_cuda_state()
-
-    def _get_dense_feature_source_context(self, *, run_dir: Path) -> _FeatureSourceContext:
-        if self._config.preprocessing.masks is not None:
-            return self._build_slide_manifest_dense_context(run_dir=run_dir)
+        ).extract()
         return _FeatureSourceContext(
-            feature_store=self._get_dense_source(run_dir=run_dir),
-            dataset=self._dataset,
-            splits=self._splits,
+            feature_store=extraction.source,
+            dataset=extraction.dataset,
+            splits=self._splits.project(extraction.dataset),
         )
 
     def _cache_backed_dense_source(
@@ -3458,9 +3450,7 @@ class Pipeline:
         *,
         kind: str,
         dataset_csv: str | Path,
-        splits_csv: str | Path,
         parent_dataset_csv: str | Path | None = None,
-        parent_splits_csv: str | Path | None = None,
     ):
         from soma.dense import CacheBackedDenseSource, DenseSourceProvenance
 
@@ -3470,15 +3460,11 @@ class Pipeline:
                 kind=kind,
                 feature_dir=getattr(store, "feature_dir", None),
                 dataset_csv=dataset_csv,
-                splits_csv=splits_csv,
                 parent_dataset_csv=parent_dataset_csv,
-                parent_splits_csv=parent_splits_csv,
             ),
         )
 
     def _get_dense_source(self, *, run_dir: Path):
-        from soma.dense import DenseFeatureStore
-
         # Live re-encode path: no cached grids — hold the frozen encoder + geometry and
         # re-encode (augmented) tiles each step. Built before the fold loop so the
         # backbone loads once and is shared across folds.
@@ -3487,14 +3473,6 @@ class Pipeline:
 
             return build_live_segmentation_source(self._config)
 
-        if self._feature_dir is not None:
-            return self._cache_backed_dense_source(
-                DenseFeatureStore(self._feature_dir),
-                kind="dense_cache",
-                dataset_csv=self._config.dataset_csv,
-                splits_csv=self._config.splits_csv,
-            )
-
         # Multi-encoder composite: extract each member into its own cache, then present a
         # load-time channel-concat view (design §7).
         if self._config.composite is not None:
@@ -3502,197 +3480,8 @@ class Pipeline:
                 self._build_composite_dense_store(run_dir=run_dir),
                 kind="composite_dense_cache",
                 dataset_csv=self._config.dataset_csv,
-                splits_csv=self._config.splits_csv,
             )
-
-        dtype = self._config.dataset_type
-        if self._config.encoder is None:
-            raise ValueError(
-                f"PipelineConfig.encoder is required for dataset_type={dtype!r} "
-                "when feature_dir is not provided."
-            )
-        # Resolve preprocessing so requested_spacing_um defaults to the encoder's
-        # supported spacing (without overriding an explicit value); the dense read is
-        # spacing-aware (hs2p). requested_tile_size_px stays the supervision size.
-        preprocessing = resolve_pipeline_preprocessing(self._config)
-        # The dense supervision size (tile/mask size) drives the pad-to-patch
-        # geometry. Reuse the existing tile-size knob — a segmentation tile is an
-        # image of this size — rather than duplicating it on the decoder config.
-        target_size = preprocessing.requested_tile_size_px
-        if target_size is None:
-            raise ValueError(
-                f"dataset_type={dtype!r} extraction requires "
-                "preprocessing.requested_tile_size_px (the supervision tile size) "
-                "when feature_dir is not provided."
-            )
-        if preprocessing.requested_spacing_um is None:
-            raise ValueError(
-                f"dataset_type={dtype!r} extraction requires a spacing — set "
-                "preprocessing.requested_spacing_um or use an encoder that advertises "
-                "a single supported_spacing_um."
-            )
-        from soma.dense_extraction import DenseTileFeatureExtractor
-
-        cache_config = self._config.cache
-        if cache_config.root_dir is None:
-            cache_config = replace(
-                cache_config,
-                root_dir=Path(self._config.output_root) / "feature_cache",
-            )
-        extractor = DenseTileFeatureExtractor(
-            self._dataset,
-            self._config.encoder,
-            target_size=int(target_size),
-            spacing_um=float(preprocessing.requested_spacing_um),
-            backend=preprocessing.backend,
-            tolerance=float(preprocessing.tolerance),
-            window_size=preprocessing.dense_window_size,
-            overlap=float(preprocessing.dense_window_overlap),
-            execution=self._config.execution,
-            cache=cache_config,
-            preprocessing=preprocessing,
-        )
-        try:
-            return self._cache_backed_dense_source(
-                extractor.run(feature_dir=run_dir / "features"),
-                kind="dense_cache",
-                dataset_csv=self._config.dataset_csv,
-                splits_csv=self._config.splits_csv,
-            )
-        finally:
-            _release_parent_cuda_state()
-            _log_cuda_memory("after dense extraction release")
-
-    def _build_slide_manifest_dense_context(self, *, run_dir: Path):
-        """Sample ROIs from slides+masks, extract dense grids, return derived context.
-
-        The derived ROI manifest + ROI splits (each ROI inherits its parent slide's split)
-        are returned explicitly so the pipeline's configured slide-level dataset/splits stay
-        intact. The grids are extracted via slide2vec + cached by soma; the sampling spec is
-        folded into the dense cache key (distinct ``min_coverage``/spacing/strategy ⇒ distinct
-        cache). Cached path only — the live/augmentation path over the same ROIs is A4.
-        """
-        from soma.dataset import SegmentationManifest, Splits
-        from soma.dense_slide_extraction import (
-            SlideManifestDenseExtractor,
-            build_roi_manifest,
-            sample_slide_rois,
-        )
-
-        dtype = self._config.dataset_type
-        if dtype != "segmentation":
-            raise ValueError(f"slide-manifest masks: config requires dataset_type='segmentation', got {dtype!r}.")
-        if self._config.feature_mode == "live":
-            raise NotImplementedError(
-                "Live (augmentation) extraction over slide-manifest ROIs is not implemented "
-                "yet (A4). Use the default cached feature_mode for slide-manifest segmentation."
-            )
-        if self._config.composite is not None:
-            raise NotImplementedError(
-                "Multi-encoder composite extraction over slide-manifest ROIs is not implemented "
-                "yet. Use a single encoder for slide-manifest segmentation."
-            )
-        if self._feature_dir is not None:
-            raise ValueError(
-                "feature_dir is not supported with a slide-manifest masks: config — the ROIs "
-                "are sampled and extracted from the slides, not read from pre-extracted grids."
-            )
-        if self._config.encoder is None:
-            raise ValueError(
-                "PipelineConfig.encoder is required for slide-manifest segmentation "
-                "(feature_dir is not supported here)."
-            )
-
-        preprocessing = resolve_pipeline_preprocessing(self._config)
-        sampling = self._config.preprocessing.sampling or SamplingConfig()
-        masks = self._config.preprocessing.masks
-
-        cache_config = self._config.cache
-        if cache_config.root_dir is None:
-            cache_config = replace(cache_config, root_dir=Path(self._config.output_root) / "feature_cache")
-
-        # Cross-run ROI sampling reuse (#365): resolve the roi_sampling cache before
-        # sampling, run hs2p only over the missing slide set, publish the fresh per-slide
-        # coords (zero-ROI outcomes included, so they hit next launch), and merge. Splits
-        # are structurally excluded from the cache — the ROI manifest/splits are re-derived
-        # below every launch from coords + the run's splits CSV, so a splits edit never
-        # re-samples and never reads stale splits. Cache disabled ⇒ sample everything,
-        # no cache I/O, exactly as before.
-        if cache_config.enabled:
-            from soma.cache import (
-                resolve_cache_root,
-                resolve_roi_sampling_cache,
-                write_roi_sampling_coords,
-            )
-
-            cache_resolution = resolve_roi_sampling_cache(
-                cache_root=resolve_cache_root(cache_config, feature_dir=run_dir / "features"),
-                dataset=self._dataset,
-                preprocessing=preprocessing,
-            )
-            miss_ids = cache_resolution.miss_sample_ids
-            logger.info(
-                "Sampling segmentation ROIs: %d slide(s) from cache, %d slide(s) to sample.",
-                len(cache_resolution.coords_by_id),
-                len(miss_ids),
-            )
-            fresh: dict[str, list[tuple[int, int]]] = {}
-            if miss_ids:
-                fresh = sample_slide_rois(
-                    self._dataset,
-                    masks=masks,
-                    sampling=sampling,
-                    preprocessing=preprocessing,
-                    sample_ids=miss_ids,
-                )
-                write_roi_sampling_coords(
-                    cache_resolution=cache_resolution, coords_by_sample_id=fresh
-                )
-            merged = {**cache_resolution.coords_by_id, **fresh}
-        else:
-            logger.info("Sampling segmentation ROIs from %d slides...", len(self._dataset.sample_ids))
-            merged = sample_slide_rois(
-                self._dataset, masks=masks, sampling=sampling, preprocessing=preprocessing
-            )
-        # Manifest row order follows the slide manifest regardless of the hit/miss mix,
-        # so a warm relaunch derives a byte-identical ROI manifest.
-        coords_by_slide = {sid: merged[sid] for sid in self._dataset.sample_ids}
-        roi_dir = run_dir / "segmentation_rois"
-        roi_manifest_csv, roi_splits_csv = build_roi_manifest(
-            self._dataset, self._config.splits_csv, coords_by_slide, out_dir=roi_dir
-        )
-        roi_dataset = SegmentationManifest(roi_manifest_csv)
-        roi_splits = Splits(
-            roi_splits_csv,
-            roi_dataset,
-            tune_is_test=self._config.training.tune_is_test,
-        )
-
-        extractor = SlideManifestDenseExtractor(
-            roi_dataset,
-            self._config.encoder,
-            masks=masks,
-            sampling=sampling,
-            preprocessing=preprocessing,
-            execution=self._config.execution,
-            cache=cache_config,
-        )
-        try:
-            store = extractor.run(feature_dir=run_dir / "features")
-        finally:
-            _release_parent_cuda_state()
-        return _FeatureSourceContext(
-            feature_store=self._cache_backed_dense_source(
-                store,
-                kind="slide_manifest_dense_cache",
-                dataset_csv=roi_manifest_csv,
-                splits_csv=roi_splits_csv,
-                parent_dataset_csv=self._config.dataset_csv,
-                parent_splits_csv=self._config.splits_csv,
-            ),
-            dataset=roi_dataset,
-            splits=roi_splits,
-        )
+        raise RuntimeError("Dense source selection reached no live/composite branch.")
 
     def _build_composite_dense_store(self, *, run_dir: Path):
         """Extract every member encoder into its own cache; return a concat view (§7).
@@ -3705,7 +3494,7 @@ class Pipeline:
         composite's ``concat_resolution`` / ``concat_grid_size``.
         """
         from soma.dense.composite import CompositeDenseFeatureStore
-        from soma.dense_extraction import DenseTileFeatureExtractor
+        from soma.dense_extraction import _DenseImageExtractor
 
         composite = self._config.composite
         preprocessing = resolve_pipeline_preprocessing(self._config)
@@ -3755,7 +3544,7 @@ class Pipeline:
                     dense_window_size=member_window,
                     dense_window_overlap=member_overlap,
                 )
-                extractor = DenseTileFeatureExtractor(
+                extractor = _DenseImageExtractor(
                     self._dataset,
                     member_encoder,
                     target_size=int(target_size),
@@ -3779,6 +3568,7 @@ class Pipeline:
             concat_grid_size=composite.concat_grid_size,
             member_norms=[m.member_norm or "none" for m in composite.encoders],
         )
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers

@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,7 +53,9 @@ def test_every_cell_uses_the_one_native_manifest(tmp_path: Path):
     ]
 
 
-def test_campaign_resolves_the_current_dense_image_cache_layout(tmp_path: Path):
+def test_campaign_resolves_the_current_dense_image_cache_layout(monkeypatch, tmp_path: Path):
+    import soma
+
     m = _load_campaign()
     curated = tmp_path / "curated"
     curated.mkdir()
@@ -63,12 +66,33 @@ def test_campaign_resolves_the_current_dense_image_cache_layout(tmp_path: Path):
     (curated / "splits.csv").write_text(
         "sample_id,split,fold\ntrain_001,train,0\n"
     )
+    feature_dir = (
+        tmp_path
+        / "feature_cache"
+        / "dense_image"
+        / "cache-key"
+        / "dense_image_embeddings"
+    )
+    calls: list[dict] = []
+
+    class _FakeFeatureExtractor:
+        def __init__(self, *args, **kwargs):
+            calls.append({"args": args, "kwargs": kwargs})
+
+        def extract(self):
+            return SimpleNamespace(
+                artifacts=SimpleNamespace(feature_dir=feature_dir)
+            )
+
+    monkeypatch.setattr(soma, "FeatureExtractor", _FakeFeatureExtractor)
 
     path = m.dense_embeddings_dir(m.ANCHOR, tmp_path)
 
     assert path is not None
     assert path.parts[-3] == "dense_image"
     assert path.name == "dense_image_embeddings"
+    assert len(calls) == 1
+    assert calls[0]["kwargs"]["output_root"].name == "rescore_extraction"
 
 
 def test_score_run_reuses_the_trained_runs_saved_config(monkeypatch, tmp_path: Path):
