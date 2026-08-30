@@ -55,6 +55,8 @@ from soma.benchmarks.reproduction import (  # noqa: E402
 # provenance / record guarantees `soma reproduce` provides, callable as an API — with a
 # parameterizable results root so an external repo can host its own committed ledger.
 from soma.benchmarks.run import (  # noqa: E402
+    BenchmarkRunResult,
+    MetricResult,
     ReportedScoreError,
     run_benchmark,
 )
@@ -62,9 +64,11 @@ from soma.benchmarks.run import (  # noqa: E402
 __all__ = [
     "RESOLVABLE_EPS",
     "Benchmark",
+    "BenchmarkRunResult",
     "Cell",
     "Facet",
     "MeasuredRow",
+    "MetricResult",
     "PairOutcome",
     "ReferenceRow",
     "ReportedScoreError",
