@@ -1536,7 +1536,6 @@ def train_one_segmentation_fold(
     normalization: NormalizationConfig | None = None,
     projection: ProjectionConfig | None = None,
     encoder_identity: str = "",
-    artifact_mirror: ArtifactMirror | None = None,
     roi_population_cache_root: str | Path | None = None,
     resolved_roi_population: "SegmentationRoiPopulation | None" = None,
     roi_source_fingerprint_cache: dict[str, dict[str, object]] | None = None,
@@ -1813,35 +1812,6 @@ def train_one_segmentation_fold(
             test_reports={},
         )
 
-    def on_checkpoint_improved(
-        checkpoint_path: Path, history: list, epoch: int
-    ) -> None:
-        if artifact_mirror is None:
-            return
-        _save_training_history(history, fold_dir / "training_history.json")
-        sampler_audit = (
-            roi_batch_sampler.audit()
-            if roi_batch_sampler is not None
-            else {"strategy": "standard", "epochs": []}
-        )
-        (fold_dir / "sampler_audit.json").write_text(
-            json.dumps(sampler_audit, indent=2, sort_keys=True), encoding="utf-8"
-        )
-        artifact_mirror.checkpoint_improved(
-            fold=fold,
-            epoch=epoch,
-            artifacts={
-                "best_model.pt": checkpoint_path,
-                "training_history.json": fold_dir / "training_history.json",
-                "sampler_audit.json": fold_dir / "sampler_audit.json",
-            },
-            restore_files=[
-                "best_model.pt",
-                "training_history.json",
-                "sampler_audit.json",
-            ],
-        )
-
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -1851,7 +1821,6 @@ def train_one_segmentation_fold(
         device=device,
         fold=fold,
         num_folds=num_folds,
-        on_checkpoint_improved=on_checkpoint_improved,
     )
     train_result = trainer.fit()
     if roi_batch_sampler is not None:
@@ -2859,7 +2828,6 @@ def train(
                 normalization=normalization,
                 projection=projection,
                 encoder_identity=encoder_identity,
-                artifact_mirror=(None if fold_was_complete else artifact_mirror),
                 roi_population_cache_root=roi_population_cache_root,
                 resolved_roi_population=run_roi_population,
                 roi_source_fingerprint_cache=roi_source_fingerprint_cache,

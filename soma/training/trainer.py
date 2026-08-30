@@ -5,7 +5,6 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import torch
@@ -88,7 +87,6 @@ class Trainer:
         console: Console | None = None,
         fold: int | None = None,
         num_folds: int = 1,
-        on_checkpoint_improved: Callable[[Path, list[EpochLog], int], None] | None = None,
     ) -> None:
         self._model = model.to(device)
         self._train_loader = train_loader
@@ -99,7 +97,6 @@ class Trainer:
         self._console = console
         self._fold = fold
         self._num_folds = num_folds
-        self._on_checkpoint_improved = on_checkpoint_improved
         self._trainable_param_count = _count_trainable_parameters(self._model)
 
         self._optimizer = _build_optimizer(model, config)
@@ -292,8 +289,6 @@ class Trainer:
                         tune_metrics=tune_metrics,
                         selection=selection,
                     )
-                    if self._on_checkpoint_improved is not None:
-                        self._on_checkpoint_improved(checkpoint_path, history, epoch)
                     status = f"new selected checkpoint saved at epoch {epoch + 1}"
                 else:
                     patience_counter += 1
