@@ -8,7 +8,6 @@ import pandas as pd
 import pytest
 import torch
 
-
 COARSE_IDS = (
     "TCGA-OL-A66I-01Z-00-DX1.8CE9DCAB-98D3-4163-94AC-1557D86C1E25",
     "TCGA-OL-A66P-01Z-00-DX1.5ADD0D6D-37C6-4BC9-8C2B-64DB18BE99B3",
@@ -37,10 +36,7 @@ def _write_manifest(tmp_path: Path) -> tuple[Path, Path]:
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
     splits_csv = tmp_path / "splits.csv"
     pd.DataFrame(
-        [
-            {"sample_id": row["sample_id"], "split": "train", "fold": 0}
-            for row in rows
-        ]
+        [{"sample_id": row["sample_id"], "split": "train", "fold": 0} for row in rows]
     ).to_csv(splits_csv, index=False)
     return dataset_csv, splits_csv
 
@@ -49,14 +45,14 @@ class _FakeExtractor:
     calls: list[dict] = []
     negate_fp16 = False
 
-    def __init__(self, roi_dataset, encoder, **kwargs):
+    def __init__(self, roi_dataset, encoder, preprocessing=None, **kwargs):
         self.roi_dataset = roi_dataset
         self.encoder = encoder
-        self.kwargs = kwargs
+        self.kwargs = {"preprocessing": preprocessing, **kwargs}
 
-    def run(self, feature_dir):
+    def extract(self):
         dtype = torch.float16 if self.kwargs["cache"].dtype == "fp16" else torch.float32
-        payload = Path(feature_dir) / "dense_embeddings"
+        payload = Path(self.kwargs["output_root"]) / "features" / "dense_embeddings"
         for record in self.roi_dataset.samples.values():
             x, y = record.region
             sample_dir = payload / record.slide_id
@@ -101,7 +97,7 @@ class _FakeExtractor:
                 **self.kwargs,
             }
         )
-        return SimpleNamespace(feature_dir=payload)
+        return SimpleNamespace(source=SimpleNamespace(feature_dir=payload))
 
 
 def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_ordinary(
@@ -136,7 +132,7 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
             return {"mask": torch.full((512, 512), 2, dtype=torch.long)}
 
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
-    monkeypatch.setattr(module, "SlideManifestDenseExtractor", _FakeExtractor)
+    monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
     monkeypatch.setattr(module, "SegmentationHead", FakeHead)
     _FakeExtractor.calls = []
     _FakeExtractor.negate_fp16 = False
@@ -188,13 +184,9 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
         "fp32",
     ]
     assert all(
-        call["preprocessing"].tolerance == pytest.approx(0.1)
-        for call in _FakeExtractor.calls
+        call["preprocessing"].tolerance == pytest.approx(0.1) for call in _FakeExtractor.calls
     )
-    assert all(
-        call["preprocessing"].mask_backend == "openslide"
-        for call in _FakeExtractor.calls
-    )
+    assert all(call["preprocessing"].mask_backend == "openslide" for call in _FakeExtractor.calls)
     assert _FakeExtractor.calls[0]["cache"].root_dir != _FakeExtractor.calls[1]["cache"].root_dir
 
 
@@ -216,7 +208,7 @@ def test_representative_extraction_rejects_fp16_cache_below_cosine_contract(
             return {"mask": torch.zeros((512, 512), dtype=torch.long)}
 
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
-    monkeypatch.setattr(module, "SlideManifestDenseExtractor", _FakeExtractor)
+    monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
     monkeypatch.setattr(module, "SegmentationHead", FakeHead)
     _FakeExtractor.calls = []
     _FakeExtractor.negate_fp16 = True

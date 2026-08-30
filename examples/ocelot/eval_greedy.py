@@ -39,10 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import torch
 
+from soma import FeatureExtractor
 from soma.config import load_config
 from soma.dataset import DetectionManifest, Splits
-from soma.dense import DenseFeatureStore
-from soma.dense_extraction import DenseTileFeatureExtractor
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.pipeline import (
     _make_loaders,
@@ -91,10 +90,8 @@ def main() -> None:
     # dense cache-key subdir — e.g. an empty orphan left by a since-changed key (the
     # 1024->410/819 target_size fix) sitting next to the populated one — so a blind
     # next(glob("*")) can grab the wrong dir. Recompute the *exact* key from the config
-    # via the extractor's side-effect-free resolver (no encoder load, no dataset scan, no
-    # dir creation), built the same way the pipeline builds it for dataset_type='detection'
-    # (soma/pipeline.py::_build_dense_tile_context). That addresses the precise grids the
-    # run wrote, independent of what sibling dirs happen to exist.
+    # through the same canonical extractor the pipeline uses. On a complete hit this
+    # validates and opens the exact cache without loading the encoder or rewriting grids.
     # Resolve encoder-driven preprocessing defaults exactly as the pipeline does before
     # extraction (soma/pipeline.py::_resolve_preprocessing → resolve_preprocessing_config):
     # it fills derived fields (read_tile_size_px / ref_tile_size_px from
@@ -104,26 +101,16 @@ def main() -> None:
     cache_cfg = cfg.cache
     if cache_cfg.root_dir is None:
         cache_cfg = replace(cache_cfg, root_dir=args.run_dir / "feature_cache")
-    extractor = DenseTileFeatureExtractor(
+    extraction = FeatureExtractor(
         manifest,
         cfg.encoder,
-        target_size=int(pre.requested_tile_size_px),
-        spacing_um=float(pre.requested_spacing_um),
-        backend=pre.backend,
-        tolerance=float(pre.tolerance),
-        window_size=pre.dense_window_size,
-        overlap=float(pre.dense_window_overlap),
+        pre,
         execution=cfg.execution,
         cache=cache_cfg,
-        preprocessing=pre,
-    )
-    store_dir = extractor.cache_dir()
-    if store_dir is None:
-        raise RuntimeError(
-            "caching is disabled in this config; eval_greedy needs the cached dense grids "
-            "the run trained on."
-        )
-    store = DenseFeatureStore(store_dir)
+        output_root=args.run_dir / "rescore_extraction",
+    ).extract()
+    store = extraction.source
+    store_dir = extraction.artifacts.feature_dir.parent
     # Fail loud if the recomputed key points where the grids aren't — a config that no
     # longer matches what this run trained on, or an incomplete extraction — instead of
     # silently re-scoring against the wrong (or an empty) store.

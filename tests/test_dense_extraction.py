@@ -27,7 +27,7 @@ from soma.config import CacheConfig, EncoderConfig, ExecutionConfig  # noqa: E40
 from soma.dataset import Dataset, SampleRecord  # noqa: E402
 from soma.dense import DenseFeatureStore, compute_dense_geometry  # noqa: E402
 from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
-from soma.dense_extraction import DenseTileFeatureExtractor  # noqa: E402
+from soma.dense_extraction import _DenseImageExtractor  # noqa: E402
 
 FEATURE_DIM = 8
 PATCH = 16
@@ -141,14 +141,14 @@ def fake_model(monkeypatch) -> type[_FakeDenseImageModel]:
     return _FakeDenseImageModel
 
 
-def _extractor(dataset: Dataset, tmp_path: Path, **overrides) -> DenseTileFeatureExtractor:
+def _extractor(dataset: Dataset, tmp_path: Path, **overrides) -> _DenseImageExtractor:
     kwargs = dict(
         target_size=32,
         spacing_um=0.5,
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
     )
     kwargs.update(overrides)
-    return DenseTileFeatureExtractor(
+    return _DenseImageExtractor(
         dataset, EncoderConfig(name="uni", precision="fp32", batch_size=2), **kwargs
     )
 
@@ -197,7 +197,7 @@ def test_real_flat_raster_extraction_respects_manifest_source_spacing(
         ]
     ).to_csv(manifest, index=False)
 
-    store = DenseTileFeatureExtractor(
+    store = _DenseImageExtractor(
         Dataset(manifest),
         EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
         target_size=target_size,

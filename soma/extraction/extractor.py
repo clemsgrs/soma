@@ -219,7 +219,7 @@ def _non_empty_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[Lo
     return [loaded for loaded in loaded_tilings if tiling_num_tiles(loaded.tiling_result) > 0]
 
 
-class FeatureExtractor:
+class _PooledFeatureExtractor:
     """Preprocesses slides and extracts features for all samples in a dataset."""
 
     def __init__(

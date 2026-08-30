@@ -116,11 +116,6 @@ def build() -> nbformat.NotebookNode:
             "\n"
             "img_paths = [str(ROIS / f'{s}.tif') for s in ids]\n"
             "\n"
-            "# Feature extraction only needs the images; supervision lives in the mask manifest.\n"
-            "extract_csv = WORK / 'extract.csv'\n"
-            "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
-            "              'label': 0}).to_csv(extract_csv, index=False)\n"
-            "\n"
             "seg_csv = WORK / 'seg.csv'\n"
             "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
             "              'label_mask_path': [str(MASKS / f'{s}.png') for s in ids]}).to_csv(seg_csv, index=False)\n"
@@ -131,7 +126,7 @@ def build() -> nbformat.NotebookNode:
             "## 1. Extract each member into its own dense store\n"
             "\n"
             "A composite has **no separate cache**: each member is extracted independently\n"
-            "with `DenseTileFeatureExtractor` (exactly as in the single-encoder dense flow)\n"
+            "with `FeatureExtractor` (exactly as in the single-encoder dense flow)\n"
             "and cached on its own. We run the same ROIs through `phikon` and `hibou-b`,\n"
             "writing each member's grids to its own feature directory. Both emit a 14×14\n"
             "token grid here, but they need not — members may differ freely in patch size /\n"
@@ -139,21 +134,25 @@ def build() -> nbformat.NotebookNode:
         ),
         code(
             "from soma import (\n"
-            "    Dataset, DenseTileFeatureExtractor, EncoderConfig, CacheConfig,\n"
+            "    SegmentationManifest, FeatureExtractor, EncoderConfig, CacheConfig,\n"
+            "    PreprocessingConfig,\n"
             ")\n"
             "\n"
             "MEMBERS = ['phikon', 'hibou-b']\n"
+            "seg_manifest = SegmentationManifest(seg_csv)\n"
             "member_stores = []\n"
             "for name in MEMBERS:\n"
-            "    extractor = DenseTileFeatureExtractor(\n"
-            "        Dataset(extract_csv),\n"
+            "    extractor = FeatureExtractor(\n"
+            "        seg_manifest,\n"
             "        EncoderConfig(name=name),\n"
-            "        target_size=SIZE,\n"
-            "        spacing_um=SPACING,\n"
-            "        backend='openslide',\n"
+            "        preprocessing=PreprocessingConfig(\n"
+            "            requested_tile_size_px=SIZE, requested_spacing_um=SPACING,\n"
+            "            backend='openslide',\n"
+            "        ),\n"
             "        cache=CacheConfig(enabled=False),\n"
+            "        output_root=str(WORK / 'dense' / name),\n"
             "    )\n"
-            "    store = extractor.run(str(WORK / 'dense' / name))\n"
+            "    store = extractor.extract().source\n"
             "    member_stores.append(store)\n"
             "    print(f'{name}: feature_dim={store.feature_dim}, samples={len(store.available_samples)}')"
         ),
@@ -190,13 +189,11 @@ def build() -> nbformat.NotebookNode:
             "decoder simply sees a wider per-position vector; nothing else changes."
         ),
         code(
-            "from soma.dataset import SegmentationManifest\n"
             "from soma import (\n"
             "    Splits, DecoderConfig, TaskConfig, TrainingConfig, EvalConfig,\n"
             "    PreprocessingConfig, train,\n"
             ")\n"
             "\n"
-            "seg_manifest = SegmentationManifest(seg_csv)\n"
             "seg_splits = Splits(splits_csv, seg_manifest)\n"
             "\n"
             "seg_result = train(\n"
@@ -254,7 +251,11 @@ def build() -> nbformat.NotebookNode:
         ),
     ]
     nb = new_notebook(cells=cells)
-    nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
+    nb.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
     nb.metadata["language_info"] = {"name": "python"}
     # Reachable via :doc: links from the tutorial hub pages, but kept out of the
     # sidebar nav (the hub pages are the nav entries).
@@ -270,8 +271,12 @@ def main() -> None:
     if os.environ.get("SOMA_EXECUTE_NOTEBOOKS"):
         from nbclient import NotebookClient
 
-        client = NotebookClient(nb, timeout=1800, kernel_name="python3",
-                                resources={"metadata": {"path": str(HERE)}})
+        client = NotebookClient(
+            nb,
+            timeout=1800,
+            kernel_name="python3",
+            resources={"metadata": {"path": str(HERE)}},
+        )
         client.execute()
     nbformat.write(nb, OUT)
     print(f"wrote {OUT}")

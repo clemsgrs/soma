@@ -27,13 +27,13 @@ def test_extract_cache_prepares_features_without_starting_training(
         def validate_coverage(self, sample_ids):
             assert sample_ids == ["roi-a", "roi-b"]
 
-    class FakePipeline:
-        def __init__(self, config):
-            self.dataset = SimpleNamespace(sample_ids=["slide-a", "slide-b", "slide-c"])
+    class FakeFeatureExtractor:
+        def __init__(self, dataset, encoder, preprocessing, **kwargs):
+            assert dataset.sample_ids == ["slide-a", "slide-b", "slide-c"]
 
-        def _build_slide_manifest_dense_context(self, *, run_dir):
+        def extract(self):
             return SimpleNamespace(
-                feature_store=FakeStore(),
+                source=FakeStore(),
                 dataset=SimpleNamespace(
                     sample_ids=["roi-a", "roi-b"],
                     samples={
@@ -41,13 +41,26 @@ def test_extract_cache_prepares_features_without_starting_training(
                         "roi-b": SimpleNamespace(slide_id="slide-b"),
                     },
                 ),
+                provenance=SimpleNamespace(zero_roi_sample_ids=("slide-c",)),
             )
 
-    monkeypatch.setattr(extract_cache, "load_config", lambda _path: object())
-    monkeypatch.setattr(extract_cache, "Pipeline", FakePipeline)
     output = tmp_path / "cache_extraction.json"
     config_path = tmp_path / "uniform.yaml"
     config_path.write_text("fixture: true\n", encoding="utf-8")
+    config = SimpleNamespace(
+        dataset_csv=tmp_path / "dataset.csv",
+        dataset_type="segmentation",
+        encoder=object(),
+        preprocessing=object(),
+        execution=object(),
+        cache=SimpleNamespace(root_dir=tmp_path / "cache"),
+        output_root=tmp_path / "output",
+    )
+    parent_dataset = SimpleNamespace(sample_ids=["slide-a", "slide-b", "slide-c"])
+    monkeypatch.setattr(extract_cache, "load_config", lambda _path: config)
+    monkeypatch.setattr(extract_cache, "load_manifest", lambda _path, _type: parent_dataset)
+    monkeypatch.setattr(extract_cache, "resolve_pipeline_preprocessing", lambda _config: object())
+    monkeypatch.setattr(extract_cache, "FeatureExtractor", FakeFeatureExtractor)
 
     payload = extract_cache.extract_verified_cache(
         config_path=config_path,

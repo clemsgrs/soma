@@ -99,7 +99,10 @@ def test_public_import_surface_dependencies_are_declared():
     import soma
 
     assert soma.Pipeline is not None
-    assert soma.TileFeatureExtractor is not None
+    assert soma.FeatureExtractor is not None
+    assert soma.FeatureExtractionResult is not None
+    assert not hasattr(soma, "TileFeatureExtractor")
+    assert not hasattr(soma, "DenseTileFeatureExtractor")
 
 
 def test_top_level_package_exports_dense_configuration_and_discovery_surface():

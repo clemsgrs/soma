@@ -40,7 +40,7 @@ def build() -> nbformat.NotebookNode:
             "the per-head **CLS-attention** variant of the dense flow:\n"
             "\n"
             "```\n"
-            "Dataset(+masks) -> DenseTileFeatureExtractor(cls_attention) -> train (pixel classifier) -> evaluate\n"
+            "SegmentationManifest -> FeatureExtractor(cls_attention) -> train (pixel classifier) -> evaluate\n"
             "```\n"
             "\n"
             "It is the alternative to the neural-decoder path in the\n"
@@ -126,12 +126,6 @@ def build() -> nbformat.NotebookNode:
             "\n"
             "img_paths = [str(ROIS / f'{s}.tif') for s in ids]\n"
             "\n"
-            "# Feature extraction only needs the images; supervision lives in the\n"
-            "# segmentation manifest below (the mask raster per sample).\n"
-            "extract_csv = WORK / 'extract.csv'\n"
-            "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
-            "              'label': 0}).to_csv(extract_csv, index=False)\n"
-            "\n"
             "seg_csv = WORK / 'seg.csv'\n"
             "pd.DataFrame({'sample_id': ids, 'image_path': img_paths,\n"
             "              'label_mask_path': [str(MASKS / f'{s}.png') for s in ids]}).to_csv(seg_csv, index=False)\n"
@@ -142,7 +136,7 @@ def build() -> nbformat.NotebookNode:
             "## 1. Extract per-head CLS-attention grids\n"
             "\n"
             "This is the one extraction difference from the neural-decoder path. We point\n"
-            "`DenseTileFeatureExtractor` at `feature_kind='cls_attention'`, so instead of\n"
+            "`FeatureExtractor` at `feature_kind='cls_attention'`, so instead of\n"
             "the ViT **patch-feature** grid it captures the **CLS-token self-attention of\n"
             "the chosen block(s)** — one `(grid_h × grid_w)` map **per head**. With phikon\n"
             "at 224 px and patch-16 that's a 14×14 grid; the channel count `K` is\n"
@@ -157,26 +151,27 @@ def build() -> nbformat.NotebookNode:
         ),
         code(
             "from soma import (\n"
-            "    Dataset, DenseTileFeatureExtractor, EncoderConfig, AttentionConfig,\n"
+            "    SegmentationManifest, FeatureExtractor, EncoderConfig, AttentionConfig,\n"
             "    CacheConfig, PreprocessingConfig,\n"
             ")\n"
             "\n"
-            "extractor = DenseTileFeatureExtractor(\n"
-            "    Dataset(extract_csv),\n"
+            "seg_manifest = SegmentationManifest(seg_csv)\n"
+            "extractor = FeatureExtractor(\n"
+            "    seg_manifest,\n"
             "    EncoderConfig(name='phikon'),\n"
-            "    target_size=SIZE,\n"
-            "    spacing_um=SPACING,\n"
-            "    backend='openslide',\n"
             "    cache=CacheConfig(enabled=False),\n"
             "    # feature_kind='cls_attention' is what makes this the decoder-free path:\n"
             "    # the encoder emits per-head CLS-attention maps, not the patch grid.\n"
             "    preprocessing=PreprocessingConfig(\n"
             "        feature_kind='cls_attention',\n"
             "        attention=AttentionConfig(blocks=[-1], include_registers=False),\n"
+            "        requested_tile_size_px=SIZE,\n"
             "        requested_spacing_um=SPACING,\n"
+            "        backend='openslide',\n"
             "    ),\n"
+            "    output_root=str(WORK / 'attention'),\n"
             ")\n"
-            "attn_store = extractor.run(str(WORK / 'attention'))\n"
+            "attn_store = extractor.extract().source\n"
             "print('attention store ready for', len(attn_store.available_samples), 'ROIs')"
         ),
         md(
@@ -196,12 +191,10 @@ def build() -> nbformat.NotebookNode:
             "class-stratified pixel budget for the fit."
         ),
         code(
-            "from soma.dataset import SegmentationManifest\n"
             "from soma import (\n"
             "    Splits, PixelClassifierConfig, TaskConfig, TrainingConfig, EvalConfig, train,\n"
             ")\n"
             "\n"
-            "seg_manifest = SegmentationManifest(seg_csv)\n"
             "seg_splits = Splits(splits_csv, seg_manifest)\n"
             "\n"
             "seg_result = train(\n"
@@ -267,7 +260,11 @@ def build() -> nbformat.NotebookNode:
         ),
     ]
     nb = new_notebook(cells=cells)
-    nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
+    nb.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
     nb.metadata["language_info"] = {"name": "python"}
     # Reachable via :doc: links from the tutorial hub pages, but kept out of the
     # sidebar nav (the hub pages are the nav entries).
@@ -282,8 +279,12 @@ def main() -> None:
     # notebook with EMPTY cell outputs. The docs build never re-executes notebooks
     # (nbsphinx_execute = "never"), so empty-output notebooks render and build clean.
     if os.environ.get("SOMA_EXECUTE_NOTEBOOKS"):
-        client = NotebookClient(nb, timeout=1800, kernel_name="python3",
-                                resources={"metadata": {"path": str(HERE)}})
+        client = NotebookClient(
+            nb,
+            timeout=1800,
+            kernel_name="python3",
+            resources={"metadata": {"path": str(HERE)}},
+        )
         client.execute()
     nbformat.write(nb, OUT)
     print(f"wrote {OUT}")

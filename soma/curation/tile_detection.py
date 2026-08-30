@@ -1,6 +1,6 @@
 """Tile a large-ROI detection manifest into fixed-size tiles for the dense path.
 
-soma's dense **detection** path (:class:`soma.dense_extraction.DenseTileFeatureExtractor`,
+soma's dense **detection** path (:class:`soma.extraction.FeatureExtractor`,
 backed by slide2vec's ``embed_images_dense``) requires every sample to be one fixed
 ``target_size`` tile — dense image extraction never performs fit-to-size resizing, so an
 image whose extent differs from the declared ``target_size`` is refused outright. OCELOT

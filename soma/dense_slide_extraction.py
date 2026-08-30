@@ -1,6 +1,6 @@
 """Slide-manifest dense extraction: slides + annotation masks → cached ROI grids.
 
-The slide-manifest counterpart of :class:`soma.dense_extraction.DenseTileFeatureExtractor`
+The slide-region counterpart of soma's internal dense given-image engine
 (which reads *pre-cropped* tile images). Here the dataset rows are **whole slides** plus a
 ``masks:``/``sampling:`` config; soma:
 
@@ -18,11 +18,10 @@ Persistence is not caching (ADR 0007): slide2vec writes the payloads, into soma'
 cache directory, while the key, the completeness decision, the missing set and the identity
 signatures stay here.
 
-Splits stay slide-level and user-provided; the ROI manifest (one row per sampled tile, with
-its parent slide's ``image_path``/``label_mask_path`` + a ``region_x``/``region_y`` origin) and the
-ROI splits (each ROI inherits its parent slide's split/fold) are *derived* here — soma never
-creates splits. The ROI manifest is a coordinate manifest, not a tile dump: no pixels are
-written to disk, the grids are the only cached artifact.
+Splits stay outside extraction. The ROI manifest records one row per sampled tile, with
+its parent ``slide_id``, paths, and ``region_x``/``region_y`` origin; callers project their
+existing splits through that explicit ancestry. The ROI manifest is a coordinate manifest,
+not a tile dump: no pixels are written to disk, and the grids are the only cached payloads.
 """
 
 from __future__ import annotations
@@ -45,7 +44,14 @@ from soma.cache import (
     resolve_dense_cache,
     resolve_output_dtype,
 )
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, MasksConfig, PreprocessingConfig, SamplingConfig
+from soma.config import (
+    CacheConfig,
+    EncoderConfig,
+    ExecutionConfig,
+    MasksConfig,
+    PreprocessingConfig,
+    SamplingConfig,
+)
 from soma.dense import DenseFeatureStore, normalize_hw
 from soma.slide2vec_adapter import build_execution_options
 
@@ -87,11 +93,17 @@ def sampling_signature(
     signature = {
         "pixel_mapping": dict(masks.pixel_mapping),
         "min_coverage": dict(masks.min_coverage),
-        "colors": None if masks.colors is None else {k: (None if v is None else list(v)) for k, v in masks.colors.items()},
+        "colors": (
+            None
+            if masks.colors is None
+            else {k: (None if v is None else list(v)) for k, v in masks.colors.items()}
+        ),
         "strategy": str(sampling.strategy),
         "output_mode": str(sampling.output_mode),
         "spacing_um": float(preprocessing.requested_spacing_um),
-        "tile_size_px": list(normalize_hw(int(preprocessing.requested_tile_size_px), name="tile_size_px")),
+        "tile_size_px": list(
+            normalize_hw(int(preprocessing.requested_tile_size_px), name="tile_size_px")
+        ),
         "overlap": float(preprocessing.overlap),
     }
     if preprocessing.spacing_policy != "strict":
@@ -137,12 +149,12 @@ def sample_slide_rois(
         if wanted is not None and sid not in wanted:
             continue
         if record.label_mask_path is None:
-            raise ValueError(f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one.")
+            raise ValueError(
+                f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one."
+            )
         effective_preprocessing = replace(
             preprocessing,
-            requested_spacing_um=preprocessing.effective_spacing_um(
-                record.spacing_at_level_0
-            ),
+            requested_spacing_um=preprocessing.effective_spacing_um(record.spacing_at_level_0),
         )
         tiling = _build_tiling_config(effective_preprocessing, sampling)
         spec = _resolve_sampling_spec_from_masks(masks, tiling=tiling)
@@ -168,65 +180,32 @@ def sample_slide_rois(
     return coords_by_slide
 
 
-def build_roi_manifest(
+def build_roi_dataset(
     dataset: "SegmentationManifest",
-    slide_splits_csv: str | Path,
     coords_by_slide: dict[str, list[tuple[int, int]]],
     *,
     out_dir: Path,
-) -> tuple[Path, Path]:
-    """Write the derived ROI coordinate manifest + ROI splits CSVs; return their paths.
-
-    One ROI row per sampled tile (``sample_id = <slide>__x<X>_y<Y>``) carrying its parent
-    ``slide_id`` alongside that slide's ``image_path``/``label_mask_path`` and a
-    ``region_x``/``region_y`` origin. The ``slide_id`` column is what makes the ROI →
-    (slide, x, y) mapping a *recorded* fact rather than something recovered by splitting
-    the ROI id apart later — it is the ROI's address in slide2vec's per-slide dense
-    layout, so a slide id containing the ``__x``/``_y`` separators would otherwise be
-    ambiguous (ADR 0007). The ROI
-    splits CSV is expanded **directly from the slide splits CSV** — every ROI inherits its
-    parent slide row's split (and ``fold``, if present) verbatim (propagation, not creation;
-    soma never partitions). Reading the slide splits CSV (rather than a parsed ``Splits``)
-    preserves the exact fold labels and any extra test-split names.
-    """
-    import pandas as pd
-
+) -> Path:
+    """Persist the deterministic effective ROI dataset without depending on splits."""
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "roi_manifest.csv"
-    splits_path = out_dir / "roi_splits.csv"
-
-    slide_splits = pd.read_csv(slide_splits_csv)
-    has_fold = "fold" in slide_splits.columns
-    # slide sample_id -> list of its split rows (split[, fold]) to clone onto each ROI.
-    rows_by_slide: dict[str, list[dict]] = defaultdict(list)
-    for _, row in slide_splits.iterrows():
-        entry = {"split": str(row["split"])}
-        if has_fold:
-            entry["fold"] = int(row["fold"])
-        rows_by_slide[str(row["sample_id"])].append(entry)
-
-    manifest_rows: list[dict] = []
-    splits_rows: list[dict] = []
-    for slide_id, coords in coords_by_slide.items():
+    rows: list[dict] = []
+    for slide_id in dataset.sample_ids:
         record = dataset.samples[slide_id]
-        for x, y in coords:
-            roi_id = f"{slide_id}__x{x}_y{y}"
-            manifest_rows.append(
+        for x, y in coords_by_slide.get(slide_id, []):
+            rows.append(
                 {
-                    "sample_id": roi_id,
+                    "sample_id": f"{slide_id}__x{x}_y{y}",
                     "slide_id": slide_id,
                     "image_path": str(record.image_path),
-                    "mask_path": "" if record.mask_path is None else str(record.mask_path),
+                    "mask_path": ("" if record.mask_path is None else str(record.mask_path)),
                     "label_mask_path": str(record.label_mask_path),
-                    "patient_id": "" if record.patient_id is None else record.patient_id,
+                    "patient_id": ("" if record.patient_id is None else record.patient_id),
                     "spacing_at_level_0": record.spacing_at_level_0,
                     "region_x": int(x),
                     "region_y": int(y),
                 }
             )
-            for entry in rows_by_slide.get(slide_id, []):
-                splits_rows.append({"sample_id": roi_id, **entry})
-
     _write_csv(
         manifest_path,
         [
@@ -240,11 +219,9 @@ def build_roi_manifest(
             "region_x",
             "region_y",
         ],
-        manifest_rows,
+        rows,
     )
-    splits_fields = ["sample_id", "split", "fold"] if has_fold else ["sample_id", "split"]
-    _write_csv(splits_path, splits_fields, splits_rows)
-    return manifest_path, splits_path
+    return manifest_path
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
@@ -254,10 +231,10 @@ def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
         writer.writerows(rows)
 
 
-class SlideManifestDenseExtractor:
+class _SlideRegionExtractor:
     """Encode annotation-sampled ROIs into cached dense grids (slide-manifest segmentation).
 
-    Reads the ROI coordinate manifest (built by :func:`build_roi_manifest`), groups ROIs by
+    Reads the ROI coordinate manifest (built by :func:`build_roi_dataset`), groups ROIs by
     slide, and asks slide2vec to encode each slide's regions into ``(d, gh, gw)`` grids;
     persists each grid via soma's dense store and resolves/populates soma's dense cache.
     """
@@ -280,7 +257,9 @@ class SlideManifestDenseExtractor:
         self._preprocessing = preprocessing
         self._execution = execution
         self._cache = cache or CacheConfig(enabled=False)
-        self._target_size = normalize_hw(int(preprocessing.requested_tile_size_px), name="target_size")
+        self._target_size = normalize_hw(
+            int(preprocessing.requested_tile_size_px), name="target_size"
+        )
         self._spacing_um = float(preprocessing.requested_spacing_um)
         self._pad_mode = "reflect"
         # Encoder-window knobs (design §5): window_size=None ⇒ one whole-region forward;
@@ -379,7 +358,10 @@ class SlideManifestDenseExtractor:
                 ),
             )
             if cache_resolution.complete:
-                logger.info("Reusing cached ROI dense grids from %s", cache_resolution.features_dir)
+                logger.info(
+                    "Reusing cached ROI dense grids from %s",
+                    cache_resolution.features_dir,
+                )
                 return DenseFeatureStore(cache_resolution.cache_dir, payload_stems=payload_stems)
             out_root = cache_resolution.cache_dir
 
@@ -433,9 +415,7 @@ class SlideManifestDenseExtractor:
         )
         regions_by_effective_spacing: dict[float, list[SlideRegions]] = defaultdict(list)
         for slide_id, coords in coords_by_slide.items():
-            effective_spacing = self._preprocessing.effective_spacing_um(
-                spacing_by_slide[slide_id]
-            )
+            effective_spacing = self._preprocessing.effective_spacing_um(spacing_by_slide[slide_id])
             regions_by_effective_spacing[effective_spacing].append(
                 SlideRegions(
                     sample_id=slide_id,

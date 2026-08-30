@@ -66,7 +66,7 @@ extractor = FeatureExtractor(
     cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
 )
 
-store = extractor.extract(feature_dir="output/features/uni2")
+features = extractor.extract()
 
 # Train multiple model variants on the same features
 
@@ -74,9 +74,9 @@ splits = Splits("splits.csv", dataset)
 task = TaskConfig(name="binary_classification")
 
 abmil_result = train(
-    feature_store=store,
-    dataset=dataset,
-    splits=splits,
+    feature_store=features.source,
+    dataset=features.dataset,
+    splits=splits.project(features.dataset),
     aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
     task=task,
     training=TrainingConfig(learning_rate=1e-4, epochs=50),
@@ -84,9 +84,9 @@ abmil_result = train(
 )
 
 clam_result = train(
-    feature_store=store,
-    dataset=dataset,
-    splits=splits,
+    feature_store=features.source,
+    dataset=features.dataset,
+    splits=splits.project(features.dataset),
     aggregator=AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128}),
     task=task,
     training=TrainingConfig(learning_rate=1e-4, epochs=50),

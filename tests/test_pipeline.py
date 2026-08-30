@@ -1625,12 +1625,15 @@ class TestPipeline:
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output_prism"
 
-        def _fake_run(self, feature_dir, **kwargs):
-            out = self._output_root / feature_dir
+        def _fake_extract(self):
+            out = self._output_root / "features"
             out.mkdir(parents=True, exist_ok=True)
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(D), out / f"s{i}.pt")
-            return FeatureStore(out)
+            return SimpleNamespace(
+                source=FeatureStore(out),
+                dataset=self._dataset,
+            )
 
         config = PipelineConfig(
             dataset_csv=dataset_csv,
@@ -1643,7 +1646,7 @@ class TestPipeline:
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
-        with patch("soma.extraction.FeatureExtractor.run", new=_fake_run):
+        with patch("soma.extraction.FeatureExtractor.extract", new=_fake_extract):
             with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
                 result = Pipeline(config).run()
 
@@ -1688,7 +1691,7 @@ class TestPipeline:
         from slide2vec.encoders.registry import encoder_registry
         from soma.slide2vec_adapter import LoadedTiling
         from soma.cache import record_feature_dim, record_sample_identity_signatures
-        from soma.extraction import FeatureExtractor
+        from soma.extraction.extractor import _PooledFeatureExtractor
 
         test_tile = "_test_pipeline_cache_tile"
         test_slide = "_test_pipeline_cache_slide"
@@ -1864,22 +1867,22 @@ class TestPipeline:
             record_sample_identity_signatures(tile_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
             record_sample_identity_signatures(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
 
-        with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
-            "soma.extraction.torch.cuda.device_count", return_value=1
+        with patch("soma.extraction.extractor.torch.cuda.is_available", return_value=False), patch(
+            "soma.extraction.extractor.torch.cuda.device_count", return_value=1
         ), patch.object(
-            FeatureExtractor,
+            _PooledFeatureExtractor,
             "preprocess",
             autospec=True,
             side_effect=_fake_preprocess,
         ), patch(
             "soma.extraction.extractor.load_tilings", return_value=loaded_tilings
         ), patch("soma.extraction.extractor._validate_runtime"), patch.object(
-            FeatureExtractor,
+            _PooledFeatureExtractor,
             "_populate_tile_cache",
             autospec=True,
             side_effect=_fake_populate_tile_cache,
         ) as populate_tile_cache, patch.object(
-            FeatureExtractor,
+            _PooledFeatureExtractor,
             "_populate_slide_cache",
             autospec=True,
             side_effect=_fake_populate_slide_cache,
@@ -1888,17 +1891,17 @@ class TestPipeline:
                 Pipeline(slide_config).run()
             assert populate_slide_cache.called
 
-        with patch("soma.extraction.torch.cuda.is_available", return_value=False), patch(
-            "soma.extraction.torch.cuda.device_count", return_value=1
+        with patch("soma.extraction.extractor.torch.cuda.is_available", return_value=False), patch(
+            "soma.extraction.extractor.torch.cuda.device_count", return_value=1
         ), patch.object(
-            FeatureExtractor,
+            _PooledFeatureExtractor,
             "preprocess",
             autospec=True,
             side_effect=_fake_preprocess,
         ), patch(
             "soma.extraction.extractor.load_tilings", return_value=loaded_tilings
         ), patch("soma.extraction.extractor._validate_runtime"), patch.object(
-            FeatureExtractor,
+            _PooledFeatureExtractor,
             "_populate_tile_cache",
             side_effect=AssertionError("tile extraction should be reused"),
         ):

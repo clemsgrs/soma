@@ -630,10 +630,9 @@ def _decode_cell_points(
         _locate_run_config,
         build_detection_model_from_checkpoint,
     )
+    from soma import FeatureExtractor
     from soma.config import load_config
     from soma.dataset import DetectionManifest, Splits
-    from soma.dense import DenseFeatureStore
-    from soma.dense_extraction import DenseTileFeatureExtractor
     from soma.encoders.validation import resolve_preprocessing_config
     from soma.pipeline import (
         _make_loaders,
@@ -659,14 +658,14 @@ def _decode_cell_points(
     cache_cfg = cfg.cache
     if cache_cfg.root_dir is None:
         cache_cfg = _replace(cache_cfg, root_dir=Path(cfg.output_root) / "feature_cache")
-    extractor = DenseTileFeatureExtractor(
-        manifest, cfg.encoder,
-        target_size=int(pre.requested_tile_size_px), spacing_um=float(pre.requested_spacing_um),
-        backend=pre.backend, tolerance=float(pre.tolerance),
-        window_size=pre.dense_window_size, overlap=float(pre.dense_window_overlap),
-        execution=cfg.execution, cache=cache_cfg, preprocessing=pre,
-    )
-    store = DenseFeatureStore(extractor.cache_dir())
+    store = FeatureExtractor(
+        manifest,
+        cfg.encoder,
+        pre,
+        execution=cfg.execution,
+        cache=cache_cfg,
+        output_root=run_dir / "rescore_extraction",
+    ).extract().source
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])

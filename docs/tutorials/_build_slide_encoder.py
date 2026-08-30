@@ -67,8 +67,8 @@ def build() -> nbformat.NotebookNode:
             "rng = np.random.default_rng(0)\n"
             "\n"
             "def make_toy_slide(path, size=640):\n"
-            "    \"\"\"A white background with a central H&E-ish blob, saved as a tiled TIFF\n"
-            "    whose resolution tags make OpenSlide report 0.5 microns/pixel.\"\"\"\n"
+            '    """A white background with a central H&E-ish blob, saved as a tiled TIFF\n'
+            '    whose resolution tags make OpenSlide report 0.5 microns/pixel."""\n'
             "    img = np.full((size, size, 3), 240, np.uint8)\n"
             "    yy, xx = np.mgrid[0:size, 0:size]\n"
             "    blob = ((xx - size // 2) ** 2 + (yy - size // 2) ** 2) < (size * 0.35) ** 2\n"
@@ -133,7 +133,7 @@ def build() -> nbformat.NotebookNode:
             "    cache=CacheConfig(enabled=True, root_dir=str(WORK / 'cache')),\n"
             "    output_root=str(WORK / 'output'),\n"
             ")\n"
-            "store = extractor.extract(feature_dir='features')\n"
+            "store = extractor.extract().source\n"
             "vec = store.load(store.available_samples[0])\n"
             "print('slide-level features:', store.is_slide_level, '| one vector of dim', tuple(vec.shape))"
         ),
@@ -196,7 +196,11 @@ def build() -> nbformat.NotebookNode:
         ),
     ]
     nb = new_notebook(cells=cells)
-    nb.metadata["kernelspec"] = {"display_name": "Python 3", "language": "python", "name": "python3"}
+    nb.metadata["kernelspec"] = {
+        "display_name": "Python 3",
+        "language": "python",
+        "name": "python3",
+    }
     nb.metadata["language_info"] = {"name": "python"}
     nb.metadata["nbsphinx"] = {"orphan": True}
     return nb

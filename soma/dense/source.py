@@ -10,10 +10,11 @@ from typing import Protocol, runtime_checkable
 import torch
 
 from soma.dense.geometry import DenseGridGeometry
+from soma.extraction_contracts import FeatureSource
 
 
 @runtime_checkable
-class DenseFeatureSource(Protocol):
+class DenseFeatureSource(FeatureSource, Protocol):
     """Cache-backed dense source surface consumed by dense training paths."""
 
     provenance: "DenseSourceProvenance"
@@ -91,18 +92,14 @@ class DenseSourceProvenance:
     kind: str
     feature_dir: Path | str | None = None
     dataset_csv: Path | str | None = None
-    splits_csv: Path | str | None = None
     parent_dataset_csv: Path | str | None = None
-    parent_splits_csv: Path | str | None = None
 
     def to_dict(self) -> dict[str, str]:
         data: dict[str, str] = {"kind": str(self.kind)}
         for key in (
             "feature_dir",
             "dataset_csv",
-            "splits_csv",
             "parent_dataset_csv",
-            "parent_splits_csv",
         ):
             value = getattr(self, key)
             if value is not None:

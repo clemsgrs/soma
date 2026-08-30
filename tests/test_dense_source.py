@@ -43,7 +43,6 @@ def test_cache_backed_dense_sources_share_training_contract(tmp_path: Path):
             kind="dense_cache",
             feature_dir=tmp_path / "cached" / "dense_embeddings",
             dataset_csv=tmp_path / "tiles.csv",
-            splits_csv=tmp_path / "splits.csv",
         ),
     )
     slide_manifest = CacheBackedDenseSource(
@@ -52,9 +51,7 @@ def test_cache_backed_dense_sources_share_training_contract(tmp_path: Path):
             kind="slide_manifest_dense_cache",
             feature_dir=tmp_path / "slide_manifest" / "dense_embeddings",
             dataset_csv=tmp_path / "roi_manifest.csv",
-            splits_csv=tmp_path / "roi_splits.csv",
             parent_dataset_csv=tmp_path / "slides.csv",
-            parent_splits_csv=tmp_path / "slide_splits.csv",
         ),
     )
 
@@ -77,15 +74,12 @@ def test_cache_backed_dense_sources_share_training_contract(tmp_path: Path):
         "kind": "dense_cache",
         "feature_dir": str(tmp_path / "cached" / "dense_embeddings"),
         "dataset_csv": str(tmp_path / "tiles.csv"),
-        "splits_csv": str(tmp_path / "splits.csv"),
     }
     assert slide_manifest.provenance.to_dict() == {
         "kind": "slide_manifest_dense_cache",
         "feature_dir": str(tmp_path / "slide_manifest" / "dense_embeddings"),
         "dataset_csv": str(tmp_path / "roi_manifest.csv"),
-        "splits_csv": str(tmp_path / "roi_splits.csv"),
         "parent_dataset_csv": str(tmp_path / "slides.csv"),
-        "parent_splits_csv": str(tmp_path / "slide_splits.csv"),
     }
 
 
