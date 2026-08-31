@@ -33,6 +33,25 @@ replace the scalar ``label`` with a per-sample supervision file:
   source image's level-0 µm/px. It is required for flat PNG/JPEG dense extraction. See
   :doc:`detection` for the full column contract.
 
+.. _semantic-manifest-identity:
+
+Semantic manifest identity
+--------------------------
+
+Experiment and leaderboard dataset checksums describe the semantic values in the
+selected ``dataset.csv`` rows. They exclude exactly the storage-location columns
+``image_path``, ``mask_path``, ``label_mask_path``, and ``points_path``. Relocating
+otherwise identical images, tissue masks, label masks, or point files therefore does
+not change data identity. Every other column remains part of the checksum, including
+scalar supervision, sample metadata, and sample IDs; fold, split, and membership
+assignments remain part of the separate splits checksum.
+
+When artifact contents must contribute to identity, a preparer should compute the
+checksum and add an explicit ``<path_column>_sha256`` column such as
+``image_path_sha256`` or ``label_mask_path_sha256``. These columns are ordinary semantic
+metadata and are hashed. soma does not open referenced artifacts or derive their
+checksums implicitly.
+
 Splits format
 -------------
 

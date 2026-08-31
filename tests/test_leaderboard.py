@@ -220,6 +220,38 @@ def test_seed_runs_collapse_to_mean_std_n(tmp_path: Path):
     assert row.seeds == (0, 1)
 
 
+def test_relocated_manifests_share_one_leaderboard_triple(tmp_path: Path):
+    root = tmp_path / "out"
+    local_dataset = _dataset_csv(
+        tmp_path,
+        "local-dataset",
+        "sample_id,image_path,label\ns0,/local/images/s0.svs,tumor\n",
+    )
+    relocated_dataset = _dataset_csv(
+        tmp_path,
+        "relocated-dataset",
+        "sample_id,image_path,label\ns0,/archive/images/s0.svs,tumor\n",
+    )
+    local_splits = _splits_csv(tmp_path, "local-splits")
+    relocated_splits = _splits_csv(tmp_path, "relocated-splits")
+    local_run = make_run_dir(
+        _cfg(root, local_dataset, local_splits, seed=0),
+        {"test/accuracy": 0.80},
+    )
+    relocated_run = make_run_dir(
+        _cfg(root, relocated_dataset, relocated_splits, seed=1),
+        {"test/accuracy": 0.90},
+    )
+
+    table = project_leaderboard(
+        [local_run, relocated_run],
+        LeaderboardFacet(vary=("encoder",)),
+    )
+
+    assert len(table.rows) == 1
+    assert table.rows[0].n == 2
+
+
 def test_single_seed_leaves_std_blank(tmp_path: Path):
     root = tmp_path / "out"
     ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
@@ -309,7 +341,7 @@ def test_flat_facet_ranks_all_no_vary(tmp_path: Path):
 def test_discover_triples_groups_by_dataset_splits_task(tmp_path: Path):
     root = tmp_path / "out"
     ds_a = _dataset_csv(tmp_path, "ds_a", "sample_id,image_path,label\ns0,/a.svs,tumor\n")
-    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,tumor\n")
+    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,normal\n")
     sp = _splits_csv(tmp_path)
     make_run_dir(_cfg(root, ds_a, sp, encoder="uni2"), {"test/accuracy": 0.8})
     make_run_dir(_cfg(root, ds_b, sp, encoder="uni2"), {"test/accuracy": 0.7})
@@ -339,7 +371,7 @@ def test_discover_triples_collects_managed_runs_below_seed_roots(tmp_path: Path)
 def test_project_leaderboard_rejects_multiple_triples(tmp_path: Path):
     root = tmp_path / "out"
     ds_a = _dataset_csv(tmp_path, "ds_a", "sample_id,image_path,label\ns0,/a.svs,tumor\n")
-    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,tumor\n")
+    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,normal\n")
     sp = _splits_csv(tmp_path)
     d_a = make_run_dir(_cfg(root, ds_a, sp, encoder="uni2"), {"test/accuracy": 0.8})
     d_b = make_run_dir(_cfg(root, ds_b, sp, encoder="uni2"), {"test/accuracy": 0.7})
@@ -1472,7 +1504,7 @@ def test_cli_leaderboard_renders_and_writes(tmp_path: Path, capsys):
 def test_cli_multiple_triples_requires_disambiguation(tmp_path: Path, capsys):
     root = tmp_path / "out"
     ds_a = _dataset_csv(tmp_path, "ds_a", "sample_id,image_path,label\ns0,/a.svs,tumor\n")
-    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,tumor\n")
+    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,normal\n")
     sp = _splits_csv(tmp_path)
     make_run_dir(_cfg(root, ds_a, sp, encoder="uni2"), {"test/accuracy": 0.8})
     make_run_dir(_cfg(root, ds_b, sp, encoder="uni2"), {"test/accuracy": 0.7})
@@ -1486,7 +1518,7 @@ def test_cli_multiple_triples_requires_disambiguation(tmp_path: Path, capsys):
 def test_cli_like_selects_one_triple(tmp_path: Path, capsys):
     root = tmp_path / "out"
     ds_a = _dataset_csv(tmp_path, "ds_a", "sample_id,image_path,label\ns0,/a.svs,tumor\n")
-    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,tumor\n")
+    ds_b = _dataset_csv(tmp_path, "ds_b", "sample_id,image_path,label\ns0,/b.svs,normal\n")
     sp = _splits_csv(tmp_path)
     like = make_run_dir(_cfg(root, ds_a, sp, encoder="uni2"), {"test/accuracy": 0.81})
     make_run_dir(_cfg(root, ds_b, sp, encoder="uni2"), {"test/accuracy": 0.72})
