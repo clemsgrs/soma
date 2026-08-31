@@ -561,7 +561,7 @@ def build_eva_benchmark_rst() -> str:
             f"weight_decay ``{eva_bench.WEIGHT_DECAY:g}``",
         ),
         ("batch size", f"``{eva_bench.HEAD_BATCH_SIZE}``"),
-        ("budget", f"eva's ``max_steps={eva_bench.MAX_STEPS}`` mapped to soma epochs"),
+        ("budget", f"fixed step budget: ``max_steps={eva_bench.MAX_STEPS}`` optimizer updates"),
         ("metric", "``balanced_accuracy``"),
         ("varied axis", "``encoder``"),
         ("primary metric", f"``{head.primary_metric}`` (from ``summary.json``)"),

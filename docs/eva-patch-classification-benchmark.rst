@@ -121,7 +121,7 @@ Protocol details
    * - batch size
      - ``256``
    * - budget
-     - eva's ``max_steps=12500`` mapped to soma epochs
+     - fixed step budget: ``max_steps=12500`` optimizer updates
    * - metric
      - ``balanced_accuracy``
    * - varied axis
