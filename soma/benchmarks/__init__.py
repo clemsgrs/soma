@@ -59,12 +59,15 @@ from soma.benchmarks.run import (  # noqa: E402
     MetricResult,
     ReportedScoreError,
     run_benchmark,
+    run_benchmark_spec,
 )
+from soma.benchmarks.spec import BenchmarkSpec  # noqa: E402
 
 __all__ = [
     "RESOLVABLE_EPS",
     "Benchmark",
     "BenchmarkRunResult",
+    "BenchmarkSpec",
     "Cell",
     "Facet",
     "MeasuredRow",
@@ -86,5 +89,6 @@ __all__ = [
     "reproduced_rows",
     "reproduction_report",
     "run_benchmark",
+    "run_benchmark_spec",
     "score_from_summary",
 ]

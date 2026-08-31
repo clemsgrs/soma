@@ -17,6 +17,7 @@ like the CLI — protocol violations inside one scoring attempt may raise ``Syst
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any, Callable
 import yaml
 
 from soma.benchmarks.registry import get_benchmark, get_reported_metrics
+from soma.benchmarks.spec import BenchmarkSpec
 
 
 def _pipeline_cls():
@@ -782,4 +784,76 @@ def run_benchmark(
         options,
         results_root=results_root,
         return_result=return_result,
+    )
+
+
+def run_benchmark_spec(
+    spec: BenchmarkSpec,
+    *,
+    dataset_csv: str | Path,
+    splits_csv: str | Path,
+    encoder: str,
+    output_root: str | Path,
+    cache_root: str | Path | None = None,
+    seeds: Sequence[int] | None = None,
+) -> BenchmarkRunResult:
+    """Execute an external benchmark specification without registry concerns."""
+    import statistics
+
+    if seeds is not None and (
+        not isinstance(seeds, Sequence) or isinstance(seeds, (str, bytes))
+    ):
+        raise ValueError("seeds must be a non-empty sequence of unique integers")
+    selected_seeds = tuple(spec.canonical_seeds if seeds is None else seeds)
+    if (
+        not selected_seeds
+        or not all(isinstance(seed, int) for seed in selected_seeds)
+        or len(set(selected_seeds)) != len(selected_seeds)
+    ):
+        raise ValueError("seeds must be a non-empty sequence of unique integers")
+    output_root = Path(output_root)
+    shared_cache_root = (
+        Path(cache_root) if cache_root is not None else output_root / "feature_cache"
+    )
+    overrides = {"cache": {"enabled": True, "root_dir": str(shared_cache_root)}}
+    reported_metrics = get_reported_metrics(spec)
+    measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
+    seed_roots: list[Path] = []
+    pipeline_cls = _pipeline_cls()
+
+    for seed in selected_seeds:
+        seed_root = output_root / f"seed_{seed}"
+        seed_roots.append(seed_root)
+        config = spec.build_config(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=seed_root,
+            seed=seed,
+            overrides=overrides,
+            encoder=encoder,
+        )
+        pipeline_cls(config).run()
+        scores = spec.score(seed_root)
+        missing = [metric for metric in reported_metrics if metric not in scores]
+        if missing:
+            names = ", ".join(repr(metric) for metric in missing)
+            raise ValueError(
+                f"benchmark spec {spec.name!r} score is missing Reported metric(s): "
+                f"{names}."
+            )
+        for metric in reported_metrics:
+            measured_values[metric].append(float(scores[metric]))
+
+    return BenchmarkRunResult(
+        status=0,
+        metrics=tuple(
+            MetricResult(
+                metric=metric,
+                measured=statistics.fmean(values),
+                std=statistics.stdev(values) if len(values) > 1 else 0.0,
+                n_seeds=len(values),
+            )
+            for metric, values in measured_values.items()
+        ),
+        seed_roots=tuple(seed_roots),
     )
