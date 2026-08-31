@@ -20,6 +20,11 @@ import yaml
 from soma.config import PipelineConfig
 
 
+_SEMANTIC_IDENTITY_EXCLUDED_PATH_COLUMN_ALLOWLIST = frozenset(
+    {"image_path", "mask_path", "label_mask_path", "points_path"}
+)
+
+
 def _sha256_file(path: str | Path) -> str:
     digest = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -95,9 +100,13 @@ def _split_assignments(splits_path: Path, keep) -> list[list[str]]:
 
 
 def _dataset_rows_digest(dataset_path: Path, sample_ids: set[str]) -> str:
-    """sha256 over the dataset.csv rows for ``sample_ids`` (sorted by id, byte-stable)."""
+    """sha256 over semantic dataset rows for ``sample_ids`` (sorted by id)."""
     rows = [
-        {str(k): ("" if v is None else str(v)) for k, v in row.items()}
+        {
+            str(k): ("" if v is None else str(v))
+            for k, v in row.items()
+            if str(k) not in _SEMANTIC_IDENTITY_EXCLUDED_PATH_COLUMN_ALLOWLIST
+        }
         for row in _read_csv_rows(dataset_path)
         if str(row.get("sample_id", "")) in sample_ids
     ]

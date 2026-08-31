@@ -37,6 +37,17 @@ training seed is intentionally a run-level value, so repeated seeds produce
 separate runs under the same experiment when the rest of the configuration is
 unchanged.
 
+Dataset checksums use :ref:`semantic manifest identity <semantic-manifest-identity>`:
+machine-local artifact paths are excluded, while every semantic manifest value and
+split assignment remains hashed. ``ExperimentSpec`` retains the resolved manifest
+paths, while ``RunMetadata`` also stores whole-file SHA-256 provenance for the physical
+``dataset.csv`` and ``splits.csv``; those provenance values may differ after
+relocation. Cache identities are a separate physical-input contract and continue to
+include the paths documented in :doc:`caching`.
+
+This semantic checksum is a clean identity break: experiments and leaderboard triples
+created by older soma versions are not aliased or migrated to the new values.
+
 Evaluation settings are part of the identity because they change the reported
 outputs. Heatmap settings are also part of the identity when heatmaps are
 enabled because they change generated artifacts; inactive heatmap rendering

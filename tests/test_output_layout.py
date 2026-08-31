@@ -659,6 +659,323 @@ _TRAIN_TUNE_DATASET = (
 _TRAIN_TUNE_SPLITS = "fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,tune\n"
 
 
+def test_classification_manifest_identity_is_portable_across_storage_roots(
+    tmp_path: Path,
+):
+    local = _make_config_with_manifests(
+        tmp_path / "local",
+        dataset_csv_text=(
+            "sample_id,image_path,mask_path,label,site\n"
+            "s0,/local/images/s0.svs,/local/masks/s0.png,tumor,north\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    relocated = _make_config_with_manifests(
+        tmp_path / "relocated",
+        dataset_csv_text=(
+            "sample_id,image_path,mask_path,label,site\n"
+            "s0,/archive/images/s0.svs,/archive/masks/s0.png,tumor,north\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+
+    local_spec = build_experiment_spec(local)
+    relocated_spec = build_experiment_spec(relocated)
+
+    assert relocated_spec.dataset_checksum == local_spec.dataset_checksum
+    assert relocated_spec.splits_checksum == local_spec.splits_checksum
+    assert relocated_spec.experiment_id == local_spec.experiment_id
+
+
+def test_adding_explicit_path_checksum_column_changes_dataset_identity(tmp_path: Path):
+    without_checksum = _make_config_with_manifests(
+        tmp_path / "without",
+        dataset_csv_text=(
+            "sample_id,image_path,label\n"
+            "s0,/local/images/s0.svs,tumor\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    checksum_a = _make_config_with_manifests(
+        tmp_path / "checksum-a",
+        dataset_csv_text=(
+            "sample_id,image_path,image_path_sha256,label\n"
+            "s0,/local/images/s0.svs,aaaaaaaa,tumor\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+
+    without_digest = build_experiment_spec(without_checksum).dataset_checksum
+    checksum_digest = build_experiment_spec(checksum_a).dataset_checksum
+
+    assert checksum_digest != without_digest
+
+
+def test_changing_explicit_path_checksum_column_changes_dataset_identity(
+    tmp_path: Path,
+):
+    checksum_a = _make_config_with_manifests(
+        tmp_path / "checksum-a",
+        dataset_csv_text=(
+            "sample_id,image_path,image_path_sha256,label\n"
+            "s0,/local/images/s0.svs,aaaaaaaa,tumor\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    checksum_b = _make_config_with_manifests(
+        tmp_path / "checksum-b",
+        dataset_csv_text=(
+            "sample_id,image_path,image_path_sha256,label\n"
+            "s0,/archive/images/s0.svs,bbbbbbbb,tumor\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+
+    checksum_a_digest = build_experiment_spec(checksum_a).dataset_checksum
+    checksum_b_digest = build_experiment_spec(checksum_b).dataset_checksum
+
+    assert checksum_b_digest != checksum_a_digest
+
+
+def test_unrecognized_path_column_defines_dataset_identity(tmp_path: Path):
+    source_a = _make_config_with_manifests(
+        tmp_path / "source-a",
+        dataset_csv_text=(
+            "sample_id,image_path,source_path,label\n"
+            "s0,/images/s0.svs,/source/a.json,tumor\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    source_b = _make_config_with_manifests(
+        tmp_path / "source-b",
+        dataset_csv_text=(
+            "sample_id,image_path,source_path,label\n"
+            "s0,/images/s0.svs,/source/b.json,tumor\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+
+    assert (
+        build_experiment_spec(source_b).dataset_checksum
+        != build_experiment_spec(source_a).dataset_checksum
+    )
+
+
+def test_segmentation_manifest_identity_ignores_label_mask_storage_root(
+    tmp_path: Path,
+):
+    common = {
+        "splits_csv_text": "fold,sample_id,split\n0,s0,train\n",
+        "dataset_type": "segmentation",
+        "aggregator": None,
+        "decoder": DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+        "task": TaskConfig(name="segmentation", params={"num_classes": 2}),
+    }
+    local = _make_config_with_manifests(
+        tmp_path / "local",
+        dataset_csv_text=(
+            "sample_id,image_path,label_mask_path,class_names\n"
+            "s0,/local/images/s0.png,/local/labels/s0.png,background|tumor\n"
+        ),
+        **common,
+    )
+    relocated = _make_config_with_manifests(
+        tmp_path / "relocated",
+        dataset_csv_text=(
+            "sample_id,image_path,label_mask_path,class_names\n"
+            "s0,/archive/images/s0.png,/archive/labels/s0.png,background|tumor\n"
+        ),
+        **common,
+    )
+
+    local_spec = build_experiment_spec(local)
+    relocated_spec = build_experiment_spec(relocated)
+
+    assert relocated_spec.dataset_checksum == local_spec.dataset_checksum
+    assert relocated_spec.experiment_id == local_spec.experiment_id
+
+
+def test_detection_manifest_identity_ignores_points_storage_root(tmp_path: Path):
+    common = {
+        "splits_csv_text": "fold,sample_id,split\n0,s0,train\n",
+        "dataset_type": "detection",
+        "aggregator": None,
+        "decoder": DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+        "task": TaskConfig(name="detection", params={"num_classes": 2}),
+    }
+    local = _make_config_with_manifests(
+        tmp_path / "local",
+        dataset_csv_text=(
+            "sample_id,image_path,points_path,spacing_at_level_0\n"
+            "s0,/local/images/s0.png,/local/points/s0.csv,0.5\n"
+        ),
+        **common,
+    )
+    relocated = _make_config_with_manifests(
+        tmp_path / "relocated",
+        dataset_csv_text=(
+            "sample_id,image_path,points_path,spacing_at_level_0\n"
+            "s0,/archive/images/s0.png,/archive/points/s0.csv,0.5\n"
+        ),
+        **common,
+    )
+
+    local_spec = build_experiment_spec(local)
+    relocated_spec = build_experiment_spec(relocated)
+
+    assert relocated_spec.dataset_checksum == local_spec.dataset_checksum
+    assert relocated_spec.experiment_id == local_spec.experiment_id
+
+
+def test_semantic_manifest_metadata_changes_dataset_identity(tmp_path: Path):
+    north = _make_config_with_manifests(
+        tmp_path / "north",
+        dataset_csv_text=(
+            "sample_id,image_path,label,site\n"
+            "s0,/images/s0.svs,tumor,north\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    south = _make_config_with_manifests(
+        tmp_path / "south",
+        dataset_csv_text=(
+            "sample_id,image_path,label,site\n"
+            "s0,/images/s0.svs,tumor,south\n"
+        ),
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+
+    north_spec = build_experiment_spec(north)
+    south_spec = build_experiment_spec(south)
+
+    assert south_spec.dataset_checksum != north_spec.dataset_checksum
+    assert south_spec.splits_checksum == north_spec.splits_checksum
+    assert south_spec.experiment_id != north_spec.experiment_id
+
+
+def test_training_sample_membership_changes_dataset_and_split_identity(tmp_path: Path):
+    dataset = (
+        "sample_id,image_path,label\n"
+        "s0,/images/s0.svs,tumor\n"
+        "s1,/images/s1.svs,normal\n"
+    )
+    sample_zero = _make_config_with_manifests(
+        tmp_path / "sample-zero",
+        dataset_csv_text=dataset,
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    sample_one = _make_config_with_manifests(
+        tmp_path / "sample-one",
+        dataset_csv_text=dataset,
+        splits_csv_text="fold,sample_id,split\n0,s1,train\n",
+    )
+
+    sample_zero_spec = build_experiment_spec(sample_zero)
+    sample_one_spec = build_experiment_spec(sample_one)
+
+    assert sample_one_spec.dataset_checksum != sample_zero_spec.dataset_checksum
+    assert sample_one_spec.splits_checksum != sample_zero_spec.splits_checksum
+    assert sample_one_spec.experiment_id != sample_zero_spec.experiment_id
+
+
+def test_fold_assignment_changes_only_split_identity(tmp_path: Path):
+    dataset = "sample_id,image_path,label\ns0,/images/s0.svs,tumor\n"
+    fold_zero = _make_config_with_manifests(
+        tmp_path / "fold-zero",
+        dataset_csv_text=dataset,
+        splits_csv_text="fold,sample_id,split\n0,s0,train\n",
+    )
+    fold_one = _make_config_with_manifests(
+        tmp_path / "fold-one",
+        dataset_csv_text=dataset,
+        splits_csv_text="fold,sample_id,split\n1,s0,train\n",
+    )
+
+    fold_zero_spec = build_experiment_spec(fold_zero)
+    fold_one_spec = build_experiment_spec(fold_one)
+
+    assert fold_one_spec.dataset_checksum == fold_zero_spec.dataset_checksum
+    assert fold_one_spec.splits_checksum != fold_zero_spec.splits_checksum
+    assert fold_one_spec.experiment_id != fold_zero_spec.experiment_id
+
+
+def test_test_identity_is_portable_across_storage_roots(tmp_path: Path):
+    local = _make_config_with_manifests(
+        tmp_path / "local",
+        dataset_csv_text=(
+            "sample_id,image_path,label\n"
+            "s0,/local/images/s0.svs,tumor\n"
+            "t0,/local/images/t0.svs,normal\n"
+        ),
+        splits_csv_text=(
+            "fold,sample_id,split\n"
+            "0,s0,train\n"
+            "0,t0,test\n"
+        ),
+    )
+    relocated = _make_config_with_manifests(
+        tmp_path / "relocated",
+        dataset_csv_text=(
+            "sample_id,image_path,label\n"
+            "s0,/archive/images/s0.svs,tumor\n"
+            "t0,/archive/images/t0.svs,normal\n"
+        ),
+        splits_csv_text=(
+            "fold,sample_id,split\n"
+            "0,s0,train\n"
+            "0,t0,test\n"
+        ),
+    )
+
+    assert compute_test_digest(relocated) == compute_test_digest(local)
+
+
+def test_run_metadata_keeps_semantic_identity_and_physical_file_provenance(
+    tmp_path: Path,
+):
+    splits = "fold,sample_id,split\n0,s0,train\n0,t0,test\n"
+    local = _make_config_with_manifests(
+        tmp_path / "local",
+        dataset_csv_text=(
+            "sample_id,image_path,label\n"
+            "s0,/local/images/s0.svs,tumor\n"
+            "t0,/local/images/t0.svs,normal\n"
+        ),
+        splits_csv_text=splits,
+    )
+    relocated = _make_config_with_manifests(
+        tmp_path / "relocated",
+        dataset_csv_text=(
+            "sample_id,image_path,label\n"
+            "s0,/archive/images/s0.svs,tumor\n"
+            "t0,/archive/images/t0.svs,normal\n"
+        ),
+        splits_csv_text=splits,
+    )
+    local_experiment = build_experiment_spec(local)
+    relocated_experiment = build_experiment_spec(relocated)
+
+    local_metadata = create_run_metadata(
+        config=local,
+        experiment=local_experiment,
+        run_dir=tmp_path / "local-run",
+        run_id="local",
+        status="running",
+    )
+    relocated_metadata = create_run_metadata(
+        config=relocated,
+        experiment=relocated_experiment,
+        run_dir=tmp_path / "relocated-run",
+        run_id="relocated",
+        status="running",
+    )
+
+    assert relocated_metadata.test_checksum == local_metadata.test_checksum
+    assert relocated_metadata.comparison_key == local_metadata.comparison_key
+    assert relocated_metadata.dataset_file_checksum != local_metadata.dataset_file_checksum
+    assert relocated_metadata.splits_file_checksum == local_metadata.splits_file_checksum
+
+
 def test_experiment_id_is_invariant_to_added_test_rows(tmp_path: Path):
     # The headline acceptance criterion (#247): dropping in a new/official test set — extra
     # dataset rows + extra `test` split rows — must NOT change experiment_id.

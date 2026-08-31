@@ -128,7 +128,9 @@ def test_representation_requires_canonical_seed_zero(tmp_path: Path):
         load_config(path)
 
 
-def test_ordinary_task_default_and_identity_match_origin_main(tmp_path: Path):
+def test_ordinary_task_default_and_identity_match_semantic_manifest_contract(
+    tmp_path: Path,
+):
     (tmp_path / "dataset.csv").write_text(
         "sample_id,image_path,label\n"
         "train,/images/train.png,A\n"
@@ -166,10 +168,10 @@ def test_ordinary_task_default_and_identity_match_origin_main(tmp_path: Path):
     assert payload["task"] == {"name": "binary_classification", "params": {}}
     assert "representation" not in payload
     assert experiment.experiment_id == (
-        "d3cc5e80fff797440aadcfd0ede9d24a869f2c777c4c34551e1d7fa41c88b869"
+        "ebb473ce4443ef7921f666b9c5dd3ccd29ee17415b6a04a82b5267a65ab4152e"
     )
     assert experiment.slug == (
-        "dataset-precomputed-slide-binary-classification_d3cc5e80fff7"
+        "dataset-precomputed-slide-binary-classification_ebb473ce4443"
     )
 
 
@@ -262,7 +264,7 @@ def test_representation_identity_uses_only_selected_rows_and_protocol(tmp_path: 
         ),
         split_rows="0,train,train\n0,held,test\n",
     )
-    changed_selected = _representation_config_with_manifests(
+    relocated_selected = _representation_config_with_manifests(
         tmp_path / "selected",
         dataset_rows=(
             "train,/images/train.png,A,g0,north\n"
@@ -289,7 +291,7 @@ def test_representation_identity_uses_only_selected_rows_and_protocol(tmp_path: 
     )
 
     base_id = build_experiment_spec(base).experiment_id
-    assert build_experiment_spec(changed_selected).experiment_id != base_id
+    assert build_experiment_spec(relocated_selected).experiment_id == base_id
     assert build_experiment_spec(changed_unselected).experiment_id == base_id
     assert build_experiment_spec(changed_protocol).experiment_id != base_id
     payload = canonical_experiment_payload(base)
