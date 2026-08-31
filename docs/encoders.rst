@@ -212,6 +212,23 @@ Use this page to choose a valid starting point, then let the runtime validate
 the final combination. The spacing table is a reference for selecting
 preprocessing geometry, not a separate encoder knob.
 
+Resolving a fixed benchmark MIL recipe
+--------------------------------------
+
+A slide-level benchmark that accepts both tile- and slide-level encoders can
+use :func:`soma.encoders.resolve_aggregator` when it builds each
+``PipelineConfig``. The helper returns the supplied ``AggregatorConfig`` for a
+tile encoder and ``None`` for a slide encoder, allowing the existing slide
+representation path to pass the embedding directly to the task head. Patient
+encoders are rejected because their representations are not slide-level.
+
+Resolution reads only the encoder's registry metadata; it does not construct
+the encoder or load weights, so config generation remains offline-safe. The
+benchmark owns the scientific MIL recipe passed to ``tile_recipe`` because the
+helper only decides whether that fixed recipe applies to the encoder level.
+
+.. autofunction:: soma.encoders.resolve_aggregator
+
 Discovery helpers
 -----------------
 
