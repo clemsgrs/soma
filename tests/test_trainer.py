@@ -6,6 +6,7 @@ from pathlib import Path
 
 import functools
 
+import pytest
 import torch
 from rich.console import Console
 
@@ -92,6 +93,129 @@ def _make_synthetic_loader(num_slides: int, seed: int = 0):
 
 
 class TestTrainer:
+    def _fit_step_budget(
+        self,
+        tmp_path: Path,
+        *,
+        max_steps: int,
+        gradient_accumulation: int = 1,
+        checkpoint_selection: str = "last",
+    ) -> TrainResult:
+        seed_everything(42)
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=_make_synthetic_loader(6, seed=0),
+            tune_loader=_make_synthetic_loader(4, seed=1),
+            config=TrainingConfig(
+                epochs=None,
+                max_steps=max_steps,
+                gradient_accumulation=gradient_accumulation,
+                learning_rate=1e-3,
+                patience=None,
+                checkpoint_selection=checkpoint_selection,
+            ),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        return trainer.fit()
+
+    @staticmethod
+    def _checkpoint_optimizer_steps(result: TrainResult) -> set[int]:
+        checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+        return {
+            int(state["step"])
+            for state in checkpoint["optimizer_state_dict"]["state"].values()
+        }
+
+    def test_step_budget_stops_before_the_end_of_the_first_epoch(self, tmp_path: Path):
+        result = self._fit_step_budget(tmp_path, max_steps=2)
+
+        assert result.optimizer_steps == 2
+        assert self._checkpoint_optimizer_steps(result) == {2}
+        assert len(result.history) == 1
+
+    def test_step_budget_stops_at_the_end_of_an_epoch(self, tmp_path: Path):
+        result = self._fit_step_budget(tmp_path, max_steps=3)
+
+        assert result.optimizer_steps == 3
+        assert self._checkpoint_optimizer_steps(result) == {3}
+        assert len(result.history) == 1
+
+    def test_step_budget_stops_partway_through_a_later_epoch(self, tmp_path: Path):
+        result = self._fit_step_budget(tmp_path, max_steps=5)
+
+        assert result.optimizer_steps == 5
+        assert self._checkpoint_optimizer_steps(result) == {5}
+        assert len(result.history) == 2
+
+    def test_step_budget_eta_is_based_on_remaining_optimizer_updates(
+        self, tmp_path: Path
+    ):
+        result = self._fit_step_budget(tmp_path, max_steps=5)
+
+        first_epoch = result.history[0]
+        assert first_epoch.eta_seconds == pytest.approx(
+            first_epoch.elapsed_seconds * 2 / 3
+        )
+
+    def test_step_budget_counts_gradient_accumulation_windows(self, tmp_path: Path):
+        result = self._fit_step_budget(
+            tmp_path,
+            max_steps=3,
+            gradient_accumulation=2,
+        )
+
+        assert result.optimizer_steps == 3
+        assert self._checkpoint_optimizer_steps(result) == {3}
+        assert len(result.history) == 2
+
+    def test_step_budget_cosine_reaches_its_endpoint_on_the_last_update(
+        self, tmp_path: Path
+    ):
+        result = self._fit_step_budget(tmp_path, max_steps=3)
+
+        checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+        assert result.history[-1].lr == 0.0
+        assert checkpoint["optimizer_state_dict"]["param_groups"][0]["lr"] == 0.0
+
+    def test_partial_final_epoch_tune_can_select_the_best_checkpoint(
+        self, tmp_path: Path
+    ):
+        result = self._fit_step_budget(
+            tmp_path,
+            max_steps=4,
+            checkpoint_selection="best",
+        )
+
+        checkpoint = torch.load(result.checkpoint_path, weights_only=True)
+        assert len(result.history) == 2
+        assert result.selected_epoch == 1
+        assert checkpoint["epoch"] == 1
+
+    def test_epoch_budget_cosine_trace_is_unchanged(self, tmp_path: Path):
+        seed_everything(42)
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=_make_synthetic_loader(6, seed=0),
+            tune_loader=_make_synthetic_loader(4, seed=1),
+            config=TrainingConfig(
+                epochs=3,
+                learning_rate=1e-3,
+                patience=None,
+                checkpoint_selection="last",
+            ),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+
+        result = trainer.fit()
+
+        assert [log.lr for log in result.history] == [
+            0.001,
+            0.00075,
+            0.0002500000000000001,
+        ]
+
     def test_default_monitor_resolves_tune_loss(self):
         config = TrainingConfig()
 
@@ -504,6 +628,30 @@ class TestTrainingProgressFormatting:
     def test_format_batch_progress_uses_item_counts(self):
         text = _format_batch_progress(87, 10000, phase="train")
         assert "train 87/10000" in text
+
+    def test_training_panel_shows_step_budget_and_derived_epoch_count(self):
+        panel = _build_training_panel(
+            title="Training progress",
+            subtitle="complete",
+            log=_make_epoch_log(1, 0.4, 0.5, 0.7, 0.6, 0.5, 0.65, 0.0),
+            total_epochs=2,
+            total_steps=5,
+            optimizer_steps=5,
+            selected_epoch=1,
+            selected_tune_loss=0.5,
+            selected_tune_metrics={"auroc": 0.7},
+            monitor_name="tune_loss",
+            selected_monitor_value=0.5,
+            patience_counter=0,
+            patience_limit=None,
+            status="training complete",
+        )
+        console = Console(record=True, width=100)
+        console.print(panel)
+
+        rendered = console.export_text()
+        assert "02/02" in rendered
+        assert "5/5" in rendered
 
     def test_training_panel_labels_selected_checkpoint_by_monitor_value(self):
         panel = _build_training_panel(

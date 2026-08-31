@@ -1096,8 +1096,14 @@ class TrainingConfig:
     """Training-loop hyperparameters and optimizer settings.
 
     ``batch_size`` and ``gradient_accumulation`` control the effective batch
-    size, while ``epochs``, ``learning_rate``, ``optimizer``, ``scheduler``,
-    and ``patience`` define the optimization schedule. ``monitor`` and
+    size. Exactly one training budget is configured: ``epochs`` counts full
+    passes over each fold's training loader, while ``max_steps`` counts
+    optimizer updates (one complete gradient-accumulation window). Step-budget
+    runs set ``epochs`` to ``None`` and may finish partway through an epoch.
+    ``learning_rate``, ``optimizer``, ``scheduler``, and ``patience`` define the
+    optimization schedule. Cosine scheduling advances once per epoch with
+    ``T_max=epochs`` in epoch mode and once per optimizer update with
+    ``T_max=max_steps`` in step mode. ``monitor`` and
     ``monitor_mode`` choose the tune loss or metric used for selected-checkpoint
     selection and early stopping. ``tune_is_test`` ties the tune and test
     splits to the same samples for protocols with a single held-out set: a fold
@@ -1130,7 +1136,8 @@ class TrainingConfig:
     """
 
     seed: int = 0
-    epochs: int = 50
+    epochs: int | None = 50
+    max_steps: int | None = None
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
     optimizer: str = "adam"
@@ -1166,7 +1173,7 @@ class TrainingConfig:
     max_train_pixels: int = 2_000_000
 
     def __post_init__(self) -> None:
-        if self.epochs < 1:
+        if self.epochs is not None and self.epochs < 1:
             raise ValueError("TrainingConfig.epochs must be >= 1")
         if self.max_train_pixels < 1:
             raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
@@ -1394,6 +1401,17 @@ class PipelineConfig:
     run_id: str | None = None
 
     def __post_init__(self) -> None:
+        if (self.training.epochs is None) == (self.training.max_steps is None):
+            raise ValueError(
+                "training budget requires exactly one of training.epochs and "
+                "training.max_steps to be set."
+            )
+        if self.training.max_steps is not None and (
+            not isinstance(self.training.max_steps, int)
+            or isinstance(self.training.max_steps, bool)
+            or self.training.max_steps < 1
+        ):
+            raise ValueError("training.max_steps must be an integer >= 1.")
         if (self.task is None) == (self.representation is None):
             raise TypeError(
                 "PipelineConfig requires exactly one of 'task' and 'representation'."
@@ -1474,6 +1492,11 @@ class PipelineConfig:
                 "pixel_classifier: pixel classifiers own separate fit loops and do not "
                 "produce Trainer checkpoints. Use checkpoint_selection: best."
             )
+        if self.training.max_steps is not None and self.pixel_classifier is not None:
+            raise ValueError(
+                "training.max_steps is not supported with a pixel_classifier: pixel "
+                "classifiers do not use Trainer optimizer updates. Use training.epochs."
+            )
         if (
             self.training.checkpoint_selection == "last"
             and self.training.method == "ridge_pca_probe"
@@ -1482,6 +1505,15 @@ class PipelineConfig:
                 "training.checkpoint_selection='last' is not supported with "
                 "training.method='ridge_pca_probe': the closed-form probe has no epoch "
                 "checkpoint to select. Use checkpoint_selection: best."
+            )
+        if (
+            self.training.max_steps is not None
+            and self.training.method == "ridge_pca_probe"
+        ):
+            raise ValueError(
+                "training.max_steps is not supported with "
+                "training.method='ridge_pca_probe': the closed-form probe does not use "
+                "Trainer optimizer updates. Use training.epochs."
             )
         # spatial_expression (HEST gene-expression-from-morphology): one spot = one tile
         # with a vector target, trained by the closed-form Ridge+PCA probe. It reuses the

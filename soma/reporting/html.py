@@ -280,8 +280,23 @@ def _format_patience(training_config: dict) -> str:
 
 def _training_summary_panel(run_data: RunData) -> str:
     cfg = run_data.config.get("training", {})
-    items = [
-        ("Epochs", str(cfg.get("epochs", "—"))),
+    if cfg.get("max_steps") is not None:
+        derived_epochs = [len(fold.training_history) for fold in run_data.folds]
+        derived_text = (
+            str(derived_epochs[0])
+            if derived_epochs and len(set(derived_epochs)) == 1
+            else ", ".join(
+                f"fold {fold.fold}: {len(fold.training_history)}"
+                for fold in run_data.folds
+            )
+        )
+        budget_items = [
+            ("Optimizer steps", str(cfg["max_steps"])),
+            ("Derived epochs", derived_text or "—"),
+        ]
+    else:
+        budget_items = [("Epochs", str(cfg.get("epochs", "—")))]
+    items = budget_items + [
         ("Batch size", str(cfg.get("batch_size", "—"))),
         ("Learning rate", str(cfg.get("learning_rate", "—"))),
         ("Optimizer", str(cfg.get("optimizer", "—"))),

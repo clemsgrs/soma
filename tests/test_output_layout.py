@@ -155,6 +155,25 @@ def test_canonical_experiment_payload_omits_default_checkpoint_selection(tmp_pat
     assert "checkpoint_selection" not in payload["training"]
 
 
+def test_canonical_epoch_experiment_payload_omits_null_step_budget(tmp_path: Path):
+    """The new opt-in field must not re-mint legacy epoch experiment identities."""
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert "max_steps" not in payload["training"]
+
+
+def test_canonical_step_experiment_payload_names_the_step_budget(tmp_path: Path):
+    payload = canonical_experiment_payload(
+        _make_pipeline_config(
+            tmp_path,
+            training=TrainingConfig(epochs=None, max_steps=12500),
+        )
+    )
+
+    assert payload["training"]["epochs"] is None
+    assert payload["training"]["max_steps"] == 12500
+
+
 def test_canonical_experiment_payload_omits_default_roi_batch_sampling(tmp_path: Path):
     """An opt-out run keeps its legacy experiment identity payload."""
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
