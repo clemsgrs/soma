@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from soma.benchmarks import (
     get_reported_metrics,
     run_benchmark_spec,
 )
+from soma.benchmarks.spec import BenchmarkConfigBuilder
 
 
 def _build_config(**kwargs):
@@ -44,6 +46,25 @@ def test_benchmark_spec_is_public_and_validates_metrics_without_registration():
     assert "BenchmarkSpec" in soma.benchmarks.__all__
     with pytest.raises(KeyError, match="Unknown benchmark 'fmtf/example'"):
         get_benchmark(spec.name)
+
+
+def test_benchmark_spec_types_the_exact_config_builder_keyword_contract():
+    parameters = inspect.signature(BenchmarkConfigBuilder.__call__).parameters
+
+    assert tuple(parameters) == (
+        "self",
+        "dataset_csv",
+        "splits_csv",
+        "output_root",
+        "seed",
+        "overrides",
+        "encoder",
+    )
+    assert all(
+        parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        for name, parameter in parameters.items()
+        if name != "self"
+    )
 
 
 def test_benchmark_spec_rejects_invalid_metric_declaration_on_construction():
@@ -84,9 +105,11 @@ def test_benchmark_spec_rejects_invalid_ranking_declaration_on_construction():
         )
 
 
-@pytest.mark.parametrize("canonical_seeds", [(), (7, 7)])
-def test_benchmark_spec_rejects_empty_or_duplicate_canonical_seeds(canonical_seeds):
-    with pytest.raises(ValueError, match="canonical_seeds must be non-empty and unique"):
+@pytest.mark.parametrize("canonical_seeds", [(), (7, 7), (7, "3"), (True,)])
+def test_benchmark_spec_rejects_invalid_canonical_seeds(canonical_seeds):
+    with pytest.raises(
+        ValueError, match="canonical_seeds must be non-empty and unique integers"
+    ):
         BenchmarkSpec(
             name="fmtf/invalid-seeds",
             canonical_seeds=canonical_seeds,

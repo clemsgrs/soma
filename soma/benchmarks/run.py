@@ -1,13 +1,11 @@
 """Importable benchmark-reproduction orchestration (issue #370).
 
-:func:`run_benchmark` is the public entry point carrying everything ``soma reproduce``
-provides — the canonical-seed loop, reference-row resolution and tolerance status,
-provenance stamping (git commit, slide2vec/croma versions), and the results-ledger
-append — as an importable API. The CLI is a thin caller of the same code, so an external
-harness (e.g. the BigPicture FMTF benchmark leaderboard) calling :func:`run_benchmark`
-gets byte-identical orchestration guarantees, and can pass ``results_root`` to append
-:class:`~soma.benchmarks.registry.MeasuredRow` rows to its own committed ledger instead
-of the in-package one.
+Two public entry points serve distinct benchmark owners. :func:`run_benchmark` carries
+everything ``soma reproduce`` provides for a registered Built-in Benchmark — reference
+resolution, tolerance status, provenance, and ledger append. :func:`run_benchmark_spec`
+executes an external project's direct :class:`~soma.benchmarks.spec.BenchmarkSpec` with
+exact seeds, shared feature caching, metric aggregation, and per-seed evidence roots,
+without registry, reference, tolerance, ledger, or CLI concerns.
 
 The helpers here keep the CLI's reporting contract verbatim (stdout/stderr text, exit
 codes): a return value of ``0`` is success, ``2`` a usage/protocol error, and — exactly
@@ -27,7 +25,7 @@ from typing import Any, Callable
 import yaml
 
 from soma.benchmarks.registry import get_benchmark, get_reported_metrics
-from soma.benchmarks.spec import BenchmarkSpec
+from soma.benchmarks.spec import BenchmarkSpec, _validate_seed_sequence
 
 
 def _pipeline_cls():
@@ -73,7 +71,7 @@ class MetricResult:
 
 @dataclass(frozen=True)
 class BenchmarkRunResult:
-    """Measurements and evidence locations produced by :func:`run_benchmark`.
+    """Measurements and evidence locations produced by either benchmark runner.
 
     ``seed_roots`` holds the per-seed output roots of a canonical-seed run; for a
     ``from_run_dir`` re-score it holds the single resolved run directory that was scored.
@@ -104,17 +102,32 @@ def _require_reported_scores(
     raise_error: bool = False,
 ) -> dict[str, float]:
     """Fail one scoring attempt if any required Reported metric is absent."""
-    missing = [metric for metric in get_reported_metrics(benchmark) if metric not in scores]
-    if missing:
-        names = ", ".join(repr(metric) for metric in missing)
-        message = (
-            f"benchmark {benchmark.name!r} score is missing Reported metric(s): {names}."
-        )
+    message = _missing_reported_score_message(benchmark, scores)
+    if message is not None:
         if raise_error:
             raise ReportedScoreError(message)
         print(f"Error: {message}", file=sys.stderr)
         sys.exit(2)
     return scores
+
+
+def _missing_reported_score_message(
+    benchmark,
+    scores: dict[str, float],
+    *,
+    reported_metrics: Sequence[str] | None = None,
+) -> str | None:
+    """Describe omitted Reported metrics consistently across both public runners."""
+    required = (
+        tuple(reported_metrics)
+        if reported_metrics is not None
+        else get_reported_metrics(benchmark)
+    )
+    missing = [metric for metric in required if metric not in scores]
+    if not missing:
+        return None
+    names = ", ".join(repr(metric) for metric in missing)
+    return f"benchmark {benchmark.name!r} score is missing Reported metric(s): {names}."
 
 
 def _reproduce_reference_row(benchmark, axes: dict[str, Any]):
@@ -800,17 +813,10 @@ def run_benchmark_spec(
     """Execute an external benchmark specification without registry concerns."""
     import statistics
 
-    if seeds is not None and (
-        not isinstance(seeds, Sequence) or isinstance(seeds, (str, bytes))
-    ):
-        raise ValueError("seeds must be a non-empty sequence of unique integers")
-    selected_seeds = tuple(spec.canonical_seeds if seeds is None else seeds)
-    if (
-        not selected_seeds
-        or not all(isinstance(seed, int) for seed in selected_seeds)
-        or len(set(selected_seeds)) != len(selected_seeds)
-    ):
-        raise ValueError("seeds must be a non-empty sequence of unique integers")
+    selected_seeds = _validate_seed_sequence(
+        spec.canonical_seeds if seeds is None else seeds,
+        message="seeds must be a non-empty sequence of unique integers",
+    )
     output_root = Path(output_root)
     shared_cache_root = (
         Path(cache_root) if cache_root is not None else output_root / "feature_cache"
@@ -834,13 +840,11 @@ def run_benchmark_spec(
         )
         pipeline_cls(config).run()
         scores = spec.score(seed_root)
-        missing = [metric for metric in reported_metrics if metric not in scores]
-        if missing:
-            names = ", ".join(repr(metric) for metric in missing)
-            raise ValueError(
-                f"benchmark spec {spec.name!r} score is missing Reported metric(s): "
-                f"{names}."
-            )
+        error = _missing_reported_score_message(
+            spec, scores, reported_metrics=reported_metrics
+        )
+        if error is not None:
+            raise ValueError(error)
         for metric in reported_metrics:
             measured_values[metric].append(float(scores[metric]))
 
