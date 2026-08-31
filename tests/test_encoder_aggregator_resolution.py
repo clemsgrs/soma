@@ -69,14 +69,13 @@ def test_patient_encoder_rejected_for_slide_benchmark(monkeypatch):
     monkeypatch.setattr("soma.encoders.encoder_registry", _PatientMetadataRegistry())
     recipe = AggregatorConfig(name="abmil")
 
-    with pytest.raises(
-        ValueError,
-        match=(
-            "Slide-level benchmarks cannot consume patient-level representations.*"
-            "choose a tile- or slide-level encoder"
-        ),
-    ):
+    with pytest.raises(ValueError) as error:
         resolve_aggregator("moozy", recipe)
+
+    assert str(error.value) == (
+        "Slide-level benchmarks cannot consume patient-level representations "
+        "from encoder 'moozy'; choose a tile- or slide-level encoder."
+    )
 
 
 def test_unknown_encoder_lists_available_names(monkeypatch):
