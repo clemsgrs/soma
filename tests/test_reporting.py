@@ -673,3 +673,22 @@ def test_generate_report_single_fold_omits_fold_specific_tab(tmp_path: Path) -> 
     assert "Elapsed Time" in html
     assert "Configuration" in html
     assert '<details class="cfg-details">' not in html
+
+
+def test_step_budget_report_shows_budget_and_derived_epochs(tmp_path: Path) -> None:
+    run_dir = _make_run_dir(tmp_path)
+    config_path = run_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["training"]["epochs"] = None
+    config["training"]["max_steps"] = 5
+    config_path.write_text(_to_yaml(config))
+    (run_dir / "training_history.json").write_text(
+        json.dumps({"epochs": _make_training_history(n_epochs=2), "peak_per_metric": {}})
+    )
+
+    html = generate_report(run_dir).read_text()
+
+    assert "Optimizer steps" in html
+    assert ">5<" in html
+    assert "Derived epochs" in html
+    assert ">2<" in html

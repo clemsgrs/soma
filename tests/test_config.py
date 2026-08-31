@@ -157,6 +157,7 @@ def test_training_config_defaults():
     cfg = TrainingConfig()
     assert cfg.seed == 0
     assert cfg.epochs == 50
+    assert cfg.max_steps is None
     assert cfg.learning_rate == 1e-4
     assert cfg.weight_decay == 1e-5
     assert cfg.optimizer == "adam"
@@ -173,6 +174,44 @@ def test_training_config_defaults():
     assert cfg.num_workers == 0
     assert cfg.pin_memory is True
     assert cfg.persistent_workers is True
+
+
+def test_training_config_accepts_an_optimizer_step_budget():
+    cfg = TrainingConfig(epochs=None, max_steps=12500)
+
+    assert cfg.epochs is None
+    assert cfg.max_steps == 12500
+
+
+def test_pipeline_config_rejects_both_epoch_and_step_budgets():
+    with pytest.raises(ValueError, match="exactly one.*epochs.*max_steps"):
+        _make_pipeline_config(training=TrainingConfig(epochs=5, max_steps=10))
+
+
+def test_pipeline_config_rejects_a_missing_training_budget():
+    with pytest.raises(ValueError, match="exactly one.*epochs.*max_steps"):
+        _make_pipeline_config(training=TrainingConfig(epochs=None, max_steps=None))
+
+
+def test_pipeline_config_rejects_a_non_positive_step_budget():
+    with pytest.raises(ValueError, match="max_steps.*integer >= 1"):
+        _make_pipeline_config(training=TrainingConfig(epochs=None, max_steps=0))
+
+
+def test_step_budget_survives_config_roundtrip(tmp_path: Path):
+    config = _make_pipeline_config(
+        training=TrainingConfig(epochs=None, max_steps=12500)
+    )
+    yaml_path = tmp_path / "config.yaml"
+
+    save_config(config, yaml_path)
+    loaded = load_config(yaml_path)
+
+    saved = yaml.safe_load(yaml_path.read_text())
+    assert saved["training"]["epochs"] is None
+    assert saved["training"]["max_steps"] == 12500
+    assert loaded.training.epochs is None
+    assert loaded.training.max_steps == 12500
 
 
 @pytest.mark.parametrize(
@@ -594,6 +633,18 @@ def test_pixel_classifier_rejects_last_checkpoint_selection():
         )
 
 
+def test_pixel_classifier_rejects_an_optimizer_step_budget():
+    """Pixel classifiers do not train through Trainer optimizer updates."""
+    from soma.config import PixelClassifierConfig
+
+    with pytest.raises(ValueError, match="max_steps.*pixel_classifier.*Trainer"):
+        _seg_config(
+            decoder=None,
+            pixel_classifier=PixelClassifierConfig(name="mlp"),
+            training=TrainingConfig(epochs=None, max_steps=10),
+        )
+
+
 def test_closed_form_probe_rejects_last_checkpoint_selection():
     """A closed-form probe has no epoch checkpoint that `last` could select."""
     with pytest.raises(ValueError, match="checkpoint_selection='last'.*ridge_pca_probe"):
@@ -607,6 +658,23 @@ def test_closed_form_probe_rejects_last_checkpoint_selection():
                 method="ridge_pca_probe",
                 checkpoint_selection="last",
                 patience=None,
+            ),
+        )
+
+
+def test_closed_form_probe_rejects_an_optimizer_step_budget():
+    """The closed-form probe has no Trainer optimizer updates to budget."""
+    with pytest.raises(ValueError, match="max_steps.*ridge_pca_probe.*Trainer"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="spatial_expression",
+            task=TaskConfig(name="regression"),
+            training=TrainingConfig(
+                epochs=None,
+                max_steps=10,
+                method="ridge_pca_probe",
             ),
         )
 

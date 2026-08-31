@@ -51,6 +51,8 @@ def _stable_json(payload: dict[str, Any]) -> str:
 def _training_identity(config: PipelineConfig) -> dict[str, Any]:
     training = asdict(config.training)
     training.pop("seed", None)
+    if config.training.max_steps is None:
+        training.pop("max_steps", None)
     # ``checkpoint_selection`` folds in only when non-default (issue #282), the same
     # guard the dtype/annotation-sampling knobs use: the evaluation protocol *is* part
     # of what the experiment is, but every pre-existing run was implicitly ``best``, so

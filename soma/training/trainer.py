@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,6 +52,7 @@ class TrainResult:
     selected_tune_metrics: dict[str, float]
     history: list[EpochLog]
     checkpoint_path: Path
+    optimizer_steps: int = 0
 
 
 class Trainer:
@@ -101,6 +103,7 @@ class Trainer:
 
         self._optimizer = _build_optimizer(model, config)
         self._scheduler = _build_scheduler(self._optimizer, config)
+        self._optimizer_steps = 0
 
     def fit(self) -> TrainResult:
         """Run the full training loop.
@@ -132,6 +135,18 @@ class Trainer:
 
         current_avg_epoch_seconds: float | None = None
         current_eta_seconds: float | None = None
+        updates_per_epoch = _optimizer_updates_per_epoch(
+            self._train_loader,
+            gradient_accumulation=self._config.gradient_accumulation,
+            prediction_accumulation=getattr(
+                self._model.task_head, "accumulates_predictions", False
+            ),
+        )
+        total_epochs = (
+            self._config.epochs
+            if self._config.epochs is not None
+            else _derived_epoch_count(self._config.max_steps, updates_per_epoch)
+        )
 
         def render_panel() -> None:
             elapsed_seconds = time.perf_counter() - started_at
@@ -140,7 +155,7 @@ class Trainer:
                     title="Training progress",
                     subtitle=current_subtitle,
                     log=current_log,
-                    total_epochs=self._config.epochs,
+                    total_epochs=total_epochs,
                     selected_epoch=selected_epoch,
                     selected_tune_loss=selected_tune_loss,
                     selected_tune_metrics=selected_tune_metrics,
@@ -156,6 +171,8 @@ class Trainer:
                     avg_epoch_seconds=current_avg_epoch_seconds,
                     eta_seconds=current_eta_seconds,
                     batch_progress=current_batch_progress,
+                    total_steps=self._config.max_steps,
+                    optimizer_steps=self._optimizer_steps,
                 ),
                 refresh=True,
             )
@@ -165,7 +182,7 @@ class Trainer:
                 title="Training progress",
                 subtitle="starting",
                 log=None,
-                total_epochs=self._config.epochs,
+                total_epochs=total_epochs,
                 selected_epoch=selected_epoch,
                 selected_tune_loss=selected_tune_loss,
                 selected_tune_metrics=selected_tune_metrics,
@@ -181,6 +198,8 @@ class Trainer:
                 avg_epoch_seconds=None,
                 eta_seconds=None,
                 batch_progress=None,
+                total_steps=self._config.max_steps,
+                optimizer_steps=self._optimizer_steps,
             ),
             console=console,
             refresh_per_second=8,
@@ -198,31 +217,46 @@ class Trainer:
                 current_status = f"{phase} items {processed_items}/{total_items}"
                 render_panel()
 
-            for epoch in range(self._config.epochs):
+            for epoch in range(total_epochs):
                 batch_sampler = getattr(self._train_loader, "batch_sampler", None)
                 set_epoch = getattr(batch_sampler, "set_epoch", None)
                 if callable(set_epoch):
                     set_epoch(epoch)
-                current_subtitle = f"epoch {epoch + 1}/{self._config.epochs} | train"
+                current_subtitle = f"epoch {epoch + 1}/{total_epochs} | train"
                 current_status = "training epoch in progress"
                 current_batch_progress = None
                 render_panel()
-                train_loss = self._train_epoch(on_batch_progress=on_batch_progress)
+                remaining_updates = (
+                    None
+                    if self._config.max_steps is None
+                    else self._config.max_steps - self._optimizer_steps
+                )
+                train_loss = self._train_epoch(
+                    on_batch_progress=on_batch_progress,
+                    max_updates=remaining_updates,
+                )
 
-                current_subtitle = f"epoch {epoch + 1}/{self._config.epochs} | tune"
+                current_subtitle = f"epoch {epoch + 1}/{total_epochs} | tune"
                 current_status = "evaluating tune split"
                 render_panel()
                 tune_loss, tune_metrics = self._tune(on_batch_progress=on_batch_progress)
 
                 lr = self._optimizer.param_groups[0]["lr"]
-                if self._scheduler is not None:
+                if self._scheduler is not None and self._config.max_steps is None:
                     self._scheduler.step()
 
                 elapsed_seconds = time.perf_counter() - started_at
                 completed_epochs = len(history) + 1
                 avg_epoch_seconds = elapsed_seconds / completed_epochs
-                remaining_epochs = max(self._config.epochs - completed_epochs, 0)
-                eta_seconds = avg_epoch_seconds * remaining_epochs
+                if self._config.max_steps is None:
+                    remaining_epochs = max(total_epochs - completed_epochs, 0)
+                    eta_seconds = avg_epoch_seconds * remaining_epochs
+                else:
+                    avg_step_seconds = elapsed_seconds / max(self._optimizer_steps, 1)
+                    remaining_steps = max(
+                        self._config.max_steps - self._optimizer_steps, 0
+                    )
+                    eta_seconds = avg_step_seconds * remaining_steps
                 current_avg_epoch_seconds = avg_epoch_seconds
                 current_eta_seconds = eta_seconds
 
@@ -310,7 +344,7 @@ class Trainer:
                     title="Training progress",
                     subtitle=current_subtitle,
                     log=history[-1] if history else None,
-                    total_epochs=self._config.epochs,
+                    total_epochs=total_epochs,
                     selected_epoch=selected_epoch,
                     selected_tune_loss=selected_tune_loss,
                     selected_tune_metrics=selected_tune_metrics,
@@ -326,6 +360,8 @@ class Trainer:
                     avg_epoch_seconds=current_avg_epoch_seconds,
                     eta_seconds=current_eta_seconds,
                     batch_progress=current_batch_progress,
+                    total_steps=self._config.max_steps,
+                    optimizer_steps=self._optimizer_steps,
                 ),
                 refresh=True,
             )
@@ -336,15 +372,20 @@ class Trainer:
             selected_tune_metrics=selected_tune_metrics,
             history=history,
             checkpoint_path=checkpoint_path,
+            optimizer_steps=self._optimizer_steps,
         )
 
     def _train_epoch(
         self,
         on_batch_progress: Callable[[str, int, int], None] | None = None,
+        max_updates: int | None = None,
     ) -> float:
         """Run one training epoch. Returns average loss."""
         if getattr(self._model.task_head, "accumulates_predictions", False):
-            return self._train_epoch_windowed(on_batch_progress=on_batch_progress)
+            return self._train_epoch_windowed(
+                on_batch_progress=on_batch_progress,
+                max_updates=max_updates,
+            )
 
         self._model.train()
         total_loss = 0.0
@@ -352,6 +393,7 @@ class Trainer:
         total_items = _resolve_total_items(self._train_loader, fallback=total_batches)
         processed_items = 0
         accum_steps = self._config.gradient_accumulation
+        optimizer_steps_at_start = self._optimizer_steps
 
         self._optimizer.zero_grad()
         step = 0
@@ -384,12 +426,18 @@ class Trainer:
             if step % accum_steps == 0 or step == total_batches:
                 self._optimizer.step()
                 self._optimizer.zero_grad()
+                if self._record_optimizer_update(
+                    optimizer_steps_at_start=optimizer_steps_at_start,
+                    max_updates=max_updates,
+                ):
+                    break
 
         return total_loss / max(step, 1)
 
     def _train_epoch_windowed(
         self,
         on_batch_progress: Callable[[str, int, int], None] | None = None,
+        max_updates: int | None = None,
     ) -> float:
         """Cox prediction-accumulation training epoch. Returns average loss.
 
@@ -405,6 +453,7 @@ class Trainer:
         total_items = _resolve_total_items(self._train_loader, fallback=total_windows)
         processed_items = 0
         head = self._model.task_head
+        optimizer_steps_at_start = self._optimizer_steps
 
         windows = 0
         for window in self._train_loader:
@@ -428,13 +477,34 @@ class Trainer:
             self._optimizer.zero_grad()
             loss.backward()
             self._optimizer.step()
+            stop_after_update = self._record_optimizer_update(
+                optimizer_steps_at_start=optimizer_steps_at_start,
+                max_updates=max_updates,
+            )
             total_loss += loss.item()
 
             processed_items = min(total_items, processed_items + len(window.bags))
             if on_batch_progress is not None:
                 on_batch_progress("train", processed_items, total_items)
+            if stop_after_update:
+                break
 
         return total_loss / max(windows, 1)
+
+    def _record_optimizer_update(
+        self,
+        *,
+        optimizer_steps_at_start: int,
+        max_updates: int | None,
+    ) -> bool:
+        """Record one completed update and report whether this epoch must stop."""
+        self._optimizer_steps += 1
+        if self._scheduler is not None and self._config.max_steps is not None:
+            self._scheduler.step()
+        return (
+            max_updates is not None
+            and self._optimizer_steps - optimizer_steps_at_start >= max_updates
+        )
 
     @torch.inference_mode()
     def _tune(
@@ -597,12 +667,33 @@ def _build_scheduler(
     optimizer: torch.optim.Optimizer, config: TrainingConfig
 ) -> torch.optim.lr_scheduler.LRScheduler | None:
     if config.scheduler == "cosine":
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
+        t_max = config.max_steps if config.max_steps is not None else config.epochs
+        if t_max is None:  # PipelineConfig validates the public configuration contract.
+            raise ValueError("Cosine scheduling requires an epoch or optimizer-step budget.")
+        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=t_max)
     elif config.scheduler == "none":
         return None
     else:
         msg = f"Unknown scheduler: {config.scheduler}. Use 'cosine' or 'none'."
         raise ValueError(msg)
+
+
+def _optimizer_updates_per_epoch(
+    loader: object,
+    *,
+    gradient_accumulation: int,
+    prediction_accumulation: bool,
+) -> int:
+    batches = int(len(loader))
+    if prediction_accumulation:
+        return max(batches, 1)
+    return max(math.ceil(batches / gradient_accumulation), 1)
+
+
+def _derived_epoch_count(max_steps: int | None, updates_per_epoch: int) -> int:
+    if max_steps is None:
+        raise ValueError("A step-budget run requires training.max_steps.")
+    return math.ceil(max_steps / updates_per_epoch)
 
 
 def _initial_monitor_value(monitor_mode: str) -> float:
@@ -729,6 +820,8 @@ def _build_training_panel(
     avg_epoch_seconds: float | None = None,
     eta_seconds: float | None = None,
     batch_progress: str | None = None,
+    total_steps: int | None = None,
+    optimizer_steps: int = 0,
 ) -> Panel:
     table = Table.grid(padding=(0, 1))
     table.add_column(style="dim", no_wrap=True)
@@ -752,6 +845,12 @@ def _build_training_panel(
 
     if fold is not None and num_folds > 1:
         table.add_row("fold", Text(f"{fold + 1}/{num_folds}", style="white"))
+
+    if total_steps is not None:
+        table.add_row(
+            "steps",
+            Text(f"{optimizer_steps}/{total_steps}", style="bold cyan"),
+        )
 
     if batch_progress is not None:
         table.add_row("batch", Text(batch_progress, style="white"))
