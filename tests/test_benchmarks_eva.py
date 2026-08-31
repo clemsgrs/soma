@@ -60,18 +60,17 @@ def test_eva_facet_fixes_dataset_and_varies_encoder():
 
 def test_build_config_uses_fixed_step_budget(tmp_path):
     """The benchmark expresses eva's max_steps=12500 directly — no train-size mapping."""
-    splits = _write_splits(tmp_path, n_train=268)
     config = get_benchmark("eva/bach").build_config(
         encoder="uni2",
         dataset_csv=tmp_path / "dataset.csv",
-        splits_csv=splits,
+        splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
     )
     assert config.training.max_steps == eva.MAX_STEPS == 12500
     assert config.training.epochs is None
 
 
-def test_build_config_no_longer_requires_splits_csv_for_the_budget(tmp_path):
+def test_budget_does_not_read_splits_csv(tmp_path):
     # The step budget is fixed by protocol, so the config builder never reads the splits.
     config = get_benchmark("eva/bach").build_config(
         dataset_csv=tmp_path / "dataset.csv",
