@@ -380,3 +380,24 @@ mirror the CLI flags, plus ``results_root`` so an external repository can append
        # appends to <results_root>/eva.csv with full provenance
        results_root="/path/to/leaderboard-repo/results",
    )
+
+Run an external benchmark specification
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A project outside soma can own its benchmark protocol as a typed
+``soma.benchmarks.BenchmarkSpec`` — a config builder, the canonical seed set,
+and a scorer — and hand it to ``soma.benchmarks.run_benchmark_spec`` for
+execution. soma runs every canonical seed with one shared feature cache and
+returns the aggregated ``BenchmarkRunResult`` together with the per-seed
+evidence roots, without touching the registry, reference tables, or ledger.
+
+Runnable demonstrations live in ``examples/``
+(`examples/README.md <https://github.com/clemsgrs/soma/blob/main/examples/README.md>`_):
+
+* ``examples/external_benchmark_spec.py`` — build and execute a ``BenchmarkSpec``;
+* ``examples/fixed_step_training.py`` — fixed optimizer-step training budgets
+  (``TrainingConfig(max_steps=N, epochs=None)``);
+* ``examples/aggregator_resolution.py`` — resolve one fixed MIL recipe for
+  tile- and slide-level encoders with ``soma.encoders.resolve_aggregator``;
+* ``examples/portable_identity.py`` — manifest identity is portable across
+  storage roots.
