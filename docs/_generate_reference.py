@@ -318,16 +318,30 @@ def _reference_source_link(family: str) -> str:
     return f"`{label} <{url}>`__"
 
 
+def _latest_rows(rows):
+    """The most recent ledger row per (key, metric) cell, in first-seen cell order.
+
+    The results ledger is append-only, so a cell reproduced at a new commit adds a row
+    rather than rewriting history; the docs show the latest reproduction of each cell
+    (``reproduced_rows`` documents "take the last match").
+    """
+    latest: dict[tuple, object] = {}
+    for row in rows:
+        latest[(tuple(sorted(row.key.items())), row.metric)] = row
+    return list(latest.values())
+
+
 def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
     """A ``list-table`` of soma's recorded measurements joined against the reference band.
 
     Built from the packaged results ledger (``results/<name>.csv``) via ``load_results`` — so
     only cells that have actually been run appear, each next to its reference number, the
-    delta, and the provenance (seeds, date, commit) that produced it. Returns a plain
+    delta, and the provenance (seeds, date, commit) that produced it. An append-only ledger
+    can hold several rows per cell; only the latest is shown. Returns a plain
     "nothing recorded yet" note when the ledger is empty (or absent), so a benchmark with no
     reproductions still renders.
     """
-    rows = load_results(name)
+    rows = _latest_rows(load_results(name))
     if not rows:
         return (
             "No reproductions have been recorded yet. Run ``soma reproduce <name> --record`` "
@@ -369,7 +383,7 @@ def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> str:
 
 def _eva_results_section() -> str:
     """Render the public reproduced-versus-reference EVA comparison."""
-    rows = load_results("eva")
+    rows = _latest_rows(load_results("eva"))
     if not rows:
         return (
             "No reproduced cells have been recorded yet. Run, for example::\n\n"
@@ -561,7 +575,7 @@ def build_eva_benchmark_rst() -> str:
             f"weight_decay ``{eva_bench.WEIGHT_DECAY:g}``",
         ),
         ("batch size", f"``{eva_bench.HEAD_BATCH_SIZE}``"),
-        ("budget", f"eva's ``max_steps={eva_bench.MAX_STEPS}`` mapped to soma epochs"),
+        ("budget", f"fixed step budget: ``max_steps={eva_bench.MAX_STEPS}`` optimizer updates"),
         ("metric", "``balanced_accuracy``"),
         ("varied axis", "``encoder``"),
         ("primary metric", f"``{head.primary_metric}`` (from ``summary.json``)"),

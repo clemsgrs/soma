@@ -7,3 +7,9 @@ crc,uni2,test/balanced_accuracy,0.966,0.001,5,2026-06-19,7ef2d7c,,"Historical re
 crc,virchow2,test/balanced_accuracy,0.966,0.001,5,2026-06-19,7ef2d7c,,"Historical reproduction (PR #87, branch worktree-eva-benchmark-repro, EVA_REPRODUCTION.md); paige_virchow2 CLS-only (1280-d); 5 seeds; slide2vec version not recorded."
 gleason_arvaniti,virchow2,test/balanced_accuracy,0.7778,0.0101,5,2026-07-09,c8b320d,5.3.0,soma reproduce --record
 gleason_arvaniti,uni2,test/balanced_accuracy,0.7788,0.0048,5,2026-07-09,9663253,5.3.0,soma reproduce --record
+bach,uni2,test/balanced_accuracy,0.913958333333,0.00795358715368,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
+bach,virchow2,test/balanced_accuracy,0.870633473586,0.0111928102217,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
+breakhis,uni2,test/balanced_accuracy,0.855133503843,0.00713001524327,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
+breakhis,virchow2,test/balanced_accuracy,0.812221377913,0.00849989861585,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
+gleason_arvaniti,uni2,test/balanced_accuracy,0.77886752902,0.00494223989809,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
+gleason_arvaniti,virchow2,test/balanced_accuracy,0.777876078535,0.0101208062815,5,2026-09-01,3330c1d,5.8.2,soma reproduce --record

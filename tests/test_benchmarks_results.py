@@ -35,15 +35,22 @@ def test_load_results_absent_table_is_empty_not_error():
 def test_load_results_parses_eva_seed_rows():
     rows = load_results("eva")
     assert rows, "results/eva.csv should ship seeded historical rows"
-    by_cell = {(r.key.get("dataset"), r.key.get("encoder")): r for r in rows}
-    bach_uni2 = by_cell[("bach", "uni2")]
-    assert bach_uni2.metric == "test/balanced_accuracy"
-    assert bach_uni2.measured == pytest.approx(0.914)
-    assert bach_uni2.std == pytest.approx(0.007)
-    assert bach_uni2.n_seeds == 5
-    assert bach_uni2.soma_commit == "7ef2d7c"
+    # The ledger is append-only, so a re-recorded cell holds several rows; file order is
+    # oldest-first and the latest reproduction of a cell is the last match.
+    bach_uni2 = [r for r in rows if r.key == {"dataset": "bach", "encoder": "uni2"}]
+    assert len(bach_uni2) == 2  # historical epoch-mapping row + fixed-step re-record
+    historical, rerecorded = bach_uni2
+    assert historical.metric == "test/balanced_accuracy"
+    assert historical.measured == pytest.approx(0.914)
+    assert historical.std == pytest.approx(0.007)
+    assert historical.n_seeds == 5
+    assert historical.soma_commit == "7ef2d7c"
     # slide2vec version was not recorded for the historical rows -> blank, not fabricated.
-    assert bach_uni2.slide2vec_version == ""
+    assert historical.slide2vec_version == ""
+    assert rerecorded.metric == "test/balanced_accuracy"
+    assert rerecorded.measured == pytest.approx(0.914, abs=1e-3)
+    assert rerecorded.n_seeds == 5
+    assert rerecorded.slide2vec_version == "5.8.2"
 
 
 def test_load_results_requires_metric_and_measured(tmp_path, monkeypatch):

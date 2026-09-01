@@ -13,10 +13,9 @@ Protocol points that matter for matching the leaderboard:
 
 * Linear head, AdamW ``lr=3e-4`` and ``weight_decay=0.01`` (eva sets only ``lr``, so
   torch's AdamW default ``0.01`` applies), no scheduler, batch size 256.
-* Training is step-based: ``max_steps=12500`` with one validation per epoch. We map that to
-  soma's epoch loop via :func:`epochs_for_train_size`:
-  ``epochs = ceil(12500 / ceil(N_train / 256))``. Early-stopping patience is eva's hand-set
-  per-dataset value.
+* Training is step-based: a fixed budget of ``max_steps=12500`` optimizer updates with one
+  validation per epoch, expressed directly via ``TrainingConfig(max_steps=12500,
+  epochs=None)``. Early-stopping patience is eva's hand-set per-dataset value.
 * The selection/report metric is balanced accuracy, which equals eva's
   ``MulticlassAccuracy(average="macro")`` / ``BinaryBalancedAccuracy``.
 * Datasets with no eva test split (bach, breakhis, crc, mhist, gleason_arvaniti) report on
@@ -36,12 +35,9 @@ balanced accuracy; there is no custom scorer.
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
-
-import pandas as pd
 
 from soma.benchmarks.registry import (
     Facet,
@@ -121,20 +117,6 @@ DATASETS: dict[str, DatasetSpec] = {
 }
 
 
-def epochs_for_train_size(n_train: int) -> int:
-    """Map eva's ``max_steps`` to a soma epoch count for ``n_train`` samples."""
-    if n_train <= 0:
-        raise ValueError(f"n_train must be positive, got {n_train}")
-    steps_per_epoch = math.ceil(n_train / HEAD_BATCH_SIZE)
-    return max(1, math.ceil(MAX_STEPS / steps_per_epoch))
-
-
-def count_train_samples(splits_csv: str | Path) -> int:
-    """Number of ``train``-split samples in a soma splits manifest."""
-    splits = pd.read_csv(splits_csv)
-    return int((splits["split"] == "train").sum())
-
-
 def _require_dataset(dataset: str) -> DatasetSpec:
     try:
         return DATASETS[dataset]
@@ -152,7 +134,7 @@ def _build_eva_config(
     splits_csv: str | Path,
     output_root: str | Path,
     seed: int = 0,
-    epochs: int | None = None,
+    max_steps: int | None = None,
     patience: int | None = None,
     encoder_batch_size: int = 32,
     head_num_workers: int = 0,
@@ -161,16 +143,16 @@ def _build_eva_config(
 ) -> PipelineConfig:
     """Assemble an EVA-faithful :class:`~soma.config.PipelineConfig` for one run.
 
-    ``epochs`` defaults to :func:`epochs_for_train_size` computed from ``splits_csv``;
-    ``patience`` defaults to the dataset's eva value. Pass overrides for smoke runs.
+    ``max_steps`` defaults to eva's fixed :data:`MAX_STEPS` budget; ``patience`` defaults
+    to the dataset's eva value. Pass overrides for smoke runs.
     """
     spec = _require_dataset(dataset)
     # Known EVA reference encoders may need a protocol-specific output variant. Any other
     # registered soma encoder uses its own default variant and can extend the benchmark.
     enc = ENCODERS.get(encoder)
 
-    if epochs is None:
-        epochs = epochs_for_train_size(count_train_samples(splits_csv))
+    if max_steps is None:
+        max_steps = MAX_STEPS
     if patience is None:
         patience = spec.patience
 
@@ -190,7 +172,8 @@ def _build_eva_config(
         evaluation=EvalConfig(metrics=["balanced_accuracy", "accuracy"]),
         training=TrainingConfig(
             seed=seed,
-            epochs=epochs,
+            epochs=None,
+            max_steps=max_steps,
             learning_rate=LEARNING_RATE,
             weight_decay=WEIGHT_DECAY,
             optimizer="adamw",
@@ -264,7 +247,7 @@ class EvaBenchmark:
         output_root: str | Path | None = None,
         seed: int | None = None,
         overrides: dict[str, Any] | None = None,
-        epochs: int | None = None,
+        max_steps: int | None = None,
         patience: int | None = None,
         encoder_batch_size: int = 32,
         execution: ExecutionConfig | None = None,
@@ -272,14 +255,9 @@ class EvaBenchmark:
         """Build the EVA-faithful config for this dataset and the ``encoder`` axis.
 
         ``dataset_csv`` / ``splits_csv`` / ``output_root`` come from the curated Manifest;
-        ``epochs`` defaults to the eva step-budget mapping computed from ``splits_csv``.
+        ``max_steps`` defaults to eva's fixed :data:`MAX_STEPS` optimizer-step budget.
         ``overrides`` carries the CLI's shared feature-cache block (``{"cache": {...}}``).
         """
-        if splits_csv is None and epochs is None:
-            raise ValueError(
-                "build_config needs splits_csv (to compute the eva epoch budget) or an "
-                "explicit epochs override."
-            )
         return _build_eva_config(
             dataset=self.dataset,
             encoder=encoder,
@@ -287,7 +265,7 @@ class EvaBenchmark:
             splits_csv=splits_csv if splits_csv is not None else "splits.csv",
             output_root=output_root if output_root is not None else "output/eva",
             seed=0 if seed is None else int(seed),
-            epochs=epochs,
+            max_steps=max_steps,
             patience=patience,
             encoder_batch_size=encoder_batch_size,
             execution=execution,

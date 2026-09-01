@@ -1,7 +1,7 @@
 """EVA promoted into the Benchmark registry as per-dataset sub-benchmarks (issue #219).
 
 No EVA raw data or GPU here: the registry lookup, the per-dataset ``build_config`` recipe
-fidelity (epochs mapping, lr/wd/batch, balanced-accuracy metric, tune_is_test split,
+fidelity (fixed max_steps budget, lr/wd/batch, balanced-accuracy metric, tune_is_test split,
 virchow2 CLS-only), the keyed ``reference/eva.csv`` per-row tolerance parse + axis
 selection, the default ``summary.json`` scorer, and ``curate`` delegation are all
 verifiable offline. The live curate→train→score reproduction (needs data + GPU) is what
@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 from importlib import resources
 from pathlib import Path
 
@@ -56,31 +55,34 @@ def test_eva_facet_fixes_dataset_and_varies_encoder():
     assert facet.fixed["dataset"] == "bach"
 
 
-# --- epochs mapping (eva step budget) -------------------------------------------------
+# --- step budget (eva max_steps protocol) ---------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "n_train, expected_epochs",
-    [
-        (268, 6250),  # bach
-        (1132, 2500),  # breakhis
-        (100_000, 32),  # crc
-        (262_144, 13),  # patch_camelyon
-    ],
-)
-def test_epochs_for_train_size_matches_eva_step_budget(n_train, expected_epochs):
-    assert eva.epochs_for_train_size(n_train) == expected_epochs
-    spe = math.ceil(n_train / eva.HEAD_BATCH_SIZE)
-    assert eva.epochs_for_train_size(n_train) == max(1, math.ceil(eva.MAX_STEPS / spe))
+def test_build_config_uses_fixed_step_budget(tmp_path):
+    """The benchmark expresses eva's max_steps=12500 directly — no train-size mapping."""
+    config = get_benchmark("eva/bach").build_config(
+        encoder="uni2",
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "runs",
+    )
+    assert config.training.max_steps == eva.MAX_STEPS == 12500
+    assert config.training.epochs is None
 
 
-def test_epochs_for_train_size_is_at_least_one_for_huge_datasets():
-    assert eva.epochs_for_train_size(10_000_000) == 1
+def test_budget_does_not_read_splits_csv(tmp_path):
+    # The step budget is fixed by protocol, so the config builder never reads the splits.
+    config = get_benchmark("eva/bach").build_config(
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "does_not_exist.csv",
+        output_root=tmp_path / "runs",
+    )
+    assert config.training.max_steps == 12500
 
 
-def test_epochs_for_train_size_rejects_nonpositive():
-    with pytest.raises(ValueError):
-        eva.epochs_for_train_size(0)
+def test_train_size_epoch_mapping_is_gone():
+    assert not hasattr(eva, "epochs_for_train_size")
+    assert not hasattr(eva, "count_train_samples")
 
 
 # --- build_config recipe fidelity -----------------------------------------------------
@@ -111,7 +113,8 @@ def test_build_config_encodes_eva_protocol(tmp_path):
     assert training.monitor_mode == "max"
     assert training.seed == 3
     assert training.tune_is_test is True  # bach reports on the validation split
-    assert training.epochs == 6250  # computed from n_train=268
+    assert training.max_steps == 12500  # eva's fixed optimizer-step budget
+    assert training.epochs is None  # step-budget run, not an epoch-count run
     assert training.patience == 1250  # eva's per-dataset value
 
 
@@ -145,11 +148,11 @@ def test_build_config_honours_smoke_overrides(tmp_path):
         dataset_csv=tmp_path / "dataset.csv",
         splits_csv=splits,
         output_root=tmp_path / "runs",
-        epochs=1,
+        max_steps=1,
         patience=1,
         encoder_batch_size=8,
     )
-    assert config.training.epochs == 1
+    assert config.training.max_steps == 1
     assert config.training.patience == 1
     assert config.encoder.batch_size == 8
 
@@ -161,7 +164,7 @@ def test_build_config_applies_cache_overrides(tmp_path):
         dataset_csv=tmp_path / "dataset.csv",
         splits_csv=splits,
         output_root=tmp_path / "runs",
-        epochs=1,
+        max_steps=1,
         overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
     )
     assert config.cache.enabled is True
@@ -175,7 +178,7 @@ def test_build_config_accepts_encoder_without_packaged_reference(tmp_path):
         dataset_csv=tmp_path / "dataset.csv",
         splits_csv=splits,
         output_root=tmp_path / "runs",
-        epochs=1,
+        max_steps=1,
     )
     assert config.encoder.name == "phikon"
     assert config.encoder.output_variant is None
