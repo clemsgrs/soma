@@ -70,15 +70,15 @@ EVA's published balanced accuracy scores.
      - EVA reference
    * - bach
      - uni2
-     - 0.914 ± 0.007
+     - 0.914 ± 0.008
      - 0.915
    * - bach
      - virchow2
-     - 0.870 ± 0.010
+     - 0.871 ± 0.011
      - 0.883
    * - breakhis
      - uni2
-     - 0.855 ± 0.006
+     - 0.855 ± 0.007
      - 0.859
    * - breakhis
      - virchow2
@@ -101,7 +101,7 @@ EVA's published balanced accuracy scores.
      - 0.778 ± 0.010
      - 0.783
 
-Across these 8 recorded dataset–encoder comparisons, the median relative difference is **0.48%**.
+Across these 8 recorded dataset–encoder comparisons, the median relative difference is **0.47%**.
 
 See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
 
