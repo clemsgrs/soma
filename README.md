@@ -175,7 +175,7 @@ soma list pixel-classifiers
 soma list tasks
 ```
 
-`examples/` contains a `reference.yaml` documenting every available field, and focused per-task starting points (`slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, `tile_classification.yaml`).
+`examples/` contains a `reference.yaml` documenting every available field, focused per-task starting points (`slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, `tile_classification.yaml`), and runnable scripts for the external benchmark API — see [`examples/README.md`](examples/README.md).
 
 ## Docs
 
