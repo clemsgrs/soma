@@ -1,5 +1,16 @@
 # Project Documentation Notes
 
+- 2026-09-02: Fixed DTFD-MIL feature distillation. The top-k slice selected every
+  instance of each pseudo-bag (and ``maxmin`` duplicated them), so tier 2 saw the whole
+  bag instead of a distilled set. ``DTFDMIL`` now takes ``instances_per_group`` (default
+  1, the reference ``total_instance // numGroup``; clamped to the pseudo-bag size), draws
+  the training-time pseudo-bag permutation from torch's global RNG (so it follows the run
+  seed) and uses a deterministic contiguous partition in eval mode. Existing DTFD-MIL
+  runs are not comparable with new ones. ``cox_breslow_loss`` now builds each event's
+  risk set from an explicit ``time_j >= time_i`` mask instead of a sort plus cumulative
+  log-sum-exp, so tied times share one denominator (true Breslow) and the loss is
+  invariant to sample order. ``clam_mb`` is refused for every task other than
+  ``multiclass_classification`` (the guard previously only caught binary).
 - 2026-09-02: Manifest validation fails loudly instead of dropping rows. A blank
   ``fold`` cell in ``splits.csv`` and a blank ``label`` cell in ``dataset.csv`` (slide,
   patient and tile datasets) are now hard errors listing the offending sample ids;

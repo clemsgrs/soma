@@ -106,7 +106,9 @@ DTFDMIL
 ~~~~~~~
 
 ``dtfdmil`` partitions a bag into pseudo-bags, distills features from the
-first tier, then aggregates the distilled set a second time.
+first tier, then aggregates the distilled set a second time. ``instances_per_group``
+(default 1) sets how many instances each pseudo-bag contributes per direction; the
+pseudo-bag partition is random during training and contiguous in eval mode.
 
 .. autoclass:: soma.aggregators.mil.dtfdmil.DTFDMIL
    :members:

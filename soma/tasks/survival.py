@@ -92,12 +92,13 @@ def cox_breslow_loss(
     contain at least one event, and the mean of per-batch losses is not the
     full-cohort loss (hence ``full_cohort_eval_loss`` on the head).
 
-    No-ties Breslow: sort by descending time, ``logcumsumexp`` over the sorted
-    risks gives each event's log risk-set denominator (the log-sum-exp over all
-    samples with time >= its time), and the loss is the mean over events of
-    ``-(risk_i - logcumsumexp_i)``. Tied times share an arbitrary order, so their
-    denominators differ slightly — the standard Breslow approximation, accepted
-    here. Computed in float32 for numerical stability of the log-cumsum term.
+    Breslow risk sets: sample ``j`` is at risk for event ``i`` iff
+    ``time_j >= time_i``, so each event's log denominator is the log-sum-exp of
+    the risks over that set and the loss is the mean over events of
+    ``-(risk_i - log_denominator_i)``. The risk set is built from an explicit
+    ``(B, B)`` comparison mask rather than a sort, so tied times share exactly
+    the same denominator (true Breslow) and the result is invariant to the
+    sample order. Computed in float32 for numerical stability.
 
     Args:
         risk: Per-sample risk score (higher = higher hazard = shorter survival),
@@ -116,13 +117,13 @@ def cox_breslow_loss(
     time = time.view(-1)
     events = events.view(-1).float()
 
-    order = torch.argsort(time, descending=True)
-    risk = risk[order]
-    events = events[order]
-
-    # Sorted descending by time, the cumulative log-sum-exp at position i covers
-    # every sample with time >= time_i — exactly the Breslow risk set denominator.
-    log_risk_set = torch.logcumsumexp(risk, dim=0)
+    # at_risk[i, j] is True when sample j is still at risk at event i's time. The
+    # diagonal is always True, so no row is empty and logsumexp stays finite.
+    at_risk = time.unsqueeze(0) >= time.unsqueeze(1)
+    masked_risk = risk.unsqueeze(0).expand(risk.numel(), -1).masked_fill(
+        ~at_risk, float("-inf")
+    )
+    log_risk_set = torch.logsumexp(masked_risk, dim=1)
     per_event = (risk - log_risk_set) * events
 
     n_events = events.sum()
