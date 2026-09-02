@@ -86,6 +86,8 @@ __all__ = [
     "build_ranking_report",
     "DetectionBenchmark",
     "DETECTION_BENCHMARK",
+    "DetectionDatasetBenchmark",
+    "DETECTION_DATASET_BENCHMARKS",
 ]
 
 BENCHMARK_NAME = "detection-benchmark"
@@ -1123,6 +1125,12 @@ class DetectionBenchmark:
     emits a ``ranking_report.json`` (no single pooled scalar). ``build_config`` resolves an
     ``(encoder, dataset)`` cell to its committed per-dataset config with the encoder swapped
     in; ``score`` re-aggregates a run's native metric off its persisted per-sample cache.
+
+    This object drives the campaign harness and is *not* itself in the benchmark registry:
+    its ``curate`` takes a ``dataset`` argument and its ``primary_metric`` is only nominal,
+    neither of which fits the registry protocol. The registered, ``soma reproduce``-able
+    views are the per-dataset :class:`DetectionDatasetBenchmark` objects
+    (``detection/midog``, ``detection/monkey``).
     """
 
     name = BENCHMARK_NAME
@@ -1259,4 +1267,78 @@ class DetectionBenchmark:
 
 
 DETECTION_BENCHMARK = DetectionBenchmark()
-register_benchmark(DETECTION_BENCHMARK)
+
+
+class DetectionDatasetBenchmark:
+    """One detection dataset registered as ``detection/<dataset>`` (protocol-as-code).
+
+    The registry-facing, EVA-style view of the ranking harness: the dataset (and its
+    committed recipe) is fixed, ``encoder`` is the only varied axis, and the conformant
+    ``curate(raw_root, out_dir)`` / ``build_config(encoder=...)`` / ``expected(**axes)`` /
+    ``score(run_dir)`` surface delegates to :class:`DetectionBenchmark` with the dataset
+    bound. ``primary_metric`` is the dataset's native metric (MIDOG ``f1``, MONKEY
+    ``mean_froc``); OCELOT keeps its own standalone ``ocelot`` benchmark.
+    """
+
+    canonical_seeds = DEFAULT_SEEDS
+    reference_environment = REFERENCE_ENVIRONMENT
+
+    def __init__(self, dataset: str, harness: DetectionBenchmark = DETECTION_BENCHMARK) -> None:
+        spec = dataset_spec(dataset)
+        self.dataset = dataset
+        self.name = f"detection/{dataset}"
+        self.primary_metric = spec.metric_name
+        self._harness = harness
+        self.facet = Facet(
+            fixed={
+                "dataset": dataset,
+                "task": "detection",
+                "decoder": DECODER,
+                "protocol": "frozen-probe-full-ranking",
+            },
+            varied=("encoder",),
+        )
+
+    def curate(self, raw_root: str | Path, out_dir: str | Path) -> CuratedManifest:
+        """Curate this dataset into its run-ready detection Manifest (delegates)."""
+        return self._harness.curate(raw_root, out_dir, dataset=self.dataset)
+
+    def build_config(
+        self,
+        *,
+        encoder: str = DEFAULT_ROSTER[0].name,
+        dataset_csv: str | Path | None = None,
+        splits_csv: str | Path | None = None,
+        output_root: str | Path | None = None,
+        seed: int | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> PipelineConfig:
+        """The committed per-dataset recipe with ``encoder`` swapped in (delegates)."""
+        return self._harness.build_config(
+            encoder=encoder,
+            dataset=self.dataset,
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=output_root,
+            seed=seed,
+            overrides=overrides,
+        )
+
+    def expected(self, **axes: Any) -> list[ReferenceRow]:
+        """Reference rows from ``reference/<dataset>.csv`` matching ``axes``."""
+        merged = {k: v for k, v in axes.items() if v is not None}
+        merged.pop("dataset", None)
+        return self._harness.expected(dataset=self.dataset, **merged)
+
+    def score(self, run_dir: str | Path) -> dict[str, float]:
+        """Native re-aggregation off the run's persisted per-sample predictions (delegates)."""
+        return self._harness.score(run_dir)
+
+
+# Register one conformant sub-benchmark per dataset the harness owns; OCELOT is served by
+# the standalone ``ocelot`` benchmark, so it is not duplicated here.
+DETECTION_DATASET_BENCHMARKS: dict[str, DetectionDatasetBenchmark] = {}
+for _dataset in ("midog", "monkey"):
+    _bench = DetectionDatasetBenchmark(_dataset)
+    DETECTION_DATASET_BENCHMARKS[_bench.name] = _bench
+    register_benchmark(_bench)
