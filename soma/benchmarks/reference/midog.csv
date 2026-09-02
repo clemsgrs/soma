@@ -1,3 +1,2 @@
 dataset,encoder,spacing,metric,expected,tolerance,kind,label,url,source
-,,,f1,0.0,0.02,gate,,,"TODO(human): soma frozen-probe MIDOG-native F1 on the LOCAL held-out split (not the official hidden test). Placeholder — fill the measured seed-0 headline + snapshot date after the #234 GPU run. Reproductions within +/-0.02 are cuDNN/GPU noise."
 ,,,f1,0.764,,external,MIDOG 2022 winner (official hidden test),https://arxiv.org/abs/2309.15589,"Top-performing team of the MIDOG 2022 challenge: F1 0.764 on the official hidden test (challenge summary paper, arXiv:2309.15589). Different test set + protocol from soma's frozen-probe local held-out split, so NON-GATING guidance only. Snapshotted 2026-08-21."

@@ -100,8 +100,12 @@ class ReferenceRow:
         return self.kind == EXTERNAL
 
     def tolerance_band(self) -> float:
-        """The effective absolute tolerance band — ``tolerance·expected`` when relative."""
-        return self.tolerance * self.expected if self.relative else self.tolerance
+        """The effective absolute tolerance band — ``tolerance·|expected|`` when relative.
+
+        ``abs`` keeps the band positive for a negative expected value (a signed delta or
+        a loss-like metric); a negative band would make every measurement fail.
+        """
+        return self.tolerance * abs(self.expected) if self.relative else self.tolerance
 
     def matches(self, axes: dict[str, Any]) -> bool:
         """True if every populated key cell equals the matching axis (banner matches all)."""
@@ -223,6 +227,41 @@ def list_benchmarks() -> list[str]:
 # --- reference tables ----------------------------------------------------------------
 
 
+def _key_columns(fieldnames: Sequence[str]) -> list[str]:
+    """Every column left of ``metric`` is a key column (the one rule both tables share)."""
+    if "metric" not in fieldnames:
+        return list(fieldnames)
+    return list(fieldnames[: list(fieldnames).index("metric")])
+
+
+def _validate_gate_row(name: str, raw: dict[str, str], key_columns: Sequence[str]) -> None:
+    """A gate row is a real, fully keyed target — never a placeholder or a broad banner.
+
+    ``expected`` 0 is the scaffold placeholder that a tolerance check would pass any
+    near-zero (i.e. broken) reproduction against; a blank key cell would let one row gate
+    every encoder / spacing / dataset at once. External anchors are exempt: they never gate.
+    """
+    blank = [col for col in key_columns if not (raw.get(col) or "").strip()]
+    if blank:
+        raise ValueError(
+            f"reference/{name}.csv: gate row for metric {raw.get('metric')!r} leaves key "
+            f"column(s) {blank} blank; a gate row must name every key axis (or be "
+            "kind=external)."
+        )
+    try:
+        expected = float(raw.get("expected") or "")
+    except ValueError:
+        raise ValueError(
+            f"reference/{name}.csv: gate row for metric {raw.get('metric')!r} has a "
+            f"non-numeric expected value {raw.get('expected')!r}."
+        ) from None
+    if expected == 0.0:
+        raise ValueError(
+            f"reference/{name}.csv: gate row for metric {raw.get('metric')!r} has "
+            "expected 0.0 (a placeholder); fill the measured headline or drop the row."
+        )
+
+
 def load_reference(name: str) -> list[ReferenceRow]:
     """Load ``reference/<name>.csv`` (package data) into :class:`ReferenceRow` objects.
 
@@ -240,12 +279,13 @@ def load_reference(name: str) -> list[ReferenceRow]:
                 f"reference/{name}.csv is missing required column(s) {missing}; "
                 f"got {fieldnames}."
             )
-        value_columns = set(_REFERENCE_VALUE_COLUMNS) | set(_OPTIONAL_VALUE_COLUMNS)
-        key_columns = [c for c in fieldnames if c not in value_columns]
+        key_columns = _key_columns(fieldnames)
         rows: list[ReferenceRow] = []
         for raw in reader:
             key = {col: raw[col] for col in key_columns if (raw.get(col) or "").strip()}
             kind = (raw.get("kind") or "").strip() or GATE
+            if kind == GATE:
+                _validate_gate_row(name, raw, key_columns)
             tolerance_cell = (raw.get("tolerance") or "").strip()
             # An external guidance anchor never gates, so a blank tolerance is fine.
             tolerance = float(tolerance_cell) if tolerance_cell else 0.0
@@ -368,8 +408,7 @@ def load_results(
             raise ValueError(
                 f"results/{name}.csv is missing required column(s) {missing}; got {fieldnames}."
             )
-        value_columns = set(_RESULT_VALUE_COLUMNS)
-        key_columns = [c for c in fieldnames if c not in value_columns]
+        key_columns = _key_columns(fieldnames)
         rows: list[MeasuredRow] = []
         for raw in reader:
             key = {col: raw[col] for col in key_columns if (raw.get(col) or "").strip()}
@@ -436,12 +475,6 @@ def append_result(
     path = _resolve_results_file(name, results_root)
     columns = list(key_order) if key_order is not None else list(row.key)
     header = columns + list(_RESULT_VALUE_COLUMNS)
-    exists = path.is_file()
-    if exists:
-        with path.open(newline="") as handle:
-            existing = next(csv.reader(handle), None)
-        if existing:
-            header = existing
     record = {
         **row.key,
         "metric": row.metric,
@@ -455,12 +488,50 @@ def append_result(
         "source": row.source,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
+    exists = path.is_file() and path.stat().st_size > 0
+    if exists:
+        with path.open(newline="") as handle:
+            existing = next(csv.reader(handle), None)
+        if existing:
+            header = _extend_results_header(existing, record)
+            if header != existing:
+                _rewrite_results_with_header(path, header)
     with path.open("a", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=header, extrasaction="ignore")
+        writer = csv.DictWriter(handle, fieldnames=header)
         if not exists:
             writer.writeheader()
         writer.writerow({col: record.get(col, "") for col in header})
     return path
+
+
+def _extend_results_header(existing: Sequence[str], record: dict[str, str]) -> list[str]:
+    """Grow an existing ledger header so no cell of ``record`` is silently dropped.
+
+    New key columns (anything the row keys on that the header lacks) are inserted left of
+    ``metric`` after the existing keys; new value columns go after the existing ones. The
+    header is otherwise reused verbatim so old rows keep their meaning.
+    """
+    header = list(existing)
+    known_values = set(_RESULT_VALUE_COLUMNS)
+    new_keys = [c for c in record if c not in header and c not in known_values]
+    new_values = [c for c in _RESULT_VALUE_COLUMNS if c not in header]
+    if not new_keys and not new_values:
+        return header
+    metric_at = header.index("metric") if "metric" in header else len(header)
+    return header[:metric_at] + new_keys + header[metric_at:] + new_values
+
+
+def _rewrite_results_with_header(path: Path, header: Sequence[str]) -> None:
+    """Rewrite the ledger under ``header`` (blank cells for columns old rows lack)."""
+    with path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    staging = path.with_name(f".{path.name}.tmp")
+    with staging.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(header))
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: (row.get(col) or "") for col in header})
+    staging.replace(path)
 
 
 # --- default scorer ------------------------------------------------------------------

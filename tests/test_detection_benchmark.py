@@ -22,7 +22,10 @@ import pytest
 from PIL import Image
 
 from soma.benchmarks import get_benchmark
+from soma.benchmarks.registry import Benchmark
 from soma.benchmarks.detection_benchmark import (
+    DETECTION_BENCHMARK,
+    DetectionDatasetBenchmark,
     DATASET_ORDER,
     DEFAULT_ROSTER,
     Cell,
@@ -61,13 +64,37 @@ def _load_driver():
 # --- registration + build_config -----------------------------------------------------
 
 
-def test_registered_under_name():
-    bench = get_benchmark("detection-benchmark")
-    assert isinstance(bench, DetectionBenchmark)
-    assert bench.name == "detection-benchmark"
-    assert bench.datasets == ("ocelot", "midog", "monkey")
-    assert bench.facet.varied == ("encoder", "dataset")
-    assert bench.facet.fixed["decoder"] == "lightweight_conv"
+def test_registered_per_dataset_not_as_the_harness():
+    # The multi-dataset harness object is not a registry benchmark (its curate takes a
+    # dataset argument); the per-dataset views are, with encoder as the only varied axis.
+    with pytest.raises(KeyError):
+        get_benchmark("detection-benchmark")
+    for dataset, metric in (("midog", "f1"), ("monkey", "mean_froc")):
+        bench = get_benchmark(f"detection/{dataset}")
+        assert isinstance(bench, DetectionDatasetBenchmark)
+        assert isinstance(bench, Benchmark)  # runtime protocol conformance
+        assert bench.primary_metric == metric
+        assert bench.facet.varied == ("encoder",)
+        assert bench.facet.fixed["dataset"] == dataset
+        assert bench.facet.fixed["decoder"] == "lightweight_conv"
+    assert isinstance(DETECTION_BENCHMARK, DetectionBenchmark)
+    assert DETECTION_BENCHMARK.datasets == ("ocelot", "midog", "monkey")
+
+
+def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
+    bench = get_benchmark("detection/midog")
+    cfg = bench.build_config(encoder="uni2", dataset_csv="/x/d.csv", output_root="/out", seed=3)
+    assert cfg.encoder.name == "uni2" and cfg.task.params["num_classes"] == 1
+    assert cfg.training.seed == 3 and str(cfg.dataset_csv) == "/x/d.csv"
+    # expected() reads reference/midog.csv (external anchors only, so any encoder matches).
+    rows = bench.expected(encoder="uni2")
+    assert rows and all(r.is_external for r in rows)
+    write_cell_predictions(
+        tmp_path / "predictions.json",
+        CellPredictions("uni2", "midog", 0, "f1", 0.25,
+                        [SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0])]),
+    )
+    assert bench.score(tmp_path)["f1"] == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize(
@@ -75,7 +102,7 @@ def test_registered_under_name():
     [("ocelot", 2, "mean_f1"), ("midog", 1, "f1"), ("monkey", 2, "mean_froc")],
 )
 def test_build_config_resolves_encoder_dataset(dataset, num_classes, metric):
-    bench = get_benchmark("detection-benchmark")
+    bench = DETECTION_BENCHMARK
     cfg = bench.build_config(
         encoder="uni2", dataset=dataset,
         dataset_csv="/x/d.csv", splits_csv="/x/s.csv", output_root="/out", seed=5,
@@ -92,18 +119,18 @@ def test_build_config_resolves_encoder_dataset(dataset, num_classes, metric):
 
 def test_build_config_is_roster_size_agnostic():
     # An encoder not in DEFAULT_ROSTER still resolves (extraction is per-encoder additive).
-    cfg = get_benchmark("detection-benchmark").build_config(encoder="phikon", dataset="ocelot")
+    cfg = DETECTION_BENCHMARK.build_config(encoder="phikon", dataset="ocelot")
     assert cfg.encoder.name == "phikon"
 
 
 def test_midog_config_carries_relaxed_tolerance():
-    cfg = get_benchmark("detection-benchmark").build_config(encoder="virchow2", dataset="midog")
+    cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset="midog")
     assert cfg.preprocessing.tolerance == pytest.approx(0.10)
 
 
 def test_unknown_dataset_raises():
     with pytest.raises(KeyError):
-        get_benchmark("detection-benchmark").build_config(encoder="uni2", dataset="pannuke")
+        DETECTION_BENCHMARK.build_config(encoder="uni2", dataset="pannuke")
 
 
 def test_midog_benchmark_curate_emits_nominal_tiled_manifest(tmp_path: Path):
@@ -367,7 +394,7 @@ def test_benchmark_score_reads_persisted_predictions(tmp_path: Path):
         CellPredictions("uni2", "ocelot", 0, "mean_f1", 0.2,
                         [SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0])]),
     )
-    metrics = get_benchmark("detection-benchmark").score(tmp_path)
+    metrics = DETECTION_BENCHMARK.score(tmp_path)
     assert metrics["mean_f1"] == pytest.approx(1.0)
 
 
@@ -494,15 +521,15 @@ def test_reference_scaffold_shape(dataset, metric):
         assert col in columns
     external = [r for r in rows if (r.get("kind") or "").strip() == "external"]
     gate = [r for r in rows if (r.get("kind") or "gate").strip() != "external"]
-    assert len(gate) == 1 and external
+    # No placeholder gate row: a gate is added only once the local sweep has measured a
+    # headline (load_reference rejects expected-0 / blank-key gate rows).
+    assert not gate and external
     assert all(r["metric"] == metric for r in rows)
     for row in external:
         assert row["url"].strip().startswith("http")
         # Filled non-gating guidance: a real published number with a snapshot date.
         assert float(row["expected"]) > 0 and "TODO" not in row["source"]
         assert "Snapshotted" in row["source"]
-    # The gate row stays a clearly-marked placeholder until the local sweep measures it.
-    assert "TODO" in gate[0]["source"]
 
 
 # --- driver: replicate resolution, planning, skip guards, aggregate-from-disk --------

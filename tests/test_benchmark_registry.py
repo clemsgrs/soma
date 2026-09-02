@@ -238,13 +238,13 @@ def test_reference_row_relative_tolerance_scales_with_expected():
 def test_load_reference_parses_ocelot_band():
     rows = load_reference("ocelot")
     assert rows, "ocelot reference must have at least one row"
-    banner = rows[0]
-    # Broad, config-agnostic banner: no populated key cells.
-    assert banner.key == {}
-    assert banner.metric == "mean_f1"
-    assert banner.expected == pytest.approx(0.6995, abs=1e-6)
-    assert banner.tolerance == pytest.approx(0.02, abs=1e-6)  # per-row tolerance column
-    assert banner.source  # a non-empty provenance string
+    gate = rows[0]
+    # The gate row is pinned to the anchor it was measured on: every key cell populated.
+    assert gate.key == {"encoder": "virchow2"}
+    assert gate.metric == "mean_f1"
+    assert gate.expected == pytest.approx(0.6995, abs=1e-6)
+    assert gate.tolerance == pytest.approx(0.02, abs=1e-6)  # per-row tolerance column
+    assert gate.source  # a non-empty provenance string
 
 
 def test_ocelot_carries_external_guidance_anchors():
@@ -358,12 +358,15 @@ def test_load_reference_defaults_kind_to_gate_when_column_absent(monkeypatch):
 
 
 def test_expected_rows_filters_by_axes_and_metric():
-    # The gate band is a single config-agnostic row; external guidance rows share the
-    # metric + empty key, so filter by kind to isolate the gate.
+    # The gate row is keyed to the anchor; external guidance rows share the metric with an
+    # empty key (match anything), so filter by kind to isolate the gate.
     rows = expected_rows("ocelot", metric="mean_f1", encoder="virchow2", spacing=0.2)
     gate = [r for r in rows if r.kind == "gate"]
     assert len(gate) == 1
     assert gate[0].metric == "mean_f1"
+    # Another encoder has no gate (only the non-gating anchors match).
+    other = expected_rows("ocelot", metric="mean_f1", encoder="uni2", spacing=0.2)
+    assert all(r.is_external for r in other)
     # A metric that isn't tabulated yields nothing.
     assert expected_rows("ocelot", metric="dice") == []
 
@@ -387,3 +390,49 @@ def test_facet_records_fixed_and_varied():
     facet = Facet(fixed={"decoder": "conv"}, varied=("encoder", "spacing"))
     assert facet.fixed == {"decoder": "conv"}
     assert facet.varied == ("encoder", "spacing")
+
+
+def test_relative_band_uses_absolute_expected_for_negative_values():
+    row = ReferenceRow(
+        key={}, metric="delta", expected=-0.5, tolerance=0.1, source="", relative=True
+    )
+    assert row.tolerance_band() == pytest.approx(0.05)
+    assert row.within_tolerance(-0.52) and not row.within_tolerance(-0.6)
+
+
+def test_load_reference_rejects_placeholder_and_banner_gate_rows(tmp_path, monkeypatch):
+    def _with(text: str):
+        target = tmp_path / "toy.csv"
+        target.write_text(text)
+
+        class _Files:
+            def joinpath(self, _name):
+                return target
+
+        monkeypatch.setattr(registry_mod.resources, "files", lambda _pkg: _Files())
+        return load_reference("toy")
+
+    header = "dataset,encoder,metric,expected,tolerance,kind,source\n"
+    with pytest.raises(ValueError, match="expected 0.0"):
+        _with(header + "d,e,f1,0.0,0.02,gate,placeholder\n")
+    with pytest.raises(ValueError, match=r"key column\(s\) \['encoder'\] blank"):
+        _with(header + "d,,f1,0.7,0.02,gate,banner\n")
+    # External anchors are exempt from both rules.
+    rows = _with(header + ",,f1,0.7,,external,anchor\n")
+    assert rows[0].is_external and rows[0].key == {}
+
+
+def test_packaged_reference_gate_rows_are_fully_keyed_and_non_placeholder():
+    for name in ("ocelot", "midog", "monkey", "eva", "hest", "croma"):
+        for row in load_reference(name):
+            if row.is_external:
+                continue
+            assert row.expected != 0.0, (name, row)
+            assert row.key, (name, row)
+
+
+def test_key_columns_are_everything_left_of_metric():
+    assert registry_mod._key_columns(["dataset", "encoder", "metric", "expected", "kind"]) == [
+        "dataset", "encoder"
+    ]
+    assert registry_mod._key_columns(["metric", "measured"]) == []

@@ -1,4 +1,4 @@
-"""HEST-Benchmark gene-expression-from-morphology, registered as ``hest/IDC`` (issue #259).
+"""HEST-Benchmark gene-expression-from-morphology, registered as ``hest/<task>`` (issue #259).
 
 HEST-Benchmark (Jaume et al., NeurIPS 2024) evaluates a **frozen** patch encoder on
 predicting a 50-dimensional highly-variable-gene expression vector from a 112x112 µm tile,
@@ -135,7 +135,7 @@ def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheConfig | Non
 
 
 class HestBenchmark:
-    """HEST-Benchmark task registered as ``hest/<task>`` (protocol-as-code; only IDC now).
+    """One HEST-Benchmark task registered as ``hest/<task>`` (protocol-as-code).
 
     Fixes the spatial-expression probe recipe + task and varies the ``encoder`` axis.
     ``build_config`` emits a ``spatial_expression`` config carrying the probe method + PCA
@@ -221,8 +221,9 @@ class HestBenchmark:
         Injects the sub-benchmark's own ``dataset`` (the HEST task) and defaults the
         ``encoder`` axis to :data:`DEFAULT_ENCODER`, so ``expected()`` resolves the uni2
         row and ``expected(encoder="virchow2")`` the virchow2 row. ``reference/hest.csv``
-        carries external (``kind=external``, non-gating) rows only — HEST's published IDC
-        Pearson per encoder — so these are rendered *beside* the Measured row, never gated.
+        carries external (``kind=external``, non-gating) rows only — HEST's published
+        Pearson per task and encoder — so these are rendered *beside* the Measured row,
+        never gated.
         Returns ``[]`` for an encoder with no published HEST number.
         """
         merged: dict[str, Any] = {"dataset": self.task, "encoder": DEFAULT_ENCODER}

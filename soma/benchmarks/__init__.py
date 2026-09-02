@@ -8,7 +8,7 @@ package registers every bundled benchmark, so ``soma list benchmarks`` and
 
 This package registers ``ocelot`` (OCELOT 2023 cell detection), the ``eva/<dataset>``
 family (kaiko-ai/eva patch classification, one sub-benchmark per dataset),
-``detection-benchmark`` (the multi-dataset encoder-ranking harness, issue #246), and
+``detection/<dataset>`` (per-dataset views of the multi-dataset encoder-ranking harness, issue #246), and
 the HEST and CRoMa benchmark families.
 """
 

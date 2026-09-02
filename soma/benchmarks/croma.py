@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
+from collections.abc import Iterable
 from typing import Any, Mapping
 
 from slide2vec.encoders import encoder_registry, resolve_encoder_output
@@ -87,10 +88,22 @@ def _metadata_mismatch(
 
 
 def validate_croma_0_3_encoder_panel(
-    *, metadata_by_encoder: Mapping[str, Mapping[str, Any]] | None = None
+    *,
+    metadata_by_encoder: Mapping[str, Mapping[str, Any]] | None = None,
+    encoders: Iterable[str] | None = None,
 ) -> None:
-    """Validate the pinned panel against slide2vec metadata without loading weights."""
-    for spec in CROMA_0_3_ENCODER_PANEL.values():
+    """Validate the pinned panel against slide2vec metadata without loading weights.
+
+    ``encoders`` restricts the check to those soma encoder names (the whole panel when
+    ``None``), so building a config for one panel encoder does not fail on an unrelated
+    panel member whose registry metadata drifted.
+    """
+    if encoders is None:
+        specs = list(CROMA_0_3_ENCODER_PANEL.values())
+    else:
+        wanted = set(encoders)
+        specs = [spec for spec in CROMA_0_3_ENCODER_PANEL.values() if spec.soma_encoder in wanted]
+    for spec in specs:
         try:
             metadata = (
                 encoder_registry.info(spec.soma_encoder)
@@ -193,7 +206,7 @@ class CromaBenchmark:
     ) -> PipelineConfig:
         panel_spec = _PANEL_BY_ENCODER.get(encoder)
         if panel_spec is not None:
-            validate_croma_0_3_encoder_panel()
+            validate_croma_0_3_encoder_panel(encoders=[encoder])
         cache_overrides = (overrides or {}).get("cache")
         return PipelineConfig(
             dataset_csv=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
