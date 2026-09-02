@@ -195,6 +195,11 @@ def _build_split_rows(
     ]
 
 
+def _midog_sample_id(file_name: str) -> str:
+    """``midog_<stem>``: the one sample-id rule shared by sorting and row construction."""
+    return f"midog_{Path(str(file_name)).stem}"
+
+
 def curate_midog_detection(
     raw_root: str | Path,
     output_dir: str | Path,
@@ -305,16 +310,17 @@ def curate_midog_detection(
 
     # Sort by sample_id so dataset.csv / points ordering is deterministic regardless of the
     # order images appear in the JSON.
-    images_sorted = sorted(coco["images"], key=lambda im: f"midog_{Path(im['file_name']).stem}")
+    images_sorted = sorted(coco["images"], key=lambda im: _midog_sample_id(im["file_name"]))
     for img in images_sorted:
         file_name = str(img["file_name"])
-        stem = Path(file_name).stem
-        sample_id = f"midog_{stem}"
+        sample_id = _midog_sample_id(file_name)
         image_path = (images_root / file_name).resolve()
 
         tumor_type = img.get("tumortype", img.get("tumor_type"))
         scanner = img.get("scanner")
-        patient_id = str(img.get("patient_id", sample_id))
+        # A present-but-null patient_id must not collapse every image onto the patient
+        # "None" (which would make the leakage check group the whole set together).
+        patient_id = str(img.get("patient_id") or sample_id)
         domain = str(tumor_type or scanner or "unknown")
         spacing = (
             force_spacing_at_level_0

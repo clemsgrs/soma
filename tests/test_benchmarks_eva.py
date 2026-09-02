@@ -251,8 +251,8 @@ def test_score_uses_default_summary_scorer(tmp_path):
 def test_curate_delegates_to_eva_curator(monkeypatch, tmp_path):
     calls = {}
 
-    def _fake_curate(name, raw_root, output_dir, *, tune_fraction):
-        calls["args"] = (name, str(raw_root), str(output_dir), tune_fraction)
+    def _fake_curate(name, raw_root, output_dir):
+        calls["args"] = (name, str(raw_root), str(output_dir))
         from soma.curation.manifest import CuratedManifest
 
         return CuratedManifest(
@@ -262,8 +262,8 @@ def test_curate_delegates_to_eva_curator(monkeypatch, tmp_path):
 
     monkeypatch.setattr(eva, "curate_eva_patch_dataset", _fake_curate)
     manifest = get_benchmark("eva/bach").curate(tmp_path / "raw", tmp_path / "out")
-    # Delegates with the dataset name and the tune-is-test curation fraction (0.0).
-    assert calls["args"] == ("bach", str(tmp_path / "raw"), str(tmp_path / "out"), 0.0)
+    # Delegates with the dataset name; the curator itself follows the official protocol.
+    assert calls["args"] == ("bach", str(tmp_path / "raw"), str(tmp_path / "out"))
     assert manifest.dataset_csv == tmp_path / "out" / "dataset.csv"
 
 
