@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import socket
-import subprocess
 import sys
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
@@ -17,6 +16,7 @@ from typing import Any
 
 import yaml
 
+from soma.provenance import soma_git_state
 from soma.config import PipelineConfig
 
 
@@ -48,33 +48,36 @@ def _stable_json(payload: dict[str, Any]) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+#: Bump when the canonical payload changes shape. Recorded on every run and
+#: experiment manifest so ids minted under different rules are never compared as equal.
+IDENTITY_VERSION = 2
+
+# Loader plumbing: changes throughput, never the trained model or its evaluation.
+_TRAINING_IDENTITY_EXCLUDED = ("seed", "num_workers", "pin_memory", "persistent_workers")
+# Artifact toggles and operational flags: what is *saved* or guarded, not what is measured.
+_EVALUATION_IDENTITY_EXCLUDED = (
+    "overwrite_test",
+    "save_segmentation_overlays",
+    "save_segmentation_probabilities",
+    "save_segmentation_confusion_evidence",
+    "save_detection_overlays",
+    "save_detection_heatmaps",
+)
+
+
 def _training_identity(config: PipelineConfig) -> dict[str, Any]:
+    """Every ``TrainingConfig`` field except the explicit exclusions, emitted
+    unconditionally (identity v2 dropped the "only when non-default" guards)."""
     training = asdict(config.training)
-    training.pop("seed", None)
-    if config.training.max_steps is None:
-        training.pop("max_steps", None)
-    # ``checkpoint_selection`` folds in only when non-default (issue #282), the same
-    # guard the dtype/annotation-sampling knobs use: the evaluation protocol *is* part
-    # of what the experiment is, but every pre-existing run was implicitly ``best``, so
-    # emitting the key unconditionally would re-mint every legacy experiment_id.
-    if config.training.checkpoint_selection == "best":
-        training.pop("checkpoint_selection", None)
-    if config.training.roi_batch_sampling is None:
-        training.pop("roi_batch_sampling", None)
-        training.pop("class_request_ratios", None)
-        training.pop("roi_draws_per_epoch", None)
+    for key in _TRAINING_IDENTITY_EXCLUDED:
+        training.pop(key, None)
     return training
 
 
 def _evaluation_identity(config: PipelineConfig) -> dict[str, Any]:
     evaluation = asdict(config.evaluation)
-    # ``overwrite_test`` is an operational clobber-guard flag (issue #247), not part of
-    # what the experiment *is* — toggling it must never mint a new experiment_id.
-    evaluation.pop("overwrite_test", None)
-    # Per-sample confusion evidence is selected-checkpoint reporting, not training state.
-    # Keep the flag in config.yaml for provenance without re-minting an experiment when
-    # export is enabled (issue #401).
-    evaluation.pop("save_segmentation_confusion_evidence", None)
+    for key in _EVALUATION_IDENTITY_EXCLUDED:
+        evaluation.pop(key, None)
     return evaluation
 
 
@@ -159,12 +162,7 @@ def test_identity_digest(config: PipelineConfig) -> str:
 
 
 def _preprocessing_identity(config: PipelineConfig) -> dict[str, Any]:
-    preprocessing = asdict(config.preprocessing)
-    if config.preprocessing.spacing_policy == "strict":
-        # Preserve identities minted before this opt-in policy existed. Non-strict
-        # spacing can change the pixels seen by the model and must remain explicit.
-        preprocessing.pop("spacing_policy")
-    return preprocessing
+    return asdict(config.preprocessing)
 
 
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
@@ -178,6 +176,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             lambda name: name == config.representation.split,
         )
         return {
+            "identity_version": IDENTITY_VERSION,
             "dataset": {"checksum": dataset_digest},
             "splits": {"checksum": splits_digest},
             "dataset_type": config.dataset_type,
@@ -203,6 +202,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         dataset_path, splits_path, _is_training_split
     )
     payload: dict[str, Any] = {
+        "identity_version": IDENTITY_VERSION,
         # No manifest ``path`` here: identity is the {train,tune} content, not the machine-
         # local file location, so a checkpoint is reused even when the official test set
         # arrives as a *new* splits/dataset file rather than appended rows (issue #247).
@@ -234,30 +234,14 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "training": _training_identity(config),
         "tags": list(config.tags),
     }
-    # ``normalization`` folds in only when non-default (issue #283), the same guard the
-    # dtype / annotation-sampling / checkpoint_selection knobs use: the transform applied
-    # to the features *is* part of what the experiment is, but every pre-existing run was
-    # implicitly ``none``, so emitting the key unconditionally would re-mint every legacy
-    # experiment_id. The saved config.yaml records the block regardless.
-    if config.normalization.method != "none":
-        payload["normalization"] = {
-            "method": config.normalization.method,
-            "eps": config.normalization.eps,
-        }
-    # ``projection`` folds in under the same guard (issue #284): the dim-matched ablation
-    # is a different experiment from the native-width run, but `projection: none` must
-    # leave every pre-existing experiment_id untouched.
-    if config.projection.method == "pca":
-        payload["projection"] = {
-            "method": "pca",
-            "target_dim": config.projection.target_dim,
-        }
-    elif config.projection.method == "random":
-        payload["projection"] = {
-            "method": "random",
-            "target_dim": config.projection.target_dim,
-            "seed": config.projection.seed,
-        }
+    # Identity v2: the feature adaptor blocks are always part of the payload. ``none``
+    # is a value like any other; the guarded "only when non-default" form was a
+    # backward-compat device for pre-1.13 ids, which are no longer reproduced.
+    payload["normalization"] = {
+        "method": config.normalization.method,
+        "eps": config.normalization.eps,
+    }
+    payload["projection"] = asdict(config.projection)
     return payload
 
 
@@ -276,6 +260,7 @@ class ExperimentSpec:
     def to_dict(self) -> dict[str, Any]:
         return {
             "experiment_id": self.experiment_id,
+            "identity_version": IDENTITY_VERSION,
             "slug": self.slug,
             "short_hash": self.short_hash,
             "experiment_dirname": self.experiment_dirname,
@@ -345,6 +330,7 @@ class RunMetadata:
         payload = {
             "run_id": self.run_id,
             "experiment_id": self.experiment_id,
+            "identity_version": IDENTITY_VERSION,
             "status": self.status,
             "started_at": self.started_at,
             "finished_at": self.finished_at or "",
@@ -391,34 +377,6 @@ def capture_environment() -> dict[str, str]:
         environment["torch"] = ""
         environment["cuda"] = ""
     return environment
-
-
-def _git_sha(cwd: Path) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-    return result.stdout.strip() or None
-
-
-def _git_dirty(cwd: Path) -> bool | None:
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=cwd,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-    return bool(result.stdout.strip())
 
 
 def _timestamp_now() -> str:
@@ -516,7 +474,7 @@ def create_run_metadata(
     wandb_id: str | None = None,
     wandb_url: str | None = None,
 ) -> RunMetadata:
-    cwd = Path.cwd()
+    git_state = soma_git_state()
     dataset_path = Path(config.dataset_csv)
     splits_path = Path(config.splits_csv)
     if config.representation is not None:
@@ -547,8 +505,8 @@ def create_run_metadata(
         seed=config.training.seed,
         wandb_id=wandb_id,
         wandb_url=wandb_url,
-        git_sha=_git_sha(cwd),
-        git_dirty=_git_dirty(cwd),
+        git_sha=git_state.sha,
+        git_dirty=git_state.dirty,
         hostname=socket.gethostname() or None,
         username=getuser() or None,
         resolved_output_dir=run_dir.resolve(),
@@ -612,21 +570,22 @@ def _write_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, str]
         writer.writerows(rows)
 
 
-def update_run_index(path: Path, metadata: RunMetadata) -> None:
-    fieldnames = [
-        "run_id",
-        "experiment_id",
-        "status",
-        "started_at",
-        "finished_at",
-        "seed",
-        "wandb_id",
-        "git_sha",
-        "run_dir",
-        "error",
-    ]
-    rows = _read_csv_rows(path)
-    row = {
+RUN_INDEX_FIELDNAMES = [
+    "run_id",
+    "experiment_id",
+    "status",
+    "started_at",
+    "finished_at",
+    "seed",
+    "wandb_id",
+    "git_sha",
+    "run_dir",
+    "error",
+]
+
+
+def _run_index_row(metadata: RunMetadata) -> dict[str, str]:
+    return {
         "run_id": metadata.run_id,
         "experiment_id": metadata.experiment_id,
         "status": metadata.status,
@@ -638,10 +597,49 @@ def update_run_index(path: Path, metadata: RunMetadata) -> None:
         "run_dir": str(metadata.resolved_output_dir),
         "error": metadata.error or "",
     }
-    rows = [existing for existing in rows if existing.get("run_id") != metadata.run_id]
-    rows.append(row)
-    rows.sort(key=lambda item: item["run_id"])
-    _write_csv_rows(path, fieldnames, rows)
+
+
+def update_run_index(path: Path, metadata: RunMetadata) -> None:
+    """Append one row per status change; readers keep the last row per ``run_id``.
+
+    Appending a single line in ``O_APPEND`` mode is atomic for practical line sizes, so
+    concurrent runs under one output root no longer race a read-modify-rewrite of the
+    whole file (which could drop each other's rows). :func:`read_run_index` dedupes and
+    :func:`compact_run_index` rewrites the file on demand.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = _run_index_row(metadata)
+    if path.is_file() and path.stat().st_size > 0:
+        with path.open(newline="", encoding="utf-8") as handle:
+            header = next(csv.reader(handle), [])
+        if header != RUN_INDEX_FIELDNAMES:
+            # Schema changed under an existing index: rewrite once so the appended
+            # rows share the new header.
+            compact_run_index(path)
+    write_header = not path.is_file() or path.stat().st_size == 0
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=RUN_INDEX_FIELDNAMES)
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def read_run_index(path: Path) -> list[dict[str, str]]:
+    """Rows of ``runs.csv`` deduplicated by ``run_id`` (last appended row wins), sorted."""
+    latest: dict[str, dict[str, str]] = {}
+    for row in _read_csv_rows(path):
+        run_id = str(row.get("run_id", ""))
+        if not run_id:
+            continue
+        latest[run_id] = {name: str(row.get(name, "") or "") for name in RUN_INDEX_FIELDNAMES}
+    return [latest[run_id] for run_id in sorted(latest)]
+
+
+def compact_run_index(path: Path) -> int:
+    """Rewrite ``runs.csv`` with one row per ``run_id``; returns the rows kept."""
+    rows = read_run_index(path)
+    _write_csv_rows(path, RUN_INDEX_FIELDNAMES, rows)
+    return len(rows)
 
 
 def has_successful_run(experiment_dir: Path) -> bool:

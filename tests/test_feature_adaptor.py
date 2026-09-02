@@ -1868,11 +1868,12 @@ def _dense_pipeline_config(tmp_path: Path, **adaptor):
     )
 
 
-def test_dense_run_identity_folds_in_the_adaptor_only_when_non_default(tmp_path: Path):
+def test_dense_run_identity_always_names_the_adaptor(tmp_path: Path):
     from soma.output_layout import canonical_experiment_payload
 
     default = canonical_experiment_payload(_dense_pipeline_config(tmp_path))
-    assert "normalization" not in default and "projection" not in default
+    assert default["normalization"]["method"] == "none"
+    assert default["projection"]["method"] == "none"
 
     for section in (
         {"normalization": NormalizationConfig(method="zscore")},

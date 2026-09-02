@@ -267,27 +267,15 @@ def _git_commit() -> str:
     """Short ``HEAD`` SHA of the soma checkout (``-dirty`` if *tracked* code has changes).
 
     Resolved from the installed package location, not the CWD, so it pins the code that
-    actually produced the number. Only tracked modifications count as dirty — untracked
-    scratch (run outputs, notes) does not affect the code, so ``--untracked-files=no``
-    keeps it out of the provenance. Returns ``"unknown"`` outside a git checkout.
+    actually produced the number (see :func:`soma.provenance.soma_git_state`). Returns
+    ``"unknown"`` outside a git checkout, e.g. for a wheel install.
     """
-    import subprocess
+    from soma.provenance import soma_git_state
 
-    import soma
-
-    repo = Path(soma.__file__).resolve().parents[1]
-    try:
-        sha = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        dirty = subprocess.run(
-            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=no"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        return f"{sha}-dirty" if dirty else sha
-    except (subprocess.SubprocessError, OSError):
+    state = soma_git_state()
+    if state.short is None:
         return "unknown"
+    return f"{state.short}-dirty" if state.dirty else state.short
 
 
 def _provenance() -> tuple[str, str, str]:

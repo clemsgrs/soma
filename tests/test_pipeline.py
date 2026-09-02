@@ -1980,8 +1980,13 @@ class TestPipeline:
         assert latest.resolve() == result.run_dir.resolve()
 
         with runs_index.open(newline="", encoding="utf-8") as handle:
-            rows = list(csv.DictReader(handle))
+            raw_rows = list(csv.DictReader(handle))
+        # Append-only index: one line per status change (running -> completed) …
+        assert [row["status"] for row in raw_rows] == ["running", "completed"]
+        # … and one row per run_id for readers.
+        from soma.output_layout import read_run_index
 
+        rows = read_run_index(runs_index)
         assert rows == [
             {
                 "run_id": FIXED_RUN_ID,
