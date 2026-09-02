@@ -1199,7 +1199,7 @@ class TestTrain:
 
         summary = _aggregate_fold_metrics(fold_results, include_tune=True)
         assert summary["tune/auroc_mean"] == pytest.approx(0.9)
-        assert summary["tune/auroc_std"] == pytest.approx(0.1)
+        assert summary["tune/auroc_std"] == pytest.approx(0.1 * 2**0.5)  # sample std
 
     def test_completed_run_panel_includes_coverage_summary(self):
         panel = _build_completed_run_panel(

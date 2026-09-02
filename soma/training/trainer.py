@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,7 +18,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from soma.atomic_io import atomic_torch_save
 from soma.config import TrainingConfig
+from soma.evaluation.metrics import metric_higher_is_better
 
 
 def model_input_device(model: torch.nn.Module, default: torch.device | str) -> torch.device:
@@ -291,6 +294,13 @@ class Trainer:
                         tune_loss=tune_loss,
                         tune_metrics=tune_metrics,
                     )
+                    if not math.isfinite(monitor_value):
+                        # A non-finite monitor never compares as an improvement, so
+                        # the run would silently finish without a checkpoint. Fail
+                        # at the first observation instead of at load time.
+                        _raise_non_finite_monitor(
+                            self._config.monitor, monitor_value, epoch, self._fold
+                        )
                     improved = _is_monitor_improvement(
                         monitor_value,
                         selected_monitor_value,
@@ -722,6 +732,19 @@ def _resolve_monitor_value(
     )
 
 
+def _raise_non_finite_monitor(
+    monitor: str, value: float, epoch: int, fold: int | None
+) -> None:
+    where = f"fold {fold}" if fold is not None else "this run"
+    raise RuntimeError(
+        f"Training monitor '{monitor}' is {value} at epoch {epoch + 1} for {where}, "
+        "so no checkpoint could ever be selected. Threshold-free metrics (AUROC, "
+        "AUPRC, C-index, ...) are undefined when the tune split holds a single "
+        "class or no comparable pairs; check the split for that fold or monitor "
+        "'tune_loss' / a threshold-based metric instead."
+    )
+
+
 def _is_monitor_improvement(current: float, best: float, monitor_mode: str) -> bool:
     if monitor_mode == "min":
         return current < best
@@ -741,8 +764,8 @@ def _save_checkpoint(
     tune_metrics: dict[str, float],
     selection: dict[str, str | float],
 ) -> None:
-    """Save model state plus self-describing tune/selection evidence."""
-    torch.save(
+    """Save model state plus self-describing tune/selection evidence (atomically)."""
+    atomic_torch_save(
         {
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
@@ -781,9 +804,9 @@ def peak_per_metric(history: list[EpochLog]) -> dict[str, dict[str, float | int]
     if a rare class's Dice peaks far from the selected epoch, the monitor may be
     starving that class.
 
-    Every metric is treated as "higher is better", which holds for the metrics
-    soma reports (Dice, AUROC, accuracy, ...). ``tune_loss`` is not in
-    ``tune_metrics`` and is therefore excluded -- it is min-better, not a metric.
+    Direction follows :func:`soma.evaluation.metrics.metric_higher_is_better`
+    (``mae``, ``mse``, ``rmse``, ... peak at their minimum). ``tune_loss`` is not
+    in ``tune_metrics`` and is therefore excluded.
 
     Returns ``{metric: {"epoch": <1-based epoch>, "value": <peak value>}}``.
     """
@@ -794,7 +817,15 @@ def peak_per_metric(history: list[EpochLog]) -> dict[str, dict[str, float | int]
             if not np.isfinite(value):
                 continue
             current = peaks.get(name)
-            if current is None or value > current["value"]:
+            if current is None:
+                peaks[name] = {"epoch": log.epoch + 1, "value": value}
+                continue
+            better = (
+                value > current["value"]
+                if metric_higher_is_better(name)
+                else value < current["value"]
+            )
+            if better:
                 peaks[name] = {"epoch": log.epoch + 1, "value": value}
     return peaks
 

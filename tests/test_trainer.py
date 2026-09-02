@@ -247,6 +247,46 @@ class TestTrainer:
         assert _is_monitor_improvement(0.8, 0.7, "max")
         assert not _is_monitor_improvement(0.6, 0.7, "max")
 
+    def test_non_finite_monitor_fails_fast_naming_fold_and_metric(self, tmp_path: Path):
+        """A single-class tune split makes AUROC nan; the run must not finish
+        silently without a checkpoint."""
+        seed_everything(42)
+        from torch.utils.data import DataLoader
+
+        single_class = [
+            (torch.randn(5 + i, D), {"label": 1}, f"slide_{i}") for i in range(4)
+        ]
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=_make_synthetic_loader(6, seed=0),
+            tune_loader=DataLoader(single_class, batch_size=2, collate_fn=_CLS_COLLATE),
+            config=TrainingConfig(
+                epochs=3, learning_rate=1e-3, patience=10, monitor="auroc", monitor_mode="max"
+            ),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+            fold=2,
+        )
+
+        with pytest.raises(RuntimeError, match=r"monitor 'auroc' is nan at epoch 1 for fold 2"):
+            trainer.fit()
+        assert not (tmp_path / "best_model.pt").exists()
+
+    def test_checkpoint_save_leaves_no_staging_file(self, tmp_path: Path):
+        seed_everything(42)
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=_make_synthetic_loader(6, seed=0),
+            tune_loader=_make_synthetic_loader(4, seed=1),
+            config=TrainingConfig(epochs=2, learning_rate=1e-3, patience=10),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        trainer.fit()
+
+        assert (tmp_path / "best_model.pt").exists()
+        assert not [p for p in tmp_path.iterdir() if p.name.startswith(".best_model.pt")]
+
     def test_fit_returns_train_result(self, tmp_path: Path):
         seed_everything(42)
         model = _make_model()
@@ -763,6 +803,18 @@ class TestPeakPerMetric:
             "auroc": {"epoch": 2, "value": 0.70},
             "rare_dice": {"epoch": 3, "value": 0.50},
         }
+
+    def test_lower_is_better_metrics_peak_at_their_minimum(self):
+        history = [
+            self._log(0, {"mae": 0.9, "auroc": 0.6}),
+            self._log(1, {"mae": 0.4, "auroc": 0.5}),
+            self._log(2, {"mae": 0.7, "auroc": 0.7}),
+        ]
+
+        peaks = peak_per_metric(history)
+
+        assert peaks["mae"] == {"epoch": 2, "value": 0.4}
+        assert peaks["auroc"] == {"epoch": 3, "value": 0.7}
 
     def test_excludes_tune_loss_and_skips_non_finite(self):
         history = [

@@ -216,7 +216,8 @@ def test_seed_runs_collapse_to_mean_std_n(tmp_path: Path):
     row = table.rows[0]
     assert row.n == 2
     assert row.mean == pytest.approx(0.85)
-    assert row.std is not None and row.std == pytest.approx(0.05)
+    # Sample std (ddof=1): seeds are a sample, not the population.
+    assert row.std is not None and row.std == pytest.approx(0.05 * 2**0.5)
     assert row.seeds == (0, 1)
 
 
@@ -663,13 +664,13 @@ def test_multi_metric_statistics_are_aggregated_independently(tmp_path: Path):
 
     metrics = table.rows[0].metrics
     assert (metrics["croma_median"].mean, metrics["croma_median"].std) == pytest.approx(
-        (0.30, 0.10)
+        (0.30, 0.10 * 2**0.5)
     )
     assert (metrics["croma_f0"].mean, metrics["croma_f0"].std) == pytest.approx(
-        (0.12, 0.02)
+        (0.12, 0.02 * 2**0.5)
     )
     assert (metrics["croma_ltm10"].mean, metrics["croma_ltm10"].std) == pytest.approx(
-        (0.40, 0.10)
+        (0.40, 0.10 * 2**0.5)
     )
     assert all(metric.n == 2 and metric.seeds == (0, 1) for metric in metrics.values())
 

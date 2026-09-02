@@ -143,7 +143,7 @@ def test_from_disk_aggregates_every_fold_present(tmp_path: Path):
 
     # Mean over BOTH folds (0.8, 0.6) — not just the one that ran this session.
     assert summary["test/auroc_mean"] == pytest.approx(0.7)
-    assert summary["test/auroc_std"] == pytest.approx(np.std([0.8, 0.6]))
+    assert summary["test/auroc_std"] == pytest.approx(np.std([0.8, 0.6], ddof=1))
     assert "tune/auroc_mean" not in summary  # tune excluded unless include_tune
 
 
@@ -302,4 +302,7 @@ def test_resume_skips_completed_fold_and_summary_covers_all_folds(tmp_path: Path
         json.loads((run_dir / f"fold_{i}" / "metrics.json").read_text())["test"]["auroc"]
         for i in (0, 1)
     ]
-    assert summary["test/auroc_mean"] == pytest.approx(float(np.mean(disk_aurocs)))
+    # Mean over the finite folds (a tiny synthetic test split can make AUROC nan).
+    assert summary["test/auroc_mean"] == pytest.approx(
+        float(np.nanmean(disk_aurocs)), nan_ok=True
+    )

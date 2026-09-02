@@ -35,6 +35,7 @@ from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
 from soma.artifact_mirror import ArtifactMirror, restore_run_from_mirror
+from soma.atomic_io import atomic_write_json
 from soma.cache import resolve_cache_root
 from soma.decoders.registry import build_decoder_for_grid
 from soma.config import (
@@ -71,6 +72,7 @@ from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.dense_artifacts import DenseArtifactWriter
 from soma.evaluation.report import EvaluationReport, SamplePrediction
+from soma.evaluation.summary import summarize_values
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
 from soma.output_layout import (
@@ -3984,7 +3986,7 @@ def _save_metrics(
     data: dict[str, dict[str, float]] = {"tune": tune_report.metrics}
     for split_name, report in test_reports.items():
         data[split_name] = report.metrics
-    path.write_text(json.dumps(data, indent=2))
+    atomic_write_json(path, data)
 
 
 def _save_training_history(history: list, path: Path) -> None:
@@ -3994,7 +3996,7 @@ def _save_training_history(history: list, path: Path) -> None:
         # layer drops this so it never reaches summaries or results tables.
         "peak_per_metric": peak_per_metric(history),
     }
-    path.write_text(json.dumps(data, indent=2))
+    atomic_write_json(path, data)
 
 
 def _build_subgroup_data(
@@ -4155,8 +4157,13 @@ def _summarize_fold_metric_dicts(
             if single_fold:
                 summary[f"{split_name}/{key}"] = float(values[0])
             else:
-                summary[f"{split_name}/{key}_mean"] = float(np.mean(values))
-                summary[f"{split_name}/{key}_std"] = float(np.std(values))
+                stats = summarize_values(values)
+                summary[f"{split_name}/{key}_mean"] = stats.mean
+                summary[f"{split_name}/{key}_std"] = stats.std
+                if stats.n_nan:
+                    # Folds whose split could not support the metric (nan) are
+                    # excluded from mean/std; surface how many so the reader knows.
+                    summary[f"{split_name}/{key}_nan_folds"] = stats.n_nan
 
     return summary
 
@@ -4199,4 +4206,4 @@ def _aggregate_fold_metrics_from_disk(
 
 
 def _save_summary(summary: dict[str, float], path: Path) -> None:
-    path.write_text(json.dumps(summary, indent=2))
+    atomic_write_json(path, summary)

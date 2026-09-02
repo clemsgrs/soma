@@ -1,5 +1,17 @@
 # Project Documentation Notes
 
+- 2026-09-02: Degenerate tune/test splits no longer masquerade as chance-level
+  performance. AUROC, macro AUROC and the C-index return ``nan`` (instead of ``0.5``)
+  when a split holds a single class or no comparable pairs; the trainer raises at the
+  first epoch, naming the fold and metric, when the monitored value is non-finite
+  (previously the run finished silently without ever saving a checkpoint). The
+  cross-validation summary averages over the finite folds and reports
+  ``<split>/<metric>_nan_folds`` when any fold was excluded. All reported spreads
+  (``*_std`` in ``summary.json``, the leaderboard ``std`` column) are now the sample
+  standard deviation (``ddof=1``) via one shared helper; a single fold/seed yields
+  ``nan`` / blank. ``peak_per_metric`` honours lower-is-better metrics, and checkpoints,
+  ``metrics.json``, ``training_history.json`` and ``summary.json`` are written through a
+  staging file so an interrupted write never leaves a truncated artifact.
 - 2026-07-20: Extended the feature adaptor (`normalization` + `projection`) to the
   **single-encoder dense path** (`segmentation` and `detection` over one encoder's cached
   grids), completing the protocol across all three paths. The adaptor operates

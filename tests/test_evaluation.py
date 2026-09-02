@@ -91,12 +91,14 @@ class TestBinaryClassificationMetrics:
         assert m["sensitivity"] == pytest.approx(1.0)
         assert m["specificity"] == pytest.approx(1.0)
 
-    def test_single_class_auroc_fallback(self):
+    def test_single_class_auroc_is_nan(self):
+        # A single-class split cannot rank positives against negatives; report
+        # nan rather than a fake chance-level 0.5 that would pollute CV means.
         y_true = np.array([1, 1, 1])
         y_prob = self._probs([0.8, 0.9, 0.7])
         y_pred = np.array([1, 1, 1])
         m = compute_metrics("binary_classification", ["auroc"], y_true, y_pred, y_prob)
-        assert m["auroc"] == 0.5
+        assert np.isnan(m["auroc"])
 
     def test_auprc(self):
         y_true = np.array([0, 1, 0, 1])
@@ -152,12 +154,12 @@ class TestMulticlassClassificationMetrics:
             assert key in m
             assert isinstance(m[key], float)
 
-    def test_single_class_auroc_macro_fallback(self):
+    def test_single_class_auroc_macro_is_nan(self):
         y_true = np.array([1, 1, 1])
         y_prob = np.array([[0.1, 0.9], [0.2, 0.8], [0.3, 0.7]])
         y_pred = np.array([1, 1, 1])
         m = compute_metrics("multiclass_classification", ["auroc_macro"], y_true, y_pred, y_prob)
-        assert m["auroc_macro"] == 0.5
+        assert np.isnan(m["auroc_macro"])
 
     def test_f1_weighted_vs_macro(self):
         y_true = np.array([0, 0, 0, 1])  # imbalanced

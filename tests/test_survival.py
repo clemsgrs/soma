@@ -180,9 +180,9 @@ class TestSurvivalMetrics:
         m = compute_survival_metrics(["c_index"], event, time, risk)
         assert m["c_index"] == pytest.approx(1.0)
 
-    def test_all_censored_returns_half_not_crash(self):
+    def test_all_censored_returns_nan_not_crash(self):
         m = compute_survival_metrics(["c_index"], np.zeros(3), np.array([1.0, 2.0, 3.0]), np.array([0.1, 0.2, 0.3]))
-        assert m["c_index"] == 0.5
+        assert np.isnan(m["c_index"])
 
     def test_unknown_metric_raises(self):
         with pytest.raises(ValueError, match="Unknown survival metric"):

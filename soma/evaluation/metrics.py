@@ -115,7 +115,7 @@ def _auroc(y_true, y_pred, y_prob) -> float:
         value = float(roc_auc_score(y_true, y_prob[:, 1]))
     except ValueError:
         value = float("nan")
-    return value if np.isfinite(value) else 0.5
+    return value if np.isfinite(value) else float("nan")
 
 
 def _auroc_macro(y_true, y_pred, y_prob) -> float:
@@ -125,7 +125,7 @@ def _auroc_macro(y_true, y_pred, y_prob) -> float:
         )
     except ValueError:
         value = float("nan")
-    return value if np.isfinite(value) else 0.5
+    return value if np.isfinite(value) else float("nan")
 
 
 def _auprc(y_true, y_pred, y_prob) -> float:
@@ -300,13 +300,13 @@ def compute_metrics(
 
 
 def _concordance_index(event: np.ndarray, time: np.ndarray, risk: np.ndarray) -> float:
-    """Harrell's C-index via scikit-survival, guarded against degenerate splits.
+    """Harrell's C-index via scikit-survival, ``nan`` on degenerate splits.
 
     ``concordance_index_censored`` *raises* when a split has no events or no
-    comparable pairs (e.g. an all-censored or single-sample tune split). Since
-    this runs every tune epoch, we mirror the ``_auroc`` pattern and fall back
-    to 0.5 rather than nan — nan breaks ``monitor="c_index"`` max-mode, where
-    nan comparisons are always False and the checkpoint would never improve.
+    comparable pairs (e.g. an all-censored or single-sample tune split). Like
+    ``_auroc`` this reports ``nan`` rather than a fake chance-level score; the
+    trainer fails fast when a monitored metric is non-finite, and the CV summary
+    averages over the finite folds while counting the excluded ones.
     """
     from sksurv.metrics import concordance_index_censored
 
@@ -316,7 +316,7 @@ def _concordance_index(event: np.ndarray, time: np.ndarray, risk: np.ndarray) ->
         )
     except (ValueError, ZeroDivisionError):
         value = float("nan")
-    return value if np.isfinite(value) else 0.5
+    return value if np.isfinite(value) else float("nan")
 
 
 def compute_survival_metrics(
