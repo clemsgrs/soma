@@ -158,3 +158,30 @@ def test_eva_seed_rows_join_and_stay_within_reference_band():
             f"recorded {row.key} {row.measured} outside band "
             f"{gates[0].expected}±{gates[0].tolerance}"
         )
+
+
+def test_append_result_extends_an_existing_header_in_place(tmp_path, monkeypatch):
+    """A row keyed on an axis the ledger has never seen must not lose that cell.
+
+    New key columns are inserted left of ``metric`` (after the existing keys) and old
+    rows get blanks; previously ``extrasaction="ignore"`` dropped the cell silently.
+    """
+    target = tmp_path / "toy.csv"
+    monkeypatch.setattr(registry, "_results_file", lambda name: target)
+    append_result(
+        "toy",
+        MeasuredRow(key={"encoder": "e"}, metric="m", measured=0.5, date="2026-07-09",
+                    soma_commit="abc"),
+        key_order=["encoder"],
+    )
+    append_result(
+        "toy",
+        MeasuredRow(key={"encoder": "e", "spacing": "0.2"}, metric="m", measured=0.6,
+                    date="2026-07-10", soma_commit="def"),
+    )
+    header = target.read_text().splitlines()[0]
+    assert header.startswith("encoder,spacing,metric,measured,")
+    rows = load_results("toy")
+    assert rows[0].key == {"encoder": "e"}  # old row: blank spacing stays out of the key
+    assert rows[1].key == {"encoder": "e", "spacing": "0.2"}
+    assert [r.measured for r in rows] == pytest.approx([0.5, 0.6])

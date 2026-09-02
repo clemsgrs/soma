@@ -383,16 +383,16 @@ def test_project_leaderboard_rejects_multiple_triples(tmp_path: Path):
 # --- reference rows: broad banner + keyed join --------------------------------------
 
 
-def test_broad_reference_renders_as_banner(tmp_path: Path):
+def test_pinned_reference_joins_the_anchor_row(tmp_path: Path):
     root = tmp_path / "out"
     ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
     run = make_run_dir(_cfg(root, ds, sp, encoder="virchow2", task="detection"), {"test/mean_f1": 0.70})
     table = project_leaderboard([run], LeaderboardFacet(vary=("encoder",)), benchmark=get_benchmark("ocelot"))
-    # OCELOT ships a broad, config-agnostic band -> a threshold banner, not a per-row join.
-    assert table.banner is not None
-    assert table.banner.metric == "mean_f1"
-    assert table.banner.expected == pytest.approx(0.6995, abs=1e-6)
-    assert table.rows[0].reference_expected is None  # broad band never joins per-row
+    # OCELOT's gate is pinned to the Virchow2 @ 0.2 anchor -> a per-row join for that
+    # encoder, no config-agnostic banner.
+    assert table.banner is None
+    assert table.rows[0].reference_expected == pytest.approx(0.6995, abs=1e-6)
+    assert table.rows[0].reference_pass is True
 
 
 def _detection_table(tmp_path: Path):
@@ -409,20 +409,19 @@ def _detection_table(tmp_path: Path):
 
 def test_external_anchors_collected_as_guidance_distinct_from_gate(tmp_path: Path):
     table = _detection_table(tmp_path)
-    # The gate band stays the soma-reproduced anchor; external anchors land in `guidance`.
-    assert table.banner is not None and table.banner.expected == pytest.approx(0.6995, abs=1e-6)
+    # The gate joins the soma-reproduced anchor row; external anchors land in `guidance`.
+    gate_expected = table.rows[0].reference_expected
+    assert gate_expected == pytest.approx(0.6995, abs=1e-6)
     assert len(table.guidance) >= 2  # official baseline + best-reported
     assert any("best reported" in a.label for a in table.guidance)
     for anchor in table.guidance:
         assert anchor.label and anchor.url.startswith("http")
-    # Non-gating: an external anchor is never the gate value, and never joins per-row.
-    assert all(a.expected != table.banner.expected for a in table.guidance)
-    assert table.rows[0].reference_expected is None
+    # Non-gating: an external anchor is never the gate value.
+    assert all(a.expected != gate_expected for a in table.guidance)
 
 
 def test_format_table_renders_guidance_section_separate_from_gate(tmp_path: Path):
     text = format_table(_detection_table(tmp_path))
-    assert "reference band" in text  # the gate band
     assert "guidance" in text.lower()  # a distinct, labelled guidance section
     assert "best reported" in text  # an anchor label
     assert "https://wearewaiv.github.io/histoboard/" in text  # its linkable source

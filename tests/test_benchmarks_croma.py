@@ -48,7 +48,7 @@ def test_croma_family_appears_in_cli_benchmark_listing(capsys):
 
 def test_croma_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel", lambda: None
+        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel", lambda **_kw: None
     )
     benchmark = get_benchmark("croma/camelyon")
 
@@ -108,13 +108,13 @@ def test_croma_validates_panel_pins(tmp_path, monkeypatch):
     validations = []
     monkeypatch.setattr(
         "soma.benchmarks.croma.validate_croma_0_3_encoder_panel",
-        lambda: validations.append("validated"),
+        lambda **kw: validations.append(tuple(kw.get("encoders") or ())),
     )
     benchmark = get_benchmark("croma/camelyon")
 
     panel = benchmark.build_config(encoder="uni2", output_root=tmp_path / "panel")
 
-    assert validations == ["validated"]
+    assert validations == [("uni2",)]  # scoped to the requested encoder only
     assert panel.encoder.output_variant == "default"
 
 
@@ -122,7 +122,7 @@ def test_croma_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
     validations = []
     monkeypatch.setattr(
         "soma.benchmarks.croma.validate_croma_0_3_encoder_panel",
-        lambda: validations.append("validated"),
+        lambda **kw: validations.append(tuple(kw.get("encoders") or ())),
     )
 
     outside = get_benchmark("croma/camelyon").build_config(

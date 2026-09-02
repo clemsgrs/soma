@@ -154,13 +154,26 @@ def test_reference_csv_has_key_metric_expected_tolerance_source_columns():
     assert key_columns, "reference table declares key columns left of `metric`"
     gate_rows = [r for r in rows if (r.get("kind") or "gate").strip() != "external"]
     external_rows = [r for r in rows if (r.get("kind") or "").strip() == "external"]
-    # One gate row (the broad, config-agnostic banner) + the external guidance anchors.
+    # One gate row, pinned to the anchor it was measured on, + the external guidance anchors.
     assert len(gate_rows) == 1
     assert external_rows, "the CSV carries non-gating external guidance anchors"
-    banner = gate_rows[0]
-    assert all(not (banner[c] or "").strip() for c in key_columns)
-    assert float(banner["tolerance"]) == pytest.approx(0.02)
+    gate = gate_rows[0]
+    assert {c: gate[c] for c in key_columns} == {"encoder": "virchow2"}
+    assert float(gate["tolerance"]) == pytest.approx(0.02)
     # External anchors carry a label + linkable URL and are not tolerance-checked.
     for row in external_rows:
         assert (row["label"] or "").strip()
         assert (row["url"] or "").strip().startswith("http")
+
+
+def test_greedy_rescore_passes_nms_distance_through():
+    """The re-scorer resolves ``task.params.nms_distance`` like the pipeline instead of
+    hard-coding the NMS radius to the matching distance (source-level pin: the greedy
+    re-scorer needs a trained run + dense cache to execute)."""
+    import inspect
+
+    import soma.benchmarks.ocelot as ocelot_mod
+
+    source = inspect.getsource(ocelot_mod._greedy_report_for_run)
+    assert "nms_distance_px=nms_px" in source
+    assert 'p.get("nms_distance")' in source

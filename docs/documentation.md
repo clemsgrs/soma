@@ -1,5 +1,22 @@
 # Project Documentation Notes
 
+- 2026-09-02: Benchmark registry hardening. Reference/results tables now treat every
+  column left of ``metric`` as a key column (one rule for both tables), a relative
+  tolerance band uses ``|expected|`` so a negative expected value cannot yield a negative
+  band, and ``append_result`` extends an existing ledger header in place (new key columns
+  left of ``metric``, blanks for old rows) instead of silently dropping cells the header
+  lacked. Gate rows must be fully keyed and non-zero: ``load_reference`` rejects an
+  expected-0 placeholder or a blank key cell on a gate row (external anchors are exempt).
+  The MIDOG/MONKEY placeholder gate rows are gone (their external anchors stay) and the
+  OCELOT gate row is pinned to its measured anchor (``encoder=virchow2``; spacing is fixed
+  by the facet and no longer a key column), so other encoders are no longer compared to
+  the Virchow2 band as if it were universal. The multi-dataset ``detection-benchmark``
+  object is no longer a registry entry (its curate signature never fit the protocol);
+  ``detection/midog`` (primary ``f1``) and ``detection/monkey`` (primary ``mean_froc``)
+  are registered as EVA-style per-dataset views with ``encoder`` as the only varied axis.
+  The OCELOT greedy re-scorer now honours ``task.params.nms_distance``; CRoMa validates
+  only the requested panel encoder when building a config; HEST docstrings no longer claim
+  IDC is the only registered task.
 - 2026-09-02: **Experiment identity v2 (breaking: pre-1.13 experiment ids differ).**
   The canonical payload now emits every key unconditionally — the "only when
   non-default" guards for ``checkpoint_selection``, ``max_steps``, ROI batch sampling,

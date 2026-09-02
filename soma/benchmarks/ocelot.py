@@ -302,6 +302,13 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
         if p.get("sigma") is not None
         else delta_px / 3.0
     )
+    # NMS radius follows the run's own task params (µm, like the pipeline); the previous
+    # hard-coded ``delta_px`` silently re-scored a run trained with a different radius.
+    nms_px = (
+        _resolve_detection_px(float(p["nms_distance"]), effective_spacing_um, "nms_distance")
+        if p.get("nms_distance") is not None
+        else delta_px
+    )
     geometry = store.geometry(train_records[0].sample_id)
 
     head = DetectionHead(
@@ -309,7 +316,7 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
         geometry=geometry,
         delta_px=delta_px,
         sigma_px=sigma_px,
-        nms_distance_px=delta_px,
+        nms_distance_px=nms_px,
         matching=matching,
         foreground_weight=float(p.get("foreground_weight", 10.0)),
         sample_spacings=sample_spacings,
@@ -466,8 +473,16 @@ class OcelotBenchmark:
         return load_config(config_path, overrides=merged or None)
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:
-        """Reference rows matching ``axes`` (the broad banner matches any axes)."""
-        return expected_rows(self.name, **axes)
+        """Reference rows for the resolved ``encoder`` axis.
+
+        The gate row is pinned to the anchor encoder (Virchow2; spacing is fixed at
+        0.2 µm/px by the facet, so it is not a key column), so an omitted encoder defaults
+        to the anchor: ``expected()`` selects the anchor band, while
+        ``expected(encoder="uni2")`` returns only external anchors (no gate for uni2).
+        """
+        merged: dict[str, Any] = {"encoder": ANCHOR_ENCODER}
+        merged.update({k: v for k, v in axes.items() if v is not None})
+        return expected_rows(self.name, **merged)
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """Greedy (OCELOT-official) re-score of a trained run — the ``score`` override."""
