@@ -120,6 +120,28 @@ def _validate_preprocessing_runtime(
     )
 
 
+def _runtime_output_variant(
+    *,
+    encoder_name: str,
+    level: str,
+    resolved_output: dict[str, object],
+) -> str | None:
+    """Output variant handed to slide2vec at runtime.
+
+    slide2vec treats any non-``None`` ``output_variant`` as an override and rejects it
+    for encoders with a fixed output (patient level, or slide level with a single
+    variant). Those get ``None``; slide encoders with several variants get the
+    resolved one so the requested variant is actually computed, not just recorded.
+    """
+    if level == "patient":
+        return None
+    if level == "slide":
+        output_variants = encoder_registry.info(encoder_name).get("output_variants")
+        if not isinstance(output_variants, dict) or len(output_variants) <= 1:
+            return None
+    return str(resolved_output["output_variant"])
+
+
 def _feature_kind_from_rank(feature_rank: int) -> str:
     if int(feature_rank) == 1:
         return "slide"
@@ -468,17 +490,17 @@ class _PooledFeatureExtractor:
             loaded_tilings=loaded_tilings,
         )
         resolved_output_variant = str(resolved_output["output_variant"])
-        runtime_output_variant = resolved_output_variant
+        runtime_output_variant = _runtime_output_variant(
+            encoder_name=self._encoder.name,
+            level=level,
+            resolved_output=resolved_output,
+        )
         s2v_preprocessing = build_preprocessing_config(resolved_preprocessing)
         allow_non_recommended_settings = bool(self._encoder.allow_non_recommended_settings)
 
-        # slide2vec validates the *requested* override (``None`` = "use the default");
-        # handing it the resolved default trips its fixed-variant guard for single-variant
-        # slide/patient encoders. The resolved variant itself was already checked by
-        # ``_resolved_output``.
         _validate_runtime(
             encoder_name=self._encoder.name,
-            output_variant=self._encoder.output_variant,
+            output_variant=runtime_output_variant,
             encoder=self._encoder,
             preprocessing=resolved_preprocessing,
             tiling_results=prepared_tilings,

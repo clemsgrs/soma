@@ -2203,8 +2203,8 @@ def test_extract_slide_features_preserves_requested_tile_artifact_regime(
     assert (tmp_path / "features" / "tile_embeddings" / "s0.pt").exists() is save_tile_features
 
 
-def test_slide_encoder_runtime_forwards_resolved_output_variant(tmp_path: Path):
-    """Runtime gets the resolved variant; slide2vec validation gets the requested override."""
+def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path: Path):
+    """Single-variant slide encoders hand slide2vec no override (it would reject one)."""
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
@@ -2230,7 +2230,7 @@ def test_slide_encoder_runtime_forwards_resolved_output_variant(tmp_path: Path):
         preprocessing,
         execution,
     ):
-        assert output_variant == "default"
+        assert output_variant is None
         artifacts = []
         for slide in slides:
             artifacts.append(
@@ -2247,7 +2247,7 @@ def test_slide_encoder_runtime_forwards_resolved_output_variant(tmp_path: Path):
         preprocessing,
         execution,
     ):
-        assert output_variant == "default"
+        assert output_variant is None
         slide_artifacts = []
         for artifact in tile_artifacts:
             slide_artifacts.append(
@@ -3457,7 +3457,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
     assert store.load("s0").shape == (2, 8)
 
 
-def test_multi_gpu_slide_cache_population_forwards_resolved_output_variant(tmp_path: Path):
+def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
     csv_path = tmp_path / "dataset-two.csv"
     pd.DataFrame(
@@ -3502,7 +3502,7 @@ def test_multi_gpu_slide_cache_population_forwards_resolved_output_variant(tmp_p
         *, output_variant, output_dir, shard_payloads_by_rank, on_shard_complete, on_progress=None, **kwargs
     ):
         # Two slides + num_gpus=2 ⇒ multi-GPU sharded aggregation. The slide stage
-        # must receive the resolved output variant so the workers compute it.
+        # must receive the runtime output variant (None for a fixed-output encoder).
         captured_output_variants.append(output_variant)
         slide_dir = Path(output_dir) / "slide_embeddings"
         slide_dir.mkdir(parents=True, exist_ok=True)
@@ -3536,7 +3536,7 @@ def test_multi_gpu_slide_cache_population_forwards_resolved_output_variant(tmp_p
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
-    assert captured_output_variants == ["default"]
+    assert captured_output_variants == [None]
 
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
@@ -3604,7 +3604,7 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
             num_gpus=2,
         )
 
-    assert captured_output_variants == ["default"]
+    assert captured_output_variants == [None]
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
     assert all(call.kwargs["output_variant"] == "default" for call in resolve_slide_cache.call_args_list)
