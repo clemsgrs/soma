@@ -26,11 +26,17 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_image_cache,
-    resolve_output_dtype,
+    resolve_cache_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
-from soma.encoders.validation import resolve_encoder_precision
+from soma.cache.compute_key import resolved_output_variant
+from soma.cache.keys import build_tile_cache_key
+from soma.extraction.commit import (
+    DEFAULT_IMAGE_COMMIT_EVERY,
+    commit_chunks,
+    resolve_commit_every,
+)
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import build_execution_options
 
@@ -94,20 +100,35 @@ class _TileFeatureExtractor:
 
         # On-disk feature dtype (#164): one resolved value folded into the cache key and
         # handed to slide2vec as output_dtype, so storage matches the key.
-        dtype = resolve_output_dtype(
-            self._cache.dtype,
-            resolve_encoder_precision(self._encoder, encoder_name=self._encoder.name),
+        dtype = resolve_cache_dtype(
+            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
+        )
+        # Key on the *resolved* output variant, as the pooled WSI path does, so a config
+        # that leaves ``encoder.output_variant`` null shares the cache of one that names
+        # the encoder's default variant explicitly.
+        output_variant = resolved_output_variant(
+            self._encoder.name, self._encoder.output_variant
+        )
+        logger.info(
+            "Tile-image features: encoder=%s output_variant=%s dtype=%s",
+            self._encoder.name,
+            output_variant,
+            dtype,
         )
 
         cache_resolution: FeatureCacheResolution | None = None
         if self._cache.enabled:
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
+            if self._encoder.output_variant is None:
+                _log_legacy_image_cache_key(
+                    encoder=self._encoder, output_variant=output_variant, dtype=dtype
+                )
             cache_resolution = resolve_image_cache(
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
                 execution=self._encoder,
-                output_variant=self._encoder.output_variant,
+                output_variant=output_variant,
                 dtype=dtype,
                 validate_payloads=self._cache.validate_payloads,
             )
@@ -152,21 +173,60 @@ class _TileFeatureExtractor:
                 output_variant=self._encoder.output_variant,
                 allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
             )
-            artifacts = model.embed_images(
-                [
-                    ImageSpec(sample_id=record.sample_id, image_path=record.image_path)
-                    for record in pending
-                ],
-                execution=execution,
+            # Commit identity signatures per chunk: slide2vec persists each image as it
+            # goes, but an unsigned payload is dropped on the next run, so one commit at
+            # the very end would make an interrupted extraction restart from zero.
+            commit_every = resolve_commit_every(
+                self._cache.commit_every, default=DEFAULT_IMAGE_COMMIT_EVERY
             )
-            feature_dim = int(artifacts[0].feature_dim) if artifacts else None
+            feature_dim: int | None = None
+            for chunk in commit_chunks(pending, commit_every):
+                artifacts = model.embed_images(
+                    [
+                        ImageSpec(sample_id=record.sample_id, image_path=record.image_path)
+                        for record in chunk
+                    ],
+                    execution=execution,
+                )
+                if feature_dim is None and artifacts:
+                    feature_dim = int(artifacts[0].feature_dim)
+                if cache_resolution is not None and feature_dim is not None:
+                    record_feature_dim(cache_resolution, feature_dim)
+                    record_sample_identity_signatures(
+                        cache_resolution, [record.sample_id for record in chunk]
+                    )
             logger.info("Saved tile features to %s (dim=%s)", out_root, feature_dim)
 
-            if cache_resolution is not None and feature_dim is not None:
-                record_feature_dim(cache_resolution, feature_dim)
-                record_sample_identity_signatures(
-                    cache_resolution,
-                    [record.sample_id for record in records],
-                )
-
         return FeatureStore(out_root)
+
+
+def _log_legacy_image_cache_key(
+    *, encoder: EncoderConfig, output_variant: str, dtype: str
+) -> None:
+    """Name the pre-1.13 cache key so an existing directory can be renamed by hand."""
+    legacy_key = build_tile_cache_key(
+        tile_encoder_name=encoder.name,
+        preprocessing=None,
+        execution=encoder,
+        output_variant=None,
+        feature_type="tile",
+        dtype=dtype,
+    )
+    current_key = build_tile_cache_key(
+        tile_encoder_name=encoder.name,
+        preprocessing=None,
+        execution=encoder,
+        output_variant=output_variant,
+        feature_type="tile",
+        dtype=dtype,
+    )
+    if legacy_key != current_key:
+        logger.info(
+            "Tile-image cache key for encoder '%s' now resolves output_variant=%r: "
+            "image/%s (pre-1.13 key with output_variant=null: image/%s). Rename the old "
+            "cache directory to reuse its features.",
+            encoder.name,
+            output_variant,
+            current_key,
+            legacy_key,
+        )

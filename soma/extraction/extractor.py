@@ -40,7 +40,7 @@ from soma.cache import (
     probe_resolved_backends,
     resolve_cache_root,
     resolve_hierarchical_cache,
-    resolve_output_dtype,
+    resolve_cache_dtype,
     resolve_patient_cache,
     resolve_slide_cache,
     resolve_tiling_cache,
@@ -52,6 +52,11 @@ from soma.cache import (
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset, ensure_filename_safe_id
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
+from soma.extraction.commit import (
+    DEFAULT_SLIDES_PER_GPU_COMMIT_EVERY,
+    commit_chunks,
+    resolve_commit_every,
+)
 from soma.extraction.orchestration import (
     _aggregate_patients,
     _aggregate_tiles,
@@ -291,6 +296,13 @@ class _PooledFeatureExtractor:
             output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
         )
 
+    def _slides_per_commit(self, *, num_gpus: int | None) -> int:
+        """Slides per slide2vec call on the WSI paths (see ``cache.commit_every``)."""
+        return resolve_commit_every(
+            self._cache.commit_every,
+            default=DEFAULT_SLIDES_PER_GPU_COMMIT_EVERY * max(1, int(num_gpus or 1)),
+        )
+
     def _resolved_dtype(self, *, encoder_name: str | None = None) -> str:
         """Resolve the on-disk feature dtype ('fp16'/'fp32') from cache.dtype + precision.
 
@@ -300,8 +312,7 @@ class _PooledFeatureExtractor:
         the tile encoder for a tile-dependency cache, the slide/patient encoder for its own.
         """
         name = encoder_name or self._encoder.name
-        precision = resolve_encoder_precision(self._encoder, encoder_name=name)
-        return resolve_output_dtype(self._cache.dtype, precision)
+        return resolve_cache_dtype(self._cache.dtype, self._encoder, encoder_name=name)
 
     def preprocess(
         self,
@@ -1494,21 +1505,26 @@ class _PooledFeatureExtractor:
             save_tile_embeddings=True,
             output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
-        artifacts = _embed_tile_artifacts_with_coordinates(
-            model_name=encoder_name,
-            output_variant=output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            preprocessing=preprocessing,
-            execution=execution,
-            tiling_dir=tiling_dir,
-            slides=[loaded.slide for loaded in selected_loaded],
-        )
-        feature_dim = self._write_artifacts_to_cache_resolution(
-            artifacts=artifacts,
-            cache_resolution=cache_resolution,
-        )
-        if feature_dim is not None:
-            record_feature_dim(cache_resolution, feature_dim)
+        # Commit per chunk of slides so an interrupted run keeps every finished chunk
+        # (signatures are what make a payload trusted on resume).
+        for chunk in commit_chunks(
+            selected_loaded, self._slides_per_commit(num_gpus=execution.num_gpus)
+        ):
+            artifacts = _embed_tile_artifacts_with_coordinates(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                preprocessing=preprocessing,
+                execution=execution,
+                tiling_dir=tiling_dir,
+                slides=[loaded.slide for loaded in chunk],
+            )
+            feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=artifacts,
+                cache_resolution=cache_resolution,
+            )
+            if feature_dim is not None:
+                record_feature_dim(cache_resolution, feature_dim)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 
@@ -1547,21 +1563,26 @@ class _PooledFeatureExtractor:
             save_tile_embeddings=True,
             output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
-        artifacts = _embed_hierarchical_artifacts_with_coordinates(
-            model_name=encoder_name,
-            output_variant=output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            preprocessing=preprocessing,
-            execution=execution,
-            tiling_dir=tiling_dir,
-            slides=[loaded.slide for loaded in selected_loaded],
-        )
-        feature_dim = self._write_artifacts_to_cache_resolution(
-            artifacts=artifacts,
-            cache_resolution=cache_resolution,
-        )
-        if feature_dim is not None:
-            record_feature_dim(cache_resolution, feature_dim)
+        # Commit per chunk of slides so an interrupted run keeps every finished chunk
+        # (signatures are what make a payload trusted on resume).
+        for chunk in commit_chunks(
+            selected_loaded, self._slides_per_commit(num_gpus=execution.num_gpus)
+        ):
+            artifacts = _embed_hierarchical_artifacts_with_coordinates(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                preprocessing=preprocessing,
+                execution=execution,
+                tiling_dir=tiling_dir,
+                slides=[loaded.slide for loaded in chunk],
+            )
+            feature_dim = self._write_artifacts_to_cache_resolution(
+                artifacts=artifacts,
+                cache_resolution=cache_resolution,
+            )
+            if feature_dim is not None:
+                record_feature_dim(cache_resolution, feature_dim)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 

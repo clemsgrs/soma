@@ -42,7 +42,7 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_dense_cache,
-    resolve_output_dtype,
+    resolve_cache_dtype,
 )
 from soma.config import (
     CacheConfig,
@@ -319,12 +319,13 @@ class _SlideRegionExtractor:
         signature = sampling_signature(self._masks, self._sampling, self._preprocessing)
 
         # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
-        # None ⇒ follow the compute precision; 'fp16'/'fp32' force it. Folded into the cache
-        # key so an fp16 cache never aliases an fp32 one. (None-resolution needs the
-        # precision; with an unspecified precision it conservatively keys fp32 — prefer an
-        # explicit setting.)
-        precision_hint = self._execution.precision or self._encoder.precision
-        dense_dtype = resolve_output_dtype(self._cache.dtype, precision_hint)
+        # None ⇒ follow the encoder's resolved compute precision (override, else registry
+        # recommendation); 'fp16'/'fp32' force it. Same resolver as the pooled path, so
+        # the key never aliases an fp16 cache with an fp32 one.
+        dense_dtype = resolve_cache_dtype(
+            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
+        )
+        logger.info("Dense grid storage dtype resolved to %s", dense_dtype)
 
         cache_resolution = None
         # slide2vec appends ``dense_embeddings/`` to output_dir, and that subdirectory is

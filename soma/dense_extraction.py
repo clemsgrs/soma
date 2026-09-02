@@ -34,7 +34,7 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_cache_root,
     resolve_dense_cache,
-    resolve_output_dtype,
+    resolve_cache_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -217,8 +217,8 @@ class _DenseImageExtractor:
         if not self._cache.enabled:
             return None
         patch_size = resolve_patch_size(self._encoder.name)
-        dense_dtype = resolve_output_dtype(
-            self._cache.dtype, self._execution.precision or self._encoder.precision
+        dense_dtype = resolve_cache_dtype(
+            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
         )
         cache_root = resolve_cache_root(
             self._cache, feature_dir=feature_dir if feature_dir is not None else Path.cwd()
@@ -261,9 +261,10 @@ class _DenseImageExtractor:
         # None ⇒ follow the compute precision; 'fp16'/'fp32' force it. Folded into the cache
         # key (guarded so fp32 keys stay byte-stable) and handed to slide2vec as the write
         # dtype, so storage matches the key.
-        dense_dtype = resolve_output_dtype(
-            self._cache.dtype, self._execution.precision or self._encoder.precision
+        dense_dtype = resolve_cache_dtype(
+            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
         )
+        logger.info("Dense grid storage dtype resolved to %s", dense_dtype)
 
         cache_resolution = None
         out_root = feature_dir
