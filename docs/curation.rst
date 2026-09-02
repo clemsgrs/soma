@@ -65,10 +65,6 @@ Use the curator from Python:
        "mhist",
        raw_root="/path/to/mhist",
        output_dir="data/eva/mhist",
-       # 0.0 reproduces the kaiko-ai/eva leaderboard (train-on-all-train, evaluate
-       # on EVA validation via tune_is_test). Use a positive fraction (e.g. 0.2)
-       # only if you want a separate carved-out tune split for model selection.
-       tune_fraction=0.0,
    )
 
    print(manifest.dataset_csv)
@@ -81,20 +77,17 @@ orientation for binary tasks.
 .. note::
 
    The registered :doc:`EVA benchmark <eva-patch-classification-benchmark>`
-   curates with ``tune_fraction=0.0`` for you (its ``CURATION_TUNE_FRACTION``), so
-   ``soma reproduce eva/<dataset>`` follows the leaderboard protocol without any
-   manual split choice.
+   curates the same way, so ``soma reproduce eva/<dataset>`` follows the
+   leaderboard protocol without any manual split choice.
 
 Split policy
 ~~~~~~~~~~~~
 
-For datasets where EVA provides only train/validation-style splits, soma
-reserves EVA validation as ``test`` and creates ``tune`` by deterministic
-stratified sampling from EVA train.
-
-To reproduce EVA's train-on-all-train/evaluate-on-validation protocol, curate
-with ``tune_fraction=0.0`` and set ``training.tune_is_test: true`` in the run
-config. The generated split file will contain only ``train`` and ``test`` rows.
+The curator follows EVA's official protocol and has no split knob. For datasets
+where EVA provides only train/validation-style splits, every EVA train sample is
+soma ``train`` and EVA validation is soma ``test``; the split file contains only
+``train`` and ``test`` rows, and the run sets ``training.tune_is_test: true`` so
+checkpoint selection happens on the reported split, as the leaderboard does.
 
 For datasets where EVA provides train/validation/test splits, soma preserves
 EVA validation as ``tune`` and EVA test as ``test``. This lets one run report

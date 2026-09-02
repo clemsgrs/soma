@@ -336,3 +336,17 @@ def test_edge_annotation_clamped_and_counted(tmp_path: Path):
     assert summary["num_edge_clamped"] == 1
     pts = pd.read_csv(out / "points" / "midog_001.csv")
     assert (pts["x"] >= 0).all() and (pts["y"] >= 0).all()  # clamped into frame
+
+
+def test_null_patient_id_falls_back_to_the_sample_id(tmp_path: Path):
+    """A present-but-null patient_id must not collapse every image onto patient "None"."""
+    raw = _write_midog_raw(
+        tmp_path / "raw",
+        [
+            {"file_name": "007.tiff", "tumortype": "melanoma", "scanner": "Aperio", "patient_id": None, "boxes": []},
+            {"file_name": "008.tiff", "tumortype": "melanoma", "scanner": "Aperio", "patient_id": None, "boxes": []},
+        ],
+    )
+    detection = DetectionManifest(curate_midog_detection(raw, tmp_path / "curated").dataset_csv)
+    assert detection.samples["midog_007"].patient_id == "midog_007"
+    assert detection.samples["midog_008"].patient_id == "midog_008"

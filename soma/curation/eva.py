@@ -29,6 +29,8 @@ _EVA_DATASET_TYPE = "tile"
 
 
 BACH_CLASSES = {"Benign": 0, "InSitu": 1, "Invasive": 2, "Normal": 3}
+# The official ICIAR2018 photo set: 100 images per class; the split ranges index into it.
+BACH_NUM_PHOTOS = 400
 BACH_TRAIN_RANGES = [
     (0, 41),
     (59, 60),
@@ -133,10 +135,15 @@ def curate_eva_patch_dataset(
     name: str,
     raw_root: str | Path,
     output_dir: str | Path,
-    *,
-    tune_fraction: float = 0.2,
 ) -> CuratedManifest:
-    """Curate one EVA patch-level classification dataset.
+    """Curate one EVA patch-level classification dataset under the official protocol.
+
+    Every EVA ``train`` sample is soma ``train``. A dataset with only a validation
+    split reports on it: EVA ``val`` becomes soma ``test`` and the run selects on it
+    with ``training.tune_is_test: true`` (tune = test, as the leaderboard does). A
+    dataset with a real test split keeps EVA ``val`` as soma ``tune`` and EVA ``test``
+    as soma ``test``. There is no carved-out tune fraction: that would train on fewer
+    samples than the protocol and make the numbers non-comparable.
 
     Args:
         name: Dataset name. Supported names include ``"bach"``, ``"mhist"``,
@@ -145,10 +152,6 @@ def curate_eva_patch_dataset(
         raw_root: Local raw dataset root in the layout expected by EVA.
         output_dir: Directory where ``dataset.csv`` and ``splits.csv`` will be
             written.
-        tune_fraction: Fraction of EVA train samples reserved as Soma ``tune``.
-            Set to ``0.0`` to keep all EVA train samples as Soma ``train`` for
-            tune-is-test benchmark reproduction. EVA validation/test samples
-            are reserved as Soma ``test``.
     """
 
     normalized_name = _normalize_dataset_name(name)
@@ -171,7 +174,6 @@ def curate_eva_patch_dataset(
         dataset_name=normalized_name,
         samples=samples,
         output_dir=Path(output_dir),
-        tune_fraction=tune_fraction,
     )
 
 
@@ -180,7 +182,6 @@ def curate_eva_patch_datasets(
     output_root: str | Path,
     *,
     dataset_names: Iterable[str] = EVA_PATCH_CLASSIFICATION_DATASETS,
-    tune_fraction: float = 0.2,
 ) -> dict[str, CuratedManifest]:
     """Curate multiple EVA patch-level datasets from sibling raw roots.
 
@@ -197,7 +198,6 @@ def curate_eva_patch_datasets(
             normalized_name,
             raw_root / normalized_name,
             output_root / normalized_name,
-            tune_fraction=tune_fraction,
         )
     return manifests
 
@@ -207,10 +207,7 @@ def _write_manifests(
     dataset_name: str,
     samples: list[_Sample],
     output_dir: Path,
-    tune_fraction: float,
 ) -> CuratedManifest:
-    if not 0.0 <= tune_fraction < 1.0:
-        raise ValueError("tune_fraction must be in [0, 1)")
     if not samples:
         raise ValueError(f"No samples found for EVA dataset '{dataset_name}'")
 
@@ -228,23 +225,21 @@ def _write_manifests(
 
     train_ids = [sample.sample_id for sample in samples if sample.eva_split == "train"]
     has_eva_test = any(sample.eva_split == "test" for sample in samples)
-    labels_by_id = {sample.sample_id: sample.label for sample in samples}
+    # Official protocol: every EVA train sample trains. With a real EVA test split, EVA
+    # val is the selection (tune) split; without one, EVA val is the reported test split
+    # and the run selects on it via ``training.tune_is_test`` (tune = test).
     if has_eva_test:
         tune_ids = sorted(sample.sample_id for sample in samples if sample.eva_split == "val")
-        tune_ids.extend(_stratified_tune_ids(train_ids, labels_by_id, tune_fraction))
         test_ids = [sample.sample_id for sample in samples if sample.eva_split == "test"]
     else:
-        tune_ids = _stratified_tune_ids(train_ids, labels_by_id, tune_fraction)
+        tune_ids = []
         test_ids = [sample.sample_id for sample in samples if sample.eva_split != "train"]
-    tune_set = set(tune_ids)
     # Single fold ⇒ fold=0 for every row (write_manifest fills the fold column).
     split_rows = [
-        {"sample_id": sample_id, "split": "tune" if sample_id in tune_set else "train", "fold": 0}
-        for sample_id in sorted(train_ids)
+        {"sample_id": sample_id, "split": "train", "fold": 0} for sample_id in sorted(train_ids)
     ]
     split_rows.extend(
-        {"sample_id": sample_id, "split": "tune", "fold": 0}
-        for sample_id in sorted(tune_set - set(train_ids))
+        {"sample_id": sample_id, "split": "tune", "fold": 0} for sample_id in sorted(tune_ids)
     )
     split_rows.extend(
         {"sample_id": sample_id, "split": "test", "fold": 0} for sample_id in sorted(test_ids)
@@ -257,7 +252,7 @@ def _write_manifests(
         "num_classes": len(class_names_by_label),
         "class_names": [class_names_by_label[label] for label in sorted(class_names_by_label)],
         "total_samples": len(samples),
-        "tune_fraction": tune_fraction,
+        "protocol": "eva-official-splits",
         "splits": {
             "train": sum(1 for r in split_rows if r["split"] == "train"),
             "tune": sum(1 for r in split_rows if r["split"] == "tune"),
@@ -272,28 +267,6 @@ def _write_manifests(
         split_rows=split_rows,
         summary=summary,
     )
-
-
-def _stratified_tune_ids(
-    train_ids: list[str],
-    labels_by_id: dict[str, int],
-    tune_fraction: float,
-) -> list[str]:
-    """Select a deterministic stratified tune subset from EVA train samples."""
-    if tune_fraction == 0.0:
-        return []
-
-    by_label: dict[int, list[str]] = {}
-    for sample_id in sorted(train_ids):
-        by_label.setdefault(labels_by_id[sample_id], []).append(sample_id)
-
-    tune_ids: list[str] = []
-    for ids in by_label.values():
-        n_tune = max(1, round(len(ids) * tune_fraction)) if len(ids) > 1 else 0
-        tune_ids.extend(ids[-n_tune:] if n_tune else [])
-    if not tune_ids and train_ids:
-        tune_ids.append(sorted(train_ids)[-1])
-    return sorted(tune_ids)
 
 
 def _bach_samples(root: Path) -> list[_Sample]:
@@ -331,6 +304,13 @@ def _bach_photos_samples(photos_path: Path) -> list[_Sample]:
             for path in sorted((photos_path / class_name).glob("*.tif"))
         )
     all_samples = sorted(all_samples, key=lambda item: str(item[0]))
+    if len(all_samples) != BACH_NUM_PHOTOS:
+        raise ValueError(
+            f"BACH: expected exactly {BACH_NUM_PHOTOS} photos under {photos_path} "
+            f"({', '.join(BACH_CLASSES)}), found {len(all_samples)}. The EVA train/val "
+            "index ranges are positions in the sorted 400-file list, so a partial or "
+            "extended set would silently shift every split assignment."
+        )
     train_indices = set(_ranges_to_indices(BACH_TRAIN_RANGES))
     val_indices = set(_ranges_to_indices(BACH_VAL_RANGES))
     samples: list[_Sample] = []
@@ -580,6 +560,15 @@ def _write_gleason_arvaniti_patches(core_paths, masks_dir, out_dir, np, Image) -
         image = np.asarray(Image.open(core_path).convert("RGB"))
         mask = np.asarray(Image.open(mask_path))  # palette indices == class ids (0..4)
         size_y, size_x = image.shape[0], image.shape[1]
+        if size_x != size_y or mask.shape[:2] != image.shape[:2]:
+            # The upstream enumeration indexes rows with the x coordinate and columns
+            # with y; on the square TMA cores that is a transposed walk over the same
+            # patch set, but on anything else it would slice off-grid. Refuse rather
+            # than silently produce shifted patches.
+            raise ValueError(
+                f"Gleason core {core_path.name}: expected a square core with a mask of "
+                f"the same size, got image {image.shape[:2]} and mask {mask.shape[:2]}."
+            )
         subdir = out_dir / name
         for index, (i0, j0) in enumerate(
             _gleason_arvaniti_patch_coords(size_x, size_y, patch_size)
@@ -908,17 +897,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--raw-root", type=Path, required=True, help="local raw dataset root")
     parser.add_argument("--output-dir", type=Path, required=True, help="curated output dir")
-    parser.add_argument(
-        "--tune-fraction",
-        type=float,
-        default=0.2,
-        help="fraction of EVA train reserved as Soma tune (0.0 keeps all train for tune-is-test)",
-    )
     args = parser.parse_args(argv)
 
-    manifest = curate_eva_patch_dataset(
-        args.name, args.raw_root, args.output_dir, tune_fraction=args.tune_fraction
-    )
+    manifest = curate_eva_patch_dataset(args.name, args.raw_root, args.output_dir)
     print(f"curated: {manifest.dataset_csv}")
     print(f"         {manifest.splits_csv}")
     if manifest.summary_json is not None:

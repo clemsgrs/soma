@@ -19,8 +19,8 @@ Protocol points that matter for matching the leaderboard:
 * The selection/report metric is balanced accuracy, which equals eva's
   ``MulticlassAccuracy(average="macro")`` / ``BinaryBalancedAccuracy``.
 * Datasets with no eva test split (bach, breakhis, crc, mhist, gleason_arvaniti) report on
-  the validation split: curate with ``tune_fraction=0.0`` and run with ``tune_is_test=True``
-  so soma's ``test`` split *is* the eva validation set. patch_camelyon has a real val + test
+  the validation split: the curator keeps every eva-train sample as soma ``train`` and the
+  run uses ``tune_is_test=True`` so soma's ``test`` split *is* the eva validation set. patch_camelyon has a real val + test
   split (``tune_is_test=False``): the reported (test) number is the headline; the val number
   is recorded alongside it in the reference table.
 * virchow2 must use the CLS-only output (1280-d); eva's ``paige_virchow2`` sets
@@ -64,8 +64,6 @@ HEAD_BATCH_SIZE = 256
 LEARNING_RATE = 3.0e-4
 WEIGHT_DECAY = 0.01  # eva sets only lr; torch.optim.AdamW default weight_decay
 # eva reports on the validation split for tune-is-test datasets, so curation must keep
-# every eva-train sample as soma "train" (none diverted to "tune").
-CURATION_TUNE_FRACTION = 0.0
 
 # The default (summary.json) scorer returns split-prefixed keys; every eva sub-benchmark
 # reports its headline on soma's test split, so this is the primary tolerance metric.
@@ -231,12 +229,11 @@ class EvaBenchmark:
     def curate(self, raw_root: str | Path, out_dir: str | Path) -> CuratedManifest:
         """Curate this EVA dataset into a soma tile Manifest (delegates to the curator).
 
-        ``tune_fraction=0.0`` keeps every eva-train sample as soma ``train`` so the eva
-        validation set lands in soma's reported ``test`` split (tune-is-test protocol).
+        The curator follows the official protocol: every eva-train sample is soma
+        ``train`` and the eva validation set lands in soma's reported ``test`` split
+        (tune-is-test) unless the dataset ships a real test split.
         """
-        return curate_eva_patch_dataset(
-            self.dataset, raw_root, out_dir, tune_fraction=CURATION_TUNE_FRACTION
-        )
+        return curate_eva_patch_dataset(self.dataset, raw_root, out_dir)
 
     def build_config(
         self,

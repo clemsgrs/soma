@@ -130,7 +130,14 @@ def _resolve_uniform_spacing(roi_df: pd.DataFrame, target_spacing: float | None)
                 f"'spacing_at_level_0' column to check against."
             )
         return None
-    values = sorted({round(float(v), 6) for v in roi_df["spacing_at_level_0"]})
+    spacing_column = roi_df["spacing_at_level_0"]
+    blank = roi_df.loc[spacing_column.isna(), "sample_id"].astype(str).tolist()
+    if blank:
+        raise ValueError(
+            f"{len(blank)} ROI row(s) have a blank spacing_at_level_0 (e.g. {blank[:5]}); "
+            "every ROI must declare its spacing before tiling."
+        )
+    values = sorted({round(float(v), 6) for v in spacing_column})
     if len(values) != 1:
         raise ValueError(
             f"tiling requires a uniform spacing_at_level_0 (one run declares one geometry "

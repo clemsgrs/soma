@@ -463,3 +463,22 @@ def test_beetle_recuration_is_byte_identical(tmp_path: Path):
         assert (first.dataset_csv.parent / filename).read_bytes() == (
             second.dataset_csv.parent / filename
         ).read_bytes()
+
+
+def test_split_rotation_handles_non_contiguous_fold_numbers():
+    from examples.beetle.curate import build_split_rows, select_subset
+
+    rows = [
+        {"sample_id": "a", "validation_fold": "fold1"},
+        {"sample_id": "b", "validation_fold": "fold3"},
+        {"sample_id": "c", "validation_fold": "fold5"},
+    ]
+    split_rows = build_split_rows(rows)
+    # Every fold has exactly one test, one tune and one train slide: the tune fold is
+    # the next *existing* fold, not (k + 1) % n, which would name a missing fold.
+    for k in (1, 3, 5):
+        splits = {r["sample_id"]: r["split"] for r in split_rows if r["fold"] == k}
+        assert sorted(splits.values()) == ["test", "train", "tune"]
+    with pytest.raises(ValueError, match="at least two validation folds"):
+        build_split_rows(rows[:1])
+    assert select_subset([], 4) == []
