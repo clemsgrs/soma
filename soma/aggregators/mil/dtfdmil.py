@@ -9,7 +9,6 @@ The two-tier mechanism:
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -28,7 +27,16 @@ class DTFDMIL(Aggregator):
         hidden_dim: Attention bottleneck dimension.
         n_groups: Number of pseudo-bags to partition into.
         distill_mode: Feature distillation mode ('maxmin', 'max', 'afs').
+        instances_per_group: Instances distilled per pseudo-bag and per direction
+            ('max' keeps the top-k CAM instances, 'maxmin' the top-k and bottom-k).
+            The reference implementation uses ``total_instance // numGroup`` = 1;
+            clamped to the pseudo-bag size.
         dropout: Dropout rate applied before tier-1 attention.
+
+    The pseudo-bag partition is a random permutation drawn from torch's global RNG
+    while the module is in training mode (so it follows the run seed and differs
+    every step, as in the reference), and a deterministic contiguous split in eval
+    mode so scoring a checkpoint is reproducible.
     """
 
     def __init__(
@@ -37,6 +45,7 @@ class DTFDMIL(Aggregator):
         hidden_dim: int = 128,
         n_groups: int = 8,
         distill_mode: str = "maxmin",
+        instances_per_group: int = 1,
         dropout: float = 0.25,
     ) -> None:
         super().__init__()
@@ -44,10 +53,15 @@ class DTFDMIL(Aggregator):
         if distill_mode not in ("maxmin", "max", "afs"):
             msg = f"distill_mode must be 'maxmin', 'max', or 'afs', got '{distill_mode}'"
             raise ValueError(msg)
+        if instances_per_group < 1:
+            raise ValueError(
+                f"instances_per_group must be >= 1, got {instances_per_group}"
+            )
 
         self._input_dim = input_dim
         self.n_groups = n_groups
         self.distill_mode = distill_mode
+        self.instances_per_group = instances_per_group
         self._auxiliary_mode = "binary"
         self._t1_output_dim = 1
 
@@ -119,17 +133,18 @@ class DTFDMIL(Aggregator):
     ) -> AggregatorOutput:
         bag_size, feat_dim = X.shape
 
-        bag_index = np.arange(bag_size)
-        np.random.shuffle(bag_index)
-        bag_chunks = np.array_split(bag_index, n_groups)
+        if self.training:
+            bag_index = torch.randperm(bag_size, device=X.device)
+        else:
+            bag_index = torch.arange(bag_size, device=X.device)
+        bag_chunks = list(torch.tensor_split(bag_index, n_groups))
 
         pseudo_pred_list = []
         pseudo_feat_list = []
         inst_cam_list = []
 
         for chunk_idx in bag_chunks:
-            chunk_idx_tensor = torch.as_tensor(chunk_idx, device=X.device, dtype=torch.long)
-            X_chunk = X.index_select(0, chunk_idx_tensor).unsqueeze(0)  # (1, chunk_size, D)
+            X_chunk = X.index_select(0, chunk_idx).unsqueeze(0)  # (1, chunk_size, D)
 
             z, _ = self.t1_pool(X_chunk)  # (1, D)
             pseudo_pred = self.t1_classifier(z)  # (1, O)
@@ -139,18 +154,19 @@ class DTFDMIL(Aggregator):
             inst_cam_list.append(inst_cam)
 
             chunk_size = X_chunk.size(1)
+            k = min(self.instances_per_group, chunk_size)
 
             if self.distill_mode == "afs":
                 pseudo_feat = z.unsqueeze(1)  # (B, 1, D)
             else:
                 cam_for_sort = inst_cam
                 sort_idx_max = torch.sort(cam_for_sort, 1, descending=True)[1]
-                topk_idx_max = sort_idx_max[:, :chunk_size].long()
+                topk_idx_max = sort_idx_max[:, :k].long()
 
                 if self.distill_mode == "maxmin":
                     cam_for_min = inst_cam
                     sort_idx_min = torch.sort(cam_for_min, 1, descending=False)[1]
-                    topk_idx_min = sort_idx_min[:, :chunk_size].long()
+                    topk_idx_min = sort_idx_min[:, :k].long()
                     topk_idx = torch.cat([topk_idx_max, topk_idx_min], dim=1)
                 else:  # "max"
                     topk_idx = topk_idx_max
@@ -172,7 +188,7 @@ class DTFDMIL(Aggregator):
         # Reorder instance CAM to original tile order
         inst_cam = torch.cat(inst_cam_list, dim=1)  # (1, valid_bag_size)
         valid_cam_reorder = torch.zeros_like(inst_cam)
-        reorder_idx = np.concatenate(bag_chunks)
+        reorder_idx = torch.cat(bag_chunks)
         valid_cam_reorder[:, reorder_idx] = inst_cam
         full_cam = X.new_zeros((1, original_bag_size))
         full_cam[:, original_indices] = valid_cam_reorder

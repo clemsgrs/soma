@@ -42,19 +42,18 @@ FIXED_RUN_ID = "20990101_000000"
 
 
 def _reference_breslow(risk, time, events) -> float:
-    """Independent no-ties Breslow partial likelihood for cross-check."""
-    order = sorted(range(len(time)), key=lambda i: time[i], reverse=True)
-    r = [float(risk[i]) for i in order]
-    e = [float(events[i]) for i in order]
-    lcse = []
-    acc: list[float] = []
-    for x in r:
-        acc.append(x)
-        m = max(acc)
-        lcse.append(m + math.log(sum(math.exp(v - m) for v in acc)))
-    n_events = sum(e)
-    contrib = sum((r[i] - lcse[i]) * e[i] for i in range(len(r)))
-    return -contrib / n_events
+    """Independent Breslow partial likelihood: the risk set of event i is every
+    sample with time >= time_i (tied times share one risk set)."""
+    r = [float(v) for v in risk]
+    t = [float(v) for v in time]
+    e = [float(v) for v in events]
+    contrib = 0.0
+    for i in range(len(r)):
+        at_risk = [r[j] for j in range(len(r)) if t[j] >= t[i]]
+        m = max(at_risk)
+        lse = m + math.log(sum(math.exp(v - m) for v in at_risk))
+        contrib += (r[i] - lse) * e[i]
+    return -contrib / sum(e)
 
 
 class TestCoxBreslowLoss:
@@ -64,6 +63,21 @@ class TestCoxBreslowLoss:
         events = torch.tensor([1.0, 1.0, 0.0, 1.0])
         loss = float(cox_breslow_loss(risk, time, events))
         assert loss == pytest.approx(_reference_breslow(risk, time, events), abs=1e-5)
+
+    def test_ties_share_one_risk_set_and_loss_is_permutation_invariant(self):
+        # Two events tied at t=5 and a censored sample tied with them: under the
+        # old sort-based cumsum the tied events got different denominators
+        # depending on argsort order, and the loss changed with sample order.
+        risk = torch.tensor([1.5, -0.3, 0.8, 0.2, 2.0, -1.0])
+        time = torch.tensor([5.0, 5.0, 5.0, 9.0, 2.0, 7.0])
+        events = torch.tensor([1.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+        loss = float(cox_breslow_loss(risk, time, events))
+        assert loss == pytest.approx(_reference_breslow(risk, time, events), abs=1e-5)
+
+        for seed in range(5):
+            perm = torch.randperm(6, generator=torch.Generator().manual_seed(seed))
+            permuted = float(cox_breslow_loss(risk[perm], time[perm], events[perm]))
+            assert permuted == pytest.approx(loss, abs=1e-6)
 
     def test_gradient_flows_and_graph_connected(self):
         risk = torch.randn(6, requires_grad=True)
