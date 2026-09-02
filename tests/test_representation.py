@@ -168,10 +168,10 @@ def test_ordinary_task_default_and_identity_match_semantic_manifest_contract(
     assert payload["task"] == {"name": "binary_classification", "params": {}}
     assert "representation" not in payload
     assert experiment.experiment_id == (
-        "ebb473ce4443ef7921f666b9c5dd3ccd29ee17415b6a04a82b5267a65ab4152e"
+        "17a1c329f537f891aeca3684d984aa212839323546a7f471e4916038f81823fa"
     )
     assert experiment.slug == (
-        "dataset-precomputed-slide-binary-classification_ebb473ce4443"
+        "dataset-precomputed-slide-binary-classification_17a1c329f537"
     )
 
 

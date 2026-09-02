@@ -37,6 +37,8 @@ from soma.output_layout import (
     register_test_result,
     resolve_managed_output_paths,
     update_run_index,
+    read_run_index,
+    compact_run_index,
     write_run_metadata,
 )
 from soma.output_layout import test_identity_digest as compute_test_digest
@@ -148,18 +150,18 @@ def test_mirror_root_does_not_change_experiment_identity(tmp_path: Path):
     ).experiment_id
 
 
-def test_canonical_experiment_payload_omits_default_checkpoint_selection(tmp_path: Path):
-    """Guarded identity: the default `best` must not perturb legacy experiment ids."""
+def test_canonical_experiment_payload_names_checkpoint_selection_unconditionally(tmp_path: Path):
+    """Identity v2: every training knob is emitted, defaults included."""
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert "checkpoint_selection" not in payload["training"]
+    assert payload["training"]["checkpoint_selection"] == "best"
+    assert payload["identity_version"] == 2
 
 
-def test_canonical_epoch_experiment_payload_omits_null_step_budget(tmp_path: Path):
-    """The new opt-in field must not re-mint legacy epoch experiment identities."""
+def test_canonical_epoch_experiment_payload_names_null_step_budget(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert "max_steps" not in payload["training"]
+    assert payload["training"]["max_steps"] is None
 
 
 def test_canonical_step_experiment_payload_names_the_step_budget(tmp_path: Path):
@@ -174,13 +176,32 @@ def test_canonical_step_experiment_payload_names_the_step_budget(tmp_path: Path)
     assert payload["training"]["max_steps"] == 12500
 
 
-def test_canonical_experiment_payload_omits_default_roi_batch_sampling(tmp_path: Path):
-    """An opt-out run keeps its legacy experiment identity payload."""
+def test_canonical_experiment_payload_names_null_roi_batch_sampling(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert "roi_batch_sampling" not in payload["training"]
-    assert "class_request_ratios" not in payload["training"]
-    assert "roi_draws_per_epoch" not in payload["training"]
+    assert payload["training"]["roi_batch_sampling"] is None
+    assert payload["training"]["class_request_ratios"] is None
+    assert payload["training"]["roi_draws_per_epoch"] is None
+
+
+def test_loader_plumbing_is_not_part_of_identity(tmp_path: Path):
+    """num_workers / pin_memory / persistent_workers change throughput, not the model."""
+    base = _make_pipeline_config(tmp_path, training=TrainingConfig(num_workers=0))
+    tuned = _make_pipeline_config(
+        tmp_path,
+        training=TrainingConfig(num_workers=8, pin_memory=False, persistent_workers=False),
+    )
+
+    assert build_experiment_spec(base).experiment_id == build_experiment_spec(tuned).experiment_id
+    payload = canonical_experiment_payload(base)
+    for key in ("num_workers", "pin_memory", "persistent_workers", "seed"):
+        assert key not in payload["training"]
+
+
+def test_spacing_policy_is_always_part_of_identity(tmp_path: Path):
+    payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
+
+    assert payload["preprocessing"]["spacing_policy"] == "strict"
 
 
 def test_null_class_request_ratios_are_explicit_in_sampling_identity(tmp_path: Path):
@@ -274,11 +295,10 @@ def test_build_experiment_spec_distinguishes_checkpoint_selection(tmp_path: Path
     assert build_experiment_spec(best).experiment_id != build_experiment_spec(last).experiment_id
 
 
-def test_canonical_experiment_payload_omits_default_normalization(tmp_path: Path):
-    """Guarded identity: `normalization: none` must not re-mint legacy experiment ids."""
+def test_canonical_experiment_payload_names_default_normalization(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert "normalization" not in payload
+    assert payload["normalization"]["method"] == "none"
 
 
 def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
@@ -298,11 +318,10 @@ def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
     assert len(ids) == 3
 
 
-def test_canonical_experiment_payload_omits_default_projection(tmp_path: Path):
-    """Guarded identity: `projection: none` must not re-mint legacy experiment ids."""
+def test_canonical_experiment_payload_names_default_projection(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert "projection" not in payload
+    assert payload["projection"]["method"] == "none"
 
 
 def test_build_experiment_spec_distinguishes_projection(tmp_path: Path):
@@ -323,6 +342,7 @@ def test_build_experiment_spec_distinguishes_projection(tmp_path: Path):
     assert canonical_experiment_payload(pca)["projection"] == {
         "method": "pca",
         "target_dim": 64,
+        "seed": 0,
     }
     assert canonical_experiment_payload(random)["projection"] == {
         "method": "random",
@@ -425,20 +445,27 @@ def test_build_experiment_spec_distinguishes_evaluation_metrics(tmp_path: Path):
     assert auroc_spec.experiment_id != f1_spec.experiment_id
 
 
-def test_build_experiment_spec_distinguishes_evaluation_probability_artifacts(tmp_path: Path):
-    without_probabilities = _make_segmentation_config(
+def test_evaluation_artifact_toggles_are_identity_neutral(tmp_path: Path):
+    """What is *saved* alongside the evaluation is not what the experiment is."""
+    plain = _make_segmentation_config(
         tmp_path,
-        evaluation=EvalConfig(metrics=["mean_dice"], save_segmentation_probabilities=False),
+        evaluation=EvalConfig(metrics=["mean_dice"]),
     )
-    with_probabilities = _make_segmentation_config(
+    with_artifacts = _make_segmentation_config(
         tmp_path,
-        evaluation=EvalConfig(metrics=["mean_dice"], save_segmentation_probabilities=True),
+        evaluation=EvalConfig(
+            metrics=["mean_dice"],
+            save_segmentation_probabilities=True,
+            save_segmentation_overlays=False,
+            save_detection_overlays=False,
+            save_detection_heatmaps=True,
+        ),
     )
 
-    without_spec = build_experiment_spec(without_probabilities)
-    with_spec = build_experiment_spec(with_probabilities)
-
-    assert without_spec.experiment_id != with_spec.experiment_id
+    assert build_experiment_spec(plain).experiment_id == build_experiment_spec(with_artifacts).experiment_id
+    payload = canonical_experiment_payload(plain)
+    assert "save_segmentation_probabilities" not in payload["evaluation"]
+    assert payload["evaluation"]["metrics"] == ["mean_dice"]
 
 
 def test_build_experiment_spec_distinguishes_heatmap_artifact_settings(tmp_path: Path):
@@ -610,15 +637,100 @@ def test_run_index_upserts_rows(tmp_path: Path):
         status="running",
     )
 
-    update_run_index(layout.index_dir / "runs.csv", run)
+    index_path = layout.index_dir / "runs.csv"
+    update_run_index(index_path, run)
     completed = run.with_updates(status="completed")
-    update_run_index(layout.index_dir / "runs.csv", completed)
+    update_run_index(index_path, completed)
 
-    with (layout.index_dir / "runs.csv").open(newline="", encoding="utf-8") as handle:
-        run_rows = list(csv.DictReader(handle))
+    with index_path.open(newline="", encoding="utf-8") as handle:
+        raw_rows = list(csv.DictReader(handle))
 
-    assert len(run_rows) == 1
-    assert run_rows[0]["status"] == "completed"
+    # Append-only on disk: both status changes are kept as separate lines…
+    assert [row["status"] for row in raw_rows] == ["running", "completed"]
+    # …and readers see one row per run_id, the last one appended.
+    rows = read_run_index(index_path)
+    assert len(rows) == 1 and rows[0]["status"] == "completed"
+    # Compaction rewrites the file to the deduplicated view.
+    assert compact_run_index(index_path) == 1
+    with index_path.open(newline="", encoding="utf-8") as handle:
+        assert [row["status"] for row in csv.DictReader(handle)] == ["completed"]
+
+
+def test_run_index_rewrites_when_header_schema_changes(tmp_path: Path):
+    config = _make_pipeline_config(tmp_path)
+    layout = resolve_managed_output_paths(config, run_id="2026-04-09_16-22-10__local")
+    run = create_run_metadata(
+        config=config, experiment=layout.experiment, run_dir=layout.run_dir,
+        run_id=layout.run_id, status="running",
+    )
+    index_path = layout.index_dir / "runs.csv"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text("run_id,status\nold-run,completed\n")
+
+    update_run_index(index_path, run)
+
+    rows = read_run_index(index_path)
+    assert [row["run_id"] for row in rows] == ["2026-04-09_16-22-10__local", "old-run"]
+    assert rows[1]["status"] == "completed" and rows[1]["experiment_id"] == ""
+
+
+def test_run_manifest_records_identity_version(tmp_path: Path):
+    config = _make_pipeline_config(tmp_path)
+    layout = resolve_managed_output_paths(config, run_id="r1")
+    run = create_run_metadata(
+        config=config, experiment=layout.experiment, run_dir=layout.run_dir,
+        run_id=layout.run_id, status="running",
+    )
+    assert run.to_dict()["identity_version"] == 2
+    assert layout.experiment.to_dict()["identity_version"] == 2
+
+
+def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, monkeypatch):
+    import subprocess
+
+    from soma import provenance
+
+    repo = tmp_path / "repo"
+    pkg = repo / "soma"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    git = lambda *a: subprocess.run(["git", "-C", str(repo), *a], check=True, capture_output=True)
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "t")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    monkeypatch.setattr(provenance, "_soma_package_dir", lambda: pkg)
+    # cwd is a different, dirty repo: it must not leak into the run's provenance.
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    config = _make_pipeline_config(tmp_path)
+    layout = resolve_managed_output_paths(config, run_id="r1")
+    run = create_run_metadata(
+        config=config, experiment=layout.experiment, run_dir=layout.run_dir,
+        run_id=layout.run_id, status="running",
+    )
+    assert run.git_sha == sha and run.git_dirty is False
+
+    (pkg / "__init__.py").write_text("# edited\n")
+    assert provenance.soma_git_state().dirty is True
+
+
+def test_git_provenance_is_null_for_a_wheel_install(tmp_path: Path, monkeypatch):
+    from soma import provenance
+
+    site = tmp_path / "site-packages" / "soma"
+    site.mkdir(parents=True)
+    monkeypatch.setattr(provenance, "_soma_package_dir", lambda: site)
+    monkeypatch.chdir(tmp_path)  # tmp_path is not a git checkout either
+    state = provenance.soma_git_state()
+    assert state.sha is None and state.dirty is None
 
 
 def test_experiment_index_writer_is_removed():
