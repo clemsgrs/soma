@@ -603,15 +603,17 @@ def test_representation_rejects_invalid_selected_rows_or_features(
     tensors,
     message: str,
 ):
-    dataset, splits, store = _representation_inputs(
-        tmp_path,
-        rows=rows,
-        split_rows=[(0, "s0", "test")],
-        tensors=tensors,
-    )
     monkeypatch.setattr("croma.CRoMa.compute", lambda *_args, **_kwargs: None)
 
+    # A blank label is now rejected by Dataset itself; the other rows reach the
+    # representation evaluator, which owns the group/confounder/rank checks.
     with pytest.raises(ValueError, match=message):
+        dataset, splits, store = _representation_inputs(
+            tmp_path,
+            rows=rows,
+            split_rows=[(0, "s0", "test")],
+            tensors=tensors,
+        )
         evaluate_representation(
             feature_store=store,
             dataset=dataset,

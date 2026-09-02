@@ -1,5 +1,15 @@
 # Project Documentation Notes
 
+- 2026-09-02: Manifest validation fails loudly instead of dropping rows. A blank
+  ``fold`` cell in ``splits.csv`` and a blank ``label`` cell in ``dataset.csv`` (slide,
+  patient and tile datasets) are now hard errors listing the offending sample ids;
+  previously the blank-fold row vanished from every fold and the blank label became its
+  own ``nan`` class. ``Splits`` also logs a warning naming any fold/split that lacks a
+  class present elsewhere in the fold, since threshold-free metrics are undefined there.
+  Resume hardening: the cross-validation summary reads only the folds the current split
+  file declares, a run dir holding ``fold_*`` dirs beyond that count is refused, and the
+  resume drift guard now also recomputes the train/tune experiment identity from the
+  manifest *content* so an edited label or reshuffled fold under unchanged paths is caught.
 - 2026-09-02: Degenerate tune/test splits no longer masquerade as chance-level
   performance. AUROC, macro AUROC and the C-index return ``nan`` (instead of ``0.5``)
   when a split holds a single class or no comparable pairs; the trainer raises at the

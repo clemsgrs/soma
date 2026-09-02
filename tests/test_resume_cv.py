@@ -139,7 +139,7 @@ def test_from_disk_aggregates_every_fold_present(tmp_path: Path):
     _write_metrics(tmp_path / "fold_0", tune={"auroc": 0.6}, test={"auroc": 0.8})
     _write_metrics(tmp_path / "fold_1", tune={"auroc": 0.7}, test={"auroc": 0.6})
 
-    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False)
+    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False, num_folds=2)
 
     # Mean over BOTH folds (0.8, 0.6) — not just the one that ran this session.
     assert summary["test/auroc_mean"] == pytest.approx(0.7)
@@ -149,13 +149,13 @@ def test_from_disk_aggregates_every_fold_present(tmp_path: Path):
 
 def test_from_disk_single_fold_reads_run_dir_metrics(tmp_path: Path):
     _write_metrics(tmp_path, tune={"auroc": 0.9}, test={"auroc": 0.85})
-    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=False)
+    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=False, num_folds=1)
     assert summary == {"test/auroc": 0.85}
 
 
 def test_from_disk_include_tune_surfaces_tune(tmp_path: Path):
     _write_metrics(tmp_path, tune={"auroc": 0.9}, test={"auroc": 0.85})
-    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=True)
+    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=True, num_folds=1)
     assert summary == {"tune/auroc": 0.9, "test/auroc": 0.85}
 
 
@@ -178,7 +178,7 @@ def test_from_disk_matches_in_memory_aggregation(tmp_path: Path):
         )
         for i, m in enumerate(per_fold)
     ]
-    disk = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False)
+    disk = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False, num_folds=2)
     in_memory = _aggregate_fold_metrics(fold_results, include_tune=False)
     assert disk == in_memory
 
@@ -306,3 +306,43 @@ def test_resume_skips_completed_fold_and_summary_covers_all_folds(tmp_path: Path
     assert summary["test/auroc_mean"] == pytest.approx(
         float(np.nanmean(disk_aurocs)), nan_ok=True
     )
+
+
+def test_from_disk_ignores_nothing_but_rejects_undeclared_fold_dirs(tmp_path: Path):
+    _write_metrics(tmp_path / "fold_0", tune={"auroc": 0.9}, test={"auroc": 0.8})
+    _write_metrics(tmp_path / "fold_1", tune={"auroc": 0.7}, test={"auroc": 0.6})
+    # A leftover fold from a 3-fold launch under a now-2-fold split file.
+    _write_metrics(tmp_path / "fold_2", tune={"auroc": 0.5}, test={"auroc": 0.4})
+
+    with pytest.raises(ValueError, match=r"fold_2.*do not declare"):
+        _aggregate_fold_metrics_from_disk(
+            tmp_path, single_fold=False, include_tune=False, num_folds=2
+        )
+
+
+def test_from_disk_reads_only_declared_folds_in_order(tmp_path: Path):
+    _write_metrics(tmp_path / "fold_0", tune={"auroc": 0.9}, test={"auroc": 0.8})
+    _write_metrics(tmp_path / "fold_1", tune={"auroc": 0.7}, test={"auroc": 0.6})
+    summary = _aggregate_fold_metrics_from_disk(
+        tmp_path, single_fold=False, include_tune=False, num_folds=3
+    )
+    # fold_2 is declared but not yet on disk (pending): mean over the two present.
+    assert summary["test/auroc_mean"] == pytest.approx(0.7)
+
+
+def test_drift_guard_refuses_changed_manifest_content_under_same_paths(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    cfg = _make_config(tmp_path)
+    save_config(cfg, run_dir / "config.yaml")
+    # The run recorded the identity minted from the original train/tune content.
+    from soma.output_layout import build_experiment_spec
+
+    (run_dir / "run.yaml").write_text(
+        yaml.safe_dump({"experiment_id": build_experiment_spec(cfg).experiment_id})
+    )
+    _guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # unchanged: passes
+
+    # Same paths, different label -> different train/tune content.
+    Path(cfg.dataset_csv).write_text("sample_id,image_path,label\ns0,/slides/s0.svs,normal\n")
+    with pytest.raises(ValueError, match="train/tune content"):
+        _guard_resume_config_drift(run_dir, replace(cfg, resume=True))

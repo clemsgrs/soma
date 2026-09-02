@@ -294,3 +294,17 @@ def test_safe_sample_ids_with_dots_allowed(tmp_path: Path):
     path = tmp_path / "ok.csv"
     df.to_csv(path, index=False)
     assert sorted(Dataset(path).sample_ids) == ["TCGA-AB-1234", "case.1.2"]
+
+
+def test_blank_label_cell_raises_listing_sample_ids(tmp_path: Path):
+    df = pd.DataFrame(
+        {
+            "sample_id": ["s1", "s2", "s3"],
+            "image_path": ["/a.svs", "/b.svs", "/c.svs"],
+            "label": ["tumor", None, "normal"],
+        }
+    )
+    path = tmp_path / "bad.csv"
+    df.to_csv(path, index=False)
+    with pytest.raises(ValueError, match=r"Missing label for 1 sample\(s\): \['s2'\]"):
+        Dataset(path)

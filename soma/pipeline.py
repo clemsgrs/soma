@@ -76,6 +76,7 @@ from soma.evaluation.summary import summarize_values
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.features import FeatureStore
 from soma.output_layout import (
+    build_experiment_spec,
     create_run_metadata,
     has_successful_run,
     register_test_result,
@@ -2660,6 +2661,8 @@ def train(
         # A single fold owns run_dir directly; multi-fold folds get fold_N/ subdirs.
         return run_dir if single_fold else run_dir / f"fold_{fold_idx}"
 
+    if not single_fold:
+        _reject_undeclared_fold_dirs(run_dir, splits.num_folds)
     # A fold with a metrics.json is complete; any without one is pending. A run with
     # pending folds is a resume in progress (issue #244).
     pending_folds = [
@@ -2879,7 +2882,10 @@ def train(
     # fold_results — so a resumed run (some folds skipped above) still summarizes all
     # folds. For a fresh run every fold is on disk, so this equals the in-memory path.
     summary = _aggregate_fold_metrics_from_disk(
-        run_dir, single_fold=single_fold, include_tune=include_tune_in_summary
+        run_dir,
+        single_fold=single_fold,
+        include_tune=include_tune_in_summary,
+        num_folds=splits.num_folds,
     )
     if evaluation.save_segmentation_confusion_evidence:
         from soma.evaluation.confusion_evidence import (
@@ -3133,6 +3139,7 @@ def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
         if isinstance(evaluation, dict):
             evaluation.pop("save_segmentation_confusion_evidence", None)
     if saved == current:
+        _guard_resume_manifest_drift(run_dir, config)
         return
     differing = sorted(
         key for key in set(saved) | set(current) if saved.get(key) != current.get(key)
@@ -3142,6 +3149,33 @@ def _guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
         f"current config (differing top-level sections: {differing}). Resuming would mix "
         "folds trained under different recipes. Start a fresh run, or reconcile the config "
         "to match the existing run."
+    )
+
+
+def _guard_resume_manifest_drift(run_dir: Path, config: PipelineConfig) -> None:
+    """Refuse to resume when the train/tune manifest *content* changed under the same paths.
+
+    ``config.yaml`` only records the dataset/splits file paths. The run's ``run.yaml``
+    carries the ``experiment_id`` minted from the train+tune slice content, so recompute
+    that identity for the current files and compare: an edited label or reshuffled fold
+    with unchanged paths is caught here rather than mixing folds trained on different data.
+    """
+    run_yaml = run_dir / "run.yaml"
+    if not run_yaml.is_file():
+        return
+    saved = yaml.safe_load(run_yaml.read_text(encoding="utf-8")) or {}
+    saved_experiment_id = saved.get("experiment_id")
+    if not saved_experiment_id:
+        return
+    current_experiment_id = build_experiment_spec(config).experiment_id
+    if saved_experiment_id == current_experiment_id:
+        return
+    raise ValueError(
+        f"Refusing to resume run '{run_dir.name}': the train/tune content of "
+        f"{config.dataset_csv} / {config.splits_csv} differs from what the run was trained "
+        f"on (experiment identity {str(saved_experiment_id)[:12]} → "
+        f"{current_experiment_id[:12]}). Resuming would mix folds trained on different "
+        "data. Start a fresh run, or restore the original manifests."
     )
 
 
@@ -4186,7 +4220,7 @@ def _aggregate_fold_metrics(
 
 
 def _aggregate_fold_metrics_from_disk(
-    run_dir: Path, *, single_fold: bool, include_tune: bool
+    run_dir: Path, *, single_fold: bool, include_tune: bool, num_folds: int
 ) -> dict[str, float]:
     """Aggregate every fold's persisted ``metrics.json`` under ``run_dir``.
 
@@ -4198,11 +4232,32 @@ def _aggregate_fold_metrics_from_disk(
     if single_fold:
         metrics_paths = [run_dir / "metrics.json"]
     else:
-        metrics_paths = sorted(run_dir.glob("fold_*/metrics.json"))
+        _reject_undeclared_fold_dirs(run_dir, num_folds)
+        metrics_paths = [run_dir / f"fold_{i}" / "metrics.json" for i in range(num_folds)]
     per_fold = [
         json.loads(path.read_text()) for path in metrics_paths if path.is_file()
     ]
     return _summarize_fold_metric_dicts(per_fold, include_tune=include_tune)
+
+
+def _reject_undeclared_fold_dirs(run_dir: Path, num_folds: int) -> None:
+    """Refuse a run dir holding ``fold_*`` dirs beyond what the current splits declare.
+
+    Such a dir comes from a previous launch with a different split file; folding its
+    ``metrics.json`` into the summary would silently mix two protocols."""
+    stray = sorted(
+        path.name
+        for path in run_dir.glob("fold_*")
+        if path.is_dir()
+        and path.name[len("fold_"):].isdigit()
+        and int(path.name[len("fold_"):]) >= num_folds
+    )
+    if stray:
+        raise ValueError(
+            f"Run dir {run_dir} holds fold dir(s) {stray} that the current splits do not "
+            f"declare ({num_folds} fold(s)). They were written under a different split "
+            "file; start a fresh run or remove them before resuming."
+        )
 
 
 def _save_summary(summary: dict[str, float], path: Path) -> None:

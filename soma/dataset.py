@@ -172,6 +172,17 @@ class SampleRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+def _reject_missing_labels(df: pd.DataFrame) -> None:
+    """A blank ``label`` cell would silently become its own ``nan`` class."""
+    missing = df.loc[df["label"].isna(), "sample_id"].astype(str).tolist()
+    if missing:
+        raise ValueError(
+            f"Missing label for {len(missing)} sample(s): "
+            f"{missing[:20]}{' ...' if len(missing) > 20 else ''}. Every row needs a label; "
+            "drop unlabeled samples or fill the column."
+        )
+
+
 class Dataset:
     """Loads a dataset from a CSV with columns: sample_id, image_path, label.
 
@@ -217,6 +228,7 @@ class Dataset:
                 )
 
     def _build_samples(self, df: pd.DataFrame) -> dict[str, SampleRecord]:
+        _reject_missing_labels(df)
         meta_columns = [c for c in df.columns if c not in KNOWN_DATASET_COLUMNS]
         samples: dict[str, SampleRecord] = {}
         for _, row in df.iterrows():
@@ -367,6 +379,8 @@ class SegmentationManifest:
                 )
 
     def _build_samples(self, df: pd.DataFrame) -> dict[str, SampleRecord]:
+        if "label" in df.columns:
+            _reject_missing_labels(df)
         meta_columns = [c for c in df.columns if c not in KNOWN_DATASET_COLUMNS]
         samples: dict[str, SampleRecord] = {}
         for _, row in df.iterrows():
@@ -695,6 +709,40 @@ class FoldSplit:
         return sorted(self.tests.keys())
 
 
+def _warn_on_missing_class_coverage(folds: list[FoldSplit], dataset: Dataset) -> None:
+    """Warn when a fold's split lacks classes that other splits of the fold contain.
+
+    A tune or test split with a single class makes threshold-free metrics (AUROC,
+    AUPRC, ...) undefined; the trainer then fails fast on a monitored metric. This
+    warning names the offending fold/split up front so the split file can be fixed
+    before features are extracted. Only scalar labels are checked; datasets whose
+    samples carry no label (segmentation, detection, vector targets) are skipped.
+    """
+    labels = {sid: rec.label for sid, rec in dataset.samples.items()}
+    if not labels or any(label is None for label in labels.values()):
+        return
+    all_classes = {str(label) for label in labels.values()}
+    if len(all_classes) < 2:
+        return
+    for fold_index, fold in enumerate(folds):
+        named_splits = {"train": fold.train, "tune": fold.tune, **fold.tests}
+        for split_name, sample_ids in named_splits.items():
+            if not sample_ids:
+                continue
+            present = {str(labels[sid]) for sid in sample_ids if sid in labels}
+            missing = sorted(all_classes - present)
+            if missing:
+                logger.warning(
+                    "Fold %d split '%s' has no samples for class(es) %s (present: %s). "
+                    "Threshold-free metrics such as AUROC are undefined on a "
+                    "single-class split.",
+                    fold_index,
+                    split_name,
+                    missing,
+                    sorted(present),
+                )
+
+
 class Splits:
     """Loads user-provided splits from a CSV with columns: sample_id, split[, fold].
 
@@ -725,8 +773,21 @@ class Splits:
         if "fold" not in df.columns:
             df = df.copy()
             df["fold"] = 0
+        self._validate_fold_values(df)
         self._validate_values(df, dataset)
         self._folds = self._build_folds(df)
+        _warn_on_missing_class_coverage(self._folds, dataset)
+
+    def _validate_fold_values(self, df: pd.DataFrame) -> None:
+        # groupby("fold") silently drops rows whose fold cell is blank, so a sample
+        # would vanish from every fold without a trace.
+        blank = df.loc[df["fold"].isna(), "sample_id"].astype(str).tolist()
+        if blank:
+            raise ValueError(
+                f"Blank 'fold' value for {len(blank)} row(s) in {self._path}: "
+                f"{blank[:20]}{' ...' if len(blank) > 20 else ''}. Every row must name "
+                "its fold (or drop the column for a single-fold split file)."
+            )
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
         for col in REQUIRED_SPLITS_COLUMNS:
