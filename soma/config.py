@@ -649,6 +649,18 @@ class CacheConfig:
     # per-epoch read I/O. Folded into every cache key (guarded so legacy fp32 keys stay
     # byte-stable) so an fp16 cache and an fp32 cache never collide.
     dtype: str | None = None
+    # How much extraction work is committed to the cache at a time (identity signatures
+    # are recorded per chunk, so an interrupted run resumes from the last chunk instead
+    # of re-encoding everything unsigned). Unit follows the path: pre-cropped images on
+    # the tile-image path (default 1024), slides on the WSI paths (default 8 per GPU).
+    # Not part of any cache key.
+    commit_every: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.commit_every is not None and (
+            isinstance(self.commit_every, bool) or int(self.commit_every) < 1
+        ):
+            raise ValueError(f"cache.commit_every must be >= 1, got {self.commit_every!r}")
 
 
 _NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")

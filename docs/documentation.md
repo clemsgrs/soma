@@ -1,5 +1,19 @@
 # Project Documentation Notes
 
+- 2026-09-02: Extraction commits its cache in chunks. Identity signatures were recorded
+  only after every image/slide had been encoded, and unsigned payloads are deleted on the
+  next run, so an interrupted extraction restarted from zero. The tile-image path now
+  commits every ``cache.commit_every`` images (default 1024) and the WSI tile/hierarchical
+  paths every ``commit_every`` slides (default 8 per GPU; each chunk is one slide2vec
+  pipeline call, hence not one slide). The knob is not part of any cache key. The
+  tile-image cache key now resolves ``encoder.output_variant`` before keying (as the
+  pooled WSI path already did), so a null variant and the encoder's explicit default
+  share one cache; pre-cropped tile caches keyed under a null variant re-key, and the
+  old/new keys are logged so the directory can be renamed. WSI tile/slide/dense caches are
+  unaffected. Dense grid storage dtype now goes through the same resolver as the pooled
+  caches (``cache.dtype``, else the encoder's override, else the registry recommendation):
+  dense caches with ``cache.dtype: null`` on an encoder whose registry precision is fp16
+  re-key from fp32 to fp16; pin ``cache.dtype`` to keep an existing cache.
 - 2026-09-02: Fixed DTFD-MIL feature distillation. The top-k slice selected every
   instance of each pseudo-bag (and ``maxmin`` duplicated them), so tier 2 saw the whole
   bag instead of a distilled set. ``DTFDMIL`` now takes ``instances_per_group`` (default
