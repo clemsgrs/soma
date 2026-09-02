@@ -386,7 +386,12 @@ class TestTrainOneFold:
             message == "Fold 0: train=5 tune=1 test=1 | train empty dropped=1"
             for message in messages
         )
-        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+        # Dropping an empty-feature sample is routine, not a warning. (The one-sample
+        # tune split does draw soma.dataset's class-coverage warning, which is expected.)
+        assert not any(
+            record.levelno >= logging.WARNING and record.name == "soma.pipeline"
+            for record in caplog.records
+        )
 
     def test_errors_when_expected_feature_is_missing(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)

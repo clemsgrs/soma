@@ -462,3 +462,54 @@ def test_patient_leakage_detected_across_named_test_splits(
     splits = Splits(path, patient_dataset)
     with pytest.raises(ValueError, match="p1"):
         splits.validate_no_patient_leakage(patient_dataset)
+
+
+def test_blank_fold_cell_raises_listing_sample_ids(tmp_path: Path, dataset: Dataset):
+    df = pd.DataFrame(
+        {
+            "fold": [0, 0, None, 0, 0, 0],
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "train", "train", "train", "tune", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    # Previously groupby("fold") dropped s3 silently.
+    with pytest.raises(ValueError, match=r"Blank 'fold' value for 1 row\(s\).*\['s3'\]"):
+        Splits(path, dataset)
+
+
+def test_single_class_split_warns_naming_fold_and_split(
+    tmp_path: Path, dataset: Dataset, caplog
+):
+    # labels: s1=0 s2=0 s3=1 s4=1 s5=0 s6=1 -> tune holds only class 0.
+    df = pd.DataFrame(
+        {
+            "fold": [0] * 6,
+            "sample_id": ["s1", "s2", "s3", "s4", "s5", "s6"],
+            "split": ["train", "tune", "train", "train", "tune", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with caplog.at_level("WARNING", logger="soma.dataset"):
+        Splits(path, dataset)
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("Fold 0 split 'tune' has no samples for class(es) ['1']" in m for m in messages)
+    assert not any("split 'train'" in m for m in messages)
+
+
+def test_full_coverage_emits_no_warning(tmp_path: Path, dataset: Dataset, caplog):
+    # Every split holds both classes (s1,s2,s5 = 0; s3,s4,s6 = 1).
+    df = pd.DataFrame(
+        {
+            "fold": [0] * 6,
+            "sample_id": ["s1", "s3", "s2", "s4", "s5", "s6"],
+            "split": ["train", "train", "tune", "tune", "test", "test"],
+        }
+    )
+    path = tmp_path / "splits.csv"
+    df.to_csv(path, index=False)
+    with caplog.at_level("WARNING", logger="soma.dataset"):
+        Splits(path, dataset)
+    assert not [r for r in caplog.records if "no samples for class" in r.getMessage()]
