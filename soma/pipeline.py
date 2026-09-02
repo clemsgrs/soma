@@ -1218,12 +1218,15 @@ def train_one_fold(
         )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=adapted_dim, **aggregator.params)
-        if aggregator.name == "clam_mb" and task.name == "binary_classification":
-            raise ValueError(
-                "clam_mb does not support binary_classification; "
-                "use multiclass_classification or a different aggregator."
-            )
-        elif aggregator.name == "clam_mb" and task.name == "multiclass_classification":
+        if aggregator.name == "clam_mb":
+            # clam_mb emits one branch per class and needs the branch-aware head;
+            # every other task family (binary, ordinal, regression, survival, ...)
+            # has no per-class branch to route through.
+            if task.name != "multiclass_classification":
+                raise ValueError(
+                    f"clam_mb does not support task '{task.name}'; it only supports "
+                    "multiclass_classification. Use a different aggregator."
+                )
             head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
         else:
             head = task_cls(input_dim=agg.output_dim, **task_params)

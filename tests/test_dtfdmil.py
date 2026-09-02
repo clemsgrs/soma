@@ -74,9 +74,9 @@ class TestDTFDMIL:
         X = torch.cat([valid, padded], dim=1)
         mask = torch.tensor([[True, True, True, False, False, False, False, False]])
 
-        np.random.seed(123)
+        torch.manual_seed(123)
         masked_out = model(X, mask=mask)
-        np.random.seed(123)
+        torch.manual_seed(123)
         valid_out = model(valid)
 
         assert torch.isfinite(masked_out.bag_representation).all()
@@ -215,3 +215,79 @@ class TestDTFDMIL:
             labels.float().unsqueeze(1).expand_as(pseudo_pred),
         )
         assert torch.isclose(loss, expected)
+
+
+class TestDTFDMILDistillation:
+    """Top-k distillation and partition determinism (previously the top-k slice
+    selected every instance of the pseudo-bag, and 'maxmin' duplicated it)."""
+
+    @staticmethod
+    def _distilled_count(model, X) -> int:
+        seen = {}
+        original = model.t2_pool.forward
+
+        def spy(pseudo_feat, *args, **kwargs):
+            seen["n"] = pseudo_feat.size(1)
+            return original(pseudo_feat, *args, **kwargs)
+
+        model.t2_pool.forward = spy
+        model(X)
+        return seen["n"]
+
+    def test_default_distills_one_instance_per_group_and_direction(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        X = torch.randn(1, 12, 8)
+        maxmin = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=4, distill_mode="maxmin")
+        assert self._distilled_count(maxmin, X) == 4 * 2
+        max_only = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=4, distill_mode="max")
+        assert self._distilled_count(max_only, X) == 4
+
+    def test_instances_per_group_is_honoured_and_clamped(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        X = torch.randn(1, 12, 8)  # 4 groups of 3
+        model = DTFDMIL(
+            input_dim=8, hidden_dim=4, n_groups=4, distill_mode="max", instances_per_group=2
+        )
+        assert self._distilled_count(model, X) == 4 * 2
+        clamped = DTFDMIL(
+            input_dim=8, hidden_dim=4, n_groups=4, distill_mode="max", instances_per_group=10
+        )
+        assert self._distilled_count(clamped, X) == 12  # every instance, no duplicates
+
+    def test_instances_per_group_must_be_positive(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        with pytest.raises(ValueError, match="instances_per_group"):
+            DTFDMIL(input_dim=8, hidden_dim=4, instances_per_group=0)
+
+    def test_eval_partition_is_deterministic_without_seeding(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).eval()
+        X = torch.randn(1, 9, 8)
+        first = model(X)
+        second = model(X)
+        assert torch.equal(first.bag_representation, second.bag_representation)
+        assert torch.equal(
+            first.auxiliary["pseudo_predictions"], second.auxiliary["pseudo_predictions"]
+        )
+
+    def test_train_partition_follows_torch_seed(self):
+        from soma.aggregators.mil.dtfdmil import DTFDMIL
+
+        torch.manual_seed(0)
+        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).train()
+        X = torch.randn(1, 9, 8)
+        torch.manual_seed(7)
+        a = model(X).auxiliary["pseudo_predictions"]
+        torch.manual_seed(7)
+        b = model(X).auxiliary["pseudo_predictions"]
+        torch.manual_seed(8)
+        c = model(X).auxiliary["pseudo_predictions"]
+        assert torch.equal(a, b)
+        assert not torch.equal(a, c)
