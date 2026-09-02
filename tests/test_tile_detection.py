@@ -249,3 +249,16 @@ def test_max_image_pixels_not_disabled_globally(tmp_path):
     )
     tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
     assert Image.MAX_IMAGE_PIXELS is not None  # restored, not left at None
+
+
+def test_blank_spacing_is_named_instead_of_listed_as_nan(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        rois=[
+            {"sample_id": "r0", "spacing_at_level_0": 0.25},
+            {"sample_id": "r1"},  # blank cell in a column other rows populate
+        ],
+        splits=[{"sample_id": "r0", "split": "train"}, {"sample_id": "r1", "split": "test"}],
+    )
+    with pytest.raises(ValueError, match=r"1 ROI row\(s\) have a blank spacing_at_level_0.*r1"):
+        tile_detection_manifest(curated, tmp_path / "out", tile_size=128, overlap=32)

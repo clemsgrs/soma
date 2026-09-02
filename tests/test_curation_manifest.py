@@ -147,6 +147,20 @@ def test_write_manifest_supervision_column_by_dataset_type(tmp_path: Path):
     assert list(pd.read_csv(det.dataset_csv).columns)[:3] == ["sample_id", "image_path", "points_path"]
 
 
+def test_write_manifest_rejects_duplicate_sample_ids(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"duplicated sample_id value\(s\): \['s0'\]"):
+        write_manifest(
+            tmp_path / "out",
+            dataset_type="tile",
+            dataset_rows=[
+                {"sample_id": "s0", "image_path": "/a.png", "label": 1},
+                {"sample_id": "s0", "image_path": "/b.png", "label": 0},
+            ],
+            split_rows=[{"sample_id": "s0", "split": "train"}],
+            summary={},
+        )
+
+
 def test_write_manifest_rejects_missing_supervision_column(tmp_path: Path):
     with pytest.raises(ValueError, match="missing required column"):
         write_manifest(
@@ -395,7 +409,7 @@ def test_curated_manifest_lives_in_neutral_module():
 
 def test_all_curators_emit_identical_core_schema(tmp_path: Path):
     eva = curate_eva_patch_dataset(
-        "mhist", _make_mhist_raw(tmp_path / "mhist_raw"), tmp_path / "eva", tune_fraction=0.5
+        "mhist", _make_mhist_raw(tmp_path / "mhist_raw"), tmp_path / "eva"
     )
     ocelot = curate_ocelot_detection(_make_ocelot_raw(tmp_path / "oce_raw"), tmp_path / "oce")
     overview, beetle_root = _make_beetle_raw(tmp_path / "beetle_raw")
@@ -436,8 +450,8 @@ def test_beetle_curator_emits_dataset_csv_not_manifest_csv(tmp_path: Path):
 
 def test_recuration_is_byte_identical(tmp_path: Path):
     raw = _make_mhist_raw(tmp_path / "mhist_raw")
-    a = curate_eva_patch_dataset("mhist", raw, tmp_path / "a", tune_fraction=0.5)
-    b = curate_eva_patch_dataset("mhist", raw, tmp_path / "b", tune_fraction=0.5)
+    a = curate_eva_patch_dataset("mhist", raw, tmp_path / "a")
+    b = curate_eva_patch_dataset("mhist", raw, tmp_path / "b")
 
     for name in ("dataset.csv", "splits.csv", "summary.json"):
         assert (a.dataset_csv.parent / name).read_bytes() == (

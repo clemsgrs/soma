@@ -1,5 +1,18 @@
 # Project Documentation Notes
 
+- 2026-09-02: EVA curation follows the official protocol only. The ``tune_fraction``
+  knob (API and ``--tune-fraction`` CLI flag) and the stratified tune carve-out are gone:
+  every EVA train sample is soma ``train``; a dataset without an EVA test split reports on
+  EVA validation as soma ``test`` (select with ``training.tune_is_test: true``), one with
+  a real test split keeps EVA val as ``tune``. BACH curation refuses a photo set that is
+  not exactly the official 400 files, since the split index ranges address positions in
+  the sorted list. Curation guards: ``write_manifest`` rejects duplicated ``sample_id``
+  values; MIDOG derives the sample id through one helper and falls back to it when
+  ``patient_id`` is present but null (previously every image collapsed onto patient
+  ``"None"``); tiling names ROI rows with a blank ``spacing_at_level_0`` instead of
+  listing ``nan``; the Gleason patch writer refuses non-square cores (its enumeration
+  is a transposed walk that is only harmless on square TMA cores); the BEETLE split
+  rotation picks the next *existing* fold and rejects fewer than two folds.
 - 2026-09-02: Benchmark registry hardening. Reference/results tables now treat every
   column left of ``metric`` as a key column (one rule for both tables), a relative
   tolerance band uses ``|expected|`` so a negative expected value cannot yield a negative

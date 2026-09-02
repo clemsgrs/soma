@@ -186,6 +186,16 @@ def write_manifest(
             f"supervision column ({supervision!r}), but also contain {present_forbidden}."
         )
     validate_spacing_declaration_columns(dataset_df)
+    duplicated = dataset_df.loc[
+        dataset_df["sample_id"].astype(str).duplicated(), "sample_id"
+    ].astype(str)
+    if not duplicated.empty:
+        dupes = sorted(set(duplicated))
+        raise ValueError(
+            f"dataset rows contain {len(dupes)} duplicated sample_id value(s): "
+            f"{dupes[:20]}{' ...' if len(dupes) > 20 else ''}. Each sample_id names one "
+            "cache payload, so a duplicate would silently overwrite another sample."
+        )
 
     matrix: np.ndarray | None = None
     if is_spatial:

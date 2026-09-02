@@ -177,6 +177,8 @@ def select_subset(rows: list[dict], n: int | None) -> list[dict]:
     """Deterministically pick ~n dev WSIs balanced across folds."""
     if n is None:
         return rows
+    if not rows:
+        return []
     by_fold: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
         by_fold[r["validation_fold"]].append(r)
@@ -236,9 +238,15 @@ def build_split_rows(dataset_rows: list[dict]) -> list[dict]:
     fold_ids = sorted({r["validation_fold"] for r in dataset_rows})
     fold_nums = sorted(int(f.replace("fold", "")) for f in fold_ids)
     n_folds = len(fold_nums)
+    if n_folds < 2:
+        raise ValueError(
+            f"BEETLE split rotation needs at least two validation folds, found {fold_ids}."
+        )
     split_rows: list[dict] = []
-    for k in fold_nums:
-        tune_fold = (k + 1) % n_folds
+    for position, k in enumerate(fold_nums):
+        # Rotate by position so the tune fold always exists even when the fold numbers
+        # are not a contiguous 0..n-1 range.
+        tune_fold = fold_nums[(position + 1) % n_folds]
         for r in dataset_rows:
             wf = int(r["validation_fold"].replace("fold", ""))
             if wf == k:

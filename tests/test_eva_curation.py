@@ -111,7 +111,6 @@ def test_curate_mhist_preserves_eva_binary_targets_and_reserves_test(tmp_path: P
         "mhist",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.5,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv).sort_values("sample_id")
@@ -158,10 +157,10 @@ def test_curate_mhist_preserves_eva_binary_targets_and_reserves_test(tmp_path: P
     assert splits_df.to_dict("records") == [
         {"sample_id": "mhist_images_hp_test", "split": "test", "fold": 0},
         {"sample_id": "mhist_images_hp_train_0", "split": "train", "fold": 0},
-        {"sample_id": "mhist_images_hp_train_1", "split": "tune", "fold": 0},
+        {"sample_id": "mhist_images_hp_train_1", "split": "train", "fold": 0},
         {"sample_id": "mhist_images_ssa_test", "split": "test", "fold": 0},
         {"sample_id": "mhist_images_ssa_train_0", "split": "train", "fold": 0},
-        {"sample_id": "mhist_images_ssa_train_1", "split": "tune", "fold": 0},
+        {"sample_id": "mhist_images_ssa_train_1", "split": "train", "fold": 0},
     ]
 
     dataset = Dataset(manifest.dataset_csv)
@@ -194,7 +193,6 @@ def test_curate_mhist_allows_full_train_for_eva_reproduction(tmp_path: Path):
         "mhist",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.0,
     )
 
     splits_df = pd.read_csv(manifest.splits_csv)
@@ -255,7 +253,6 @@ def test_curate_breakhis_uses_eva_40x_patient_split(tmp_path: Path):
         "breakhis",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.0,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -288,7 +285,6 @@ def test_curate_crc_splits_eva_train_and_reserves_eva_val_as_test(tmp_path: Path
         "crc",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=1 / 3,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -297,8 +293,9 @@ def test_curate_crc_splits_eva_train_and_reserves_eva_val_as_test(tmp_path: Path
     assert set(dataset_df["class_name"]) == set(CRC_CLASS_NAMES)
     assert set(dataset_df.loc[dataset_df["class_name"] == "ADI", "label"]) == {0}
     assert set(dataset_df.loc[dataset_df["class_name"] == "BACK", "label"]) == {1}
-    assert len(splits_df[splits_df["split"] == "train"]) == 18
-    assert len(splits_df[splits_df["split"] == "tune"]) == 9
+    # Official protocol: every EVA train sample trains, EVA val is the reported test split.
+    assert len(splits_df[splits_df["split"] == "train"]) == 27
+    assert len(splits_df[splits_df["split"] == "tune"]) == 0
     assert len(splits_df[splits_df["split"] == "test"]) == 9
 
     dataset = Dataset(manifest.dataset_csv)
@@ -328,7 +325,6 @@ def test_curate_crc_accepts_original_subdirectories(tmp_path: Path):
         "crc",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=1 / 3,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -375,7 +371,6 @@ def test_curate_gleason_arvaniti_reports_on_validation_and_ignores_test_patches(
         "gleason_arvaniti",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.0,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv).sort_values("sample_id")
@@ -407,7 +402,7 @@ def test_gleason_materializes_from_extracted_section_dirs(tmp_path: Path):
     assert not (raw_root / "train_validation_patches_750").exists()
 
     manifest = curate_eva_patch_dataset(
-        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        "gleason_arvaniti", raw_root, tmp_path / "curated"
     )
 
     # Patches were materialized in place, one per synthetic core, with the mask's grade.
@@ -441,7 +436,7 @@ def test_gleason_materializes_from_tarball_archives(tmp_path: Path):
         tar.add(src / "Gleason_masks_train", arcname="Gleason_masks_train")
 
     manifest = curate_eva_patch_dataset(
-        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        "gleason_arvaniti", raw_root, tmp_path / "curated"
     )
 
     patches = sorted((raw_root / "train_validation_patches_750").glob("**/*.jpg"))
@@ -465,7 +460,7 @@ def test_gleason_prefers_existing_patches_over_raw_materialization(tmp_path: Pat
     )
 
     manifest = curate_eva_patch_dataset(
-        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        "gleason_arvaniti", raw_root, tmp_path / "curated"
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -483,7 +478,7 @@ def test_gleason_materialization_clears_stale_partial(tmp_path: Path):
     (stale / "leftover" / "junk_patch_0_class_9.jpg").write_bytes(b"")
 
     curate_eva_patch_dataset(
-        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        "gleason_arvaniti", raw_root, tmp_path / "curated"
     )
 
     # A crashed run's staging is discarded; only freshly materialized patches remain.
@@ -502,7 +497,7 @@ def test_gleason_raises_without_patches_or_raw(tmp_path: Path):
     raw_root.mkdir()
     with pytest.raises(FileNotFoundError, match="Harvard Dataverse"):
         curate_eva_patch_dataset(
-            "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+            "gleason_arvaniti", raw_root, tmp_path / "curated"
         )
 
 
@@ -511,7 +506,7 @@ def test_gleason_raises_when_masks_missing(tmp_path: Path):
     _make_gleason_core(raw_root / "ZT76_39_A", "ZT76_39_A_1_1")  # cores present, masks absent
     with pytest.raises(FileNotFoundError, match="Harvard Dataverse"):
         curate_eva_patch_dataset(
-            "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+            "gleason_arvaniti", raw_root, tmp_path / "curated"
         )
 
 
@@ -543,7 +538,7 @@ def test_gleason_materializes_zt76_to_eva_validation_count(tmp_path: Path):
     )
 
     manifest = curate_eva_patch_dataset(
-        "gleason_arvaniti", raw_root, tmp_path / "curated", tune_fraction=0.0
+        "gleason_arvaniti", raw_root, tmp_path / "curated"
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -561,7 +556,6 @@ def test_curate_patch_camelyon_accepts_split_class_folders(tmp_path: Path):
         "patch_camelyon",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.0,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -596,7 +590,7 @@ def test_curate_patch_camelyon_materializes_hdf5_when_folders_absent(tmp_path: P
     _write_pcam_hdf5(raw_root, _tiny_pcam_splits())
 
     manifest = curate_eva_patch_dataset(
-        "patch_camelyon", raw_root, tmp_path / "curated", tune_fraction=0.0
+        "patch_camelyon", raw_root, tmp_path / "curated"
     )
 
     # HDF5 was materialized into the class-folder layout under the (writable) raw root,
@@ -632,14 +626,14 @@ def test_curate_patch_camelyon_hdf5_materialization_is_idempotent(tmp_path: Path
     _write_pcam_hdf5(raw_root, _tiny_pcam_splits())
 
     first = curate_eva_patch_dataset(
-        "patch_camelyon", raw_root, tmp_path / "curated_a", tune_fraction=0.0
+        "patch_camelyon", raw_root, tmp_path / "curated_a"
     )
     materialized = raw_root / "train" / "normal" / "image_0.png"
     mtime_after_first = materialized.stat().st_mtime_ns
 
     # Second curation finds the folders present and must not re-decode the HDF5.
     second = curate_eva_patch_dataset(
-        "patch_camelyon", raw_root, tmp_path / "curated_b", tune_fraction=0.0
+        "patch_camelyon", raw_root, tmp_path / "curated_b"
     )
 
     assert materialized.stat().st_mtime_ns == mtime_after_first
@@ -653,7 +647,7 @@ def test_curate_patch_camelyon_resumes_after_interrupted_final_split(tmp_path: P
     _write_pcam_hdf5(raw_root, _tiny_pcam_splits())
 
     curate_eva_patch_dataset(
-        "patch_camelyon", raw_root, tmp_path / "curated_a", tune_fraction=0.0
+        "patch_camelyon", raw_root, tmp_path / "curated_a"
     )
 
     # Simulate a crash while the *last* split was being written: its final directory is
@@ -666,7 +660,7 @@ def test_curate_patch_camelyon_resumes_after_interrupted_final_split(tmp_path: P
     (stale / "image_0.png").write_bytes(b"corrupt")
 
     manifest = curate_eva_patch_dataset(
-        "patch_camelyon", raw_root, tmp_path / "curated_b", tune_fraction=0.0
+        "patch_camelyon", raw_root, tmp_path / "curated_b"
     )
 
     assert not (raw_root / "test.partial").exists()
@@ -713,7 +707,6 @@ def test_curate_bach_uses_eva_index_ranges_with_train_split_recut(tmp_path: Path
         "bach",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.25,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
@@ -721,8 +714,8 @@ def test_curate_bach_uses_eva_index_ranges_with_train_split_recut(tmp_path: Path
 
     assert len(dataset_df) == 400
     assert len(splits_df[splits_df["split"] == "test"]) == 132
-    assert len(splits_df[splits_df["split"] == "tune"]) > 0
-    assert len(splits_df[splits_df["split"] == "train"]) + len(splits_df[splits_df["split"] == "tune"]) == 268
+    assert len(splits_df[splits_df["split"] == "tune"]) == 0
+    assert len(splits_df[splits_df["split"] == "train"]) == 268
     assert set(dataset_df["label"]) == {0, 1, 2, 3}
 
     dataset = Dataset(manifest.dataset_csv)
@@ -745,14 +738,32 @@ def test_curate_bach_accepts_pre_split_train_test_layout(tmp_path: Path):
         "bach",
         raw_root,
         tmp_path / "curated",
-        tune_fraction=0.5,
     )
 
     dataset_df = pd.read_csv(manifest.dataset_csv)
     splits_df = pd.read_csv(manifest.splits_csv)
 
     assert len(dataset_df) == 12
-    assert len(splits_df[splits_df["split"] == "train"]) == 4
-    assert len(splits_df[splits_df["split"] == "tune"]) == 4
+    assert len(splits_df[splits_df["split"] == "train"]) == 8
+    assert len(splits_df[splits_df["split"] == "tune"]) == 0
     assert len(splits_df[splits_df["split"] == "test"]) == 4
     assert dataset_df["image_path"].str.contains("/train/|/test/").all()
+
+
+def test_curate_bach_rejects_a_partial_photo_set(tmp_path: Path):
+    """The EVA index ranges address positions in the sorted 400-file list, so a
+    partial download would silently shift every split assignment."""
+    raw_root = tmp_path / "bach_raw"
+    photos = raw_root / "ICIAR2018_BACH_Challenge" / "Photos"
+    for class_name in ("Benign", "InSitu", "Invasive", "Normal"):
+        for i in range(99):
+            _touch(photos / class_name / f"{class_name}_{i:03d}.tif")
+
+    with pytest.raises(ValueError, match="expected exactly 400 photos"):
+        curate_eva_patch_dataset("bach", raw_root, tmp_path / "curated")
+
+
+def test_curator_has_no_tune_fraction_knob():
+    import inspect
+
+    assert "tune_fraction" not in inspect.signature(curate_eva_patch_dataset).parameters
