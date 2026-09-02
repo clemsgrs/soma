@@ -47,7 +47,8 @@ from slide2vec.encoders.registry import resolve_encoder_output
 _SUPPORTED_KINDS = ("tile", "hierarchical", "slide", "patient")
 
 
-def _resolved_output_variant(encoder_name: str, requested: str | None) -> str:
+def resolved_output_variant(encoder_name: str, requested: str | None) -> str:
+    """Resolve ``requested`` (``None`` = the encoder's default) to a concrete variant name."""
     info = encoder_registry.info(encoder_name)
     resolved = resolve_encoder_output(
         encoder_name,
@@ -120,7 +121,7 @@ def compute_cache_key(
 
     if kind in ("tile", "hierarchical"):
         resolved_prep = _resolve(encoder_name, preprocessing, has_precomputed_masks=has_precomputed_masks)
-        ov = _resolved_output_variant(encoder_name, output_variant)
+        ov = resolved_output_variant(encoder_name, output_variant)
         exec_for_cache = _exec_with_output_variant(
             execution if execution is not None else EncoderConfig(name=encoder_name),
             ov,
@@ -139,7 +140,7 @@ def compute_cache_key(
     resolved_tile_prep = _resolve(
         resolved_tile_encoder, preprocessing, has_precomputed_masks=has_precomputed_masks,
     )
-    tile_ov = _resolved_output_variant(resolved_tile_encoder, output_variant)
+    tile_ov = resolved_output_variant(resolved_tile_encoder, output_variant)
     tile_exec = _exec_with_output_variant(
         execution if execution is not None else EncoderConfig(name=resolved_tile_encoder),
         tile_ov,
@@ -156,7 +157,7 @@ def compute_cache_key(
     }
     # The slide/patient stage runs the cache's own encoder over the upstream
     # features — no preprocessing of its own, execution defaults from registry.
-    stage_ov = _resolved_output_variant(encoder_name, None)
+    stage_ov = resolved_output_variant(encoder_name, None)
     stage_exec = _exec_with_output_variant(EncoderConfig(name=encoder_name), stage_ov)
     builder = build_slide_cache_key if kind == "slide" else build_patient_cache_key
     encoder_kw = "slide_encoder_name" if kind == "slide" else "patient_encoder_name"

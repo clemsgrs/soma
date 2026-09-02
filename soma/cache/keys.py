@@ -355,6 +355,24 @@ def resolve_output_dtype(dtype: str | None, precision: str | None) -> str:
     return "fp16" if str(precision or "").lower() in _FP16_ALIASES else "fp32"
 
 
+def resolve_cache_dtype(
+    cache_dtype: str | None,
+    encoder_config: EncoderConfig,
+    *,
+    encoder_name: str | None = None,
+) -> str:
+    """Resolve the on-disk dtype for a cache keyed on ``encoder_config``.
+
+    The one entry point for the pooled, tile-image and dense paths: an explicit
+    ``cache.dtype`` wins; otherwise the dtype follows the encoder's resolved compute
+    precision (``encoder.precision`` override, else the registry recommendation, else
+    fp32). ``execution.precision`` is deliberately not consulted so the key stays
+    stable across runtime overrides; pin ``cache.dtype`` when the storage dtype matters.
+    """
+    precision = _resolve_encoder_precision(encoder_config, encoder_name=encoder_name)
+    return resolve_output_dtype(cache_dtype, precision)
+
+
 def build_dense_cache_key(
     *,
     tile_encoder_name: str,
