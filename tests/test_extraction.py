@@ -33,6 +33,7 @@ _TEST_TILE = "_cutover_tile"
 _TEST_SLIDE = "_cutover_slide"
 _TEST_PATIENT = "_cutover_patient"
 _TEST_MULTI = "_cutover_multi_spacing"
+_TEST_SLIDE_VARIANTS = "_cutover_slide_variants"
 _TISSUE_METHOD_SENTINEL = object()
 
 
@@ -87,6 +88,22 @@ def _register_test_encoders() -> None:
                 "supported_spacing_um": 0.5,
                 "precision": "fp16",
                 "source": "test/cutover-patient",
+            },
+        )
+    if _TEST_SLIDE_VARIANTS not in encoder_registry:
+        # Mirrors PRISM2: a slide encoder with a base and a wider named variant.
+        encoder_registry.register(
+            _TEST_SLIDE_VARIANTS,
+            object,
+            metadata={
+                "level": "slide",
+                "tile_encoder": _TEST_TILE,
+                "tile_encoder_output_variant": "default",
+                "output_variants": {"base": {"encode_dim": 8}, "wide": {"encode_dim": 16}},
+                "default_output_variant": "base",
+                "supported_spacing_um": 0.5,
+                "precision": "fp16",
+                "source": "test/cutover-slide-variants",
             },
         )
     if _TEST_MULTI not in encoder_registry:
@@ -2186,7 +2203,8 @@ def test_extract_slide_features_preserves_requested_tile_artifact_regime(
     assert (tmp_path / "features" / "tile_embeddings" / "s0.pt").exists() is save_tile_features
 
 
-def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path: Path):
+def test_slide_encoder_runtime_forwards_resolved_output_variant(tmp_path: Path):
+    """Runtime gets the resolved variant; slide2vec validation gets the requested override."""
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
@@ -2212,7 +2230,7 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
         preprocessing,
         execution,
     ):
-        assert output_variant is None
+        assert output_variant == "default"
         artifacts = []
         for slide in slides:
             artifacts.append(
@@ -2229,7 +2247,7 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
         preprocessing,
         execution,
     ):
-        assert output_variant is None
+        assert output_variant == "default"
         slide_artifacts = []
         for artifact in tile_artifacts:
             slide_artifacts.append(
@@ -3439,7 +3457,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
     assert store.load("s0").shape == (2, 8)
 
 
-def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_override(tmp_path: Path):
+def test_multi_gpu_slide_cache_population_forwards_resolved_output_variant(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
     csv_path = tmp_path / "dataset-two.csv"
     pd.DataFrame(
@@ -3484,7 +3502,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         *, output_variant, output_dir, shard_payloads_by_rank, on_shard_complete, on_progress=None, **kwargs
     ):
         # Two slides + num_gpus=2 ⇒ multi-GPU sharded aggregation. The slide stage
-        # must receive the resolved runtime output variant (None), not an override.
+        # must receive the resolved output variant so the workers compute it.
         captured_output_variants.append(output_variant)
         slide_dir = Path(output_dir) / "slide_embeddings"
         slide_dir.mkdir(parents=True, exist_ok=True)
@@ -3518,7 +3536,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
             tiling_dir=tmp_path / "tiling",
             num_gpus=2,
         )
-    assert captured_output_variants == [None]
+    assert captured_output_variants == ["default"]
 
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
@@ -3586,10 +3604,119 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
             num_gpus=2,
         )
 
-    assert captured_output_variants == [None]
+    assert captured_output_variants == ["default"]
     assert store.is_slide_level is True
     assert store.load("s0").shape == (8,)
     assert all(call.kwargs["output_variant"] == "default" for call in resolve_slide_cache.call_args_list)
+
+
+def test_slide_extraction_computes_requested_non_default_output_variant(tmp_path: Path):
+    """A named slide variant must reach the aggregation model, not just the cache key."""
+    dataset = _make_dataset(tmp_path)
+    extractor = _PooledFeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_SLIDE_VARIANTS, output_variant="wide", save_tile_features=False),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        output_root=tmp_path,
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+    captured_output_variants: list[str | None] = []
+
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ]
+
+    def _fake_aggregate_tiles(*, output_variant, tile_artifacts, execution, **kwargs):
+        captured_output_variants.append(output_variant)
+        return [
+            _artifact(
+                sample_id=str(art.sample_id),
+                output_dir=Path(execution.output_dir),
+                kind="slide_embeddings",
+                tensor=torch.ones(16),
+            )
+            for art in tile_artifacts
+        ]
+
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
+    ), patch(
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
+    ), patch.object(_PooledFeatureExtractor, "preprocess", autospec=True, return_value=None):
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
+
+    assert captured_output_variants == ["wide"]
+    recorded = pd.read_csv(tmp_path / "features" / "process_list.csv").set_index("sample_id")
+    assert recorded.loc["s0", "output_variant"] == "wide"
+    assert int(recorded.loc["s0", "feature_dim"]) == 16
+    assert store.load("s0").shape == (16,)
+
+
+def test_single_variant_slide_encoder_passes_runtime_validation(tmp_path: Path):
+    """PRISM-style encoders (one fixed variant) must not trip slide2vec's override guard."""
+    dataset = _make_dataset(tmp_path)
+    extractor = _PooledFeatureExtractor(
+        dataset,
+        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        output_root=tmp_path,
+    )
+    loaded = [
+        LoadedTiling(
+            slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
+            tiling_result=_tiling(),
+        )
+    ]
+
+    def _fake_embed_tile_artifacts(**kwargs):
+        execution = kwargs["execution"]
+        return [
+            _artifact(
+                sample_id="s0",
+                output_dir=Path(execution.output_dir),
+                kind="tile_embeddings",
+                tensor=torch.ones(2, 8),
+            )
+        ]
+
+    def _fake_aggregate_tiles(*, tile_artifacts, execution, **kwargs):
+        return [
+            _artifact(
+                sample_id=str(art.sample_id),
+                output_dir=Path(execution.output_dir),
+                kind="slide_embeddings",
+                tensor=torch.ones(8),
+            )
+            for art in tile_artifacts
+        ]
+
+    # Deliberately leaves ``_validate_runtime`` unpatched.
+    with patch("soma.extraction.extractor.load_tilings", return_value=loaded), patch(
+        "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
+        side_effect=_fake_embed_tile_artifacts,
+    ), patch(
+        "soma.extraction.extractor._aggregate_tiles",
+        side_effect=_fake_aggregate_tiles,
+    ), patch.object(_PooledFeatureExtractor, "preprocess", autospec=True, return_value=None):
+        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
+
+    assert store.load("s0").shape == (8,)
 
 
 def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
