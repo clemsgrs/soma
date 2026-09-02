@@ -114,10 +114,9 @@ def _write_comparison_manifest(
     run_dirs: list[Path],
 ) -> Path:
     """Write manifest.json describing the runs included in the comparison."""
-    try:
-        soma_version = version("soma")
-    except PackageNotFoundError:
-        soma_version = None
+    # The distribution is ``soma-pathology``; ``version("soma")`` never resolved and the
+    # manifest always recorded null. ``soma.__version__`` already carries the fallback.
+    from soma import __version__ as soma_version
 
     runs_payload = []
     for run, run_dir, label in zip(

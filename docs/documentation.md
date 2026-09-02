@@ -1,5 +1,18 @@
 # Project Documentation Notes
 
+- 2026-09-02: **Version 1.13.0.** Closes out the codebase review (issue #443): several
+  behaviour breaks land together — experiment identity v2, EVA curation without the tune
+  fraction knob, the DTFD-MIL distillation fix, the resolved tile-image cache key and the
+  sample-std / nan-metric reporting described in the entries above. Reporting: the
+  comparison ``manifest.json`` records ``soma.__version__`` (``version("soma")`` never
+  resolved the ``soma-pathology`` distribution and always wrote null) and report data
+  loading tolerates ``task: null`` (task-free representation runs). Heatmaps: the
+  no-attention skip list uses the registry names ``mean_pool`` / ``max_pool`` (the old
+  ``meanpool`` / ``maxpool`` never matched, so those runs fell through to a failing model
+  rebuild), the ``loss`` task param is stripped before rebuilding the head, and the
+  slide's level downsamples are read while the reader is open. Packaging: ``torchvision``
+  (imported by the dense augmentation and segmentation loaders) is a core dependency and
+  ``xgboost`` lives in a new ``pixel`` extra with a lazy-import error naming it.
 - 2026-09-02: EVA curation follows the official protocol only. The ``tune_fraction``
   knob (API and ``--tune-fraction`` CLI flag) and the stratified tune carve-out are gone:
   every EVA train sample is soma ``train``; a dataset without an EVA test split reports on

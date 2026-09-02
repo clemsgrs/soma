@@ -197,7 +197,9 @@ def load_run_data(run_dir: str | Path) -> RunData:
     summary_path = run_dir / "summary.json"
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
 
-    task_family = config.get("task", {}).get("name", "binary_classification")
+    # ``task: null`` is a valid persisted config (task-free representation runs), so the
+    # block must be treated as absent rather than indexed.
+    task_family = (config.get("task") or {}).get("name", "binary_classification")
     evaluation = config.get("evaluation", {}) or {}
     metrics = resolve_metrics(task_family, evaluation.get("metrics") or [])
     subgroup_columns = list((evaluation.get("subgroups", {}) or {}).get("columns", []) or [])

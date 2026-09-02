@@ -16,6 +16,10 @@ soma requires Python 3.11 or later:
 
    pip install soma-pathology
 
+Optional extras add the dependencies of specific paths: ``[pixel]`` for the
+``xgboost`` pixel classifier, ``[croma]`` for the CRoMa robustness benchmark,
+``[hest]`` for HEST curation, for example ``pip install 'soma-pathology[pixel]'``.
+
 The first run downloads the selected model weights. Feature extraction is
 faster on a GPU, but a GPU is not required. ``phikon`` uses publicly available
 weights and needs no access token.

@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # Aggregators whose tile_attention is already post-softmax (don't re-apply softmax).
 _POST_SOFTMAX_AGGREGATORS = {"dsmil"}
 
-# Aggregators with no per-tile attention — skip silently.
-_NO_ATTENTION_AGGREGATORS = {"transmil", "meanpool", "maxpool"}
+# Aggregators with no per-tile attention — skip silently (registry names).
+_NO_ATTENTION_AGGREGATORS = {"transmil", "mean_pool", "max_pool"}
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +96,9 @@ def save_attention(
     evaluation_cfg = config.evaluation
     task_cls = task_registry.get(task_cfg.name)
     task_params = {**task_cls.auto_params(dataset), **task_cfg.params, "metrics": evaluation_cfg.metrics}
+    # ``loss`` selects the training objective (pipeline-level), not a head kwarg; the
+    # pipeline strips it before constructing the head and so must this reconstruction.
+    task_params.pop("loss", None)
     feature_dim = feature_store.feature_dim
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -360,9 +363,10 @@ def render_attention_heatmap(
         vis_level = select_level_for_downsample(seg_downsample, slide.level_downsamples)
         vis_size = slide.level_dimensions[vis_level]  # (W, H)
         canvas = slide.read_region((0, 0), vis_level, vis_size).copy()  # (H, W, 3) uint8
+        # Read while the handle is open: a closed reader may no longer expose its levels.
+        ds_x, ds_y = slide.level_downsamples[vis_level]
 
     vis_w, vis_h = vis_size
-    ds_x, ds_y = slide.level_downsamples[vis_level]
     scale_x = 1.0 / ds_x
     scale_y = 1.0 / ds_y
     tile_vis_w = max(1, round(tile_size_lv0 * scale_x))

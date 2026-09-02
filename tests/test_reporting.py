@@ -692,3 +692,17 @@ def test_step_budget_report_shows_budget_and_derived_epochs(tmp_path: Path) -> N
     assert ">5<" in html
     assert "Derived epochs" in html
     assert ">2<" in html
+
+
+def test_load_run_data_tolerates_null_task_block(tmp_path: Path) -> None:
+    """A task-free run persists ``task: null``; loading must not index into None."""
+    import yaml as _yaml
+
+    run_dir = _make_run_dir(tmp_path)
+    config_path = run_dir / "config.yaml"
+    config = _yaml.safe_load(config_path.read_text())
+    config["task"] = None
+    config_path.write_text(_yaml.safe_dump(config))
+
+    run_data = load_run_data(run_dir)
+    assert run_data is not None

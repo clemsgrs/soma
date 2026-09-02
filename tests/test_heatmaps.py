@@ -448,7 +448,7 @@ def test_render_heatmaps_skips_unknown_sample(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_save_attention_skips_no_attention_aggregator(tmp_path):
+def test_save_attention_skips_no_attention_aggregator(tmp_path, caplog):
     """TransMIL/MeanPool/MaxPool are skipped without error."""
     from soma.config import (
         AggregatorConfig, CacheConfig, EncoderConfig, HeatmapConfig,
@@ -471,8 +471,14 @@ def test_save_attention_skips_no_attention_aggregator(tmp_path):
 
     dataset = MagicMock()
 
-    # Should return without error, writing nothing
-    save_attention(tmp_path, dataset, feature_store)
+    # Skipped up front by registry name (the old "meanpool" spelling never matched, so
+    # the run fell through to a model rebuild that failed on a missing checkpoint).
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="soma.heatmaps"):
+        save_attention(tmp_path, dataset, feature_store)
+    assert any("mean_pool produces no tile attention" in r.getMessage() for r in caplog.records)
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
     assert not list((tmp_path / "attention").glob("*.npz"))
 
 
@@ -496,3 +502,30 @@ def test_save_attention_skips_slide_level_features(tmp_path):
     dataset = MagicMock()
     save_attention(tmp_path, dataset, feature_store)
     assert not list((tmp_path / "attention").glob("*.npz"))
+
+
+class _ClosingFakeSlide(_FakeSlide):
+    """A reader whose level metadata is only available while the handle is open."""
+
+    def __init__(self):
+        self._open = True
+
+    def __exit__(self, *args):
+        self._open = False
+
+    def __getattribute__(self, name):
+        if name in ("level_downsamples", "level_dimensions", "read_region"):
+            if not object.__getattribute__(self, "_open"):
+                raise RuntimeError(f"{name} accessed on a closed slide")
+        return object.__getattribute__(self, name)
+
+
+def test_render_attention_heatmap_reads_level_metadata_inside_the_reader_context(tmp_path):
+    x = np.array([0, 256], dtype=np.int64)
+    y = np.array([0, 0], dtype=np.int64)
+    scores = np.array([0.2, 0.8], dtype=np.float32)
+    with patch("soma.heatmaps.open_slide", return_value=_ClosingFakeSlide()):
+        image = render_attention_heatmap(
+            tmp_path / "fake.svs", x, y, scores, tile_size_lv0=256, seg_downsample=4
+        )
+    assert image.shape[-1] == 3
