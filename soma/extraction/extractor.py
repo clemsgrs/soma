@@ -120,9 +120,25 @@ def _validate_preprocessing_runtime(
     )
 
 
-def _runtime_output_variant(*, level: str, resolved_output: dict[str, object]) -> str | None:
-    if level == "slide":
+def _runtime_output_variant(
+    *,
+    encoder_name: str,
+    level: str,
+    resolved_output: dict[str, object],
+) -> str | None:
+    """Output variant handed to slide2vec at runtime.
+
+    slide2vec treats any non-``None`` ``output_variant`` as an override and rejects it
+    for encoders with a fixed output (patient level, or slide level with a single
+    variant). Those get ``None``; slide encoders with several variants get the
+    resolved one so the requested variant is actually computed, not just recorded.
+    """
+    if level == "patient":
         return None
+    if level == "slide":
+        output_variants = encoder_registry.info(encoder_name).get("output_variants")
+        if not isinstance(output_variants, dict) or len(output_variants) <= 1:
+            return None
     return str(resolved_output["output_variant"])
 
 
@@ -475,6 +491,7 @@ class _PooledFeatureExtractor:
         )
         resolved_output_variant = str(resolved_output["output_variant"])
         runtime_output_variant = _runtime_output_variant(
+            encoder_name=self._encoder.name,
             level=level,
             resolved_output=resolved_output,
         )
