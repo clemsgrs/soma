@@ -33,6 +33,7 @@ import numpy as np
 import yaml
 
 from soma.evaluation.metrics import metric_higher_is_better
+from soma.evaluation.summary import sample_std
 from soma.reporting.data import diff_configs
 
 if TYPE_CHECKING:
@@ -444,7 +445,7 @@ def project_leaderboard(
                 "experiment_id": experiment_id,
                 "spec": spec,
                 "mean": float(np.mean(values)),
-                "std": float(np.std(values)) if len(values) > 1 else None,
+                "std": sample_std(values) if len(values) > 1 else None,
                 "n": len(values),
                 "seeds": tuple(sorted(r.seed for r in recs if r.seed is not None)),
                 "vary_values": vary_values,
@@ -565,7 +566,7 @@ def _project_multi_metric(
             values = [value for _, value in observations]
             metrics[metric_name] = {
                 "mean": float(np.mean(values)),
-                "std": float(np.std(values)) if len(values) > 1 else None,
+                "std": sample_std(values) if len(values) > 1 else None,
                 "n": len(values),
                 "seeds": tuple(sorted(seed for seed, _ in observations if seed is not None)),
             }

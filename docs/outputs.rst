@@ -80,6 +80,11 @@ Metric keys in ``summary.json`` are prefixed by split name:
 - **Single fold**: ``test/auroc``, ``test_external/auroc``
 - **Cross-validation**: ``test/auroc_mean``, ``test/auroc_std``
 
+``*_std`` is the sample standard deviation (``ddof=1``) across folds. Threshold-free
+metrics (AUROC, AUPRC, C-index, ...) are ``nan`` on a fold whose split holds a single
+class or no comparable pairs; such folds are excluded from ``*_mean`` / ``*_std`` and
+counted in ``test/<metric>_nan_folds``, which is only written when the count is non-zero.
+
 Saved timing data
 -----------------
 
