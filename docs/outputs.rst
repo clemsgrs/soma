@@ -85,6 +85,13 @@ metrics (AUROC, AUPRC, C-index, ...) are ``nan`` on a fold whose split holds a s
 class or no comparable pairs; such folds are excluded from ``*_mean`` / ``*_std`` and
 counted in ``test/<metric>_nan_folds``, which is only written when the count is non-zero.
 
+Run index
+---------
+
+``<output_root>/indexes/runs.csv`` is append-only: every status change of a run
+appends one line, and readers keep the last line per ``run_id``. Run
+``soma compact-index <output_root>`` to rewrite it with one row per run.
+
 Saved timing data
 -----------------
 

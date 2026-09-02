@@ -1,5 +1,24 @@
 # Project Documentation Notes
 
+- 2026-09-02: **Experiment identity v2 (breaking: pre-1.13 experiment ids differ).**
+  The canonical payload now emits every key unconditionally — the "only when
+  non-default" guards for ``checkpoint_selection``, ``max_steps``, ROI batch sampling,
+  ``normalization``, ``projection`` and ``spacing_policy`` are gone — and excludes an
+  explicit list of non-identity knobs: ``training.seed`` (as before),
+  ``training.num_workers`` / ``pin_memory`` / ``persistent_workers`` (loader plumbing) and
+  the evaluation artifact toggles (``save_segmentation_overlays``,
+  ``save_segmentation_probabilities``, ``save_segmentation_confusion_evidence``,
+  ``save_detection_overlays``, ``save_detection_heatmaps``, ``overwrite_test``).
+  ``identity_version: 2`` is stamped into the payload, ``experiment.json`` and ``run.yaml``.
+  Existing run dirs keep their old ids; new runs of the same config land in a new
+  experiment dir. Feature, tiling and dense caches are keyed separately and are unaffected.
+  The per-root ``indexes/runs.csv`` is now append-only (one line per status change,
+  no rewrite, so concurrent runs cannot drop each other's rows); ``read_run_index``
+  dedupes by ``run_id`` (last wins) and ``soma compact-index OUTPUT_ROOT`` rewrites the
+  file on demand. Git provenance (``git_sha`` / ``git_dirty`` on ``run.yaml`` and the
+  ``soma_commit`` column of recorded benchmark rows) is now computed from the soma
+  *package* checkout via one helper (``soma.provenance.soma_git_state``), never from the
+  working directory, and is null for a wheel install.
 - 2026-09-02: Extraction commits its cache in chunks. Identity signatures were recorded
   only after every image/slide had been encoded, and unsigned payloads are deleted on the
   next run, so an interrupted extraction restarted from zero. The tile-image path now

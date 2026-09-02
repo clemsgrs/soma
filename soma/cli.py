@@ -770,6 +770,33 @@ def _build_prepare_croma_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cmd_compact_index(args: argparse.Namespace) -> int:
+    from soma.output_layout import compact_run_index
+
+    path = Path(args.path)
+    if path.is_dir():
+        path = path / "indexes" / "runs.csv"
+    if not path.is_file():
+        print(f"Error: no run index at {path}", file=sys.stderr)
+        return 2
+    kept = compact_run_index(path)
+    print(f"Compacted {path}: {kept} run(s) kept.")
+    return 0
+
+
+def _build_compact_index_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="soma compact-index",
+        description=(
+            "Rewrite an output root's append-only runs.csv with one row per run_id "
+            "(the latest status). Readers already dedupe; this only shrinks the file."
+        ),
+    )
+    parser.add_argument("path", help="Output root (containing indexes/runs.csv) or the runs.csv itself.")
+    parser.set_defaults(func=_cmd_compact_index)
+    return parser
+
+
 def _print_top_level_help() -> None:
     print(
         "usage: soma CONFIG\n"
@@ -777,6 +804,7 @@ def _print_top_level_help() -> None:
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
+        "       soma compact-index OUTPUT_ROOT\n"
         "\n"
         "commands:\n"
         "  CONFIG       run a pipeline from a YAML config file\n"
@@ -784,6 +812,7 @@ def _print_top_level_help() -> None:
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
+        "  compact-index  rewrite the append-only runs.csv with one row per run\n"
         "\n"
         "examples:\n"
         "  soma /path/to/config.yaml\n"
@@ -845,6 +874,11 @@ def main(argv: list[str] | None = None) -> None:
 
     if args[0] == "leaderboard":
         parser = _build_leaderboard_parser()
+        parsed = parser.parse_args(args[1:])
+        raise SystemExit(parsed.func(parsed))
+
+    if args[0] == "compact-index":
+        parser = _build_compact_index_parser()
         parsed = parser.parse_args(args[1:])
         raise SystemExit(parsed.func(parsed))
 
