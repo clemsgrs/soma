@@ -22,8 +22,8 @@ def _require_xgboost():
         import xgboost  # noqa: F401
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise ImportError(
-            "The 'xgboost' pixel classifier requires the xgboost package "
-            "(`pip install xgboost`)."
+            "The 'xgboost' pixel classifier requires the xgboost package: install the "
+            "`pixel` extra (`pip install 'soma-pathology[pixel]'`) or `pip install xgboost`."
         ) from exc
     return xgboost
 

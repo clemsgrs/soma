@@ -91,10 +91,14 @@ def test_public_import_surface_dependencies_are_declared():
     # These packages are imported by modules exposed from `import soma`, so a fresh
     # install must not rely on them arriving only as transitive dependencies.
     assert {"pillow", "rich"}.issubset(dependencies)
+    # torchvision is imported by the dense augmentation / segmentation loaders.
+    assert "torchvision" in dependencies
 
     # The dense pixel-classifier adapter stays optional and reports its own missing
     # dependency only when the xgboost classifier is selected.
     assert "xgboost" not in dependencies
+    extras = data["project"]["optional-dependencies"]
+    assert any(dep.lower().startswith("xgboost") for dep in extras["pixel"])
 
     import soma
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "soma-pathology"
-version = "1.12.0"
+version = "1.13.0"
 description = "Modular experimentation framework for computational pathology"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -27,6 +27,7 @@ dependencies = [
     "Pillow",
     "h5py",
     "torch",
+    "torchvision",
     "scikit-learn",
     "scikit-survival",
     "scipy>=1.11",
@@ -58,6 +59,11 @@ dev = [
 ]
 croma = [
     "pyarrow>=17",
+]
+# The decoder-free ``pixel_classifier: xgboost`` path; the other pixel classifiers
+# (logistic regression, random forest, MLP) run on the core scikit-learn / torch deps.
+pixel = [
+    "xgboost>=2.0",
 ]
 # Curation-only dependencies for the HEST-Benchmark spatial_expression curator
 # (soma.curation.hest). Lazy-imported inside curate_hest so `import soma` and core CI
