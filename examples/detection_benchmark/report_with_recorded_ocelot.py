@@ -141,13 +141,13 @@ def main(argv: list[str] | None = None) -> int:
                     help="locally swept datasets to collect from disk (ocelot is recorded)")
     args = ap.parse_args(argv)
 
-    from soma.output_layout import _git_sha
+    from soma.provenance import soma_git_state
 
     report = build_full_report(
         args.out_root,
         data_root=args.data_root,
         datasets=list(args.datasets),
-        git_sha=_git_sha(REPO_ROOT),
+        git_sha=soma_git_state().sha,
     )
     out_path = Path(args.out_root) / "ranking_report.json"
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
