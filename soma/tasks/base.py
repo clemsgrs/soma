@@ -12,6 +12,25 @@ if TYPE_CHECKING:
     from soma.dataset import Dataset, SampleRecord
 
 
+def build_input_dropout(dropout: float) -> nn.Dropout | None:
+    """Build a task head's input-dropout module, or ``None`` at the default.
+
+    ``None`` rather than an ``nn.Identity`` placeholder: assigning ``None`` to an
+    ``nn.Module`` attribute registers no submodule, so a head at the default has
+    exactly the modules, ``state_dict`` and random-number consumption of a head built
+    before the knob existed. Heads guard their forward on ``is not None``.
+
+    Args:
+        dropout: Probability of zeroing an input element, in ``[0.0, 1.0)``.
+
+    Returns:
+        An ``nn.Dropout`` when ``dropout > 0``, else ``None``.
+    """
+    if isinstance(dropout, bool) or not 0.0 <= dropout < 1.0:
+        raise ValueError(f"dropout must be a probability in [0.0, 1.0), got {dropout!r}.")
+    return nn.Dropout(dropout) if dropout > 0.0 else None
+
+
 class TaskHead(ABC, nn.Module):
     """Abstract base class for task heads.
 

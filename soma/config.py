@@ -1723,6 +1723,19 @@ class PipelineConfig:
                     "the augmentation section."
                 )
             # dataset_type is already guaranteed 'segmentation' by the live check above.
+        if "dropout" in self.task.params:
+            # Fail at config load, not at head construction after extraction: the head
+            # re-validates, but a full pipeline run should not spend the extraction
+            # stage before discovering a bad probability.
+            head_dropout = self.task.params["dropout"]
+            if (
+                isinstance(head_dropout, bool)
+                or not isinstance(head_dropout, (int, float))
+                or not 0.0 <= head_dropout < 1.0
+            ):
+                raise ValueError(
+                    f"task.params.dropout must be a probability in [0.0, 1.0), got {head_dropout!r}."
+                )
         if self.task.name == "survival":
             if self.dataset_type == "tile":
                 raise ValueError(

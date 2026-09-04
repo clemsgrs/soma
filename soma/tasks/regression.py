@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
-from soma.tasks.base import TaskHead
+from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
@@ -24,6 +24,8 @@ class RegressionHead(TaskHead):
         num_targets: Number of regression targets. Default 1.
         metrics: Metrics to compute. Empty list uses the default set for
             regression: mae, r2.
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the linear layer. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"value": torch.float}
@@ -34,9 +36,11 @@ class RegressionHead(TaskHead):
         input_dim: int,
         num_targets: int = 1,
         metrics: list[str] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.fc = nn.Linear(input_dim, num_targets)
+        self.dropout = build_input_dropout(dropout)
         self.num_targets = num_targets
         self.metrics = resolve_metrics("regression", metrics or [])
 
@@ -48,6 +52,8 @@ class RegressionHead(TaskHead):
         return {"value": float(record.label)}
 
     def forward(self, X: Tensor) -> Tensor:
+        if self.dropout is not None:
+            X = self.dropout(X)
         return self.fc(X)
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
