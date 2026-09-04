@@ -309,10 +309,9 @@ class _DenseImageExtractor:
         #
         # soma's cache is the authority on reuse; slide2vec runs its own recipe-aware resume
         # over whatever it is handed, but it only ever sees the images soma already decided
-        # to encode, so the two cannot disagree about a skip. The one thing upstream's recipe
-        # deliberately does not key on is batch size — and soma's dense grids are only
-        # byte-stable at a fixed batch size, which is why the standing rule is to resume a
-        # dense cache at the batch size that built it (docs/caching.rst).
+        # to encode, so the two cannot disagree about a skip. Batch size is deliberately
+        # outside cache identity: it is runtime tuning, and resumed payloads need only meet
+        # slide2vec's numerical-equivalence contract rather than be byte-identical.
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
