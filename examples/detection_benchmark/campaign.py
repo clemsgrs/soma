@@ -775,11 +775,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.phase == "extract":
         run_extract(args.data_root, args.out_root, roster, args.datasets, dry_run=args.dry_run)
         return 0
-    from soma.output_layout import _git_sha
+    from soma.provenance import soma_git_state
 
     run_rank(
         args.data_root, args.out_root, roster, args.datasets, args.seeds,
-        dry_run=args.dry_run, git_sha=_git_sha(REPO_ROOT),
+        dry_run=args.dry_run, git_sha=soma_git_state().sha,
     )
     return 0
 
