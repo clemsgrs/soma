@@ -16,7 +16,7 @@ import torch
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
-from soma.tasks.base import TaskHead
+from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
@@ -153,6 +153,8 @@ class SurvivalHead(TaskHead):
         alpha: Up-weighting of the uncensored NLL term (HIPT default 0.15).
         metrics: Metrics to compute. Empty list uses the survival default
             (c_index).
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the linear layer. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"bin": torch.long, "event": torch.float, "time": torch.float}
@@ -164,11 +166,13 @@ class SurvivalHead(TaskHead):
         num_bins: int,
         alpha: float = 0.15,
         metrics: list[str] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if num_bins < 1:
             raise ValueError(f"SurvivalHead requires num_bins >= 1, got {num_bins}.")
         self.fc = nn.Linear(input_dim, num_bins)
+        self.dropout = build_input_dropout(dropout)
         self.num_bins = num_bins
         self.alpha = alpha
         self.metrics = resolve_metrics("survival", metrics or [])
@@ -188,6 +192,8 @@ class SurvivalHead(TaskHead):
         if X.ndim != 2:
             msg = f"SurvivalHead expects input of shape (B, D), got {tuple(X.shape)}"
             raise ValueError(msg)
+        if self.dropout is not None:
+            X = self.dropout(X)
         return self.fc(X)
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
@@ -242,6 +248,8 @@ class CoxSurvivalHead(TaskHead):
             padded mode; ``>= 2`` selects accumulation mode with this risk-set size.
         metrics: Metrics to compute. Empty list uses the survival default
             (c_index).
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the linear layer. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"event": torch.float, "time": torch.float}
@@ -256,6 +264,7 @@ class CoxSurvivalHead(TaskHead):
         min_events_per_window: int = 1,
         cox_window: int = 1,
         metrics: list[str] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if ties != "breslow":
@@ -270,6 +279,7 @@ class CoxSurvivalHead(TaskHead):
         if cox_window < 1:
             raise ValueError(f"cox_window must be >= 1, got {cox_window}.")
         self.fc = nn.Linear(input_dim, 1)
+        self.dropout = build_input_dropout(dropout)
         self.ties = ties
         self.min_events_per_window = min_events_per_window
         self.accumulation_window = cox_window
@@ -288,6 +298,8 @@ class CoxSurvivalHead(TaskHead):
         if X.ndim != 2:
             msg = f"CoxSurvivalHead expects input of shape (B, D), got {tuple(X.shape)}"
             raise ValueError(msg)
+        if self.dropout is not None:
+            X = self.dropout(X)
         return self.fc(X)  # (B, 1)
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:

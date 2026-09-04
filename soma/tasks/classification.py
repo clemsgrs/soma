@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
-from soma.tasks.base import TaskHead
+from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
@@ -47,6 +47,8 @@ class BinaryClassificationHead(TaskHead):
         num_classes: Must be 2.
         metrics: Metrics to compute. Empty list uses the default set for
             binary_classification: auroc, balanced_accuracy, auprc, f1.
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the linear layer. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"label": torch.long}
@@ -58,6 +60,7 @@ class BinaryClassificationHead(TaskHead):
         num_classes: int,
         metrics: list[str] | None = None,
         label_map: dict[str | int, int] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if num_classes != 2:
@@ -66,6 +69,7 @@ class BinaryClassificationHead(TaskHead):
                 "Use multiclass_classification for more than two classes."
             )
         self.fc = nn.Linear(input_dim, num_classes)
+        self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes
         self._label_map = label_map
         self.metrics = resolve_metrics("binary_classification", metrics or [])
@@ -81,6 +85,8 @@ class BinaryClassificationHead(TaskHead):
         if X.ndim != 2:
             msg = f"BinaryClassificationHead expects input of shape (B, D), got {tuple(X.shape)}"
             raise ValueError(msg)
+        if self.dropout is not None:
+            X = self.dropout(X)
         return self.fc(X)
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
@@ -109,6 +115,8 @@ class MulticlassClassificationHead(TaskHead):
         num_classes: Number of output classes (>= 2).
         metrics: Metrics to compute. Empty list uses the default set for
             multiclass_classification: auroc_macro, balanced_accuracy, f1_macro.
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the linear layer. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"label": torch.long}
@@ -120,6 +128,7 @@ class MulticlassClassificationHead(TaskHead):
         num_classes: int,
         metrics: list[str] | None = None,
         label_map: dict[str | int, int] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if num_classes < 2:
@@ -127,6 +136,7 @@ class MulticlassClassificationHead(TaskHead):
                 f"MulticlassClassificationHead requires num_classes >= 2, got {num_classes}."
             )
         self.fc = nn.Linear(input_dim, num_classes)
+        self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes
         self._label_map = label_map
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
@@ -142,6 +152,8 @@ class MulticlassClassificationHead(TaskHead):
         if X.ndim != 2:
             msg = f"MulticlassClassificationHead expects input of shape (B, D), got {tuple(X.shape)}"
             raise ValueError(msg)
+        if self.dropout is not None:
+            X = self.dropout(X)
         return self.fc(X)
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
@@ -175,6 +187,8 @@ class BranchAwareClassificationHead(TaskHead):
         num_classes: Number of output classes.
         metrics: Metrics to compute. Empty list uses the default set for
             multiclass_classification: auroc_macro, balanced_accuracy, f1_macro.
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the per-branch linear layers. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"label": torch.long}
@@ -187,9 +201,11 @@ class BranchAwareClassificationHead(TaskHead):
         num_classes: int,
         metrics: list[str] | None = None,
         label_map: dict[str | int, int] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.branch_fcs = nn.ModuleList(nn.Linear(input_dim, 1) for _ in range(num_classes))
+        self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes
         self._label_map = label_map
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
@@ -211,6 +227,8 @@ class BranchAwareClassificationHead(TaskHead):
                 f"got {X.shape[1]}"
             )
             raise ValueError(msg)
+        if self.dropout is not None:
+            X = self.dropout(X)
         logits = torch.empty(X.shape[0], self.num_classes, device=X.device, dtype=X.dtype)
         for idx, fc in enumerate(self.branch_fcs):
             logits[:, idx] = fc(X[:, idx, :]).squeeze(-1)

@@ -30,6 +30,30 @@ The base abstraction is :class:`soma.tasks.base.TaskHead`.
 .. autoclass:: soma.tasks.base.TaskHead
    :members:
 
+Head dropout
+------------
+
+The classification and survival heads take an optional ``dropout`` probability,
+applied to the head's **input** — the aggregated bag representation, or the frozen
+embedding itself when ``aggregation: null`` leaves the head as the only trainable
+component:
+
+.. code-block:: yaml
+
+   task:
+     name: binary_classification
+     params:
+       dropout: 0.2
+
+It defaults to ``0.0``, and at that default no dropout module is built at all: the
+head has exactly the modules, checkpoint state and random-number consumption it had
+before the knob existed. Dropout carries no parameters, so a checkpoint trained with
+it loads into a head built without it and vice versa.
+
+Aggregators carry their own ``dropout`` under ``aggregator.params`` — see
+:doc:`aggregators`. The two are independent; with ``aggregation: null`` only the head's
+applies.
+
 Task Zoo
 --------
 
