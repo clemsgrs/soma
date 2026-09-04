@@ -33,10 +33,10 @@ The base abstraction is :class:`soma.tasks.base.TaskHead`.
 Head dropout
 ------------
 
-The classification and survival heads take an optional ``dropout`` probability,
-applied to the head's **input** — the aggregated bag representation, or the frozen
-embedding itself when ``aggregation: null`` leaves the head as the only trainable
-component:
+The classification, ordinal-classification, regression and survival heads take an
+optional ``dropout`` probability, applied to the head's **input** — the aggregated
+bag representation, or the frozen embedding itself when ``aggregation: null`` leaves
+the head as the only trainable component:
 
 .. code-block:: yaml
 

@@ -18,6 +18,8 @@ from soma.tasks.classification import (
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
+from soma.tasks.ordinal_classification import OrdinalClassificationHead
+from soma.tasks.regression import RegressionHead
 from soma.tasks.survival import CoxSurvivalHead, SurvivalHead
 from soma.training.model import EmbeddingModel, MILModel
 
@@ -38,6 +40,11 @@ HEADS = {
     ),
     "survival": (lambda **kw: SurvivalHead(input_dim=D, num_bins=4, **kw), (4, D)),
     "cox": (lambda **kw: CoxSurvivalHead(input_dim=D, **kw), (4, D)),
+    "ordinal": (
+        lambda **kw: OrdinalClassificationHead(input_dim=D, num_classes=6, **kw),
+        (4, D),
+    ),
+    "regression": (lambda **kw: RegressionHead(input_dim=D, **kw), (4, D)),
 }
 
 
@@ -183,6 +190,21 @@ class TestBothModelingPaths:
 class TestReachesTheHeadThroughTheConfig:
     """``task.params.dropout`` must survive the pipeline's head construction."""
 
+    @pytest.fixture
+    def built_probabilities(self, monkeypatch):
+        """Record every probability the classification heads hand to the builder."""
+        import soma.tasks.classification as classification
+        from soma.tasks.base import build_input_dropout
+
+        seen: list[float] = []
+
+        def spy(dropout):
+            seen.append(dropout)
+            return build_input_dropout(dropout)
+
+        monkeypatch.setattr(classification, "build_input_dropout", spy)
+        return seen
+
     def _train(self, tmp_path, *, slide_level):
         from soma import Dataset, Splits
         from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
@@ -209,10 +231,37 @@ class TestReachesTheHeadThroughTheConfig:
             fold_dir=tmp_path / "fold",
         )
 
-    def test_single_embedding_path(self, tmp_path):
+    def test_single_embedding_path(self, tmp_path, built_probabilities):
         result = self._train(tmp_path, slide_level=True)
         assert "auroc" in result.test_reports["test"].metrics
+        assert built_probabilities == [0.2]
 
-    def test_aggregated_path(self, tmp_path):
+    def test_aggregated_path(self, tmp_path, built_probabilities):
         result = self._train(tmp_path, slide_level=False)
         assert "auroc" in result.test_reports["test"].metrics
+        assert built_probabilities == [0.2]
+
+
+class TestConfigLoadValidation:
+    """A bad probability fails at config load, before any extraction is spent."""
+
+    @staticmethod
+    def _config(dropout):
+        from soma.config import PipelineConfig, TaskConfig
+
+        return PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="slide",
+            task=TaskConfig(name="binary_classification", params={"dropout": dropout}),
+        )
+
+    @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5, True, "0.2"])
+    def test_rejects_bad_probabilities(self, bad):
+        with pytest.raises(ValueError, match="task.params.dropout"):
+            self._config(bad)
+
+    @pytest.mark.parametrize("ok", [0, 0.0, 0.5])
+    def test_accepts_valid_probabilities(self, ok):
+        assert self._config(ok).task.params["dropout"] == ok

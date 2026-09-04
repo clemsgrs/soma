@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
-from soma.tasks.base import TaskHead
+from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.classification import _categorical_auto_params, _extract_categorical_target
 from soma.tasks.registry import task_registry
 
@@ -31,6 +31,8 @@ class OrdinalClassificationHead(TaskHead):
         num_classes: Number of ordinal classes (e.g. 6 for labels 0–5).
         metrics: Metrics to compute. Empty list uses the default set for
             ordinal_classification: qwk, balanced_accuracy.
+        dropout: Probability of zeroing an element of the head's input, applied
+            before the linear layer. ``0.0`` (default) builds no dropout module.
     """
 
     target_dtypes = {"label": torch.long}
@@ -42,9 +44,11 @@ class OrdinalClassificationHead(TaskHead):
         num_classes: int,
         metrics: list[str] | None = None,
         label_map: dict[str | int, int] | None = None,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         self.fc = nn.Linear(input_dim, 1)
+        self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes
         self._label_map = label_map
         self.metrics = resolve_metrics("ordinal_classification", metrics or [])
@@ -57,6 +61,8 @@ class OrdinalClassificationHead(TaskHead):
         return _extract_categorical_target(self._label_map, record)
 
     def forward(self, X: Tensor) -> Tensor:
+        if self.dropout is not None:
+            X = self.dropout(X)
         return self.fc(X)
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
