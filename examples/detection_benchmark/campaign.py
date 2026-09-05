@@ -366,7 +366,8 @@ def _config_path(dataset: str) -> Path:
 
 
 def train_cell(
-    encoder: str, dataset: str, replicate: int, axis: str, data_root: Path, out_root: Path
+    encoder: str, dataset: str, replicate: int, axis: str, data_root: Path, out_root: Path,
+    decoder: str | None = None,
 ) -> None:
     """Train (+extract) one cell via ``python -m soma`` — the config supplies the recipe.
 
@@ -377,6 +378,8 @@ def train_cell(
     cmd = [sys.executable, "-m", "soma", str(_config_path(dataset))]
     cmd += _data_overrides(data_root, dataset)
     cmd += ["--set", f"encoder.name={encoder}"]
+    if decoder:
+        cmd += ["--set", f"decoder.name={decoder}"]
     cmd += ["--set", f"run.output_root={cell_dir(out_root, dataset, encoder, replicate)}"]
     # Point every cell at the dataset-wide grid cache, else each replicate builds its own
     # private copy under its run dir. score_cell reloads the run's persisted config, so it
@@ -411,7 +414,10 @@ def score_cell_isolated(
     _run(cmd, cwd=REPO_ROOT)
 
 
-def run_extract(data_root: Path, out_root: Path, roster, datasets, *, dry_run: bool) -> None:
+def run_extract(
+    data_root: Path, out_root: Path, roster, datasets, *, dry_run: bool,
+    decoder: str | None = None,
+) -> None:
     """Phase 1: populate the dense cache for every ``(encoder, dataset)`` pair (skip if done)."""
     for dataset in datasets:
         for entry in roster:
@@ -423,14 +429,15 @@ def run_extract(data_root: Path, out_root: Path, roster, datasets, *, dry_run: b
                 continue
             axis, ids = dataset_replicate_ids(splits_csv_for(data_root, dataset))
             # One pass over replicate ids[0] extracts the shared grids for all splits.
-            train_cell(entry.name, dataset, ids[0], axis, data_root, out_root)
+            train_cell(entry.name, dataset, ids[0], axis, data_root, out_root, decoder=decoder)
             marker = Path(out_root) / dataset / entry.name / "extracted.marker"
             marker.parent.mkdir(parents=True, exist_ok=True)
             marker.write_text("ok\n", encoding="utf-8")
 
 
 def run_rank(
-    data_root: Path, out_root: Path, roster, datasets, seeds, *, dry_run: bool, git_sha: str | None
+    data_root: Path, out_root: Path, roster, datasets, seeds, *, dry_run: bool,
+    git_sha: str | None, decoder: str | None = None,
 ) -> dict:
     """Phase 2: train + freeze-on-tune + score-on-test every cell, then aggregate the report."""
     for cell in plan_cells(roster, datasets, data_root, seeds=seeds):
@@ -442,7 +449,7 @@ def run_rank(
             print(f"[{ds}/{enc}/r{rid}] would train+score ({axis})")
             continue
         if not training_done(out_root, ds, enc, rid):
-            train_cell(enc, ds, rid, axis, data_root, out_root)
+            train_cell(enc, ds, rid, axis, data_root, out_root, decoder=decoder)
         score_cell_isolated(enc, ds, rid, axis, data_root, out_root)
     return aggregate_and_report(
         out_root, roster=roster, datasets=datasets, seeds=seeds, data_root=data_root,
@@ -756,6 +763,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="score phase only: which replicate of the cell to score")
     ap.add_argument("--axis", choices=["seeds", "folds"], default="seeds",
                     help="score phase only: the cell's replicate axis")
+    ap.add_argument("--decoder", default=None,
+                    help="override the config's decoder (e.g. linear, heavy_conv) for the "
+                         "#235 decoder ladder; scoring inherits it from the run's persisted "
+                         "config. Pair a non-default decoder with its own --out-root.")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -773,13 +784,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.phase == "extract":
-        run_extract(args.data_root, args.out_root, roster, args.datasets, dry_run=args.dry_run)
+        run_extract(args.data_root, args.out_root, roster, args.datasets,
+                    dry_run=args.dry_run, decoder=args.decoder)
         return 0
     from soma.provenance import soma_git_state
 
     run_rank(
         args.data_root, args.out_root, roster, args.datasets, args.seeds,
-        dry_run=args.dry_run, git_sha=soma_git_state().sha,
+        dry_run=args.dry_run, git_sha=soma_git_state().sha, decoder=args.decoder,
     )
     return 0
 
