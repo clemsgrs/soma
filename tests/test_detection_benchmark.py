@@ -511,8 +511,10 @@ def test_report_reference_bands_scaffolds():
 # --- reference CSV scaffolds ---------------------------------------------------------
 
 
-@pytest.mark.parametrize("dataset,metric", [("midog", "f1"), ("monkey", "mean_froc")])
-def test_reference_scaffold_shape(dataset, metric):
+@pytest.mark.parametrize(
+    "dataset,metric,gated", [("midog", "f1", True), ("monkey", "mean_froc", False)]
+)
+def test_reference_scaffold_shape(dataset, metric, gated):
     with resources.files("soma.benchmarks.reference").joinpath(f"{dataset}.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
@@ -521,9 +523,18 @@ def test_reference_scaffold_shape(dataset, metric):
         assert col in columns
     external = [r for r in rows if (r.get("kind") or "").strip() == "external"]
     gate = [r for r in rows if (r.get("kind") or "gate").strip() != "external"]
-    # No placeholder gate row: a gate is added only once the local sweep has measured a
-    # headline (load_reference rejects expected-0 / blank-key gate rows).
-    assert not gate and external
+    if gated:
+        # The measured local headline: fully keyed (dataset/encoder/spacing), a real
+        # number with a real tolerance (load_reference enforces the same invariants).
+        assert gate
+        for row in gate:
+            assert all((row.get(c) or "").strip() for c in ("dataset", "encoder", "spacing"))
+            assert float(row["expected"]) > 0 and float(row["tolerance"]) > 0
+    else:
+        # No placeholder gate row: a gate is added only once the local sweep has measured
+        # a headline (load_reference rejects expected-0 / blank-key gate rows).
+        assert not gate
+    assert external
     assert all(r["metric"] == metric for r in rows)
     for row in external:
         assert row["url"].strip().startswith("http")
