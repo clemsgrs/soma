@@ -784,6 +784,12 @@ def test_train_cell_decoder_override_reaches_soma_argv(monkeypatch):
     assert "decoder.name=heavy_conv" in cmds[0]
     assert not [a for a in cmds[1] if a.startswith("decoder.name=")]
 
+    # Extra --set overrides must be forwarded verbatim (e.g. the heavy rung pins
+    # num_upsample_blocks so the geometry-derived depth can't OOM or vary per encoder).
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"), decoder="heavy_conv",
+                 extra_sets=["decoder.params.num_upsample_blocks=2"])
+    assert "decoder.params.num_upsample_blocks=2" in cmds[2]
+
 
 def _fabricate_scored_cell(m, out, dataset, encoder, replicate, axis, test_val):
     cd = m.cell_dir(out, dataset, encoder, replicate)
