@@ -766,6 +766,31 @@ def test_rank_scores_out_of_process(tmp_path: Path, monkeypatch):
     assert scored == [("uni2", "ocelot", 1, "seeds", data_root, out_root)]
 
 
+def test_train_cell_decoder_override_reaches_soma_argv(monkeypatch):
+    """``--decoder`` must land as a ``--set decoder.name=`` override on the soma command.
+
+    The #235 ladder reruns the sweep with ``linear`` and ``heavy_conv``; scoring reloads the
+    run's persisted config, so the train-time override is the single source of truth. Without
+    the flag the committed config's ``lightweight_conv`` must stay untouched (no stray
+    override), keeping the rung-2 sweep byte-compatible with what already ran.
+    """
+    m = _load_driver()
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
+
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"), decoder="heavy_conv")
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"))
+
+    assert "decoder.name=heavy_conv" in cmds[0]
+    assert not [a for a in cmds[1] if a.startswith("decoder.name=")]
+
+    # Extra --set overrides must be forwarded verbatim (e.g. the heavy rung pins
+    # num_upsample_blocks so the geometry-derived depth can't OOM or vary per encoder).
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"), decoder="heavy_conv",
+                 extra_sets=["decoder.params.num_upsample_blocks=2"])
+    assert "decoder.params.num_upsample_blocks=2" in cmds[2]
+
+
 def _fabricate_scored_cell(m, out, dataset, encoder, replicate, axis, test_val):
     cd = m.cell_dir(out, dataset, encoder, replicate)
     cd.mkdir(parents=True)
