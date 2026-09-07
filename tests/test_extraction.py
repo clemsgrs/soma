@@ -1740,7 +1740,7 @@ def test_materialize_feature_dir_from_cache_leaves_pointer_only_run_dir(tmp_path
     assert not any(feature_dir.glob("*.pt"))
 
 
-def test_tile_cache_hit_aligns_cache_and_run_feature_manifests(tmp_path: Path):
+def test_tile_cache_hit_preserves_shared_manifest_and_uses_run_manifest(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
@@ -1812,12 +1812,12 @@ def test_tile_cache_hit_aligns_cache_and_run_feature_manifests(tmp_path: Path):
 
     cache_manifest = pd.read_csv(cache_dir / "process_list.csv").set_index("sample_id")
     run_manifest = pd.read_csv(feature_dir / "process_list.csv").set_index("sample_id")
-    assert cache_manifest.loc["s1", "feature_status"] == "empty"
+    assert cache_manifest.loc["s1", "feature_status"] == "tbp"
     assert run_manifest.loc["s1", "feature_status"] == "empty"
     assert cache_manifest.loc["s0", "feature_path"] == run_manifest.loc["s0", "feature_path"]
 
-    assert store.feature_dir == payload_dir
-    assert store.feature_manifest_path == cache_dir / "process_list.csv"
+    assert store.feature_dir == feature_dir
+    assert store.feature_manifest_path == feature_dir / "process_list.csv"
     assert store.feature_statuses["s1"] == "empty"
     assert store.empty_feature_samples == ["s1"]
     assert store.feature_dim == 8
@@ -2389,7 +2389,7 @@ def test_slide_cache_population_records_all_empty_without_embedding(tmp_path: Pa
     assert slide_metadata["empty_sample_ids"] == ["s0"]
     assert not any((cache_root / "tile").glob("*/tile_embeddings/s0.pt"))
     assert not any((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
-    process_df = pd.read_csv(slide_metadata_paths[0].parent / "process_list.csv")
+    process_df = pd.read_csv(store.feature_manifest_path)
     assert process_df.loc[0, "feature_status"] == "empty"
     assert process_df.loc[0, "feature_kind"] == "slide"
 
@@ -4016,3 +4016,129 @@ def test_feature_summary_from_sidecar_ignores_packed_cache(tmp_path: Path):
     torch.save({"sample_ids": ["s1"], "features": torch.randn(1, 8)}, feature_dir / PACKED_FILENAME)
 
     assert _feature_summary_from_sidecar(feature_dir) == (1, 8)
+
+
+@pytest.mark.parametrize("kind", ["tile", "hierarchical", "slide", "patient"])
+@pytest.mark.parametrize("complete", [True, False])
+@pytest.mark.parametrize("shared_manifest", ["broken,header\nwrong,row\n", "sample_id,feature_status\nstale,empty\n"])
+def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
+    tmp_path: Path, monkeypatch, kind, complete, shared_manifest
+):
+    """Publish B between A's manifest write and store construction, then reopen A."""
+    encoder = {"tile": _TEST_TILE, "hierarchical": _TEST_TILE,
+               "slide": _TEST_SLIDE, "patient": _TEST_PATIENT}[kind]
+    feature_type, shape, rank = {
+        "tile": ("bag", (2, 2), 2), "hierarchical": ("hierarchical", (1, 2, 2), 3),
+        "slide": ("slide", (2,), 1), "patient": ("patient", (2,), 1),
+    }[kind]
+    cache_dir = tmp_path / "shared-cache" / kind / "key"
+    payload_dir = cache_dir / f"{kind}_embeddings"
+    payload_dir.mkdir(parents=True)
+    shared_path = cache_dir / "process_list.csv"
+    shared_path.write_text(shared_manifest)
+    paths = {sid: payload_dir / f"identity-{sid}.pt" for sid in ["eval", "support-a", "support-b"]}
+    expected = {"eval": torch.full(shape, 1.0), "support-a": torch.full(shape, 2.0),
+                "support-b": torch.full(shape, 3.0)}
+    if complete:
+        for sid, path in paths.items():
+            torch.save(expected[sid], path)
+
+    extractors = {}
+    for run in ["a", "b"]:
+        root = tmp_path / run
+        root.mkdir()
+        pd.DataFrame([
+            {"sample_id": f"slide-{sid}" if kind == "patient" else sid, "patient_id": sid, "image_path": str(tmp_path / f"{sid}.svs"), "label": "tumor"}
+            for sid in ["eval", f"support-{run}", f"empty-{run}"]
+        ]).to_csv(root / "dataset.csv", index=False)
+        preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5,
+                                            **({"region_tile_multiple": 2} if kind == "hierarchical" else {}))
+        extractors[run] = _PooledFeatureExtractor(
+            Dataset(root / "dataset.csv"), EncoderConfig(name=encoder), preprocessing,
+            cache=CacheConfig(root_dir=tmp_path / "shared-cache"), output_root=root,
+        )
+
+    def resolve(**kwargs):
+        ids = (list(kwargs["dataset"].patient_groups) if kind == "patient"
+               else list(kwargs["dataset"].sample_ids))
+        return SimpleNamespace(
+            complete=complete or kwargs.get("complete_state") == "populated",
+            cache_dir=cache_dir, features_dir=payload_dir, cache_kind=kind,
+            cache_ids=ids, empty_sample_ids={sid for sid in ids if sid.startswith("empty-")},
+            metadata={"feature_type": feature_type, "feature_dim": 2, "encoder_name": encoder,
+                      "cache_key": "key", "execution": {"output_variant": "default"}},
+            feature_path_for_id=lambda sid: paths[sid],
+        )
+
+    def populate(self, **kwargs):
+        for sid in (self._dataset.patient_groups if kind == "patient" else self._dataset.sample_ids):
+            if sid in paths:
+                torch.save(expected[sid], paths[sid])
+
+    def tilings(**kwargs):
+        return [LoadedTiling(
+            slide=SlideSpec(sample_id=sid, image_path=tmp_path / f"{sid}.svs"),
+            tiling_result=_empty_tiling(sid) if "empty-" in sid else _tiling(sid),
+        ) for sid in kwargs["dataset"].sample_ids]
+
+    monkeypatch.setattr("soma.extraction.extractor.load_tilings", tilings)
+    monkeypatch.setattr("soma.extraction.extractor._validate_runtime", lambda **kwargs: None)
+    for mode in {"tile", kind}:
+        monkeypatch.setattr(f"soma.extraction.extractor.resolve_{mode}_cache", resolve)
+        monkeypatch.setattr(_PooledFeatureExtractor, f"_populate_{mode}_cache", populate)
+
+    original_write = _PooledFeatureExtractor._write_cached_process_list
+    neighbors = []
+
+    def publish_then_neighbor(self, feature_dir, *, cache_resolution):
+        original_write(self, feature_dir, cache_resolution=cache_resolution)
+        if self is extractors["a"]:
+            neighbors.append(extractors["b"].extract(feature_dir="features", tiling_dir=tmp_path / "tiling"))
+
+    monkeypatch.setattr(_PooledFeatureExtractor, "_write_cached_process_list", publish_then_neighbor)
+    first = extractors["a"].extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
+    for run, result in [("a", first), ("b", neighbors[0])]:
+        local = tmp_path / run / "features"
+        assert result.feature_dir == local
+        for store in [result, FeatureStore(result.feature_dir)]:
+            assert store.feature_manifest_path == local / "process_list.csv"
+            assert store.available_samples == ["eval", f"support-{run}"]
+            assert store.empty_feature_samples == [f"empty-{run}"]
+            store.validate_coverage(["eval", f"support-{run}"])
+            assert (store.feature_rank, store.feature_dim) == (rank, 2)
+            for sid in ["eval", f"support-{run}"]:
+                assert torch.equal(store.load(sid), expected[sid])
+        manifest = pd.read_csv(local / "process_list.csv").set_index("sample_id")
+        for sid in ["eval", f"support-{run}"]:
+            assert manifest.loc[sid, "feature_path"] == str(paths[sid])
+        assert set(manifest["cache_kind"]) == {kind}
+        assert set(manifest["cache_key"]) == {"key"}
+        assert (local / "README.txt").is_file()
+        assert not [p for p in local.glob("*.pt") if p.name != PACKED_FILENAME]
+    assert shared_path.read_text() == shared_manifest
+
+
+def test_fallback_feature_manifest_publishes_only_in_run_directory(tmp_path: Path):
+    extractor = _PooledFeatureExtractor(
+        _make_dataset(tmp_path), EncoderConfig(name=_TEST_TILE),
+        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        cache=CacheConfig(enabled=True), output_root=tmp_path,
+    )
+    payload_dir = tmp_path / "shared-cache" / "tile_embeddings"
+    payload_dir.mkdir(parents=True)
+    torch.save(torch.tensor([[1.0, 2.0], [3.0, 4.0]]), payload_dir / "s0.pt")
+    (payload_dir / "s0.meta.json").write_text(json.dumps({"artifact_type": "tile_embeddings", "feature_dim": 2}))
+    local = tmp_path / "features"
+    local.mkdir()
+    extractor._write_feature_manifest(
+        feature_dir=local, store=FeatureStore(payload_dir),
+        loaded_tilings=[LoadedTiling(slide=SlideSpec(sample_id="s0", image_path=tmp_path / "s0.svs"),
+                                    tiling_result=_tiling())],
+        encoder_name=_TEST_TILE, output_variant="default",
+    )
+    assert not (payload_dir.parent / "process_list.csv").exists()
+    store = FeatureStore(local)
+    assert store.available_samples == ["s0"]
+    assert torch.equal(store.load("s0"), torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    manifest = pd.read_csv(local / "process_list.csv")
+    assert manifest.loc[0, "feature_path"] == str(payload_dir / "s0.pt")
