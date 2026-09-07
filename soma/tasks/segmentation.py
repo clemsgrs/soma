@@ -17,7 +17,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from soma.dense.reader import load_mask, read_mask_at_spacing, read_mask_region_at_spacing
+from soma.dense.reader import load_mask as load_mask
+from soma.dense.reader import read_mask_at_spacing, read_mask_region_at_spacing
 from soma.evaluation.metrics import resolve_metrics
 from soma.spacing import resolve_effective_spacing_um
 from soma.tasks.base import TaskHead

@@ -161,10 +161,6 @@ def test_identity_digest(config: PipelineConfig) -> str:
     ).hexdigest()
 
 
-def _preprocessing_identity(config: PipelineConfig) -> dict[str, Any]:
-    return asdict(config.preprocessing)
-
-
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_path = Path(config.dataset_csv).resolve()
     splits_path = Path(config.splits_csv).resolve()
@@ -181,7 +177,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "splits": {"checksum": splits_digest},
             "dataset_type": config.dataset_type,
             "feature_mode": config.feature_mode,
-            "preprocessing": _preprocessing_identity(config),
+            "preprocessing": asdict(config.preprocessing),
             "cache": {
                 "enabled": config.cache.enabled,
                 "reuse_policy": config.cache.reuse_policy,
@@ -215,7 +211,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         },
         "dataset_type": config.dataset_type,
         "feature_mode": config.feature_mode,
-        "preprocessing": _preprocessing_identity(config),
+        "preprocessing": asdict(config.preprocessing),
         "cache": {
             "enabled": config.cache.enabled,
             "reuse_policy": config.cache.reuse_policy,

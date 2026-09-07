@@ -39,13 +39,10 @@ def _default_preview_config() -> PreviewConfig:
     )
 
 
-def _config_resource_path() -> resources.abc.Traversable:
-    return resources.files("soma.configs").joinpath("default.yaml")
-
-
 @lru_cache(maxsize=1)
 def _load_default_config_data() -> dict[str, Any]:
-    with _config_resource_path().open("r", encoding="utf-8") as handle:
+    path = resources.files("soma.configs").joinpath("default.yaml")
+    with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError("Bundled default config must be a mapping")
@@ -1916,9 +1913,7 @@ def _normalize_yaml_value(obj: Any) -> Any:
     """Recursively normalize dataclass output into YAML-safe primitives."""
     if isinstance(obj, Path):
         return str(obj)
-    if isinstance(obj, tuple):
-        return [_normalize_yaml_value(value) for value in obj]
-    if isinstance(obj, list):
+    if isinstance(obj, (tuple, list)):
         return [_normalize_yaml_value(value) for value in obj]
     if isinstance(obj, dict):
         return {key: _normalize_yaml_value(value) for key, value in obj.items()}
@@ -1959,17 +1954,12 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             }
         ),
         "augmentation": _normalize_yaml_value(asdict(config.augmentation)),
-        # Always recorded, even when off (`{method: none}`): the *hash* is guarded so
-        # legacy experiment_ids survive, the *record* is not — a saved config always
-        # says what transform the run applied (issue #283).
         "normalization": _normalize_yaml_value(asdict(config.normalization)),
-        # Same guard-the-hash-not-the-record rule as ``normalization`` (issue #284).
         "projection": _normalize_yaml_value(asdict(config.projection)),
         "reports": {
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },
     }
-    data["preprocessing"]["preview"] = _normalize_yaml_value(asdict(config.preprocessing.preview))
     data["encoder"] = (
         _normalize_yaml_value(asdict(config.encoder))
         if config.encoder is not None

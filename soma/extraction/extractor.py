@@ -696,7 +696,7 @@ class _PooledFeatureExtractor:
     ) -> None:
         """Write the run-owned manifest pointing to reusable shared payloads."""
         metadata = cache_resolution.metadata
-        sample_ids = self._cache_ids_for_resolution(cache_resolution)
+        sample_ids = cache_resolution.cache_ids
         empty_sample_ids = cache_resolution.empty_sample_ids
         artifact_kind = {
             "tile": "tile_embeddings",
@@ -730,7 +730,7 @@ class _PooledFeatureExtractor:
             feature_status = "empty" if sample_id in empty_sample_ids else "success"
             feature_path = ""
             if feature_status == "success":
-                feature_path = str(self._feature_path_for_cache_id(cache_resolution, sample_id).resolve())
+                feature_path = str(cache_resolution.feature_path_for_id(sample_id).resolve())
             rows.append(
                 {
                     "sample_id": sample_id,
@@ -780,22 +780,6 @@ class _PooledFeatureExtractor:
             for loaded in loaded_tilings
             if loaded.slide.sample_id in wanted_ids and loaded.slide.sample_id not in empty_ids
         ]
-
-    @staticmethod
-    def _cache_ids_for_resolution(cache_resolution: FeatureCacheResolution) -> list[str]:
-        cache_ids = getattr(cache_resolution, "cache_ids", None)
-        if cache_ids is not None:
-            return [str(sample_id) for sample_id in cache_ids]
-        return [str(sample_id) for sample_id in cache_resolution.metadata.get("sample_ids", [])]
-
-    @staticmethod
-    def _feature_path_for_cache_id(
-        cache_resolution: FeatureCacheResolution,
-        cache_id: str,
-    ) -> Path:
-        if hasattr(cache_resolution, "feature_path_for_id"):
-            return cache_resolution.feature_path_for_id(cache_id)
-        return cache_resolution.features_dir / f"{cache_id}.pt"
 
     def _extract_uncached(
         self,
@@ -1448,7 +1432,7 @@ class _PooledFeatureExtractor:
             if cache_stem_by_id is not None and cache_id not in cache_stem_by_id:
                 continue
             source = Path(artifact.path)
-            destination = self._feature_path_for_cache_id(cache_resolution, cache_id)
+            destination = cache_resolution.feature_path_for_id(cache_id)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source.resolve() != destination.resolve():
                 if destination.exists():

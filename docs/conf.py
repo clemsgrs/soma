@@ -52,8 +52,6 @@ extensions = [
 # build time (the docs build has no GPU, no gated HF token, and no slides). The
 # tutorials are refreshed out-of-band via scripts/execute_tutorials.sh.
 nbsphinx_execute = "never"
-# nbsphinx renders a "source" download link per notebook; keep it (handy for the
-# copy-and-run workflow the tutorials are built around).
 nbsphinx_allow_errors = False
 
 templates_path = ["_templates"]
@@ -72,7 +70,6 @@ always_use_bars_union = True
 # Keep the docs build self-contained in offline environments.
 intersphinx_mapping = {}
 
-html_theme = "furo"
 html_static_path = ["_static"]
 html_css_files = ["sidebar.css"]
 html_title = "soma"

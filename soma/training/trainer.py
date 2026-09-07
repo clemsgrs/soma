@@ -102,7 +102,9 @@ class Trainer:
         self._console = console
         self._fold = fold
         self._num_folds = num_folds
-        self._trainable_param_count = _count_trainable_parameters(self._model)
+        self._trainable_param_count = sum(
+            param.numel() for param in self._model.parameters() if param.requires_grad
+        )
 
         self._optimizer = _build_optimizer(model, config)
         self._scheduler = _build_scheduler(self._optimizer, config)
@@ -658,9 +660,7 @@ def accumulate_dense_stats(
 
 
 def _build_optimizer(model: torch.nn.Module, config: TrainingConfig) -> torch.optim.Optimizer:
-    # Only optimize trainable params: the live segmentation model holds a frozen
-    # encoder, and an optimizer raises if handed params with requires_grad=False. A
-    # strict no-op for fully-trainable models (every param requires grad).
+    # Exclude the live segmentation model's frozen encoder from optimizer groups.
     params = [p for p in model.parameters() if p.requires_grad]
     if config.optimizer == "adam":
         return torch.optim.Adam(params, lr=config.learning_rate, weight_decay=config.weight_decay)
@@ -942,10 +942,6 @@ def _format_metrics(metrics: dict[str, float]) -> str:
     return " | ".join(items)
 
 
-def _format_finite(value: float) -> str:
-    return f"{value:.4f}" if np.isfinite(value) else "n/a"
-
-
 def _format_elapsed_seconds(elapsed_seconds: float) -> str:
     total_seconds = max(0, int(elapsed_seconds))
     hours, remainder = divmod(total_seconds, 3600)
@@ -961,10 +957,6 @@ def _format_elapsed_with_eta(elapsed_seconds: float | None, eta_seconds: float |
     elapsed_text = _format_optional_duration(elapsed_seconds)
     eta_text = _format_optional_duration(eta_seconds)
     return f"{elapsed_text} [ETA {eta_text}]"
-
-
-def _count_trainable_parameters(model: torch.nn.Module) -> int:
-    return sum(param.numel() for param in model.parameters() if param.requires_grad)
 
 
 def _resolve_total_items(loader: object, *, fallback: int) -> int:

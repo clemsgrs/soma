@@ -19,17 +19,6 @@ class DenseFeatureSource(FeatureSource, Protocol):
 
     provenance: "DenseSourceProvenance"
 
-    @property
-    def available_samples(self) -> list[str]:
-        ...
-
-    @property
-    def feature_dim(self) -> int:
-        ...
-
-    def load(self, sample_id: str) -> torch.Tensor:
-        ...
-
     def metadata(self, sample_id: str) -> dict:
         ...
 
@@ -40,9 +29,6 @@ class DenseFeatureSource(FeatureSource, Protocol):
         ...
 
     def spacing_um(self, sample_id: str) -> float | None:
-        ...
-
-    def validate_coverage(self, sample_ids: list[str]) -> None:
         ...
 
 

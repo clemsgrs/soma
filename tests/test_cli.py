@@ -34,30 +34,15 @@ def _make_valid_config(tmp_path: Path) -> Path:
     return path
 
 
-def test_run_shorthand_calls_pipeline_run(tmp_path: Path):
+def test_run_shorthand_passes_config_and_runs_pipeline(tmp_path: Path):
     config_path = _make_valid_config(tmp_path)
 
     with patch("soma.cli.Pipeline") as MockPipeline:
-        mock_instance = MagicMock()
-        MockPipeline.return_value = mock_instance
-
         from soma.cli import main
         main([str(config_path)])
 
     MockPipeline.assert_called_once()
-    mock_instance.run.assert_called_once()
-
-
-def test_run_shorthand_passes_correct_config_to_pipeline(tmp_path: Path):
-    config_path = _make_valid_config(tmp_path)
-
-    with patch("soma.cli.Pipeline") as MockPipeline:
-        mock_instance = MagicMock()
-        MockPipeline.return_value = mock_instance
-
-        from soma.cli import main
-        main([str(config_path)])
-
+    MockPipeline.return_value.run.assert_called_once()
     config_arg = MockPipeline.call_args[0][0]
     assert config_arg.encoder.name == "uni2"
     assert config_arg.task.name == "binary_classification"

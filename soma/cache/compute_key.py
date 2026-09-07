@@ -58,15 +58,6 @@ def resolved_output_variant(encoder_name: str, requested: str | None) -> str:
     return str(resolved["output_variant"])
 
 
-def _require_tissue_method(preprocessing: PreprocessingConfig) -> None:
-    if preprocessing.tissue_method is None:
-        raise ValueError(
-            "preprocessing.tissue_method must be set explicitly when computing a "
-            "cache_key — the auto-promotion soma performs against a Dataset is "
-            "not replicated here."
-        )
-
-
 def _resolve(
     encoder_name: str,
     preprocessing: PreprocessingConfig,
@@ -74,7 +65,12 @@ def _resolve(
     has_precomputed_masks: bool = False,
 ) -> PreprocessingConfig:
     """Return preprocessing with encoder-driven defaults filled in."""
-    _require_tissue_method(preprocessing)
+    if preprocessing.tissue_method is None:
+        raise ValueError(
+            "preprocessing.tissue_method must be set explicitly when computing a "
+            "cache_key — the auto-promotion soma performs against a Dataset is "
+            "not replicated here."
+        )
     resolved_prep = resolve_preprocessing_config(
         EncoderConfig(name=encoder_name),
         preprocessing,

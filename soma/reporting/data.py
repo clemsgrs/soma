@@ -285,11 +285,13 @@ def run_data_from_result(
     Returns:
         RunData ready for report rendering.
     """
+    from soma.config import _config_to_layout_dict
+
     task_family = config.task.name
     metrics = resolve_metrics(task_family, config.evaluation.metrics)
     subgroup_columns = list(config.evaluation.subgroups.columns)
 
-    config_dict = _config_to_dict(config)
+    config_dict = _config_to_layout_dict(config)
 
     run_metadata_path = result.run_dir / "run.yaml"
     run_metadata = yaml.safe_load(run_metadata_path.read_text()) if run_metadata_path.exists() else {}
@@ -340,13 +342,6 @@ def run_data_from_result(
         metrics=metrics,
         subgroup_columns=subgroup_columns,
     )
-
-
-def _config_to_dict(config: PipelineConfig) -> dict:
-    """Serialize PipelineConfig to a plain dict (Paths converted to strings)."""
-    from soma.config import _config_to_layout_dict
-
-    return _config_to_layout_dict(config)
 
 
 def _predictions_to_dataframe(predictions: list) -> pd.DataFrame:

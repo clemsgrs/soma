@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import fields, is_dataclass
-from inspect import signature
 from importlib import resources
 from pathlib import Path
 from textwrap import dedent, indent
@@ -15,7 +13,6 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
     if sibling.exists():
         sys.path.insert(0, str(sibling))
 
-from soma.aggregators import aggregator_registry
 from soma.benchmarks import (
     expected_rows,
     get_benchmark,
@@ -26,101 +23,7 @@ from soma.benchmarks import (
 from soma.benchmarks import croma as croma_bench
 from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import ocelot as ocelot_bench
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    EncoderConfig,
-    EvalConfig,
-    ExecutionConfig,
-    HeatmapConfig,
-    PipelineConfig,
-    PreprocessingConfig,
-    PreviewConfig,
-    TaskConfig,
-    TrainingConfig,
-)
-from soma.dataset import Dataset, Splits
-from soma.extraction import FeatureExtractor
-from soma.features import FeatureStore
-from soma.pipeline import Pipeline, train
-from soma.tasks import task_registry
 from soma.training.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
-
-
-def _field_names(cls: type, *, exclude: set[str] | None = None) -> str:
-    if not is_dataclass(cls):
-        raise TypeError(f"{cls!r} is not a dataclass")
-    excluded = exclude or set()
-    return ", ".join(f"``{field.name}``" for field in fields(cls) if field.name not in excluded)
-
-
-def _constructor_knobs(cls: type) -> str:
-    params = [
-        f"``{param.name}``"
-        for param in signature(cls.__init__).parameters.values()
-        if param.name != "self"
-    ]
-    return ", ".join(params)
-
-
-def _list_table(rows: list[tuple[str, str, str, str]]) -> str:
-    lines = [".. list-table::", "   :header-rows: 1", ""]
-    lines.extend(
-        [
-            "   * - Name",
-            "     - Class",
-            "     - Constructor knobs",
-            "     - Notes",
-        ]
-    )
-    for name, cls_name, knobs, notes in rows:
-        lines.extend(
-            [
-                f"   * - ``{name}``",
-                f"     - ``{cls_name}``",
-                f"     - {knobs}",
-                f"     - {notes}",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _api_table(rows: list[tuple[str, str]]) -> str:
-    lines = [".. list-table::", "   :header-rows: 1", ""]
-    lines.extend(
-        [
-            "   * - Symbol",
-            "     - Description",
-        ]
-    )
-    for symbol, desc in rows:
-        lines.extend(
-            [
-                f"   * - ``{symbol}``",
-                f"     - {desc}",
-            ]
-        )
-    return "\n".join(lines)
-
-
-def _config_table(rows: list[tuple[str, str, str]]) -> str:
-    lines = [".. list-table::", "   :header-rows: 1", ""]
-    lines.extend(
-        [
-            "   * - Config",
-            "     - Main fields",
-            "     - Purpose",
-        ]
-    )
-    for name, fields_text, purpose in rows:
-        lines.extend(
-            [
-                f"   * - ``{name}``",
-                f"     - {fields_text}",
-                f"     - {purpose}",
-            ]
-        )
-    return "\n".join(lines)
 
 
 def _default_config_yaml_block() -> str:

@@ -1,19 +1,11 @@
-"""Pixel-classifier segmentation glue: pixel sampling, dense predict, evaluation.
+"""Pixel sampling, prediction, and evaluation for pixel-classifier segmentation.
 
-Pure orchestration helpers shared by ``train_one_pixel_classifier_fold`` (in
-``soma.pipeline``). They reuse the segmentation **data plane** verbatim — the
-``SegmentationHead``'s geometry (``forward`` upsamples a ``(C, gh, gw)`` grid to the
-mask's pixel resolution; ``extract_targets`` reads the spacing-aware mask), the
-``dense_confusion_counts`` / streaming Dice-IoU reduction, and the
-``DenseArtifactWriter`` — so a pixel-classifier run produces byte-identical metrics and
-artifacts to the neural-decoder run. Only the model differs.
-
-Design: attention-pixel segmentation §9 (pixel-resolution, sample-train / predict-all).
+Reuses the segmentation head's geometry, streaming metrics, and artifact writer
+so pixel classifiers and neural decoders follow the same evaluation protocol.
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -30,8 +22,6 @@ if TYPE_CHECKING:
     from soma.pixel_classifiers.base import PixelClassifier
     from soma.tasks.segmentation import SegmentationHead
 
-logger = logging.getLogger(__name__)
-
 _LOG_EPS = 1e-8
 
 
@@ -46,20 +36,6 @@ def grid_to_target_features(grid: torch.Tensor, head: "SegmentationHead") -> tor
     """
     with torch.no_grad():
         return head.forward(grid.unsqueeze(0).float())[0]  # (K, H, W)
-
-
-def _valid_pixel_features(
-    record: "SampleRecord",
-    feature_store: "DenseFeatureSource",
-    head: "SegmentationHead",
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return ``(features (P, K), mask (P,))`` flattened over all pixels of one tile."""
-    grid = feature_store.load(record.sample_id)
-    feat = grid_to_target_features(grid, head)  # (K, H, W)
-    k = feat.shape[0]
-    feat = feat.reshape(k, -1).transpose(0, 1).contiguous().numpy()  # (H*W, K)
-    mask = head.extract_targets(record)["mask"].reshape(-1).numpy()  # (H*W,)
-    return feat, mask
 
 
 def build_training_matrix(

@@ -1,23 +1,8 @@
-"""Pure spatial geometry for dense (segmentation) feature extraction.
+"""Spatial layout of a supervision tile padded to the encoder's patch multiple.
 
-This module owns the pad-to-patch-multiple math that maps a supervision-sized
-tile/mask (``target_size``) to the patch-divisible tensor actually fed to a ViT
-encoder (``encoded_size``) and the resulting token grid (``grid_shape``). It is
-deliberately weight-free and side-effect-free: the returned :class:`DenseGridGeometry`
-is exactly what the dense cache persists as per-sample metadata, and what the
-decoder/head later use to crop logits back to the mask.
-
-Why a dedicated function (not inlined in the extractor): this is the
-highest-bug-density code in the dense pipeline — the patch-16 vs patch-14
-asymmetry (512 is clean for P=16 → 32×32, but P=14 needs 518 → 37×37; see
-segmentation-design §5c) silently misregisters the grid against the mask if it is
-off by a patch. Isolating it makes it unit-testable without an encoder.
-
-Scope: the **output** geometry — ``target_size`` padded to the patch multiple and the
-resulting token grid. Sliding-window extraction (design §5, window-as-knob) reuses this
-exact geometry as its stitched output and *derives* its per-window tiling from it in
-:mod:`soma.dense.sliding` (``resolve_window_geometry``); it does not need a separate
-output layout here.
+The cache records this geometry so decoders can crop outputs back to the mask.
+For example, a 512-pixel tile needs no padding for patch size 16, but must be
+padded to 518 pixels for patch size 14 to preserve grid-to-mask alignment.
 """
 
 from __future__ import annotations

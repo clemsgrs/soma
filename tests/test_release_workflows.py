@@ -9,10 +9,6 @@ def _load_workflow(path: str) -> dict:
     return yaml.load(Path(path).read_text(), Loader=yaml.BaseLoader)
 
 
-def _load_text(path: str) -> str:
-    return Path(path).read_text()
-
-
 def test_release_workflow_publishes_to_pypi_on_published_release():
     workflow = _load_workflow(".github/workflows/release.yaml")
 

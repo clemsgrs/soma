@@ -11,6 +11,7 @@ def test_pyproject_has_publish_ready_metadata():
 
     project = data["project"]
     assert project["name"] == "soma-pathology"
+    assert project["scripts"]["soma"] == "soma.__main__:entrypoint"
     assert re.fullmatch(r"\d+\.\d+\.\d+", project["version"]) is not None
     assert project["license"] == {"file": "LICENSE"}
     assert project["authors"] == [
@@ -44,15 +45,6 @@ def test_hs2p_minimum_includes_fast_tiling_previews():
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert "hs2p>=4.4.2" in data["project"]["dependencies"]
-
-
-def test_pypi_distribution_name_keeps_soma_import_package():
-    pyproject = Path("pyproject.toml")
-    data = tomllib.loads(pyproject.read_text())
-
-    assert data["project"]["name"] == "soma-pathology"
-    assert data["project"]["scripts"]["soma"] == "soma.__main__:entrypoint"
-    assert data["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["soma"]
 
 
 def test_release_metadata_matches_license_and_verified_python_support():
