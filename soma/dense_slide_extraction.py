@@ -32,6 +32,7 @@ from collections import defaultdict
 from collections.abc import Collection
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from slide2vec import DenseOptions, Model, SlideRegions
@@ -73,7 +74,7 @@ def _build_tiling_config(preprocessing: PreprocessingConfig, sampling: SamplingC
 
     soma's ``preprocessing.min_coverage`` is the tissue threshold in hs2p's own masks-shaped
     form; the per-class sampling map still flows separately through
-    ``_resolve_sampling_spec_from_masks(masks, …)``, and this tiling-level entry only feeds
+    ``resolve_sampling_spec``, and this tiling-level entry only feeds
     the result's binary ``min_tissue_fraction`` provenance.
     """
     return replace(
@@ -128,7 +129,7 @@ def sample_slide_rois(
     missing slides without touching the hits. ``None`` (the default) samples every slide.
     """
     from hs2p import SlideSpec, tile_slide
-    from hs2p.configs.resolvers import _resolve_sampling_spec_from_masks
+    from hs2p.configs.resolvers import resolve_sampling_spec
     from hs2p.wsi.types import CoordinateOutputMode
 
     if sampling.output_mode != "merged":
@@ -157,7 +158,9 @@ def sample_slide_rois(
             requested_spacing_um=preprocessing.effective_spacing_um(record.spacing_at_level_0),
         )
         tiling = _build_tiling_config(effective_preprocessing, sampling)
-        spec = _resolve_sampling_spec_from_masks(masks, tiling=tiling)
+        spec = resolve_sampling_spec(
+            SimpleNamespace(tiling=SimpleNamespace(masks=masks)), tiling=tiling,
+        )
         # The annotation raster drives ROI sampling (per-class coverage), so it is the
         # sampling mask hs2p sees here.
         result = tile_slide(

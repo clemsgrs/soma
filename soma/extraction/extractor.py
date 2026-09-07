@@ -11,7 +11,7 @@ import shutil
 import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import torch
 from slide2vec import (
@@ -1475,6 +1475,23 @@ class _PooledFeatureExtractor:
             record_sample_identity_signatures(cache_resolution, sorted(written_ids))
         return feature_dim
 
+    def _artifact_cache_committer(
+        self, cache_resolution: FeatureCacheResolution,
+    ) -> Callable[[Sequence[object]], None]:
+        """Sign persisted artifacts and record the first known feature dimension."""
+        feature_dim: int | None = None
+
+        def commit(artifacts: Sequence[object]) -> None:
+            nonlocal feature_dim
+            dim = self._write_artifacts_to_cache_resolution(
+                artifacts=artifacts, cache_resolution=cache_resolution,
+            )
+            if feature_dim is None and dim is not None:
+                record_feature_dim(cache_resolution, dim)
+                feature_dim = dim
+
+        return commit
+
     def _populate_tile_cache(
         self,
         *,
@@ -1510,16 +1527,7 @@ class _PooledFeatureExtractor:
             save_tile_embeddings=True,
             output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
-        feature_dim = None
-
-        def on_slide_persisted(artifact: object) -> None:
-            nonlocal feature_dim
-            dim = self._write_artifacts_to_cache_resolution(
-                artifacts=[artifact], cache_resolution=cache_resolution,
-            )
-            if feature_dim is None and dim is not None:
-                record_feature_dim(cache_resolution, dim)
-                feature_dim = dim
+        commit = self._artifact_cache_committer(cache_resolution)
 
         artifacts = _embed_tile_artifacts_with_coordinates(
             model_name=encoder_name,
@@ -1529,14 +1537,10 @@ class _PooledFeatureExtractor:
             execution=execution,
             tiling_dir=tiling_dir,
             slides=[loaded.slide for loaded in selected_loaded],
-            on_slide_persisted=on_slide_persisted,
+            on_slide_persisted=lambda artifact: commit([artifact]),
         )
         # Reconcile returned artifacts in case upstream omitted a callback.
-        dim = self._write_artifacts_to_cache_resolution(
-            artifacts=artifacts, cache_resolution=cache_resolution,
-        )
-        if feature_dim is None and dim is not None:
-            record_feature_dim(cache_resolution, dim)
+        commit(artifacts)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 
@@ -1575,16 +1579,7 @@ class _PooledFeatureExtractor:
             save_tile_embeddings=True,
             output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
-        feature_dim = None
-
-        def on_slide_persisted(artifact: object) -> None:
-            nonlocal feature_dim
-            dim = self._write_artifacts_to_cache_resolution(
-                artifacts=[artifact], cache_resolution=cache_resolution,
-            )
-            if feature_dim is None and dim is not None:
-                record_feature_dim(cache_resolution, dim)
-                feature_dim = dim
+        commit = self._artifact_cache_committer(cache_resolution)
 
         artifacts = _embed_hierarchical_artifacts_with_coordinates(
             model_name=encoder_name,
@@ -1594,14 +1589,10 @@ class _PooledFeatureExtractor:
             execution=execution,
             tiling_dir=tiling_dir,
             slides=[loaded.slide for loaded in selected_loaded],
-            on_slide_persisted=on_slide_persisted,
+            on_slide_persisted=lambda artifact: commit([artifact]),
         )
         # Reconcile returned artifacts in case upstream omitted a callback.
-        dim = self._write_artifacts_to_cache_resolution(
-            artifacts=artifacts, cache_resolution=cache_resolution,
-        )
-        if feature_dim is None and dim is not None:
-            record_feature_dim(cache_resolution, dim)
+        commit(artifacts)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 
