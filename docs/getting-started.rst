@@ -1,11 +1,9 @@
 Getting started
 ===============
 
-This is a compact slide-level classification walkthrough. It first builds one
-AB-MIL experiment with soma's modular API, then runs the same experiment through
-the pipeline and CLI. The goal is to show how the pieces fit together. The
-:doc:`slide-level tutorial <tutorials/slide-level>` covers more hands-on and
-advanced workflows.
+Run slide-level binary classification with a frozen ``phikon`` encoder and an
+AB-MIL aggregator. The modular API exposes each step; the pipeline and CLI
+examples express the same experiment in one configuration.
 
 Install
 -------
@@ -17,7 +15,7 @@ soma requires Python 3.11 or later:
    pip install soma-pathology
 
 Optional extras add the dependencies of specific paths: ``[pixel]`` for the
-``xgboost`` pixel classifier, ``[croma]`` for the CRoMa robustness benchmark,
+``xgboost`` pixel classifier, ``[croma]`` for CRoMa data preparation,
 ``[hest]`` for HEST curation, for example ``pip install 'soma-pathology[pixel]'``.
 
 The first run downloads the selected model weights. Feature extraction is
@@ -41,27 +39,28 @@ or sweep one component without rerunning the others.
    slide_001,/path/to/slides/slide_001.svs,0
    slide_002,/path/to/slides/slide_002.svs,1
    slide_003,/path/to/slides/slide_003.svs,0
-   ...
+   slide_004,/path/to/slides/slide_004.svs,1
+   slide_005,/path/to/slides/slide_005.svs,0
+   slide_006,/path/to/slides/slide_006.svs,1
 
-``splits.csv`` assigns every sample to one split in each fold. This excerpt
-shows part of a five-fold definition. The complete file repeats every sample
-for folds 0 through 4.
+Replace the paths with your slides. ``splits.csv`` assigns each sample to one
+split per fold. This minimal example defines one fold:
 
 .. code-block:: text
 
    sample_id,split,fold
-   slide_001,test,0
-   slide_002,tune,0
-   slide_003,train,0
-   ...
-   slide_001,train,4
-   slide_002,tune,4
-   slide_003,test,4
-   ...
+   slide_001,train,0
+   slide_002,train,0
+   slide_003,tune,0
+   slide_004,tune,0
+   slide_005,test,0
+   slide_006,test,0
 
-Each fold is an independent assignment. Every sample
-appears once per fold as train, tune, or test. See :doc:`dataset` for the
-complete manifest contract and split rules.
+Use independent subjects across splits and enough samples for meaningful
+evaluation. Both classes must appear in each scored split for AUROC to be
+defined. For cross-validation, repeat every sample's assignment for each fold
+using consecutive fold numbers from 0. See :doc:`dataset` for manifest and split
+rules.
 
 2. Preprocess and encode
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -84,11 +83,11 @@ store.
    splits = Splits("splits.csv", dataset)
 
    preprocessing = PreprocessingConfig(
-       tissue_method="hsv", # tissue detection method
-       min_coverage={"tissue": 0.2}, # minimum tissue coverage for a tile to be kept
-       overlap=0.0, # fraction of tile overlap (0.0 means no overlap, 0.5 means 50% overlap)
-       requested_spacing_um=0.5, # microns per pixel
-       requested_tile_size_px=224, # tile width and height in pixels
+       tissue_method="hsv",
+       min_coverage={"tissue": 0.2},
+       overlap=0.0,
+       requested_spacing_um=0.5,
+       requested_tile_size_px=224,
    )
    encoder = EncoderConfig(
        name="phikon",
@@ -154,12 +153,8 @@ See :doc:`aggregators`, :doc:`classification`, :doc:`training`, and
 Pipeline and CLI
 ----------------
 
-The same experiment can be expressed as one
-:class:`~soma.config.PipelineConfig`. With a single call to
-:meth:`~soma.pipeline.Pipeline.run`, soma performs every modular step above:
-preprocessing, feature extraction, training, and evaluation. Use the modular
-API to debug or customize individual stages. Use the pipeline (or the CLI) for
-scalable runs.
+Use :class:`~soma.config.PipelineConfig` to run preprocessing, feature extraction,
+training, and evaluation with one call:
 
 .. code-block:: python
 
@@ -199,14 +194,44 @@ scalable runs.
 metrics, and ``result.fold_results`` holds per-fold results. See :doc:`outputs`
 for the saved configuration, predictions, metrics, and reports.
 
-We also ship a simple **CLI** that runs the same pipeline from its YAML representation:
+For the CLI, save the equivalent configuration as ``config.yaml``:
+
+.. code-block:: yaml
+
+   run:
+     output_root: output
+     seed: 0
+   data:
+     dataset_csv: dataset.csv
+     splits_csv: splits.csv
+     dataset_type: slide
+   preprocessing:
+     tissue_method: hsv
+     min_coverage: {tissue: 0.2}
+     overlap: 0.0
+     requested_spacing_um: 0.5
+     requested_tile_size_px: 224
+   encoder:
+     name: phikon
+   aggregation:
+     name: abmil
+   task:
+     name: binary_classification
+   training:
+     epochs: 5
+     learning_rate: 1.0e-4
+   evaluation:
+     metrics: [auroc, balanced_accuracy]
+
+Then run:
 
 .. code-block:: bash
 
    soma config.yaml
 
-soma validates ``config.yaml`` as a ``PipelineConfig`` before running it. See
-the :doc:`CLI reference <cli>` for the YAML schema and command surface.
+soma merges the file with bundled defaults and validates it before running.
+YAML uses ``aggregation`` where the Python constructor uses ``aggregator``.
+See :doc:`cli` for defaults and command-line overrides.
 
 Go further
 ----------

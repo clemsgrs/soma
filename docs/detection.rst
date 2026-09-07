@@ -1,27 +1,17 @@
 Detection
 =========
 
-A dense **point-detection** path for cell / nucleus detection: predict object
-**centroids** (+ class) in a tile, not bounding boxes. detection-v1 reuses the
-:doc:`segmentation` *front half* verbatim — the shared **dense contract** (a **frozen**
-foundation-model encoder produces a dense ``(d, grid_h, grid_w)`` token grid, cached as
-``feature_type="dense_grid"``) — and only the output representation is detection-specific:
-a decoder regresses a per-class **peak heatmap**, and a
-:class:`~soma.tasks.detection.DetectionHead` turns it back into points and scores them with
-**F1 at a matching distance δ** (the OCELOT convention).
-
-It sits alongside the :doc:`segmentation` paths: same manifest shape, splits, dense feature
-cache, decoder registry, and streaming evaluator — the head, target encoding, loss,
-postprocess, and metric are what differ.
+Detection predicts cell or nucleus centroids and classes in a tile. A frozen
+encoder supplies dense grids, a :doc:`decoder <decoders>` predicts per-class
+heatmaps, and the detection head extracts points and scores them at matching
+distance δ. It shares dense extraction and caching with :doc:`segmentation`.
 
 .. figure:: /_static/figures/dense-prediction.svg
    :figclass: soma-figure
    :alt: A frozen foundation model produces a 2D feature grid; the same trained conv decoder feeds a detection branch (sigmoid heatmap, peak extraction, cell points) and a segmentation branch (per-pixel argmax, mask).
 
-   The dense path. A frozen encoder produces a 2D feature grid; the same trained
-   lightweight conv decoder drives both dense tasks — detection reads peaks out of a
-   per-class heatmap, segmentation argmaxes per pixel. This page covers the detection
-   branch (left).
+   Detection extracts heatmap peaks; segmentation selects a class per pixel.
+   Both use the same decoder architecture, trained for their respective task.
 
 .. seealso::
 
@@ -38,17 +28,14 @@ For each tile:
 1. Run the frozen ViT → dense patch-feature grid ``(d, grid_h, grid_w)`` (the same
    extraction / cache / store stack as the decoder segmentation path).
 2. A **decoder** (``lightweight_conv`` by default) regresses a ``(C, grid)`` map; the
-   head interpolates it to the supervision ``target_size``, crops via ``crop_box``, and
+   head interpolates it to the padded ``encoded_size``, crops to ``target_size``, and
    applies a **sigmoid** → a per-class heatmap in ``[0, 1]`` (one channel per object
    class; background is the absence of a peak).
 3. The training target is a **peak Gaussian** rendered at each annotated point (peak
    value 1, overlaps merged by element-wise **max** — *not* a count-preserving density
-   map, so adjacent cells stay separable). Loss is **foreground-weighted MSE**.
+   map). Loss is **foreground-weighted MSE**.
 4. At inference, peaks are recovered per channel by **local-maxima + NMS + a per-class
    score threshold**, then matched to ground truth with **class-aware F1@δ**.
-
-Lineage: FCRN / CellRegNet (density-map regression). The P2PNet point-set head is a
-planned follow-on; see the design note ``design/detection-design.md``.
 
 Data contract
 -------------
@@ -70,14 +57,14 @@ supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
      - Tile / ROI image.
    * - ``points_path``
      - yes
-     - Per-sample point file (replaces seg's ``label_mask_path``).
+     - Per-sample point annotations.
    * - ``spacing_at_level_0``
      - no
      - Finite positive µm/px declaration for the source image's level-0 pixels. Required
        for flat PNG/JPEG extraction; WSI readers may resolve it from the slide.
    * - ``source_wsi`` / ``tile_x`` / ``tile_y``
      - no
-     - Parent slide id + tile origin — retained now for deferred WSI stitching.
+     - Parent slide id and tile origin, retained as metadata.
    * - ``label`` / ``patient_id``
      - no
      - Optional; supervision is the points.
@@ -90,8 +77,7 @@ OCELOT's ``{1, 2}``) to ``{0, 1}`` during ingestion.
 Coordinate convention — level-0 store, target compute
 -----------------------------------------------------
 
-Points are **persisted in level-0 (base full-resolution) pixels** — the pathology
-convention (ASAP / QuPath / hs2p), invariant to the experiment. The loader maps them
+Points are stored in the source image's level-0 pixels. The loader maps them
 into the run's ``target_size`` frame for encoding and matching::
 
    x_target = x_level0 * (source_spacing_um / effective_spacing_um) - crop_left
@@ -103,8 +89,7 @@ and ``effective_spacing_um`` is the scale actually sampled for the dense grid. T
 can legitimately differ slightly from ``preprocessing.requested_spacing_um`` when a WSI
 reader accepts a nearby native level. For flat tiles read at native resolution (equal
 source/effective spacing, no crop) the transform is the identity. Predicted points are
-written **back** to level-0 in the prediction CSV, so deferred WSI stitching needs no data
-migration.
+written back to that source frame in the prediction CSV.
 
 Configuration
 -------------
@@ -130,32 +115,15 @@ Configuration
    evaluation:
      metrics: [mean_f1, f1_per_class]
 
-``match_distance`` (δ), ``sigma``, and ``nms_distance`` are **always given in µm** —
-physically meaningful and spacing-invariant, so the same value means the same tolerance
-regardless of which encoder / spacing the run uses, with no "px at which level?"
-ambiguity. Each is resolved to target-frame pixels by dividing by the persisted
-``effective_spacing_um`` (the scale actually sampled), so resolved provenance is required
-for every detection grid. One run may contain different source spacings, but all samples
-must share one effective spacing because they share a decoder geometry. ``match_distance``
-is required; ``sigma`` defaults to δ/3 and
-``nms_distance`` to δ (so two detections cannot both satisfy one ground-truth point).
-Benchmarks that define their tolerance in pixels are expressed in µm via the read
-effective spacing: OCELOT's official **15 px** at ``effective_spacing_um = 0.2`` is
-``match_distance: 3.0`` µm (``3.0 / 0.2 = 15`` px).
+``match_distance`` (δ) is required. ``sigma`` defaults to δ/3 and
+``nms_distance`` to δ. All three are specified in µm and converted to pixels
+using each grid's persisted ``effective_spacing_um``. Samples may have different
+source spacings, but a run requires one effective spacing and uniform grid
+geometry. For example, 15 pixels at 0.2 µm/px corresponds to
+``match_distance: 3.0``.
 
-Feature substrate — patch features or attention grids
------------------------------------------------------
-
-The decoder is **input-agnostic**: it consumes whatever dense ``(d, grid)`` grid the
-encoder emits, set by ``preprocessing.feature_kind`` (see :doc:`decoders`). Two choices:
-
-* ``patch_features`` *(default)* — the ViT patch-token grid (``d`` = the encoder's
-  feature dim). The richest descriptor for sub-token localisation; the recommended
-  baseline.
-* ``cls_attention`` — per-head prefix-token self-attention as a ``(K, grid)`` grid (set
-  ``attention: {blocks: [-1], include_registers: false}``). Switching to it is a **pure
-  config flip** — nothing in the head, loss, peak extraction, or F1@δ evaluator changes
-  (the decoder is simply built with ``input_dim = K``).
+The default feature kind is ``patch_features``. To probe attention maps with
+the same head, loss, and evaluator, use an attention-capable encoder and set:
 
 .. code-block:: yaml
 
@@ -163,19 +131,10 @@ encoder emits, set by ``preprocessing.feature_kind`` (see :doc:`decoders`). Two 
      feature_kind: cls_attention
      attention: { blocks: [-1], include_registers: false }
 
-Attention grids sit at the same token-grid resolution as patch features, so they do not
-buy extra localisation resolution; they are best treated as an **ablation** against the
-``patch_features`` baseline rather than an automatic win (a saliency scalar per head
-carries less sub-token detail than a full patch descriptor). Run the ``patch_features``
-baseline first so the attention number is interpretable relative to it.
-
-Methods
--------
-
-The dense grid admits two **feature substrates** (what the encoder emits) and two
-**trainable components** on it; the neural decoder is detection's default and required
-component. The :doc:`Detection tutorial <tutorials/detection>` lists the substrate and
-component alternatives with the runnable walkthrough for each.
+Attention maps retain the token-grid resolution; switching feature kind does
+not add spatial samples. Detection requires a neural decoder. See
+:doc:`decoders` for available architectures and :doc:`tutorials/detection`
+for a runnable workflow.
 
 Metric — F1 at matching distance δ
 ----------------------------------
@@ -206,13 +165,12 @@ Task head
 .. autoclass:: soma.tasks.detection.DetectionHead
    :members:
 
-Status & scope
---------------
+Scope
+-----
 
-detection-v1 is **cached-only** (no live re-encode / geometric point-target
-augmentation) and assumes a uniform tile/grid size across the cohort. The P2PNet
-point-set head, live augmentation, and WSI-level stitching are deferred increments. Full
-rationale and the locked design decisions are in ``design/detection-design.md``.
+Detection uses cached features and assumes uniform tile and grid sizes across
+the cohort. Live re-encoding, geometric point-target augmentation, point-set
+heads, and WSI-level stitching are not implemented.
 
 Benchmarks
 ----------
@@ -228,5 +186,3 @@ References
 * *Towards Effective and Efficient Context-aware Nucleus Detection in Histopathology
   WSIs* (2025), `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`_ — P2PNet on frozen
   features.
-* The decoder :doc:`segmentation` path and shared dense extraction (see :doc:`decoders`,
-  the decoder-free :doc:`decoders/pixel-classifier`, and :doc:`preprocessing`).

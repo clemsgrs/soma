@@ -45,9 +45,8 @@ def build_cli_rst() -> str:
         CLI
         ===
 
-        ``soma`` exposes a compact command-line interface for running
-        experiments from YAML config files and for listing the available model
-        presets.
+        Use ``soma`` to run YAML experiments, discover components, reproduce
+        benchmarks, and compare completed runs.
 
         .. figure:: /_static/figures/run-flow.svg
            :figclass: soma-figure
@@ -63,14 +62,22 @@ def build_cli_rst() -> str:
 
             soma /path/to/config.yaml
 
-        You can also invoke it through Python if you prefer::
+        The equivalent Python invocation is::
 
             python -m soma /path/to/config.yaml
+
+        Override individual settings without editing the file::
+
+            soma config.yaml --set run.output_root=runs/local --set training.epochs=5
+
+        Repeat ``--set KEY=VALUE`` for multiple overrides. Keys are dotted YAML
+        paths and values are parsed as YAML, preserving numbers and booleans.
+        Use ``soma --help`` or ``soma COMMAND --help`` for command options.
 
         Available commands
         ------------------
 
-        ``soma CONFIG``
+        ``soma CONFIG [--set KEY=VALUE ...]``
            Run a full pipeline from the given YAML config file.
 
         ``soma list encoders [--level {tile,slide,patient}]``
@@ -93,11 +100,21 @@ def build_cli_rst() -> str:
            List all registered foundation-model benchmarks — the names
            ``soma reproduce`` and ``soma leaderboard`` accept.
 
+        ``soma compact-index OUTPUT_ROOT``
+           Compact ``indexes/runs.csv`` to the latest row per run. Readers
+           already deduplicate the append-only index; compaction saves space.
+           A path to the CSV itself is also accepted. See :doc:`outputs`.
+
         Benchmarking commands
         ---------------------
 
-        These drive the registered benchmarks (see :doc:`benchmarking` for the
-        end-to-end curate → configure → run → leaderboard → reproduce story).
+        See :doc:`benchmarking` for data preparation, protocol selection, and
+        interpretation of reference comparisons.
+
+        ``soma prepare-croma RAW_ROOT [--rebuild]``
+           Download and decode the pinned PathoROB tile sources for
+           :doc:`croma-robustness-benchmark`. ``--rebuild`` replaces a partial
+           or revision-mismatched destination.
 
         ``soma reproduce NAME [--encoder NAME | --encoders NAME [NAME ...]] [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
            Curate → run → score a registered benchmark. When a matching packaged
@@ -109,19 +126,20 @@ def build_cli_rst() -> str:
            sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
            already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
            curation; ``--from-run-dir`` re-scores an existing run without retraining.
-           ``--seeds 1`` is the quickest smoke. ``--encoders`` resolves a family first and
-           checks the complete ordered concrete-Benchmark × Encoder panel before curation,
-           Pipeline construction, extraction, training, or Run writes. Every
-           incompatibility names its concrete Benchmark and Encoder. A valid panel writes
-           one canonical cross-encoder Leaderboard per concrete Benchmark; ranks are never
-           combined across family members. For a missing capability, select a compatible
-           Benchmark or fix the Encoder plugin.
-           It cannot be combined with single-Run ``--from-run-dir`` rescoring. A preflight
-           rejection starts no Run. After a valid panel starts, runtime failures do not
-           invalidate completed Runs or stop later encoders. soma labels the panel
-           ``PARTIAL`` in command output, writes the ordinary canonical Leaderboard over
-           completed Runs, prints one failure summary, and exits nonzero. If no Run
-           completed, it writes no Leaderboard.
+           ``--seeds N`` runs seeds 0 through N−1 instead of the canonical set;
+           use ``--seeds 1`` for a smoke run.
+
+           ``--encoders`` checks every benchmark/encoder pairing before starting
+           work, then writes one cross-encoder leaderboard per benchmark. It
+           cannot be combined with ``--from-run-dir``. Incompatible panels start
+           no runs. After a valid panel starts, runtime failures preserve
+           completed runs and allow later encoders to proceed. The command
+           reports ``PARTIAL`` and exits nonzero; the ordinary leaderboard
+           includes completed runs only. No completed runs means no leaderboard.
+
+           Use ``--output-root`` for run artifacts, ``--cache-root`` to share
+           features, and ``--out-dir`` for curated manifests. ``--record`` appends
+           measured scores and provenance to the packaged results ledger.
 
         ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
            Render a faceted leaderboard over the completed run dirs under an
@@ -129,17 +147,14 @@ def build_cli_rst() -> str:
            reference band; ``--vary`` / ``--fix`` / ``--like`` shape the facet on
            top of it.
 
-        What the CLI expects
-        --------------------
-
-        The config file follows the canonical nested schema below. This block
-        is generated from ``soma/configs/default.yaml``, the bundled defaults
-        merged by :func:`soma.config.load_config`. Copy it when you want the
-        baseline public YAML shape, then replace neutral defaults such as
-        ``encoder: null`` and ``aggregation: null`` for your run.
-
         Full config reference
         ---------------------
+
+        The YAML below is generated from ``soma/configs/default.yaml``, which
+        :func:`soma.config.load_config` merges with your file. Set the data paths,
+        encoder, and task-specific components for your run. The
+        :doc:`getting-started` guide provides a runnable configuration shape.
+        YAML uses ``aggregation`` for the Python ``aggregator`` argument.
 
         .. code-block:: yaml
 
@@ -152,8 +167,8 @@ def build_cli_rst() -> str:
         See also
         --------
 
-        * :doc:`getting-started` – Python API equivalent of each config section
-        * :doc:`getting-started` – end-to-end walkthrough
+        * :doc:`api` — Python interfaces and recipes.
+        * :doc:`modeling` — supported component combinations.
 
         """
         )
@@ -182,11 +197,9 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 
 _GENERATED_PAGE_NOTE = (
     ".. note::\n\n"
-    "   This page is generated from the registered benchmark definition — the protocol\n"
-    "   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows\n"
-    "   (packaged ``{csv}``), and the command from the benchmark name. Edit the registry\n"
-    "   (``{module}``) and the CSV, not this page; ``python docs/_generate_reference.py``\n"
-    "   re-emits it and ``tests/test_docs.py`` guards the two from drifting."
+    "   Maintainers: edit ``docs/_generate_reference.py`` for prose, ``{module}``\n"
+    "   for the protocol, and ``{csv}`` for references. Regenerate this page with\n"
+    "   ``python docs/_generate_reference.py``; ``tests/test_docs.py`` checks parity."
 )
 
 # Upstream provenance for each benchmark family's published reference band — the leaderboard
@@ -295,8 +308,7 @@ def _eva_results_section() -> str:
             "to record a soma score next to the published EVA reference."
         )
     lines = [
-        "We benchmarked two encoders: soma closely reproduces\n"
-        "EVA's published balanced accuracy scores.\n",
+        "Recorded balanced accuracy scores alongside the packaged EVA references.\n",
         ".. list-table::",
         "   :header-rows: 1",
         "",
@@ -365,12 +377,9 @@ def _ocelot_guidance_section(bench) -> str:
         )
     return (
         "Guidance anchors (non-gating)\n-----------------------------\n\n"
-        "External reference points shown for **context only** — the official challenge\n"
-        "baseline and best-reported numbers, snapshotted (not live-scraped) from\n"
-        "`histoboard <https://wearewaiv.github.io/histoboard/>`__. They measure a\n"
-        "*different* protocol than soma's frozen probe (fully-supervised, end-to-end, not\n"
-        "tied to any encoder), so ``soma reproduce`` **never gates** on them; they only show\n"
-        "how far the frozen-probe result stands from the best reported result:\n\n"
+        "These packaged snapshots describe fully supervised, end-to-end methods.\n"
+        "They provide context for the frozen probe and never determine command\n"
+        "success:\n\n"
         + "\n".join(bullets)
     )
 
@@ -403,19 +412,23 @@ def build_ocelot_benchmark_rst() -> str:
 
     sections = [
         "OCELOT\n======",
-        "*Maps to task:* :doc:`detection` — soma's :doc:`detection path <detection>`\n"
-        "reproduced on the `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_\n"
-        "cell-detection challenge.",
-        _GENERATED_PAGE_NOTE.format(
-            csv="soma/benchmarks/reference/ocelot.csv", module="soma/benchmarks/ocelot.py"
-        ),
-        "OCELOT 2023 provides paired cell + tissue patches from TCGA. This benchmark is\n"
-        "**cell-only**: a **frozen** foundation-model encoder produces a dense token grid,\n"
-        "a ``lightweight_conv`` decoder regresses a per-class peak heatmap, and the\n"
-        ":class:`~soma.tasks.detection.DetectionHead` scores it with OCELOT's class-aware\n"
-        "**mean F1 @ δ = 3 µm**, greedy-matched — the leaderboard-comparable operating\n"
-        "point (per-class score thresholds swept on ``tune``, frozen, applied once to\n"
-        "``test``). See :doc:`detection` for the canonical matcher and px↔µm definitions.",
+        "Evaluate frozen encoders on the `OCELOT 2023\n"
+        "<https://ocelot2023.grand-challenge.org/>`_ cell-detection challenge. The data\n"
+        "contains paired cell and tissue patches from TCGA; this benchmark uses only\n"
+        "the cell patches.\n\n"
+        "A frozen encoder produces a dense token grid and a ``lightweight_conv``\n"
+        "decoder predicts per-class peak heatmaps. The score is class-aware\n"
+        "**mean F1 @ δ = 3 µm**, using greedy matching. Per-class score thresholds\n"
+        "are selected on ``tune``, frozen, and applied once to ``test``. See\n"
+        ":doc:`detection` for matching and pixel-to-micrometer definitions.",
+        "Run the benchmark\n-----------------\n\n"
+        "Prepare the raw data as described in :doc:`curation`, then run the default\n"
+        "Virchow2 encoder at 0.2 µm/px with canonical seed 0::\n\n"
+        "    soma reproduce ocelot --raw-root /path/to/ocelot\n\n"
+        "The command curates, trains, scores, and compares the result with its\n"
+        "packaged reference. Select another compatible encoder with ``--encoder``\n"
+        "or compare several with ``--encoders``. Use ``--from-run-dir <dir>`` to\n"
+        "rescore an existing run without training.",
         "Protocol\n--------\n\n"
         "The recipe backbone is held fixed; ``soma reproduce`` varies only the ``encoder``\n"
         "and fixes image spacing at the anchor.\n\n"
@@ -427,40 +440,31 @@ def build_ocelot_benchmark_rst() -> str:
         ":doc:`leaderboard <benchmarking>`, like any other non-encoder axis:\n\n"
         + _kv_table("Encoder", "Spacing (µm/px)", axes_rows, widths="50 50"),
         "Reference band\n--------------\n\n"
-        "The tolerance band ``soma reproduce`` uses to highlight potential drift — a\n"
-        "**config-agnostic** banner\n"
-        "(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression\n"
-        "anchor, not an external leaderboard number). The non-gating external anchors —\n"
-        "fully-supervised end-to-end baselines from a *different* protocol — are surfaced\n"
-        "with clickable links under *Guidance anchors* below:\n\n"
+        "The packaged reference is soma's frozen-probe Virchow2 result at\n"
+        "0.2 µm/px, seed 0. ``soma reproduce`` uses its tolerance to highlight drift\n"
+        "for that encoder; the comparison is informational. External baselines\n"
+        "appear separately under *Guidance anchors* below.\n\n"
         + _kv_table("Metric", "Reference band (expected ± tolerance)", gate_rows, widths="40 60"),
         "Encoder results\n---------------\n\n"
-        "Frozen-probe ``mean_f1`` on OCELOT test across foundation-model encoders — each a\n"
-        "**frozen** encoder feeding the same ``lightweight_conv`` decoder at 0.2 µm/px, with\n"
-        "per-class score thresholds swept on ``tune`` and applied once to ``test``. The\n"
-        "``Seeds`` column states how many runs each ledger entry aggregates; ``Δ`` is against\n"
-        "the Virchow2 anchor band above.\n\n"
+        "Recorded test ``mean_f1`` scores use the protocol above at 0.2 µm/px.\n"
+        "``Seeds`` counts the runs aggregated in each entry; ``Δ`` is shown only\n"
+        "when a packaged reference matches the encoder.\n\n"
         + _reproduced_table("ocelot", ("encoder",))
         + "\n\nThese frozen-probe encoder results accompany an upcoming publication — Grisi\n"
         "*et al.*, *Benchmarking foundation models for cell detection* (in preparation, 2026;\n"
         "provisional citation).",
         _ocelot_guidance_section(bench),
         "Reference environment\n---------------------\n\n"
-        "The recorded anchor environment the reference number was produced in:\n\n"
+        "The anchor reference was measured in this environment:\n\n"
         + _kv_table("Component", "Version", env_rows, widths="40 60"),
-        "Reproduce\n---------\n\n"
-        "One command curates the raw data, trains the anchor for the canonical seed,\n"
-        "greedy-scores it, and reports ``mean_f1`` beside the band above::\n\n"
-        "    soma reproduce ocelot --raw-root /path/to/ocelot\n\n"
-        "Fast paths: ``--from-run-dir <dir>`` re-scores an existing run with the greedy\n"
-        "matcher (no training); ``--seeds 1`` is the quickest smoke. Compare encoders with\n"
-        "``--encoder`` (e.g. ``soma reproduce ocelot --encoder uni2 --raw-root ...``); to\n"
-        "compare spacings, run per-spacing configs and a :doc:`leaderboard <benchmarking>`.",
         ".. seealso::\n\n"
         "   * :doc:`detection` — the detection modeling substrate (head, target encoding,\n"
         "     loss, F1@δ evaluator).\n"
         "   * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.\n"
         "   * :doc:`curation` — the OCELOT curator and split policy.",
+        _GENERATED_PAGE_NOTE.format(
+            csv="soma/benchmarks/reference/ocelot.csv", module="soma/benchmarks/ocelot.py"
+        ),
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 
@@ -528,7 +532,7 @@ def build_eva_benchmark_rst() -> str:
         + ". All share the same linear-probe protocol.\n\n"
         "**Pipeline:** labelled patches → frozen encoder → linear head → balanced accuracy",
         "Prepare the data\n----------------\n\n"
-        "soma does not download benchmark data. Download one dataset from its official\n"
+        "Download one EVA dataset from its official\n"
         "source and unpack it in the directory you will pass as ``--raw-root``:\n\n"
         + _kv_table("Dataset and source", "Raw-root contents", raw_layout_rows, widths="38 62")
         + "\n\nFor example, prepare BACH from its public archive::\n\n"
@@ -537,13 +541,14 @@ def build_eva_benchmark_rst() -> str:
         "ICIAR2018_BACH_Challenge.zip?download=1' -o /tmp/bach.zip\n"
         "    unzip /tmp/bach.zip -d /path/to/eva/bach",
         "Run the benchmark\n-----------------\n\n"
-        "Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the\n"
+        "Choose a compatible tile-level :doc:`encoder <encoders>` and pass the\n"
         "downloaded dataset directory as ``--raw-root``. ``soma reproduce`` runs the\n"
         "built-in EVA curator automatically, writes the manifests under\n"
         "``<raw-root>/curated``, extracts features, trains the linear probe, and reports\n"
         "balanced accuracy. For example::\n\n"
         "    soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach\n\n"
-        "Or run EVA's 6 datasets in one go::\n\n"
+        "To run the whole family, prepare one subdirectory per dataset under\n"
+        "``/path/to/eva``::\n\n"
         "    soma reproduce eva --encoder virchow2 --raw-root /path/to/eva",
         "Results\n-------\n\n"
         + _eva_results_section()
@@ -565,13 +570,12 @@ def _hest_results_section() -> str:
         return (
             "No reproduced cells have been recorded yet. Run, for example::\n\n"
             "    soma reproduce hest/IDC --encoder uni2 "
-            "--raw-root /path/to/hest-bench --record\n\n"
+            "--raw-root /path/to/hest-bench/IDC --record\n\n"
             "to record a soma score next to the published HEST reference."
         )
 
     lines = [
-        "We benchmarked three encoders: soma closely reproduces\n"
-        "HEST's published Pearson scores.\n",
+        "Recorded mean Pearson scores alongside the packaged HEST references.\n",
         ".. list-table::",
         "   :header-rows: 1",
         "   :widths: 24 28 24 24",
@@ -671,15 +675,15 @@ def build_hest_benchmark_rst() -> str:
             "Use the Hugging Face CLI to download one task while excluding HEST's\n"
             "precomputed ``fm_v1`` features; soma re-extracts them locally::\n\n"
             + download_cmd
-            + "\n\nThe ``hf`` CLI downloads the data. Omit ``--include`` to download\n"
+            + "\n\nOmit ``--include`` to download\n"
             "every registered task under the same local root.",
         ),
         _section(
             "Run the benchmark",
-            "Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the\n"
+            "Choose a compatible tile-level :doc:`encoder <encoders>` and pass the\n"
             "downloaded task directory as ``--raw-root``. ``soma reproduce`` runs the\n"
             "built-in HEST curator automatically, writes the manifests under\n"
-            "``<raw-root>/curated``, preserving HEST's fold assignments. It then extracts features,\n"
+            "``<raw-root>/curated``, and preserves HEST's fold assignments. It then extracts features,\n"
             "runs the Ridge probe, and reports the mean Pearson score. For example::\n\n"
             "    soma reproduce hest/IDC --encoder virchow2 "
             "--raw-root /path/to/hest-bench/IDC\n\n"
@@ -789,9 +793,8 @@ def _croma_results_section(tolerance: float) -> str:
         )
     else:
         intro += (
-            f" A soma value would be shown in red if it deviated from the "
-            f"published value by more than {tolerance:g}; none does — across all "
-            f"{len(cells)} recorded values the largest deviation is "
+            f" All {len(cells)} values are within the {tolerance:g} absolute "
+            "tolerance; the largest deviation is "
             f"{max(abs(cell.delta) for cell in cells):.4f}"
         )
         intro += (

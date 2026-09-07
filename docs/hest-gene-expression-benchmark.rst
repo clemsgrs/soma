@@ -23,16 +23,16 @@ precomputed ``fm_v1`` features; soma re-extracts them locally::
     hf download MahmoodLab/hest-bench --include 'IDC/*' --exclude 'fm_v1/*' \
         --repo-type dataset --local-dir /path/to/hest-bench
 
-The ``hf`` CLI downloads the data. Omit ``--include`` to download
+Omit ``--include`` to download
 every registered task under the same local root.
 
 Run the benchmark
 -----------------
 
-Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the
+Choose a compatible tile-level :doc:`encoder <encoders>` and pass the
 downloaded task directory as ``--raw-root``. ``soma reproduce`` runs the
 built-in HEST curator automatically, writes the manifests under
-``<raw-root>/curated``, preserving HEST's fold assignments. It then extracts features,
+``<raw-root>/curated``, and preserves HEST's fold assignments. It then extracts features,
 runs the Ridge probe, and reports the mean Pearson score. For example::
 
     soma reproduce hest/IDC --encoder virchow2 --raw-root /path/to/hest-bench/IDC
@@ -44,8 +44,7 @@ Or run HEST's 9 datasets in one go::
 Results
 -------
 
-We benchmarked three encoders: soma closely reproduces
-HEST's published Pearson scores.
+Recorded mean Pearson scores alongside the packaged HEST references.
 
 .. list-table::
    :header-rows: 1

@@ -1,10 +1,9 @@
 Encoders
 ========
 
-Encoder choice sets the representation space. In `soma`, the encoder is
-selected by ``EncoderConfig.name`` and configured through runtime behavior
-fields such as precision, batch size, and output variant. Geometry is handled
-through preprocessing, not the encoder config itself.
+Select a frozen encoder with ``EncoderConfig.name``. The encoder config also
+controls precision, batch size, and output variant; :doc:`preprocessing`
+controls image geometry.
 
 **Encoding methods**
 
@@ -21,8 +20,9 @@ The main configuration object is :class:`soma.config.EncoderConfig`.
 Model Zoo
 ---------
 
-The tile encoder zoo below is grouped by output dimension for easier scanning,
-with entries inside each bucket still following the existing date ordering.
+Tile encoders are grouped by output dimension. Spacing is in µm/px; multiple
+dimensions indicate output variants. The installed registry, available through
+``soma.list_models()``, is the source of truth for available presets.
 
 Tile-level encoders
 ~~~~~~~~~~~~~~~~~~~
@@ -207,10 +207,9 @@ Patient-level encoders
      - ``lunit``
      - 768
 
-Compatibility is enforced by the code and by ``PipelineConfig`` validation.
-Use this page to choose a valid starting point, then let the runtime validate
-the final combination. The spacing table is a reference for selecting
-preprocessing geometry, not a separate encoder knob.
+Set ``preprocessing.requested_spacing_um`` explicitly for encoders with multiple
+recommended spacings. For a single recommended spacing, soma can fill it in.
+Configuration and runtime validation check the final combination.
 
 Resolving a fixed benchmark MIL recipe
 --------------------------------------
@@ -222,10 +221,9 @@ tile encoder and ``None`` for a slide encoder, allowing the existing slide
 representation path to pass the embedding directly to the task head. Patient
 encoders are rejected because their representations are not slide-level.
 
-Resolution reads only the encoder's registry metadata; it does not construct
-the encoder or load weights, so config generation remains offline-safe. The
-benchmark owns the scientific MIL recipe passed to ``tile_recipe`` because the
-helper only decides whether that fixed recipe applies to the encoder level.
+Resolution reads registry metadata without constructing the encoder or loading
+weights. The benchmark supplies the MIL recipe through ``tile_recipe``; the
+helper only decides whether it applies.
 
 .. autofunction:: soma.encoders.resolve_aggregator
 

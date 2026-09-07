@@ -91,7 +91,7 @@ claim of numerical identity with the published embeddings.
 Results
 -------
 
-The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Values are rounded to three decimals. A soma value would be shown in red if it deviated from the published value by more than 0.005; none does — across all 36 recorded values the largest deviation is 0.0007, and soma reproduces every published pair ordering.
+The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Values are rounded to three decimals. All 36 values are within the 0.005 absolute tolerance; the largest deviation is 0.0007, and soma reproduces every published pair ordering.
 
 **CRoMa median** (``test/croma_median``) — ranking metric:
 

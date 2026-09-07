@@ -1,7 +1,7 @@
 Run outputs
 ===========
 
-Each pipeline run writes a self-contained bundle beneath ``output_root``.
+Each pipeline run writes a run bundle beneath ``output_root``.
 The bundle captures the resolved configuration, per-fold artifacts, and the
 metrics needed to compare experiments reproducibly.
 
@@ -11,7 +11,7 @@ feature extraction, is documented separately in :doc:`caching`.
 Run directory contents
 ----------------------
 
-The main run directory contains:
+For task-training pipelines, the main run directory contains:
 
 - the resolved pipeline configuration
 - model checkpoints and per-fold summaries
@@ -23,35 +23,33 @@ The main run directory contains:
 Experiment identity
 -------------------
 
-Managed outputs group runs by experiment identity before adding the per-run
-timestamp/W&B suffix. The identity is derived from the data manifests and the
-configuration choices that can change predictions, reported metrics, generated
-artifacts, or the experiment indexes. Changing those choices creates a new
-experiment namespace instead of mixing outputs under an existing one.
+Managed outputs group runs by experiment identity, with a timestamp/W&B suffix
+for each run. Identity version 2 hashes the ``train`` and ``tune`` manifest
+slices, preprocessing, encoders, downstream model, task, training, evaluation,
+feature mode, augmentation, normalization, projection, cache policy, and tags.
+Representation-only runs instead hash their configured evaluation split and
+representation settings.
 
-The identity covers the dataset and split checksums, preprocessing and sampling
-choices, encoder or composite encoder choices, aggregation or dense decoder /
-pixel-classifier choices, task and training settings, feature mode, live
-augmentation, evaluation settings, and enabled heatmap artifact settings. The
-training seed is intentionally a run-level value, so repeated seeds produce
-separate runs under the same experiment when the rest of the configuration is
-unchanged.
+Training seed and loader settings are run-level choices. Dense-output toggles
+and ``evaluation.overwrite_test`` also do not change experiment identity.
+Enabled attention-heatmap settings do, because they change generated artifacts;
+inactive heatmap rendering options are excluded.
 
-Dataset checksums use :ref:`semantic manifest identity <semantic-manifest-identity>`:
-machine-local artifact paths are excluded, while every semantic manifest value and
-split assignment remains hashed. ``ExperimentSpec`` retains the resolved manifest
-paths, while ``RunMetadata`` also stores whole-file SHA-256 provenance for the physical
-``dataset.csv`` and ``splits.csv``; those provenance values may differ after
-relocation. Cache identities are a separate physical-input contract and continue to
-include the paths documented in :doc:`caching`.
+Adding or changing ``test*`` rows leaves the training experiment identity
+unchanged. A separate test digest identifies the test assignments and their
+sample rows; ``test_results.json`` records test identities and guards against
+accidental re-scoring. See :doc:`evaluation` for test holdout and overwrite
+controls.
 
-This semantic checksum is a clean identity break: experiments and leaderboard triples
-created by older soma versions are not aliased or migrated to the new values.
+Dataset checksums follow :ref:`semantic manifest identity
+<semantic-manifest-identity>`: storage paths are excluded while semantic values
+in the selected rows are hashed. ``ExperimentSpec`` retains resolved manifest
+paths. ``RunMetadata`` also records the test digest and whole-file SHA-256 values
+for the physical CSV files, so relocation or added test rows remain visible in
+provenance. Cache identity separately includes physical inputs as described in
+:doc:`caching`.
 
-Evaluation settings are part of the identity because they change the reported
-outputs. Heatmap settings are also part of the identity when heatmaps are
-enabled because they change generated artifacts; inactive heatmap rendering
-options do not fork the namespace.
+Older experiment identities are not aliased or migrated to version 2.
 
 Layout: single split vs cross-validation
 -----------------------------------------
@@ -92,13 +90,6 @@ Run index
 appends one line, and readers keep the last line per ``run_id``. Run
 ``soma compact-index <output_root>`` to rewrite it with one row per run.
 
-Saved timing data
------------------
-
-``training_history.json`` records the elapsed time and average epoch time for
-each epoch. The HTML report includes the same timing information in a dedicated
-training section, while the ETA remains a live-only display field.
-
 Heatmap artifacts
 -----------------
 
@@ -119,16 +110,13 @@ Heatmap appearance is controlled by :class:`soma.config.HeatmapConfig`:
 HTML report
 -----------
 
-Each run automatically generates an interactive HTML report containing metrics
-summary tables, ROC/PR curves, confusion matrices (classification), scatter and
-residual plots (regression), loss curves, and training timing. The report is
-written to the run directory as ``report.html``.
+Completed task-training pipelines write ``report.html`` with task-specific
+metrics, plots, training history, and timing. Task-free representation runs
+write metrics without a task report. See :doc:`reporting` for report contents,
+regeneration, and multi-run comparison.
 
-Run directory vs cache
-----------------------
-
-The run directory stores the outcome of one specific experiment and should be
-treated as immutable once the run completes.
+Treat completed run artifacts as the recorded outcome of that run. Use a new
+run for a new training attempt; shared features remain in the cache.
 
 Recoverable shared-storage mirrors
 ----------------------------------

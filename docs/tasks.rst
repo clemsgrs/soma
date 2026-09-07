@@ -1,58 +1,9 @@
 Tasks
 =====
 
-Task heads map a representation to predictions and define the loss and metric
-contract. This page is the task-layer index: it lists the task zoo, documents
-the :class:`soma.tasks.base.TaskHead` base abstraction, and links to the
-per-task pages.
-
-.. seealso::
-
-   The :doc:`slide-level MIL walkthrough <tutorials/walkthrough-slide-mil>` trains a
-   task head on frozen features end to end — swapping classification, regression, or
-   survival is just a different ``TaskConfig`` on the **same** extracted features.
-
-Modeling paths
---------------
-
-Task heads receive representations through three modeling paths:
-
-* A **single feature vector** can feed :doc:`classification` or :doc:`regression`
-  directly for a tile, region, slide, or patient. :doc:`survival` supports
-  slide- and patient-level vectors.
-* A **bag of features** can first pass through an :doc:`aggregator <aggregators>`,
-  then feed the same classification, regression, or survival heads.
-* A **dense feature grid** passes through a :doc:`decoder <decoders>` before a
-  :doc:`segmentation` or :doc:`detection` head.
-
-The base abstraction is :class:`soma.tasks.base.TaskHead`.
-
-.. autoclass:: soma.tasks.base.TaskHead
-   :members:
-
-Head dropout
-------------
-
-The classification, ordinal-classification, regression and survival heads take an
-optional ``dropout`` probability, applied to the head's **input** — the aggregated
-bag representation, or the frozen embedding itself when ``aggregation: null`` leaves
-the head as the only trainable component:
-
-.. code-block:: yaml
-
-   task:
-     name: binary_classification
-     params:
-       dropout: 0.2
-
-It defaults to ``0.0``, and at that default no dropout module is built at all: the
-head has exactly the modules, checkpoint state and random-number consumption it had
-before the knob existed. Dropout carries no parameters, so a checkpoint trained with
-it loads into a head built without it and vice versa.
-
-Aggregators carry their own ``dropout`` under ``aggregator.params`` — see
-:doc:`aggregators`. The two are independent; with ``aggregation: null`` only the head's
-applies.
+Select a task with ``task.name``. Its head maps a representation to predictions
+and defines the loss and compatible metrics. See :doc:`modeling` for the paths
+that produce those representations.
 
 Task Zoo
 --------
@@ -94,19 +45,39 @@ Task Zoo
      - ``mean_f1``
      - Cell / nucleus point detection (``dataset_type: detection``); see :doc:`detection`
 
-Task pages
-----------
-
-Scalar and vector tasks (single vector, or bag → :doc:`aggregator <aggregators>` → head):
+Task details
+------------
 
 * :doc:`classification` — binary, multiclass, and ordinal heads.
 * :doc:`regression` — continuous targets.
-* :doc:`survival` — time-to-event with the ``nll`` and ``cox`` losses.
+* :doc:`survival` — time-to-event with ``nll`` or ``cox`` loss.
+* :doc:`segmentation` — per-pixel labels with a decoder or pixel classifier.
+* :doc:`detection` — object centroids scored at a physical matching distance.
 
-Dense tasks (token grid → decoder → head):
+Head dropout
+------------
 
-* :doc:`segmentation` — the dense contract + neural-decoder default path.
-* :doc:`detection` — point detection with the F1@δ metric.
+The classification, ordinal-classification, regression and survival heads take an
+optional ``dropout`` probability, applied to the head's **input** — the aggregated
+bag representation, or the frozen embedding itself when ``aggregation: null`` leaves
+the head as the only trainable component:
+
+.. code-block:: yaml
+
+   task:
+     name: binary_classification
+     params:
+       dropout: 0.2
+
+The default is ``0.0`` (disabled). Dropout has no parameters, so changing this
+setting does not change checkpoint compatibility. Aggregator dropout, set under
+``aggregation.params``, is independent.
+
+Task-head interface
+-------------------
+
+.. autoclass:: soma.tasks.base.TaskHead
+   :members:
 
 Discovery helper
 ----------------

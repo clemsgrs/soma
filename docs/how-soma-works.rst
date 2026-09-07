@@ -1,13 +1,13 @@
 How soma works
 ==============
 
-soma was built to streamline computational pathology research with foundation models.
-Define images, labels, and splits: soma takes care of preprocessing, feature
-extraction, downstream training, and evaluation.
+Define images, labels, and splits; soma preprocesses the images, extracts
+frozen foundation-model features, trains a downstream model, and evaluates its
+predictions.
 
 Whether inputs are tiles, regions of interest, or whole slides, the same
 modular workflow supports classification, regression, survival, segmentation,
-and detection. Change any block without rewriting the rest.
+and detection. The :doc:`modeling` guide describes which components fit each path.
 
 .. figure:: /_static/figures/how-soma-works-workflow.svg
    :figclass: soma-figure
@@ -30,7 +30,7 @@ One workflow, modular blocks
      - Images, labels, and train/tune/test or K-fold splits.
      - :doc:`dataset`
    * - Preprocess
-     - Whole-slide tiling, spacing, tile size, overlap, ...
+     - Whole-slide tissue masking, spacing, tile size, and overlap.
      - :doc:`preprocessing`
    * - Encode
      - Frozen foundation models: soma applies model-specific transforms, then caches the features.
@@ -42,30 +42,20 @@ One workflow, modular blocks
      - Metrics and prediction visualizations.
      - :doc:`evaluation`
 
-Explore or benchmark
---------------------
+Explore and compare
+-------------------
 
-Custom experimentation
-~~~~~~~~~~~~~~~~~~~~~~
+Use the :doc:`modular API <api>` to vary preprocessing, encoders, and downstream
+models independently. Extracted features can be reused when only the downstream
+model changes; :doc:`caching` explains when extraction must run again.
 
-Explore preprocessing, encoders, and downstream models—alone or in
-combination—to optimize a workflow for your data and evaluation objective. See
-the :doc:`API <api>` for the composable interfaces.
+For controlled comparisons, hold the cohort, labels, splits, and remaining
+protocol fixed while varying one component. Registered :doc:`benchmarks
+<benchmarking>` provide fixed protocols for reproducing public results and
+comparing encoders.
 
-Benchmarking
-~~~~~~~~~~~~
-
-Vary one block while holding the source cohort, labels, splits, and
-the rest of the protocol fixed to measure its downstream effect. Encoder sweeps
-are the most common use case, but the same applies to any building block like preprocessing or downstream models. See
-:doc:`benchmarking` for controlled comparisons and public benchmark
-reproduction.
-
-Reproducible by design
-----------------------
-
-Each run records the resolved configuration. This provenance supports audit and reproduction. See :doc:`outputs`
-for the saved result bundle.
+Each pipeline run saves the resolved configuration, predictions, and metrics in
+a :doc:`run bundle <outputs>` so the experiment can be inspected and repeated.
 
 Where to go next
 ----------------

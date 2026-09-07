@@ -1,10 +1,10 @@
 Slide-level
 ===========
 
-Predict a slide- or patient-level label from a bag of tile features. You build the slide
-representation one of two ways, then attach a task head — and classification, regression,
-and survival are just a different head on the **same** extracted features. Each walkthrough
-below runs one path end to end.
+Predict slide- or patient-level outcomes using a slide representation and a
+classification, regression, or survival head. The extracted features can be
+reused across tasks; each task needs its own labels and head. Choose how to
+build the slide representation below.
 
 .. list-table::
    :header-rows: 1

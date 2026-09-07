@@ -1,9 +1,8 @@
 CLI
 ===
 
-``soma`` exposes a compact command-line interface for running
-experiments from YAML config files and for listing the available model
-presets.
+Use ``soma`` to run YAML experiments, discover components, reproduce
+benchmarks, and compare completed runs.
 
 .. figure:: /_static/figures/run-flow.svg
    :figclass: soma-figure
@@ -19,14 +18,22 @@ The main entrypoint takes a config path directly::
 
     soma /path/to/config.yaml
 
-You can also invoke it through Python if you prefer::
+The equivalent Python invocation is::
 
     python -m soma /path/to/config.yaml
+
+Override individual settings without editing the file::
+
+    soma config.yaml --set run.output_root=runs/local --set training.epochs=5
+
+Repeat ``--set KEY=VALUE`` for multiple overrides. Keys are dotted YAML
+paths and values are parsed as YAML, preserving numbers and booleans.
+Use ``soma --help`` or ``soma COMMAND --help`` for command options.
 
 Available commands
 ------------------
 
-``soma CONFIG``
+``soma CONFIG [--set KEY=VALUE ...]``
    Run a full pipeline from the given YAML config file.
 
 ``soma list encoders [--level {tile,slide,patient}]``
@@ -49,11 +56,21 @@ Available commands
    List all registered foundation-model benchmarks — the names
    ``soma reproduce`` and ``soma leaderboard`` accept.
 
+``soma compact-index OUTPUT_ROOT``
+   Compact ``indexes/runs.csv`` to the latest row per run. Readers
+   already deduplicate the append-only index; compaction saves space.
+   A path to the CSV itself is also accepted. See :doc:`outputs`.
+
 Benchmarking commands
 ---------------------
 
-These drive the registered benchmarks (see :doc:`benchmarking` for the
-end-to-end curate → configure → run → leaderboard → reproduce story).
+See :doc:`benchmarking` for data preparation, protocol selection, and
+interpretation of reference comparisons.
+
+``soma prepare-croma RAW_ROOT [--rebuild]``
+   Download and decode the pinned PathoROB tile sources for
+   :doc:`croma-robustness-benchmark`. ``--rebuild`` replaces a partial
+   or revision-mismatched destination.
 
 ``soma reproduce NAME [--encoder NAME | --encoders NAME [NAME ...]] [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
    Curate → run → score a registered benchmark. When a matching packaged
@@ -65,19 +82,20 @@ end-to-end curate → configure → run → leaderboard → reproduce story).
    sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
    already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
    curation; ``--from-run-dir`` re-scores an existing run without retraining.
-   ``--seeds 1`` is the quickest smoke. ``--encoders`` resolves a family first and
-   checks the complete ordered concrete-Benchmark × Encoder panel before curation,
-   Pipeline construction, extraction, training, or Run writes. Every
-   incompatibility names its concrete Benchmark and Encoder. A valid panel writes
-   one canonical cross-encoder Leaderboard per concrete Benchmark; ranks are never
-   combined across family members. For a missing capability, select a compatible
-   Benchmark or fix the Encoder plugin.
-   It cannot be combined with single-Run ``--from-run-dir`` rescoring. A preflight
-   rejection starts no Run. After a valid panel starts, runtime failures do not
-   invalidate completed Runs or stop later encoders. soma labels the panel
-   ``PARTIAL`` in command output, writes the ordinary canonical Leaderboard over
-   completed Runs, prints one failure summary, and exits nonzero. If no Run
-   completed, it writes no Leaderboard.
+   ``--seeds N`` runs seeds 0 through N−1 instead of the canonical set;
+   use ``--seeds 1`` for a smoke run.
+
+   ``--encoders`` checks every benchmark/encoder pairing before starting
+   work, then writes one cross-encoder leaderboard per benchmark. It
+   cannot be combined with ``--from-run-dir``. Incompatible panels start
+   no runs. After a valid panel starts, runtime failures preserve
+   completed runs and allow later encoders to proceed. The command
+   reports ``PARTIAL`` and exits nonzero; the ordinary leaderboard
+   includes completed runs only. No completed runs means no leaderboard.
+
+   Use ``--output-root`` for run artifacts, ``--cache-root`` to share
+   features, and ``--out-dir`` for curated manifests. ``--record`` appends
+   measured scores and provenance to the packaged results ledger.
 
 ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
    Render a faceted leaderboard over the completed run dirs under an
@@ -85,17 +103,14 @@ end-to-end curate → configure → run → leaderboard → reproduce story).
    reference band; ``--vary`` / ``--fix`` / ``--like`` shape the facet on
    top of it.
 
-What the CLI expects
---------------------
-
-The config file follows the canonical nested schema below. This block
-is generated from ``soma/configs/default.yaml``, the bundled defaults
-merged by :func:`soma.config.load_config`. Copy it when you want the
-baseline public YAML shape, then replace neutral defaults such as
-``encoder: null`` and ``aggregation: null`` for your run.
-
 Full config reference
 ---------------------
+
+The YAML below is generated from ``soma/configs/default.yaml``, which
+:func:`soma.config.load_config` merges with your file. Set the data paths,
+encoder, and task-specific components for your run. The
+:doc:`getting-started` guide provides a runnable configuration shape.
+YAML uses ``aggregation`` for the Python ``aggregator`` argument.
 
 .. code-block:: yaml
 
@@ -278,5 +293,5 @@ Full config reference
 See also
 --------
 
-* :doc:`getting-started` – Python API equivalent of each config section
-* :doc:`getting-started` – end-to-end walkthrough
+* :doc:`api` — Python interfaces and recipes.
+* :doc:`modeling` — supported component combinations.

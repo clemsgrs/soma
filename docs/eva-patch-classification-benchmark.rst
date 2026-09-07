@@ -12,7 +12,7 @@ EVA provides 6 registered datasets: bach, breakhis, crc, gleason_arvaniti, mhist
 Prepare the data
 ----------------
 
-soma does not download benchmark data. Download one dataset from its official
+Download one EVA dataset from its official
 source and unpack it in the directory you will pass as ``--raw-root``:
 
 .. list-table::
@@ -43,7 +43,7 @@ For example, prepare BACH from its public archive::
 Run the benchmark
 -----------------
 
-Pick any tile-level :doc:`encoder <encoders>` supported by soma and pass the
+Choose a compatible tile-level :doc:`encoder <encoders>` and pass the
 downloaded dataset directory as ``--raw-root``. ``soma reproduce`` runs the
 built-in EVA curator automatically, writes the manifests under
 ``<raw-root>/curated``, extracts features, trains the linear probe, and reports
@@ -51,15 +51,15 @@ balanced accuracy. For example::
 
     soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach
 
-Or run EVA's 6 datasets in one go::
+To run the whole family, prepare one subdirectory per dataset under
+``/path/to/eva``::
 
     soma reproduce eva --encoder virchow2 --raw-root /path/to/eva
 
 Results
 -------
 
-We benchmarked two encoders: soma closely reproduces
-EVA's published balanced accuracy scores.
+Recorded balanced accuracy scores alongside the packaged EVA references.
 
 .. list-table::
    :header-rows: 1

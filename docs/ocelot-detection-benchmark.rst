@@ -1,25 +1,29 @@
 OCELOT
 ======
 
-*Maps to task:* :doc:`detection` — soma's :doc:`detection path <detection>`
-reproduced on the `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_
-cell-detection challenge.
+Evaluate frozen encoders on the `OCELOT 2023
+<https://ocelot2023.grand-challenge.org/>`_ cell-detection challenge. The data
+contains paired cell and tissue patches from TCGA; this benchmark uses only
+the cell patches.
 
-.. note::
+A frozen encoder produces a dense token grid and a ``lightweight_conv``
+decoder predicts per-class peak heatmaps. The score is class-aware
+**mean F1 @ δ = 3 µm**, using greedy matching. Per-class score thresholds
+are selected on ``tune``, frozen, and applied once to ``test``. See
+:doc:`detection` for matching and pixel-to-micrometer definitions.
 
-   This page is generated from the registered benchmark definition — the protocol
-   summary and reference numbers from the ``Benchmark`` object's ``expected()`` rows
-   (packaged ``soma/benchmarks/reference/ocelot.csv``), and the command from the benchmark name. Edit the registry
-   (``soma/benchmarks/ocelot.py``) and the CSV, not this page; ``python docs/_generate_reference.py``
-   re-emits it and ``tests/test_docs.py`` guards the two from drifting.
+Run the benchmark
+-----------------
 
-OCELOT 2023 provides paired cell + tissue patches from TCGA. This benchmark is
-**cell-only**: a **frozen** foundation-model encoder produces a dense token grid,
-a ``lightweight_conv`` decoder regresses a per-class peak heatmap, and the
-:class:`~soma.tasks.detection.DetectionHead` scores it with OCELOT's class-aware
-**mean F1 @ δ = 3 µm**, greedy-matched — the leaderboard-comparable operating
-point (per-class score thresholds swept on ``tune``, frozen, applied once to
-``test``). See :doc:`detection` for the canonical matcher and px↔µm definitions.
+Prepare the raw data as described in :doc:`curation`, then run the default
+Virchow2 encoder at 0.2 µm/px with canonical seed 0::
+
+    soma reproduce ocelot --raw-root /path/to/ocelot
+
+The command curates, trains, scores, and compares the result with its
+packaged reference. Select another compatible encoder with ``--encoder``
+or compare several with ``--encoders``. Use ``--from-run-dir <dir>`` to
+rescore an existing run without training.
 
 Protocol
 --------
@@ -76,12 +80,10 @@ ablation plus the native anchor. Use these for a custom spacing sweep compared o
 Reference band
 --------------
 
-The tolerance band ``soma reproduce`` uses to highlight potential drift — a
-**config-agnostic** banner
-(soma's own frozen-probe Virchow2 @ 0.2 µm/px seed-0 headline, used as a regression
-anchor, not an external leaderboard number). The non-gating external anchors —
-fully-supervised end-to-end baselines from a *different* protocol — are surfaced
-with clickable links under *Guidance anchors* below:
+The packaged reference is soma's frozen-probe Virchow2 result at
+0.2 µm/px, seed 0. ``soma reproduce`` uses its tolerance to highlight drift
+for that encoder; the comparison is informational. External baselines
+appear separately under *Guidance anchors* below.
 
 .. list-table::
    :header-rows: 1
@@ -95,11 +97,9 @@ with clickable links under *Guidance anchors* below:
 Encoder results
 ---------------
 
-Frozen-probe ``mean_f1`` on OCELOT test across foundation-model encoders — each a
-**frozen** encoder feeding the same ``lightweight_conv`` decoder at 0.2 µm/px, with
-per-class score thresholds swept on ``tune`` and applied once to ``test``. The
-``Seeds`` column states how many runs each ledger entry aggregates; ``Δ`` is against
-the Virchow2 anchor band above.
+Recorded test ``mean_f1`` scores use the protocol above at 0.2 µm/px.
+``Seeds`` counts the runs aggregated in each entry; ``Δ`` is shown only
+when a packaged reference matches the encoder.
 
 .. list-table::
    :header-rows: 1
@@ -168,12 +168,9 @@ provisional citation).
 Guidance anchors (non-gating)
 -----------------------------
 
-External reference points shown for **context only** — the official challenge
-baseline and best-reported numbers, snapshotted (not live-scraped) from
-`histoboard <https://wearewaiv.github.io/histoboard/>`__. They measure a
-*different* protocol than soma's frozen probe (fully-supervised, end-to-end, not
-tied to any encoder), so ``soma reproduce`` **never gates** on them; they only show
-how far the frozen-probe result stands from the best reported result:
+These packaged snapshots describe fully supervised, end-to-end methods.
+They provide context for the frozen probe and never determine command
+success:
 
 * `OCELOT official baseline (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.70 — Top fully-trained OCELOT cell-detection methods land ~0.70-0.73 mF1 (low end / official challenge baseline). A different protocol from soma's frozen probe (end-to-end supervised, encoder not frozen, not tied to any encoder), so non-gating guidance. Snapshotted from histoboard 2026-07-03.
 * `best reported (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.73 — Top fully-trained OCELOT cell-detection methods land ~0.70-0.73 mF1 (high end / best reported SOTA). A different protocol from soma's frozen probe, so non-gating guidance. Snapshotted from histoboard 2026-07-03.
@@ -181,7 +178,7 @@ how far the frozen-probe result stands from the best reported result:
 Reference environment
 ---------------------
 
-The recorded anchor environment the reference number was produced in:
+The anchor reference was measured in this environment:
 
 .. list-table::
    :header-rows: 1
@@ -200,22 +197,15 @@ The recorded anchor environment the reference number was produced in:
    * - ``gpu``
      - ``NVIDIA GeForce RTX 2080 Ti``
 
-Reproduce
----------
-
-One command curates the raw data, trains the anchor for the canonical seed,
-greedy-scores it, and reports ``mean_f1`` beside the band above::
-
-    soma reproduce ocelot --raw-root /path/to/ocelot
-
-Fast paths: ``--from-run-dir <dir>`` re-scores an existing run with the greedy
-matcher (no training); ``--seeds 1`` is the quickest smoke. Compare encoders with
-``--encoder`` (e.g. ``soma reproduce ocelot --encoder uni2 --raw-root ...``); to
-compare spacings, run per-spacing configs and a :doc:`leaderboard <benchmarking>`.
-
 .. seealso::
 
    * :doc:`detection` — the detection modeling substrate (head, target encoding,
      loss, F1@δ evaluator).
    * :doc:`benchmarking` — the shared curate → run → leaderboard → reproduce guide.
    * :doc:`curation` — the OCELOT curator and split policy.
+
+.. note::
+
+   Maintainers: edit ``docs/_generate_reference.py`` for prose, ``soma/benchmarks/ocelot.py``
+   for the protocol, and ``soma/benchmarks/reference/ocelot.csv`` for references. Regenerate this page with
+   ``python docs/_generate_reference.py``; ``tests/test_docs.py`` checks parity.
