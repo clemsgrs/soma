@@ -601,10 +601,7 @@ class _PooledFeatureExtractor:
     ) -> None:
         if store.feature_manifest_path is not None and store.feature_manifest_path.is_file():
             return
-        manifest_roots = {feature_dir.resolve()}
         feature_root = store.feature_dir.resolve()
-        if feature_root != feature_dir.resolve():
-            manifest_roots.add(feature_root.parent.resolve())
         feature_rank: int | None = None
         feature_dim: int | None = None
         if store.feature_manifest_path is not None and store.feature_manifest_path.is_file():
@@ -651,26 +648,25 @@ class _PooledFeatureExtractor:
                 }
             )
 
-        for root in manifest_roots:
-            manifest_path = root / "process_list.csv"
-            with manifest_path.open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=[
-                        "sample_id",
-                        "annotation",
-                        "feature_status",
-                        "feature_path",
-                        "num_tiles",
-                        "feature_rank",
-                        "feature_dim",
-                        "encoder_name",
-                        "output_variant",
-                        "feature_kind",
-                    ],
-                )
-                writer.writeheader()
-                writer.writerows(rows)
+        manifest_path = feature_dir / "process_list.csv"
+        with manifest_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=[
+                    "sample_id",
+                    "annotation",
+                    "feature_status",
+                    "feature_path",
+                    "num_tiles",
+                    "feature_rank",
+                    "feature_dim",
+                    "encoder_name",
+                    "output_variant",
+                    "feature_kind",
+                ],
+            )
+            writer.writeheader()
+            writer.writerows(rows)
 
     def _write_cache_marker(
         self,
@@ -698,11 +694,7 @@ class _PooledFeatureExtractor:
         *,
         cache_resolution: FeatureCacheResolution,
     ) -> None:
-        """Write canonical cache and run-local manifests for cached feature payloads."""
-        manifest_roots = {
-            feature_dir.resolve(),
-            cache_resolution.cache_dir.resolve(),
-        }
+        """Write the run-owned manifest pointing to reusable shared payloads."""
         metadata = cache_resolution.metadata
         sample_ids = self._cache_ids_for_resolution(cache_resolution)
         empty_sample_ids = cache_resolution.empty_sample_ids
@@ -756,12 +748,11 @@ class _PooledFeatureExtractor:
                     "feature_dim": feature_dim,
                 }
             )
-        for root in manifest_roots:
-            root.mkdir(parents=True, exist_ok=True)
-            with (root / "process_list.csv").open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(handle, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(rows)
+        feature_dir.mkdir(parents=True, exist_ok=True)
+        with (feature_dir / "process_list.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
 
     def _materialize_feature_dir_from_cache(
         self,
@@ -970,7 +961,7 @@ class _PooledFeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(cache_resolution.cache_dir)
+            return FeatureStore(feature_dir)
 
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
@@ -1004,7 +995,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(refreshed.cache_dir)
+        return FeatureStore(feature_dir)
 
     def _extract_hierarchical_cached(
         self,
@@ -1043,7 +1034,7 @@ class _PooledFeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(cache_resolution.cache_dir)
+            return FeatureStore(feature_dir)
 
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
@@ -1077,7 +1068,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(refreshed.cache_dir)
+        return FeatureStore(feature_dir)
 
     def _extract_slide_cached(
         self,
@@ -1142,7 +1133,7 @@ class _PooledFeatureExtractor:
         if tile_cache.complete and slide_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
-            return FeatureStore(slide_cache.cache_dir)
+            return FeatureStore(feature_dir)
 
         # Always-aggregate: ensure the tile-dependency cache is complete first,
         # then aggregate from it. This reuses the incremental, crash-safe tile
@@ -1212,7 +1203,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(refreshed.cache_dir)
+        return FeatureStore(feature_dir)
 
     def _extract_patient_cached(
         self,
@@ -1277,7 +1268,7 @@ class _PooledFeatureExtractor:
         if tile_cache.complete and patient_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
-            return FeatureStore(patient_cache.cache_dir)
+            return FeatureStore(feature_dir)
 
         patient_id_map = self._patient_id_map_for_patient_encoder()
 
@@ -1341,7 +1332,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(refreshed.cache_dir)
+        return FeatureStore(feature_dir)
 
     def _populate_patient_cache(
         self,

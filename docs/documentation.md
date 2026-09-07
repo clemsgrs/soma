@@ -1,5 +1,10 @@
 # Project Documentation Notes
 
+- 2026-09-07: Pooled tile, hierarchical, slide, and patient feature stores now use
+  run-local manifests with absolute shared payload paths on cache hits and population.
+  Concurrent runs with overlapping evaluation samples and different support sets keep
+  their own membership and empty IDs without rewriting shared canonical manifests.
+
 - 2026-09-02: **Version 1.13.0.** Closes out the codebase review (issue #443): several
   behaviour breaks land together — experiment identity v2, EVA curation without the tune
   fraction knob, the DTFD-MIL distillation fix, the resolved tile-image cache key and the
