@@ -1,10 +1,8 @@
-"""Chunked cache commits shared by the extraction paths.
+"""Chunked commits for pre-cropped images extracted with ``Model.embed_images``.
 
-slide2vec persists every embedding as it is produced and resumes on sidecar
-existence, but soma only trusts a payload once its identity signature is
-recorded in the cache metadata — and unsigned payloads are deleted on the next
-run. Committing signatures once per *chunk* of work, rather than once after the
-whole extraction, bounds what an interrupted run has to redo to one chunk.
+Image signatures commit once per chunk to bound interruption loss. WSI tile and
+hierarchical extraction instead commit each slide through ``on_slide_persisted``
+within one pipeline call and do not use these chunk settings.
 """
 
 from __future__ import annotations
@@ -16,10 +14,6 @@ T = TypeVar("T")
 
 #: Pre-cropped images per commit on the tile-image path (``Model.embed_images``).
 DEFAULT_IMAGE_COMMIT_EVERY = 1024
-#: Slides per commit *per GPU* on the WSI tile/hierarchical paths: each chunk is one
-#: slide2vec pipeline call (one model load), so committing every slide would reload
-#: the encoder per slide.
-DEFAULT_SLIDES_PER_GPU_COMMIT_EVERY = 8
 
 
 def resolve_commit_every(commit_every: int | None, *, default: int) -> int:

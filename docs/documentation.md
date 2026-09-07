@@ -62,7 +62,13 @@
   ``soma_commit`` column of recorded benchmark rows) is now computed from the soma
   *package* checkout via one helper (``soma.provenance.soma_git_state``), never from the
   working directory, and is null for a wheel install.
-- 2026-09-02: Extraction commits its cache in chunks. Identity signatures were recorded
+- 2026-09-07: WSI tile and hierarchical feature caches now commit each persisted
+  slide through slide2vec's `on_slide_persisted` callback (requires slide2vec 5.9.0).
+  Each cache population uses one pipeline call, retaining completed slides after
+  interruption without repeatedly loading encoders. `cache.commit_every` applies
+  only to pre-cropped images; WSI extraction ignores it.
+- 2026-09-02: Extraction introduced chunked cache commits (WSI behavior superseded
+  by per-slide callbacks on 2026-09-07). Identity signatures were recorded
   only after every image/slide had been encoded, and unsigned payloads are deleted on the
   next run, so an interrupted extraction restarted from zero. The tile-image path now
   commits every ``cache.commit_every`` images (default 1024) and the WSI tile/hierarchical

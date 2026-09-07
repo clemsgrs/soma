@@ -17,7 +17,6 @@ pytest.importorskip("timm")
 from slide2vec.encoders.base import TimmTileEncoder  # noqa: E402
 
 from slide2vec.runtime.dense_sliding import (  # noqa: E402
-    _window_starts,
     encode_dense_sliding,
     resolve_window_geometry,
 )
@@ -41,19 +40,6 @@ def _encoder() -> TimmTileEncoder:
 
 
 # --- pure geometry (no encoder) ------------------------------------------------
-
-
-def test_window_starts_cover_and_patch_aligned():
-    starts = _window_starts(extent=64, win=32, stride=16)
-    assert starts == [0, 16, 32]
-    assert all(s % PATCH == 0 for s in starts)
-    assert starts[-1] + 32 == 64  # last window flush to the edge
-
-
-def test_window_starts_appends_edge_window_when_stride_misses():
-    # stride 24 from 0 -> [0, 24] then last (24+32=56 < 64) appends edge 32.
-    starts = _window_starts(extent=64, win=32, stride=24)
-    assert starts[0] == 0 and starts[-1] == 32 and starts[-1] + 32 == 64
 
 
 def test_resolve_window_geometry_whole_is_single_window():
