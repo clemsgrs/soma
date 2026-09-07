@@ -5,7 +5,7 @@ from __future__ import annotations
 import gc
 import shutil
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import torch
 from hs2p.utils.stderr import run_with_filtered_stderr
@@ -79,6 +79,7 @@ def _run_with_coordinates(
     execution: ExecutionOptions,
     tiling_dir: Path,
     slides: Sequence[object],
+    on_slide_persisted: Callable[[object], None] | None = None,
 ):
     staged_process_list = Path(execution.output_dir) / "process_list.csv"
     source_process_list = tiling_dir / "process_list.csv"
@@ -101,6 +102,7 @@ def _run_with_coordinates(
             ).run_with_coordinates(
                 tiling_dir,
                 slides=list(slides),
+                on_slide_persisted=on_slide_persisted,
             )
 
         return run_with_filtered_stderr(_run_pipeline)
@@ -129,6 +131,7 @@ def _embed_tile_artifacts_with_coordinates(
     execution: ExecutionOptions,
     tiling_dir: Path,
     slides: Sequence[object],
+    on_slide_persisted: Callable[[object], None] | None = None,
 ) -> list:
     result = _run_with_coordinates(
         model_name=model_name,
@@ -138,6 +141,7 @@ def _embed_tile_artifacts_with_coordinates(
         execution=execution,
         tiling_dir=tiling_dir,
         slides=slides,
+        on_slide_persisted=on_slide_persisted,
     )
     return _require_artifact_list(result, "tile_artifacts", artifact_label="tile")
 
@@ -151,6 +155,7 @@ def _embed_hierarchical_artifacts_with_coordinates(
     execution: ExecutionOptions,
     tiling_dir: Path,
     slides: Sequence[object],
+    on_slide_persisted: Callable[[object], None] | None = None,
 ) -> list:
     result = _run_with_coordinates(
         model_name=model_name,
@@ -160,6 +165,7 @@ def _embed_hierarchical_artifacts_with_coordinates(
         execution=execution,
         tiling_dir=tiling_dir,
         slides=slides,
+        on_slide_persisted=on_slide_persisted,
     )
     return _require_artifact_list(result, "hierarchical_artifacts", artifact_label="hierarchical")
 

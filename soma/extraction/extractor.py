@@ -11,7 +11,7 @@ import shutil
 import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import torch
 from slide2vec import (
@@ -52,11 +52,6 @@ from soma.cache import (
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset, ensure_filename_safe_id
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
-from soma.extraction.commit import (
-    DEFAULT_SLIDES_PER_GPU_COMMIT_EVERY,
-    commit_chunks,
-    resolve_commit_every,
-)
 from soma.extraction.orchestration import (
     _aggregate_patients,
     _aggregate_tiles,
@@ -310,13 +305,6 @@ class _PooledFeatureExtractor:
         return replace(
             self._encoder,
             output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
-        )
-
-    def _slides_per_commit(self, *, num_gpus: int | None) -> int:
-        """Slides per slide2vec call on the WSI paths (see ``cache.commit_every``)."""
-        return resolve_commit_every(
-            self._cache.commit_every,
-            default=DEFAULT_SLIDES_PER_GPU_COMMIT_EVERY * max(1, int(num_gpus or 1)),
         )
 
     def _resolved_dtype(self, *, encoder_name: str | None = None) -> str:
@@ -1487,6 +1475,23 @@ class _PooledFeatureExtractor:
             record_sample_identity_signatures(cache_resolution, sorted(written_ids))
         return feature_dim
 
+    def _artifact_cache_committer(
+        self, cache_resolution: FeatureCacheResolution,
+    ) -> Callable[[Sequence[object]], None]:
+        """Sign persisted artifacts and record the first known feature dimension."""
+        feature_dim: int | None = None
+
+        def commit(artifacts: Sequence[object]) -> None:
+            nonlocal feature_dim
+            dim = self._write_artifacts_to_cache_resolution(
+                artifacts=artifacts, cache_resolution=cache_resolution,
+            )
+            if feature_dim is None and dim is not None:
+                record_feature_dim(cache_resolution, dim)
+                feature_dim = dim
+
+        return commit
+
     def _populate_tile_cache(
         self,
         *,
@@ -1522,26 +1527,20 @@ class _PooledFeatureExtractor:
             save_tile_embeddings=True,
             output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
-        # Commit per chunk of slides so an interrupted run keeps every finished chunk
-        # (signatures are what make a payload trusted on resume).
-        for chunk in commit_chunks(
-            selected_loaded, self._slides_per_commit(num_gpus=execution.num_gpus)
-        ):
-            artifacts = _embed_tile_artifacts_with_coordinates(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                preprocessing=preprocessing,
-                execution=execution,
-                tiling_dir=tiling_dir,
-                slides=[loaded.slide for loaded in chunk],
-            )
-            feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=artifacts,
-                cache_resolution=cache_resolution,
-            )
-            if feature_dim is not None:
-                record_feature_dim(cache_resolution, feature_dim)
+        commit = self._artifact_cache_committer(cache_resolution)
+
+        artifacts = _embed_tile_artifacts_with_coordinates(
+            model_name=encoder_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            preprocessing=preprocessing,
+            execution=execution,
+            tiling_dir=tiling_dir,
+            slides=[loaded.slide for loaded in selected_loaded],
+            on_slide_persisted=lambda artifact: commit([artifact]),
+        )
+        # Reconcile returned artifacts in case upstream omitted a callback.
+        commit(artifacts)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 
@@ -1580,26 +1579,20 @@ class _PooledFeatureExtractor:
             save_tile_embeddings=True,
             output_dtype=self._resolved_dtype(encoder_name=encoder_name),
         )
-        # Commit per chunk of slides so an interrupted run keeps every finished chunk
-        # (signatures are what make a payload trusted on resume).
-        for chunk in commit_chunks(
-            selected_loaded, self._slides_per_commit(num_gpus=execution.num_gpus)
-        ):
-            artifacts = _embed_hierarchical_artifacts_with_coordinates(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                preprocessing=preprocessing,
-                execution=execution,
-                tiling_dir=tiling_dir,
-                slides=[loaded.slide for loaded in chunk],
-            )
-            feature_dim = self._write_artifacts_to_cache_resolution(
-                artifacts=artifacts,
-                cache_resolution=cache_resolution,
-            )
-            if feature_dim is not None:
-                record_feature_dim(cache_resolution, feature_dim)
+        commit = self._artifact_cache_committer(cache_resolution)
+
+        artifacts = _embed_hierarchical_artifacts_with_coordinates(
+            model_name=encoder_name,
+            output_variant=output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            preprocessing=preprocessing,
+            execution=execution,
+            tiling_dir=tiling_dir,
+            slides=[loaded.slide for loaded in selected_loaded],
+            on_slide_persisted=lambda artifact: commit([artifact]),
+        )
+        # Reconcile returned artifacts in case upstream omitted a callback.
+        commit(artifacts)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 

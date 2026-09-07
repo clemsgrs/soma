@@ -1273,6 +1273,7 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         output_dir = Path(execution.output_dir) / "tile_embeddings"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1525,6 +1526,7 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         output_dir = Path(execution.output_dir) / "tile_embeddings"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1573,6 +1575,7 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         output_dir = Path(execution.output_dir) / "tile_embeddings"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1627,6 +1630,7 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         output_dir = Path(execution.output_dir) / "tile_embeddings"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1944,6 +1948,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         tile_artifact = _artifact(
             sample_id="s0",
@@ -1998,7 +2003,7 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
     ):
         instance = MockPipeline.return_value
 
-        def _fake_run_with_coordinates(coordinates_dir, *, slides):
+        def _fake_run_with_coordinates(coordinates_dir, *, slides, on_slide_persisted=None):
             Path(coordinates_dir, "process_list.csv").write_text(updated_process_list, encoding="utf-8")
             return SimpleNamespace(tile_artifacts=[], slide_artifacts=[])
 
@@ -2015,7 +2020,7 @@ def test_run_with_coordinates_stages_process_list_into_output_dir(tmp_path: Path
     staged_process_list = execution.output_dir / "process_list.csv"
     assert source_process_list.read_text(encoding="utf-8") == updated_process_list
     assert staged_process_list.read_text(encoding="utf-8") == updated_process_list
-    instance.run_with_coordinates.assert_called_once_with(tiling_dir, slides=[])
+    instance.run_with_coordinates.assert_called_once_with(tiling_dir, slides=[], on_slide_persisted=None)
 
 
 def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec(tmp_path: Path):
@@ -2040,7 +2045,7 @@ def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec
     ):
         instance = MockPipeline.return_value
 
-        def _fake_run_with_coordinates(coordinates_dir, *, slides):
+        def _fake_run_with_coordinates(coordinates_dir, *, slides, on_slide_persisted=None):
             process_list_path = Path(coordinates_dir, "process_list.csv")
             df = pd.read_csv(process_list_path)
             mask = df["sample_id"] == "s0"
@@ -2063,7 +2068,7 @@ def test_run_with_coordinates_normalizes_empty_feature_path_column_for_slide2vec
     recorded = pd.read_csv(staged_process_list).set_index("sample_id")
     assert recorded.loc["s0", "feature_status"] == "success"
     assert recorded.loc["s0", "feature_path"] == "/tmp/features/s0.pt"
-    instance.run_with_coordinates.assert_called_once_with(tiling_dir, slides=[])
+    instance.run_with_coordinates.assert_called_once_with(tiling_dir, slides=[], on_slide_persisted=None)
 
 
 def _run_with_coordinates_cuda_state_helper(tmp_path, num_gpus):
@@ -2109,7 +2114,7 @@ def test_run_with_coordinates_releases_parent_cuda_state_multigpu(tmp_path: Path
     collect.assert_called_once_with()
     empty_cache.assert_called_once_with()
     ipc_collect.assert_called_once_with()
-    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
+    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[], on_slide_persisted=None)
 
 
 def test_run_with_coordinates_releases_parent_cuda_state_single_gpu(tmp_path: Path):
@@ -2117,7 +2122,7 @@ def test_run_with_coordinates_releases_parent_cuda_state_single_gpu(tmp_path: Pa
     collect.assert_called_once_with()
     empty_cache.assert_called_once_with()
     ipc_collect.assert_called_once_with()
-    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
+    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[], on_slide_persisted=None)
 
 
 def test_run_with_coordinates_releases_parent_cuda_state_no_gpu_count(tmp_path: Path):
@@ -2125,7 +2130,7 @@ def test_run_with_coordinates_releases_parent_cuda_state_no_gpu_count(tmp_path: 
     collect.assert_called_once_with()
     empty_cache.assert_called_once_with()
     ipc_collect.assert_called_once_with()
-    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[])
+    instance.run_with_coordinates.assert_called_once_with(tmp_path / "tiling", slides=[], on_slide_persisted=None)
 
 
 @pytest.mark.parametrize("save_tile_features", [True, False])
@@ -2434,6 +2439,7 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         del model_name, output_variant, allow_non_recommended_settings, preprocessing, tiling_dir
         seen_output_dirs.append(Path(execution.output_dir))
@@ -2907,6 +2913,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         del model_name, output_variant, allow_non_recommended_settings, preprocessing, tiling_dir
         seen_output_dirs.append(Path(execution.output_dir))
@@ -3009,6 +3016,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         del model_name, output_variant, allow_non_recommended_settings, preprocessing, tiling_dir
         embedded_slide_ids.append([slide.sample_id for slide in slides])
@@ -3431,6 +3439,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         assert execution.num_gpus == 2
         tile_artifact = _artifact(
@@ -3828,6 +3837,7 @@ def test_hierarchical_multi_gpu_uses_coordinate_helper(tmp_path: Path):
         execution,
         tiling_dir,
         slides,
+        on_slide_persisted=None,
     ):
         assert execution.num_gpus == 2
         artifact = _artifact(

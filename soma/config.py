@@ -649,10 +649,9 @@ class CacheConfig:
     # per-epoch read I/O. Folded into every cache key (guarded so legacy fp32 keys stay
     # byte-stable) so an fp16 cache and an fp32 cache never collide.
     dtype: str | None = None
-    # How much extraction work is committed to the cache at a time (identity signatures
-    # are recorded per chunk, so an interrupted run resumes from the last chunk instead
-    # of re-encoding everything unsigned). Unit follows the path: pre-cropped images on
-    # the tile-image path (default 1024), slides on the WSI paths (default 8 per GPU).
+    # Pre-cropped images per cache commit (default 1024). Interrupted image extraction
+    # resumes after the last signed chunk. WSI tile/hierarchical caches commit per
+    # slide through slide2vec's persistence callback and ignore this setting.
     # Not part of any cache key.
     commit_every: int | None = None
 
