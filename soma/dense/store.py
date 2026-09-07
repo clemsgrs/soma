@@ -68,14 +68,12 @@ def _load_array_resilient(path: Path):
     latency and no sleep. A genuinely-permanent error still surfaces (unchanged
     type) once the retries are exhausted.
     """
-    last_error: OSError | None = None
     for attempt in range(1, _LOAD_RETRIES + 1):
         try:
             return load_array(path)
         except OSError as error:  # FileNotFoundError is a subclass of OSError
-            last_error = error
             if attempt == _LOAD_RETRIES:
-                break
+                raise
             delay = _LOAD_BACKOFF_SECONDS * attempt
             logger.warning(
                 "Transient error reading dense grid %s (attempt %d/%d): %s; retrying in %.1fs",
@@ -86,8 +84,6 @@ def _load_array_resilient(path: Path):
                 delay,
             )
             time.sleep(delay)
-    assert last_error is not None  # loop only exits via return or a caught error
-    raise last_error
 
 
 def resolve_dense_payload_dir(path: Path | str) -> Path:

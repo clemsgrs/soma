@@ -22,8 +22,6 @@ attributable on that second benchmark axis.
 from __future__ import annotations
 
 import functools
-import inspect
-import math
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any

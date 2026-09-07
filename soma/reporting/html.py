@@ -11,7 +11,6 @@ import uuid
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 from soma.reporting.charts import (
     SOMA_PALETTE,
@@ -26,7 +25,6 @@ from soma.reporting.charts import (
     roc_curve_chart,
     scatter_predicted_vs_actual,
     subgroup_metric_chart,
-    subgroup_stats_heatmap,
 )
 from soma.evaluation.metrics import (
     bh_correct,
@@ -1208,90 +1206,6 @@ def _comparison_section_header(cd: ComparisonData) -> str:
     {label_badges}
   </div>
 </header>"""
-
-
-def _comparison_section_hero_metrics(cd: ComparisonData) -> str:
-    if not cd.metric_names:
-        return ""
-
-    cards = []
-    for metric in cd.metric_names:
-        means: list[float | None] = []
-        stds: list[float | None] = []
-        for run in cd.runs:
-            split_name = _primary_split(run)
-            val = run.summary.get(f"{split_name}/{metric}_mean")
-            if val is None:
-                val = run.folds[0].test_metrics.get(split_name, {}).get(metric) if run.folds else None
-            means.append(val)
-            std_key = f"{split_name}/{metric}_std"
-            stds.append(run.summary.get(std_key))
-
-        valid = [v for v in means if v is not None]
-        if not valid:
-            continue
-        best_val = max(valid)
-
-        rows = ""
-        for i, (label, val, std) in enumerate(zip(cd.labels, means, stds)):
-            if val is None:
-                continue
-            color = _badge_color(i)
-            is_best = abs(val - best_val) < 1e-9
-            val_weight = "font-weight:700;" if is_best else "font-weight:400;opacity:0.8;"
-            std_html = f'<span style="font-size:0.8rem;color:var(--soma-text-muted)"> ± {std:.3f}</span>' if std is not None else ""
-            best_mark = ' <span style="color:var(--soma-success);font-size:0.9rem">▲</span>' if is_best else ""
-            rows += f"""
-  <div class="comp-hero-row">
-    <span class="run-badge" style="background:{color}">{label}</span>
-    <span class="comp-hero-val" style="color:{color};{val_weight}">{val:.3f}{std_html}{best_mark}</span>
-  </div>"""
-
-        cards.append(f"""
-<div class="comp-hero-card">
-  <div class="comp-hero-metric">{metric.upper()}</div>
-  {rows}
-</div>""")
-
-    if not cards:
-        return ""
-    return f'<div class="hero-strip"><div class="comp-hero-grid">{"".join(cards)}</div></div>'
-
-
-def _comparison_section_run_context(cd: ComparisonData) -> str:
-    shared = cd.shared_config
-    diffs = cd.config_diffs
-
-    items: list[str] = []
-
-    # Shared dataset / splits → single chip
-    for key, label in [
-        ("data.dataset_csv", "Dataset"),
-        ("data.splits_csv", "Splits"),
-    ]:
-        val = shared.get(key)
-        if val:
-            name = _basename(str(val))
-            items.append(
-                f'<span class="ctx-chip"><span class="ctx-label">{label}</span>'
-                f'<span class="ctx-value">{name}</span></span>'
-            )
-        else:
-            # Differs per run → one chip per run
-            per_run = [diff.get(key) for diff in diffs]
-            if any(v for v in per_run):
-                for i, (label_run, val) in enumerate(zip(cd.labels, per_run)):
-                    if val:
-                        color = _badge_color(i)
-                        items.append(
-                            f'<span class="ctx-chip">'
-                            f'<span class="ctx-label" style="color:{color}">{label_run} {label.lower()}</span>'
-                            f'<span class="ctx-value">{_basename(str(val))}</span></span>'
-                        )
-
-    if not items:
-        return ""
-    return f'<div class="run-context">{"".join(items)}</div>'
 
 
 def _comparison_section_config_varying(cd: ComparisonData) -> str:

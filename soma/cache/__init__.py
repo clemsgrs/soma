@@ -72,8 +72,6 @@ from soma.cache.tiling import (
     _build_tiling_cache_metadata,
     _canonical_artifact_destination,
     _clear_directory_for_stub,
-    _copy_file_to_cache,
-    _is_relative_to,
     _optional_path,
     _tiling_cache_dir,
     _validate_tiling_cache_contents,

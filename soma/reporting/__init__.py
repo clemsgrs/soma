@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -114,8 +113,6 @@ def _write_comparison_manifest(
     run_dirs: list[Path],
 ) -> Path:
     """Write manifest.json describing the runs included in the comparison."""
-    # The distribution is ``soma-pathology``; ``version("soma")`` never resolved and the
-    # manifest always recorded null. ``soma.__version__`` already carries the fallback.
     from soma import __version__ as soma_version
 
     runs_payload = []

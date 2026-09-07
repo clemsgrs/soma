@@ -14,7 +14,6 @@ import logging
 import json
 import csv
 import functools
-import inspect
 import math
 import os
 from collections.abc import Iterable
@@ -51,7 +50,6 @@ from soma.config import (
     PreprocessingConfig,
     ProjectionConfig,
     RepresentationConfig,
-    SamplingConfig,
     TaskConfig,
     TrainingConfig,
     config_yaml_dict,
@@ -107,7 +105,7 @@ from soma.training.model import (
     SegmentationModel,
 )
 from soma.training.patient_dataset import PatientDataset, patient_collate_fn
-from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
+from soma.training.sample_dataset import SampleDataset, sample_collate_fn
 from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
 from soma.training.fold_planning import plan_dense_fold
 from soma.training.segmentation_dataset import (

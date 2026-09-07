@@ -31,9 +31,8 @@ from soma.training.trainer import EpochLog, TrainResult
 # ---------------------------------------------------------------------------
 
 
-def _make_binary_preds_df(n: int = 16, seed: int = 42) -> pd.DataFrame:
+def _make_binary_preds_df(n: int = 16) -> pd.DataFrame:
     """Create a deterministic binary-classification predictions DataFrame."""
-    rng = np.random.default_rng(seed)
     true_labels = [i % 2 for i in range(n)]
     return pd.DataFrame({
         "sample_id": [f"s{i}" for i in range(n)],
@@ -43,15 +42,6 @@ def _make_binary_preds_df(n: int = 16, seed: int = 42) -> pd.DataFrame:
         "prob_1": [0.7 if t == 1 else 0.3 for t in true_labels],
         "sex": (["M"] * (n // 2) + ["F"] * (n // 2)),
         "grade": (["low", "high"] * (n // 2)),
-    })
-
-
-def _make_regression_preds_df(n: int = 10) -> pd.DataFrame:
-    return pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": [float(i) for i in range(n)],
-        "predicted_value": [float(i) + 0.05 for i in range(n)],
-        "group": (["A"] * (n // 2) + ["B"] * (n // 2)),
     })
 
 
@@ -98,7 +88,6 @@ def _make_run_dir(
     df = _make_binary_preds_df()
     if subgroup_columns:
         # Keep subgroup columns in the predictions CSV (as enriched by pipeline)
-        df[subgroup_columns].to_csv.__doc__  # access check
         df.to_csv(run_dir / "predictions_test.csv", index=False)
     else:
         df[["sample_id", "true_label", "predicted_label", "prob_0", "prob_1"]].to_csv(

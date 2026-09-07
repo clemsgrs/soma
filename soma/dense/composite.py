@@ -1,34 +1,12 @@
-"""CompositeDenseFeatureStore — load-time multi-encoder channel concatenation.
+"""Load-time channel concatenation over independently cached encoder grids.
 
-The paper's headline (arXiv:2602.18747): concatenating per-pixel features from several
-frozen FMs gives a richer per-pixel vector (+7.95% mean Dice). This store is a thin
-**read-time** view over independent per-member :class:`~soma.dense.store.DenseFeatureStore`s
-(each with its own cache); there is no separate composite cache. It presents the same
-surface the dense folds consume (``load`` / ``geometry`` / ``metadata`` / ``feature_dim`` /
-``validate_coverage``).
+``target`` mode resamples each member through its own padding/crop geometry to
+supervision pixels, for per-pixel classifiers. ``grid`` mode resamples native
+grids to a common token grid for decoders, treating each grid as spanning the
+full target field of view and ignoring its padding fraction.
 
-It serves two consumers with opposite spatial needs via ``concat_resolution`` (design §7):
-
-- ``"target"`` *(the decoder-free per-pixel classifier)*: each member's ``(K_i, gh_i,
-  gw_i)`` grid is upsampled to the shared mask ``target_size`` via its **own** geometry
-  (:func:`resample_grid_to_target`), then channels stack into ``(ΣK_i, H, W)``. Per-pixel
-  resolution makes this resolution-agnostic; the composite geometry is trivial
-  (``patch_size=(1, 1)`` ⇒ the head's interpolate+crop is an identity).
-- ``"grid"`` *(the trained decoder / detection)*: each member's **native** grid is
-  bilinearly resampled to a common token grid ``(h, w)`` (decision B: pad fraction
-  ignored), then channels stack into ``(ΣK_i, h, w)``. The decoder upsamples from
-  ``(h, w)`` to the mask as usual, so it runs at token resolution (not full mask
-  resolution). The reported geometry has ``grid_shape=(h, w)``, ``encoded_size=target``,
-  ``crop_box`` = full frame — so the head's ``interpolate→encoded→crop`` maps the decoder
-  output to the mask and the auto-upsample-depth (``ceil(log2(encoded/grid))``) tells the
-  decoder to learn the ``(h, w)→target`` upsampling.
-
-``member_norm`` (per member) is applied at load time **after** the resample, before
-concat, so a large-magnitude encoder does not dominate the decoder.
-
-v1 constraint: all members must share the same ``target_size`` and read-``spacing_um`` per
-sample — heterogeneous *per-member native spacing* is deferred (design §7). Members may
-still differ freely in patch size and token grid ``(gh_i, gw_i)``.
+Member normalization follows resampling. All members must share the same target
+size and read spacing; patch sizes and native token grids may differ.
 """
 
 from __future__ import annotations
@@ -61,7 +39,7 @@ def resample_grid_to_target(grid: torch.Tensor, geometry: DenseGridGeometry) -> 
 
 
 def _resample_grid_to_size(grid: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-    """Bilinearly resample a ``(C, gh, gw)`` grid to ``(C, h, w)`` (decision B).
+    """Bilinearly resample a ``(C, gh, gw)`` grid to ``(C, h, w)``.
 
     Ignores each member's few-px pad fraction — the native grid is treated as spanning the
     target FOV. Cheap, no full-resolution intermediate.
@@ -125,7 +103,6 @@ class CompositeDenseFeatureStore:
             if concat_grid_size is not None
             else None
         )
-        # Sample coverage = intersection across members (a sample must be present in all).
         common = set(members[0].available_samples)
         for member in members[1:]:
             common &= set(member.available_samples)
@@ -138,8 +115,6 @@ class CompositeDenseFeatureStore:
         self._feature_dim = sum(int(m.feature_dim) for m in members)
         self._target_size: tuple[int, int] | None = None
 
-    # --- shape / geometry (uniform across the cohort, like DenseFeatureStore) ---
-
     @property
     def available_samples(self) -> list[str]:
         return list(self._available)
@@ -149,7 +124,6 @@ class CompositeDenseFeatureStore:
         return self._feature_dim
 
     def _resolve_target_size(self, sample_id: str) -> tuple[int, int]:
-        # All members must agree on the supervision target_size for this sample.
         sizes = {tuple(int(v) for v in m.metadata(sample_id)["target_size"]) for m in self._members}
         if len(sizes) != 1:
             raise ValueError(
@@ -185,7 +159,7 @@ class CompositeDenseFeatureStore:
             # so the head's interpolate+crop is an identity on the concatenated grid.
             return compute_dense_geometry(target_size=target, patch_size=(1, 1))
         # grid mode: report the real (h, w) decoder-input grid spanning the target FOV.
-        # encoded_size = target + crop = full frame (pad ignored, decision B); grid_shape =
+        # encoded_size = target + crop = full frame (pad ignored); grid_shape =
         # (h, w) so the head upsamples the decoder output to target and the auto
         # num_upsample_blocks = ceil(log2(target/(h,w))) is correct. patch_size is the
         # nominal per-axis stride (cosmetic; the head uses encoded_size/crop_box).
@@ -207,11 +181,7 @@ class CompositeDenseFeatureStore:
 
     def metadata(self, sample_id: str) -> dict:
         target = self._resolve_target_size(sample_id)
-        # Ask each member for its spacing rather than reading the raw sidecar key: slide2vec
-        # spells the field differently per dense writer, and ``spacing_um()`` is the one
-        # place that knows both spellings. Reading the key directly would make every
-        # image-sourced member report ``None``, and this disagreement check would then pass
-        # vacuously on a set of unknowns instead of comparing real spacings.
+        # spacing_um() handles the different sidecar field names used by dense writers.
         spacings = {m.spacing_um(sample_id) for m in self._members}
         if len(spacings) != 1:
             raise ValueError(

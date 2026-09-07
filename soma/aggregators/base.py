@@ -6,7 +6,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import torch
 from torch import Tensor, nn
 
 if TYPE_CHECKING:

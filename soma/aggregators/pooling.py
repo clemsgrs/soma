@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import torch
-from torch import Tensor, nn
+from torch import Tensor
 
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.registry import aggregator_registry
@@ -53,6 +52,5 @@ class MaxPool(Aggregator):
         return self._input_dim
 
 
-# Register
 aggregator_registry.register("mean_pool", MeanPool)
 aggregator_registry.register("max_pool", MaxPool)

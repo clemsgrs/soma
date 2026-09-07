@@ -91,14 +91,9 @@ def _canonical_artifact_destination(
         return artifacts_dir / f"{artifact_stem}.coordinates.npz"
     if column_name == "coordinates_meta_path":
         return artifacts_dir / f"{artifact_stem}.coordinates.meta.json"
-    suffix = "".join(source_path.suffixes) if source_path.suffixes else source_path.suffix
+    suffix = "".join(source_path.suffixes)
     stem = f"{artifact_stem}.{column_name.removesuffix('_path')}"
     return artifacts_dir / f"{stem}{suffix}"
-
-
-def _copy_file_to_cache(*, source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source, destination)
 
 
 def _clear_directory_for_stub(tiling_dir: Path) -> None:
@@ -121,14 +116,6 @@ def _write_tiling_stub_marker(*, tiling_dir: Path, cache_dir: Path) -> None:
         ),
         encoding="utf-8",
     )
-
-
-def _is_relative_to(path: Path, root: Path) -> bool:
-    try:
-        path.relative_to(root)
-    except ValueError:
-        return False
-    return True
 
 
 def _validate_tiling_cache_contents(
@@ -188,7 +175,7 @@ def _validate_tiling_cache_contents(
                     return CacheValidationResult(complete=False, reason=f"missing artifact for {sample_id}")
                 resolved_candidate = candidate.resolve()
                 expected_root = previews_dir if column_name in {"mask_preview_path", "tiling_preview_path"} else artifacts_dir
-                if not _is_relative_to(resolved_candidate, expected_root.resolve()):
+                if not resolved_candidate.is_relative_to(expected_root.resolve()):
                     return CacheValidationResult(
                         complete=False,
                         reason=f"artifact path escapes cache entry for {sample_id}",
@@ -382,7 +369,8 @@ def write_tiling_cache_payload(
                 artifacts_dir=cache_resolution.artifacts_dir,
                 previews_dir=cache_resolution.previews_dir,
             )
-            _copy_file_to_cache(source=source_path, destination=destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, destination)
             rewritten[column_name] = str(destination.resolve())
         rows_by_stem[sample_cache_stem] = rewritten
 
