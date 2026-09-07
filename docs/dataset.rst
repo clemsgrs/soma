@@ -1,14 +1,13 @@
 Dataset
 =======
 
-The first thing ``soma`` needs is a pair of CSV manifests:
+soma loads samples and split assignments from two CSV manifests:
 
 - ``dataset.csv`` describes the samples, labels, and optional metadata.
 - ``splits.csv`` assigns each sample to a fold and split.
 
-These files are the contract between your data and the pipeline. They are
-validated when the dataset and splits are loaded, and they define which samples
-are used for training, tuning, and testing.
+Both files are validated on loading. Keep ``sample_id`` stable across them;
+sample and patient IDs must be bare names without path separators.
 
 Dataset format
 --------------
@@ -16,7 +15,7 @@ Dataset format
 ``dataset.csv``
   | Required columns: ``sample_id``, ``image_path``, ``label``.
   | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``).
-  | Any additional columns are carried along as per-sample metadata.
+  | Additional, unrecognized columns are carried along as per-sample metadata.
 
 Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)
 replace the scalar ``label`` with a per-sample supervision file:
@@ -33,13 +32,37 @@ replace the scalar ``label`` with a per-sample supervision file:
   source image's level-0 µm/px. It is required for flat PNG/JPEG dense extraction. See
   :doc:`detection` for the full column contract.
 
+For ``dataset_type="spatial_expression"``, use ``target_index`` instead of
+``label``. Each index selects a row in ``targets.npy`` (shape
+``[n_rows, n_genes]``); ``genes.json`` lists the genes in column order. Both
+sidecars must sit beside ``dataset.csv`` and are validated by
+:class:`soma.dataset.SpatialExpressionManifest`.
+
+Splits format
+-------------
+
+``splits.csv``
+  | Required columns: ``sample_id``, ``split``.
+  | Optional column: ``fold`` (integer). Omit it for a single train/tune/test split; include distinct values (0, 1, 2, …) for cross-validation.
+  | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
+  | Every fold must contain at least one test split, unless ``training.tune_is_test`` uses its tune split for both roles.
+
+Use explicit test split names for multiple held-out cohorts. See
+:doc:`training` for checkpoint selection and missing-tune policies, and
+:doc:`getting-started` for a complete run.
+
 .. _semantic-manifest-identity:
 
 Semantic manifest identity
 --------------------------
 
-Experiment and leaderboard dataset checksums describe the semantic values in the
-selected ``dataset.csv`` rows. They exclude exactly the storage-location columns
+Experiment and leaderboard dataset checksums describe semantic values in the
+``dataset.csv`` rows selected by ``train`` and ``tune`` assignments. Test rows
+have a separate identity, so changing a test cohort does not change the
+training experiment. Representation-only runs use their configured evaluation
+split instead. See :doc:`outputs` for the identity and provenance rules.
+
+Dataset checksums exclude exactly the storage-location columns
 ``image_path``, ``mask_path``, ``label_mask_path``, and ``points_path``. Relocating
 otherwise identical images, tissue masks, label masks, or point files therefore does
 not change data identity. Every other column remains part of the checksum, including
@@ -51,24 +74,3 @@ checksum and add an explicit ``<path_column>_sha256`` column such as
 ``image_path_sha256`` or ``label_mask_path_sha256``. These columns are ordinary semantic
 metadata and are hashed. soma does not open referenced artifacts or derive their
 checksums implicitly.
-
-Splits format
--------------
-
-``splits.csv``
-  | Required columns: ``sample_id``, ``split``.
-  | Optional column: ``fold`` (integer). Omit it for a single train/tune/test split; include it with distinct values (0, 1, 2, …) for cross-validation.
-  | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
-  | Every fold must contain at least one test split.
-
-Practical notes
----------------
-
-- Keep ``sample_id`` stable across both files.
-- Use ``patient_id`` when you want patient-level evaluation or aggregation.
-- Prefer explicit test split names when you have more than one held-out cohort.
-- Keep at least one held-out test split in every fold so comparisons are
-  reproducible.
-
-For a quick example of how these manifests fit into a full run, see
-:doc:`getting-started`.

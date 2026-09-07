@@ -23,9 +23,9 @@ and training interfaces.
      - Typical outputs
    * - One feature vector per sample
      - Apply a task-specific predictor directly.
-     - Tile or region classification and regression.
-   * - A bag of tile features per slide or patient
-     - Use :doc:`aggregators` to learn one slide- or patient-level representation.
+     - Classification or regression; survival for slide and patient embeddings.
+   * - A bag of tile features per slide
+     - Use :doc:`aggregators` to produce one slide-level representation.
      - Classification, regression, or survival predictions.
    * - A dense feature grid per tile or region
      - Use :doc:`decoders` to recover spatial detail before prediction.
@@ -33,6 +33,10 @@ and training interfaces.
 
 Tasks and training
 ------------------
+
+Patient-level pipelines use a frozen patient encoder and a task head, with no
+trainable aggregator. Segmentation also supports a decoder-free
+:doc:`pixel classifier <decoders/pixel-classifier>`.
 
 The :doc:`tasks` page defines the prediction target, loss, and compatible
 metrics. :doc:`training` controls optimization and checkpoint selection, then

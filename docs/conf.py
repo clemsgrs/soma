@@ -48,9 +48,9 @@ extensions = [
     "sphinx_autodoc_typehints"
 ) + _optional_extension("nbsphinx")
 
-# Notebooks ship with their outputs already committed: never re-execute them at
-# build time (the docs build has no GPU, no gated HF token, and no slides). The
-# tutorials are refreshed out-of-band via scripts/execute_tutorials.sh.
+# Notebooks ship without outputs as code listings. Never execute them during a
+# docs build, which needs neither GPUs, model access tokens, nor slide data.
+# Smoke-test their execution separately via scripts/execute_tutorials.sh.
 nbsphinx_execute = "never"
 nbsphinx_allow_errors = False
 

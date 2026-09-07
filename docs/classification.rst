@@ -1,10 +1,11 @@
 Classification
 ==============
 
-Classification task heads map the aggregated bag representation to class
-predictions. ``soma`` ships binary, multiclass, and ordinal variants. The
-aggregator is the method home for the bag → slide-level step that feeds these
-heads — see :doc:`aggregators`.
+Classification heads map a feature vector to class predictions. The vector can
+come directly from a frozen encoder or from a slide-level :doc:`aggregator
+<aggregators>`. Choose binary classification for two classes, multiclass
+classification for an unordered set of classes, or ordinal classification for
+ordered integer grades.
 
 Binary
 ------

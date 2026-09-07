@@ -1,51 +1,56 @@
 Decoders
 ========
 
-Decoders are the **dense trainable component**: the dense-grid analogue of
-:doc:`aggregators`. Where an aggregator collapses a bag of tile features into a
-single slide- or patient-level vector, a decoder consumes the dense
-``(d, grid_h, grid_w)`` token grid a **frozen** foundation-model encoder emits and
-produces a dense per-position output (a per-pixel segmentation map or a per-class
-detection heatmap). No gradients flow through the backbone; only the decoder is
-trained.
+Decoders train on a frozen encoder's dense feature grids to produce spatial
+predictions. They are used for :doc:`segmentation` and :doc:`detection`; only
+the downstream model is trained. Segmentation also supports a decoder-free
+:doc:`pixel classifier <decoders/pixel-classifier>`.
 
-The dense paths share the same front half — a frozen encoder produces a dense
-``(d, grid)`` grid (cached as ``feature_type="dense_grid"``) — and differ only in the
-trainable component on that grid and its output representation. The decoder is the
-default trainable component; the decoder-free :doc:`pixel-classifier
-<decoders/pixel-classifier>` method is the alternative.
-
-**Decoding methods**
-
-- **linear** — a single ``1x1`` conv at grid resolution (the minimal dense linear probe).
-- **lightweight_conv** — the default trainable neural decoder (documented below).
-- **heavy_conv** — a UPerNet/DPT-lite decoder: pyramid-pooling context fusion + learned
-  (transposed-conv) upsampling. Like ``lightweight_conv`` it opens with a ``1x1`` ``d->D``
-  projection, so its trainable capacity is independent of the encoder's embedding dim ``d``
-  (the same fairness invariant powers the multi-encoder :doc:`encoders/composite` ensemble,
-  where the projection absorbs the concatenated ``Σdᵢ`` width).
-- **Decoder-free pixel classifier** — classifies the encoder's own attention per
-  pixel, no neural decoder: :doc:`Attention-based segmentation
-  <decoders/pixel-classifier>` ·
-  :doc:`tutorial <tutorials/walkthrough-attention-segmentation>`.
-
-lightweight_conv
+Choose a decoder
 ----------------
 
-``lightweight_conv`` is the default decoder. It regresses a ``(C, grid)`` map from the
-dense token grid; the task head then interpolates it to the supervision ``target_size``,
-crops via ``crop_box``, and applies the task-specific activation (a **sigmoid** per-class
-heatmap for detection; per-pixel class logits for segmentation).
+.. list-table::
+   :header-rows: 1
+
+   * - ``decoder.name``
+     - Structure
+   * - ``linear``
+     - A single ``1x1`` convolution at token-grid resolution.
+   * - ``lightweight_conv``
+     - A ``1x1`` projection, bilinear upsampling and convolution blocks, then
+       a class-output convolution.
+   * - ``heavy_conv``
+     - A ``1x1`` projection, pyramid-pooling context fusion, and learned
+       upsampling through transposed convolutions.
+
+The two convolutional decoders project the input channels to ``hidden_dim``.
+Only this input projection depends on the encoder's embedding width; subsequent
+layers have fixed width. A wider encoder therefore still increases the total
+trainable parameter count.
 
 .. code-block:: yaml
 
-   decoder:                               # the dense trainable component
+   decoder:
      name: lightweight_conv
 
-The decoder is **input-agnostic**: it consumes whatever dense ``(d, grid)`` grid the
-encoder emits, set by ``preprocessing.feature_kind`` — ``patch_features`` (the ViT
-patch-token grid, ``d`` = the encoder's feature dim) or ``cls_attention`` (per-head
-prefix-token self-attention as a ``(K, grid)`` grid). Switching between them is a **pure
-config flip** — the decoder is simply built with ``input_dim`` set to the emitted channel
-count (``d`` or ``K``). Multi-encoder :doc:`encoders/composite` runs are supported and
-auto-concatenate at token-grid resolution (``concat_resolution: grid``).
+The task head interpolates decoder outputs to the padded ``encoded_size``, then
+uses ``crop_box`` to recover the supervision ``target_size``. Segmentation uses
+per-pixel class logits; detection applies a sigmoid to produce one heatmap per
+object class.
+
+Choose the input features
+-------------------------
+
+``preprocessing.feature_kind`` selects the dense grid:
+
+* ``patch_features`` (default with a decoder) supplies patch-token embeddings.
+* ``cls_attention`` supplies per-head prefix-token attention maps. Configure
+  the selected blocks and register tokens through ``preprocessing.attention``.
+
+Both have shape ``(channels, grid_h, grid_w)``. The decoder's input dimension is
+resolved from the grid's channel count; changing feature kind leaves the task
+head and loss unchanged. Attention extraction requires encoder support.
+
+:doc:`Composite encoders <encoders/composite>` combine several independently
+cached grids. Decoder runs default to concatenation at a common token-grid
+resolution.

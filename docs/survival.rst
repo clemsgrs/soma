@@ -1,9 +1,9 @@
 Survival
 ========
 
-The ``survival`` task models time-to-event with right censoring. The
-aggregator is the method home for the bag → slide-level step that feeds the
-head — see :doc:`aggregators`.
+The ``survival`` task models time-to-event with right censoring from a frozen
+slide or patient embedding, or a slide representation produced by an
+:doc:`aggregator <aggregators>`.
 
 The ``survival`` task offers two losses, selected via ``task.params.loss``:
 
@@ -25,9 +25,9 @@ The ``survival`` task offers two losses, selected via ``task.params.loss``:
     bags. ``batch_size`` is pinned to ``1`` and an aggregator is required; the
     trainer forwards ``cox_window`` bags un-padded, keeps their risk scalars
     graph-connected, and computes one Cox loss over the window (one optimiser
-    step per window). This avoids the padding-memory cost of padded mode. Note
-    it does ~``cox_window``× fewer optimiser steps per epoch, so budget a higher
-    learning rate and/or more epochs.
+    step per window). This avoids padding, but retains each bag's computation
+    graph until the window loss is computed. Changing the window size also
+    changes the number of optimizer steps per epoch.
 
 Both losses rank with Harrell's C-index via scikit-survival.
 
@@ -54,8 +54,8 @@ time-to-last-follow-up** and add two columns:
 Supported ``dataset_type`` values are ``slide`` and ``patient`` (``tile`` is
 rejected). For ``patient`` pipelines, all slides of a patient must agree on the
 survival target. The CLAM and DTFD-MIL aggregators are rejected for survival
-because their label-aware auxiliary losses assume classification. Survival MIL
-uses aggregators without label-aware auxiliary classification losses, such as
+because their label-aware auxiliary losses assume classification. DSMIL is also
+incompatible because it requires binary classification. Survival MIL can use
 ``abmil``, ``transmil``, ``mean_pool``, or hierarchical ``hipt`` features.
 
 Task heads

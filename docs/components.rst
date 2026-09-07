@@ -7,7 +7,7 @@ without rewriting the workflow around it.
 
 * :doc:`encoders` turn images into frozen representations.
 * :doc:`modeling` is the overview for choosing a downstream prediction path.
-* :doc:`aggregators` pool bags of tile features for slide- and patient-level tasks.
+* :doc:`aggregators` pool bags of tile features for slide-level tasks.
 * :doc:`decoders` recover dense spatial outputs from feature grids.
 
 .. toctree::

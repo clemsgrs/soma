@@ -1,9 +1,11 @@
 Aggregators
 ===========
 
-Aggregators combine tile features into a bag-level representation for MIL.
-Start with the simplest preset that matches the task, then tune only the
-knobs you need.
+Aggregators combine a slide's tile features into a representation for
+multiple-instance learning (MIL). In YAML, select a preset with
+``aggregation.name``. In Python, pass ``AggregatorConfig(name=...)`` to
+``PipelineConfig(aggregator=...)``. Patient-level pipelines use a frozen
+patient encoder instead.
 
 .. figure:: /_static/figures/slide-level.svg
    :figclass: soma-figure
@@ -12,15 +14,6 @@ knobs you need.
    Where aggregators sit. A frozen tile encoder turns a slide into a bag of
    features; a **trained** MIL aggregator (or, alternatively, a frozen slide-level
    foundation model) pools that bag into one slide-level vector for the task head.
-
-The shared base classes are :class:`soma.aggregators.base.Aggregator` and
-:class:`soma.aggregators.base.AggregatorOutput`.
-
-.. autoclass:: soma.aggregators.base.Aggregator
-   :members:
-
-.. autoclass:: soma.aggregators.base.AggregatorOutput
-   :members:
 
 Aggregator Zoo
 --------------
@@ -77,9 +70,8 @@ scores for interpretability and heatmap generation.
 CLAM-SB
 ~~~~~~~
 
-| ``clam_sb`` is the single-branch CLAM preset.
-| It supports binary, multiclass, ordinal, and single-target regression tasks, and can mix bag-level
-  and instance-level supervision.
+``clam_sb`` supports binary, multiclass, ordinal, and single-target regression
+tasks, and can mix bag-level and instance-level supervision.
 
 .. autoclass:: soma.aggregators.mil.clam.CLAM_SB
    :members:
@@ -87,8 +79,8 @@ CLAM-SB
 CLAM-MB
 ~~~~~~~
 
-| ``clam_mb`` is the multi-branch CLAM preset.
-| It is classification-only and creates one attention branch per class.
+``clam_mb`` requires ``multiclass_classification`` and creates one attention
+branch per class.
 
 .. autoclass:: soma.aggregators.mil.clam.CLAM_MB
    :members:
@@ -97,7 +89,8 @@ DSMIL
 ~~~~~
 
 ``dsmil`` first scores instances to find a critical tile, then performs
-query-key attention against that tile to build the bag representation.
+query-key attention against that tile to build the bag representation. It
+requires ``binary_classification``.
 
 .. autoclass:: soma.aggregators.mil.dsmil.DSMIL
    :members:
@@ -127,21 +120,24 @@ HIPT
 
 ``hipt`` first aggregates tiles within regions, then aggregates regions into
 a slide-level representation. This preset assumes hierarchical tiling in the
-preprocessing pipeline.
+preprocessing pipeline. Set
+``preprocessing.region_tile_multiple`` to control how many tiles fit along
+each side of a region.
 
 .. autoclass:: soma.aggregators.mil.hipt.HIPT
    :members:
 
-Notes
------
+Aggregator interface
+--------------------
 
-- ``clam_sb`` is the only CLAM preset that supports regression and ordinal
-  classification.
-- ``clam_mb`` is classification-only and emits one branch per class.
-- ``hipt`` requires hierarchical tiling; set
-  ``region_tile_multiple`` in :class:`soma.config.PreprocessingConfig` to
-  control how many tiles fit inside a region.
-- The task head ultimately determines the valid loss and metric pairing.
+The shared base classes are :class:`soma.aggregators.base.Aggregator` and
+:class:`soma.aggregators.base.AggregatorOutput`.
+
+.. autoclass:: soma.aggregators.base.Aggregator
+   :members:
+
+.. autoclass:: soma.aggregators.base.AggregatorOutput
+   :members:
 
 Discovery helper
 ----------------

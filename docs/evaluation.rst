@@ -35,6 +35,9 @@ The default metrics depend on the task family:
    * - ``regression``
      - ``mae``, ``r2``
      - Continuous targets
+   * - ``survival``
+     - ``c_index``
+     - Time-to-event outcomes
    * - ``segmentation``
      - ``mean_dice``, ``mean_iou``
      - Dense per-pixel prediction
@@ -60,9 +63,21 @@ for each distinct value in the selected columns.
      subgroups:
        columns: [center, grade]
 
-The run outputs write subgroup tables to ``subgroup_metrics_<split>.json`` and
-the HTML report includes the same breakdowns. The detailed statistical tests
-used for subgroup comparisons are described in :doc:`reporting`.
+The run writes ``subgroup_metrics_<split>.json`` and includes the breakdowns in
+the HTML report. See :doc:`reporting` for group-size requirements and statistical
+tests.
+
+Holding out test data
+------------------------
+
+Set ``evaluation.holdout_test: true`` to train and report tune results without
+test inference or test artifacts. Checkpoint selection and tune evaluation
+continue normally. This supports selecting a candidate on tune results before
+evaluating it on the held-out test cohort.
+
+Test identities are recorded in ``test_results.json``. Re-scoring an already
+recorded test identity is skipped unless ``evaluation.overwrite_test: true``;
+resuming unfinished folds is allowed. See :doc:`outputs` for experiment identity.
 
 Evaluation results
 ------------------

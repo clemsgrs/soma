@@ -1,7 +1,7 @@
 Curation
 ========
 
-soma includes small curators for converting known public benchmark layouts into
+soma includes curators for converting supported public benchmark layouts into
 the standard ``dataset.csv`` and ``splits.csv`` manifests described in
 :doc:`dataset`.
 
@@ -45,8 +45,7 @@ for you.
 EVA patch-level classification
 ------------------------------
 
-The first supported EVA slice covers patch-level classification datasets that
-fit soma's ``dataset_type: tile`` workflow:
+The EVA patch curator supports these ``dataset_type: tile`` datasets:
 
 - ``bach``
 - ``mhist``
@@ -77,8 +76,7 @@ orientation for binary tasks.
 .. note::
 
    The registered :doc:`EVA benchmark <eva-patch-classification-benchmark>`
-   curates the same way, so ``soma reproduce eva/<dataset>`` follows the
-   leaderboard protocol without any manual split choice.
+   runs this curation automatically with ``soma reproduce eva/<dataset>``.
 
 Split policy
 ~~~~~~~~~~~~
@@ -171,8 +169,8 @@ OCELOT ships paired *cell* and *tissue* patches; detection-v1 uses the **cell**
 patches only (1024×1024 JPEGs at ~0.2 µm/px). Each is paired with a headerless
 ``x,y,label`` point CSV whose 1-based cell label (``1`` = background cell, ``2`` =
 tumor cell) is remapped to soma's 0-based class ids (BC→0, TC→1). The curator
-writes ``dataset.csv`` (``sample_id, image_path, points_path``), ``splits.csv``,
-one ``points/<sample_id>.csv`` per sample, and ``summary.json``.
+writes ``dataset.csv`` (``sample_id, image_path, points_path, spacing_at_level_0``),
+``splits.csv``, one ``points/<sample_id>.csv`` per sample, and ``summary.json``.
 
 Split policy
 ~~~~~~~~~~~~

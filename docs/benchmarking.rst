@@ -1,117 +1,100 @@
 Benchmarking
 ============
 
-soma packages foundation model benchmarks as registered, reproducible
-protocols. Each benchmark fixes data preparation, splits, downstream training,
-metrics, and seeds, leaving the encoder as the component you choose.
-
-Two commands drive them:
-
-* ``soma reproduce`` runs a benchmark end to end for the encoder you pick —
-  curation, execution, and scoring — and, when the benchmark ships a packaged
-  reference, reports the delta against it.
-* ``soma leaderboard`` reads completed runs — from reproduce or from your own
-  configs — and renders a ranked comparison, without retraining.
-
-See :doc:`cli` for every command option and :doc:`outputs` for the artifacts each
-run writes.
-
-To compare an externally installed private preset with public presets, follow
-:doc:`benchmark-in-house-encoder`.
-
-.. tip::
-
-   Prefer Python? soma ships this as an API — the same curate, run, and score
-   flow, driving the same protocol from code. See :ref:`benchmark-api`.
+Compare encoders with registered benchmarks that fix data preparation, splits,
+downstream training, metrics, and seeds. ``soma reproduce`` curates the data,
+runs the protocol, and scores the result. ``soma leaderboard`` compares completed
+runs without retraining.
 
 Reproduce a benchmark
----------------------
+------------------------
 
-``soma reproduce NAME`` curates the data, runs the fixed protocol, and scores the
-result. Keep the Benchmark's default encoder, select one with ``--encoder``, or run an
-explicitly ordered panel with ``--encoders``::
+List the available protocols with ``soma list benchmarks``, then follow the
+benchmark's data-preparation instructions below. Keep its default encoder or
+select a compatible installed preset with ``--encoder``::
 
    soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
-   soma reproduce eva/bach --encoders private-pathology uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach
-   soma reproduce eva --encoders private-pathology uni2 --raw-root /path/to/eva --output-root runs/eva --seeds 1
 
-The plural form resolves a family to all of its concrete Benchmarks, then validates every
-Benchmark × Encoder cell before curation, Pipeline construction, extraction, training, or
-Run writes. If any cell is invalid, soma names its concrete Benchmark and Encoder, reports
-every incompatibility in panel order, and starts no work. A missing capability means you
-must select a compatible Benchmark or fix the Encoder plugin implementation. After a
-successful preflight, soma executes one ordinary Run at a time in canonical Benchmark order
-and supplied Encoder order. Raw data is curated once per concrete Benchmark;
-``--curated-dir`` skips curation for the whole panel. ``--encoder`` and ``--encoders`` are
-mutually exclusive, and ``--from-run-dir`` remains a single-Run rescoring path.
-Installed-preset discovery and capability preflight require slide2vec 5.8.0 or newer.
+``--seeds 1`` runs seed 0 for a quick smoke test; omit it to use the canonical
+seed set. Use ``--curated-dir`` to reuse prepared manifests or
+``--from-run-dir`` to rescore one existing run.
 
-Each concrete Benchmark writes its own canonical cross-encoder Leaderboard beneath its
-member output root—for example ``runs/eva/bach/leaderboards/eva/bach.*``. A family is a
-collection of dataset-, splits-, and task-specific comparisons; soma never combines its
-members into a family-wide rank.
+A family prefix such as ``eva`` runs every registered member. EVA and HEST
+expect one raw-data subdirectory per member; CRoMa shares one prepared raw root.
+Each member remains a separate dataset-, splits-, and task-specific comparison.
 
-A preflight rejection starts no Run. Once a valid panel has started, a runtime failure is
-different: later encoders still run, and completed Runs remain ordinary valid Runs. If at
-least one Run completed during the panel, soma writes the canonical Leaderboard from the
-completed Runs and labels the panel ``PARTIAL`` in command output; the Leaderboard remains
-the ordinary canonical projection. If no Run completed, soma writes no Leaderboard. In either
-case soma prints one failure summary and exits nonzero, so automation cannot mistake partial
-output for complete success.
+When a packaged reference matches the encoder, soma reports the measured value
+and its delta. An encoder without a matching reference still runs; only the
+reference comparison is skipped. Reference comparisons are informational and
+do not determine command success.
 
-``NAME`` is a registered benchmark (e.g. ``ocelot``, ``eva/bach``) or a family prefix
-(``eva``) that fans out over every member. ``--seeds 1`` is the quickest smoke; the
-benchmark's canonical seed set runs by default. Completed runs remain ordinary soma
-experiments.
+Compare an encoder panel
+------------------------
 
-When the benchmark ships a packaged reference for the encoder you ran, soma reports
-the measured value beside it and highlights potential drift. Because the encoder is a free choice, you
-can also benchmark models the reference never covered — passing an encoder with no
-matching reference simply skips the comparison::
-
-   soma reproduce eva/bach --encoder phikon --raw-root /path/to/eva/bach --output-root runs/eva-bach
-
-Compare runs on a leaderboard
------------------------------
-
-``soma leaderboard`` projects a set of completed runs into a single
-ranked table, comparing them along the axis you pass to ``--vary``. It writes the table as CSV, JSON, and
-HTML, with any packaged reference shown alongside. Every run sharing one
-``(dataset, splits, task)`` triple joins the table.
-
-The encoder is the axis ``soma reproduce --encoders`` varies, so the plural command is the
-short path to a local comparison::
+Use ``--encoders`` to run an ordered panel on one benchmark or a family::
 
    soma reproduce eva/bach --encoders uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+   soma reproduce eva --encoders uni2 virchow2 --raw-root /path/to/eva --output-root runs/eva --seeds 1
 
-Any other axis — aggregator, decoder, spacing, feature mode — works the same way, but
-you produce the runs yourself with ordinary ``soma <config>`` runs. To compare
-aggregators for a fixed encoder:
+soma validates every benchmark–encoder combination before curation or execution.
+It reports incompatibilities in panel order and starts no runs unless the whole
+panel is valid. Choose a compatible benchmark or correct the encoder plugin's
+capabilities if validation fails. Installed-preset discovery and capability
+checks require slide2vec 5.8.0 or newer.
 
-#. Take one cohort — a shared ``dataset.csv`` + ``splits.csv`` + task
-#. Write N configs identical except the ``aggregation:`` key
-#. Run each ordinary pipeline: ``soma abmil.yaml``, ``soma transmil.yaml``, …
-#. ``soma leaderboard --root runs/agg-sweep --vary aggregator`` — every run sharing that
-   ``(dataset, splits, task)`` triple joins the table, ranked by the metric inferred
-   from the runs
+After validation, benchmarks run in canonical order and encoders in the supplied
+order. Raw data is curated once per benchmark. With ``--curated-dir``, curation
+is skipped; a family expects each member's manifests in its own subdirectory.
+``--encoder`` and ``--encoders`` are mutually exclusive, and ``--from-run-dir``
+accepts only a single run.
+
+Each benchmark writes a cross-encoder leaderboard beneath its output root, for
+example ``runs/eva/bach/leaderboards/eva/bach.*``. Family members are never
+combined into a cross-dataset rank.
+
+If an encoder fails during execution, later encoders continue and completed
+runs remain valid. When any run completes, soma writes the ordinary leaderboard
+from completed runs and labels the panel ``PARTIAL`` in command output. If none
+completes, it writes no leaderboard. Either failure case ends with a failure
+summary and a nonzero exit status.
+
+To install and compare a private preset, follow
+:doc:`benchmark-in-house-encoder`.
+
+Compare other experiment choices
+--------------------------------
+
+``soma leaderboard`` ranks completed runs along the axis passed to ``--vary``
+and writes CSV, JSON, and HTML tables, including any packaged reference. Runs
+sharing a ``(dataset, splits, task)`` triple form one comparison.
+
+To compare aggregators, decoders, spacing, or feature modes, create the runs
+with ordinary configs. For an aggregator comparison:
+
+#. Use the same ``dataset.csv``, ``splits.csv``, and task in every config.
+#. Change only ``aggregation:`` and use a shared output root, such as
+   ``runs/agg-sweep``.
+#. Run each config: ``soma abmil.yaml``, ``soma transmil.yaml``, and so on.
+#. Run ``soma leaderboard --root runs/agg-sweep --vary aggregator``. The ranking
+   metric is inferred from the runs.
+
+See :doc:`cli` for command options, :doc:`outputs` for run artifacts, and
+:ref:`benchmark-api` for the equivalent Python workflow.
 
 Included benchmarks
 -------------------
 
-* :doc:`EVA <eva-patch-classification-benchmark>` evaluates frozen encoders on
-  patch-classification datasets.
-* :doc:`OCELOT <ocelot-detection-benchmark>` evaluates dense encoders for cell
-  detection.
-* :doc:`HEST <hest-gene-expression-benchmark>` evaluates frozen encoders for
-  spatial gene-expression prediction.
-* :doc:`CRoMa <croma-robustness-benchmark>` evaluates frozen tile encoders
-  for representation robustness across medical centers.
+* :doc:`EVA <eva-patch-classification-benchmark>`: patch classification with
+  frozen tile encoders.
+* :doc:`OCELOT <ocelot-detection-benchmark>`: cell detection with dense encoders.
+* :doc:`HEST <hest-gene-expression-benchmark>`: spatial gene-expression prediction
+  with frozen encoders.
+* :doc:`CRoMa <croma-robustness-benchmark>`: representation robustness across
+  medical centers with frozen tile encoders.
 
-Each page documents data acquisition, the fixed protocol, reproduction commands,
-and the relevant packaged reference.
-
-All of them accept any installed encoder: see :doc:`BYO Encoder
-<benchmark-in-house-encoder>` to benchmark your own.
+Each page covers data acquisition, the fixed protocol, commands, and packaged
+references. Encoder compatibility depends on the protocol's required outputs
+and geometry.
 
 .. toctree::
    :maxdepth: 1

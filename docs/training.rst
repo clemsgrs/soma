@@ -1,23 +1,33 @@
 Training
 ========
 
-Training takes the selected feature representation and fits the task head.
-The main knobs are learning rate, epochs, patience, optimizer, scheduler, and
-batch behavior. If a benchmark only exposes train/test splits, set
-``tune_is_test=True`` to use the single test split for checkpoint selection and
-final reporting. If a dataset has no tune split and you want a train-as-tune
-fallback instead, set ``allow_missing_tune=True``.
+Training fits an aggregator, task head, or dense decoder to the selected
+features. Configure the training budget, checkpoint selection, and feature
+transforms below.
 
-``checkpoint_selection`` decides *which* epoch's weights are evaluated. The
-default ``best`` selects the checkpoint by the monitored tune metric and stops
-early once it stops improving. ``checkpoint_selection='last'`` instead evaluates
-the final-epoch weights: model selection comes off the tune metric entirely and
-early stopping is disabled, so it requires ``patience=None``. Per-epoch tune
-metrics are still computed and written to ``training_history.json`` — as
-diagnostics only. This is the protocol for benchmarks that predeclare a fixed
-epoch budget and forbid per-encoder tuning. It is orthogonal to
-``allow_missing_tune``: one governs which checkpoint is evaluated, the other
-where the diagnostic tune split comes from, and neither implies the other.
+Budget and checkpoint selection
+-------------------------------
+
+Choose one budget: ``epochs`` counts passes through the training loader;
+``max_steps`` counts optimizer updates after gradient accumulation. For a step
+budget, set ``epochs: null``. Cosine scheduling advances per epoch or per update
+to match the selected budget.
+
+``checkpoint_selection: best`` selects weights using ``monitor`` and
+``monitor_mode`` (default: minimize tune loss). ``patience`` controls early
+stopping; ``null`` disables it. ``checkpoint_selection: last`` evaluates weights
+at the end of the budget and requires ``patience: null``. Tune metrics are still
+recorded for diagnostics.
+
+By default, training requires a tune split. Two explicit alternatives
+are available:
+
+- ``tune_is_test: true`` uses one held-out split for both checkpoint selection
+  and test reporting. Provide either tune or test, not both. Use this only when
+  reproducing a benchmark protocol that selects on its reported cohort.
+- ``allow_missing_tune: true`` reuses train as tune when tune is absent and emits
+  a warning. This controls the diagnostic split independently of checkpoint
+  selection.
 
 The main configuration object is :class:`soma.config.TrainingConfig`.
 
@@ -38,7 +48,10 @@ Practical defaults
      - Reproducibility
    * - ``epochs``
      - ``50``
-     - Maximum training epochs
+     - Training budget when ``max_steps`` is unset
+   * - ``max_steps``
+     - ``None``
+     - Optimizer-update budget; set ``epochs: null`` when using it
    * - ``learning_rate``
      - ``1e-4``
      - Primary optimization knob
@@ -53,10 +66,10 @@ Practical defaults
      - Or ``none``
    * - ``checkpoint_selection``
      - ``best``
-     - ``last`` evaluates the final-epoch weights (no early stopping, no metric-based selection); requires ``patience=None``
+     - ``last`` evaluates weights at the end of the budget; requires ``patience=None``
    * - ``patience``
      - ``10``
-     - Early stopping on tune loss; ``None`` disables early stopping
+     - Early stopping on the monitored tune value; ``None`` disables it
    * - ``batch_size``
      - ``1``
      - Good for MIL; raise for tile runs
@@ -65,23 +78,17 @@ Practical defaults
      - Effective batch size multiplier
    * - ``tune_is_test``
      - ``False``
-     - Use the only test split as tune; intended for reproducing benchmark protocols without an internal validation set
+     - Use one held-out split as both tune and test
    * - ``allow_missing_tune``
      - ``False``
      - Reuse train as tune when a fold has no tune split; emits a warning
 
-When tuning, keep the task and evaluation contract stable before sweeping
-optimizer details.
-
 Feature normalization
 ---------------------
 
-Frozen encoders span 768 to 4608 dimensions with very different activation
-scales, so a shared aggregator and its single externally-calibrated learning
-rate do not see comparable inputs across encoders. The top-level
-``normalization`` section closes that gap by inserting a *feature adaptor* — a
-front module applied to the frozen features before anything trainable sees
-them.
+The top-level ``normalization`` section applies a feature adaptor before the
+trainable model, allowing encoders with different activation scales to share
+training settings.
 
 .. code-block:: yaml
 
@@ -89,52 +96,25 @@ them.
      method: zscore   # none | zscore | l2 | layernorm
      eps: 1.0e-6
 
-``zscore`` is **fitted**: per-feature center and scale are estimated from the
-Support (train) split's tiles alone, so the transform is leak-free — held-out
-rows only ever pass *through* the adaptor and never move its statistics.
-``eps`` floors the scale so a constant or near-constant channel cannot blow up.
-It must be a finite positive number; when ``method: none``, it must retain its
-default because it has no executed meaning.
-``l2`` and ``layernorm`` are stateless and need no fitting. The default,
-``none``, means no adaptor at all: the model is structurally identical to one
-built before this section existed.
+``zscore`` estimates per-feature center and scale from the train split alone.
+Held-out samples use the fitted transform without updating it. ``eps`` floors
+the scale of constant or near-constant channels and must be finite and positive.
+``l2`` and ``layernorm`` are stateless. ``none`` adds no adaptor and requires
+``eps`` to retain its default.
 
-The fitted state is carried as **buffers, not parameters**, so the optimizer
-never sees it while it still rides in the checkpoint — the final-checkpoint test
-pass therefore re-applies the exact transform that was fit. Each fold writes a
-``feature_adapter.json`` QC sidecar next to its checkpoint recording the method,
-the ``eps`` floor, and how many channels that floor actually caught. The sidecar
-distinguishes Support units from feature rows: top-level ``n_support_samples`` is
-the fold's ``K``, while each stage's ``n_fit_samples`` is the number of feature
-rows it estimated state from. Fitted stages report their actual row count,
-active stateless/data-free stages report ``0``, and inactive stages report
-``null``.
-
-Turning normalization on does **not** invalidate an extracted feature cache: the
-section is not part of the feature-extraction cache key. It *is* part of the
-experiment identity, but only when non-default, so every pre-existing
-``experiment_id`` is preserved. The saved run config always serializes the block
-regardless, as ``{method: none}`` when off.
-
-This is orthogonal to the composite per-member ``member_norm``, which normalizes
-each member's block before concatenation and is unaffected.
-
-Today the adaptor is fit on the tile-encoder MIL path, the slide-encoder
-embedding path, and single-encoder cached dense paths. On the embedding path the
-fit is over the Support split's
-**embeddings** — one vector per slide — rather than tiles, so the fit sample
-count is exactly ``K``. Requesting a transform on a path that does not yet
-support one is refused rather than silently ignored.
+The adaptor supports cached tile-encoder MIL, slide-encoder embeddings, and
+single-encoder dense paths. Unsupported paths reject an active transform.
+For slide embeddings, fitting uses one row per training slide; MIL and dense
+paths supply feature rows from their training samples. Composite
+``member_norm`` separately normalizes each encoder's block before concatenation.
 
 Feature projection
 ------------------
 
-A wider embedding means a larger aggregator, so "smaller encoders are more
-label-efficient" can be manufactured from dimensionality alone. The top-level
-``projection`` section is the dim-matched ablation that tests whether a ranking
-survives once that confound is removed: every encoder is mapped to a common
-width by a **label-free** projection, so the trainable capacity downstream is
-equal across the roster.
+The top-level ``projection`` section maps frozen features to a common width
+without labels. Matching the downstream input dimension helps compare encoders
+without changing the aggregator's capacity simply because their embeddings have
+different widths.
 
 .. code-block:: yaml
 
@@ -143,50 +123,39 @@ equal across the roster.
      target_dim: 512  # required when method != none
      seed: 0           # configurable only for random
 
-It is the *second* stage of the same feature adaptor, applied **after**
-``normalization`` — the order is normalize → project. The two sections are
-independently configurable: standardize without projecting, project without
-standardizing, or both.
+Projection follows normalization. Either stage can be enabled independently.
 
-``pca`` is **fitted**: the principal components are estimated per fold from the
-Support (train) split alone, so the map is leak-free. It centers intrinsically
-(storing its own mean alongside the components) and pins a sign convention — the
-largest-magnitude entry of every component is made positive — so repeated fits on
-the same data are byte-identical. There is no whitening.
+``pca`` fits centered principal components on the train split alone, without
+whitening. It fixes each component's sign by making its largest-magnitude entry
+positive. ``target_dim`` must not exceed either the encoder dimension or the
+number of training feature rows; preflight checks both limits. With 12 training
+slide embeddings, for example, at most 12 components can be fitted.
 
-``random`` draws a fixed Gaussian matrix scaled by ``1/sqrt(target_dim)``, which
-approximately preserves inner products and distances. Its seed is derived from
-``seed`` combined with the encoder identity and the in/out dims, from a private
-generator that never touches the global RNG — so the matrix is reproducible from
-the config alone, constant across training trajectories, and different for every
-encoder in a roster.
+``random`` uses a fixed Gaussian matrix scaled by ``1/sqrt(target_dim)`` and can
+reduce or expand the input while approximately preserving inner products and
+distances. A private generator derives its seed from the
+configured seed, encoder identity, and input/output dimensions. It does not
+alter the global random state.
 
-Projection controls are exact integers (booleans, strings, and fractional
-numbers are rejected). ``target_dim`` is meaningful for active projections;
-``seed`` is meaningful only for ``random``. Inactive fields must retain their
-defaults, and PCA requires the default seed because it is deterministic.
+``target_dim`` and ``seed`` must be exact integers, excluding booleans, strings,
+and fractional values. Inactive fields retain their defaults; PCA requires the
+default seed. The downstream aggregator and head use ``target_dim`` when
+projection is active.
 
-Both maps are **frozen**: they live in buffers, not learned layers, so the
-projection cannot reintroduce or relocate the capacity confound it exists to
-remove. When a projection is active the aggregator and head are constructed
-against ``target_dim`` rather than the encoder's native dim — the *dim rewire* —
-which is what equalizes trainable capacity.
+Adaptor state and provenance
+----------------------------
 
-A preflight refuses an unsatisfiable PCA up front: it needs at least
-``target_dim`` feature rows in the Support set, and ``target_dim`` can be at
-most the encoder's dimension ``D``. Either shortfall raises an error naming it.
-``random`` is unconstrained and may expand as well as reduce. The row-count half
-bites hardest on the slide-encoder embedding path, where the Support set yields
-one row per slide: at ``K = 12`` no PCA wider than 12 components is available.
+Both stages are frozen checkpoint buffers, so evaluation restores the fitted
+transform. Neither changes the extracted feature cache. Both configuration
+blocks are recorded in the saved config and :doc:`experiment identity <outputs>`,
+including their default values.
 
-Provenance follows the same guards as ``normalization``: the section is not part
-of the feature-extraction cache key (so one extracted cache is shared across
-every projection width), it folds into the experiment identity only when
-active, and only with effective fields (PCA omits ``seed``; random includes it).
-The saved run config always serializes the complete block. The
-``feature_adapter.json`` sidecar records the method, ``target_dim``, ``seed``,
-the number of rows fit on, the in/out dims, and — for ``pca`` — the
-explained-variance ratio of the retained components.
+Each fold with an active transform writes ``feature_adapter.json`` beside its
+checkpoint. It records normalization and projection methods, the ``eps`` floor,
+the number of floored channels, dimensions, projection seed, and PCA explained
+variance where applicable. ``n_support_samples`` counts training samples;
+each stage's ``n_fit_samples`` counts feature rows used to fit it. Active
+stateless stages report ``0`` and inactive stages report ``null``.
 
 Live training summary
 ---------------------
@@ -196,11 +165,6 @@ learning rate, tune metrics, patience, status, trainable parameter count, and
 epoch timing. For cross-validation runs, it also shows the active fold as
 ``Fold: x/N``. The estimated time remaining is shown only in the live display.
 
-Saved timing artifacts
-----------------------
-
-The training history is saved as ``training_history.json`` (directly in the
-run directory for single-fold runs, inside ``fold_N/`` for cross-validation).
-It records the elapsed time and average epoch time for each epoch. Those values
-also appear in the HTML report so completed runs can be compared without
-reopening the live console.
+The same epoch timing and loss history are saved in
+``training_history.json`` and shown in the HTML report. See :doc:`outputs` for
+single-fold and cross-validation layouts.

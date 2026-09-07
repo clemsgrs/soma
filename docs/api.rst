@@ -1,9 +1,9 @@
 API
 ===
 
-`soma` exposes a modular public API that can be used either end to end or one
-piece at a time. For a quick tour of the end-to-end orchestration — from
-manifests to reports — before diving in, see :doc:`How soma works <how-soma-works>`.
+Use the Python API to extract features once, train downstream models, and
+inspect results. Start with :doc:`getting-started` for the complete pipeline;
+the recipes here cover custom orchestration.
 
 Main building blocks
 --------------------
@@ -30,16 +30,12 @@ Main building blocks
    * - :doc:`Reporting <reporting>`
      - Report contents, subgroup analysis, and comparison statistics
 
-Examples
---------
-
-The examples below show the most common entry points.
-
 Extract once, cache, and reuse features across experiments
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+----------------------------------------------------------
 
-This is the most common modular workflow when you want to compare several task
-heads or aggregators against the same encoder output:
+Extract a shared feature source, then train each downstream model in its own
+run directory. This example uses ``uni2``; see :doc:`encoders` for model access
+requirements.
 
 .. code-block:: python
 
@@ -99,8 +95,64 @@ artifact paths. The source can be reused across experiments as long as the
 upstream dataset, preprocessing, and encoder settings do not change. Cache and
 artifact locations are fixed by constructor configuration.
 
+Train with explicit evaluation settings
+---------------------------------------
+
+Extending the first extract-once example, pass metric names and dataset
+metadata columns to ``train()``. See :doc:`evaluation` for metric contracts and
+subgroup outputs:
+
+.. code-block:: python
+
+   from soma import EvalConfig, SubgroupConfig
+
+   evaluation = EvalConfig(
+       metrics=["auroc", "balanced_accuracy", "f1"],
+       subgroups=SubgroupConfig(columns=["center", "grade"]),
+   )
+
+   result = train(
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=effective_splits,
+       task=task,
+       training=training,
+       aggregator=abmil_aggregator,
+       evaluation=evaluation,
+       run_dir="output/abmil/uni2",
+   )
+
+Enable heatmaps when you want attention overlays
+------------------------------------------------
+
+Attention heatmaps are controlled through ``HeatmapConfig`` and passed through
+``train(...)``. This is most useful for attention-based aggregators that
+expose per-tile scores. The saved overlays and raw attention scores are
+documented in :doc:`outputs`:
+
+.. code-block:: python
+
+   from soma import HeatmapConfig
+
+   heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
+
+   result = train(
+       feature_store=features.source,
+       dataset=features.dataset,
+       splits=effective_splits,
+       task=task,
+       training=training,
+       aggregator=abmil_aggregator,
+       evaluation=evaluation,
+       heatmaps=heatmaps,
+       run_dir="output/abmil/uni2",
+   )
+
+Attention scores and rendered overlays are saved under ``attention/`` and
+``heatmaps/`` in the fold directory (the run directory for a single fold).
+
 Dense features over given images
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+--------------------------------
 
 Use the task-specific manifest type to select dense extraction. Geometry remains
 part of ``PreprocessingConfig``:
@@ -134,7 +186,7 @@ part of ``PreprocessingConfig``:
 from ``TrainingConfig.batch_size``, which controls downstream training batches.
 
 Annotation-sampled whole slides
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-------------------------------
 
 A segmentation manifest containing whole-slide image and annotation paths becomes
 an annotation-sampled extraction when masks and sampling are configured. The result's
@@ -179,89 +231,30 @@ Slides with no sampled ROI are not represented by fake samples or empty tensors.
 They are recorded in provenance, while the sampling cache preserves the zero outcome
 for identical reruns.
 
-Breaking-change migration
-~~~~~~~~~~~~~~~~~~~~~~~~~
+Generate and compare reports
+----------------------------
 
-.. list-table::
-   :header-rows: 1
-
-   * - Before
-     - Now
-   * - ``TileFeatureExtractor(...).run(feature_dir)``
-     - ``FeatureExtractor(TileDataset(...), ..., output_root=...).extract()``
-   * - ``DenseTileFeatureExtractor(...).run(feature_dir)``
-     - ``FeatureExtractor(SegmentationManifest(...) or DetectionManifest(...), ...).extract()``
-   * - ``SlideManifestDenseExtractor`` or private pipeline ROI orchestration
-     - ``FeatureExtractor(SegmentationManifest(...), preprocessing=PreprocessingConfig(masks=..., sampling=...), ...).extract()``
-   * - ``FeatureExtractor.preprocess()`` then ``FeatureExtractor.run(...)``
-     - Configure the constructor fully, then call argument-free ``extract()``
-   * - Extractor returns a feature store
-     - Use ``result.source``; ``result.dataset`` is the exact indexed dataset
-   * - Persist a derived ROI split CSV
-     - Use ``original_splits.project(result.dataset)`` in memory
-
-Train with explicit evaluation settings
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-If you want a more explicit :doc:`evaluation contract <evaluation>`, define the evaluation
-config up front and pass it through the pipeline or the lower-level training API.
-Subgroup columns are included in the run outputs and summarized in the report:
+Reporting reads the saved configuration and artifacts from completed
+``Pipeline`` runs. Given two ``PipelineResult`` objects from pipeline runs:
 
 .. code-block:: python
 
-   from soma import EvalConfig, SubgroupConfig
+   from soma.reporting import compare_runs, generate_report
 
-   evaluation = EvalConfig(
-       metrics=["auroc", "balanced_accuracy", "f1"],
-       subgroups=SubgroupConfig(columns=["center", "grade"]),
-   )
-
-   result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=effective_splits,
-       task=task,
-       training=training,
-       aggregator=aggregator,
-       evaluation=evaluation,
-       run_dir="output/abmil/uni2",
-   )
-
-Generate a report for one run
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Use ``generate_report`` to generate a :doc:`report <reporting>` from saved artifacts,
-rendering key results (e.g., loss curves and evaluation metrics) in an HTML view:
-
-.. code-block:: python
-
-   from soma.reporting import generate_report, generate_report_from_result
-
-   report_dir = "output/abmil/uni2"
-   report_path = generate_report(report_dir)
-
-Compare multiple runs
-~~~~~~~~~~~~~~~~~~~~~
-
-Use ``compare_runs`` to generate a cross-run comparison report:
-
-.. code-block:: python
-
-   from soma.reporting import compare_runs
-
-   abmil_run_dir = "output/abmil/uni2"
-   transmil_run_dir = "output/transmil/uni2"
-
+   report_path = generate_report(first_result.run_dir)
    comparison_path = compare_runs(
-       [abmil_run_dir, transmil_run_dir],
+       [first_result.run_dir, second_result.run_dir],
        labels=["ABMIL", "TransMIL"],
    )
 
-The report is written to ``<shared output_root>/comparisons/<comparison-id>/index.html``
-unless you pass ``output_dir`` explicitly.
+A single-run report defaults to ``<run_dir>/report.html``; pass ``output_path``
+to change it. Comparisons default to
+``<shared output_root>/comparisons/<comparison-id>/index.html``; pass
+``output_dir`` to choose a bundle directory. See :doc:`reporting` for report
+contents and comparison statistics.
 
 Discover available presets programmatically
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-------------------------------------------
 
 Use the public discovery helpers to list currently registered presets:
 
@@ -281,43 +274,46 @@ Use the public discovery helpers to list currently registered presets:
    pixel_classifiers = list_pixel_classifiers()
    task_heads = list_task_heads()
 
-For more detail on what the generated HTML report contains, how subgroup
-analysis is summarized, and how comparison statistics are computed, see the
-:doc:`reporting guide <reporting>`.
+Task-free representation evaluation
+-----------------------------------
 
-Enable heatmaps when you want attention overlays
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Evaluate frozen tile embeddings with the fixed CRoMa v1 protocol by setting
+``task: null`` and a ``representation`` block. Save this as a YAML config and
+run it with ``soma config.yaml``:
 
-Attention heatmaps are controlled through ``HeatmapConfig`` and passed through
-``train(...)``. This is most useful for attention-based aggregators that
-expose per-tile scores. The saved overlays and raw attention scores are
-documented in :doc:`outputs`:
+.. code-block:: yaml
 
-.. code-block:: python
+   data:
+     dataset_csv: dataset.csv
+     splits_csv: splits.csv
+     dataset_type: tile
+   encoder:
+     name: phikon
+   task: null
+   representation:
+     kind: croma
+     confounder_column: medical_center
+     split: test
+     evaluation_design: all
+     m: 5
+     alpha: 0.10
 
-   from soma import HeatmapConfig
+Selected dataset rows require non-empty ``label``, literal ``group_id``, and
+``medical_center`` columns. The selected split must occur in exactly one fold;
+cross-validation is unsupported. The cohort must provide enough same- and
+other-confounder neighbours for ``m=5``; undefined scores cause an error.
 
-   heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
-
-   result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=effective_splits,
-       task=task,
-       training=training,
-       aggregator=aggregator,
-       evaluation=evaluation,
-       heatmaps=heatmaps,
-       run_dir="output/abmil/uni2",
-   )
-
-   # attention scores land in fold_N/attention/
-   # rendered attention overlays in fold_N/heatmaps/
+Representation runs return metrics in ``result.summary`` with an empty
+``fold_results`` list. They fit no task head and write no task report. Provenance
+records the installed CRoMa version and encoder configuration, including output
+variant. It does not include checkpoint hashes or an upstream fingerprint, so
+these records alone cannot establish byte-identical weights or preprocessing.
+See :doc:`croma-robustness-benchmark` for the registered cohorts and metrics.
 
 .. _benchmark-api:
 
 Reproduce a packaged benchmark programmatically
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+-----------------------------------------------
 
 Every registered :doc:`benchmark <benchmarking>` is a Python object, so the
 ``soma reproduce`` flow is available from code: discover benchmarks, curate the
@@ -348,8 +344,8 @@ same protocol the CLI drives, so results are directly comparable:
            # share one feature cache across seeds (extraction is seed-independent)
            overrides={"cache": {"enabled": True, "root_dir": "runs/eva-bach/feature_cache"}},
        )
-       Pipeline(config).run()
-       metrics = benchmark.score(seed_root)
+       result = Pipeline(config).run()
+       metrics = benchmark.score(result.run_dir)
        measured.append(metrics[benchmark.primary_metric])
 
    print(statistics.fmean(measured))
@@ -362,7 +358,7 @@ for the CLI equivalents and :doc:`outputs` for the artifacts each run writes.
 The one-call equivalent is ``soma.benchmarks.run_benchmark``, the importable
 orchestration behind ``soma reproduce`` itself: the canonical-seed loop, the
 reference-row tolerance status, provenance stamping (git commit, slide2vec/croma
-versions), and the results-ledger append, byte-identical to the CLI. Its keywords
+versions), and the results-ledger append used by the CLI. Its keywords
 mirror the CLI flags, plus ``results_root`` so an external repository can append
 ``MeasuredRow`` rows to its own committed ledger instead of the in-package one:
 
@@ -382,7 +378,7 @@ mirror the CLI flags, plus ``results_root`` so an external repository can append
    )
 
 Run an external benchmark specification
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+---------------------------------------
 
 A project outside soma can own its benchmark protocol as a typed
 ``soma.benchmarks.BenchmarkSpec`` — a config builder, the canonical seed set,
@@ -401,3 +397,24 @@ Runnable demonstrations live in ``examples/``
   tile- and slide-level encoders with ``soma.encoders.resolve_aggregator``;
 * ``examples/portable_identity.py`` — manifest identity is portable across
   storage roots.
+
+Breaking-change migration
+-------------------------
+
+.. list-table::
+   :header-rows: 1
+
+   * - Before
+     - Now
+   * - ``TileFeatureExtractor(...).run(feature_dir)``
+     - ``FeatureExtractor(TileDataset(...), ..., output_root=...).extract()``
+   * - ``DenseTileFeatureExtractor(...).run(feature_dir)``
+     - ``FeatureExtractor(SegmentationManifest(...) or DetectionManifest(...), ...).extract()``
+   * - ``SlideManifestDenseExtractor`` or private pipeline ROI orchestration
+     - ``FeatureExtractor(SegmentationManifest(...), preprocessing=PreprocessingConfig(masks=..., sampling=...), ...).extract()``
+   * - ``FeatureExtractor.preprocess()`` then ``FeatureExtractor.run(...)``
+     - Configure the constructor fully, then call argument-free ``extract()``
+   * - Extractor returns a feature store
+     - Use ``result.source``; ``result.dataset`` is the exact indexed dataset
+   * - Persist a derived ROI split CSV
+     - Use ``original_splits.project(result.dataset)`` in memory

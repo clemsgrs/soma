@@ -1,8 +1,8 @@
 Caching
 =======
 
-The cache keeps repeated experiments inexpensive. Treat it as shared
-infrastructure across sweeps, not as part of any single run.
+The shared cache reuses tiling and frozen features across compatible runs.
+Run-specific checkpoints, predictions, and reports live in :doc:`outputs`.
 
 The cache configuration is :class:`soma.config.CacheConfig`.
 
@@ -20,7 +20,7 @@ What the cache stores
      - Why it matters
    * - Tiling
      - Yes, when preprocessing matches
-     - Avoids re-reading whole-slide images
+     - Avoids repeating tissue selection and tiling
    * - Features
      - Yes, when encoder and geometry match
      - Avoids re-embedding the same data
@@ -28,27 +28,26 @@ What the cache stores
 Cache reuse rules
 -----------------
 
-The shared cache stores reusable upstream artifacts such as tiling and feature
-extraction.
+Tiling is reused per sample when preprocessing matches. Features also require
+matching encoder and execution settings; patient embeddings are reused per
+patient. Datasets with overlapping samples can share their payloads while
+extracting only the missing samples.
 
-On a cache miss, soma delegates extraction and persistence through slide2vec's
-public ``Model`` interfaces. Pooled slide encoders receive artifacts from
-``Model.embed_tiles`` and pass those same artifacts to ``Model.aggregate_tiles``;
-slide2vec owns progress and writes into the directory soma selected. soma retains
-ownership of cache identity, completeness, and check-before-load decisions, so a
-complete cache hit does not load the foundation encoder.
+Sample identity includes ``sample_id``, ``image_path``, ``mask_path``, and the
+optional ``spacing_at_level_0`` declaration. ``mask_path`` is the tissue or
+annotation-sampling mask; segmentation's ``label_mask_path`` is excluded from
+ordinary feature identity but participates in the separate ROI-sampling cache.
+Delete affected caches before replacing source files in place.
 
-- Tiling payloads are reused per sample when preprocessing matches.
-- Tiling reuse keys include sample identity
-  ``(sample_id, image_path, mask_path)`` plus resolved preprocessing settings.
-- Feature payloads are reused per sample (or per patient for patient-level
-  embeddings) when the encoder and preprocessing match.
-- Feature reuse keys include sample identity
-  ``(sample_id, image_path, mask_path)`` plus encoder/preprocessing/execution
-  settings.
-- Sample identity uses ``sample_id``, ``image_path``, and ``mask_path`` (the tissue
-  mask; a segmentation row's ``label_mask_path`` does not shape features and is not
-  part of it). Replace files in place only after deleting the affected cache.
+On a complete cache hit, soma does not load the foundation encoder. On a miss,
+slide2vec extracts and persists features through its public ``Model`` interfaces.
+For pooled slide encoders, soma passes the artifacts from ``Model.embed_tiles``
+to ``Model.aggregate_tiles``. soma owns cache identity and completeness checks;
+slide2vec owns extraction progress and writes to the selected directory.
+
+Validation
+----------
+
 - By default, feature cache validation checks metadata identity and payload
   existence. Dense grids also validate their per-sample sidecar metadata
   (feature dimension, grid shape, target/encoded geometry, and — for
@@ -65,39 +64,21 @@ complete cache hit does not load the foundation encoder.
   - ``slide``: 1-D slide-level embeddings
   - ``patient``: 1-D patient-level embeddings
   - ``hierarchical``: 3-D hierarchical embeddings
-  - ``dense_grid``: 3-D dense segmentation grids with shape stored in sidecars
-
-- Two datasets can therefore reuse the same cached feature payload for shared
-  samples while still recomputing non-overlapping samples.
-- Cache hits do not replace the run directory, which still records one
-  immutable experiment result.
+  - ``dense_grid``: 3-D dense segmentation/detection grids with shape stored in sidecars
 
 Extraction geometry
 -------------------
 
-A feature cache also records the geometry it was extracted under
-(``docs/adr/0008-cache-records-geometry-and-does-not-stamp-extraction-semantics.md``):
-the tile size that was **requested**, the size actually **read** off each slide, and the
-**effective encoder input** — the geometry of the tensor handed to the encoder.
+Feature caches record the requested tile size, the size read from the slide,
+and the effective encoder input size. Only effective input size is validated
+on reuse: soma can derive it from configuration and the encoder registry without
+loading the model.
 
-Only the last is validated on reuse, because it is the one soma can derive from config
-plus slide2vec's registry without loading a model, and the one whose change means the
-cached features are registered to a different extent. A 224 px request reaches a
-variable-input encoder at 224 px under its shipped transform and at 512 px under a
-normalization-only one; reusing features across that shift would train on grids that do
-not mean what the run thinks they mean. That is a **hard error**, not ordinary
-incompleteness: soma raises ``CacheGeometryMismatch`` naming both sizes rather than
-silently recomputing a feature set that may be hundreds of gigabytes. Delete the cache
-directory to re-extract, or point the run at a different cache root.
+A mismatch raises ``CacheGeometryMismatch`` with both sizes. Delete the cache
+directory to re-extract or choose a different cache root. This prevents reuse of
+features whose spatial extent differs from the current encoder input.
 
-What this deliberately does **not** catch is a change in *how* pixels are produced at
-unchanged sizes — a different interpolation kernel, a resize moving stage, a corrected
-photometric recipe. Those are not sizes, so no geometry record can see them; delete
-caches by hand when upgrading slide2vec across such a change. Caches written before the
-record exists have nothing to disagree with and stay reusable.
-
-See also
---------
-
-Run-directory layout and experiment artifacts are documented in
-:doc:`outputs`.
+Geometry checks cannot detect pixel-processing changes that preserve size,
+such as a different interpolation kernel or photometric transform. Delete
+caches when upgrading slide2vec across such a change. Older caches without a
+geometry record remain reusable.

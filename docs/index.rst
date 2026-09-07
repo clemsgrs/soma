@@ -1,31 +1,20 @@
 soma
-===================
+====
 
-``soma`` is a modular framework to streamline computational pathology research.
+``soma`` runs computational pathology experiments from images and labels to
+predictions, metrics, and reports. Use a YAML pipeline for a complete run or the
+Python API to compose preprocessing, frozen encoders, and downstream models.
 
 .. figure:: /_static/figures/pipeline-overview.svg
    :figclass: soma-figure soma-hero
    :alt: The soma pipeline — data, a frozen encoder, a trained decoder, and evaluation.
 
-   Data and evaluation are fixed scaffolding; the encoder and decoder are the two
-   swappable axes — change one in a single line and keep the rest.
+   Reuse extracted features while comparing downstream models, or hold the
+   training protocol fixed to compare encoders.
 
-It provides a unified API to go from a dataset of slides and labels to a full,
-reproducible result report. Along the way, it makes it easy to sweep core
-design choices such as preprocessing (spacing, field-of-view), encoding
-(foundation models), and aggregation (MIL) so you can quickly find the
-strongest configuration for your data.
-
-Under the hood, it builds on two open-source projects of mine:
-
-- `hs2p <https://github.com/clemsgrs/hs2p>`_ for fast whole-slide
-  preprocessing
-- `slide2vec <https://github.com/clemsgrs/slide2vec>`_ for fast whole-slide
-  encoding
-
-``soma`` supports tile, region-of-interest, slide, and patient workflows. You can use it either
-as a full end-to-end :doc:`pipeline <getting-started>` or as a set of composable :doc:`building blocks <api>`
-for custom experiment orchestration.
+Workflows cover tiles, regions of interest, slides, and patients. Whole-slide
+preprocessing uses `hs2p <https://github.com/clemsgrs/hs2p>`_; foundation-model
+encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec>`_.
 
 .. raw:: html
 

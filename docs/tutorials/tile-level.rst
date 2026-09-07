@@ -1,11 +1,9 @@
 Tile-level
-===========
+==========
 
-Predict a class label for a single tile. Each sample is an already-cropped tile
-image — the path behind patch-classification benchmarks like EVA. A tile encoder
-maps each tile to one vector and a task head classifies it directly, so this is
-the simplest path in soma: **no tissue masking or tiling** (the inputs are already
-tiles) and **no MIL aggregator** (there is no bag to pool).
+Classify pre-cropped tiles with a frozen encoder and a task head, as in EVA.
+Each tile produces one feature vector, so this path needs neither tissue
+masking and tiling nor a MIL aggregator.
 
 .. list-table::
    :header-rows: 1

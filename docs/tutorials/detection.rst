@@ -1,10 +1,9 @@
 Detection
 =========
 
-Point detection — cell / nucleus centroids — on a frozen-encoder token grid. The default
-path regresses a per-class peak heatmap with a neural decoder; the rows below are the
-substrate and component choices that path can swap in, with the walkthrough for each where
-one exists.
+Predict cell or nucleus centroids from a frozen encoder's token grid. A neural
+decoder learns a per-class peak heatmap; choose a single encoder or combine
+several encoders before the decoder.
 
 .. list-table::
    :header-rows: 1
@@ -19,13 +18,12 @@ one exists.
        **F1@δ**.
      - :doc:`Detection <walkthrough-detection>`
    * - :doc:`Multi-encoder composite </encoders/composite>`
-     - Concatenate the dense outputs of several foundation models into one richer
+     - Concatenate the dense outputs of several foundation models into one
        per-position vector before the decoder.
      - :doc:`Composite <walkthrough-composite>`
-   * - :doc:`Decoder-free pixel classifier </decoders/pixel-classifier>`
-     - A per-pixel classifier on the encoder's own attention. Not yet wired for detection —
-       peaks need the decoder's spatial smoothing to stay separable.
-     -
+
+The :doc:`pixel-classifier path </decoders/pixel-classifier>` currently supports
+segmentation only.
 
 .. seealso::
 

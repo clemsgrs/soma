@@ -1,171 +1,74 @@
 # soma
 
-`soma` is a modular framework to streamline computational pathology research.
+`soma` runs computational pathology experiments from images and labels to predictions, metrics, and reports. It combines preprocessing, frozen foundation-model features, and downstream training through a modular Python API or a YAML pipeline.
 
 <p align="center">
   <img src="docs/_static/figures/pipeline-overview.png" alt="The soma pipeline — data, a frozen encoder, a trained decoder, and evaluation." width="640">
 </p>
 
-📖 **[Documentation](https://clemsgrs.github.io/soma)** · 📦 **[PyPI](https://pypi.org/project/soma-pathology/)**
-
-It provides a unified API to go from a dataset of slides and labels to a full, reproducible result report. Along the way, it makes it easy to sweep core design choices such as preprocessing (spacing, field-of-view), encoding (foundation models), and aggregation (MIL) so you can quickly find the strongest configuration for your data.
-
-You can use it either as a full end-to-end pipeline or as a set of composable building blocks for custom experiment orchestration.
+**[Documentation](https://clemsgrs.github.io/soma)** · **[PyPI](https://pypi.org/project/soma-pathology/)**
 
 ## Install
+
+Requires Python 3.11 or later:
 
 ```bash
 pip install soma-pathology
 ```
 
-The PyPI distribution is `soma-pathology`; the import package and CLI remain `soma`.
+The distribution is `soma-pathology`; the Python package and CLI are `soma`.
 
-## API Overview
+## Run an experiment
 
-The package root exports the main entry points:
+For slide classification, prepare two CSV files:
 
-- `Dataset` and `Splits` for loading data
-- `FeatureExtractor` for preprocessing slides and extracting embeddings
-- `train()` and `train_one_fold()` for training directly from features
-- `Pipeline` for the full preprocessing + feature extraction + training workflow
+- `dataset.csv`: one row per slide with a unique `sample_id`, an `image_path`, and a `label`.
+- `splits.csv`: columns `sample_id`, `split`, and `fold`, assigning every sample to `train`, `tune`, or a `test*` split in each fold.
 
-## Quick Start
-
-### 1. Prepare dataset and splits
-
-`dataset.csv` should contain one row per slide with at least `sample_id`, `image_path`, and `label`. `sample_id` must be unique, `image_path` should point to the slide file, and `label` can be either a string class name or an integer target.
-
-`splits.csv` should assign each `sample_id` to `train`, `tune`, or a `test*` split for every fold. Each fold must contain at least one test split. This is what keeps evaluation reproducible and prevents leakage.
+Use independent subjects across splits and include both classes in each split for binary AUROC. The [getting started guide](https://clemsgrs.github.io/soma/getting-started.html) shows the manifests and a complete walkthrough.
 
 ```python
-from soma import Dataset, Splits
-
-dataset = Dataset("dataset.csv")
-splits = Splits("splits.csv", dataset)
-
-print(len(dataset.sample_ids))
-print(sorted({s.label for s in dataset.samples.values()}))
-print(splits.num_folds)
-```
-
-### 2. Extract once, cache, and reuse features across experiments
-
-`FeatureExtractor` handles preprocessing and embedding extraction. The cache lets you reuse the same extracted features across multiple training runs, which is especially useful when comparing several MIL aggregators or heads against the same encoder output.
-
-```python
-from soma import Dataset, Splits, FeatureExtractor, train
-from soma import CacheConfig, EncoderConfig, AggregatorConfig, TaskConfig, TrainingConfig
-
-# Extract features once
-
-dataset = Dataset("dataset.csv")
-extractor = FeatureExtractor(
-    dataset=dataset,
-    encoder=EncoderConfig(name="uni2"),
-    output_root="output",
-    cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
+from soma import (
+    AggregatorConfig,
+    EncoderConfig,
+    EvalConfig,
+    Pipeline,
+    PipelineConfig,
+    TaskConfig,
+    TrainingConfig,
 )
-
-features = extractor.extract()
-
-# Train multiple model variants on the same features
-
-splits = Splits("splits.csv", dataset)
-task = TaskConfig(name="binary_classification")
-
-abmil_result = train(
-    feature_store=features.source,
-    dataset=features.dataset,
-    splits=splits.project(features.dataset),
-    aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-    task=task,
-    training=TrainingConfig(learning_rate=1e-4, epochs=50),
-    run_dir="output/abmil/uni2",
-)
-
-clam_result = train(
-    feature_store=features.source,
-    dataset=features.dataset,
-    splits=splits.project(features.dataset),
-    aggregator=AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128}),
-    task=task,
-    training=TrainingConfig(learning_rate=1e-4, epochs=50),
-    run_dir="output/clam_sb/uni2",
-)
-```
-
-### 3. Run a full pipeline in one call
-
-`Pipeline(config).run()` handles preprocessing, feature extraction, training across folds, and metric aggregation in a single call.
-
-```python
-from soma import Pipeline, PipelineConfig
-from soma import EncoderConfig, AggregatorConfig, TaskConfig, TrainingConfig
 
 config = PipelineConfig(
     dataset_csv="dataset.csv",
     splits_csv="splits.csv",
     output_root="output",
     dataset_type="slide",
-    encoder=EncoderConfig(name="uni2"),
-    aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
+    encoder=EncoderConfig(name="phikon"),
+    aggregator=AggregatorConfig(name="abmil"),
     task=TaskConfig(name="binary_classification"),
-    training=TrainingConfig(learning_rate=1e-4, epochs=50),
+    training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),
+    evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
 )
-
 result = Pipeline(config).run()
+print(result.summary)
+print(result.run_dir)
 ```
 
-The returned `PipelineResult` includes:
+`phikon` weights are public and download on first use. Omitted tile size and spacing resolve from the encoder's native configuration. The pipeline preprocesses slides, extracts features, trains across folds, and evaluates predictions. `result.fold_results` contains per-fold results; `result.run_dir` locates the saved artifacts.
 
-- `fold_results`: one entry per fold, each with training, tune, and test reports
-- `summary`: aggregated metrics across folds
-- `run_dir`: the resolved run directory containing the saved artifacts
+To reuse features across experiments, use `Dataset` and `Splits` to load data, `FeatureExtractor.extract()` to build a feature source, and `train()` or `train_one_fold()` for downstream training. The [API guide](https://clemsgrs.github.io/soma/api.html) shows this workflow and reporting examples.
 
-### Task-free representation evaluation
+## Use the CLI
 
-Frozen tile embeddings can instead be evaluated directly with the fixed CRoMa v1
-protocol. A representation config must explicitly disable the ordinary task default:
-
-```yaml
-data:
-  dataset_csv: dataset.csv
-  splits_csv: splits.csv
-  dataset_type: tile
-task: null
-representation:
-  kind: croma
-  confounder_column: medical_center
-  split: test
-  evaluation_design: all
-  m: 5
-  alpha: 0.10
-```
-
-Selected dataset rows must contain non-empty `label`, literal `group_id`, and the
-configured confounder column. Representation runs do not fit a head or write a task
-report. Their provenance records the installed CRoMa version and the ordinary encoder
-configuration (including output variant). That record is useful for comparison, but an
-encoder slug, variant, dimension, package version, and ordinary run metadata do **not**
-by themselves prove byte-identical weights or preprocessing; Soma does not add checkpoint
-hashing or a separate upstream fingerprint for this protocol.
-
-## CLI
-
-`soma` ships a command-line interface that runs a full pipeline from a YAML config file:
+Run the same pipeline from a YAML config:
 
 ```bash
-soma /path/to/config.yaml
-python -m soma /path/to/config.yaml
+soma config.yaml
+# Equivalent:
+python -m soma config.yaml
 ```
 
-The YAML layout is grouped by concern: `run`, `data`, `preprocessing`,
-`encoder`, `aggregation`, `task`, `evaluation`, `training`, `execution`,
-`cache`, and `reports`. `soma` merges your file on top of the bundled
-`soma/configs/default.yaml`, so you usually only need to edit the blocks you
-want to change.
-
-You can also inspect the available presets directly from the terminal:
+soma merges the file with its bundled defaults. Start with the [task examples](examples/README.md) or consult the [CLI and configuration reference](https://clemsgrs.github.io/soma/cli.html). Discover components with:
 
 ```bash
 soma list encoders --level tile
@@ -173,25 +76,17 @@ soma list aggregators
 soma list decoders
 soma list pixel-classifiers
 soma list tasks
+soma list benchmarks
 ```
 
-`examples/` contains a `reference.yaml` documenting every available field, focused per-task starting points (`slide_binary_classification.yaml`, `slide_ordinal_classification.yaml`, `slide_regression.yaml`, `tile_classification.yaml`), and runnable scripts for the external benchmark API — see [`examples/README.md`](examples/README.md).
+## Explore
 
-## Docs
-
-Full documentation is hosted at **https://clemsgrs.github.io/soma**.
-
-- [Getting started](https://clemsgrs.github.io/soma/getting-started.html)
-- [Pipeline](https://clemsgrs.github.io/soma/pipeline.html)
-- [Preprocessing](https://clemsgrs.github.io/soma/preprocessing.html)
-- [Encoders](https://clemsgrs.github.io/soma/encoders.html)
-- [Aggregators](https://clemsgrs.github.io/soma/aggregators.html)
-- [Tasks](https://clemsgrs.github.io/soma/tasks.html)
-- [Training and Evaluation](https://clemsgrs.github.io/soma/training.html)
-- [Caching](https://clemsgrs.github.io/soma/caching.html)
-- [Run outputs](https://clemsgrs.github.io/soma/outputs.html)
-- [CLI](https://clemsgrs.github.io/soma/cli.html)
+- [How soma works](https://clemsgrs.github.io/soma/how-soma-works.html): pipeline components and experiment design.
+- [Modeling paths](https://clemsgrs.github.io/soma/modeling.html): tile, slide, patient, and dense prediction workflows.
+- [Tutorials](https://clemsgrs.github.io/soma/tutorials/index.html): task-specific walkthroughs.
+- [Benchmarking](https://clemsgrs.github.io/soma/benchmarking.html): fixed protocols and encoder comparisons, including [task-free CRoMa evaluation](https://clemsgrs.github.io/soma/api.html#task-free-representation-evaluation).
+- [Caching](https://clemsgrs.github.io/soma/caching.html) and [run outputs](https://clemsgrs.github.io/soma/outputs.html): feature reuse and experiment provenance.
 
 ## License
 
-This repository is available under [Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE).
