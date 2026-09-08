@@ -9,6 +9,7 @@ function. See ``survival-design.md`` for the full design.
 
 from __future__ import annotations
 
+from numbers import Integral
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -332,7 +333,7 @@ def resolve_survival_head(loss: str = "nll") -> type[TaskHead]:
 
 
 def validate_survival_dataset(
-    dataset: Dataset, dataset_type: str, loss: str = "nll"
+    dataset: Dataset, dataset_type: str, loss: str = "nll", *, num_bins: int | None = None
 ) -> None:
     """Fail fast on malformed survival columns before training begins.
 
@@ -341,11 +342,15 @@ def validate_survival_dataset(
     requires ``bin`` (the discrete bin containing ``label``, for every sample
     including censored ones); the continuous Cox path (``loss='cox'``) ignores
     ``bin`` and so does not require it. Validates presence, ranges, bin
-    contiguity from 0 (NLL only), and — for patient pipelines — per-patient
+    indices in [0, num_bins) for an explicit positive integer NLL width, or
+    contiguity from 0 when width is inferred, and — for patient pipelines — per-patient
     agreement on the survival targets (since the patient path extracts targets
     from one representative record).
     """
     needs_bin = loss != "cox"
+    if needs_bin and num_bins is not None:
+        if isinstance(num_bins, bool) or not isinstance(num_bins, Integral) or num_bins < 1:
+            raise ValueError(f"Survival num_bins must be a positive integer, got {num_bins!r}.")
     records = list(dataset.samples.values())
     if not records:
         raise ValueError("Survival dataset has no samples.")
@@ -381,7 +386,11 @@ def validate_survival_dataset(
 
     if needs_bin:
         bins = sorted({int(record.metadata["bin"]) for record in records})
-        if bins[0] != 0 or bins != list(range(bins[-1] + 1)):
+        if num_bins is not None and bins[-1] >= num_bins:
+            raise ValueError(
+                f"Survival 'bin' values must lie in [0, {num_bins}); got {bins}."
+            )
+        if num_bins is None and (bins[0] != 0 or bins != list(range(bins[-1] + 1))):
             raise ValueError(
                 f"Survival 'bin' values must be contiguous integers starting at 0; "
                 f"got {bins}."

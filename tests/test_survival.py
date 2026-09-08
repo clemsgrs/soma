@@ -239,14 +239,15 @@ class TestValidateSurvivalDataset:
         with pytest.raises(ValueError, match="time"):
             validate_survival_dataset(ds, "slide")
 
-    def test_patient_inconsistent_targets_raise(self, tmp_path: Path):
+    @pytest.mark.parametrize("num_bins", [None, 4])
+    def test_patient_inconsistent_targets_raise(self, tmp_path: Path, num_bins):
         rows = [
             {"sample_id": "s0", "image_path": "/s0.svs", "label": 1.0, "event": 1, "bin": 0, "patient_id": "p0"},
             {"sample_id": "s1", "image_path": "/s1.svs", "label": 2.0, "event": 1, "bin": 1, "patient_id": "p0"},
         ]
         ds = _survival_dataset(tmp_path, rows)
         with pytest.raises(ValueError, match="inconsistent survival targets"):
-            validate_survival_dataset(ds, "patient")
+            validate_survival_dataset(ds, "patient", num_bins=num_bins)
 
 
 # ---------------------------------------------------------------------------
@@ -385,3 +386,77 @@ class TestSurvivalEndToEnd:
 
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_reports["test"].metrics
+
+
+@pytest.mark.parametrize("aggregation", [None, "mean_pool"])
+def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, aggregation):
+    """Cached embeddings/bags use bins 0 and 3 without dummy Cases or runtime patches."""
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label,event,bin\n"
+        "a,/a.svs,1,1,0\nb,/b.svs,7,0,3\n"
+        "c,/c.svs,2,1,0\nd,/d.svs,8,0,3\n"
+    )
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text("sample_id,split\na,train\nb,train\nc,test\nd,test\n")
+    features = tmp_path / "features"
+    features.mkdir()
+    for sid, values in [("a", [1., 0., 2., 0.]), ("b", [2., 1., 1., 0.5]),
+                        ("c", [3., 2., 0., 1.]), ("d", [4., 0., -1., 1.5])]:
+        tensor = torch.tensor(values)
+        torch.save(tensor.unsqueeze(0) if aggregation else tensor, features / f"{sid}.pt")
+    original = {p.name: p.read_bytes() for p in features.iterdir()}
+    config = PipelineConfig(
+        dataset_csv=dataset_csv, splits_csv=splits_csv,
+        output_root=tmp_path / "out", run_id="sparse-nll",
+        dataset_type="slide",
+        aggregator=AggregatorConfig(name=aggregation) if aggregation else None,
+        task=TaskConfig(name="survival", params={"loss": "nll", "num_bins": 4}),
+        training=TrainingConfig(epochs=1, batch_size=2, seed=0,
+                                checkpoint_selection="last", patience=None,
+                                allow_missing_tune=True),
+    )
+    result = Pipeline(config, feature_dir=features).run()
+    fold = result.fold_results[0]
+    assert 0 <= fold.test_reports["test"].metrics["c_index"] <= 1
+    checkpoint = torch.load(fold.train_result.checkpoint_path, weights_only=False)
+    assert tuple(checkpoint["model_state_dict"]["task_head.fc.weight"].shape) == (4, 4)
+    assert pd.read_csv(dataset_csv)["bin"].tolist() == [0, 3, 0, 3]
+    assert {name: (features / name).read_bytes() for name in original} == original
+
+
+def test_explicit_bin_width_accepts_sparse_indices_unchanged(tmp_path):
+    dataset = _survival_dataset(tmp_path, [
+        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": 0},
+        {"sample_id": "b", "image_path": "/b.svs", "label": 7., "event": 0, "bin": 3},
+    ])
+    validate_survival_dataset(dataset, "slide", num_bins=4)
+    assert [r.metadata["bin"] for r in dataset.samples.values()] == [0, 3]
+
+
+def test_explicit_bin_width_rejects_an_index_at_the_width(tmp_path):
+    dataset = _survival_dataset(tmp_path, [
+        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": 0},
+        {"sample_id": "b", "image_path": "/b.svs", "label": 7., "event": 0, "bin": 4},
+    ])
+    with pytest.raises(ValueError, match=r"\[0, 4\)"):
+        validate_survival_dataset(dataset, "slide", num_bins=4)
+
+
+@pytest.mark.parametrize("width", [0, -1, True, False, 4.0, 2.5, "4"])
+def test_explicit_bin_width_must_be_a_positive_integer(tmp_path, width):
+    dataset = _survival_dataset(tmp_path, [
+        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": 0},
+    ])
+    with pytest.raises(ValueError, match="num_bins.*positive integer"):
+        validate_survival_dataset(dataset, "slide", num_bins=width)
+
+
+@pytest.mark.parametrize("bins", [[0, 3], [1, 2]])
+def test_absent_bin_width_preserves_contiguous_from_zero_requirement(tmp_path, bins):
+    dataset = _survival_dataset(tmp_path, [
+        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": bins[0]},
+        {"sample_id": "b", "image_path": "/b.svs", "label": 7., "event": 0, "bin": bins[1]},
+    ])
+    with pytest.raises(ValueError, match="contiguous integers starting at 0"):
+        validate_survival_dataset(dataset, "slide")

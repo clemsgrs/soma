@@ -48,7 +48,11 @@ time-to-last-follow-up** and add two columns:
      - Index of the discrete time bin **containing** ``label`` — for *every*
        sample, including censored ones (a censored sample's bin is the last bin
        it was known event-free). Compute the bins yourself (e.g. ``qcut`` on the
-       uncensored times); ``num_bins`` is inferred as ``max(bin) + 1``.
+       uncensored times). Set ``task.params.num_bins`` to a positive integer to
+       fix the head width: any subset of indices in ``[0, num_bins)`` is valid,
+       including empty intervals (e.g. observed bins ``[0, 3]`` with width ``4``).
+       Indices are never renumbered. Without an explicit width, observed bins must
+       be contiguous from zero and ``num_bins`` is inferred as ``max(bin) + 1``.
        **Required for ``loss: nll`` only** — the Cox path ignores ``bin``.
 
 Supported ``dataset_type`` values are ``slide`` and ``patient`` (``tile`` is
