@@ -1042,7 +1042,9 @@ def train_one_fold(
         from soma.tasks.survival import resolve_survival_head, validate_survival_dataset
 
         survival_loss = task.params.get("loss", "nll")
-        validate_survival_dataset(dataset, dataset_type, loss=survival_loss)
+        validate_survival_dataset(
+            dataset, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
+        )
         task_cls = resolve_survival_head(survival_loss)
     task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
     task_params.pop("loss", None)
