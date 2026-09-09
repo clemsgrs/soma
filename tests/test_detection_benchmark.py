@@ -1058,3 +1058,52 @@ def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
     assert cfg.preprocessing.dense_window_overlap == base.preprocessing.dense_window_overlap
     assert cfg.cache.dtype == base.cache.dtype
     assert cfg.training == base.training
+
+
+def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
+    """A composite member resolves to the SAME dense cache key as a single-encoder run.
+
+    Regression for the rung-4 cache-miss: ``resolve_pipeline_preprocessing`` only applies
+    the encoder-aware fill (``ref_tile_size_px``/``read_tile_size_px``) when ``encoder:``
+    is set, so composite members used to key on the unresolved preprocessing and could
+    never hit the caches the ranking sweep already extracted.
+    """
+    from soma.config import load_config
+    from soma.dense_extraction import _DenseImageExtractor
+    from soma.pipeline import composite_member_extraction_spec, resolve_pipeline_preprocessing
+
+    repo_root = Path(__file__).resolve().parents[1]
+    overrides = {"cache": {"root_dir": str(tmp_path)}}
+
+    single = load_config(
+        resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml",
+        overrides={"encoder": {"name": "virchow2"}, **overrides},
+    )
+    pre_single = resolve_pipeline_preprocessing(single)
+    key_single = _DenseImageExtractor(
+        None, single.encoder,
+        target_size=int(pre_single.requested_tile_size_px),
+        spacing_um=float(pre_single.requested_spacing_um),
+        backend=pre_single.backend, tolerance=float(pre_single.tolerance),
+        window_size=pre_single.dense_window_size,
+        overlap=float(pre_single.dense_window_overlap),
+        execution=single.execution, cache=single.cache, preprocessing=pre_single,
+    ).cache_dir().name
+
+    ensemble = load_config(
+        repo_root / "examples" / "detection_benchmark" / "ensemble_top3_midog.yaml",
+        overrides=overrides,
+    )
+    pre = resolve_pipeline_preprocessing(ensemble)
+    member = next(m for m in ensemble.composite.encoders if m.name == "virchow2")
+    enc, member_prep, window, overlap = composite_member_extraction_spec(member, pre)
+    key_member = _DenseImageExtractor(
+        None, enc,
+        target_size=int(pre.requested_tile_size_px),
+        spacing_um=float(pre.requested_spacing_um),
+        backend=pre.backend, tolerance=float(pre.tolerance),
+        window_size=window, overlap=float(overlap),
+        execution=ensemble.execution, cache=ensemble.cache, preprocessing=member_prep,
+    ).cache_dir().name
+
+    assert key_member == key_single

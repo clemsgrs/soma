@@ -3247,6 +3247,47 @@ class _RunRecorder:
         update_run_index(layout.index_dir / "runs.csv", metadata)
 
 
+def composite_member_extraction_spec(member, preprocessing):
+    """The ``(EncoderConfig, PreprocessingConfig, window, overlap)`` one composite member extracts with.
+
+    Mirrors the single-encoder path exactly: the member's encoder config is run through
+    :func:`resolve_preprocessing_config` (the same encoder-aware fill
+    ``resolve_pipeline_preprocessing`` applies when ``encoder:`` is set), so a member's
+    dense cache key is identical to the key the same encoder produces in a single-encoder
+    run — composite reuse of already-extracted per-encoder caches depends on this.
+    The per-member sliding window (CONCH native-448 vs H0-mini native-224, …) falls back
+    to the run's shared window when the member leaves it unset.
+    """
+    from soma.encoders.validation import resolve_preprocessing_config
+
+    member_encoder = EncoderConfig(
+        name=member.name,
+        precision=member.precision,
+        batch_size=member.batch_size,
+        adaptive_batching=member.adaptive_batching,
+        output_variant=member.output_variant,
+        allow_non_recommended_settings=member.allow_non_recommended_settings,
+    )
+    member_window = (
+        member.dense_window_size
+        if member.dense_window_size is not None
+        else preprocessing.dense_window_size
+    )
+    member_overlap = (
+        member.dense_window_overlap
+        if member.dense_window_overlap is not None
+        else preprocessing.dense_window_overlap
+    )
+    member_prep = replace(
+        resolve_preprocessing_config(member_encoder, preprocessing),
+        feature_kind=member.feature_kind,
+        attention=member.attention,
+        dense_window_size=member_window,
+        dense_window_overlap=member_overlap,
+    )
+    return member_encoder, member_prep, member_window, member_overlap
+
+
 class Pipeline:
     """Orchestrates the full pipeline: extract → train all folds → summarize.
 
@@ -3556,32 +3597,8 @@ class Pipeline:
         member_stores = []
         try:
             for index, member in enumerate(composite.encoders):
-                member_encoder = EncoderConfig(
-                    name=member.name,
-                    precision=member.precision,
-                    batch_size=member.batch_size,
-                    adaptive_batching=member.adaptive_batching,
-                    output_variant=member.output_variant,
-                    allow_non_recommended_settings=member.allow_non_recommended_settings,
-                )
-                # Per-member sliding window (CONCH native-448 vs H0-mini native-224, …);
-                # fall back to the run's shared window when the member leaves it unset.
-                member_window = (
-                    member.dense_window_size
-                    if member.dense_window_size is not None
-                    else preprocessing.dense_window_size
-                )
-                member_overlap = (
-                    member.dense_window_overlap
-                    if member.dense_window_overlap is not None
-                    else preprocessing.dense_window_overlap
-                )
-                member_prep = replace(
-                    preprocessing,
-                    feature_kind=member.feature_kind,
-                    attention=member.attention,
-                    dense_window_size=member_window,
-                    dense_window_overlap=member_overlap,
+                member_encoder, member_prep, member_window, member_overlap = (
+                    composite_member_extraction_spec(member, preprocessing)
                 )
                 extractor = _DenseImageExtractor(
                     self._dataset,
