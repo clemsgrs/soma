@@ -1013,3 +1013,48 @@ def test_recorded_ocelot_merge_refuses_ocelot_from_disk(tmp_path: Path):
     m2 = _load_merger()
     with pytest.raises(ValueError, match="recorded"):
         m2.build_full_report(tmp_path, datasets=["ocelot", "midog"])
+
+
+# --- rung 4: committed ensemble configs (#235) ----------------------------------------
+
+
+@pytest.mark.parametrize("dataset", ["midog", "ocelot"])
+@pytest.mark.parametrize(
+    "comp,members",
+    [
+        ("top2", ["genbio-pathfm", "h-optimus-1"]),
+        ("top3", ["genbio-pathfm", "h-optimus-1", "virchow2"]),
+    ],
+)
+def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
+    """The 4 committed rung-4 YAMLs parse into the agreed composite recipe.
+
+    Guards the grilling decisions: fixed member lists, grid-mode concat on the finest
+    member grid (concat_grid_size unset), per-member l2 norm, lightweight_conv decoder,
+    and the dataset base's task/preprocessing untouched (fairness with the single-encoder
+    cells).
+    """
+    from soma.config import load_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = load_config(
+        repo_root / "examples" / "detection_benchmark" / f"ensemble_{comp}_{dataset}.yaml"
+    )
+    assert cfg.encoder is None and cfg.composite is not None
+    assert [m.name for m in cfg.composite.encoders] == members
+    assert cfg.composite.concat_resolution == "grid"
+    assert cfg.composite.concat_grid_size is None
+    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
+    assert all(m.feature_kind == "patch_features" for m in cfg.composite.encoders)
+    assert cfg.decoder is not None and cfg.decoder.name == "lightweight_conv"
+    # The recipe below the composite matches the dataset base config.
+    base = load_config(
+        resources.files("soma.benchmarks") / "configs" / "detection" / f"{dataset}.yaml"
+    )
+    assert cfg.task == base.task
+    assert cfg.preprocessing.requested_tile_size_px == base.preprocessing.requested_tile_size_px
+    assert cfg.preprocessing.requested_spacing_um == base.preprocessing.requested_spacing_um
+    assert cfg.preprocessing.dense_window_size == base.preprocessing.dense_window_size
+    assert cfg.preprocessing.dense_window_overlap == base.preprocessing.dense_window_overlap
+    assert cfg.cache.dtype == base.cache.dtype
+    assert cfg.training == base.training

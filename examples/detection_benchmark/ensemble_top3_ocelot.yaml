@@ -1,0 +1,77 @@
+# detection-benchmark rung 4 (#235) — multi-FM ensemble (top3: genbio-pathfm + h-optimus-1 + virchow2) on OCELOT.
+#
+# The OCELOT base recipe with the single encoder replaced by a `composite:` block:
+# each member is extracted into its own standard dense cache (pure cache hits after the
+# ranking sweep — uniform 448 px window / 0.25 overlap), then channel-concatenated at
+# load time on the finest member token grid (`concat_resolution: grid`), with per-member
+# l2 normalization so no encoder dominates the decoder's 1x1 projection. Everything
+# below the projection is identical to the single-encoder cells (fairness invariant).
+# Seed / data paths / output root are overridden per cell via `--set`, mirroring
+# examples/detection_benchmark/campaign.py.
+
+run:
+  output_root: output/detection_benchmark/ensemble/ocelot_top3
+  seed: 0
+  tags: [detection-benchmark, ocelot, detection, lightweight_conv, ensemble, top3]
+
+data:
+  dataset_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/dataset.csv
+  splits_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/splits.csv
+  dataset_type: detection
+
+preprocessing:
+  # OCELOT cell patches are flat 1024x1024 JPEGs declared at the benchmark's native
+  # 0.2 µm/px. This exact-spacing request preserves their decoded RGB pixels. The 448
+  # window + 0.25 overlap blends window seams.
+  requested_tile_size_px: 1024
+  requested_spacing_um: 0.2
+  dense_window_size: 448
+  dense_window_overlap: 0.25
+
+composite:
+  # feature_kind cross-defaults to patch_features for the trained-decoder path;
+  # the common grid defaults to the finest member grid (concat_grid_size unset).
+  concat_resolution: grid
+  encoders:
+    - name: genbio-pathfm
+      member_norm: l2
+      batch_size: 8
+      allow_non_recommended_settings: true
+    - name: h-optimus-1
+      member_norm: l2
+      batch_size: 8
+      allow_non_recommended_settings: true
+    - name: virchow2
+      member_norm: l2
+      batch_size: 8
+      allow_non_recommended_settings: true
+
+decoder:
+  name: lightweight_conv
+
+task:
+  name: detection
+  params:
+    num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
+    match_distance: 3.0       # δ in µm (OCELOT-official)
+    sigma: 1.0                # target Gaussian σ in µm (≈ δ/3)
+    matching: hungarian       # headline; greedy is OCELOT's official ranking scorer
+    foreground_weight: 10.0
+
+evaluation:
+  metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]
+
+training:
+  epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  optimizer: adam
+  scheduler: cosine
+  patience: 10
+  monitor: mean_f1
+  monitor_mode: max
+  batch_size: 1
+  gradient_accumulation: 8
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: false

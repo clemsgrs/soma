@@ -666,18 +666,29 @@ def _decode_cell_points(
 
     from dataclasses import replace as _replace
 
-    pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
-    cache_cfg = cfg.cache
-    if cache_cfg.root_dir is None:
-        cache_cfg = _replace(cache_cfg, root_dir=Path(cfg.output_root) / "feature_cache")
-    store = FeatureExtractor(
-        manifest,
-        cfg.encoder,
-        pre,
-        execution=cfg.execution,
-        cache=cache_cfg,
-        output_root=run_dir / "rescore_extraction",
-    ).extract().source
+    if cfg.composite is not None:
+        # Composite (rung 4) cell: rebuild the multi-encoder concat view exactly as the
+        # training run did — each member resolves to its own dense cache (pure hits after
+        # the sweep's extraction), concatenated at load time. Reuses the pipeline's own
+        # builder so scoring can never diverge from what trained.
+        from soma.pipeline import Pipeline
+
+        store = Pipeline(cfg)._build_composite_dense_store(run_dir=run_dir)
+    else:
+        pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
+        cache_cfg = cfg.cache
+        if cache_cfg.root_dir is None:
+            cache_cfg = _replace(
+                cache_cfg, root_dir=Path(cfg.output_root) / "feature_cache"
+            )
+        store = FeatureExtractor(
+            manifest,
+            cfg.encoder,
+            pre,
+            execution=cfg.execution,
+            cache=cache_cfg,
+            output_root=run_dir / "rescore_extraction",
+        ).extract().source
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])
@@ -737,8 +748,13 @@ def _decode_cell_points(
     for loader in test_loaders.values():
         test_samples.extend(_decode_split_points(model, loader, head, device, manifest))
 
+    encoder_label = (
+        cfg.encoder.name
+        if cfg.encoder is not None
+        else "+".join(m.name for m in cfg.composite.encoders)
+    )
     make = lambda samples: CellPredictions(  # noqa: E731
-        encoder=cfg.encoder.name, dataset=dataset, replicate=replicate,
+        encoder=encoder_label, dataset=dataset, replicate=replicate,
         metric_name=spec.metric_name, spacing_um=spec.spacing_um, samples=samples,
     )
     return make(tune_samples), make(test_samples), score_thresholds
