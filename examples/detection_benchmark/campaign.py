@@ -36,6 +36,17 @@ Each cell's config is the committed per-dataset benchmark YAML under
 ``build_config``, with the roster encoder swapped in); this driver only overrides the
 dataset paths (from ``--data-root``), the encoder, the replicate seed/fold, and the output
 dir. Needs a GPU + HF token for the gated encoders. Run from the soma repo root.
+
+Rung 4 of the decoder ladder (#235, the multi-FM ensemble) swaps the base recipe for a
+committed composite recipe via ``--config``. The cell's encoder label is the composite's
+member names joined by ``+`` (its cell dir, its ``--encoders`` name when scoring). Members
+resolve to the per-encoder dense caches the ranking sweep already extracted, so point
+``cache.root_dir`` at that sweep's cache and give the ablation its own ``--out-root``::
+
+    python examples/detection_benchmark/campaign.py rank --data-root data \
+        --config examples/detection_benchmark/ensemble_top2_midog.yaml --datasets midog \
+        --out-root output/detection_benchmark/ensemble \
+        --set cache.root_dir=output/detection_benchmark/midog/feature_cache
 """
 
 from __future__ import annotations
@@ -368,16 +379,20 @@ def _config_path(dataset: str) -> Path:
 def train_cell(
     encoder: str, dataset: str, replicate: int, axis: str, data_root: Path, out_root: Path,
     decoder: str | None = None, extra_sets: Sequence[str] = (),
+    config_path: Path | None = None,
 ) -> None:
     """Train (+extract) one cell via ``python -m soma`` — the config supplies the recipe.
 
     The replicate maps onto ``run.seed`` for the seeds axis and onto a fold selection for the
     folds axis (multi-fold within-run resume is #244's job; here each fold is one cell). The
-    committed config's encoder is swapped for the roster encoder.
+    committed config's encoder is swapped for the roster encoder — unless ``config_path``
+    names a composite (rung 4) recipe, whose ``composite:`` block *is* the encoder and
+    whose ``encoder`` is then the composite label (the cell-dir name).
     """
-    cmd = [sys.executable, "-m", "soma", str(_config_path(dataset))]
+    cmd = [sys.executable, "-m", "soma", str(config_path or _config_path(dataset))]
     cmd += _data_overrides(data_root, dataset)
-    cmd += ["--set", f"encoder.name={encoder}"]
+    if config_path is None:
+        cmd += ["--set", f"encoder.name={encoder}"]
     if decoder:
         cmd += ["--set", f"decoder.name={decoder}"]
     for override in extra_sets:
@@ -419,6 +434,7 @@ def score_cell_isolated(
 def run_extract(
     data_root: Path, out_root: Path, roster, datasets, *, dry_run: bool,
     decoder: str | None = None, extra_sets: Sequence[str] = (),
+    config_path: Path | None = None,
 ) -> None:
     """Phase 1: populate the dense cache for every ``(encoder, dataset)`` pair (skip if done)."""
     for dataset in datasets:
@@ -433,7 +449,7 @@ def run_extract(
             # One pass over replicate ids[0] extracts the shared grids for all splits.
             train_cell(
                 entry.name, dataset, ids[0], axis, data_root, out_root,
-                decoder=decoder, extra_sets=extra_sets,
+                decoder=decoder, extra_sets=extra_sets, config_path=config_path,
             )
             marker = Path(out_root) / dataset / entry.name / "extracted.marker"
             marker.parent.mkdir(parents=True, exist_ok=True)
@@ -443,6 +459,7 @@ def run_extract(
 def run_rank(
     data_root: Path, out_root: Path, roster, datasets, seeds, *, dry_run: bool,
     git_sha: str | None, decoder: str | None = None, extra_sets: Sequence[str] = (),
+    config_path: Path | None = None,
 ) -> dict:
     """Phase 2: train + freeze-on-tune + score-on-test every cell, then aggregate the report."""
     for cell in plan_cells(roster, datasets, data_root, seeds=seeds):
@@ -454,7 +471,10 @@ def run_rank(
             print(f"[{ds}/{enc}/r{rid}] would train+score ({axis})")
             continue
         if not training_done(out_root, ds, enc, rid):
-            train_cell(enc, ds, rid, axis, data_root, out_root, decoder=decoder, extra_sets=extra_sets)
+            train_cell(
+                enc, ds, rid, axis, data_root, out_root,
+                decoder=decoder, extra_sets=extra_sets, config_path=config_path,
+            )
         score_cell_isolated(enc, ds, rid, axis, data_root, out_root)
     return aggregate_and_report(
         out_root, roster=roster, datasets=datasets, seeds=seeds, data_root=data_root,
@@ -643,6 +663,7 @@ def _decode_cell_points(
         build_detection_model_from_checkpoint,
     )
     from soma import FeatureExtractor
+    from soma.cache import resolve_cache_root
     from soma.config import load_config
     from soma.dataset import DetectionManifest, Splits
     from soma.encoders.validation import resolve_preprocessing_config
@@ -666,18 +687,32 @@ def _decode_cell_points(
 
     from dataclasses import replace as _replace
 
-    pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
-    cache_cfg = cfg.cache
-    if cache_cfg.root_dir is None:
-        cache_cfg = _replace(cache_cfg, root_dir=Path(cfg.output_root) / "feature_cache")
-    store = FeatureExtractor(
-        manifest,
-        cfg.encoder,
-        pre,
-        execution=cfg.execution,
-        cache=cache_cfg,
-        output_root=run_dir / "rescore_extraction",
-    ).extract().source
+    rescore_root = run_dir / "rescore_extraction"
+    if cfg.composite is not None:
+        # Composite (rung 4) cell: rebuild the multi-encoder concat view exactly as the
+        # training run did — each member resolves to its own dense cache (pure hits after
+        # the sweep's extraction), concatenated at load time over the manifest this
+        # function already holds. Reuses the pipeline's own builder so scoring can never
+        # diverge from what trained.
+        from soma.pipeline import build_composite_dense_store
+
+        store = build_composite_dense_store(cfg, manifest, output_root=rescore_root)
+    else:
+        pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
+        cache_cfg = _replace(
+            cfg.cache,
+            root_dir=resolve_cache_root(
+                cfg.cache, feature_dir=rescore_root, output_root=cfg.output_root
+            ),
+        )
+        store = FeatureExtractor(
+            manifest,
+            cfg.encoder,
+            pre,
+            execution=cfg.execution,
+            cache=cache_cfg,
+            output_root=rescore_root,
+        ).extract().source
 
     p = dict(cfg.task.params)
     num_classes = int(p["num_classes"])
@@ -737,8 +772,9 @@ def _decode_cell_points(
     for loader in test_loaders.values():
         test_samples.extend(_decode_split_points(model, loader, head, device, manifest))
 
+    encoder_label = cfg.encoder.name if cfg.encoder is not None else cfg.composite.label
     make = lambda samples: CellPredictions(  # noqa: E731
-        encoder=cfg.encoder.name, dataset=dataset, replicate=replicate,
+        encoder=encoder_label, dataset=dataset, replicate=replicate,
         metric_name=spec.metric_name, spacing_um=spec.spacing_um, samples=samples,
     )
     return make(tune_samples), make(test_samples), score_thresholds
@@ -749,6 +785,33 @@ def _resolve_roster(names: Sequence[str] | None) -> tuple[RosterEntry, ...]:
         return DEFAULT_ROSTER
     by_name = {e.name: e for e in DEFAULT_ROSTER}
     return tuple(by_name.get(n, RosterEntry(n)) for n in names)
+
+
+def _composite_roster(args) -> tuple[RosterEntry, ...]:
+    """The one-entry roster a ``--config`` composite recipe defines, after checking its guards.
+
+    A composite recipe is per-dataset (it embeds the dataset base recipe), names its own
+    encoder (the composite label), and is an *ablation* under #235 ("heavier rungs labeled
+    ablation"): it must never share ``--out-root`` with the headline sweep, where the
+    roster-driven aggregation would otherwise pick it up as just another encoder.
+    """
+    from soma.config import load_config
+
+    if args.phase == "score":
+        raise SystemExit("--config is for extract/rank; score reloads the cell's persisted config")
+    if args.encoders:
+        raise SystemExit("--config defines the encoder (its composite label); drop --encoders")
+    if len(args.datasets) != 1:
+        raise SystemExit("--config embeds one dataset's recipe: pass exactly one --datasets")
+    if Path(args.out_root).resolve() == OUT_DIR.resolve():
+        raise SystemExit(
+            "--config cells are an ablation: pair them with their own --out-root "
+            "(not the headline sweep's)"
+        )
+    cfg = load_config(str(args.config))
+    if cfg.composite is None:
+        raise SystemExit(f"{args.config} has no composite: block; --config is for rung-4 recipes")
+    return (RosterEntry(cfg.composite.label),)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -777,10 +840,20 @@ def main(argv: list[str] | None = None) -> int:
                     help="extra soma config override forwarded verbatim to every train "
                          "command (repeatable), e.g. decoder.params.num_upsample_blocks=2. "
                          "Scoring inherits them from the run's persisted config.")
+    ap.add_argument("--config", type=Path, default=None,
+                    help="extract/rank only: a committed composite (rung-4 ensemble) recipe, "
+                         "e.g. examples/detection_benchmark/ensemble_top2_midog.yaml. The "
+                         "recipe replaces the dataset base config; its members become the "
+                         "cell's encoder label (member names joined by '+'). Requires exactly "
+                         "one --datasets, no --encoders, and its own --out-root (ensemble "
+                         "cells are an ablation and must not enter the headline roster).")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
-    roster = _resolve_roster(args.encoders)
+    if args.config is not None:
+        roster = _composite_roster(args)
+    else:
+        roster = _resolve_roster(args.encoders)
     if args.phase == "score":
         # The out-of-process half of score_cell_isolated: exactly one cell, then exit so the
         # GPU memory is returned before the caller trains the next one.
@@ -795,14 +868,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.phase == "extract":
         run_extract(args.data_root, args.out_root, roster, args.datasets,
-                    dry_run=args.dry_run, decoder=args.decoder, extra_sets=args.extra_sets)
+                    dry_run=args.dry_run, decoder=args.decoder, extra_sets=args.extra_sets,
+                    config_path=args.config)
         return 0
     from soma.provenance import soma_git_state
 
     run_rank(
         args.data_root, args.out_root, roster, args.datasets, args.seeds,
         dry_run=args.dry_run, git_sha=soma_git_state().sha, decoder=args.decoder,
-        extra_sets=args.extra_sets,
+        extra_sets=args.extra_sets, config_path=args.config,
     )
     return 0
 

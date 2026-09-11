@@ -1013,3 +1013,140 @@ def test_recorded_ocelot_merge_refuses_ocelot_from_disk(tmp_path: Path):
     m2 = _load_merger()
     with pytest.raises(ValueError, match="recorded"):
         m2.build_full_report(tmp_path, datasets=["ocelot", "midog"])
+
+
+# --- rung 4: committed ensemble configs (#235) ----------------------------------------
+
+
+@pytest.mark.parametrize("dataset", ["midog", "ocelot"])
+@pytest.mark.parametrize(
+    "comp,members",
+    [
+        ("top2", ["genbio-pathfm", "h-optimus-1"]),
+        ("top3", ["genbio-pathfm", "h-optimus-1", "virchow2"]),
+    ],
+)
+def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
+    """The 4 committed rung-4 YAMLs parse into the agreed composite recipe.
+
+    Guards the grilling decisions: fixed member lists, grid-mode concat on the finest
+    member grid (concat_grid_size unset), per-member l2 norm, lightweight_conv decoder,
+    and the dataset base's task/preprocessing untouched (fairness with the single-encoder
+    cells).
+    """
+    from soma.config import load_config
+
+    repo_root = Path(__file__).resolve().parents[1]
+    cfg = load_config(
+        repo_root / "examples" / "detection_benchmark" / f"ensemble_{comp}_{dataset}.yaml"
+    )
+    assert cfg.encoder is None and cfg.composite is not None
+    assert [m.name for m in cfg.composite.encoders] == members
+    assert cfg.composite.concat_resolution == "grid"
+    assert cfg.composite.concat_grid_size is None
+    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
+    assert all(m.feature_kind == "patch_features" for m in cfg.composite.encoders)
+    assert cfg.decoder is not None and cfg.decoder.name == "lightweight_conv"
+    # The recipe below the composite matches the dataset base config.
+    base = load_config(
+        resources.files("soma.benchmarks") / "configs" / "detection" / f"{dataset}.yaml"
+    )
+    assert cfg.task == base.task
+    assert cfg.preprocessing.requested_tile_size_px == base.preprocessing.requested_tile_size_px
+    assert cfg.preprocessing.requested_spacing_um == base.preprocessing.requested_spacing_um
+    assert cfg.preprocessing.dense_window_size == base.preprocessing.dense_window_size
+    assert cfg.preprocessing.dense_window_overlap == base.preprocessing.dense_window_overlap
+    assert cfg.cache.dtype == base.cache.dtype
+    assert cfg.training == base.training
+
+
+def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
+    """A composite member resolves to the SAME dense cache key as a single-encoder run.
+
+    Regression for the rung-4 cache-miss: ``resolve_pipeline_preprocessing`` only applies
+    the encoder-aware fill (``ref_tile_size_px``/``read_tile_size_px``) when ``encoder:``
+    is set, so composite members used to key on the unresolved preprocessing and could
+    never hit the caches the ranking sweep already extracted.
+    """
+    from soma.config import load_config
+    from soma.dense_extraction import _DenseImageExtractor
+    from soma.pipeline import composite_member_extraction_spec, resolve_pipeline_preprocessing
+
+    repo_root = Path(__file__).resolve().parents[1]
+    overrides = {"cache": {"root_dir": str(tmp_path)}}
+
+    single = load_config(
+        resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml",
+        overrides={"encoder": {"name": "virchow2"}, **overrides},
+    )
+    pre_single = resolve_pipeline_preprocessing(single)
+    key_single = _DenseImageExtractor(
+        None, single.encoder,
+        target_size=int(pre_single.requested_tile_size_px),
+        spacing_um=float(pre_single.requested_spacing_um),
+        backend=pre_single.backend, tolerance=float(pre_single.tolerance),
+        window_size=pre_single.dense_window_size,
+        overlap=float(pre_single.dense_window_overlap),
+        execution=single.execution, cache=single.cache, preprocessing=pre_single,
+    ).cache_dir().name
+
+    ensemble = load_config(
+        repo_root / "examples" / "detection_benchmark" / "ensemble_top3_midog.yaml",
+        overrides=overrides,
+    )
+    pre = resolve_pipeline_preprocessing(ensemble)
+    member = next(m for m in ensemble.composite.encoders if m.name == "virchow2")
+    enc, member_prep = composite_member_extraction_spec(member, pre)
+    key_member = _DenseImageExtractor(
+        None, enc,
+        target_size=int(pre.requested_tile_size_px),
+        spacing_um=float(pre.requested_spacing_um),
+        backend=pre.backend, tolerance=float(pre.tolerance),
+        window_size=member_prep.dense_window_size,
+        overlap=float(member_prep.dense_window_overlap),
+        execution=ensemble.execution, cache=ensemble.cache, preprocessing=member_prep,
+    ).cache_dir().name
+
+    assert key_member == key_single
+
+
+def test_train_cell_composite_config_replaces_base_recipe(monkeypatch):
+    """``--config`` launches an ensemble recipe: no ``encoder.name`` override, cell keyed by label."""
+    m = _load_driver()
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
+
+    recipe = Path("examples/detection_benchmark/ensemble_top2_midog.yaml")
+    label = "genbio-pathfm+h-optimus-1"
+    m.train_cell(label, "midog", 0, "seeds", Path("d"), Path("o"), config_path=recipe)
+    (cmd,) = cmds
+    assert cmd[3] == str(recipe)
+    assert not any(o.startswith("encoder.name=") for o in cmd)
+    assert f"run.output_root={m.cell_dir('o', 'midog', label, 0)}" in cmd
+
+
+def test_main_composite_config_guards(monkeypatch, tmp_path: Path):
+    """``--config`` derives the roster from the recipe and refuses the headline out-root."""
+    m = _load_driver()
+    seen = {}
+    monkeypatch.setattr(
+        m, "run_extract", lambda *a, **kw: seen.update(roster=a[2], config=kw["config_path"])
+    )
+    recipe = str(Path(__file__).resolve().parents[1]
+                 / "examples" / "detection_benchmark" / "ensemble_top2_midog.yaml")
+    base = ["extract", "--config", recipe, "--datasets", "midog", "--dry-run"]
+
+    assert m.main(base + ["--out-root", str(tmp_path / "ensemble")]) == 0
+    assert [e.name for e in seen["roster"]] == ["genbio-pathfm+h-optimus-1"]
+    assert seen["config"] == Path(recipe)
+
+    with pytest.raises(SystemExit, match="own --out-root"):
+        m.main(base)  # default --out-root is the headline sweep's
+    with pytest.raises(SystemExit, match="exactly one --datasets"):
+        m.main(base + ["--out-root", str(tmp_path), "--datasets", "midog", "ocelot"])
+    with pytest.raises(SystemExit, match="drop --encoders"):
+        m.main(base + ["--out-root", str(tmp_path), "--encoders", "uni2"])
+    single = str(resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml")
+    with pytest.raises(SystemExit, match="no composite"):
+        m.main(["extract", "--config", single, "--datasets", "midog",
+                "--out-root", str(tmp_path)])
