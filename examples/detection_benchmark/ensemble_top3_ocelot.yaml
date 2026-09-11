@@ -4,10 +4,18 @@
 # each member is extracted into its own standard dense cache (pure cache hits after the
 # ranking sweep — uniform 448 px window / 0.25 overlap), then channel-concatenated at
 # load time on the finest member token grid (`concat_resolution: grid`), with per-member
-# l2 normalization so no encoder dominates the decoder's 1x1 projection. Everything
-# below the projection is identical to the single-encoder cells (fairness invariant).
-# Seed / data paths / output root are overridden per cell via `--set`, mirroring
-# examples/detection_benchmark/campaign.py.
+# l2 normalization so no encoder dominates the decoder's 1x1 projection (ADR 0011).
+# Everything below the projection is identical to the single-encoder cells (fairness
+# invariant). Members are the I5 (#234) backbone-subset picks; they are pinned here by
+# hand, so re-check them against the ranking report's `selections` if the sweep is rerun.
+#
+# Launch through the sweep driver, which sets seed / data paths / output root per cell
+# and keys the cell dir by the composite label (member names joined by `+`):
+#
+#   python examples/detection_benchmark/campaign.py rank --data-root data \
+#       --config examples/detection_benchmark/ensemble_top3_ocelot.yaml \
+#       --datasets ocelot --out-root output/detection_benchmark/ensemble \
+#       --set cache.root_dir=output/detection_benchmark/ocelot/feature_cache
 
 run:
   output_root: output/detection_benchmark/ensemble/ocelot_top3

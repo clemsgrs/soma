@@ -41,6 +41,7 @@ from soma.config import (
     AggregatorConfig,
     DecoderConfig,
     EncoderConfig,
+    EncoderMemberConfig,
     EvalConfig,
     HeatmapConfig,
     MasksConfig,
@@ -3247,8 +3248,10 @@ class _RunRecorder:
         update_run_index(layout.index_dir / "runs.csv", metadata)
 
 
-def composite_member_extraction_spec(member, preprocessing):
-    """The ``(EncoderConfig, PreprocessingConfig, window, overlap)`` one composite member extracts with.
+def composite_member_extraction_spec(
+    member: EncoderMemberConfig, preprocessing: PreprocessingConfig
+) -> tuple[EncoderConfig, PreprocessingConfig]:
+    """The ``(EncoderConfig, PreprocessingConfig)`` one composite member extracts with.
 
     Mirrors the single-encoder path exactly: the member's encoder config is run through
     :func:`resolve_preprocessing_config` (the same encoder-aware fill
@@ -3256,7 +3259,12 @@ def composite_member_extraction_spec(member, preprocessing):
     dense cache key is identical to the key the same encoder produces in a single-encoder
     run — composite reuse of already-extracted per-encoder caches depends on this.
     The per-member sliding window (CONCH native-448 vs H0-mini native-224, …) falls back
-    to the run's shared window when the member leaves it unset.
+    to the run's shared window when the member leaves it unset; both land on the returned
+    preprocessing config's ``dense_window_size`` / ``dense_window_overlap``.
+
+    Note: the encoder-aware fill sets ``ref_tile_size_px`` / ``read_tile_size_px``, which
+    are part of the dense cache key. Composite member caches extracted before this fill
+    was applied to members key differently and are not reused.
     """
     from soma.encoders.validation import resolve_preprocessing_config
 
@@ -3268,24 +3276,100 @@ def composite_member_extraction_spec(member, preprocessing):
         output_variant=member.output_variant,
         allow_non_recommended_settings=member.allow_non_recommended_settings,
     )
-    member_window = (
-        member.dense_window_size
-        if member.dense_window_size is not None
-        else preprocessing.dense_window_size
-    )
-    member_overlap = (
-        member.dense_window_overlap
-        if member.dense_window_overlap is not None
-        else preprocessing.dense_window_overlap
-    )
     member_prep = replace(
         resolve_preprocessing_config(member_encoder, preprocessing),
         feature_kind=member.feature_kind,
         attention=member.attention,
-        dense_window_size=member_window,
-        dense_window_overlap=member_overlap,
+        dense_window_size=(
+            member.dense_window_size
+            if member.dense_window_size is not None
+            else preprocessing.dense_window_size
+        ),
+        dense_window_overlap=(
+            member.dense_window_overlap
+            if member.dense_window_overlap is not None
+            else preprocessing.dense_window_overlap
+        ),
     )
-    return member_encoder, member_prep, member_window, member_overlap
+    return member_encoder, member_prep
+
+
+def build_composite_dense_store(
+    config: PipelineConfig, dataset: Dataset, *, output_root: Path
+):
+    """Extract every composite member into its own cache; return the concat view (§7).
+
+    Public so that out-of-core consumers (a project protocol's rescore step) rebuild the
+    exact store a composite run trained on, instead of re-deriving member geometry.
+    Each member carries its own ``feature_kind`` / ``attention`` / ``member_norm``
+    spec (cross-defaulted in :class:`PipelineConfig`), so the heterogeneous setup
+    (several FMs, some attention, some patch-feature) needs no special-casing. Members
+    share the run's spacing + supervision ``target_size`` (v1); their token grids may
+    differ and are combined at load time by :class:`CompositeDenseFeatureStore` per the
+    composite's ``concat_resolution`` / ``concat_grid_size``.
+
+    Args:
+        config: A config with ``composite`` set.
+        dataset: The manifest the members are extracted over (the caller's, so a
+            rescore reuses the manifest it already holds).
+        output_root: Where per-member feature dirs (``member_<i>_<name>``) are written.
+            Cache hits make these cheap views; the cache root itself comes from
+            ``config.cache`` (default ``<run.output_root>/feature_cache``).
+    """
+    from soma.dense.composite import CompositeDenseFeatureStore
+    from soma.dense_extraction import _DenseImageExtractor
+
+    composite = config.composite
+    if composite is None:
+        raise ValueError("build_composite_dense_store requires config.composite.")
+    preprocessing = resolve_pipeline_preprocessing(config)
+    target_size = preprocessing.requested_tile_size_px
+    if target_size is None:
+        raise ValueError(
+            "multi-encoder extraction requires "
+            "preprocessing.requested_tile_size_px (the mask/tile supervision size)."
+        )
+    if preprocessing.requested_spacing_um is None:
+        raise ValueError(
+            "multi-encoder extraction requires an explicit or auto-resolved "
+            "preprocessing.requested_spacing_um."
+        )
+    cache_config = replace(
+        config.cache,
+        root_dir=resolve_cache_root(
+            config.cache, feature_dir=output_root, output_root=config.output_root
+        ),
+    )
+    member_stores = []
+    try:
+        for index, member in enumerate(composite.encoders):
+            member_encoder, member_prep = composite_member_extraction_spec(
+                member, preprocessing
+            )
+            extractor = _DenseImageExtractor(
+                dataset,
+                member_encoder,
+                target_size=int(target_size),
+                spacing_um=float(preprocessing.requested_spacing_um),
+                backend=preprocessing.backend,
+                tolerance=float(preprocessing.tolerance),
+                window_size=member_prep.dense_window_size,
+                overlap=float(member_prep.dense_window_overlap),
+                execution=config.execution,
+                cache=cache_config,
+                preprocessing=member_prep,
+            )
+            member_dir = Path(output_root) / f"member_{index}_{member.name}"
+            member_stores.append(extractor.run(feature_dir=member_dir))
+    finally:
+        _release_parent_cuda_state()
+        _log_cuda_memory("after composite dense extraction release")
+    return CompositeDenseFeatureStore(
+        member_stores,
+        concat_resolution=composite.concat_resolution or "target",
+        concat_grid_size=composite.concat_grid_size,
+        member_norms=[m.member_norm or "none" for m in composite.encoders],
+    )
 
 
 class Pipeline:
@@ -3504,12 +3588,12 @@ class Pipeline:
 
         if self._config.encoder is None:
             raise ValueError("PipelineConfig.encoder is required when feature_dir is not provided.")
-        cache_config = self._config.cache
-        if cache_config.root_dir is None:
-            cache_config = replace(
-                cache_config,
-                root_dir=Path(self._config.output_root) / "feature_cache",
-            )
+        cache_config = replace(
+            self._config.cache,
+            root_dir=resolve_cache_root(
+                self._config.cache, feature_dir=run_dir, output_root=self._config.output_root
+            ),
+        )
         extraction = FeatureExtractor(
             self._dataset,
             self._config.encoder,
@@ -3557,73 +3641,13 @@ class Pipeline:
         # load-time channel-concat view (design §7).
         if self._config.composite is not None:
             return self._cache_backed_dense_source(
-                self._build_composite_dense_store(run_dir=run_dir),
+                build_composite_dense_store(
+                    self._config, self._dataset, output_root=run_dir / "features"
+                ),
                 kind="composite_dense_cache",
                 dataset_csv=self._config.dataset_csv,
             )
         raise RuntimeError("Dense source selection reached no live/composite branch.")
-
-    def _build_composite_dense_store(self, *, run_dir: Path):
-        """Extract every member encoder into its own cache; return a concat view (§7).
-
-        Each member carries its own ``feature_kind`` / ``attention`` / ``member_norm``
-        spec (cross-defaulted in :class:`PipelineConfig`), so the heterogeneous setup
-        (several FMs, some attention, some patch-feature) needs no special-casing. Members
-        share the run's spacing + supervision ``target_size`` (v1); their token grids may
-        differ and are combined at load time by :class:`CompositeDenseFeatureStore` per the
-        composite's ``concat_resolution`` / ``concat_grid_size``.
-        """
-        from soma.dense.composite import CompositeDenseFeatureStore
-        from soma.dense_extraction import _DenseImageExtractor
-
-        composite = self._config.composite
-        preprocessing = resolve_pipeline_preprocessing(self._config)
-        target_size = preprocessing.requested_tile_size_px
-        if target_size is None:
-            raise ValueError(
-                "multi-encoder extraction requires "
-                "preprocessing.requested_tile_size_px (the mask/tile supervision size)."
-            )
-        if preprocessing.requested_spacing_um is None:
-            raise ValueError(
-                "multi-encoder extraction requires an explicit or auto-resolved "
-                "preprocessing.requested_spacing_um."
-            )
-        cache_config = self._config.cache
-        if cache_config.root_dir is None:
-            cache_config = replace(
-                cache_config, root_dir=Path(self._config.output_root) / "feature_cache"
-            )
-        member_stores = []
-        try:
-            for index, member in enumerate(composite.encoders):
-                member_encoder, member_prep, member_window, member_overlap = (
-                    composite_member_extraction_spec(member, preprocessing)
-                )
-                extractor = _DenseImageExtractor(
-                    self._dataset,
-                    member_encoder,
-                    target_size=int(target_size),
-                    spacing_um=float(preprocessing.requested_spacing_um),
-                    backend=preprocessing.backend,
-                    tolerance=float(preprocessing.tolerance),
-                    window_size=member_window,
-                    overlap=float(member_overlap),
-                    execution=self._config.execution,
-                    cache=cache_config,
-                    preprocessing=member_prep,
-                )
-                member_dir = run_dir / "features" / f"member_{index}_{member.name}"
-                member_stores.append(extractor.run(feature_dir=member_dir))
-        finally:
-            _release_parent_cuda_state()
-            _log_cuda_memory("after composite dense extraction release")
-        return CompositeDenseFeatureStore(
-            member_stores,
-            concat_resolution=composite.concat_resolution or "target",
-            concat_grid_size=composite.concat_grid_size,
-            member_norms=[m.member_norm or "none" for m in composite.encoders],
-        )
 
 
 # ---------------------------------------------------------------------------

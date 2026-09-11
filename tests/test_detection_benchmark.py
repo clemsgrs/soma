@@ -1096,14 +1096,57 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     )
     pre = resolve_pipeline_preprocessing(ensemble)
     member = next(m for m in ensemble.composite.encoders if m.name == "virchow2")
-    enc, member_prep, window, overlap = composite_member_extraction_spec(member, pre)
+    enc, member_prep = composite_member_extraction_spec(member, pre)
     key_member = _DenseImageExtractor(
         None, enc,
         target_size=int(pre.requested_tile_size_px),
         spacing_um=float(pre.requested_spacing_um),
         backend=pre.backend, tolerance=float(pre.tolerance),
-        window_size=window, overlap=float(overlap),
+        window_size=member_prep.dense_window_size,
+        overlap=float(member_prep.dense_window_overlap),
         execution=ensemble.execution, cache=ensemble.cache, preprocessing=member_prep,
     ).cache_dir().name
 
     assert key_member == key_single
+
+
+def test_train_cell_composite_config_replaces_base_recipe(monkeypatch):
+    """``--config`` launches an ensemble recipe: no ``encoder.name`` override, cell keyed by label."""
+    m = _load_driver()
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
+
+    recipe = Path("examples/detection_benchmark/ensemble_top2_midog.yaml")
+    label = "genbio-pathfm+h-optimus-1"
+    m.train_cell(label, "midog", 0, "seeds", Path("d"), Path("o"), config_path=recipe)
+    (cmd,) = cmds
+    assert cmd[3] == str(recipe)
+    assert not any(o.startswith("encoder.name=") for o in cmd)
+    assert f"run.output_root={m.cell_dir('o', 'midog', label, 0)}" in cmd
+
+
+def test_main_composite_config_guards(monkeypatch, tmp_path: Path):
+    """``--config`` derives the roster from the recipe and refuses the headline out-root."""
+    m = _load_driver()
+    seen = {}
+    monkeypatch.setattr(
+        m, "run_extract", lambda *a, **kw: seen.update(roster=a[2], config=kw["config_path"])
+    )
+    recipe = str(Path(__file__).resolve().parents[1]
+                 / "examples" / "detection_benchmark" / "ensemble_top2_midog.yaml")
+    base = ["extract", "--config", recipe, "--datasets", "midog", "--dry-run"]
+
+    assert m.main(base + ["--out-root", str(tmp_path / "ensemble")]) == 0
+    assert [e.name for e in seen["roster"]] == ["genbio-pathfm+h-optimus-1"]
+    assert seen["config"] == Path(recipe)
+
+    with pytest.raises(SystemExit, match="own --out-root"):
+        m.main(base)  # default --out-root is the headline sweep's
+    with pytest.raises(SystemExit, match="exactly one --datasets"):
+        m.main(base + ["--out-root", str(tmp_path), "--datasets", "midog", "ocelot"])
+    with pytest.raises(SystemExit, match="drop --encoders"):
+        m.main(base + ["--out-root", str(tmp_path), "--encoders", "uni2"])
+    single = str(resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml")
+    with pytest.raises(SystemExit, match="no composite"):
+        m.main(["extract", "--config", single, "--datasets", "midog",
+                "--out-root", str(tmp_path)])

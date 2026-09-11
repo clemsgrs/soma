@@ -611,6 +611,16 @@ class CompositeConfig:
     concat_resolution: str | None = None
     concat_grid_size: tuple[int, int] | None = None
 
+    @property
+    def label(self) -> str:
+        """The composite's identity as one name: member names joined with ``+``.
+
+        Stands in for ``encoder.name`` wherever a run is keyed by its encoder (cell dirs,
+        prediction records, leaderboard rows). ``+`` never appears in a registered encoder
+        name, so a label is unambiguous and path-safe.
+        """
+        return "+".join(m.name for m in self.encoders)
+
     def __post_init__(self) -> None:
         if not self.encoders:
             raise ValueError("composite.encoders must list at least one member encoder.")
