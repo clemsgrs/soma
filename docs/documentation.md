@@ -1,5 +1,15 @@
 # Project Documentation Notes
 
+- 2026-09-12: Require slide2vec 6.0.0. Pooled cache geometry records the exact
+  declared tile size for both preset and off-preset requests. Every tile encoder
+  plugin must provide a geometry-preserving normalization transform. Registry
+  defaults now use final encoder sizes (GigaPath 224 px, DINOv2 518 px), and
+  DINOv3 ViT-B/16 is available at 256 px. Spacing-agnostic DINO presets resolve
+  their declared defaults in single and composite pipelines while retaining
+  explicit spacing overrides. Regenerate older pooled feature caches
+  and GPFM pre-cropped image caches; dependency upgrades do not automatically
+  invalidate features. See `caching.rst` and `preprocessing.rst`.
+
 - 2026-09-07: Pooled tile, hierarchical, slide, and patient feature stores now use
   run-local manifests with absolute shared payload paths on cache hits and population.
   Concurrent runs with overlapping evaluation samples and different support sets keep

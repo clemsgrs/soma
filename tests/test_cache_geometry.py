@@ -42,8 +42,8 @@ def _dataset(tmp_path: Path) -> Dataset:
     return Dataset(csv_path)
 
 
-def test_pooled_geometry_records_the_shipped_transform_regime():
-    """A request the encoder's own transform resizes: the encoder sees its preset size."""
+def test_pooled_geometry_records_the_declared_preset_size():
+    """Declared pooled extraction encodes the requested size, including at the preset."""
     geometry = pooled_extraction_geometry(
         encoder_name=FIXED_ENCODER,
         requested_tile_size_px=224,
@@ -55,24 +55,22 @@ def test_pooled_geometry_records_the_shipped_transform_regime():
     assert geometry["read_tile_size_px_by_id"] == {"s1": 448, "s2": 224}
 
 
-def test_pooled_geometry_records_the_normalization_only_regime():
-    """The same request on a variable-input encoder reaches the encoder unresized.
-
-    This is the regime shift the record exists to catch: identical request, different
-    effective encoder input.
-    """
-    shipped = pooled_extraction_geometry(
-        encoder_name=VARIABLE_ENCODER, requested_tile_size_px=224
-    )
-    normalization_only = pooled_extraction_geometry(
-        encoder_name=VARIABLE_ENCODER,
-        requested_tile_size_px=512,
+@pytest.mark.parametrize(
+    ("encoder_name", "requested_size", "expected_size"),
+    [(VARIABLE_ENCODER, 512, [512, 512]), ("dinov2-vitb14", 224, [224, 224])],
+)
+def test_pooled_geometry_records_the_declared_off_preset_size(
+    encoder_name, requested_size, expected_size
+):
+    """Permitted off-preset inputs keep the requested size rather than the preset."""
+    geometry = pooled_extraction_geometry(
+        encoder_name=encoder_name,
+        requested_tile_size_px=requested_size,
         # A non-preset pooled size deviates from the model card's tiling recipe, so it is
         # opt-in — the same gate the extractor passes through from EncoderConfig.
         allow_non_recommended_settings=True,
     )
-    assert shipped["encoder_input_size_px"] == [224, 224]
-    assert normalization_only["encoder_input_size_px"] == [512, 512]
+    assert geometry["encoder_input_size_px"] == expected_size
 
 
 def test_pooled_geometry_is_undeclarable_before_the_tile_size_resolves():

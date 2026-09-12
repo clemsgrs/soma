@@ -1733,6 +1733,9 @@ class TestPipeline:
             def get_transform(self):
                 return lambda x: x
 
+            def get_normalization_transform(self):
+                return lambda x: x
+
             def encode_tiles(self, batch):
                 return torch.ones(batch.shape[0], D)
 

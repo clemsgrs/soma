@@ -11,23 +11,15 @@ from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 
 def resolve_composite_spacing(composite: CompositeConfig) -> float:
     """Resolve the one spacing shared by every v1 composite member."""
-    from slide2vec.encoders.registry import resolve_preprocessing_requirements
+    from slide2vec.encoders.registry import resolve_preprocessing_defaults
 
     per_member: dict[str, float] = {}
     for member in composite.encoders:
-        spacing = resolve_preprocessing_requirements(member.name)["spacing_um"]
-        if isinstance(spacing, (list, tuple)):
-            if len(spacing) != 1:
-                raise ValueError(
-                    f"composite member '{member.name}' supports multiple spacings "
-                    f"{list(spacing)}; set preprocessing.requested_spacing_um explicitly."
-                )
-            spacing = spacing[0]
-        per_member[member.name] = float(spacing)
+        per_member[member.name] = resolve_preprocessing_defaults(member.name)["spacing_um"]
     unique = sorted(set(per_member.values()))
     if len(unique) != 1:
         raise ValueError(
-            "composite members do not share a single supported spacing "
+            "composite members do not share a single default spacing "
             f"({per_member}); set preprocessing.requested_spacing_um explicitly "
             "(v1 reads every member at the same µm/px)."
         )

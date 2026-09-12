@@ -87,7 +87,7 @@ def _live_source(
 
     loaded = SimpleNamespace(
         model=encoder,
-        transforms=encoder.get_dense_transform(),
+        transforms=encoder.get_normalization_transform(),
         device=torch.device("cpu"),
         feature_dim=encoder.encode_dim,
     )
@@ -130,7 +130,7 @@ def _extract_cached_grids(encoder, records, out_dir: Path, *, geometry, batch_si
         target_size=TARGET,
         target_size_origin="the declared target_size",
         precision="fp32",
-        dense_transform=encoder.get_dense_transform(),
+        dense_transform=encoder.get_normalization_transform(),
     )
     records = list(records)
     for start in range(0, len(records), batch_size):
@@ -406,7 +406,7 @@ def test_build_live_source_probes_feature_width_through_public_kit(tmp_path: Pat
     encoder.encode_tiles_dense = _spy  # TileEncoder is a plain object: instance attr shadows
     loaded = SimpleNamespace(
         model=encoder,
-        transforms=encoder.get_dense_transform(),
+        transforms=encoder.get_normalization_transform(),
         device=torch.device("cpu"),
         feature_dim=encoder.encode_dim,
     )

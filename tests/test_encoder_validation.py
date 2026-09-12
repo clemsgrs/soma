@@ -7,7 +7,7 @@ import pytest
 
 from soma.config import EncoderConfig, PreprocessingConfig
 from slide2vec.encoders.registry import encoder_registry
-from soma.encoders.validation import validate_encoder_config
+from soma.encoders.validation import resolve_preprocessing_config, validate_encoder_config
 from hs2p.preprocessing import TileGeometry
 
 
@@ -62,7 +62,35 @@ def _tiling_result(
     )
 
 
+@pytest.mark.parametrize(
+    ("encoder_name", "expected_tile_size"),
+    [("dinov2-vitb14", 518), ("dinov3-vitb16", 256)],
+)
+@pytest.mark.parametrize("requested_spacing", [None, 0.25])
+def test_spacing_agnostic_encoder_resolves_defaults_and_preserves_explicit_spacing(
+    encoder_name, expected_tile_size, requested_spacing
+):
+    resolved = resolve_preprocessing_config(
+        EncoderConfig(name=encoder_name),
+        PreprocessingConfig(requested_spacing_um=requested_spacing),
+    )
+
+    assert resolved.requested_tile_size_px == expected_tile_size
+    assert resolved.requested_spacing_um == (0.5 if requested_spacing is None else 0.25)
+
+
 class TestValidateEncoderConfig:
+    def test_spacing_agnostic_encoder_accepts_any_requested_spacing(self):
+        warnings = validate_encoder_config(
+            EncoderConfig(name="dinov3-vitb16"),
+            encoder_registry.info("dinov3-vitb16"),
+            preprocessing_config=PreprocessingConfig(
+                requested_tile_size_px=256, requested_spacing_um=0.25
+            ),
+        )
+
+        assert warnings == []
+
     def test_no_warnings_when_matching(self):
         config = EncoderConfig(name="uni2", precision="fp16")
         warnings = validate_encoder_config(config, _metadata())

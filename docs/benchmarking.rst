@@ -40,7 +40,7 @@ soma validates every benchmark–encoder combination before curation or executio
 It reports incompatibilities in panel order and starts no runs unless the whole
 panel is valid. Choose a compatible benchmark or correct the encoder plugin's
 capabilities if validation fails. Installed-preset discovery and capability
-checks require slide2vec 5.8.0 or newer.
+checks use slide2vec's public encoder registry.
 
 After validation, benchmarks run in canonical order and encoders in the supplied
 order. Raw data is curated once per benchmark. With ``--curated-dir``, curation
