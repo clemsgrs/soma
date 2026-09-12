@@ -11,6 +11,12 @@ Install and inspect
 Follow the `slide2vec custom encoder plugin guide
 <https://clemsgrs.github.io/slide2vec/models.html#custom-encoder-plugin-package>`_
 for implementation, packaging, weights, credentials, and worker availability.
+slide2vec 6.0 requires every tile encoder, including pooled-only plugins, to
+implement ``get_normalization_transform()`` alongside ``get_transform()``.
+The normalization transform must preserve geometry (no resize or crop);
+declared extraction uses it, while pre-cropped images use the shipped
+``get_transform()`` recipe.
+
 Install the plugin in soma's Python environment and check discovery::
 
    pip install ./my-slide2vec-encoders

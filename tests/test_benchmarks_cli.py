@@ -653,6 +653,9 @@ def panel_benchmark():
             def get_transform(self):
                 raise AssertionError("plural preflight must not construct an Encoder")
 
+            def get_normalization_transform(self):
+                raise AssertionError("plural preflight must not construct an Encoder")
+
             def encode_tiles(self, batch):
                 raise AssertionError("plural preflight must not construct an Encoder")
 

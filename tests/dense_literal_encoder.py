@@ -71,9 +71,6 @@ class _LiteralPatchEncoder(TileEncoder):
     def get_normalization_transform(self):
         return literal_rgb_tensor
 
-    def get_dense_transform(self):
-        return literal_rgb_tensor
-
     def encode_tiles(self, batch: torch.Tensor) -> torch.Tensor:
         return batch.mean(dim=(-1, -2))
 

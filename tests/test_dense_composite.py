@@ -232,14 +232,17 @@ def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
     assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
 
 
-def test_composite_spacing_auto_defaults_from_shared_member_spacing():
-    # conch + h0-mini both advertise 0.5 µm/px → auto-default resolves to 0.5 (no explicit
-    # preprocessing.requested_spacing_um needed). Mismatched/multi-spacing members must pin.
+@pytest.mark.parametrize(
+    "member_names",
+    [("conch", "h0-mini"), ("conch", "dinov3-vitb16"), ("dinov2-vitb14", "dinov3-vitb16")],
+)
+def test_composite_spacing_auto_defaults_from_shared_member_spacing(member_names):
+    # Constrained and spacing-agnostic members can share the same 0.5 µm/px default.
     from soma.config import CompositeConfig, EncoderMemberConfig
     from soma.preprocessing.resolution import resolve_composite_spacing
 
     comp = CompositeConfig(
-        encoders=[EncoderMemberConfig(name="conch"), EncoderMemberConfig(name="h0-mini")]
+        encoders=[EncoderMemberConfig(name=name) for name in member_names]
     )
     assert resolve_composite_spacing(comp) == 0.5
 

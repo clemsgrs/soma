@@ -94,14 +94,11 @@ def pooled_extraction_geometry(
         requested_tile_size_px=int(requested_tile_size_px),
         allow_non_recommended_settings=bool(allow_non_recommended_settings),
     ).plan
-    # A ``None`` effective size means the encoder's shipped transform decides, and it
-    # resizes to the encoder's own preset — so that preset *is* what the encoder sees.
-    effective = getattr(plan, "expected_encoder_input_size_px", None)
-    if effective is None:
-        effective = plan.preset_input_size_px
+    # slide2vec 6.0 preserves declared geometry at both preset and off-preset sizes.
+    # Resolve the public contract above so capability and permission checks still apply.
     return _geometry(
         requested_tile_size_px=requested_tile_size_px,
-        encoder_input_size_px=_size_pair(effective),
+        encoder_input_size_px=_size_pair(plan.requested_tile_size_px),
         read_tile_size_px_by_id=read_tile_size_px_by_id,
     )
 
