@@ -10,6 +10,7 @@ from slide2vec.encoders.registry import (
     encoder_registry,
     resolve_encoder_output,
     resolve_encoder_level,
+    resolve_preprocessing_fields,
     resolve_preprocessing_requirements,
     resolve_tile_dependency_output,
 )
@@ -53,26 +54,14 @@ def resolve_preprocessing_config(
     model_metadata: dict[str, Any] | None = None,
 ) -> PreprocessingConfig:
     """Fill encoder-driven preprocessing defaults without overriding explicit values."""
-    requirements = resolve_preprocessing_requirements(
+    resolved_fields = resolve_preprocessing_fields(
         encoder_config.name,
+        requested_spacing_um=preprocessing_config.requested_spacing_um,
+        requested_tile_size_px=preprocessing_config.requested_tile_size_px,
         metadata=model_metadata,
     )
-    requested_tile_size_px = preprocessing_config.requested_tile_size_px
-    if requested_tile_size_px is None:
-        requested_tile_size_px = int(requirements["tile_size_px"])
-
-    requested_spacing_um = preprocessing_config.requested_spacing_um
-    if requested_spacing_um is None:
-        rec_spacing = requirements["spacing_um"]
-        if isinstance(rec_spacing, list):
-            if len(rec_spacing) != 1:
-                raise ValueError(
-                    f"Encoder '{encoder_config.name}' supports multiple spacings "
-                    f"{rec_spacing}; please specify PreprocessingConfig.requested_spacing_um."
-                )
-            requested_spacing_um = float(rec_spacing[0])
-        else:
-            requested_spacing_um = float(rec_spacing)
+    requested_tile_size_px = resolved_fields["tile_size_px"]
+    requested_spacing_um = resolved_fields["spacing_um"]
 
     ref_tile_size_px = preprocessing_config.ref_tile_size_px
     if ref_tile_size_px is None:
@@ -171,7 +160,7 @@ def validate_encoder_config(
                 f"Model supports multiple spacings {rec_spacing} but "
                 "PreprocessingConfig.requested_spacing_um is None. Please specify one."
             )
-    else:
+    elif rec_spacing is not None:
         valid_spacings = rec_spacing if isinstance(rec_spacing, list) else [rec_spacing]
         if requested_spacing_um not in valid_spacings:
             warnings.append(
@@ -192,7 +181,7 @@ def validate_encoder_config(
         requested_spacing = preprocessing_config.requested_spacing_um
 
         valid_spacings = rec_spacing if isinstance(rec_spacing, list) else [rec_spacing]
-        if requested_spacing not in valid_spacings:
+        if rec_spacing is not None and requested_spacing not in valid_spacings:
             warnings.append(
                 f"Spacing mismatch: preprocessing uses {requested_spacing} µm/px, "
                 f"model recommends {rec_spacing}."

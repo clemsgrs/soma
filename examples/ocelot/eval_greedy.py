@@ -11,7 +11,7 @@ frozen from the tune split and applied once to test — exactly what a real subm
 reports. (No oracle ceiling: the test-side threshold sweep that #146 added for the
 health gate is gone now the gate has served its purpose — see #152.)
 
-Usage (from the soma repo; slide2vec>=5.0.0 must be importable):
+Usage (from the soma repo, in soma's Python environment):
     python examples/ocelot/eval_greedy.py \
         --run-dir /maindisk/clement/runs/ocelot_conch_lightconv \
         --config  examples/ocelot/ocelot.yaml \

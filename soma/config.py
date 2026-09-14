@@ -523,8 +523,8 @@ class EncoderConfig:
 
     ``name`` selects the encoder preset. ``output_variant`` exposes
     preset-specific feature variants when the encoder supports them.
-    ``allow_non_recommended_settings`` opts into slide2vec's warning-only mode
-    when intentionally sweeping non-default runtime settings.
+    ``allow_non_recommended_settings`` permits non-default settings, including
+    exact off-preset pooled sizes, while retaining encoder capability checks.
     """
 
     name: str

@@ -143,11 +143,13 @@ Tile-level encoders
      - 4608
      - ``0.5``
 
-Natural-image control
+Natural-image controls
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-A non-pathology baseline that shares the tile-encoder interface, for measuring
-how much pathology pretraining actually contributes.
+Non-pathology baselines that share the tile-encoder interface, for measuring
+how much pathology pretraining contributes. Both are spacing agnostic, with
+0.5 µm/px as the default. DINOv2 defaults to 518 px and DINOv3 to 256 px for
+declared tiles; see :doc:`preprocessing` for explicit off-preset sizes.
 
 .. list-table::
    :header-rows: 1
@@ -160,6 +162,13 @@ how much pathology pretraining actually contributes.
      - `DINOv2 ViT-B/14 <https://huggingface.co/timm/vit_base_patch14_dinov2.lvd142m>`_
      - 768
      - ``0.5``
+   * - ``dinov3-vitb16``
+     - `DINOv3 ViT-B/16 <https://huggingface.co/timm/vit_base_patch16_dinov3.lvd1689m>`_
+     - 768
+     - ``0.5``
+
+DINOv3 uses ``patch_mean`` pooling by default; select
+``encoder.output_variant: cls`` for its class-token output.
 
 Slide-level encoders
 ~~~~~~~~~~~~~~~~~~~~

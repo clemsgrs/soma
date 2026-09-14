@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 from slide2vec.encoders import TileEncoder, register_encoder
+from torchvision.transforms import v2
 
 
 def _transform(image):
@@ -30,6 +31,9 @@ class _FixtureEncoder(TileEncoder):
 
     def get_transform(self):
         return _transform
+
+    def get_normalization_transform(self):
+        return v2.Compose([v2.ToImage(), v2.ToDtype(torch.float32, scale=True)])
 
     def encode_tiles(self, batch):
         return self.sign * batch.mean(dim=(-2, -1))

@@ -32,11 +32,11 @@ def test_pyproject_has_publish_ready_metadata():
     assert sdist_targets["only-include"] == ["LICENSE", "README.md", "pyproject.toml", "soma"]
 
 
-def test_slide2vec_minimum_includes_per_slide_persistence_callback():
-    # slide2vec 5.9.0 adds the public on_slide_persisted callback used by WSI caches.
+def test_slide2vec_minimum_includes_exact_declared_pooled_geometry():
+    # slide2vec 6.0 makes the requested pooled tile size the final encoder input.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=5.9.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=6.0.0" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_includes_fast_tiling_previews():

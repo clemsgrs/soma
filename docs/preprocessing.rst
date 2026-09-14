@@ -20,7 +20,7 @@ Key settings
      - Meaning
      - Typical use
    * - ``requested_tile_size_px``
-     - Tile size requested from the tiler
+     - Requested tile size and final pooled encoder input size
      - Match encoder expectations
    * - ``requested_spacing_um``
      - Microns per pixel for tiling
@@ -61,6 +61,19 @@ soma composes hs2p's ``TilingConfig`` for ``requested_spacing_um``,
 ``backend``, and ``mask_backend``. Unset spacing and tile size are resolved from
 the encoder. Extraction, ROI sampling, and cache keys use that resolved config.
 Read-size fields such as ``read_tile_size_px`` are derived internally.
+
+With slide2vec 6.0, declared pooled extraction encodes exactly
+``requested_tile_size_px``, applying only the encoder's photometric transform
+after tiling, including at the preset size. Defaults describe the final model
+input: GigaPath uses 224 px, DINOv2 518 px, and DINOv3 256 px. At fixed spacing,
+changing this size changes the sampled physical extent.
+
+An explicit off-preset pooled size requires
+``encoder.allow_non_recommended_settings: true`` and an encoder that supports
+variable input sizes; the flag cannot bypass that capability check.
+Pre-cropped classification images (``dataset_type: tile``) instead use the
+encoder's shipped image transform, including its resizing and cropping.
+See :doc:`caching` before reusing features from an earlier slide2vec release.
 
 Coarser source spacing
 ----------------------
