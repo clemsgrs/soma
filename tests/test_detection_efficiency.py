@@ -1,7 +1,8 @@
 """Unit tests for the annotation-efficiency ladder (issue #237).
 
 Cold on synthetic fixtures — no GPU, no real data. Covers the pure protocol math in
-``soma.benchmarks.detection_efficiency`` and the driver's pure seams (split variants, rung
+``examples/detection_benchmark/efficiency.py`` (study logic, kept out of ``soma/``) and the
+driver's pure seams (split variants, rung
 roots, full-rung references, aggregation from disk) in
 ``examples/detection_benchmark/campaign.py``.
 """
@@ -16,38 +17,32 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from soma.benchmarks.detection_efficiency import (
-    LADDERS,
-    FullReference,
-    RungResult,
-    atom_column_for,
-    build_dataset_efficiency,
-    build_efficiency_report,
-    cross_dataset_nstar,
-    curve_points,
-    ladder_for,
-    n_star,
-    nested_prefix,
-    noise_band_crossing,
-    plot_learning_curves,
-    rank_crossing,
-    rank_of,
-    recipe_scale,
-    scaled_recipe,
-    train_atoms,
-    write_split_variant,
-)
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DRIVER = REPO_ROOT / "examples" / "detection_benchmark" / "campaign.py"
+EFFICIENCY = REPO_ROOT / "examples" / "detection_benchmark" / "efficiency.py"
 
 
-def _load_driver():
-    spec = importlib.util.spec_from_file_location("db_campaign_eff", DRIVER)
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+# Study logic beside the driver (not a soma package): import it from its directory.
+if str(EFFICIENCY.parent) not in sys.path:
+    sys.path.insert(0, str(EFFICIENCY.parent))
+from efficiency import (  # noqa: E402
+    LADDERS, FullReference, RungResult, atom_column_for, build_dataset_efficiency,
+    build_efficiency_report, cross_dataset_nstar, curve_points, ladder_for, n_star,
+    nested_prefix, noise_band_crossing, plot_learning_curves, rank_crossing, rank_of,
+    recipe_scale, scaled_recipe, train_atoms, write_split_variant,
+)
+
+
+def _load_driver():
+    return _load("db_campaign_eff", DRIVER)
 
 
 # --- fixtures ------------------------------------------------------------------------

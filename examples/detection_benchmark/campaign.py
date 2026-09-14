@@ -86,6 +86,9 @@ from soma.benchmarks.detection_benchmark import (  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = Path(__file__).resolve()
+# The efficiency-ladder math (#237) is study logic and lives beside this driver.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
 REPO_ROOT = HERE.parents[1]
 OUT_DIR = REPO_ROOT / "output" / "detection_benchmark"  # reports land here (git-ignored)
 
@@ -796,7 +799,7 @@ def _decode_cell_points(
 # cell-level helper above (skip guards, train_cell, score_cell_isolated) is reused as-is by
 # treating ``<out_root>/n<N>`` as that rung's own out-root — the same trick the decoder
 # ladder used per decoder. The full rung is never retrained: it is read from the headline
-# sweep (``--full-root``). The pure math lives in ``soma.benchmarks.detection_efficiency``.
+# sweep (``--full-root``). The pure math lives in ``efficiency.py`` beside this driver.
 
 
 def efficiency_rung_root(out_root: str | Path, n: int) -> Path:
@@ -846,7 +849,7 @@ def full_references(
     ``ranking_report.json`` cells (mean/std, e.g. the recorded OCELOT ranking); ``auto``
     prefers ``sweep`` when at least one scored cell exists for the dataset.
     """
-    from soma.benchmarks.detection_efficiency import FullReference
+    from efficiency import FullReference
 
     spec = dataset_spec(dataset)
     refs: dict = {}
@@ -882,7 +885,7 @@ def plan_efficiency_variants(
     ladder: Sequence[int] | None = None,
 ) -> tuple[int, list]:
     """Write every ``(seed, n)`` split variant of a dataset; returns ``(full_n, variants)``."""
-    from soma.benchmarks.detection_efficiency import (
+    from efficiency import (
         atom_column_for, ladder_for, train_atoms, write_split_variant,
     )
 
@@ -905,7 +908,7 @@ def plan_efficiency_variants(
 
 def collect_efficiency_rungs(out_root: Path, dataset: str, roster, variants) -> dict:
     """Aggregate scored rung cells into ``{encoder: [RungResult, ...]}`` (partial sweeps OK)."""
-    from soma.benchmarks.detection_efficiency import RungResult
+    from efficiency import RungResult
 
     spec = dataset_spec(dataset)
     by_key = {(v.seed, v.n_atoms): v for v in variants}
@@ -939,7 +942,7 @@ def aggregate_efficiency(
     write: bool = True,
 ) -> dict:
     """Build ``efficiency_report.json`` (+ the learning-curve plot) from the on-disk rung cells."""
-    from soma.benchmarks.detection_efficiency import (
+    from efficiency import (
         build_dataset_efficiency, build_efficiency_report, plot_learning_curves, write_json,
     )
 
@@ -969,7 +972,7 @@ def run_efficiency(
     ladder: Sequence[int] | None = None, extra_sets: Sequence[str] = (),
 ) -> dict:
     """Phase 3: train + score every ``(dataset, encoder, rung, seed)`` cell, then aggregate."""
-    from soma.benchmarks.detection_efficiency import scaled_recipe
+    from efficiency import scaled_recipe
 
     for dataset in datasets:
         full_n, variants = plan_efficiency_variants(data_root, out_root, dataset, seeds, ladder)
