@@ -1,5 +1,3 @@
-:orphan:
-
 Attention-based segmentation
 ===============================
 
@@ -16,16 +14,11 @@ for a complete example on a small synthetic dataset.
 How it works
 ------------
 
-1. Extract the CLS-token attention rows from selected transformer blocks,
-   retaining one spatial map per head. Optionally include register-token rows
-   as additional channels.
-2. Interpolate the maps to the padded encoded size and crop them to the
-   supervision target, producing one feature vector per pixel.
-3. Fit a classifier on class-stratified sampled training pixels. At evaluation,
-   classify every pixel and compute the shared segmentation metrics.
-
-Cached attention channels retain their individual heads, ordered
-``[block][cls, reg…][head]``. The sidecar records that ordering. For features
+The dense grid is interpolated to the padded encoded size and cropped to the
+supervision target, giving one feature vector per pixel. A classifier is fitted
+on class-stratified sampled training pixels and then classifies every pixel at
+evaluation. Cached attention channels keep their individual heads, ordered
+``[block][cls, reg…][head]``; the sidecar records that ordering. For features
 from several encoders, use :doc:`../encoders/composite`.
 
 Configuration
@@ -56,10 +49,8 @@ Attention extraction requires an encoder that supports it.
 
 XGBoost requires the optional ``pixel`` extra (``pip install 'soma-pathology[pixel]'``).
 Set ``pixel_classifier.params.class_balanced_weights: true`` to weight fitting
-by inverse class frequency. Each classifier owns its training and serialization
-through :class:`~soma.pixel_classifiers.base.PixelClassifier`; this path does not
-use the torch Trainer or its fold checkpoints. The MLP runs its own minibatch
-training loop with early stopping.
+by inverse class frequency. This path does not use the torch Trainer or its
+fold checkpoints; the MLP runs its own minibatch loop with early stopping.
 
 .. _native-window:
 
@@ -93,11 +84,8 @@ pretraining input settings, but stitched attention remains a mosaic of local
 maps, not one global attention map. Set ``dense_window_overlap`` to overlap
 windows and blend their grids.
 
-This differs from resizing a complete image to the encoder's native pixel
-size, as in the attention-probing method described by Ramchandani et al.
-Resizing also changes effective physical scale: a 388 µm-wide field reduced to
-224 pixels spans approximately 1.73 µm per pixel. soma exposes spacing and
-window size separately rather than implementing that resize-to-native mode.
+soma does not resize a complete image to the encoder's native pixel size (the
+method of Ramchandani et al.), because that also changes the physical scale.
 
 References
 ----------

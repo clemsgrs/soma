@@ -2,17 +2,13 @@ Modeling
 ========
 
 Modeling begins with frozen foundation-model features and ends with predictions
-for the research task. soma keeps the foundation-model encoder frozen by design
-and trains only the downstream path. Compatible experiments can therefore reuse
-the same encoded features.
+for the research task; only the downstream path is trained.
 
 Choose a modeling path
 ----------------------
 
 The structure of the encoded features and the desired prediction determine the
-downstream path. In broad terms, features pass through an optional aggregator or
-decoder, then a task head produces the prediction. Each path uses the same task
-and training interfaces.
+downstream path. Each path uses the same task and training interfaces.
 
 .. list-table::
    :header-rows: 1
@@ -46,11 +42,5 @@ when an aggregator, decoder, or task head is replaced.
 Explore a path
 --------------
 
-Use the workflow guides for a complete view of each modeling family:
-
-* :doc:`slide-level workflow <tutorials/slide-level>` — aggregate tile features
-  for slide-level prediction.
-* :doc:`segmentation workflow <tutorials/segmentation>` — decode dense feature
-  grids into masks.
-* :doc:`detection workflow <tutorials/detection>` — decode dense feature grids
-  into spatial detections.
+The :doc:`tutorials <tutorials/index>` run each path end to end on a small
+synthetic dataset.

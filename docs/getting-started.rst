@@ -40,8 +40,6 @@ or sweep one component without rerunning the others.
    slide_002,/path/to/slides/slide_002.svs,1
    slide_003,/path/to/slides/slide_003.svs,0
    slide_004,/path/to/slides/slide_004.svs,1
-   slide_005,/path/to/slides/slide_005.svs,0
-   slide_006,/path/to/slides/slide_006.svs,1
 
 Replace the paths with your slides. ``splits.csv`` assigns each sample to one
 split per fold. This minimal example defines one fold:
@@ -52,15 +50,10 @@ split per fold. This minimal example defines one fold:
    slide_001,train,0
    slide_002,train,0
    slide_003,tune,0
-   slide_004,tune,0
-   slide_005,test,0
-   slide_006,test,0
+   slide_004,test,0
 
-Use independent subjects across splits and enough samples for meaningful
-evaluation. Both classes must appear in each scored split for AUROC to be
-defined. For cross-validation, repeat every sample's assignment for each fold
-using consecutive fold numbers from 0. See :doc:`dataset` for manifest and split
-rules.
+Both classes must appear in each scored split for AUROC to be defined. See
+:doc:`dataset` for manifest, split, and cross-validation rules.
 
 2. Preprocess and encode
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -100,18 +93,10 @@ store.
        output_root="output",
    ).extract()
 
-The immutable result contains ``source`` (the reusable feature reader), ``dataset``
-(the exact samples indexed by that source), ``provenance``, and ``artifacts``.
-``extract()`` takes no arguments; ``output_root`` and ``CacheConfig`` fully determine
-the artifact and cache locations.
-
-These values match ``phikon``'s native configuration. See :doc:`preprocessing`
-and :doc:`encoders` for every option.
-
-.. note::
-
-   If tile size or spacing is omitted, it is resolved from the encoder's native
-   configuration automatically.
+The result contains ``source`` (the reusable feature reader), ``dataset`` (the
+exact samples indexed by that source), ``provenance``, and ``artifacts``. Omitted
+tile size and spacing resolve from the encoder's native configuration; see
+:doc:`preprocessing` and :doc:`encoders` for every option.
 
 3. Train and evaluate
 ~~~~~~~~~~~~~~~~~~~~~
@@ -153,20 +138,14 @@ See :doc:`aggregators`, :doc:`classification`, :doc:`training`, and
 Pipeline and CLI
 ----------------
 
-Use :class:`~soma.config.PipelineConfig` to run preprocessing, feature extraction,
+:class:`~soma.config.PipelineConfig` runs preprocessing, feature extraction,
 training, and evaluation with one call:
 
 .. code-block:: python
 
    from soma import (
-       AggregatorConfig,
-       EncoderConfig,
-       EvalConfig,
-       Pipeline,
-       PipelineConfig,
-       PreprocessingConfig,
-       TaskConfig,
-       TrainingConfig,
+       AggregatorConfig, EncoderConfig, EvalConfig, Pipeline, PipelineConfig,
+       PreprocessingConfig, TaskConfig, TrainingConfig,
    )
 
    config = PipelineConfig(
@@ -175,11 +154,8 @@ training, and evaluation with one call:
        output_root="output",
        dataset_type="slide",
        preprocessing=PreprocessingConfig(
-           tissue_method="hsv",
-           min_coverage={"tissue": 0.2},
-           overlap=0.0,
-           requested_spacing_um=0.5,
-           requested_tile_size_px=224,
+           tissue_method="hsv", min_coverage={"tissue": 0.2}, overlap=0.0,
+           requested_spacing_um=0.5, requested_tile_size_px=224,
        ),
        encoder=EncoderConfig(name="phikon"),
        aggregator=AggregatorConfig(name="abmil"),
@@ -187,14 +163,10 @@ training, and evaluation with one call:
        training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),
        evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
    )
-
    result = Pipeline(config).run()
 
-``result.run_dir`` locates the run bundle, ``result.summary`` holds aggregate
-metrics, and ``result.fold_results`` holds per-fold results. See :doc:`outputs`
-for the saved configuration, predictions, metrics, and reports.
-
-For the CLI, save the equivalent configuration as ``config.yaml``:
+``result`` exposes ``run_dir``, ``summary``, and ``fold_results`` (see
+:doc:`outputs`). The same experiment as ``config.yaml``:
 
 .. code-block:: yaml
 
@@ -233,11 +205,5 @@ soma merges the file with bundled defaults and validates it before running.
 YAML uses ``aggregation`` where the Python constructor uses ``aggregator``.
 See :doc:`cli` for defaults and command-line overrides.
 
-Go further
-----------
-
-* Follow the :doc:`slide-level tutorial <tutorials/slide-level>` for a deeper,
-  hands-on MIL workflow.
-* Use the :doc:`API reference <api>` to build custom orchestration around
-  individual components.
-* Explore :doc:`modeling` to choose a path for other input and prediction types.
+Next, follow the :doc:`slide-level tutorial <tutorials/index>` or build
+custom orchestration with the :doc:`API reference <api>`.

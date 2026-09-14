@@ -1,11 +1,8 @@
 Survival
 ========
 
-The ``survival`` task models time-to-event with right censoring from a frozen
-slide or patient embedding, or a slide representation produced by an
-:doc:`aggregator <aggregators>`.
-
-The ``survival`` task offers two losses, selected via ``task.params.loss``:
+The ``survival`` task models time-to-event with right censoring. Select the loss
+with ``task.params.loss``:
 
 * ``nll`` (default) — **discrete-time** survival modeling. The continuous time
   axis is split into ``num_bins`` bins; the head emits one hazard logit per bin
@@ -22,12 +19,9 @@ The ``survival`` task offers two losses, selected via ``task.params.loss``:
     aggregator) *or* on MIL bags (any of ``abmil``/``transmil``/``mean_pool``),
     where variable-length bags are padded and masking keeps the result exact.
   * **Accumulation mode** (``cox_window >= 2``): for large variable-size MIL
-    bags. ``batch_size`` is pinned to ``1`` and an aggregator is required; the
-    trainer forwards ``cox_window`` bags un-padded, keeps their risk scalars
-    graph-connected, and computes one Cox loss over the window (one optimiser
-    step per window). This avoids padding, but retains each bag's computation
-    graph until the window loss is computed. Changing the window size also
-    changes the number of optimizer steps per epoch.
+    bags. ``batch_size`` is pinned to ``1`` and an aggregator is required. The
+    trainer forwards ``cox_window`` bags un-padded and computes one Cox loss and
+    one optimizer step per window.
 
 Both losses rank with Harrell's C-index via scikit-survival.
 
@@ -45,22 +39,19 @@ time-to-last-follow-up** and add two columns:
    * - ``event``
      - ``1`` if the event was observed, ``0`` if right-censored.
    * - ``bin``
-     - Index of the discrete time bin **containing** ``label`` — for *every*
-       sample, including censored ones (a censored sample's bin is the last bin
-       it was known event-free). Compute the bins yourself (e.g. ``qcut`` on the
-       uncensored times). Set ``task.params.num_bins`` to a positive integer to
-       fix the head width: any subset of indices in ``[0, num_bins)`` is valid,
-       including empty intervals (e.g. observed bins ``[0, 3]`` with width ``4``).
-       Indices are never renumbered. Without an explicit width, observed bins must
-       be contiguous from zero and ``num_bins`` is inferred as ``max(bin) + 1``.
-       **Required for ``loss: nll`` only** — the Cox path ignores ``bin``.
+     - Index of the discrete time bin containing ``label``, for every sample
+       including censored ones. Required for ``loss: nll`` only.
+
+Compute the bins yourself (e.g. ``qcut`` on the uncensored times). Set
+``task.params.num_bins`` to fix the head width: any subset of indices in
+``[0, num_bins)`` is then valid, including empty intervals, and indices are
+never renumbered. Without an explicit width, observed bins must be contiguous
+from zero and ``num_bins`` is inferred as ``max(bin) + 1``.
 
 Supported ``dataset_type`` values are ``slide`` and ``patient`` (``tile`` is
 rejected). For ``patient`` pipelines, all slides of a patient must agree on the
-survival target. The CLAM and DTFD-MIL aggregators are rejected for survival
-because their label-aware auxiliary losses assume classification. DSMIL is also
-incompatible because it requires binary classification. Survival MIL can use
-``abmil``, ``transmil``, ``mean_pool``, or hierarchical ``hipt`` features.
+survival target. Survival MIL supports ``abmil``, ``transmil``, ``mean_pool``,
+and hierarchical ``hipt`` features; other aggregators are rejected.
 
 Task heads
 ----------

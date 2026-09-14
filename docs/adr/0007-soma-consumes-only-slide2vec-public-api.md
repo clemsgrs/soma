@@ -30,7 +30,7 @@ For in-process pooled slide encoding, soma calls the public `Model.embed_tiles` 
 ## Consequences
 
 - soma's ROI identity must stay explicit in the manifest rather than re-derived by string-splitting `<slide>__x<X>_y<Y>`; `SlideRegions.sample_id` carries the slide id and the ROI→(slide, x, y) mapping is recorded, not parsed.
-- Dense extraction forwards `ExecutionConfig.num_gpus` to both public APIs. The boundary-sensitive gate in issue #305 compared 1 GPU with 2 GPUs for ragged image shards and a slide split across ROI shards in fp32 and fp16. All grids met slide2vec's cosine contract; see `docs/validation/dense-multigpu-parity-305.md`.
+- Dense extraction forwards `ExecutionConfig.num_gpus` to both public APIs. The boundary-sensitive gate in issue #305 compared 1 GPU with 2 GPUs for ragged image shards and a slide split across ROI shards in fp32 and fp16. All grids met slide2vec's cosine contract.
 - The tile-path migration has no equivalent gate: `results/eva.csv` may be re-recorded within its 2 % relative band if numbers move.
 - soma skipped slide2vec 5.4.0 entirely and aligned through 5.5/5.6. The dense source-spacing contract now requires slide2vec 5.7 and hs2p 4.4.1: soma declares `spacing_at_level_0` on source specs and consumes persisted `source_spacing_um` plus `effective_spacing_um` rather than reconstructing them from requested settings.
 - With pooled embedding orchestration migrated in #288 and dense live encoding migrated in #322, soma's production extraction paths have no `slide2vec.runtime.*` imports.

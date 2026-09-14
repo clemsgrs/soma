@@ -6,7 +6,9 @@ Composite encoders
 A composite encoder concatenates several frozen encoders' dense features for
 segmentation or detection. Each member is cached independently;
 :class:`~soma.dense.composite.CompositeDenseFeatureStore` combines them at load
-time. Use ``composite`` in place of the single ``encoder`` block.
+time. Use ``composite`` in place of the single ``encoder`` block. The
+:doc:`composite walkthrough <../tutorials/walkthrough-composite>` trains a
+segmentation decoder on two concatenated encoders.
 
 .. code-block:: yaml
 
@@ -46,18 +48,9 @@ channels at each position. Defaults are ``l2`` for patch features and ``none``
 for attention maps. Use it to control differences in feature magnitude across
 encoders.
 
-Walkthrough
------------
-
-The :doc:`composite walkthrough <../tutorials/walkthrough-composite>` extracts
-two ungated encoders on a small synthetic CPU dataset and trains a segmentation
-decoder on their concatenated grids.
-
 References
 ----------
 
 * Ramchandani et al., *Benchmarking Computational Pathology Foundation Models
   for Semantic Segmentation* (2026),
-  `arXiv:2602.18747 <https://arxiv.org/abs/2602.18747>`_. Reports a 7.95%
-  average improvement over individual models for its three-model ensemble
-  across four datasets.
+  `arXiv:2602.18747 <https://arxiv.org/abs/2602.18747>`_.

@@ -39,8 +39,7 @@ Curate one cohort, or all three with family-wide sample-ID validation::
 
 The cohorts are fixed, balanced label-by-center grids: Camelyon has 20,400
 rows, TCGA-4x4 has 5,760, and Tolkach-ESCA has 9,000. Every emitted row is
-assigned to ``test``, fold ``0``. ``soma reproduce croma`` runs this curation
-for you.
+assigned to ``test``, fold ``0``.
 
 EVA patch-level classification
 ------------------------------
@@ -73,26 +72,22 @@ The generated ``dataset.csv`` stores EVA numeric target indices in ``label`` and
 keeps the readable class in ``class_name`` metadata. This preserves EVA's class
 orientation for binary tasks.
 
-.. note::
-
-   The registered :doc:`EVA benchmark <eva-patch-classification-benchmark>`
-   runs this curation automatically with ``soma reproduce eva/<dataset>``.
+``soma reproduce eva/<dataset>`` runs this curation for you (see the
+:doc:`EVA benchmark <eva-patch-classification-benchmark>`).
 
 Split policy
 ~~~~~~~~~~~~
 
-The curator follows EVA's official protocol and has no split knob. For datasets
-where EVA provides only train/validation-style splits, every EVA train sample is
-soma ``train`` and EVA validation is soma ``test``; the split file contains only
-``train`` and ``test`` rows, and the run sets ``training.tune_is_test: true`` so
-checkpoint selection happens on the reported split, as the leaderboard does.
-
-For datasets where EVA provides train/validation/test splits, soma preserves
-EVA validation as ``tune`` and EVA test as ``test``. This lets one run report
-both the EVA validation benchmark metric and the EVA test metric.
+The curator follows EVA's official protocol and has no split knob. EVA train
+is soma ``train``. When EVA provides only a validation split, it becomes soma
+``test`` and the run sets ``training.tune_is_test: true``. When EVA also
+provides a test split, validation becomes ``tune`` and test becomes ``test``.
 
 Raw layout expectations
 ~~~~~~~~~~~~~~~~~~~~~~~
+
+HDF5 or archive inputs are materialized to image folders on first use; a
+completed materialization is reused on later runs.
 
 ``bach``
   ``ICIAR2018_BACH_Challenge/Photos/{Benign,InSitu,Invasive,Normal}/*.tif``.
@@ -121,25 +116,19 @@ Raw layout expectations
   use ``test_patches_750`` — its test split "leads to unstable evaluation
   results" — so those patches are ignored even when present.
 
-  If ``train_validation_patches_750`` is absent, soma materializes it from the raw
+  If ``train_validation_patches_750`` is absent, soma slices the 750×750 patches
+  itself from the raw
   `Harvard Dataverse download <https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/OCYCMP>`_:
-  drop the train/validation TMA archives (``ZT{76,111,199,204}_*.tar.gz``) and
-  ``Gleason_masks_train.tar.gz`` into ``<root>`` (already-extracted folders or a
-  ``TMA_images/`` dir are also accepted). soma slices the 750×750 patches itself —
-  a vendored, dependency-free port of ``create_patches.py`` from the
-  `gleason_CNN <https://github.com/eiriniar/gleason_CNN>`_ repo — so you do not need
-  to run that (Python 2-era) script. Materialization is atomic and idempotent: a
-  completed ``train_validation_patches_750`` is reused as-is on later runs. Only the
-  train/validation patches are produced; the ZT80 test cohort is skipped.
+  place the ``ZT{76,111,199,204}_*.tar.gz`` archives and
+  ``Gleason_masks_train.tar.gz`` under ``<root>`` (extracted folders or a
+  ``TMA_images/`` dir are also accepted). The ZT80 test cohort is skipped.
 
 ``patch_camelyon``
   Either materialized image folders
   ``{train,val,test}/{normal|no_tumor,tumor}/*.{png,jpg,jpeg,tif,tiff}``, or
   EVA's six official HDF5 files
   (``camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5``) under the raw
-  root. When only the HDF5 files are present the curator materializes them to
-  the class-folder layout above on first use (writing PNGs under a writable raw
-  root; idempotent, so an interrupted pass resumes on the next run).
+  root. HDF5 files are materialized as PNGs under a writable raw root.
 
 Segmentation datasets from EVA, such as MoNuSAC, CoNSeP, and BCSS, are not
 covered by this tile-classification curation path.
@@ -149,9 +138,8 @@ OCELOT 2023 cell detection
 
 The OCELOT curator targets soma's ``dataset_type: detection`` path. It converts
 the unzipped `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ release
-(Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) into soma's detection
-manifests. Like the EVA curators it does not download anything; accept the Zenodo
-terms and unzip first (see ``examples/ocelot/README.md`` for the download step).
+(``ocelot2023_v1.0.1.zip``) into soma's detection manifests. Download and unzip
+it first (see ``examples/ocelot/README.md``).
 
 Curate from Python::
 

@@ -29,19 +29,9 @@ Contents of an HTML report:
 - **Loss curves** — training and validation loss per epoch
 - **Training timing** — elapsed time per epoch and total run time
 
-To reuse predictions, metrics, and training history already in memory, pass a
-:class:`soma.pipeline.PipelineResult`:
-
-.. code-block:: python
-
-   from soma import Pipeline
-   from soma.reporting import generate_report_from_result
-
-   result = Pipeline(config).run()
-   path = generate_report_from_result(result, config)
-
-Pass ``dataset=dataset`` when regenerating subgroup reports from memory; the
-report needs the dataset metadata to populate those groups.
+``generate_report_from_result(result, config)`` builds the same report from an
+in-memory :class:`soma.pipeline.PipelineResult`; pass ``dataset=dataset`` as
+well when the report includes subgroups.
 
 Run comparison
 --------------
@@ -59,8 +49,7 @@ diffs (keys that differ between runs are highlighted), and statistical tests:
        labels=["ABMIL", "TransMIL"],
    )
 
-When ``labels`` is omitted, labels are auto-derived from the config diff
-(e.g., the aggregator name if that is the only varying field).
+When ``labels`` is omitted, labels are derived from the config diff.
 
 By default, the report is written beneath the shared ``output_root`` in
 ``comparisons/<comparison-id>/index.html``. Pass ``output_dir`` to override

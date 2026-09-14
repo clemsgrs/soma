@@ -21,8 +21,8 @@ Model Zoo
 ---------
 
 Tile encoders are grouped by output dimension. Spacing is in µm/px; multiple
-dimensions indicate output variants. The installed registry, available through
-``soma.list_models()``, is the source of truth for available presets.
+dimensions indicate output variants. ``soma.list_models(level=...)`` lists the
+presets installed in the registry.
 
 Tile-level encoders
 ~~~~~~~~~~~~~~~~~~~
@@ -148,8 +148,7 @@ Natural-image controls
 
 Non-pathology baselines that share the tile-encoder interface, for measuring
 how much pathology pretraining contributes. Both are spacing agnostic, with
-0.5 µm/px as the default. DINOv2 defaults to 518 px and DINOv3 to 256 px for
-declared tiles; see :doc:`preprocessing` for explicit off-preset sizes.
+0.5 µm/px as the default; see :doc:`preprocessing` for their tile sizes.
 
 .. list-table::
    :header-rows: 1
@@ -230,14 +229,4 @@ tile encoder and ``None`` for a slide encoder, allowing the existing slide
 representation path to pass the embedding directly to the task head. Patient
 encoders are rejected because their representations are not slide-level.
 
-Resolution reads registry metadata without constructing the encoder or loading
-weights. The benchmark supplies the MIL recipe through ``tile_recipe``; the
-helper only decides whether it applies.
-
 .. autofunction:: soma.encoders.resolve_aggregator
-
-Discovery helpers
------------------
-
-Use ``soma.list_models()`` when you want the available encoder presets in code.
-Pass ``level="tile"``, ``"slide"``, or ``"patient"`` to narrow the list.

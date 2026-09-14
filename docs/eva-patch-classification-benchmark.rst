@@ -5,7 +5,8 @@ Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_
 patch-classification leaderboard with frozen tile encoders and linear
 :doc:`classification` heads.
 
-EVA provides 6 registered datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon. All share the same linear-probe protocol.
+EVA provides 6 registered datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon. All share the same linear-probe protocol; see :doc:`benchmarking` for
+the shared workflow.
 
 **Pipeline:** labelled patches → frozen encoder → linear head → balanced accuracy
 
@@ -34,20 +35,12 @@ source and unpack it in the directory you will pass as ``--raw-root``:
    * - `PatchCamelyon <https://zenodo.org/records/2546921>`__ (``patch_camelyon``)
      - the six ``camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5`` files
 
-For example, prepare BACH from its public archive::
-
-    mkdir -p /path/to/eva/bach
-    curl -L 'https://zenodo.org/records/3632035/files/ICIAR2018_BACH_Challenge.zip?download=1' -o /tmp/bach.zip
-    unzip /tmp/bach.zip -d /path/to/eva/bach
-
 Run the benchmark
 -----------------
 
-Choose a compatible tile-level :doc:`encoder <encoders>` and pass the
-downloaded dataset directory as ``--raw-root``. ``soma reproduce`` runs the
-built-in EVA curator automatically, writes the manifests under
-``<raw-root>/curated``, extracts features, trains the linear probe, and reports
-balanced accuracy. For example::
+Choose a compatible tile-level :doc:`encoder <encoders>` and pass the downloaded
+dataset directory as ``--raw-root``; curated manifests are written under
+``<raw-root>/curated``. For example::
 
     soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach
 
@@ -101,8 +94,6 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - 0.778 ± 0.010
      - 0.783
 
-Across these 8 recorded dataset–encoder comparisons, the median relative difference is **0.47%**.
-
 See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
 
 Protocol details
@@ -130,6 +121,3 @@ Protocol details
      - ``test/balanced_accuracy`` (from ``summary.json``)
    * - canonical seeds
      - ``0, 1, 2, 3, 4`` (averaged)
-
-See :doc:`benchmarking` for the shared benchmark workflow and :doc:`classification`
-for task-head details.

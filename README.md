@@ -20,12 +20,7 @@ The distribution is `soma-pathology`; the Python package and CLI are `soma`.
 
 ## Run an experiment
 
-For slide classification, prepare two CSV files:
-
-- `dataset.csv`: one row per slide with a unique `sample_id`, an `image_path`, and a `label`.
-- `splits.csv`: columns `sample_id`, `split`, and `fold`, assigning every sample to `train`, `tune`, or a `test*` split in each fold.
-
-Use independent subjects across splits and include both classes in each split for binary AUROC. The [getting started guide](https://clemsgrs.github.io/soma/getting-started.html) shows the manifests and a complete walkthrough.
+For slide classification, prepare `dataset.csv` (sample ID, image path, label) and `splits.csv` (sample ID, split, fold). The [getting started guide](https://clemsgrs.github.io/soma/getting-started.html) shows both files and a complete walkthrough.
 
 ```python
 from soma import (
@@ -54,9 +49,7 @@ print(result.summary)
 print(result.run_dir)
 ```
 
-`phikon` weights are public and download on first use. Omitted tile size and spacing resolve from the encoder's native configuration. The pipeline preprocesses slides, extracts features, trains across folds, and evaluates predictions. `result.fold_results` contains per-fold results; `result.run_dir` locates the saved artifacts.
-
-To reuse features across experiments, use `Dataset` and `Splits` to load data, `FeatureExtractor.extract()` to build a feature source, and `train()` or `train_one_fold()` for downstream training. The [API guide](https://clemsgrs.github.io/soma/api.html) shows this workflow and reporting examples.
+`phikon` weights are public and download on first use. To extract features once and reuse them across experiments, see the [API guide](https://clemsgrs.github.io/soma/api.html).
 
 ## Use the CLI
 
@@ -68,16 +61,7 @@ soma config.yaml
 python -m soma config.yaml
 ```
 
-soma merges the file with its bundled defaults. Start with the [task examples](examples/README.md) or consult the [CLI and configuration reference](https://clemsgrs.github.io/soma/cli.html). Discover components with:
-
-```bash
-soma list encoders --level tile
-soma list aggregators
-soma list decoders
-soma list pixel-classifiers
-soma list tasks
-soma list benchmarks
-```
+soma merges the file with its bundled defaults. Start with the [task examples](examples/README.md) or the [CLI reference](https://clemsgrs.github.io/soma/cli.html). `soma list encoders` (and `aggregators`, `decoders`, `tasks`, `benchmarks`) prints the registered components.
 
 ## Explore
 

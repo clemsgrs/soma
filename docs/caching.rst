@@ -9,22 +9,6 @@ The cache configuration is :class:`soma.config.CacheConfig`.
 .. autoclass:: soma.config.CacheConfig
    :members:
 
-What the cache stores
----------------------
-
-.. list-table::
-   :header-rows: 1
-
-   * - Cache layer
-     - Reused across runs
-     - Why it matters
-   * - Tiling
-     - Yes, when preprocessing matches
-     - Avoids repeating tissue selection and tiling
-   * - Features
-     - Yes, when encoder and geometry match
-     - Avoids re-embedding the same data
-
 Cache reuse rules
 -----------------
 
@@ -74,28 +58,16 @@ and the effective encoder input size. Only effective input size is validated
 on reuse: soma can derive it from configuration and the encoder registry without
 loading the model.
 
-For declared pooled extraction with slide2vec 6.0, the effective encoder input
-equals the requested tile size, including permitted off-preset requests.
-
 A mismatch raises ``CacheGeometryMismatch`` with both sizes. Delete the cache
 directory to re-extract or choose a different cache root. This prevents reuse of
 features whose spatial extent differs from the current encoder input.
 
 Geometry checks cannot detect pixel-processing changes that preserve size,
-such as a different interpolation kernel or photometric transform. Delete
-caches when upgrading slide2vec across such a change. Older caches without a
-geometry record remain reusable.
+such as a different interpolation kernel or photometric transform, and soma
+does not invalidate caches by dependency version. Delete the affected cache
+directories, or select a fresh ``cache.root_dir``, when upgrading slide2vec
+across such a change.
 
-Upgrading to slide2vec 6.0
-------------------------------
-
-Regenerate pooled whole-slide features produced by slide2vec 5.x before
-combining them with 6.0 features. Declared extraction now preserves the entire
-requested tile, and some encoder defaults change the sampled field of view.
-GPFM pre-cropped image features also require regeneration: its shipped resize
-changed from 518 px to direct 224 px.
-
-Delete the affected feature-cache directories or select a fresh
-``cache.root_dir``. soma does not invalidate caches by dependency version, and
-equal recorded sizes do not guarantee equal preprocessing. Historical
-benchmark measurements retain their original extraction provenance.
+GPU count is not part of the dense cache key. Multi-GPU sharding can change
+grid bytes within slide2vec's tolerance contract, so a dense cache resumed at a
+different GPU count is equivalent but not byte-identical.

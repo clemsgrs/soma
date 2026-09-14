@@ -18,10 +18,6 @@ The main entrypoint takes a config path directly::
 
     soma /path/to/config.yaml
 
-The equivalent Python invocation is::
-
-    python -m soma /path/to/config.yaml
-
 Override individual settings without editing the file::
 
     soma config.yaml --set run.output_root=runs/local --set training.epochs=5
@@ -64,38 +60,22 @@ Available commands
 Benchmarking commands
 ---------------------
 
-See :doc:`benchmarking` for data preparation, protocol selection, and
-interpretation of reference comparisons.
-
 ``soma prepare-croma RAW_ROOT [--rebuild]``
    Download and decode the pinned PathoROB tile sources for
    :doc:`croma-robustness-benchmark`. ``--rebuild`` replaces a partial
    or revision-mismatched destination.
 
 ``soma reproduce NAME [--encoder NAME | --encoders NAME [NAME ...]] [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
-   Curate → run → score a registered benchmark. When a matching packaged
-   reference exists, report its delta and highlight potential drift;
-   otherwise, explicitly skip the comparison. Reference comparisons are
-   informational and never determine command success. ``NAME`` is a
-   registered benchmark (``ocelot``, ``eva/bach``) or a family prefix
-   (``eva``) that fans out over every ``eva/<dataset>``. Three manifest
-   sources: ``--raw-root`` curates from raw data; ``--curated-dir`` reuses an
-   already-curated manifest dir (``dataset.csv`` + ``splits.csv``), skipping
-   curation; ``--from-run-dir`` re-scores an existing run without retraining.
-   ``--seeds N`` runs seeds 0 through N−1 instead of the canonical set;
-   use ``--seeds 1`` for a smoke run.
-
-   ``--encoders`` checks every benchmark/encoder pairing before starting
-   work, then writes one cross-encoder leaderboard per benchmark. It
-   cannot be combined with ``--from-run-dir``. Incompatible panels start
-   no runs. After a valid panel starts, runtime failures preserve
-   completed runs and allow later encoders to proceed. The command
-   reports ``PARTIAL`` and exits nonzero; the ordinary leaderboard
-   includes completed runs only. No completed runs means no leaderboard.
-
-   Use ``--output-root`` for run artifacts, ``--cache-root`` to share
-   features, and ``--out-dir`` for curated manifests. ``--record`` appends
-   measured scores and provenance to the packaged results ledger.
+   Curate, run, and score a registered benchmark. ``NAME`` is a benchmark
+   (``ocelot``, ``eva/bach``) or a family prefix (``eva``). ``--raw-root``
+   curates from raw data, ``--curated-dir`` reuses prepared manifests, and
+   ``--from-run-dir`` rescores one existing run. ``--encoders`` runs an
+   ordered panel and writes one leaderboard per benchmark. ``--seeds N``
+   runs seeds 0 through N−1. ``--output-root``, ``--cache-root``, and
+   ``--out-dir`` place run artifacts, shared features, and curated
+   manifests; ``--record`` appends the score to the packaged results
+   ledger. See :doc:`benchmarking` for panel validation, partial
+   failures, and reference comparisons.
 
 ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
    Render a faceted leaderboard over the completed run dirs under an
@@ -125,8 +105,6 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      dataset_csv: data/dataset.csv
      splits_csv: data/splits.csv
      dataset_type: slide
-     # cached: read pre-extracted dense grids. live: re-encode (augmented) tiles through
-     # the frozen encoder every step (segmentation only — enables augmentation).
      feature_mode: cached
 
    preprocessing:
@@ -135,19 +113,10 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      requested_spacing_um: null
      requested_region_size_px: null
      region_tile_multiple: null
-     # Tissue segmentation method. Options: sam2 | hsv | otsu | threshold.
-     # Leave empty/unused when pre-computed tissue masks are provided.
      tissue_method: hsv
-     # Tissue coverage threshold as a masks-shaped map (min_coverage.tissue is the minimum
-     # tissue fraction to keep a tile). Single source of truth; no separate scalar.
      min_coverage:
        tissue: 0.1
      overlap: 0.0
-     # Dense (segmentation) encoder-window knobs — how the padded supervision tile reaches
-     # the frozen encoder (NOT the tiling `overlap` above). dense_window_size: null => the
-     # `whole` path (one padded forward; the default and cached-parity anchor). A smaller
-     # window (e.g. 224 or 512) slides the encoder over patch-aligned windows and blends the
-     # token grids over dense_window_overlap (raised-cosine), useful at large scale-ups.
      dense_window_size: null
      dense_window_overlap: 0.0
      seg_downsample: 64
@@ -175,69 +144,35 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      reuse_policy: strict
      validate_payloads: false
 
-   # No default encoder — the framework stays neutral on model choice (you must set
-   # `encoder:` for a single encoder, or `composite:` for a multi-encoder composite).
-   # A baked-in default here would also collide with `composite:` via the encoder/composite
-   # XOR check (the merged default encoder would make both present).
    encoder: null
 
-   # No default aggregator — stay neutral on the trainable component. For slide MIL set
-   # `aggregation:` explicitly; omitting it means slide-level features with no MIL. A baked-in
-   # default would also leak into the tile/patient/segmentation paths (which forbid an
-   # aggregator) when a config is hand-written without nulling it.
    aggregation: null
 
    task:
      name: binary_classification
      params: {}
 
-   # No default metrics — stay neutral (the slide-classification metrics would otherwise leak
-   # into segmentation/regression/survival configs and fail metric validation). Set
-   # `evaluation.metrics:` for the task at hand.
    evaluation:
      metrics: []
      subgroups:
        columns: []
-     # Skip ALL test-split evaluation and report tune only (no test inference, no
-     # predictions_test.csv, no `test` entries in metrics.json/summary.json). Use for
-     # model-selection sweeps: rank candidates by tune score, then re-run the winner
-     # with this off. The test split may stay in splits.csv; it is simply not touched.
      holdout_test: false
-     # Allow re-scoring a test set that was already scored for a run, overwriting its
-     # prior result. Off by default: because experiment identity is test-invariant, a
-     # checkpoint may be scored against several test sets — each result is namespaced by
-     # test identity and a re-score of an already-scored test set is refused (loud skip)
-     # unless this is set.
      overwrite_test: false
 
    training:
-     # Per-fold trainer: 'gradient' (torch head/decoder loop) or 'ridge_pca_probe'
-     # (closed-form Ridge+PCA probe for dataset_type='spatial_expression').
      method: gradient
      epochs: 50
      learning_rate: 1.0e-4
      weight_decay: 1.0e-5
      optimizer: adam
      scheduler: cosine
-     # Which epoch's weights are evaluated: 'best' selects by the monitored tune metric
-     # (with early stopping); 'last' evaluates the final-epoch weights, takes model
-     # selection off the tune metric, and requires `patience: null`.
      checkpoint_selection: best
-     # Early-stopping patience in epochs; null disables early stopping (required by
-     # checkpoint_selection: last).
      patience: 10
      monitor: tune_loss
      monitor_mode: min
      batch_size: 1
-     # Cached segmentation only. null keeps ordinary shuffled loading; explicit
-     # 'uniform' and 'class_conditioned' arms use one audited training-batch contract.
      roi_batch_sampling: null
-     # Relative requested-class weights for class_conditioned sampling, ordered 0..K-1.
-     # null requests all modeled classes equally.
      class_request_ratios: null
-     # Fixed ROI selections per epoch for an explicit arm; must contain whole physical
-     # loader batches. null rounds the training ROI count down to whole optimization
-     # batches (batch_size * gradient_accumulation).
      roi_draws_per_epoch: null
      gradient_accumulation: 1
      tune_is_test: false
@@ -246,9 +181,6 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      pin_memory: true
      persistent_workers: true
 
-   # Image/mask augmentation — only applied when data.feature_mode is 'live'
-   # (segmentation). Geometric ops transform image + mask jointly (mask nearest); the
-   # photometric ops transform the image only. All-zero = no augmentation (live-no-aug).
    augmentation:
      horizontal_flip: 0.0
      vertical_flip: 0.0
@@ -260,24 +192,10 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      saturation: 0.0
      hue: 0.0
 
-   # Per-feature normalization of frozen encoder features, applied by the feature adaptor
-   # (a buffer-carrying front module) ahead of the aggregator/head. 'none' (default) means
-   # no adaptor at all. 'zscore' is FITTED on the train split only (leak-free) and its
-   # center/scale ride in the checkpoint; 'l2' and 'layernorm' are stateless. `eps` floors
-   # the scale so a constant channel cannot blow up. Orthogonal to composite member_norm.
    normalization:
      method: none  # none | zscore | l2 | layernorm
      eps: 1.0e-6  # finite > 0; must stay at this default when method=none
 
-   # Label-free projection of frozen encoder features to a common width — the dim-matched
-   # ablation that removes the capacity confound (a wider encoder otherwise buys a larger
-   # aggregator). Applied AFTER normalization. When active the aggregator is built against
-   # `target_dim`, not the encoder's native dim. 'pca' is FITTED per fold on the train
-   # split only (leak-free), centers intrinsically and pins a sign convention so repeated
-   # fits are identical; 'random' is a fixed Gaussian matrix seeded from `seed` + the
-   # encoder identity, scaled to preserve inner products. Both are frozen buffers, never
-   # learned. PCA requires n_fit_rows >= target_dim and target_dim <= D; random is
-   # unconstrained.
    projection:
      method: none  # none | pca | random
      target_dim: null  # required when method != none

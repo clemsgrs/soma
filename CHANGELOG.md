@@ -1,4 +1,4 @@
-# Project Documentation Notes
+# Changelog
 
 - 2026-09-12: Require slide2vec 6.0.0. Pooled cache geometry records the exact
   declared tile size for both preset and off-preset requests. Every tile encoder

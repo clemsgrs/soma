@@ -9,12 +9,10 @@ Python API to compose preprocessing, frozen encoders, and downstream models.
    :figclass: soma-figure soma-hero
    :alt: The soma pipeline — data, a frozen encoder, a trained decoder, and evaluation.
 
-   Reuse extracted features while comparing downstream models, or hold the
-   training protocol fixed to compare encoders.
+   Frozen features are extracted once and reused by every downstream model.
 
-Workflows cover tiles, regions of interest, slides, and patients. Whole-slide
-preprocessing uses `hs2p <https://github.com/clemsgrs/hs2p>`_; foundation-model
-encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec>`_.
+Whole-slide preprocessing uses `hs2p <https://github.com/clemsgrs/hs2p>`_;
+foundation-model encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec>`_.
 
 .. raw:: html
 
@@ -46,7 +44,8 @@ encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec>`_.
    data
    components
    tasks
-   training-evaluation
+   training
+   evaluation
    tutorials/index
    benchmarking
    reference

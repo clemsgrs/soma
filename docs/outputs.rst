@@ -8,18 +8,6 @@ metrics needed to compare experiments reproducibly.
 The shared cache, which stores reusable upstream artifacts such as tiling and
 feature extraction, is documented separately in :doc:`caching`.
 
-Run directory contents
-----------------------
-
-For task-training pipelines, the main run directory contains:
-
-- the resolved pipeline configuration
-- model checkpoints and per-fold summaries
-- per-split predictions
-- per-split subgroup metrics
-- attention artifacts when heatmaps are enabled
-- the final HTML report
-
 Experiment identity
 -------------------
 
@@ -43,29 +31,27 @@ controls.
 
 Dataset checksums follow :ref:`semantic manifest identity
 <semantic-manifest-identity>`: storage paths are excluded while semantic values
-in the selected rows are hashed. ``ExperimentSpec`` retains resolved manifest
-paths. ``RunMetadata`` also records the test digest and whole-file SHA-256 values
-for the physical CSV files, so relocation or added test rows remain visible in
-provenance. Cache identity separately includes physical inputs as described in
-:doc:`caching`.
+in the selected rows are hashed. Run metadata still records the resolved
+manifest paths and whole-file SHA-256 values, so relocation or added test rows
+remain visible in provenance. Cache identity separately includes physical
+inputs as described in :doc:`caching`.
 
-Older experiment identities are not aliased or migrated to version 2.
+Run directory layout
+--------------------
 
-Layout: single split vs cross-validation
------------------------------------------
-
-When ``splits.csv`` has no ``fold`` column (or a single fold value), all
-artifacts are written directly inside the run directory:
+The run directory holds the resolved ``config.yaml``, ``summary.json``, and
+``report.html``. When ``splits.csv`` has no ``fold`` column (or a single fold
+value), the per-fold artifacts are written directly inside it; with several
+folds, each ``fold_N/`` subdirectory holds its own set:
 
 - ``best_model.pt``, ``metrics.json``, ``training_history.json``
-- ``feature_adapter.json`` (only when ``normalization`` or ``projection`` asks for a transform)
-- ``predictions_<split>.csv``
-- ``attention/<sample_id>.npz`` (if heatmaps enabled)
-- ``heatmaps/<sample_id>.png``
-
-When ``splits.csv`` defines multiple folds, each fold gets its own subdirectory:
-
-- ``fold_0/``, ``fold_1/``, … containing the same per-fold files above
+- ``feature_adapter.json`` when ``normalization`` or ``projection`` is active:
+  the methods, ``eps`` floor and floored-channel count, dimensions, projection
+  seed, PCA explained variance, and the number of samples and feature rows used
+  to fit each stage
+- ``predictions_<split>.csv`` and ``subgroup_metrics_<split>.json``
+- ``attention/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when heatmaps
+  are enabled
 
 Split-specific artifacts
 ------------------------
@@ -107,16 +93,8 @@ Heatmap appearance is controlled by :class:`soma.config.HeatmapConfig`:
 ``cmap`` (colormap name, default ``jet``), ``alpha`` (overlay opacity),
 ``blur_sigma`` (Gaussian blur radius in pixels).
 
-HTML report
------------
-
-Completed task-training pipelines write ``report.html`` with task-specific
-metrics, plots, training history, and timing. Task-free representation runs
-write metrics without a task report. See :doc:`reporting` for report contents,
-regeneration, and multi-run comparison.
-
-Treat completed run artifacts as the recorded outcome of that run. Use a new
-run for a new training attempt; shared features remain in the cache.
+See :doc:`reporting` for the contents of ``report.html``, its regeneration,
+and multi-run comparison.
 
 Recoverable shared-storage mirrors
 ----------------------------------
@@ -126,18 +104,14 @@ publishing recovery bundles to shared storage by setting ``run.mirror_root``. Th
 mirror destination preserves the managed run path beneath that root. Leaving the
 setting ``null`` is a no-op and does not change experiment identity.
 
-Only completed folds are published. Each shared copy is staged beside its final
-destination with the resolved ``config.yaml`` and a ``manifest.json`` containing every
-file's SHA-256 digest and byte size. The staged copy is verified and exposed by one atomic
-rename, so a partial copy never looks complete. Mirror errors never change a healthy local
-training result; a later fold event or resumed run retries any completed local fold whose
-atomic destination is still absent. Already-published destinations are not re-hashed on
-this retry path.
+Only completed folds are published, each with the resolved ``config.yaml`` and
+a ``manifest.json`` of SHA-256 digests, through an atomic rename so a partial
+copy never looks complete. Mirror errors never change the local training
+result; a later fold event or resumed run retries any fold whose destination
+is still absent.
 
-If node-local run storage is lost, a pinned resume restores checksum-verified completed
-folds from the corresponding mirror before checking which folds remain. A bare
-``resume: true`` can do the same when exactly one recipe-compatible mirrored run exists
-for the experiment. It fails loudly when several compatible runs exist so the user can
-select one with ``run_id`` rather than letting recovery guess. Mid-fold checkpoints are
-not mirrored; an incomplete fold resumes from local state when available or restarts
-after node loss.
+If node-local storage is lost, a resume pinned to ``run_id`` restores
+checksum-verified completed folds from the mirror before continuing. A bare
+``resume: true`` does the same when exactly one compatible mirrored run exists
+and fails when several do. Mid-fold checkpoints are not mirrored, so an
+incomplete fold restarts after node loss.
