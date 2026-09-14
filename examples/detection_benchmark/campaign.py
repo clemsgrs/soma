@@ -47,6 +47,14 @@ resolve to the per-encoder dense caches the ranking sweep already extracted, so 
         --config examples/detection_benchmark/ensemble_top2_midog.yaml --datasets midog \
         --out-root output/detection_benchmark/ensemble \
         --set cache.root_dir=output/detection_benchmark/midog/feature_cache
+
+Phase 3 — the annotation-efficiency ladder (#237) — reuses the sweep's dense caches and its
+full-data cells (never retrained) and trains one cell per ``(dataset, encoder, rung, seed)``
+on a nested-prefix split variant; pair it with its own ``--out-root``::
+
+    python examples/detection_benchmark/campaign.py efficiency --data-root data \
+        --datasets ocelot midog --out-root output/detection_benchmark_efficiency \
+        --full-root output/detection_benchmark
 """
 
 from __future__ import annotations
@@ -780,6 +788,228 @@ def _decode_cell_points(
     return make(tune_samples), make(test_samples), score_thresholds
 
 
+# --- efficiency ladder (#237) ---------------------------------------------------------
+#
+# A third phase over the *same* dense caches: per-encoder annotation-budget ladders. Each
+# rung ``N`` is a normal ``(dataset, encoder, replicate)`` cell trained on a nested-prefix
+# split variant (train = the seed's first ``N`` atoms; tune/test verbatim), so every
+# cell-level helper above (skip guards, train_cell, score_cell_isolated) is reused as-is by
+# treating ``<out_root>/n<N>`` as that rung's own out-root — the same trick the decoder
+# ladder used per decoder. The full rung is never retrained: it is read from the headline
+# sweep (``--full-root``). The pure math lives in ``soma.benchmarks.detection_efficiency``.
+
+
+def efficiency_rung_root(out_root: str | Path, n: int) -> Path:
+    """The out-root of rung ``n`` (cells at ``<out_root>/n<N>/<dataset>/<encoder>/replicate_<seed>``)."""
+    return Path(out_root) / f"n{n}"
+
+
+def efficiency_variant_path(out_root: str | Path, dataset: str, seed: int, n: int) -> Path:
+    return Path(out_root) / "splits" / dataset / f"seed{seed}_n{n}.csv"
+
+
+def link_feature_cache(rung_root: Path, dataset: str, cache_dir: Path) -> Path:
+    """Symlink the rung's per-dataset ``feature_cache`` to the shared sweep cache (no re-extraction)."""
+    link = feature_cache_dir(rung_root, dataset)
+    if link.is_symlink() or link.exists():
+        return link
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(Path(cache_dir).resolve(), target_is_directory=True)
+    return link
+
+
+def base_recipe(dataset: str, config_path: Path | None = None) -> dict[str, int | None]:
+    """``{"epochs", "patience"}`` of the committed recipe (what the rungs scale)."""
+    import yaml
+
+    raw = yaml.safe_load((config_path or _config_path(dataset)).read_text(encoding="utf-8"))
+    training = raw.get("training", {})
+    return {"epochs": int(training.get("epochs", 1)), "patience": training.get("patience")}
+
+
+def realized_epochs(cell_directory: Path) -> int | None:
+    """Epochs actually trained (from ``training_history.json``), for the report's honesty column."""
+    hits = sorted(cell_directory.glob("experiments/*/runs/*/training_history.json"))
+    if not hits:
+        return None
+    data = json.loads(hits[-1].read_text(encoding="utf-8"))
+    epochs = data.get("epochs", data) if isinstance(data, dict) else data
+    return len(epochs) if isinstance(epochs, list) else None
+
+
+def full_references(
+    full_root: Path, dataset: str, roster, *, full_n: int, source: str = "auto"
+) -> dict:
+    """Per-encoder full-data references from the headline sweep.
+
+    ``sweep`` reads the per-replicate ``metrics.json`` cells; ``report`` reads the
+    ``ranking_report.json`` cells (mean/std, e.g. the recorded OCELOT ranking); ``auto``
+    prefers ``sweep`` when at least one scored cell exists for the dataset.
+    """
+    from soma.benchmarks.detection_efficiency import FullReference
+
+    spec = dataset_spec(dataset)
+    refs: dict = {}
+    if source in ("auto", "sweep"):
+        for cell in collect_cells(full_root, roster, [dataset]):
+            refs[cell.encoder] = FullReference(
+                encoder=cell.encoder, n=full_n, mean=float(cell.mean), std=float(cell.std),
+                per_replicate=tuple(float(v) for v in cell.per_replicate),
+                source=f"sweep:{full_root}",
+            )
+        if refs or source == "sweep":
+            return refs
+    report_path = Path(full_root) / "ranking_report.json"
+    if not report_path.is_file():
+        return refs
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    names = {e.name for e in roster}
+    for cell in report.get("cells", []):
+        if cell.get("dataset") != dataset or cell.get("encoder") not in names:
+            continue
+        if cell.get("metric_name", spec.metric_name) != spec.metric_name:
+            continue
+        refs[cell["encoder"]] = FullReference(
+            encoder=cell["encoder"], n=full_n, mean=float(cell["mean"]), std=float(cell.get("std", 0.0)),
+            per_replicate=tuple(float(v) for v in cell.get("per_replicate", [])),
+            source=f"report:{cell.get('test_source', '')}",
+        )
+    return refs
+
+
+def plan_efficiency_variants(
+    data_root: Path, out_root: Path, dataset: str, seeds: Sequence[int],
+    ladder: Sequence[int] | None = None,
+) -> tuple[int, list]:
+    """Write every ``(seed, n)`` split variant of a dataset; returns ``(full_n, variants)``."""
+    from soma.benchmarks.detection_efficiency import (
+        atom_column_for, ladder_for, train_atoms, write_split_variant,
+    )
+
+    ds_csv, sp_csv = dataset_csv_for(data_root, dataset), splits_csv_for(data_root, dataset)
+    full_n = len(train_atoms(ds_csv, sp_csv, atom_column_for(dataset)))
+    rungs = [n for n in (ladder or ladder_for(dataset)) if n < full_n]
+    variants = []
+    for seed in seeds:
+        for n in rungs:
+            variants.append(
+                write_split_variant(
+                    ds_csv, sp_csv, dataset=dataset, seed=seed, n=n,
+                    out_path=efficiency_variant_path(out_root, dataset, seed, n),
+                )
+            )
+    manifest = Path(out_root) / "splits" / dataset / "variants.json"
+    manifest.write_text(json.dumps([v.as_dict() for v in variants], indent=2), encoding="utf-8")
+    return full_n, variants
+
+
+def collect_efficiency_rungs(out_root: Path, dataset: str, roster, variants) -> dict:
+    """Aggregate scored rung cells into ``{encoder: [RungResult, ...]}`` (partial sweeps OK)."""
+    from soma.benchmarks.detection_efficiency import RungResult
+
+    spec = dataset_spec(dataset)
+    by_key = {(v.seed, v.n_atoms): v for v in variants}
+    ns = sorted({v.n_atoms for v in variants})
+    out: dict = {}
+    for entry in roster:
+        rungs = []
+        for n in ns:
+            rung_root = efficiency_rung_root(out_root, n)
+            values, objects, epochs = [], [], []
+            for path in sorted((rung_root / dataset / entry.name).glob("replicate_*/metrics.json")):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                test_block = data.get("test", {})
+                if spec.metric_name not in test_block:
+                    continue
+                seed = int(path.parent.name.split("_")[-1])
+                values.append(float(test_block[spec.metric_name]))
+                v = by_key.get((seed, n))
+                objects.append(v.n_train_objects if v else None)
+                epochs.append(realized_epochs(path.parent))
+            if values:
+                rungs.append(RungResult(entry.name, n, tuple(values), tuple(objects), tuple(epochs)))
+        if rungs:
+            out[entry.name] = rungs
+    return out
+
+
+def aggregate_efficiency(
+    out_root: Path, data_root: Path, full_root: Path, roster, datasets, seeds,
+    *, full_source: str = "auto", git_sha: str | None = None, ladder: Sequence[int] | None = None,
+    write: bool = True,
+) -> dict:
+    """Build ``efficiency_report.json`` (+ the learning-curve plot) from the on-disk rung cells."""
+    from soma.benchmarks.detection_efficiency import (
+        build_dataset_efficiency, build_efficiency_report, plot_learning_curves, write_json,
+    )
+
+    per_dataset: dict = {}
+    for dataset in datasets:
+        full_n, variants = plan_efficiency_variants(data_root, out_root, dataset, seeds, ladder)
+        refs = full_references(full_root, dataset, roster, full_n=full_n, source=full_source)
+        rungs = collect_efficiency_rungs(out_root, dataset, roster, variants)
+        if not refs or not rungs:
+            print(f"[{dataset}] efficiency: {len(refs)} full refs, {len(rungs)} encoders with rungs — skip")
+            continue
+        per_dataset[dataset] = build_dataset_efficiency(dataset, rungs, refs)
+    report = build_efficiency_report(
+        per_dataset, git_sha=git_sha, seeds=seeds,
+        extra={"full_root": str(full_root), "full_source": full_source},
+    )
+    if write and per_dataset:
+        write_json(Path(out_root) / "efficiency_report.json", report)
+        plot_learning_curves(report, Path(out_root) / "efficiency_curves.png")
+        print(f"wrote {Path(out_root) / 'efficiency_report.json'} ({len(per_dataset)} datasets)")
+    return report
+
+
+def run_efficiency(
+    data_root: Path, out_root: Path, full_root: Path, roster, datasets, seeds,
+    *, dry_run: bool, git_sha: str | None, full_source: str = "auto",
+    ladder: Sequence[int] | None = None, extra_sets: Sequence[str] = (),
+) -> dict:
+    """Phase 3: train + score every ``(dataset, encoder, rung, seed)`` cell, then aggregate."""
+    from soma.benchmarks.detection_efficiency import scaled_recipe
+
+    for dataset in datasets:
+        full_n, variants = plan_efficiency_variants(data_root, out_root, dataset, seeds, ladder)
+        recipe = base_recipe(dataset)
+        cache_dir = feature_cache_dir(full_root, dataset)
+        if not cache_dir.exists():
+            raise SystemExit(f"[{dataset}] shared dense cache missing at {cache_dir}")
+        for variant in sorted(variants, key=lambda v: (-v.n_atoms, v.seed)):
+            n, seed = variant.n_atoms, variant.seed
+            rung_root = efficiency_rung_root(out_root, n)
+            link_feature_cache(rung_root, dataset, cache_dir)
+            scaled = scaled_recipe(full_n, n, epochs=recipe["epochs"], patience=recipe["patience"])
+            for entry in roster:
+                tag = f"[{dataset}/{entry.name}/n{n}/r{seed}]"
+                if metrics_exists(rung_root, dataset, entry.name, seed):
+                    print(f"{tag} metrics cached, skip")
+                    continue
+                if dry_run:
+                    print(f"{tag} would train+score (epochs={scaled['epochs']}, "
+                          f"train samples={variant.n_train_samples}, objects={variant.n_train_objects})")
+                    continue
+                if not training_done(rung_root, dataset, entry.name, seed):
+                    sets = [
+                        f"data.dataset_csv={variant.dataset_path}",
+                        f"data.splits_csv={variant.path}",
+                        f"training.epochs={scaled['epochs']}",
+                    ]
+                    if "patience" in scaled:
+                        sets.append(f"training.patience={scaled['patience']}")
+                    train_cell(
+                        entry.name, dataset, seed, "seeds", data_root, rung_root,
+                        extra_sets=[*sets, *extra_sets],
+                    )
+                score_cell_isolated(entry.name, dataset, seed, "seeds", data_root, rung_root)
+    return aggregate_efficiency(
+        out_root, data_root, full_root, roster, datasets, seeds,
+        full_source=full_source, git_sha=git_sha, ladder=ladder,
+    )
+
+
 def _resolve_roster(names: Sequence[str] | None) -> tuple[RosterEntry, ...]:
     if not names:
         return DEFAULT_ROSTER
@@ -818,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("phase", choices=["extract", "rank", "score"])
+    ap.add_argument("phase", choices=["extract", "rank", "score", "efficiency", "efficiency-report"])
     ap.add_argument("--data-root", type=Path, default=REPO_ROOT / "data",
                     help="root holding <dataset>/curated/{dataset,splits}.csv per dataset")
     ap.add_argument("--out-root", type=Path, default=OUT_DIR)
@@ -847,6 +1077,14 @@ def main(argv: list[str] | None = None) -> int:
                          "cell's encoder label (member names joined by '+'). Requires exactly "
                          "one --datasets, no --encoders, and its own --out-root (ensemble "
                          "cells are an ablation and must not enter the headline roster).")
+    ap.add_argument("--full-root", type=Path, default=None,
+                    help="efficiency only: the headline sweep's out-root (dense caches + full-"
+                         "data cells); default <out-root>/../out")
+    ap.add_argument("--full-source", choices=["auto", "sweep", "report"], default="auto",
+                    help="efficiency only: read the full rung from per-cell metrics (sweep) or "
+                         "from ranking_report.json (report); auto = sweep if any cell is scored")
+    ap.add_argument("--ladder", type=int, nargs="+", default=None,
+                    help="efficiency only: override the rung sizes (atoms) for the given datasets")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args(argv)
 
@@ -873,6 +1111,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     from soma.provenance import soma_git_state
 
+    if args.phase in ("efficiency", "efficiency-report"):
+        if args.config is not None or args.decoder is not None:
+            raise SystemExit("efficiency runs the committed lightweight_conv recipe: drop --config/--decoder")
+        full_root = args.full_root or (Path(args.out_root).resolve().parent / "out")
+        if Path(args.out_root).resolve() == Path(full_root).resolve():
+            raise SystemExit("efficiency needs its own --out-root (not the headline sweep's)")
+        if args.phase == "efficiency-report":
+            aggregate_efficiency(
+                args.out_root, args.data_root, full_root, roster, args.datasets, args.seeds,
+                full_source=args.full_source, git_sha=soma_git_state().sha, ladder=args.ladder,
+            )
+            return 0
+        run_efficiency(
+            args.data_root, args.out_root, full_root, roster, args.datasets, args.seeds,
+            dry_run=args.dry_run, git_sha=soma_git_state().sha, full_source=args.full_source,
+            ladder=args.ladder, extra_sets=args.extra_sets,
+        )
+        return 0
     run_rank(
         args.data_root, args.out_root, roster, args.datasets, args.seeds,
         dry_run=args.dry_run, git_sha=soma_git_state().sha, decoder=args.decoder,
