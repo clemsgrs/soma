@@ -89,51 +89,25 @@ requirements.
        run_dir="output/clam_sb/uni2",
    )
 
-``extract()`` takes no arguments and returns an immutable result containing the
-feature source, the effective dataset indexed by that source, provenance, and
-artifact paths. The source can be reused across experiments as long as the
-upstream dataset, preprocessing, and encoder settings do not change. Cache and
-artifact locations are fixed by constructor configuration.
+The source can be reused across experiments as long as the upstream dataset,
+preprocessing, and encoder settings do not change (see :doc:`getting-started`
+for the result fields).
 
-Train with explicit evaluation settings
----------------------------------------
+Evaluation settings and attention heatmaps
+------------------------------------------
 
-Extending the first extract-once example, pass metric names and dataset
-metadata columns to ``train()``. See :doc:`evaluation` for metric contracts and
-subgroup outputs:
+Pass ``evaluation`` and ``heatmaps`` to the same ``train()`` call. See
+:doc:`evaluation` for metric contracts and :doc:`outputs` for the saved
+attention scores and overlays:
 
 .. code-block:: python
 
-   from soma import EvalConfig, SubgroupConfig
+   from soma import EvalConfig, HeatmapConfig, SubgroupConfig
 
    evaluation = EvalConfig(
        metrics=["auroc", "balanced_accuracy", "f1"],
        subgroups=SubgroupConfig(columns=["center", "grade"]),
    )
-
-   result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=effective_splits,
-       task=task,
-       training=training,
-       aggregator=abmil_aggregator,
-       evaluation=evaluation,
-       run_dir="output/abmil/uni2",
-   )
-
-Enable heatmaps when you want attention overlays
-------------------------------------------------
-
-Attention heatmaps are controlled through ``HeatmapConfig`` and passed through
-``train(...)``. This is most useful for attention-based aggregators that
-expose per-tile scores. The saved overlays and raw attention scores are
-documented in :doc:`outputs`:
-
-.. code-block:: python
-
-   from soma import HeatmapConfig
-
    heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
 
    result = train(
@@ -147,9 +121,6 @@ documented in :doc:`outputs`:
        heatmaps=heatmaps,
        run_dir="output/abmil/uni2",
    )
-
-Attention scores and rendered overlays are saved under ``attention/`` and
-``heatmaps/`` in the fold directory (the run directory for a single fold).
 
 Dense features over given images
 --------------------------------
@@ -181,9 +152,6 @@ part of ``PreprocessingConfig``:
 
    grid = features.source.load("roi_001")  # float32: (feature_dim, grid_h, grid_w)
    geometry = features.source.geometry("roi_001")
-
-``EncoderConfig.batch_size`` controls encoder inference batches. It is distinct
-from ``TrainingConfig.batch_size``, which controls downstream training batches.
 
 Annotation-sampled whole slides
 -------------------------------
@@ -227,9 +195,8 @@ dataset is the persisted ROI manifest; parent-slide splits are projected explici
    print(features.artifacts.dataset_csv)
    print(features.provenance.zero_roi_sample_ids)
 
-Slides with no sampled ROI are not represented by fake samples or empty tensors.
-They are recorded in provenance, while the sampling cache preserves the zero outcome
-for identical reruns.
+Slides with no sampled ROI are recorded in provenance rather than represented
+by empty samples.
 
 Generate and compare reports
 ----------------------------
@@ -253,26 +220,9 @@ to change it. Comparisons default to
 ``output_dir`` to choose a bundle directory. See :doc:`reporting` for report
 contents and comparison statistics.
 
-Discover available presets programmatically
--------------------------------------------
-
-Use the public discovery helpers to list currently registered presets:
-
-.. code-block:: python
-
-   from soma import (
-       list_aggregators,
-       list_decoders,
-       list_models,
-       list_pixel_classifiers,
-       list_task_heads,
-   )
-
-   tile_encoders = list_models(level="tile")
-   aggregators = list_aggregators()
-   decoders = list_decoders()
-   pixel_classifiers = list_pixel_classifiers()
-   task_heads = list_task_heads()
+``soma.list_models(level=...)``, ``list_aggregators()``, ``list_decoders()``,
+``list_pixel_classifiers()``, and ``list_task_heads()`` list the registered
+presets from code.
 
 Task-free representation evaluation
 -----------------------------------
@@ -316,9 +266,8 @@ Reproduce a packaged benchmark programmatically
 -----------------------------------------------
 
 Every registered :doc:`benchmark <benchmarking>` is a Python object, so the
-``soma reproduce`` flow is available from code: discover benchmarks, curate the
-data, build the fixed config per seed, run the pipeline, and score. This is the
-same protocol the CLI drives, so results are directly comparable:
+``soma reproduce`` flow is available from code, with results directly
+comparable to the CLI's:
 
 .. code-block:: python
 
@@ -352,8 +301,7 @@ same protocol the CLI drives, so results are directly comparable:
 
 ``benchmark.expected(encoder="uni2")`` returns the packaged reference rows to
 compare against, and ``benchmark.score(run_dir)`` alone re-scores an existing run
-without retraining (the ``--from-run-dir`` fast path). See :doc:`benchmarking`
-for the CLI equivalents and :doc:`outputs` for the artifacts each run writes.
+without retraining (the ``--from-run-dir`` fast path).
 
 The one-call equivalent is ``soma.benchmarks.run_benchmark``, the importable
 orchestration behind ``soma reproduce`` itself: the canonical-seed loop, the
@@ -397,24 +345,3 @@ Runnable demonstrations live in ``examples/``
   tile- and slide-level encoders with ``soma.encoders.resolve_aggregator``;
 * ``examples/portable_identity.py`` — manifest identity is portable across
   storage roots.
-
-Breaking-change migration
--------------------------
-
-.. list-table::
-   :header-rows: 1
-
-   * - Before
-     - Now
-   * - ``TileFeatureExtractor(...).run(feature_dir)``
-     - ``FeatureExtractor(TileDataset(...), ..., output_root=...).extract()``
-   * - ``DenseTileFeatureExtractor(...).run(feature_dir)``
-     - ``FeatureExtractor(SegmentationManifest(...) or DetectionManifest(...), ...).extract()``
-   * - ``SlideManifestDenseExtractor`` or private pipeline ROI orchestration
-     - ``FeatureExtractor(SegmentationManifest(...), preprocessing=PreprocessingConfig(masks=..., sampling=...), ...).extract()``
-   * - ``FeatureExtractor.preprocess()`` then ``FeatureExtractor.run(...)``
-     - Configure the constructor fully, then call argument-free ``extract()``
-   * - Extractor returns a feature store
-     - Use ``result.source``; ``result.dataset`` is the exact indexed dataset
-   * - Persist a derived ROI split CSV
-     - Use ``original_splits.project(result.dataset)`` in memory

@@ -22,8 +22,6 @@ replace the scalar ``label`` with a per-sample supervision file:
 
 - **Segmentation** uses ``label_mask_path`` — a per-sample label mask. It is distinct
   from ``mask_path`` (the optional tissue mask): a segmentation row may carry both.
-  Segmentation manifests written before soma 1.11 used ``mask_path`` for the label
-  mask; the loader rejects those explicitly — regenerate them with their curator.
 - **Detection** uses ``points_path`` — a per-sample point file
   (:class:`soma.dataset.DetectionManifest`), a CSV of object centroids with
   ``x, y, class`` columns (headerless ``x,y,class`` — OCELOT's format — or a
@@ -62,15 +60,9 @@ have a separate identity, so changing a test cohort does not change the
 training experiment. Representation-only runs use their configured evaluation
 split instead. See :doc:`outputs` for the identity and provenance rules.
 
-Dataset checksums exclude exactly the storage-location columns
-``image_path``, ``mask_path``, ``label_mask_path``, and ``points_path``. Relocating
-otherwise identical images, tissue masks, label masks, or point files therefore does
-not change data identity. Every other column remains part of the checksum, including
-scalar supervision, sample metadata, and sample IDs; fold, split, and membership
-assignments remain part of the separate splits checksum.
-
-When artifact contents must contribute to identity, a preparer should compute the
-checksum and add an explicit ``<path_column>_sha256`` column such as
-``image_path_sha256`` or ``label_mask_path_sha256``. These columns are ordinary semantic
-metadata and are hashed. soma does not open referenced artifacts or derive their
-checksums implicitly.
+Dataset checksums exclude only the storage-location columns ``image_path``,
+``mask_path``, ``label_mask_path``, and ``points_path``, so relocating files does
+not change data identity. Split assignments have their own checksum. To make
+artifact contents part of identity, add an explicit ``<path_column>_sha256``
+column such as ``image_path_sha256``; soma never opens referenced files to derive
+checksums itself.

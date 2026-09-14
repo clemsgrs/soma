@@ -24,9 +24,8 @@ expect one raw-data subdirectory per member; CRoMa shares one prepared raw root.
 Each member remains a separate dataset-, splits-, and task-specific comparison.
 
 When a packaged reference matches the encoder, soma reports the measured value
-and its delta. An encoder without a matching reference still runs; only the
-reference comparison is skipped. Reference comparisons are informational and
-do not determine command success.
+next to it. The comparison is informational and never determines command
+success; an encoder without a reference still runs.
 
 Compare an encoder panel
 ------------------------
@@ -36,27 +35,17 @@ Use ``--encoders`` to run an ordered panel on one benchmark or a family::
    soma reproduce eva/bach --encoders uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
    soma reproduce eva --encoders uni2 virchow2 --raw-root /path/to/eva --output-root runs/eva --seeds 1
 
-soma validates every benchmark–encoder combination before curation or execution.
-It reports incompatibilities in panel order and starts no runs unless the whole
-panel is valid. Choose a compatible benchmark or correct the encoder plugin's
-capabilities if validation fails. Installed-preset discovery and capability
-checks use slide2vec's public encoder registry.
-
-After validation, benchmarks run in canonical order and encoders in the supplied
-order. Raw data is curated once per benchmark. With ``--curated-dir``, curation
-is skipped; a family expects each member's manifests in its own subdirectory.
-``--encoder`` and ``--encoders`` are mutually exclusive, and ``--from-run-dir``
-accepts only a single run.
+soma validates every benchmark–encoder pairing against slide2vec's encoder
+registry before any run starts, and reports incompatibilities in panel order.
+Benchmarks then run in canonical order and encoders in the supplied order, with
+raw data curated once per benchmark. ``--encoder`` and ``--encoders`` are
+mutually exclusive, and ``--from-run-dir`` accepts a single run.
 
 Each benchmark writes a cross-encoder leaderboard beneath its output root, for
 example ``runs/eva/bach/leaderboards/eva/bach.*``. Family members are never
-combined into a cross-dataset rank.
-
-If an encoder fails during execution, later encoders continue and completed
-runs remain valid. When any run completes, soma writes the ordinary leaderboard
-from completed runs and labels the panel ``PARTIAL`` in command output. If none
-completes, it writes no leaderboard. Either failure case ends with a failure
-summary and a nonzero exit status.
+combined into a cross-dataset rank. If an encoder fails, later encoders still
+run, the leaderboard covers completed runs, and the command reports ``PARTIAL``
+with a nonzero exit status.
 
 To install and compare a private preset, follow
 :doc:`benchmark-in-house-encoder`.
@@ -66,17 +55,11 @@ Compare other experiment choices
 
 ``soma leaderboard`` ranks completed runs along the axis passed to ``--vary``
 and writes CSV, JSON, and HTML tables, including any packaged reference. Runs
-sharing a ``(dataset, splits, task)`` triple form one comparison.
+sharing a ``(dataset, splits, task)`` triple form one comparison. To compare
+aggregators, decoders, spacing, or feature modes, run ordinary configs that
+differ only in that axis under one output root, then rank them::
 
-To compare aggregators, decoders, spacing, or feature modes, create the runs
-with ordinary configs. For an aggregator comparison:
-
-#. Use the same ``dataset.csv``, ``splits.csv``, and task in every config.
-#. Change only ``aggregation:`` and use a shared output root, such as
-   ``runs/agg-sweep``.
-#. Run each config: ``soma abmil.yaml``, ``soma transmil.yaml``, and so on.
-#. Run ``soma leaderboard --root runs/agg-sweep --vary aggregator``. The ranking
-   metric is inferred from the runs.
+   soma leaderboard --root runs/agg-sweep --vary aggregator
 
 See :doc:`cli` for command options, :doc:`outputs` for run artifacts, and
 :ref:`benchmark-api` for the equivalent Python workflow.
@@ -91,10 +74,6 @@ Included benchmarks
   with frozen encoders.
 * :doc:`CRoMa <croma-robustness-benchmark>`: representation robustness across
   medical centers with frozen tile encoders.
-
-Each page covers data acquisition, the fixed protocol, commands, and packaged
-references. Encoder compatibility depends on the protocol's required outputs
-and geometry.
 
 .. toctree::
    :maxdepth: 1

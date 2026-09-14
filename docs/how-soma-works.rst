@@ -52,15 +52,7 @@ model changes; :doc:`caching` explains when extraction must run again.
 For controlled comparisons, hold the cohort, labels, splits, and remaining
 protocol fixed while varying one component. Registered :doc:`benchmarks
 <benchmarking>` provide fixed protocols for reproducing public results and
-comparing encoders.
+comparing encoders. Every run saves its resolved configuration, predictions,
+and metrics in a :doc:`run bundle <outputs>`.
 
-Each pipeline run saves the resolved configuration, predictions, and metrics in
-a :doc:`run bundle <outputs>` so the experiment can be inspected and repeated.
-
-Where to go next
-----------------
-
-* :doc:`Get started <getting-started>` — install soma and run an experiment.
-* :doc:`Explore modeling paths <modeling>` — choose a downstream path.
-* :doc:`Benchmark a component <benchmarking>` — compare one block or reproduce
-  a published benchmark.
+Next: :doc:`get started <getting-started>` or :doc:`choose a modeling path <modeling>`.

@@ -11,9 +11,8 @@ patient encoder instead.
    :figclass: soma-figure
    :alt: A frozen tile encoder turns a slide into a bag of features; a trained MIL aggregator or a frozen slide-level FM pools it into one slide-level vector for the task head.
 
-   Where aggregators sit. A frozen tile encoder turns a slide into a bag of
-   features; a **trained** MIL aggregator (or, alternatively, a frozen slide-level
-   foundation model) pools that bag into one slide-level vector for the task head.
+   A trained MIL aggregator pools the bag of tile features into one slide-level
+   vector.
 
 Aggregator Zoo
 --------------
@@ -55,14 +54,10 @@ Aggregator Zoo
 Aggregator details
 ------------------
 
-The short notes below explain what each aggregator is for. The class docstrings
-show the full constructor signatures and parameter descriptions.
-
 ABMIL
 ~~~~~
 
-``abmil`` applies gated attention pooling and returns tile-level attention
-scores for interpretability and heatmap generation.
+``abmil`` returns tile-level attention scores for heatmap generation.
 
 .. autoclass:: soma.aggregators.mil.abmil.ABMIL
    :members:
@@ -79,8 +74,7 @@ tasks, and can mix bag-level and instance-level supervision.
 CLAM-MB
 ~~~~~~~
 
-``clam_mb`` requires ``multiclass_classification`` and creates one attention
-branch per class.
+``clam_mb`` requires ``multiclass_classification``.
 
 .. autoclass:: soma.aggregators.mil.clam.CLAM_MB
    :members:
@@ -88,9 +82,7 @@ branch per class.
 DSMIL
 ~~~~~
 
-``dsmil`` first scores instances to find a critical tile, then performs
-query-key attention against that tile to build the bag representation. It
-requires ``binary_classification``.
+``dsmil`` requires ``binary_classification``.
 
 .. autoclass:: soma.aggregators.mil.dsmil.DSMIL
    :members:
@@ -98,10 +90,8 @@ requires ``binary_classification``.
 DTFDMIL
 ~~~~~~~
 
-``dtfdmil`` partitions a bag into pseudo-bags, distills features from the
-first tier, then aggregates the distilled set a second time. ``instances_per_group``
-(default 1) sets how many instances each pseudo-bag contributes per direction; the
-pseudo-bag partition is random during training and contiguous in eval mode.
+``instances_per_group`` (default 1) sets how many instances each pseudo-bag
+contributes; the partition is random during training and contiguous in eval mode.
 
 .. autoclass:: soma.aggregators.mil.dtfdmil.DTFDMIL
    :members:
@@ -109,20 +99,14 @@ pseudo-bag partition is random during training and contiguous in eval mode.
 TransMIL
 ~~~~~~~~
 
-``transmil`` uses Nystromformer-style self-attention with pyramid positional
-encoding.
-
 .. autoclass:: soma.aggregators.mil.transmil.TransMIL
    :members:
 
 HIPT
 ~~~~
 
-``hipt`` first aggregates tiles within regions, then aggregates regions into
-a slide-level representation. This preset assumes hierarchical tiling in the
-preprocessing pipeline. Set
-``preprocessing.region_tile_multiple`` to control how many tiles fit along
-each side of a region.
+``hipt`` assumes hierarchical tiling; set ``preprocessing.region_tile_multiple``
+to control how many tiles fit along each side of a region.
 
 .. autoclass:: soma.aggregators.mil.hipt.HIPT
    :members:
@@ -139,8 +123,4 @@ The shared base classes are :class:`soma.aggregators.base.Aggregator` and
 .. autoclass:: soma.aggregators.base.AggregatorOutput
    :members:
 
-Discovery helper
-----------------
-
-Use ``soma.list_aggregators()`` to inspect the registered aggregator names
-from code when you are wiring configs or building a UI.
+``soma.list_aggregators()`` lists the registered names.

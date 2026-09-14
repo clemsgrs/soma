@@ -13,29 +13,19 @@ distance δ. It shares dense extraction and caching with :doc:`segmentation`.
    Detection extracts heatmap peaks; segmentation selects a class per pixel.
    Both use the same decoder architecture, trained for their respective task.
 
-.. seealso::
-
-   The :doc:`detection walkthrough <tutorials/walkthrough-detection>` runs
-   detection end to end on a tiny synthetic dataset;
-   :doc:`segmentation <tutorials/walkthrough-segmentation>` is the same dense flow
-   with mask supervision, so you can see exactly what changes between the two.
+The :doc:`detection walkthrough <tutorials/walkthrough-detection>` runs this
+path end to end on a small synthetic dataset.
 
 The method
 ----------
 
-For each tile:
-
-1. Run the frozen ViT → dense patch-feature grid ``(d, grid_h, grid_w)`` (the same
-   extraction / cache / store stack as the decoder segmentation path).
-2. A **decoder** (``lightweight_conv`` by default) regresses a ``(C, grid)`` map; the
-   head interpolates it to the padded ``encoded_size``, crops to ``target_size``, and
-   applies a **sigmoid** → a per-class heatmap in ``[0, 1]`` (one channel per object
-   class; background is the absence of a peak).
-3. The training target is a **peak Gaussian** rendered at each annotated point (peak
-   value 1, overlaps merged by element-wise **max** — *not* a count-preserving density
-   map). Loss is **foreground-weighted MSE**.
-4. At inference, peaks are recovered per channel by **local-maxima + NMS + a per-class
-   score threshold**, then matched to ground truth with **class-aware F1@δ**.
+The decoder output passes through a sigmoid to give one heatmap in ``[0, 1]``
+per object class; background is the absence of a peak. The training target is a
+**peak Gaussian** rendered at each annotated point (peak value 1, overlaps
+merged by element-wise **max**, not a count-preserving density map), and the
+loss is **foreground-weighted MSE**. At inference, peaks are recovered per
+channel by **local maxima + NMS + a per-class score threshold**, then matched to
+ground truth with **class-aware F1@δ**.
 
 Data contract
 -------------
@@ -83,13 +73,11 @@ into the run's ``target_size`` frame for encoding and matching::
    x_target = x_level0 * (source_spacing_um / effective_spacing_um) - crop_left
    y_target = y_level0 * (source_spacing_um / effective_spacing_um) - crop_top
 
-Both values come from each dense artifact's slide2vec sidecar:
-``source_spacing_um`` is the resolved physical scale of the stored point/source frame,
-and ``effective_spacing_um`` is the scale actually sampled for the dense grid. The latter
-can legitimately differ slightly from ``preprocessing.requested_spacing_um`` when a WSI
-reader accepts a nearby native level. For flat tiles read at native resolution (equal
-source/effective spacing, no crop) the transform is the identity. Predicted points are
-written back to that source frame in the prediction CSV.
+Both spacings come from each dense artifact's slide2vec sidecar;
+``effective_spacing_um`` can differ slightly from
+``preprocessing.requested_spacing_um`` when a WSI reader accepts a nearby native
+level. Predicted points are written back to the source frame in the prediction
+CSV.
 
 Configuration
 -------------
@@ -119,8 +107,7 @@ Configuration
 ``nms_distance`` to δ. All three are specified in µm and converted to pixels
 using each grid's persisted ``effective_spacing_um``. Samples may have different
 source spacings, but a run requires one effective spacing and uniform grid
-geometry. For example, 15 pixels at 0.2 µm/px corresponds to
-``match_distance: 3.0``.
+geometry.
 
 The default feature kind is ``patch_features``. To probe attention maps with
 the same head, loss, and evaluator, use an attention-capable encoder and set:
@@ -133,8 +120,7 @@ the same head, loss, and evaluator, use an attention-capable encoder and set:
 
 Attention maps retain the token-grid resolution; switching feature kind does
 not add spatial samples. Detection requires a neural decoder. See
-:doc:`decoders` for available architectures and :doc:`tutorials/detection`
-for a runnable workflow.
+:doc:`decoders` for available architectures.
 
 Metric — F1 at matching distance δ
 ----------------------------------
@@ -165,24 +151,8 @@ Task head
 .. autoclass:: soma.tasks.detection.DetectionHead
    :members:
 
-Scope
------
-
-Detection uses cached features and assumes uniform tile and grid sizes across
-the cohort. Live re-encoding, geometric point-target augmentation, point-set
-heads, and WSI-level stitching are not implemented.
-
 Benchmarks
 ----------
 
 * :doc:`ocelot-detection-benchmark` — this path reproduced on the OCELOT 2023
   cell-detection challenge, with the encoder × spacing ablation.
-
-References
-----------
-
-* CellRegNet, *Point Annotation-Based Cell Detection in Histopathological Images via
-  Density Map Regression* (2024).
-* *Towards Effective and Efficient Context-aware Nucleus Detection in Histopathology
-  WSIs* (2025), `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`_ — P2PNet on frozen
-  features.

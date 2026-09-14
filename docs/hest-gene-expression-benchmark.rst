@@ -6,7 +6,8 @@ reproducing `HEST-Benchmark <https://github.com/mahmoodlab/HEST>`_ (Jaume et al.
 NeurIPS 2024).
 
 HEST provides 9 registered datasets: CCRCC, COAD, IDC, LUNG, LYMPH_IDC, PAAD, PRAD, READ, and SKCM.
-All share the same closed-form :doc:`spatial-expression probe <regression>` protocol.
+All share the same closed-form :ref:`spatial-expression probe <regression-task>` protocol; see
+:doc:`benchmarking` for the shared workflow.
 
 **Pipeline:** spot tiles → frozen encoder → Ridge+PCA probe → mean Pearson
 
@@ -23,17 +24,12 @@ precomputed ``fm_v1`` features; soma re-extracts them locally::
     hf download MahmoodLab/hest-bench --include 'IDC/*' --exclude 'fm_v1/*' \
         --repo-type dataset --local-dir /path/to/hest-bench
 
-Omit ``--include`` to download
-every registered task under the same local root.
-
 Run the benchmark
 -----------------
 
-Choose a compatible tile-level :doc:`encoder <encoders>` and pass the
-downloaded task directory as ``--raw-root``. ``soma reproduce`` runs the
-built-in HEST curator automatically, writes the manifests under
-``<raw-root>/curated``, and preserves HEST's fold assignments. It then extracts features,
-runs the Ridge probe, and reports the mean Pearson score. For example::
+Choose a compatible tile-level :doc:`encoder <encoders>` and pass the downloaded
+dataset directory as ``--raw-root``; curated manifests are written under
+``<raw-root>/curated``. For example::
 
     soma reproduce hest/IDC --encoder virchow2 --raw-root /path/to/hest-bench/IDC
 
@@ -56,42 +52,40 @@ Recorded mean Pearson scores alongside the packaged HEST references.
      - HEST reference
    * - PAAD
      - ``uni2``
-     - 0.5007
-     - 0.5001
+     - 0.501
+     - 0.500
    * - PAAD
      - ``virchow2``
-     - 0.4769
-     - 0.4779
+     - 0.477
+     - 0.478
    * - PAAD
      - ``h-optimus-1``
-     - 0.4916
-     - 0.4964
+     - 0.492
+     - 0.496
    * - COAD
      - ``uni2``
-     - 0.3105
-     - 0.3015
+     - 0.310
+     - 0.301
    * - COAD
      - ``virchow2``
-     - 0.2615
-     - 0.2581
+     - 0.262
+     - 0.258
    * - COAD
      - ``h-optimus-1``
-     - 0.3190
-     - 0.3195
+     - 0.319
+     - 0.320
    * - LUNG
      - ``uni2``
-     - 0.5593
-     - 0.5587
+     - 0.559
+     - 0.559
    * - LUNG
      - ``virchow2``
-     - 0.5520
-     - 0.5685
+     - 0.552
+     - 0.569
    * - LUNG
      - ``h-optimus-1``
-     - 0.5768
-     - 0.5779
-
-Across these 9 recorded task–encoder comparisons, the median relative difference is **0.21%**.
+     - 0.577
+     - 0.578
 
 See the `HEST-Benchmark leaderboard (mahmoodlab/HEST) <https://github.com/mahmoodlab/HEST#hest-benchmark>`__ for the official reference leaderboard.
 
@@ -122,6 +116,3 @@ Protocol details
      - ``test/mean_pearson_mean`` (from ``summary.json``)
    * - canonical seeds
      - ``0`` (the probe is closed-form — one seed suffices)
-
-See :doc:`benchmarking` for the shared benchmark workflow and :doc:`regression`
-for the probe and metric.

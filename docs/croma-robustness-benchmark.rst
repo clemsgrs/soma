@@ -44,7 +44,8 @@ Each run reports three metrics:
   diagnostic, lower is better.
 
 There is no composite score. DINOv2-B (``dinov2-vitb14``) is the natural-image
-control: it is measured and shown, but never ranked.
+control: it is measured and shown, but never ranked. ``test/croma_median`` and
+``test/croma_ltm10`` rank encoders; ``test/croma_f0`` is a diagnostic.
 
 Encoder panel
 -------------
@@ -84,190 +85,85 @@ output, except:
      - ``rudolfv2-s``
      - ``cls_patch_mean``
 
-soma validates this mapping against the slide2vec registry at configuration
-time; it checks names, output variants, and feature dimensions, and makes no
+soma checks names, output variants, and feature dimensions against the
+slide2vec registry at configuration time. It makes no
 claim of numerical identity with the published embeddings.
 
 Results
 -------
 
-The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Values are rounded to three decimals. All 36 values are within the 0.005 absolute tolerance; the largest deviation is 0.0007, and soma reproduces every published pair ordering.
-
-**CRoMa median** (``test/croma_median``) — ranking metric:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 35 20 20
-
-   * - Cohort
-     - Encoder
-     - soma
-     - published
-   * - camelyon
-     - ``conchv15``
-     - 0.187
-     - 0.187
-   * - camelyon
-     - ``dinov2-vitb14`` (control)
-     - 0.050
-     - 0.050
-   * - camelyon
-     - ``h0-mini``
-     - 0.167
-     - 0.167
-   * - camelyon
-     - ``uni``
-     - -0.034
-     - -0.034
-   * - tcga-4x4
-     - ``conchv15``
-     - 0.153
-     - 0.153
-   * - tcga-4x4
-     - ``dinov2-vitb14`` (control)
-     - 0.006
-     - 0.006
-   * - tcga-4x4
-     - ``h0-mini``
-     - 0.121
-     - 0.121
-   * - tcga-4x4
-     - ``uni``
-     - 0.047
-     - 0.047
-   * - tolkach-esca
-     - ``conchv15``
-     - 0.392
-     - 0.392
-   * - tolkach-esca
-     - ``dinov2-vitb14`` (control)
-     - 0.176
-     - 0.175
-   * - tolkach-esca
-     - ``h0-mini``
-     - 0.380
-     - 0.380
-   * - tolkach-esca
-     - ``uni``
-     - 0.175
-     - 0.175
-
-**CRoMa LTM10** (``test/croma_ltm10``) — ranking metric:
+The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Each cell shows the
+soma value with the published value in parentheses. A soma value more than
+0.005 from the published value is shown in red. All values are within that tolerance, and soma reproduces every published pair ordering.
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 35 20 20
+   :widths: 16 24 20 20 20
 
    * - Cohort
      - Encoder
-     - soma
-     - published
+     - CRoMa median
+     - CRoMa LTM10
+     - CRoMa F(0) (diagnostic)
    * - camelyon
      - ``conchv15``
-     - -0.145
-     - -0.145
+     - 0.187 (0.187)
+     - -0.145 (-0.145)
+     - 0.174 (0.174)
    * - camelyon
-     - ``dinov2-vitb14`` (control)
-     - -0.184
-     - -0.184
+     - ``dinov2-vitb14``
+     - 0.050 (0.050)
+     - -0.184 (-0.184)
+     - 0.345 (0.345)
    * - camelyon
      - ``h0-mini``
-     - -0.160
-     - -0.160
+     - 0.167 (0.167)
+     - -0.160 (-0.160)
+     - 0.180 (0.180)
    * - camelyon
      - ``uni``
-     - -0.217
-     - -0.217
+     - -0.034 (-0.034)
+     - -0.217 (-0.217)
+     - 0.652 (0.651)
    * - tcga-4x4
      - ``conchv15``
-     - -0.130
-     - -0.130
+     - 0.153 (0.153)
+     - -0.130 (-0.130)
+     - 0.193 (0.193)
    * - tcga-4x4
-     - ``dinov2-vitb14`` (control)
-     - -0.122
-     - -0.122
+     - ``dinov2-vitb14``
+     - 0.006 (0.006)
+     - -0.122 (-0.122)
+     - 0.469 (0.468)
    * - tcga-4x4
      - ``h0-mini``
-     - -0.188
-     - -0.188
+     - 0.121 (0.121)
+     - -0.188 (-0.188)
+     - 0.257 (0.257)
    * - tcga-4x4
      - ``uni``
-     - -0.120
-     - -0.120
+     - 0.047 (0.047)
+     - -0.120 (-0.120)
+     - 0.320 (0.320)
    * - tolkach-esca
      - ``conchv15``
-     - -0.029
-     - -0.029
+     - 0.392 (0.392)
+     - -0.029 (-0.029)
+     - 0.043 (0.043)
    * - tolkach-esca
-     - ``dinov2-vitb14`` (control)
-     - -0.069
-     - -0.069
-   * - tolkach-esca
-     - ``h0-mini``
-     - -0.074
-     - -0.074
-   * - tolkach-esca
-     - ``uni``
-     - -0.080
-     - -0.080
-
-**CRoMa F(0)** (``test/croma_f0``) — diagnostic, never ranked:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 25 35 20 20
-
-   * - Cohort
-     - Encoder
-     - soma
-     - published
-   * - camelyon
-     - ``conchv15``
-     - 0.174
-     - 0.174
-   * - camelyon
-     - ``dinov2-vitb14`` (control)
-     - 0.345
-     - 0.345
-   * - camelyon
-     - ``h0-mini``
-     - 0.180
-     - 0.180
-   * - camelyon
-     - ``uni``
-     - 0.652
-     - 0.651
-   * - tcga-4x4
-     - ``conchv15``
-     - 0.193
-     - 0.193
-   * - tcga-4x4
-     - ``dinov2-vitb14`` (control)
-     - 0.469
-     - 0.468
-   * - tcga-4x4
-     - ``h0-mini``
-     - 0.257
-     - 0.257
-   * - tcga-4x4
-     - ``uni``
-     - 0.320
-     - 0.320
-   * - tolkach-esca
-     - ``conchv15``
-     - 0.043
-     - 0.043
-   * - tolkach-esca
-     - ``dinov2-vitb14`` (control)
-     - 0.099
-     - 0.099
+     - ``dinov2-vitb14``
+     - 0.176 (0.175)
+     - -0.069 (-0.069)
+     - 0.099 (0.099)
    * - tolkach-esca
      - ``h0-mini``
-     - 0.058
-     - 0.058
+     - 0.380 (0.380)
+     - -0.074 (-0.074)
+     - 0.058 (0.058)
    * - tolkach-esca
      - ``uni``
-     - 0.086
-     - 0.086
+     - 0.175 (0.175)
+     - -0.080 (-0.080)
+     - 0.086 (0.086)
 
 See :doc:`benchmarking` for the shared benchmark workflow.

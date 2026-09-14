@@ -62,18 +62,16 @@ soma composes hs2p's ``TilingConfig`` for ``requested_spacing_um``,
 the encoder. Extraction, ROI sampling, and cache keys use that resolved config.
 Read-size fields such as ``read_tile_size_px`` are derived internally.
 
-With slide2vec 6.0, declared pooled extraction encodes exactly
-``requested_tile_size_px``, applying only the encoder's photometric transform
-after tiling, including at the preset size. Defaults describe the final model
-input: GigaPath uses 224 px, DINOv2 518 px, and DINOv3 256 px. At fixed spacing,
-changing this size changes the sampled physical extent.
+Declared pooled extraction encodes exactly ``requested_tile_size_px``, applying
+only the encoder's photometric transform after tiling. Defaults describe the
+final model input: GigaPath uses 224 px, DINOv2 518 px, and DINOv3 256 px. At
+fixed spacing, changing this size changes the sampled physical extent.
 
 An explicit off-preset pooled size requires
 ``encoder.allow_non_recommended_settings: true`` and an encoder that supports
 variable input sizes; the flag cannot bypass that capability check.
 Pre-cropped classification images (``dataset_type: tile``) instead use the
 encoder's shipped image transform, including its resizing and cropping.
-See :doc:`caching` before reusing features from an earlier slide2vec release.
 
 Coarser source spacing
 ----------------------
@@ -136,18 +134,7 @@ it also maps to ``ignore_index``. For example, with one task class:
        min_coverage: {tumor: 0.5}
 
 When the task class count equals the mapping size, every label is a real class
-in mapping order, including ``background`` if present. Without a ``background``
-entry, the class count must equal the mapping size:
-
-.. code-block:: yaml
-
-   preprocessing:
-     masks:
-       pixel_mapping: {tumor: 2}   # raw value 2 -> class 0; every other value -> ignore
-       min_coverage: {tumor: 0.5}
-
-Older configs with top-level ``masks`` or ``sampling`` are rejected; move both
-blocks under ``preprocessing``.
+in mapping order, including ``background`` if present.
 
 Annotation-restricted bags (``dataset_type: slide`` or ``patient``)
 -------------------------------------------------------------------
@@ -178,33 +165,14 @@ pretrained patient encoder, producing compartment-restricted patient features.
    task:
      name: binary_classification
 
-Sampling and reuse:
-
-- Each dataset row's ``mask_path`` is the multi-class annotation raster (on a classification
-  dataset ``mask_path`` is the tile-*sampling* mask, whatever its classes); ``pixel_mapping``
-  names the classes. Tiles are kept by per-class
-  ``min_coverage`` over the annotation mask — binary tissue filtering is bypassed, so the
-  tissue threshold (``preprocessing.min_coverage.tissue``) does not gate annotation bags.
-- The full ``masks`` block — ``pixel_mapping``, per-class ``min_coverage``, ``colors``, an
-  explicit ``output_mode``, and ``independent_sampling`` (derived from ``sampling.strategy``)
-  — is forwarded into slide2vec's annotation sampling. The default
-  ``{background: 0, tissue: 1}`` vocabulary stays byte-for-byte plain tissue tiling; any
-  customization opts into annotation sampling.
-- A relabeled vocabulary is honored as-is: ``pixel_mapping: {background: 1, tumor: 2}``
-  routes to annotation sampling with those exact mask values (there is no reserved
-  ``tissue == 1`` value under a ``masks`` block — ``pixel_mapping`` is the single source of
-  truth).
-- The selection (active ``pixel_mapping`` entries, per-class ``min_coverage``,
-  ``strategy``, ``output_mode``) folds into the **cache key**, so a tumor-restricted bag
-  never reuses a full-tissue bag's cached tiles/features. ``colors`` is cosmetic and is
-  excluded from cache identity.
-
-.. note::
-
-   ``output_mode`` **must be** ``merged`` for ``dataset_type: slide`` and ``patient`` (the
-   default). ``output_mode: per_annotation`` (one bag per ``(slide, class)``) is unsupported
-   and raises at config load on both. A ``masks`` block is rejected on
-   ``dataset_type: tile`` (patch manifests have no annotation-sampling step).
+Each row's ``mask_path`` is the annotation raster and ``pixel_mapping`` names
+its classes exactly as stored; tiles are kept by per-class ``min_coverage``, and
+the tissue threshold does not apply. The default ``{background: 0, tissue: 1}``
+vocabulary is plain tissue tiling; any other mapping opts into annotation
+sampling. The selection (``pixel_mapping``, ``min_coverage``, ``strategy``,
+``output_mode``) is part of the cache key, so a restricted bag never reuses a
+full-tissue bag's features; ``colors`` is cosmetic. A ``masks`` block is rejected
+on ``dataset_type: tile``.
 
 A ready-to-run example lives at ``examples/slide_tumor_restricted_bag.yaml``.
 

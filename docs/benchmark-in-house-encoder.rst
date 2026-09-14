@@ -10,12 +10,8 @@ Install and inspect
 
 Follow the `slide2vec custom encoder plugin guide
 <https://clemsgrs.github.io/slide2vec/models.html#custom-encoder-plugin-package>`_
-for implementation, packaging, weights, credentials, and worker availability.
-slide2vec 6.0 requires every tile encoder, including pooled-only plugins, to
-implement ``get_normalization_transform()`` alongside ``get_transform()``.
-The normalization transform must preserve geometry (no resize or crop);
-declared extraction uses it, while pre-cropped images use the shipped
-``get_transform()`` recipe.
+for implementation, packaging, weights, and credentials. The plugin's
+normalization transform must preserve geometry (no resize or crop).
 
 Install the plugin in soma's Python environment and check discovery::
 
@@ -30,32 +26,19 @@ Run the comparison
 
 List protocols with ``soma list benchmarks`` and choose one whose input mode
 and geometry fit the preset. EVA accepts pooled tile features; a dense
-benchmark also requires dense encoder outputs.
-
-Name the private preset and each public comparator explicitly::
+benchmark also requires dense encoder outputs. Name the private preset and
+each public comparator explicitly, on one benchmark or a whole family::
 
    soma reproduce eva/bach --encoders my-private-encoder uni2 --raw-root /data/eva/bach --output-root runs/eva-bach --seeds 1
-
-``--seeds 1`` runs seed 0 for a smoke test; omit it for the canonical seeds.
-Each comparator runs locally. A packaged reference provides context for a
-matching preset and never replaces its local run. A private preset without a
-reference still produces a measured result and reports ``REFERENCE SKIPPED``.
-
-Use a family name to apply the same panel to every member::
-
    soma reproduce eva --encoders my-private-encoder uni2 --raw-root /data/eva --output-root runs/eva --seeds 1
 
-The panel is validated before any work starts. Each member produces its own
-leaderboard. See :doc:`benchmarking` for validation requirements, execution
-order, and partial-failure behavior.
+Every comparator runs locally. A private preset has no packaged reference, so
+its row reports ``REFERENCE SKIPPED``. See :doc:`benchmarking` for panel
+validation, execution order, and partial-failure behavior.
 
 Read the results
 ----------------
 
-The generated leaderboard holds the protocol fixed and varies ``encoder``.
-Compare the private preset's Measured row with the locally Measured public
-rows. ``n`` and the spread describe the collapsed seed results; Reference and
-delta columns provide packaged context when available.
-
-Runs and caches use soma's ordinary preset-name-based identity, so reruns reuse
-the normal cache.
+Each benchmark's leaderboard holds the protocol fixed and varies ``encoder``.
+Compare the private preset's measured row with the public rows; ``n`` and the
+spread summarize the seeds behind each entry.

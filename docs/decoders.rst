@@ -25,13 +25,7 @@ Choose a decoder
 
 The two convolutional decoders project the input channels to ``hidden_dim``.
 Only this input projection depends on the encoder's embedding width; subsequent
-layers have fixed width. A wider encoder therefore still increases the total
-trainable parameter count.
-
-.. code-block:: yaml
-
-   decoder:
-     name: lightweight_conv
+layers have fixed width.
 
 The task head interpolates decoder outputs to the padded ``encoded_size``, then
 uses ``crop_box`` to recover the supervision ``target_size``. Segmentation uses
@@ -54,3 +48,9 @@ head and loss unchanged. Attention extraction requires encoder support.
 :doc:`Composite encoders <encoders/composite>` combine several independently
 cached grids. Decoder runs default to concatenation at a common token-grid
 resolution.
+
+.. toctree::
+   :maxdepth: 1
+   :hidden:
+
+   decoders/pixel-classifier
