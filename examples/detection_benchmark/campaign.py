@@ -841,18 +841,31 @@ def realized_epochs(cell_directory: Path) -> int | None:
 
 
 def full_references(
-    full_root: Path, dataset: str, roster, *, full_n: int, source: str = "auto"
+    full_root: Path, dataset: str, roster, *, full_n: int, source: str = "auto",
+    efficiency_out_root: Path | None = None,
 ) -> dict:
     """Per-encoder full-data references from the headline sweep.
 
     ``sweep`` reads the per-replicate ``metrics.json`` cells; ``report`` reads the
     ``ranking_report.json`` cells (mean/std, e.g. the recorded OCELOT ranking); ``auto``
-    prefers ``sweep`` when at least one scored cell exists for the dataset.
+    prefers ``sweep`` when at least one scored cell exists for the dataset; ``train`` reads
+    the ``n = full`` rung the efficiency phase itself trained (``efficiency_out_root``).
     """
     from efficiency import FullReference
 
     spec = dataset_spec(dataset)
     refs: dict = {}
+    if source == "train":
+        if efficiency_out_root is None:
+            raise ValueError("full_source='train' needs efficiency_out_root")
+        rung_root = efficiency_rung_root(efficiency_out_root, full_n)
+        for cell in collect_cells(rung_root, roster, [dataset]):
+            refs[cell.encoder] = FullReference(
+                encoder=cell.encoder, n=full_n, mean=float(cell.mean), std=float(cell.std),
+                per_replicate=tuple(float(v) for v in cell.per_replicate),
+                source=f"train:{rung_root}",
+            )
+        return refs
     if source in ("auto", "sweep"):
         for cell in collect_cells(full_root, roster, [dataset]):
             refs[cell.encoder] = FullReference(
@@ -882,9 +895,14 @@ def full_references(
 
 def plan_efficiency_variants(
     data_root: Path, out_root: Path, dataset: str, seeds: Sequence[int],
-    ladder: Sequence[int] | None = None,
+    ladder: Sequence[int] | None = None, *, include_full: bool = False,
 ) -> tuple[int, list]:
-    """Write every ``(seed, n)`` split variant of a dataset; returns ``(full_n, variants)``."""
+    """Write every ``(seed, n)`` split variant of a dataset; returns ``(full_n, variants)``.
+
+    ``include_full`` adds the ``n = full`` rung (the seed's permutation of *all* atoms, i.e.
+    the original train split) so the full rung can be trained on the same code path as the
+    ladder (``--full-source train``) instead of read from the headline sweep.
+    """
     from efficiency import (
         atom_column_for, ladder_for, train_atoms, write_split_variant,
     )
@@ -892,6 +910,8 @@ def plan_efficiency_variants(
     ds_csv, sp_csv = dataset_csv_for(data_root, dataset), splits_csv_for(data_root, dataset)
     full_n = len(train_atoms(ds_csv, sp_csv, atom_column_for(dataset)))
     rungs = [n for n in (ladder or ladder_for(dataset)) if n < full_n]
+    if include_full:
+        rungs = [full_n, *rungs]
     variants = []
     for seed in seeds:
         for n in rungs:
@@ -948,9 +968,15 @@ def aggregate_efficiency(
 
     per_dataset: dict = {}
     for dataset in datasets:
-        full_n, variants = plan_efficiency_variants(data_root, out_root, dataset, seeds, ladder)
-        refs = full_references(full_root, dataset, roster, full_n=full_n, source=full_source)
-        rungs = collect_efficiency_rungs(out_root, dataset, roster, variants)
+        full_n, variants = plan_efficiency_variants(
+            data_root, out_root, dataset, seeds, ladder, include_full=(full_source == "train")
+        )
+        refs = full_references(
+            full_root, dataset, roster, full_n=full_n, source=full_source, efficiency_out_root=out_root
+        )
+        rungs = collect_efficiency_rungs(
+            out_root, dataset, roster, [v for v in variants if v.n_atoms < full_n]
+        )
         if not refs or not rungs:
             print(f"[{dataset}] efficiency: {len(refs)} full refs, {len(rungs)} encoders with rungs — skip")
             continue
@@ -975,7 +1001,9 @@ def run_efficiency(
     from efficiency import scaled_recipe
 
     for dataset in datasets:
-        full_n, variants = plan_efficiency_variants(data_root, out_root, dataset, seeds, ladder)
+        full_n, variants = plan_efficiency_variants(
+            data_root, out_root, dataset, seeds, ladder, include_full=(full_source == "train")
+        )
         recipe = base_recipe(dataset)
         cache_dir = feature_cache_dir(full_root, dataset)
         if not cache_dir.exists():
@@ -1083,9 +1111,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--full-root", type=Path, default=None,
                     help="efficiency only: the headline sweep's out-root (dense caches + full-"
                          "data cells); default <out-root>/../out")
-    ap.add_argument("--full-source", choices=["auto", "sweep", "report"], default="auto",
-                    help="efficiency only: read the full rung from per-cell metrics (sweep) or "
-                         "from ranking_report.json (report); auto = sweep if any cell is scored")
+    ap.add_argument("--full-source", choices=["auto", "sweep", "report", "train"], default="auto",
+                    help="efficiency only: read the full rung from per-cell metrics (sweep), "
+                         "from ranking_report.json (report), or train it as an n=full rung on "
+                         "this phase's own code path (train); auto = sweep if any cell is scored")
     ap.add_argument("--ladder", type=int, nargs="+", default=None,
                     help="efficiency only: override the rung sizes (atoms) for the given datasets")
     ap.add_argument("--dry-run", action="store_true")

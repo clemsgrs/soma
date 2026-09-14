@@ -335,3 +335,24 @@ def test_driver_collect_rungs_and_aggregate_report(tmp_path: Path):
     assert block["encoders"]["a"]["rungs"][0]["n_train_objects"] == [12, 12]
     assert block["rank_crossing"]["per_rung"][0]["ranking"] == ["b", "a"]
     assert (eff / "efficiency_report.json").is_file() and (eff / "efficiency_curves.png").is_file()
+
+
+def test_driver_train_full_source_trains_and_reads_the_full_rung(tmp_path: Path):
+    m = _load_driver()
+    data = tmp_path / "data"; _write_tiled_dataset(data)  # 8 train ROIs
+    eff = tmp_path / "eff"
+    full_n, variants = m.plan_efficiency_variants(data, eff, "midog", [0], ladder=[4], include_full=True)
+    assert [v.n_atoms for v in variants] == [8, 4]
+    full_variant = variants[0]
+    assert full_variant.n_train_samples == 8 * 3  # every train tile, none dropped
+    roster = (m.RosterEntry("a"),)
+    # no full cell yet -> no reference; once the n=full rung is scored it is the reference
+    assert m.full_references(tmp_path / "out", "midog", roster, full_n=8, source="train", efficiency_out_root=eff) == {}
+    for rep, v in enumerate([0.8, 0.9]):
+        _write_cell(m.efficiency_rung_root(eff, 8), "midog", "a", rep, v)
+    refs = m.full_references(tmp_path / "out", "midog", roster, full_n=8, source="train", efficiency_out_root=eff)
+    assert refs["a"].per_replicate == (0.8, 0.9) and refs["a"].source.startswith("train:")
+    _write_cell(m.efficiency_rung_root(eff, 4), "midog", "a", 0, 0.5)
+    report = m.aggregate_efficiency(eff, data, tmp_path / "out", roster, ["midog"], [0, 1], ladder=[4], full_source="train", write=False)
+    block = report["datasets"]["midog"]["encoders"]["a"]
+    assert block["full"]["n"] == 8 and [r["n"] for r in block["rungs"]] == [4]
