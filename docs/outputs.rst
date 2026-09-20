@@ -115,3 +115,13 @@ checksum-verified completed folds from the mirror before continuing. A bare
 ``resume: true`` does the same when exactly one compatible mirrored run exists
 and fails when several do. Mid-fold checkpoints are not mirrored, so an
 incomplete fold restarts after node loss.
+
+Folds of one run can train side by side, one per GPU. Pin every launch to the
+same ``run.run_id`` and give each its share with ``run.folds`` (for example
+``run.folds: [2]``). A launch trains only its listed folds and leaves the other
+pending folds alone; folds seed independently, so the result matches a single
+launch. While folds remain pending the run is recorded as ``partial`` and no
+``summary.json`` is written. The launch that finds every fold complete writes
+the summary and the report, so finish with one launch without ``run.folds`` if
+no fold launch ended last. Two launches given the same fold would both train
+it: the selection is not a lock.
