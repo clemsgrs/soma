@@ -1,5 +1,10 @@
 # Changelog
 
+- 2026-09-20: Require slide2vec 6.0.1. With `execution.num_gpus > 1`, each
+  extraction worker now sees only its own GPU and the launching process no
+  longer opens an idle CUDA context (~520 MiB) on every device. No soma API,
+  config or cache change; features are unaffected.
+
 - 2026-09-12: Require slide2vec 6.0.0. Pooled cache geometry records the exact
   declared tile size for both preset and off-preset requests. Every tile encoder
   plugin must provide a geometry-preserving normalization transform. Registry

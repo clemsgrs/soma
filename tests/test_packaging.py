@@ -33,10 +33,11 @@ def test_pyproject_has_publish_ready_metadata():
 
 
 def test_slide2vec_minimum_includes_exact_declared_pooled_geometry():
-    # slide2vec 6.0 makes the requested pooled tile size the final encoder input.
+    # slide2vec 6.0 makes the requested pooled tile size the final encoder input;
+    # 6.0.1 stops multi-GPU runs from opening a CUDA context on every GPU.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=6.0.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=6.0.1" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_includes_fast_tiling_previews():
