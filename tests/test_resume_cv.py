@@ -346,3 +346,84 @@ def test_drift_guard_refuses_changed_manifest_content_under_same_paths(tmp_path:
     Path(cfg.dataset_csv).write_text("sample_id,image_path,label\ns0,/slides/s0.svs,normal\n")
     with pytest.raises(ValueError, match="train/tune content"):
         _guard_resume_config_drift(run_dir, replace(cfg, resume=True))
+
+
+# --- run.folds: launches that split the folds of one run between them ----------------
+
+
+def test_folds_directive_loads_from_yaml_and_stays_out_of_the_saved_config(tmp_path: Path):
+    from soma.config import config_yaml_dict, load_config
+
+    config = _make_config(tmp_path, run_id="shared-run")
+    save_config(config, tmp_path / "config.yaml")
+    loaded = load_config(
+        tmp_path / "config.yaml", overrides={"run": {"run_id": "shared-run", "folds": [1, 3]}}
+    )
+    assert loaded.folds == (1, 3)
+    assert config_yaml_dict(loaded) == config_yaml_dict(config)
+
+
+@pytest.mark.parametrize("folds", [(), (1, 1), (-1,)])
+def test_folds_directive_rejects_malformed_selections(tmp_path: Path, folds):
+    with pytest.raises(ValueError, match="run.folds"):
+        _make_config(tmp_path, run_id="shared-run", folds=folds)
+
+
+def test_folds_directive_needs_a_shared_run_dir(tmp_path: Path):
+    with pytest.raises(ValueError, match="run.run_id"):
+        _make_config(tmp_path, folds=(0,))
+
+
+def _multifold_train_kwargs(tmp_path: Path) -> dict:
+    from soma.dataset import Dataset, Splits
+    from soma.features import FeatureStore
+    from tests.test_pipeline import _setup_multifold_data
+
+    dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
+    dataset = Dataset(dataset_csv)
+    return dict(
+        feature_store=FeatureStore(feature_dir),
+        dataset=dataset,
+        splits=Splits(splits_csv, dataset),
+        aggregator=AggregatorConfig(name="mean_pool"),
+        task=TaskConfig(name="binary_classification"),
+        training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        run_dir=tmp_path / "output",
+        test_digest="test-identity-abc",
+        run_id="shared-run",
+    )
+
+
+def test_launches_that_split_the_folds_match_a_single_launch(tmp_path: Path):
+    pytest.importorskip("torch")
+    from soma.pipeline import train
+
+    kwargs = _multifold_train_kwargs(tmp_path)
+    run_dir = kwargs["run_dir"]
+
+    # The launch given fold 1 trains it alone and writes no summary: fold 0 is pending.
+    first = train(**kwargs, folds=[1])
+    assert [fr.fold for fr in first.fold_results] == [1]
+    assert first.pending_folds == (0,) and first.summary == {}
+    assert not (run_dir / "fold_0").exists()
+    assert not (run_dir / "summary.json").exists()
+    fold1_mtime = (run_dir / "fold_1" / "metrics.json").stat().st_mtime_ns
+
+    # The launch given fold 0 finds every fold complete afterwards, so it summarizes both.
+    second = train(**kwargs, folds=[0])
+    assert [fr.fold for fr in second.fold_results] == [0]
+    assert second.pending_folds == ()
+    assert (run_dir / "fold_1" / "metrics.json").stat().st_mtime_ns == fold1_mtime
+    split_summary = json.loads((run_dir / "summary.json").read_text())
+
+    # Folds seed independently, so splitting them changes nothing about the result.
+    single = train(**{**kwargs, "run_dir": tmp_path / "single"})
+    assert split_summary == pytest.approx(single.summary, nan_ok=True)
+
+
+def test_folds_outside_the_splits_are_refused(tmp_path: Path):
+    pytest.importorskip("torch")
+    from soma.pipeline import train
+
+    with pytest.raises(ValueError, match="run.folds"):
+        train(**_multifold_train_kwargs(tmp_path), folds=[2])

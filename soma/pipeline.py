@@ -16,7 +16,7 @@ import csv
 import functools
 import math
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -176,6 +176,9 @@ class PipelineResult:
     fold_results: list[FoldResult]
     summary: dict[str, float]
     run_dir: Path
+    #: Folds still without a ``metrics.json`` when this launch ended (``run.folds`` left
+    #: them to another launch). Non-empty means no ``summary.json`` was written.
+    pending_folds: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2593,8 +2596,12 @@ def train(
     artifact_mirror: ArtifactMirror | None = None,
     resume_completed_folds: bool = False,
     roi_population_cache_root: str | Path | None = None,
+    folds: Sequence[int] | None = None,
 ) -> PipelineResult:
     """Train and evaluate all folds, then summarize.
+
+    ``folds`` restricts this launch to those fold indices; other pending folds are left
+    for another launch into the same ``run_dir``, and the summary waits for all of them.
 
     Args:
         feature_store: Precomputed embeddings.
@@ -2667,6 +2674,13 @@ def train(
 
     if not single_fold:
         _reject_undeclared_fold_dirs(run_dir, splits.num_folds)
+    if folds is not None:
+        unknown = sorted(set(folds) - set(range(splits.num_folds)))
+        if single_fold or unknown:
+            raise ValueError(
+                f"run.folds={list(folds)} does not fit the splits: they declare "
+                f"{splits.num_folds} fold(s), indexed from 0."
+            )
     # A fold with a metrics.json is complete; any without one is pending. A run with
     # pending folds is a resume in progress (issue #244).
     pending_folds = [
@@ -2763,6 +2777,9 @@ def train(
             )
             if artifact_mirror is not None:
                 artifact_mirror.fold_completed(fold=fold_idx, fold_dir=fold_dir)
+            continue
+        if folds is not None and fold_idx not in folds:
+            logger.info("Fold %d is not in run.folds; leaving it to another launch.", fold_idx)
             continue
         if training.method == "ridge_pca_probe":
             # Closed-form Ridge+PCA probe (HEST spatial_expression): a sibling per-fold
@@ -2881,6 +2898,20 @@ def train(
         fold_results.append(result)
         if artifact_mirror is not None and not fold_was_complete:
             artifact_mirror.fold_completed(fold=fold_idx, fold_dir=fold_dir)
+
+    still_pending = tuple(
+        i for i in range(splits.num_folds) if not (_fold_dir(i) / "metrics.json").exists()
+    )
+    if still_pending:
+        # Only reachable with run.folds. A summary over some of the folds would read as the
+        # run's result, so the launch that finds every fold complete writes it instead.
+        logger.info(
+            "Fold(s) %s still pending; summary.json is left to the launch that completes them.",
+            list(still_pending),
+        )
+        return PipelineResult(
+            fold_results=fold_results, summary={}, run_dir=run_dir, pending_folds=still_pending
+        )
 
     # Aggregate from every fold's metrics.json on disk, not just this session's
     # fold_results — so a resumed run (some folds skipped above) still summarizes all
@@ -3197,6 +3228,7 @@ class _RunRecorder:
         self._config = config
         self._metadata = None
         self._summary_metrics: dict[str, float] | None = None
+        self._pending_folds: tuple[int, ...] = ()
 
     def __enter__(self) -> "_RunRecorder":
         layout = self._layout
@@ -3215,6 +3247,10 @@ class _RunRecorder:
     def complete(self, summary_metrics: dict[str, float]) -> None:
         self._summary_metrics = summary_metrics
 
+    def partial(self, pending_folds: tuple[int, ...]) -> None:
+        """This launch trained its ``run.folds`` share; other folds are still pending."""
+        self._pending_folds = pending_folds
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         layout = self._layout
         if exc_type is not None:
@@ -3227,6 +3263,15 @@ class _RunRecorder:
             self._write_indexes(metadata)
             if not has_successful_run(layout.experiment_dir):
                 update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        elif self._pending_folds:
+            # Not "completed": the leaderboard ranks completed runs, and this one has no
+            # summary yet. The latest pointer stays where it was for the same reason.
+            metadata = self._metadata.with_updates(
+                status="partial",
+                finished_at=datetime.now().astimezone().isoformat(),
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
         else:
             metadata = self._metadata.with_updates(
                 status="completed",
@@ -3512,7 +3557,13 @@ class Pipeline:
                 artifact_mirror=artifact_mirror,
                 resume_completed_folds=bool(self._config.resume or self._config.run_id),
                 roi_population_cache_root=roi_population_cache_root,
+                folds=self._config.folds,
             )
+
+            if result.pending_folds:
+                # Heatmaps, the report and the completed status describe a whole run.
+                recorder.partial(result.pending_folds)
+                return result
 
             if self._config.heatmaps.enabled:
                 from soma.heatmaps import render_heatmaps
