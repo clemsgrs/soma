@@ -283,6 +283,11 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         ),
         resume=bool(run_data.get("resume", False)),
         run_id=run_data.get("run_id"),
+        folds=(
+            tuple(int(fold) for fold in run_data["folds"])
+            if run_data.get("folds") is not None
+            else None
+        ),
     )
 
 
@@ -1361,7 +1366,11 @@ class PipelineConfig:
             ``metrics.json`` (issue #244). Ignored when ``run_id`` is set.
         run_id: Pin the run to this exact run id (resume into it if it exists,
             else create it under that name). Takes precedence over ``resume``.
-            Both are invocation-time directives: they are not part of the
+        folds: Train only these fold indices in this launch and leave the other pending
+            folds untouched, so several launches pinned to one ``run_id`` can each take a
+            fold on its own GPU. ``summary.json`` is written by the first launch that finds
+            every fold complete. ``None`` trains every pending fold.
+            All three are invocation-time directives: they are not part of the
             experiment identity and are not written back into the saved
             ``config.yaml``.
     """
@@ -1392,8 +1401,19 @@ class PipelineConfig:
     # Run-lifecycle directives (issue #244) — not part of experiment identity.
     resume: bool = False
     run_id: str | None = None
+    folds: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
+        if self.folds is not None:
+            if not self.folds or len(set(self.folds)) != len(self.folds) or min(self.folds) < 0:
+                raise ValueError(
+                    f"run.folds must list distinct non-negative fold indices, got {list(self.folds)}."
+                )
+            if not (self.run_id or self.resume):
+                raise ValueError(
+                    "run.folds needs run.run_id (or run.resume) so launches that split the "
+                    "folds between them share one run dir."
+                )
         if (self.task is None) == (self.representation is None):
             raise TypeError(
                 "PipelineConfig requires exactly one of 'task' and 'representation'."
@@ -1949,7 +1969,7 @@ def config_yaml_dict(config: PipelineConfig) -> dict[str, Any]:
 
     Exposed so callers can compare configs by their persisted form without
     round-tripping through a file — e.g. the resume drift guard (issue #244).
-    The run-lifecycle directives ``resume`` / ``run_id`` are deliberately not part
+    The run-lifecycle directives ``resume`` / ``run_id`` / ``folds`` are deliberately not part
     of this dict, so a run's saved ``config.yaml`` is identical whether it was the
     original launch or a resume of it.
     """
