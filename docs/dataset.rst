@@ -22,6 +22,7 @@ replace the scalar ``label`` with a per-sample supervision file:
 
 - **Segmentation** uses ``label_mask_path`` — a per-sample label mask. It is distinct
   from ``mask_path`` (the optional tissue mask): a segmentation row may carry both.
+  A row is a pre-cropped tile or a whole slide; see :doc:`segmentation`.
 - **Detection** uses ``points_path`` — a per-sample point file
   (:class:`soma.dataset.DetectionManifest`), a CSV of object centroids with
   ``x, y, class`` columns (headerless ``x,y,class`` — OCELOT's format — or a

@@ -110,7 +110,8 @@ ROI ``sampling`` under ``preprocessing``:
 For ``dataset_type: segmentation``, ``preprocessing.masks`` selects the
 slide-manifest input mode: soma samples ROIs from slides and their
 ``label_mask_path`` annotations, extracts dense grids, then fits a segmentation
-head. Without it, segmentation uses pre-cropped tiles.
+head. Without it, segmentation uses pre-cropped tiles. :doc:`segmentation`
+compares the two modes and explains how to choose the tile and window sizes.
 See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
 
 Annotation labels
