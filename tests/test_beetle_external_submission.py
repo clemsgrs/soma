@@ -78,9 +78,9 @@ def _write_selected_recipe(
     tmp_path: Path,
     *,
     pixel_mapping: dict[str, int] | None = None,
-    num_classes: int = 4,
+    classes: dict[str, list[int]] | None = None,
 ):
-    from examples.beetle.protocol import PIXEL_MAPPING
+    from examples.beetle.protocol import CLASSES, IGNORE, PIXEL_MAPPING
     from soma.config import (
         DecoderConfig,
         EncoderConfig,
@@ -103,7 +103,9 @@ def _write_selected_recipe(
         ),
         encoder=EncoderConfig(name="virchow2", precision="fp32", output_variant="cls"),
         decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": num_classes}),
+        task=TaskConfig(
+            name="segmentation", params={"classes": classes or CLASSES, "ignore": IGNORE}
+        ),
         tags=["beetle", "project_protocol", "uniform"],
     )
     resolved = tmp_path / "resolved_uniform.yaml"
@@ -218,7 +220,7 @@ def test_selected_run_recipe_rejects_wrong_pixel_mapping(tmp_path: Path) -> None
 
 def test_selected_run_recipe_rejects_wrong_number_of_classes(tmp_path: Path) -> None:
     _config, _resolved, run_dir, resolution = _write_selected_recipe(
-        tmp_path, num_classes=3
+        tmp_path, classes={"other": [1], "epithelium": [2, 3], "necrosis": [4]}
     )
 
     with pytest.raises(ValueError, match="four annotated pixel classes"):

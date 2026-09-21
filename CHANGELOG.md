@@ -1,5 +1,19 @@
 # Changelog
 
+- 2026-09-21: **Breaking (segmentation).** Classes are declared on the task:
+  `task.params.classes` maps each class name to the raw mask value(s) that form
+  it (several values merge into one class; class index = declaration order) and
+  `task.params.ignore` lists the raw values excluded from loss and metrics.
+  `preprocessing.masks.pixel_mapping` now only selects which ROIs are sampled,
+  and `background` is an ordinary label name. Whole-slide segmentation (a
+  `masks` block) requires `classes`; to migrate, copy each `pixel_mapping` label
+  into `classes` as `name: [value]`, and drop `num_classes` (it is derived). If
+  `background` was ignored before (`num_classes` was one less than the label
+  count), list its value under `ignore` instead. A mask value declared in
+  neither fails the run. Pre-cropped tiles with `num_classes` alone are
+  unchanged. Feature caches are unaffected; cached ROI targets re-key
+  automatically. See `segmentation.rst`.
+
 - 2026-09-20: Require slide2vec 6.0.1. With `execution.num_gpus > 1`, each
   extraction worker now sees only its own GPU and the launching process no
   longer opens an idle CUDA context (~520 MiB) on every device. No soma API,

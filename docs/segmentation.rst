@@ -9,23 +9,113 @@ maps them to class logits. Alternatively, use a decoder-free
 The :doc:`segmentation walkthrough <tutorials/walkthrough-segmentation>` runs
 the decoder path on a small synthetic dataset.
 
-Data and extraction
--------------------
+Input modes
+-----------
 
-``dataset_type: segmentation`` uses :class:`soma.dataset.SegmentationManifest`.
-Each sample supplies a mask raster through ``label_mask_path``; ``mask_path``
-is reserved for an optional tissue mask. Masks are read at the run's spacing
-and aligned with the extracted grid. Annotation labels, ``pixel_mapping``, and
-per-class ``min_coverage``, and background-present or background-absent label
-remapping are configured through :doc:`preprocessing`.
+Each ``dataset.csv`` row gives an image (``image_path``) and its label mask
+(``label_mask_path``); ``mask_path`` is reserved for an optional tissue mask.
+What a row holds depends on whether ``preprocessing.masks`` is set:
 
-``preprocessing.feature_kind`` selects patch features or attention maps; see
-:doc:`decoders`. The default ``dense_window_size: null`` encodes the whole
-padded tile in one forward pass. Set a window size to extract and stitch
-smaller windows; see :ref:`native-window` for the scale and context trade-off.
+.. list-table::
+   :header-rows: 1
+   :widths: 24 38 38
 
-Configure a decoder run
------------------------
+   * -
+     - Pre-cropped tiles
+     - Whole slides
+   * - ``preprocessing.masks``
+     - Unset
+     - Set
+   * - A row is
+     - One tile and its mask, both ``requested_tile_size_px`` wide at
+       ``requested_spacing_um``. soma does not resize them.
+     - One slide and its annotation mask
+   * - A training sample is
+     - The row
+     - One ROI sampled from the slide
+   * - Mask values
+     - Class indices ``0`` to ``num_classes - 1``, plus ``ignore_index``
+       (255 by default); or any values with ``task.params.classes``
+     - Any values; ``task.params.classes`` is required
+
+Whole slides
+~~~~~~~~~~~~
+
+.. code-block:: yaml
+
+   preprocessing:
+     requested_tile_size_px: 512
+     requested_spacing_um: 0.5
+     masks:
+       pixel_mapping: {background: 0, stroma: 1, tumor: 2, necrosis: 3}
+       min_coverage: {stroma: 0.05, tumor: 0.05, necrosis: 0.05}
+
+soma tiles each slide into ROIs of ``requested_tile_size_px`` at
+``requested_spacing_um``. It keeps an ROI when at least one class covers its
+``min_coverage`` fraction of the ROI. Only classes with a ``min_coverage`` entry
+select ROIs, so give a threshold to every class you want sampled. Each ROI keeps
+its complete multi-class mask and belongs to the same split as its slide.
+
+``pixel_mapping`` and ``min_coverage`` only decide which ROIs are sampled;
+:doc:`preprocessing` covers them. What the model predicts is set separately, by
+the task.
+
+Classes
+-------
+
+.. code-block:: yaml
+
+   task:
+     name: segmentation
+     params:
+       classes: {tumor: [1, 2], stroma: [3], muscle: [4, 5, 6]}
+       ignore: [0]
+
+``classes`` names each class and the raw mask value(s) that form it; several
+values merge into one class. The class index is the declaration order (``tumor``
+is 0) and the names are recorded beside the confusion matrices. ``ignore``
+lists the raw values excluded from the loss and the metrics. No name is
+reserved.
+
+A raw value belongs to one class or to ``ignore``; listing it twice is a config
+error. A mask holding a value declared in neither fails the run and names the
+sample, so a typo cannot silently drop a class.
+
+The class scheme is not part of the feature cache key: regrouping classes reuses
+the cached ROIs and features. ``num_classes`` is derived from ``classes``.
+Pre-cropped tiles whose masks already hold class indices may set
+``num_classes`` alone.
+
+Tile size and encoder window
+----------------------------
+
+Two settings decide how much tissue the model sees.
+
+``requested_tile_size_px`` is the size of a training sample. It sets the ROI,
+its mask, and the area the decoder predicts. At 0.5 µm/px, a 512 px tile spans
+256 µm.
+
+``dense_window_size`` is the size of the image passed to the frozen encoder in
+one forward pass. It changes the features, not the training sample. With
+``null`` (the default), the encoder receives the whole tile, which only works
+for encoders that accept that input size. With a smaller value, soma slides a
+window of that size over the tile and stitches the token grids into one grid
+for the tile. ``dense_window_overlap`` blends neighboring windows.
+
+Most pathology encoders were pretrained on 224 px inputs at about 0.5 µm/px. A
+window of the encoder's native input size keeps every forward pass at that
+geometry, while a tile larger than the window gives the decoder context beyond
+a single window. :ref:`native-window` compares the window modes.
+
+The token grid is coarser than the mask. The head upsamples the decoder's
+logits to the tile size, so the loss and the metrics are always computed per
+mask pixel.
+
+``preprocessing.feature_kind`` selects patch features or attention maps as the
+grid content; see :doc:`decoders`.
+
+A starting configuration
+------------------------
 
 .. code-block:: yaml
 
@@ -34,13 +124,25 @@ Configure a decoder run
    preprocessing:
      requested_tile_size_px: 512
      requested_spacing_um: 0.5
+     dense_window_size: 224        # the encoder's native input size
+     dense_window_overlap: 0.5
+     # whole slides only:
+     masks:
+       pixel_mapping: {background: 0, stroma: 1, tumor: 2, necrosis: 3}
+       min_coverage: {stroma: 0.05, tumor: 0.05, necrosis: 0.05}
    encoder: { name: uni }
    decoder: { name: lightweight_conv }
    task:
      name: segmentation
-     params: { num_classes: 5 }
+     params:
+       classes: {stroma: [1], tumor: [2], necrosis: [3]}
+       ignore: [0]
    evaluation:
      metrics: [mean_dice, mean_iou]
+
+Treat these values as a first run. Tile size, window size, overlap, spacing, and
+coverage thresholds all change accuracy and cost, and the best values depend on
+the dataset and the encoder. Tuning them is part of the modeling work.
 
 The head trains with cross-entropy plus soft Dice; the overlap term supports
 Tversky weighting (``beta > alpha`` puts more weight on false negatives) and

@@ -65,7 +65,12 @@ decoder:
 task:
   name: segmentation
   params:
-    num_classes: 4
+    classes:
+      other: [1]
+      non_invasive_epithelium: [2]
+      invasive_epithelium: [3]
+      necrosis: [4]
+    ignore: [0]            # unannotated
 
 evaluation:
   metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]

@@ -18,7 +18,11 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from soma.dense.reader import load_mask as load_mask
-from soma.dense.reader import read_mask_at_spacing, read_mask_region_at_spacing
+from soma.dense.reader import (
+    UNDECLARED_LABEL,
+    read_mask_at_spacing,
+    read_mask_region_at_spacing,
+)
 from soma.evaluation.metrics import resolve_metrics
 from soma.spacing import resolve_effective_spacing_um
 from soma.tasks.base import TaskHead
@@ -129,9 +133,9 @@ class SegmentationHead(TaskHead):
         self._spacing_policy = spacing_policy
         self._backend = backend
         self._tolerance = float(tolerance)
-        # Optional raw-pixel → class-index LUT (slide-manifest masks carry the dataset's
-        # own vocabulary; see soma.dense.reader.build_label_remap). None ⇒ masks are
-        # already contiguous class indices (the pre-cropped-tile / flat-mask path).
+        # Optional raw-pixel → class-index LUT built from task.params.classes / ignore
+        # (see soma.dense.reader.build_label_remap). None ⇒ masks are already contiguous
+        # class indices.
         if label_remap is not None:
             label_remap = np.asarray(label_remap)
             if label_remap.shape != (256,):
@@ -225,7 +229,15 @@ class SegmentationHead(TaskHead):
                     f"mask for '{record.sample_id}' has raw pixel value(s) outside [0, 255]; "
                     "the label remap LUT only covers single-byte annotation rasters."
                 )
-            array = self._label_remap[array]
+            remapped = self._label_remap[array]
+            undeclared = remapped == UNDECLARED_LABEL
+            if undeclared.any():
+                raise ValueError(
+                    f"mask for '{record.sample_id}' has raw value(s) "
+                    f"{sorted(int(v) for v in np.unique(array[undeclared]))} declared in "
+                    "neither task.params.classes nor task.params.ignore."
+                )
+            array = remapped
         mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy

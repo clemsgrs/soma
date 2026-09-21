@@ -588,6 +588,9 @@ def test_evaluation_config_metrics_explicit():
 # --- Segmentation decoder config plumbing ---
 
 
+_CLASS_SCHEME = {"classes": {"tumor": [1], "stroma": [2], "necrosis": [3]}, "ignore": [0]}
+
+
 def _seg_config(**overrides):
     # masks/sampling now live under preprocessing (#109); accept them as top-level
     # kwargs here for test convenience and fold them into a PreprocessingConfig.
@@ -610,6 +613,9 @@ def _seg_config(**overrides):
     )
     if preprocessing is not None:
         kwargs["preprocessing"] = preprocessing
+    if masks is not None:
+        # Annotation rasters need an explicit training class scheme.
+        kwargs["task"] = TaskConfig(name="segmentation", params=dict(_CLASS_SCHEME))
     kwargs.update(overrides)
     return PipelineConfig(**kwargs)
 
@@ -779,10 +785,33 @@ def test_segmentation_slide_manifest_config_valid():
     cfg = _seg_config(
         masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        task=TaskConfig(
+            name="segmentation",
+            params={"classes": {"tissue": [1, 2], "necrosis": [3]}, "ignore": [0]},
+        ),
     )
     # masks/sampling now live under preprocessing (#109).
     assert cfg.preprocessing.masks.pixel_mapping["necrosis"] == 3
     assert cfg.preprocessing.sampling.output_mode == "merged"
+
+
+def test_segmentation_slide_manifest_requires_task_classes():
+    """Annotation rasters carry the dataset's own values: the training class scheme
+    must be stated (task.params.classes), it is never inferred from pixel_mapping."""
+    with pytest.raises(ValueError, match=r"requires task\.params\.classes"):
+        _seg_config(
+            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+            task=TaskConfig(name="segmentation", params={"num_classes": 3}),
+        )
+
+
+def test_segmentation_rejects_raw_value_in_two_classes():
+    with pytest.raises(ValueError, match="'tumor' and 'stroma' both list raw value 2"):
+        _seg_config(
+            task=TaskConfig(
+                name="segmentation", params={"classes": {"tumor": [1, 2], "stroma": [2]}}
+            )
+        )
 
 
 def test_masks_and_sampling_live_under_preprocessing():
@@ -963,6 +992,7 @@ def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
         "pixel_mapping": [{"background": 0}, {"tumor": 1}, {"stroma": 2}],
         "min_coverage": [{"tumor": 0.1}],
     }
+    raw["task"]["params"] = dict(_CLASS_SCHEME)
     path.write_text(yaml.safe_dump(raw))
     loaded = load_config(path)
     assert loaded.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1, "stroma": 2}

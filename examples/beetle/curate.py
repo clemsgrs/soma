@@ -31,15 +31,15 @@ from pathlib import Path
 
 from PIL import Image
 
-from examples.beetle.protocol import PIXEL_MAPPING
+from examples.beetle.protocol import CLASSES, PIXEL_MAPPING
 from soma.curation.manifest import CuratedManifest, write_manifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_BEETLE_ROOT = _REPO_ROOT / "data" / "beetle"
 
 # BEETLE pixel vocabulary (label_map.json): name -> raw mask pixel value. This is the
-# masks.pixel_mapping the soma config carries; "background" (0, unannotated) is the ignore
-# label. Kept here so the manifest's coverage scan uses the same class scheme as training.
+# masks.pixel_mapping the soma config carries for ROI sampling; training ignores
+# "background" (0, unannotated) through task.params.ignore.
 ANNOTATED_FRACTION_MIN = 0.05  # >=5% annotated to keep a tile
 CANONICAL_MPP = 0.5
 CROP_SIZE = 512
@@ -586,7 +586,7 @@ def curate_beetle_slide_manifest(
             if is_full_cohort
             else {}
         ),
-        "num_classes": len(PIXEL_MAPPING) - 1,
+        "num_classes": len(CLASSES),
         "ignore_index": IGNORE_INDEX,
         "pixel_mapping": PIXEL_MAPPING,
         "annotated_fraction_min": ANNOTATED_FRACTION_MIN,
