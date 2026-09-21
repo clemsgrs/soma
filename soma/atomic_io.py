@@ -12,11 +12,14 @@ def _staging_path(path: Path) -> Path:
     return path.with_name(f".{path.name}.tmp-{os.getpid()}")
 
 
-def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+def atomic_write_text(
+    path: Path, text: str, *, encoding: str = "utf-8", newline: str | None = None
+) -> None:
     """Write ``text`` to ``path`` so readers never observe a partial file."""
     path = Path(path)
     staging = _staging_path(path)
-    staging.write_text(text, encoding=encoding)
+    with staging.open("w", encoding=encoding, newline=newline) as handle:
+        handle.write(text)
     os.replace(staging, path)
 
 

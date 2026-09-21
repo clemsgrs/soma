@@ -27,6 +27,7 @@ not a tile dump: no pixels are written to disk, and the grids are the only cache
 from __future__ import annotations
 
 import csv
+import io
 import logging
 from collections import defaultdict
 from collections.abc import Collection
@@ -37,6 +38,7 @@ from typing import TYPE_CHECKING
 
 from slide2vec import DenseOptions, Model, SlideRegions
 
+from soma.atomic_io import atomic_write_text
 from soma.cache import (
     dense_extraction_geometry,
     record_feature_dim,
@@ -228,10 +230,13 @@ def build_roi_dataset(
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    # Launches that split one run's folds all rewrite this file at startup while
+    # siblings read it, so it must never be visible half-written.
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write_text(path, buffer.getvalue(), newline="")
 
 
 class _SlideRegionExtractor:

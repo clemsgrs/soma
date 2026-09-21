@@ -350,6 +350,36 @@ def test_slide_manifest_propagates_slide_splits_to_rois(tmp_path: Path, monkeypa
     assert projected.folds[0].tests == {"test": ("s3__x0_y0", "s3__x32_y0")}
 
 
+def test_roi_dataset_rewrite_never_exposes_a_partial_file(tmp_path: Path, monkeypatch):
+    """Sibling ``run.folds`` launches rewrite the ROI manifest while others read it (#482)."""
+    _patch_extraction(monkeypatch)
+    import os
+
+    from soma.dense_slide_extraction import build_roi_dataset
+    from soma.dataset import SegmentationManifest
+
+    manifest, _ = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+    dataset = SegmentationManifest(manifest)
+    coords = {sid: _coords_for(sid) for sid in dataset.sample_ids}
+    out_dir = tmp_path / "rois"
+    complete = build_roi_dataset(dataset, coords, out_dir=out_dir).read_bytes()
+
+    seen_at_swap: list[bytes] = []
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        seen_at_swap.append(Path(dst).read_bytes())
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _replace)
+    rewritten = build_roi_dataset(dataset, coords, out_dir=out_dir)
+
+    # Until the swap a reader still sees the previous complete file.
+    assert seen_at_swap == [complete]
+    assert rewritten.read_bytes() == complete
+    assert [p.name for p in out_dir.iterdir()] == ["dataset.csv"]
+
+
 def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
     tmp_path: Path, monkeypatch
 ):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import io
 import json
 import os
 import socket
@@ -16,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from soma.atomic_io import atomic_write_text
 from soma.provenance import soma_git_state
 from soma.config import PipelineConfig
 
@@ -519,12 +521,12 @@ def create_run_metadata(
 
 def _write_yaml(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    atomic_write_text(path, yaml.safe_dump(payload, sort_keys=False))
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=False), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=False))
 
 
 def write_experiment_metadata(path: Path, experiment: ExperimentSpec) -> None:
@@ -560,10 +562,11 @@ def _read_csv_rows(path: Path) -> list[dict[str, str]]:
 
 def _write_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+    atomic_write_text(path, buffer.getvalue(), newline="")
 
 
 RUN_INDEX_FIELDNAMES = [

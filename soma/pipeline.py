@@ -430,7 +430,7 @@ def _write_dense_source_provenance(run_dir: Path, feature_store: object) -> None
     if provenance is None:
         return
     path = run_dir / "dense_source.json"
-    path.write_text(json.dumps(provenance.to_dict(), indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_json(path, provenance.to_dict(), sort_keys=True)
     logger.info("Dense source provenance saved to %s", path)
 
 

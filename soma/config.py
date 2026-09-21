@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 import yaml
 
+from soma.atomic_io import atomic_write_text
 from soma.spacing import resolve_effective_spacing_um
 from hs2p import PreviewConfig
 from hs2p.configs import TilingConfig
@@ -2046,8 +2047,7 @@ def save_config(config: PipelineConfig, path: Path | str) -> None:
     data = config_yaml_dict(config)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+    atomic_write_text(path, yaml.safe_dump(data, default_flow_style=False, sort_keys=False))
 
 
 def load_config(
