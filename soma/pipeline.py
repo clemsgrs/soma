@@ -36,6 +36,7 @@ from soma.aggregators.registry import aggregator_registry
 from soma.artifact_mirror import ArtifactMirror, restore_run_from_mirror
 from soma.atomic_io import atomic_write_json
 from soma.cache import resolve_cache_root
+from soma.class_scheme import resolve_classes
 from soma.decoders.registry import build_decoder_for_grid
 from soma.config import (
     AggregatorConfig,
@@ -1941,15 +1942,13 @@ def train_one_detection_fold(
     test_records_by_split = fold_plan.test_records_by_split
     all_records = fold_plan.all_records
 
-    # num_classes + detection knobs from task.params (no scalar-label auto-inject).
-    det_params = dict(task.params)
-    num_classes = det_params.pop("num_classes", None)
-    if num_classes is None:
-        raise ValueError(
-            "dataset_type='detection' requires task.params.num_classes (the number of "
-            "object classes)."
-        )
-    num_classes = int(num_classes)
+    # Class scheme + detection knobs from task.params (no scalar-label auto-inject).
+    num_classes, class_names, class_remap, dropped_ids = resolve_classes(
+        task.params, excluded_key="drop", subject="detection"
+    )
+    det_params = {
+        k: v for k, v in task.params.items() if k not in ("num_classes", "classes", "drop")
+    }
 
     feature_store.validate_coverage([r.sample_id for r in all_records])
     ref_id = train_records[0].sample_id
@@ -2001,6 +2000,9 @@ def train_one_detection_fold(
         nms_distance_px=nms_px,
         sample_spacings=sample_spacings,
         metrics=evaluation.metrics,
+        class_remap=class_remap,
+        drop=dropped_ids,
+        class_names=class_names,
         **det_params,
     )
     target_fn = head.extract_targets

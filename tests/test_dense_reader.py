@@ -175,3 +175,12 @@ def test_class_scheme_requires_classes_for_annotation_rasters():
 def test_class_scheme_rejects_ignore_without_classes():
     with pytest.raises(ValueError, match=r"task\.params\.ignore needs task\.params\.classes"):
         resolve_class_scheme({"num_classes": 2, "ignore": [0]}, annotation_rasters=False)
+
+
+def test_resolve_class_scheme_accepts_a_scalar_zero_ignore():
+    _, _, lut = resolve_class_scheme(
+        {"classes": {"tumor": [1]}, "ignore": 0}, annotation_rasters=True
+    )
+
+    assert lut[0] == 255
+    assert lut[1] == 0

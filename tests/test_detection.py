@@ -489,6 +489,54 @@ def test_head_extract_targets_renders_points(tmp_path):
     assert targets["gt_points"].shape == (2, 3)
 
 
+def _points_record(tmp_path, rows: str):
+    from soma.dataset import SampleRecord
+
+    pts = tmp_path / "p.csv"
+    pts.write_text("x,y,class\n" + rows)
+    return SampleRecord(sample_id="s", image_path=tmp_path / "i.jpg", label=None, points_path=pts)
+
+
+def test_head_class_remap_merges_ids_into_one_class(tmp_path):
+    # classes: {mnl: [1, 2], other: [7]} -> ids 1 and 2 share channel 0, id 7 is channel 1.
+    record = _points_record(tmp_path, "10,12,1\n20,8,2\n5,25,7\n")
+    head = _make_head(num_classes=2, class_remap={1: 0, 2: 0, 7: 1})
+
+    targets = head.extract_targets(record)
+
+    assert targets["gt_points"].tolist() == [[10.0, 12.0, 0.0], [20.0, 8.0, 0.0], [5.0, 25.0, 1.0]]
+    assert targets["heatmap"][0, 12, 10] == pytest.approx(1.0)
+    assert targets["heatmap"][0, 8, 20] == pytest.approx(1.0)
+    assert targets["heatmap"][1, 25, 5] == pytest.approx(1.0)
+
+
+def test_head_dropped_point_becomes_negative_supervision(tmp_path):
+    record = _points_record(tmp_path, "10,12,0\n20,8,2\n")
+    head = _make_head(num_classes=1, class_remap={0: 0}, drop=[2])
+
+    targets = head.extract_targets(record)
+
+    assert targets["gt_points"].tolist() == [[10.0, 12.0, 0.0]]
+    assert float(targets["heatmap"][0, 8, 20]) == 0.0
+    # A prediction on the kept point and one on the dropped point: 1 TP, 1 FP, 0 FN.
+    from soma.detection.encode import render_peak_heatmap
+
+    predicted = render_peak_heatmap(
+        np.array([[10.0, 12.0], [20.0, 8.0]]), np.array([0, 0]),
+        target_size=(32, 32), num_classes=1, sigma=1.5,
+    )
+    counts = head.dense_stats(predicted.unsqueeze(0), {"gt_points": targets["gt_points"][None]})
+    assert counts.tolist() == [[[1, 1, 0]]]
+
+
+def test_head_rejects_point_id_declared_nowhere(tmp_path):
+    record = _points_record(tmp_path, "10,12,0\n20,8,3\n")
+    head = _make_head(num_classes=1, class_remap={0: 0}, drop=[2])
+
+    with pytest.raises(ValueError, match=r"points for 's' have class id\(s\) \[3\] declared in neither"):
+        head.extract_targets(record)
+
+
 def test_head_uses_persisted_per_sample_spacing(tmp_path):
     from soma.dense import DenseSampleSpacing
     from soma.dataset import SampleRecord

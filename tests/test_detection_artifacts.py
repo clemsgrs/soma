@@ -29,10 +29,13 @@ H = W = 16
 DELTA = 3.0
 
 
-def _head(num_classes: int = NUM_CLASSES):
-    # The writer needs num_classes (palette), crop_box (target-frame size) and delta_px
-    # (the match-overlay ring radius = the matching tolerance).
-    return types.SimpleNamespace(num_classes=num_classes, delta_px=DELTA, _crop_box=(0, 0, H, W))
+def _head(num_classes: int = NUM_CLASSES, class_names: tuple[str, ...] | None = None):
+    # The writer needs num_classes (palette), crop_box (target-frame size), delta_px
+    # (the match-overlay ring radius = the matching tolerance) and the class names.
+    names = class_names or tuple(f"class_{c}" for c in range(num_classes))
+    return types.SimpleNamespace(
+        num_classes=num_classes, delta_px=DELTA, _crop_box=(0, 0, H, W), class_names=names
+    )
 
 
 def _dataset_with_images(tmp_path: Path, sample_ids: list[str], make_image: bool, size=(8, 8)):
@@ -118,6 +121,25 @@ def test_writer_emits_overlays_manifest_and_metrics(tmp_path):
     assert {f"precision_class_{c}" for c in range(NUM_CLASSES)} <= set(metrics_rows)
     assert {f"recall_class_{c}" for c in range(NUM_CLASSES)} <= set(metrics_rows)
     assert metrics_rows["f1_class_0"]["aggregation"] == "dataset_global"
+
+
+def test_metrics_csv_names_each_per_class_row(tmp_path):
+    writer = DetectionArtifactWriter(
+        head=_head(class_names=("lymphocyte", "monocyte")), split="test", output_dir=tmp_path
+    )
+    writer.finalize()
+
+    rows = list(csv.DictReader((tmp_path / "metrics_test.csv").open()))
+    names = {r["metric"]: r["class_name"] for r in rows}
+    assert names == {
+        "mean_f1": "",
+        "f1_class_0": "lymphocyte",
+        "f1_class_1": "monocyte",
+        "precision_class_0": "lymphocyte",
+        "precision_class_1": "monocyte",
+        "recall_class_0": "lymphocyte",
+        "recall_class_1": "monocyte",
+    }
 
 
 def test_writer_emits_per_class_match_overlays(tmp_path):

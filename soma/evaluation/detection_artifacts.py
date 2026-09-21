@@ -54,7 +54,7 @@ by the pipeline, not here, and is unchanged):
                                          Carries ``heatmap_overlay_class_<c>`` /
                                          ``heatmap_npz_path`` columns, empty unless
                                          ``save_detection_heatmaps``.
-  - ``metrics_<split>.csv``              split-level per-class F1/precision/recall
+  - ``metrics_<split>.csv``              split-level per-class F1/precision/recall (+ ``class_name``)
                                          (dataset-global), always written (the per-class
                                          breakdown exists even when the monitor metric is
                                          just ``mean_f1``).
@@ -165,6 +165,7 @@ class DetectionArtifactWriter:
         heatmap_overlay_alpha: float = 0.5,
     ) -> None:
         self._num_classes = int(head.num_classes)
+        self._class_names = tuple(head.class_names)
         # crop_box = (top, left, height, width); the target frame the points + heatmap
         # live in (predicted/GT points are already in it, no transform for overlays).
         _, _, height, width = (int(v) for v in head._crop_box)
@@ -499,19 +500,19 @@ class DetectionArtifactWriter:
             else torch.zeros(0, self._num_classes, 3, dtype=torch.long)
         )
         full = reduce_f1(counts, num_classes=self._num_classes, aggregation="dataset_global")
-        # Long format: one (metric, aggregation, value) row. Per-class F1/precision/recall
-        # and mean_f1 are all dataset-global (the OCELOT-faithful headline reduction); the
-        # explicit aggregation column mirrors the segmentation metrics CSV.
-        ordered = [("mean_f1", "dataset_global")]
-        for c in range(self._num_classes):
-            ordered.append((f"f1_class_{c}", "dataset_global"))
-        for c in range(self._num_classes):
-            ordered.append((f"precision_class_{c}", "dataset_global"))
-        for c in range(self._num_classes):
-            ordered.append((f"recall_class_{c}", "dataset_global"))
+        # Long format: one (metric, aggregation, value, class_name) row. Per-class
+        # F1/precision/recall and mean_f1 are all dataset-global (the OCELOT-faithful headline
+        # reduction); the explicit aggregation column mirrors the segmentation metrics CSV.
+        # Metric keys stay index-based; ``class_name`` says which class an index is.
+        ordered = [("mean_f1", "")]
+        for metric in ("f1", "precision", "recall"):
+            for c, class_name in enumerate(self._class_names):
+                ordered.append((f"{metric}_class_{c}", class_name))
         path = self._output_dir / f"metrics_{self._split}.csv"
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow(["metric", "aggregation", "value"])
-            writer.writerows([(name, agg, full[name]) for name, agg in ordered])
+            writer.writerow(["metric", "aggregation", "value", "class_name"])
+            writer.writerows(
+                [(name, "dataset_global", full[name], class_name) for name, class_name in ordered]
+            )
         return path

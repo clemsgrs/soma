@@ -61,8 +61,39 @@ supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
 
 The ``points_path`` file is CSV with ``x, y, class`` columns (a headerless
 ``x,y,class`` — OCELOT's format — or a 2-column single-class ``x,y`` is also accepted).
-Class ids must be **0-based** in ``[0, num_classes)``; map annotation labels (e.g.
-OCELOT's ``{1, 2}``) to ``{0, 1}`` during ingestion.
+The ``class`` column holds the dataset's own annotated ids; :ref:`detection-classes`
+says which ids form which class.
+
+.. _detection-classes:
+
+Classes
+-------
+
+.. code-block:: yaml
+
+   task:
+     name: detection
+     params:
+       classes: {mnl: [0, 1]}
+       drop: [2]
+
+``classes`` names each class and the annotated id(s) that form it; several ids
+merge into one class, which gets one heatmap channel. The class index is the
+declaration order and the names are written to the ``class_name`` column of
+``metrics_<split>.csv``. The ids need not be 0-based: a dataset annotated with
+``{1, 2}`` can be declared as ``classes: {background_cell: [1], tumor_cell: [2]}``.
+
+``drop`` lists the annotated ids to discard. A dropped point leaves the
+supervised set: it is absent from the target heatmap and from the ground truth
+used for matching. Its location is therefore negative supervision, and a
+prediction there counts as a false positive. Points have no "ignore" region.
+
+An id belongs to one class or to ``drop``; listing it twice is a config error. A
+point file holding an id declared in neither fails the run and names the sample.
+
+The class scheme is not part of the feature cache key: regrouping classes reuses
+the cached features. ``num_classes`` is derived from ``classes``. Point files
+that already hold 0-based class indices may set ``num_classes`` alone.
 
 Coordinate convention — level-0 store, target compute
 -----------------------------------------------------
@@ -95,7 +126,7 @@ Configuration
    task:
      name: detection
      params:
-       num_classes: 2                     # e.g. OCELOT: background-cell, tumor-cell
+       classes: {background_cell: [0], tumor_cell: [1]}   # OCELOT, as curated by soma
        match_distance: 3.0                # δ, in µm (OCELOT's 15 px at 0.2 µm/px)
        sigma: 1.0                          # target Gaussian σ in µm (default ≈ δ/3)
        matching: hungarian                # hungarian (default) | greedy (OCELOT-official)
@@ -143,7 +174,9 @@ Outputs
 
 Each fold writes ``metrics.json`` (tune + per test split), ``detection_thresholds.json``
 (the frozen per-class thresholds), and ``predictions_<split>.csv`` with columns
-``sample_id, x, y, class, score`` in **level-0** coordinates.
+``sample_id, x, y, class, score`` in **level-0** coordinates; ``class`` is the class
+index. ``metrics_<split>.csv`` lists the per-class F1, precision and recall with each
+class's name.
 
 Task head
 ---------
