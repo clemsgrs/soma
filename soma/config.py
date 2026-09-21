@@ -1673,6 +1673,12 @@ class PipelineConfig:
                     "dataset_type='detection' requires task.name='detection', "
                     f"got {self.task.name!r}."
                 )
+            # A bad class scheme fails at load, not at the first fold. A bare ``num_classes``
+            # (point files already hold class indices) stays the pipeline's to require.
+            if "classes" in self.task.params or "drop" in self.task.params:
+                from soma.class_scheme import resolve_classes
+
+                resolve_classes(self.task.params, excluded_key="drop", subject="detection")
             # Detection consumes the ViT patch-token grid (same as the seg decoder path).
             if self.preprocessing.feature_kind is None:
                 object.__setattr__(

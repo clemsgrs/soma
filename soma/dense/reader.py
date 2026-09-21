@@ -28,6 +28,8 @@ import torch
 from PIL import Image
 from torch import Tensor
 
+from soma.class_scheme import assign_raw_values, resolve_classes
+
 # Flat raster formats carry no pyramid/spacing — always read with PIL, spacing N/A.
 _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
@@ -38,17 +40,12 @@ _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
 UNDECLARED_LABEL = int(np.iinfo(np.int64).min)
 
 
-def _raw_values(owner: str, values: Any) -> list[int]:
-    """Normalize one ``classes`` entry / the ``ignore`` list to raw single-byte values."""
-    if not isinstance(values, (list, tuple)):
-        values = [values]
-    for value in values:
-        is_integer = isinstance(value, (int, np.integer)) and not isinstance(value, bool)
-        if not is_integer or not 0 <= value <= 255:
-            raise ValueError(
-                f"'{owner}' raw values must be integers in [0, 255], got {value!r}."
-            )
-    return [int(value) for value in values]
+def _label_lut(class_of: Mapping[int, int], ignore: Sequence[int], ignore_index: int) -> np.ndarray:
+    lut = np.full(256, UNDECLARED_LABEL, dtype=np.int64)
+    for value, class_index in class_of.items():
+        lut[value] = class_index
+    lut[list(ignore)] = int(ignore_index)
+    return lut
 
 
 def build_label_remap(
@@ -64,34 +61,17 @@ def build_label_remap(
     head needs contiguous class indices ``[0, num_classes)``. ``classes`` maps each class
     name to the raw value(s) that form it — several values merge into one class — and the
     class index is the declaration order. ``ignore`` lists the raw values excluded from
-    loss and metrics (they map to ``ignore_index``). No name is reserved.
+    loss and metrics (they map to ``ignore_index``). The rules are those of
+    :mod:`soma.class_scheme`, with raw values capped at a single byte.
 
-    A raw value may belong to one class or to ``ignore``, never two. Every value declared
-    nowhere maps to :data:`UNDECLARED_LABEL`.
+    Every value declared nowhere maps to :data:`UNDECLARED_LABEL`.
 
     Returns the 256-entry LUT (indexable by a raw uint8/int mask).
     """
-    if not classes:
-        raise ValueError("classes must name at least one class.")
-    lut = np.full(256, UNDECLARED_LABEL, dtype=np.int64)
-    owners: dict[int, str] = {}
-
-    def assign(owner: str, values: Any, target: int) -> None:
-        for value in _raw_values(owner, values):
-            if value in owners:
-                raise ValueError(
-                    f"'{owners[value]}' and '{owner}' both list raw value {value}; a raw "
-                    "value belongs to exactly one class or to ignore."
-                )
-            owners[value] = owner
-            lut[value] = target
-
-    for class_index, (name, values) in enumerate(classes.items()):
-        if isinstance(values, (list, tuple)) and not values:
-            raise ValueError(f"class '{name}' lists no raw values.")
-        assign(str(name), values, class_index)
-    assign("ignore", list(ignore), int(ignore_index))
-    return lut
+    class_of, ignored = assign_raw_values(
+        classes, excluded=ignore, excluded_name="ignore", max_value=255
+    )
+    return _label_lut(class_of, ignored, ignore_index)
 
 
 #: ``task.params`` keys that define the class scheme rather than configure the head.
@@ -110,38 +90,21 @@ def resolve_class_scheme(
     possible for pre-cropped tiles, since ``annotation_rasters`` carry the dataset's own
     values.
     """
-    classes = task_params.get("classes")
-    ignore = task_params.get("ignore")
-    num_classes = task_params.get("num_classes")
-    if classes is None:
-        if annotation_rasters:
-            raise ValueError(
-                "segmentation from annotation rasters (preprocessing.masks) requires "
-                "task.params.classes: name each class and the raw mask value(s) that form "
-                "it, e.g. classes: {tumor: [1, 2], stroma: [3]} with ignore: [0] for the "
-                "values to exclude from loss and metrics."
-            )
-        if ignore is not None:
-            raise ValueError("task.params.ignore needs task.params.classes.")
-        if num_classes is None:
-            raise ValueError(
-                "dataset_type='segmentation' requires task.params.classes (or "
-                "task.params.num_classes when masks already hold class indices)."
-            )
-        num_classes = int(num_classes)
-        return num_classes, tuple(f"class_{index}" for index in range(num_classes)), None
-
-    if not isinstance(classes, Mapping):
-        raise ValueError("task.params.classes must map class name → raw mask value(s).")
-    lut = build_label_remap(
-        classes, ignore=ignore or (), ignore_index=int(task_params.get("ignore_index", 255))
-    )
-    if num_classes is not None and int(num_classes) != len(classes):
+    if annotation_rasters and task_params.get("classes") is None:
         raise ValueError(
-            f"task.params.num_classes={num_classes} disagrees with the {len(classes)} "
-            "classes in task.params.classes; drop num_classes (it is derived)."
+            "segmentation from annotation rasters (preprocessing.masks) requires "
+            "task.params.classes: name each class and the raw mask value(s) that form "
+            "it, e.g. classes: {tumor: [1, 2], stroma: [3]} with ignore: [0] for the "
+            "values to exclude from loss and metrics."
         )
-    return len(classes), tuple(str(name) for name in classes), lut
+    num_classes, names, class_of, ignored = resolve_classes(
+        task_params, excluded_key="ignore", subject="segmentation", max_value=255
+    )
+    if class_of is None:
+        return num_classes, names, None
+    return num_classes, names, _label_lut(
+        class_of, ignored, int(task_params.get("ignore_index", 255))
+    )
 
 
 def _is_flat(path: str | Path, spacing_um: float | None) -> bool:

@@ -1153,6 +1153,18 @@ def test_composite_enabled_for_detection():
     assert cfg.composite.encoders[0].feature_kind == "patch_features"
 
 
+def test_detection_rejects_point_id_in_a_class_and_in_drop():
+    with pytest.raises(ValueError, match="'mnl' and 'drop' both list raw value 1"):
+        PipelineConfig(
+            dataset_csv="data.csv",
+            splits_csv="splits.csv",
+            output_root="out",
+            dataset_type="detection",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            task=TaskConfig(name="detection", params={"classes": {"mnl": [0, 1]}, "drop": [1]}),
+        )
+
+
 def test_encoder_xor_composite():
     from soma.config import CompositeConfig, EncoderConfig, EncoderMemberConfig, PixelClassifierConfig
 

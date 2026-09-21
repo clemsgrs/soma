@@ -22,7 +22,7 @@ target-frame pixels (the pipeline converts from µm/px via the run spacing).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -66,6 +66,14 @@ class DetectionHead(TaskHead):
             read from dense extraction sidecars before the head is built.
         truncate: Render each target Gaussian within ``truncate * sigma_px``.
         metrics: Metric names (validated against the ``detection`` family).
+        class_remap: Annotated point id → class index, from ``task.params.classes`` (several
+            ids may share one class). ``None`` means the point files already hold class
+            indices in ``[0, num_classes)``.
+        drop: Annotated point ids removed from the supervised set (``task.params.drop``).
+            A dropped point is absent from the target heatmap *and* from the matching
+            ground truth, so its location is negative supervision and a prediction there
+            is a false positive — points have no don't-care.
+        class_names: One name per class index, recorded beside the per-class metrics.
     """
 
     target_dtypes = {"heatmap": torch.float32, "gt_points": torch.float32}
@@ -86,6 +94,9 @@ class DetectionHead(TaskHead):
         sample_spacings: Mapping[str, "DenseSampleSpacing"],
         truncate: float = 3.0,
         metrics: list[str] | None = None,
+        class_remap: Mapping[int, int] | None = None,
+        drop: Sequence[int] = (),
+        class_names: Sequence[str] | None = None,
     ) -> None:
         super().__init__()
         if num_classes < 1:
@@ -112,6 +123,19 @@ class DetectionHead(TaskHead):
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("detection", metrics or [])
+        if class_remap is None and drop:
+            raise ValueError("drop needs class_remap (task.params.classes).")
+        self._class_remap = (
+            None if class_remap is None else {int(k): int(v) for k, v in class_remap.items()}
+        )
+        self._drop = frozenset(int(value) for value in drop)
+        if class_names is None:
+            class_names = [f"class_{index}" for index in range(self.num_classes)]
+        if len(class_names) != self.num_classes:
+            raise ValueError(
+                f"class_names has {len(class_names)} entries for num_classes={self.num_classes}."
+            )
+        self.class_names = tuple(str(name) for name in class_names)
 
     # --- geometry ---------------------------------------------------------- #
 
@@ -151,13 +175,24 @@ class DetectionHead(TaskHead):
         if xy.shape[0]:
             inside = (xy[:, 0] >= 0) & (xy[:, 0] < width) & (xy[:, 1] >= 0) & (xy[:, 1] < height)
             xy, classes = xy[inside], classes[inside]
-        invalid = sorted({int(c) for c in classes if not 0 <= int(c) < self.num_classes})
-        if invalid:
+        if self._class_remap is None:
+            invalid = sorted({int(c) for c in classes if not 0 <= int(c) < self.num_classes})
+            if invalid:
+                raise ValueError(
+                    f"points for '{record.sample_id}' have class id(s) {invalid} outside "
+                    f"[0, num_classes={self.num_classes}). Name the annotated ids in "
+                    "task.params.classes, or map them to 0-based ids."
+                )
+            return xy, classes
+        undeclared = sorted({int(c) for c in classes} - self._class_remap.keys() - self._drop)
+        if undeclared:
             raise ValueError(
-                f"points for '{record.sample_id}' have class id(s) {invalid} outside "
-                f"[0, num_classes={self.num_classes}). Map annotation classes to 0-based ids."
+                f"points for '{record.sample_id}' have class id(s) {undeclared} declared in "
+                "neither task.params.classes nor task.params.drop."
             )
-        return xy, classes
+        kept = np.array([int(c) not in self._drop for c in classes], dtype=bool)
+        remapped = np.array([self._class_remap[int(c)] for c in classes[kept]], dtype=np.int64)
+        return xy[kept], remapped
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
         xy, classes = self._sample_target_points(record)

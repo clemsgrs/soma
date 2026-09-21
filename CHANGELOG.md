@@ -1,5 +1,15 @@
 # Changelog
 
+- 2026-09-21: Detection takes the same class scheme as segmentation.
+  `task.params.classes` maps each class name to the annotated point id(s) that
+  form it (several ids merge into one class; ids need not be 0-based) and
+  `task.params.drop` lists the ids to discard. A dropped point is removed from
+  the targets and from the matching ground truth, so a prediction there is a
+  false positive. An id declared in neither fails the run. Metric keys stay
+  `f1_class_{c}`; `metrics_<split>.csv` gains a `class_name` column. Configs
+  with `num_classes` alone are unchanged, and feature caches are unaffected. See
+  `detection.rst`.
+
 - 2026-09-21: **Breaking (segmentation).** Classes are declared on the task:
   `task.params.classes` maps each class name to the raw mask value(s) that form
   it (several values merge into one class; class index = declaration order) and

@@ -10,6 +10,7 @@ the grids are written directly.
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -159,6 +160,38 @@ def test_train_one_detection_fold_end_to_end(tmp_path: Path):
     assert header == "sample_id,x,y,class,score"
 
 
+def test_train_one_detection_fold_with_class_scheme(tmp_path: Path):
+    """``classes`` / ``drop`` define the classes: the fixture's two ids become one class."""
+    manifest, splits, store = _build_detection_run(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    train_one_detection_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="detection",
+            params={"classes": {"cell": [0]}, "drop": [1], "match_distance": 0.6, "sigma": 0.3},
+        ),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
+        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    )
+
+    fold = tmp_path / "fold"
+    thr = json.loads((fold / "detection_thresholds.json").read_text())
+    assert len(thr["score_threshold_per_class"]) == 1
+    names = {
+        r["metric"]: r["class_name"] for r in csv.DictReader((fold / "metrics_test.csv").open())
+    }
+    assert names["f1_class_0"] == "cell"
+    assert "f1_class_1" not in names
+    # Each test tile annotates one kept point (id 0) and one dropped point (id 1).
+    per_image = list(csv.DictReader((fold / "detection_per_image_test.csv").open()))
+    assert [int(r["n_gt"]) for r in per_image] == [1]
+
+
 def test_train_one_detection_fold_eval_only_from_checkpoint(tmp_path: Path):
     """``checkpoint_path`` loads a trained checkpoint and skips the train loop, so a
     finished fold's eval artifacts can be regenerated without retraining. The threshold
@@ -284,8 +317,6 @@ def test_detection_fold_writes_qualitative_artifacts(tmp_path: Path):
     """A detection fold writes the per-image manifest + split-level metrics CSVs and,
     with real source tiles, the plain pred/GT point overlays (design §3) — all from the
     consolidated single decode+match, leaving the per-point CSV byte-for-byte unchanged."""
-    import csv
-
     sample_ids = ["s0", "s1", "s2", "s3"]
     manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
 
@@ -374,8 +405,6 @@ def test_detection_fold_heatmap_artifacts_opt_in(tmp_path: Path):
     """save_detection_heatmaps=True writes per-class viridis overlays + a float16 npz
     sidecar per evaluated tile, and threads the manifest's heatmap columns; off by default
     those artifacts are absent and the columns are empty."""
-    import csv
-
     sample_ids = ["s0", "s1", "s2", "s3"]
     manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
 
