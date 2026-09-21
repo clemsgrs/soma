@@ -35,8 +35,8 @@ What a row holds depends on whether ``preprocessing.masks`` is set:
      - One ROI sampled from the slide
    * - Mask values
      - Class indices ``0`` to ``num_classes - 1``, plus ``ignore_index``
-       (255 by default)
-     - Any values; ``pixel_mapping`` remaps them
+       (255 by default); or any values with ``task.params.classes``
+     - Any values; ``task.params.classes`` is required
 
 Whole slides
 ~~~~~~~~~~~~
@@ -56,10 +56,35 @@ soma tiles each slide into ROIs of ``requested_tile_size_px`` at
 select ROIs, so give a threshold to every class you want sampled. Each ROI keeps
 its complete multi-class mask and belongs to the same split as its slide.
 
-``pixel_mapping`` lists the classes to model, in class-index order. Raw values
-left out of it are ignored by the loss and the metrics. It cannot merge several
-raw values into one class; rewrite the masks first if you need that.
-:doc:`preprocessing` covers the ``background`` label and the remaining options.
+``pixel_mapping`` and ``min_coverage`` only decide which ROIs are sampled;
+:doc:`preprocessing` covers them. What the model predicts is set separately, by
+the task.
+
+Classes
+-------
+
+.. code-block:: yaml
+
+   task:
+     name: segmentation
+     params:
+       classes: {tumor: [1, 2], stroma: [3], muscle: [4, 5, 6]}
+       ignore: [0]
+
+``classes`` names each class and the raw mask value(s) that form it; several
+values merge into one class. The class index is the declaration order (``tumor``
+is 0) and the names are recorded beside the confusion matrices. ``ignore``
+lists the raw values excluded from the loss and the metrics. No name is
+reserved.
+
+A raw value belongs to one class or to ``ignore``; listing it twice is a config
+error. A mask holding a value declared in neither fails the run and names the
+sample, so a typo cannot silently drop a class.
+
+The class scheme is not part of the feature cache key: regrouping classes reuses
+the cached ROIs and features. ``num_classes`` is derived from ``classes``.
+Pre-cropped tiles whose masks already hold class indices may set
+``num_classes`` alone.
 
 Tile size and encoder window
 ----------------------------
@@ -109,7 +134,9 @@ A starting configuration
    decoder: { name: lightweight_conv }
    task:
      name: segmentation
-     params: { num_classes: 3 }
+     params:
+       classes: {stroma: [1], tumor: [2], necrosis: [3]}
+       ignore: [0]
    evaluation:
      metrics: [mean_dice, mean_iou]
 

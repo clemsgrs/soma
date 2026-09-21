@@ -224,7 +224,9 @@ def _config(
             sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         ),
         decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+        task=TaskConfig(
+            name="segmentation", params={"classes": {"background": [0], "tumor": [1]}}
+        ),
         training=TrainingConfig(epochs=1, batch_size=2),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
     )
@@ -1039,3 +1041,4 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
         "s1__x0_y0",
         "s1__x32_y0",
     ]
+

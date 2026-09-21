@@ -72,7 +72,8 @@ def _write_cached_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
         FEATURE_DIM * geometry.grid_shape[0] * geometry.grid_shape[1],
         dtype=torch.float16,
     ).reshape(FEATURE_DIM, *geometry.grid_shape)
-    mask = np.tile(np.arange(4, dtype=np.uint8), (TARGET_SIZE, TARGET_SIZE // 4))
+    # BEETLE's raw annotation values 1..4, so the production task.params.classes applies.
+    mask = np.tile(np.arange(1, 5, dtype=np.uint8), (TARGET_SIZE, TARGET_SIZE // 4))
     for patient in range(NUM_FOLDS):
         for roi in range(2):
             sample_id = f"p{patient}_roi{roi}"

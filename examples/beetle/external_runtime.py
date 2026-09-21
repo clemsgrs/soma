@@ -11,7 +11,7 @@ from typing import Callable
 
 import yaml
 
-from examples.beetle.protocol import ARM_NAMES, NUM_FOLDS, PIXEL_MAPPING
+from examples.beetle.protocol import ARM_NAMES, CLASSES, IGNORE, NUM_FOLDS, PIXEL_MAPPING
 
 PredictorLoader = Callable[[Path, tuple[Path, ...]], object]
 
@@ -195,7 +195,8 @@ def validate_selected_run_recipe(
     task = resolved_config.task
     if (
         task is None
-        or int(task.params.get("num_classes", -1)) != len(PIXEL_MAPPING) - 1
+        or task.params.get("classes") != CLASSES
+        or task.params.get("ignore") != IGNORE
     ):
         raise ValueError(
             "BEETLE resolved selected arm must predict the four annotated pixel classes"
@@ -226,7 +227,7 @@ def load_selected_fold_predictor(run_dir: Path, checkpoint_paths: tuple[Path, ..
         source,
         decoder_name=config.decoder.name,
         decoder_params=config.decoder.params,
-        num_classes=int(config.task.params["num_classes"]),
+        num_classes=len(config.task.params["classes"]),
         ckpt_paths=checkpoint_paths,
         normalization=config.normalization,
         projection=config.projection,

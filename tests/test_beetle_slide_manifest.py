@@ -140,7 +140,15 @@ def test_beetle_config_loads_and_validates():
     cfg = _load_beetle_config()
     assert cfg.dataset_type == "segmentation"
     assert cfg.task.name == "segmentation"
-    assert cfg.task.params["num_classes"] == 4
+    assert cfg.task.params == {
+        "classes": {
+            "other": [1],
+            "non_invasive_epithelium": [2],
+            "invasive_epithelium": [3],
+            "necrosis": [4],
+        },
+        "ignore": [0],
+    }
 
 
 def test_beetle_config_encodes_masks_contract():
@@ -180,8 +188,9 @@ def test_beetle_config_encodes_recipe():
 
 def test_beetle_remap_matches_curation_contract():
     cfg = _load_beetle_config()
-    lut, num_classes = build_label_remap(cfg.preprocessing.masks.pixel_mapping, ignore_index=255)
-    assert num_classes == 4
+    lut = build_label_remap(
+        cfg.task.params["classes"], ignore=cfg.task.params["ignore"], ignore_index=255
+    )
     raw = np.array(sorted(EXPECTED_REMAP), dtype=np.int64)
     expected = np.array([EXPECTED_REMAP[int(v)] for v in raw], dtype=lut.dtype)
     np.testing.assert_array_equal(lut[raw], expected)

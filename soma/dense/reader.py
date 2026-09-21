@@ -19,7 +19,9 @@ dense path is verified against.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -30,75 +32,116 @@ from torch import Tensor
 _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
 
 
-def build_label_remap(
-    pixel_mapping: dict[str, int],
-    *,
-    num_classes: int | None = None,
-    ignore_index: int = 255,
-) -> tuple[np.ndarray, int]:
-    """Build a raw-pixel → class-index lookup table from a ``masks.pixel_mapping``.
+#: LUT entry for a raw pixel value that is in neither ``classes`` nor ``ignore``. Outside
+#: every valid class index and every ``ignore_index``, so the segmentation head can fail
+#: loud on it instead of silently dropping (or aliasing) a class's supervision.
+UNDECLARED_LABEL = int(np.iinfo(np.int64).min)
 
-    Slide-manifest annotation rasters carry the *dataset's own* pixel vocabulary (e.g.
-    BEETLE's ``{0 unannotated, 1 other, 2 non-invasive, 3 invasive, 4 necrosis}``); the
-    segmentation head needs contiguous class indices ``[0, num_classes)`` with unannotated
-    pixels collapsed to ``ignore_index``. This derives that mapping from ``pixel_mapping``
-    (class name → raw pixel value, mirroring hs2p's ``masks`` config). No reserved label
-    name is required; ``background`` is an opt-in name that only selects the ignore-label
-    mode:
 
-    * ``background`` **present** — its role is decided by ``num_classes`` (the task's
-      class count):
-
-      * ``num_classes is None`` or ``== len(pixel_mapping) - 1`` — ``background`` is the
-        **unannotated/ignore** label: it maps to ``ignore_index`` and the non-background
-        classes take class index = their order in ``pixel_mapping`` (``other`` → 0,
-        ``non_invasive`` → 1, …). This is the default.
-      * ``num_classes == len(pixel_mapping)`` — **every** label (including ``background``)
-        is a real class, taking class index = its order (``background`` → 0).
-
-    * ``background`` **absent** — there is no ignore-label name, so **every** named label
-      is a real class (index = order) and ``num_classes`` (when given) must equal the
-      mapping size. A background-free vocabulary like ``{tumor: 2}`` therefore maps the
-      single named value to class 0; every unlisted raw value (the unannotated regions,
-      expressed without naming them) collapses to ``ignore_index``.
-
-    Any raw pixel value not present in ``pixel_mapping`` always maps to ``ignore_index`` —
-    a stray value never silently aliases an in-range class.
-
-    Returns the 256-entry LUT (indexable by a raw uint8/int mask) and the resolved
-    ``num_classes`` it implies.
-    """
-    names = list(pixel_mapping)
-    has_background = "background" in pixel_mapping
-    # ``background`` is the ignore label only in the (size - 1) mode; in every other case
-    # (no background, or num_classes == size) every named label is a real class.
-    background_is_class = (not has_background) or (
-        num_classes is not None and int(num_classes) == len(names)
-    )
-    if background_is_class:
-        classes = names  # every label is a real class, background (if any) takes its order
-    else:
-        classes = [name for name in names if name != "background"]
-    if num_classes is not None and len(classes) != int(num_classes):
-        hint = (
-            "Provide a pixel_mapping whose class count equals num_classes."
-            if not has_background
-            else (
-                "Provide a pixel_mapping whose class count is either num_classes "
-                "(background is a class) or num_classes + 1 (background is the "
-                "unannotated/ignore label)."
+def _raw_values(owner: str, values: Any) -> list[int]:
+    """Normalize one ``classes`` entry / the ``ignore`` list to raw single-byte values."""
+    if not isinstance(values, (list, tuple)):
+        values = [values]
+    for value in values:
+        is_integer = isinstance(value, (int, np.integer)) and not isinstance(value, bool)
+        if not is_integer or not 0 <= value <= 255:
+            raise ValueError(
+                f"'{owner}' raw values must be integers in [0, 255], got {value!r}."
             )
-        )
+    return [int(value) for value in values]
+
+
+def build_label_remap(
+    classes: Mapping[str, Any],
+    *,
+    ignore: Sequence[int] = (),
+    ignore_index: int = 255,
+) -> np.ndarray:
+    """Build the raw-pixel → class-index lookup table from ``task.params.classes``/``ignore``.
+
+    Annotation rasters carry the *dataset's own* pixel vocabulary (e.g. BEETLE's
+    ``{0 unannotated, 1 other, 2 non-invasive, 3 invasive, 4 necrosis}``); the segmentation
+    head needs contiguous class indices ``[0, num_classes)``. ``classes`` maps each class
+    name to the raw value(s) that form it — several values merge into one class — and the
+    class index is the declaration order. ``ignore`` lists the raw values excluded from
+    loss and metrics (they map to ``ignore_index``). No name is reserved.
+
+    A raw value may belong to one class or to ``ignore``, never two. Every value declared
+    nowhere maps to :data:`UNDECLARED_LABEL`.
+
+    Returns the 256-entry LUT (indexable by a raw uint8/int mask).
+    """
+    if not classes:
+        raise ValueError("classes must name at least one class.")
+    lut = np.full(256, UNDECLARED_LABEL, dtype=np.int64)
+    owners: dict[int, str] = {}
+
+    def assign(owner: str, values: Any, target: int) -> None:
+        for value in _raw_values(owner, values):
+            if value in owners:
+                raise ValueError(
+                    f"'{owners[value]}' and '{owner}' both list raw value {value}; a raw "
+                    "value belongs to exactly one class or to ignore."
+                )
+            owners[value] = owner
+            lut[value] = target
+
+    for class_index, (name, values) in enumerate(classes.items()):
+        if isinstance(values, (list, tuple)) and not values:
+            raise ValueError(f"class '{name}' lists no raw values.")
+        assign(str(name), values, class_index)
+    assign("ignore", list(ignore), int(ignore_index))
+    return lut
+
+
+#: ``task.params`` keys that define the class scheme rather than configure the head.
+CLASS_SCHEME_KEYS = ("num_classes", "classes", "ignore")
+
+
+def resolve_class_scheme(
+    task_params: Mapping[str, Any], *, annotation_rasters: bool
+) -> tuple[int, tuple[str, ...], np.ndarray | None]:
+    """Resolve ``(num_classes, class names, raw-pixel → class-index LUT)`` for a run.
+
+    ``task.params.classes`` and ``task.params.ignore`` define the training targets (see
+    :func:`build_label_remap`). They are independent of
+    ``preprocessing.masks.pixel_mapping``, which only governs ROI sampling. Without
+    ``classes`` the masks must already hold contiguous class indices (LUT ``None``) — only
+    possible for pre-cropped tiles, since ``annotation_rasters`` carry the dataset's own
+    values.
+    """
+    classes = task_params.get("classes")
+    ignore = task_params.get("ignore")
+    num_classes = task_params.get("num_classes")
+    if classes is None:
+        if annotation_rasters:
+            raise ValueError(
+                "segmentation from annotation rasters (preprocessing.masks) requires "
+                "task.params.classes: name each class and the raw mask value(s) that form "
+                "it, e.g. classes: {tumor: [1, 2], stroma: [3]} with ignore: [0] for the "
+                "values to exclude from loss and metrics."
+            )
+        if ignore is not None:
+            raise ValueError("task.params.ignore needs task.params.classes.")
+        if num_classes is None:
+            raise ValueError(
+                "dataset_type='segmentation' requires task.params.classes (or "
+                "task.params.num_classes when masks already hold class indices)."
+            )
+        num_classes = int(num_classes)
+        return num_classes, tuple(f"class_{index}" for index in range(num_classes)), None
+
+    if not isinstance(classes, Mapping):
+        raise ValueError("task.params.classes must map class name → raw mask value(s).")
+    lut = build_label_remap(
+        classes, ignore=ignore or (), ignore_index=int(task_params.get("ignore_index", 255))
+    )
+    if num_classes is not None and int(num_classes) != len(classes):
         raise ValueError(
-            f"masks.pixel_mapping implies {len(classes)} class(es) but num_classes="
-            f"{num_classes}. {hint}"
+            f"task.params.num_classes={num_classes} disagrees with the {len(classes)} "
+            "classes in task.params.classes; drop num_classes (it is derived)."
         )
-    lut = np.full(256, int(ignore_index), dtype=np.int64)
-    for class_index, name in enumerate(classes):
-        lut[int(pixel_mapping[name])] = class_index
-    if has_background and not background_is_class:
-        lut[int(pixel_mapping["background"])] = int(ignore_index)
-    return lut, len(classes)
+    return len(classes), tuple(str(name) for name in classes), lut
 
 
 def _is_flat(path: str | Path, spacing_um: float | None) -> bool:

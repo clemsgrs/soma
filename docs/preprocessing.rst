@@ -122,20 +122,10 @@ with unique values; ``min_coverage`` and ``colors`` may only name mapped classes
 Coverage fractions must lie in ``[0, 1]`` and colors must be valid RGB triples.
 No reserved label name is required.
 
-For segmentation, :func:`soma.dense.reader.build_label_remap` assigns contiguous
-class indices in mapping order. Unlisted raw values map to ``ignore_index``.
-When ``background`` is present and the task has one fewer class than the mapping,
-it also maps to ``ignore_index``. For example, with one task class:
-
-.. code-block:: yaml
-
-   preprocessing:
-     masks:
-       pixel_mapping: {background: 1, tumor: 2}   # raw value 1 -> ignore, 2 -> class 0
-       min_coverage: {tumor: 0.5}
-
-When the task class count equals the mapping size, every label is a real class
-in mapping order, including ``background`` if present.
+These labels only select tiles and ROIs. For segmentation, the classes the model
+predicts are declared separately under ``task.params.classes`` and
+``task.params.ignore`` (:doc:`segmentation`), so a label here may be split or
+merged differently at training time.
 
 Annotation-restricted bags (``dataset_type: slide`` or ``patient``)
 -------------------------------------------------------------------

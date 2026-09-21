@@ -43,6 +43,13 @@ _PIXEL_MAPPING = {
     "invasive_epithelium": 3,
     "necrosis": 4,
 }
+_CLASSES = {
+    "other": [1],
+    "non_invasive_epithelium": [2],
+    "invasive_epithelium": [3],
+    "necrosis": [4],
+}
+_IGNORE = [0]
 _MIN_COVERAGE = {
     "other": 0.05,
     "non_invasive_epithelium": 0.05,
@@ -424,7 +431,7 @@ def run_representative_extraction_parity(
             "unchanged": True,
         }
     stores = resumed_stores
-    label_remap, _ = build_label_remap(_PIXEL_MAPPING, num_classes=4)
+    label_remap = build_label_remap(_CLASSES, ignore=_IGNORE)
     head = SegmentationHead(
         num_classes=4,
         geometry=compute_dense_geometry(target_size=512, patch_size=14),

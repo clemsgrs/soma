@@ -67,6 +67,7 @@ from soma.dataset import (
     load_manifest,
 )
 from soma.dense.live import LiveSegmentationSource
+from soma.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
 from soma.evaluation.metrics import resolve_metrics
 from soma.evaluation.metrics import compute_metrics
 from soma.evaluation.dense_artifacts import DenseArtifactWriter
@@ -1414,43 +1415,6 @@ def _dense_spacings_match(a: float | None, b: float | None, *, tol: float = 1e-9
     return abs(float(a) - float(b)) <= tol
 
 
-def _segmentation_label_remap(masks: "MasksConfig | None", num_classes: int, ignore_index: int):
-    """Derive the raw-pixel → class-index LUT for slide-manifest masks (None otherwise).
-
-    Slide-manifest annotation rasters carry the dataset's own pixel vocabulary, so soma
-    remaps them to contiguous class indices (+ ignore) from ``masks.pixel_mapping``. The
-    pre-cropped-tile / flat-mask path has no ``masks:`` block and stays remap-free. Fails
-    loud if the mapping's class count disagrees with ``task.num_classes`` (see
-    :func:`soma.dense.reader.build_label_remap` for how ``background`` — when present —
-    selects the ignore-label mode).
-    """
-    if masks is None:
-        return None
-    from soma.dense.reader import build_label_remap
-
-    lut, _ = build_label_remap(
-        masks.pixel_mapping, num_classes=num_classes, ignore_index=ignore_index
-    )
-    return lut
-
-
-def _segmentation_class_vocabulary(
-    masks: "MasksConfig | None", num_classes: int
-) -> tuple[str, ...]:
-    """Resolve the class-index vocabulary recorded beside confusion matrices."""
-    if masks is None:
-        return tuple(f"class_{index}" for index in range(num_classes))
-    names = list(masks.pixel_mapping)
-    if "background" in masks.pixel_mapping and len(names) == num_classes + 1:
-        names = [name for name in names if name != "background"]
-    if len(names) != num_classes:
-        raise ValueError(
-            "segmentation class vocabulary disagrees with num_classes: "
-            f"{names} vs {num_classes}"
-        )
-    return tuple(names)
-
-
 def _build_segmentation_head(
     *,
     task: TaskConfig,
@@ -1460,14 +1424,14 @@ def _build_segmentation_head(
     geometry,
 ) -> SegmentationHead:
     """Build the fold-independent segmentation target contract."""
-    seg_params = dict(task.params)
-    num_classes = seg_params.pop("num_classes", None)
-    if num_classes is None:
-        raise ValueError(
-            "dataset_type='segmentation' requires task.params.num_classes "
-            "(the number of segmentation classes)."
-        )
-    num_classes = int(num_classes)
+    num_classes, _, label_remap = resolve_class_scheme(
+        task.params, annotation_rasters=masks is not None
+    )
+    seg_params = {
+        key: value
+        for key, value in task.params.items()
+        if key not in CLASS_SCHEME_KEYS
+    }
     mask_spacing_um = (
         preprocessing.requested_spacing_um if preprocessing is not None else None
     )
@@ -1481,9 +1445,7 @@ def _build_segmentation_head(
         ),
         backend=preprocessing.mask_backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
-        label_remap=_segmentation_label_remap(
-            masks, num_classes, int(seg_params.get("ignore_index", 255))
-        ),
+        label_remap=label_remap,
         **seg_params,
     )
 
@@ -1666,6 +1628,9 @@ def train_one_segmentation_fold(
         geometry=geometry,
     )
     num_classes = head.num_classes
+    class_vocabulary = resolve_class_scheme(
+        task.params, annotation_rasters=masks is not None
+    )[1]
     target_fn = head.extract_targets
 
     # Feature adaptor (issue #286), fit BEFORE the decoder is constructed from the Support
@@ -1813,7 +1778,7 @@ def train_one_segmentation_fold(
             save_confusion_evidence=True,
             write_dense_artifacts=False,
             fold=fold,
-            class_vocabulary=_segmentation_class_vocabulary(masks, num_classes),
+            class_vocabulary=class_vocabulary,
         )
         return FoldResult(
             fold=fold,
@@ -1850,7 +1815,7 @@ def train_one_segmentation_fold(
         save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
         save_confusion_evidence=evaluation.save_segmentation_confusion_evidence,
         fold=fold,
-        class_vocabulary=_segmentation_class_vocabulary(masks, num_classes),
+        class_vocabulary=class_vocabulary,
     )
     test_reports = {
         split_name: _evaluate_segmentation(
@@ -2327,14 +2292,14 @@ def train_one_pixel_classifier_fold(
     all_records = fold_plan.all_records
     feature_store.validate_coverage([r.sample_id for r in all_records])
 
-    seg_params = dict(task.params)
-    num_classes = seg_params.pop("num_classes", None)
-    if num_classes is None:
-        raise ValueError(
-            "dataset_type='segmentation' requires task.params.num_classes "
-            "(the number of segmentation classes)."
-        )
-    num_classes = int(num_classes)
+    num_classes, _, label_remap = resolve_class_scheme(
+        task.params, annotation_rasters=masks is not None
+    )
+    seg_params = {
+        key: value
+        for key, value in task.params.items()
+        if key not in CLASS_SCHEME_KEYS
+    }
 
     # Geometry + feature_dim from one reference sample; assert cohort uniformity.
     ref_id = train_records[0].sample_id
@@ -2376,9 +2341,7 @@ def train_one_pixel_classifier_fold(
         ),
         backend=preprocessing.mask_backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
-        label_remap=_segmentation_label_remap(
-            masks, num_classes, int(seg_params.get("ignore_index", 255))
-        ),
+        label_remap=label_remap,
         **seg_params,
     )
 

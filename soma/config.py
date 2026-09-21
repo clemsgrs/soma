@@ -923,17 +923,17 @@ class PixelClassifierConfig:
 
 @dataclass(frozen=True)
 class MasksConfig:
-    """Annotation-mask → class scheme for the segmentation slide-manifest input mode.
+    """Annotation-mask label vocabulary governing which tiles / ROIs are sampled.
 
     Mirrors hs2p's ``masks`` config 1:1 and is forwarded untouched into hs2p annotation
     sampling (design — segmentation ingestion §5/§8). Its presence selects the slide-manifest
     input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), label_mask_path (annotation
     WSI))`` and soma samples ROIs from each slide, instead of the pre-cropped tile manifest.
 
-    * ``pixel_mapping`` — class name → mask pixel value; must be non-empty with unique pixel
-      values. No reserved label name is required: a background-free vocabulary like
-      ``{tumor: 2}`` is accepted (``background`` stays an opt-in name for the ignore-label
-      remap mode — see :func:`soma.dense.reader.build_label_remap`).
+    * ``pixel_mapping`` — label name → mask pixel value; must be non-empty with unique pixel
+      values. No label name is reserved. It only selects samples: the classes a
+      segmentation model predicts are ``task.params.classes`` / ``ignore`` (see
+      :func:`soma.dense.reader.resolve_class_scheme`).
     * ``min_coverage`` — per-class minimum tile coverage (in ``[0, 1]``) to sample a tile;
       keys must be a subset of ``pixel_mapping``.
     * ``colors`` — optional class → ``[r, g, b]`` (or ``None``) overlay color for mask previews;
@@ -1622,6 +1622,15 @@ class PipelineConfig:
                     "dataset_type='segmentation' requires task.name='segmentation', "
                     f"got {self.task.name!r}."
                 )
+            # The training class scheme (task.params.classes / ignore) is validated here so
+            # a bad scheme fails at config load, not after extraction. A bare num_classes
+            # (masks already hold class indices) stays the pipeline's to require.
+            task_params = self.task.params
+            annotation_rasters = self.preprocessing.masks is not None
+            if annotation_rasters or "classes" in task_params or "ignore" in task_params:
+                from soma.dense.reader import resolve_class_scheme
+
+                resolve_class_scheme(task_params, annotation_rasters=annotation_rasters)
             # Cross-default feature_kind from the component when the user left it auto
             # (None): a pixel_classifier wants per-head CLS-attention, a decoder wants the
             # patch-feature grid. Both remain overridable (an explicit feature_kind wins).

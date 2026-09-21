@@ -10,6 +10,15 @@ PIXEL_MAPPING = {
     "invasive_epithelium": 3,
     "necrosis": 4,
 }
+# Training targets (task.params.classes / ignore): the four annotated classes, with the
+# unannotated raw value 0 excluded from loss and metrics.
+CLASSES = {
+    "other": [1],
+    "non_invasive_epithelium": [2],
+    "invasive_epithelium": [3],
+    "necrosis": [4],
+}
+IGNORE = [0]
 ANNOTATED_LABEL_NAME_BY_VALUE = {
     value: name for name, value in PIXEL_MAPPING.items() if value != 0
 }
@@ -18,6 +27,8 @@ __all__ = [
     "ANNOTATED_LABEL_NAME_BY_VALUE",
     "ARM_NAMES",
     "BATCH_SIZE_CANDIDATES",
+    "CLASSES",
+    "IGNORE",
     "NUM_FOLDS",
     "PIXEL_MAPPING",
 ]
