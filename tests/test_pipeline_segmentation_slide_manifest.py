@@ -182,7 +182,10 @@ def _patch_extraction(monkeypatch):
     _patch_dense_model(monkeypatch)
 
     # Mask region read → a deterministic label window per ROI origin.
-    def _fake_mask_region(path, *, location, size, spacing_um, backend, tolerance):
+    mask_reads: list[dict] = []
+
+    def _fake_mask_region(path, *, location, size, spacing_um, **kwargs):
+        mask_reads.append(kwargs)
         x, _ = location
         w, h = size
         return np.full(
@@ -200,6 +203,7 @@ def _patch_extraction(monkeypatch):
         return np.zeros((h, w, 3), dtype=np.uint8)
 
     monkeypatch.setattr(reader_mod, "read_image_region_at_spacing", _fake_image_region)
+    return mask_reads
 
 
 def _config(
@@ -240,10 +244,17 @@ def _config(
 def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     from soma.pipeline import Pipeline
 
-    _patch_extraction(monkeypatch)
+    mask_reads = _patch_extraction(monkeypatch)
     manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
     pipeline = Pipeline(_config(tmp_path, manifest, splits, masks=None))
     result = pipeline.run()
+
+    # Each ROI mask is aligned to its own slide and read against the sampling vocabulary.
+    assert mask_reads
+    assert all(read["pixel_mapping"] == PIXEL_MAPPING for read in mask_reads)
+    assert {str(read["reference_path"]) for read in mask_reads} == {
+        f"/fake/{sid}.tif" for sid in ["s0", "s1", "s2", "s3"]
+    }
 
     assert "test/mean_dice" in result.summary
     assert result.fold_results[0].test_reports["test"].metrics["mean_dice"] >= 0.0
@@ -302,10 +313,12 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     )
     observed: dict[str, set[float]] = {}
     observed_backends: set[str] = set()
+    observed_slide_backends: set[str] = set()
 
-    def _fake_mask(path, *, location, size, spacing_um, backend, tolerance):
+    def _fake_mask(path, *, location, size, spacing_um, backend, **kwargs):
         observed.setdefault(Path(path).stem, set()).add(spacing_um)
         observed_backends.add(backend)
+        observed_slide_backends.add(kwargs["reference_backend"])
         return np.zeros((size[1], size[0]), dtype=np.int64)
 
     monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake_mask)
@@ -325,6 +338,8 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     assert observed["s0_mask"] == {0.5}
     assert observed["s3_mask"] == {0.657476464}
     assert observed_backends == {"openslide"}
+    # The slide each mask is aligned to is opened with the slide reader, not the mask's.
+    assert observed_slide_backends == {"auto"}
 
 
 def test_slide_manifest_propagates_slide_splits_to_rois(tmp_path: Path, monkeypatch):
@@ -640,7 +655,7 @@ def test_extract_targets_reads_mask_region_when_record_has_region(tmp_path: Path
 
     captured = {}
 
-    def _fake(path, *, location, size, spacing_um, backend, tolerance):
+    def _fake(path, *, location, size, spacing_um, **kwargs):
         captured.update(location=location, size=size, spacing_um=spacing_um)
         return np.zeros((size[1], size[0]), dtype=np.int64)
 
@@ -669,7 +684,7 @@ def test_extract_targets_uses_native_spacing_for_a_coarser_roi(tmp_path: Path, m
 
     captured = {}
 
-    def _fake(path, *, location, size, spacing_um, backend, tolerance):
+    def _fake(path, *, location, size, spacing_um, **kwargs):
         captured.update(location=location, size=size, spacing_um=spacing_um)
         return np.zeros((size[1], size[0]), dtype=np.int64)
 

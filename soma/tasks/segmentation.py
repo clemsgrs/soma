@@ -10,6 +10,7 @@ target-resolution logits — no chance of three divergent resize paths.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -20,6 +21,7 @@ from torch import Tensor
 from soma.dense.reader import load_mask as load_mask
 from soma.dense.reader import (
     UNDECLARED_LABEL,
+    accepted_mask_values,
     read_mask_at_spacing,
     read_mask_region_at_spacing,
 )
@@ -87,8 +89,10 @@ class SegmentationHead(TaskHead):
         spacing_um: float | None = None,
         spacing_policy: str = "strict",
         backend: str = "auto",
+        image_backend: str = "auto",
         tolerance: float = 0.05,
         label_remap: "np.ndarray | None" = None,
+        pixel_mapping: Mapping[str, int] | None = None,
     ) -> None:
         super().__init__()
         if num_classes < 1:
@@ -132,6 +136,8 @@ class SegmentationHead(TaskHead):
             )
         self._spacing_policy = spacing_policy
         self._backend = backend
+        # Reads each mask's image (the slide for an ROI) to align the mask to it.
+        self._image_backend = image_backend
         self._tolerance = float(tolerance)
         # Optional raw-pixel → class-index LUT built from task.params.classes / ignore
         # (see soma.dense.reader.build_label_remap). None ⇒ masks are already contiguous
@@ -143,9 +149,25 @@ class SegmentationHead(TaskHead):
                     f"label_remap must be a length-256 LUT, got shape {label_remap.shape}."
                 )
         self._label_remap = label_remap
+        # The label vocabulary hs2p reads spacing-aware masks against: the sampling
+        # pixel_mapping for slide-manifest ROIs, otherwise the values this head accepts.
+        self._mask_vocabulary = (
+            dict(pixel_mapping)
+            if pixel_mapping is not None
+            else accepted_mask_values(
+                num_classes=self.num_classes,
+                ignore_index=self.ignore_index,
+                label_remap=label_remap,
+            )
+        )
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
+
+    @property
+    def mask_vocabulary(self) -> dict[str, int]:
+        """The label vocabulary spacing-aware masks are read against."""
+        return dict(self._mask_vocabulary)
 
     @property
     def target_identity(self) -> dict[str, object]:
@@ -193,32 +215,43 @@ class SegmentationHead(TaskHead):
             if self._spacing_um is not None
             else None
         )
-        if record.region is not None:
-            # Slide-manifest ROI: label_mask_path is the whole-slide annotation raster; read the
-            # ROI's window at the run's spacing/target_size so it registers to the grid.
-            if self._spacing_um is None:
-                raise ValueError(
-                    f"segmentation ROI '{record.sample_id}' has a region but no spacing; "
-                    "slide-manifest masks require preprocessing.requested_spacing_um."
+        if record.region is not None and self._spacing_um is None:
+            raise ValueError(
+                f"segmentation ROI '{record.sample_id}' has a region but no spacing; "
+                "slide-manifest masks require preprocessing.requested_spacing_um."
+            )
+        _, _, target_h, target_w = self._crop_box
+        # A spacing-aware mask is aligned to its image (the slide for an ROI) and read on
+        # the grid's target_size, so it registers whatever the mask's own resolution.
+        aligned_to = {
+            "reference_path": record.image_path,
+            "reference_backend": self._image_backend,
+            "spacing_at_level_0": record.spacing_at_level_0,
+            "pixel_mapping": self._mask_vocabulary,
+            "backend": self._backend,
+        }
+        try:
+            if record.region is not None:
+                # Slide-manifest ROI: label_mask_path is the whole-slide annotation raster;
+                # read the ROI's window at the run's spacing.
+                array = read_mask_region_at_spacing(
+                    record.label_mask_path,
+                    location=record.region,
+                    size=(target_w, target_h),
+                    spacing_um=effective_spacing,
+                    **aligned_to,
                 )
-            _, _, target_h, target_w = self._crop_box
-            array = read_mask_region_at_spacing(
-                record.label_mask_path,
-                location=record.region,
-                size=(target_w, target_h),
-                spacing_um=effective_spacing,
-                backend=self._backend,
-                tolerance=self._tolerance,
-            )
-        else:
-            # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
-            # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
-            array = read_mask_at_spacing(
-                record.label_mask_path,
-                spacing_um=effective_spacing,
-                backend=self._backend,
-                tolerance=self._tolerance,
-            )
+            else:
+                # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
+                # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px.
+                array = read_mask_at_spacing(
+                    record.label_mask_path,
+                    spacing_um=effective_spacing,
+                    size=(target_w, target_h),
+                    **aligned_to,
+                )
+        except ValueError as error:
+            raise ValueError(f"segmentation sample '{record.sample_id}': {error}") from error
         array = np.ascontiguousarray(array).astype(np.int64)
         if self._label_remap is not None:
             # Raw annotation rasters carry the dataset's own pixel vocabulary; remap onto

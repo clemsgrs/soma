@@ -27,13 +27,15 @@ SPACING_UM = 0.5
 PIXEL_MAPPING = {"background": 0, "tumor": 1}
 
 
-def _write_pyramidal_tiff(path: Path, array: np.ndarray, *, photometric: str) -> None:
+def _write_pyramidal_tiff(
+    path: Path, array: np.ndarray, *, photometric: str, spacing_um: float = SPACING_UM
+) -> None:
     """Write a small multiresolution (subifds) TIFF carrying a level-0 spacing tag.
 
     ``resolution`` is pixels-per-cm, so spacing(µm/px) = 1e4 / res — readers (cucim/openslide)
-    recover ``SPACING_UM`` at level 0, which is all the slide-manifest sampling path needs.
+    recover ``spacing_um`` at level 0, which is all the slide-manifest sampling path needs.
     """
-    res = 1e4 / SPACING_UM  # pixels per centimeter
+    res = 1e4 / spacing_um  # pixels per centimeter
     levels = [array]
     cur = array
     for _ in range(2):
@@ -128,8 +130,9 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
         location=(x, y),
         size=(TARGET, TARGET),
         spacing_um=SPACING_UM,
+        reference_path=slide_path,
+        pixel_mapping=PIXEL_MAPPING,
         backend="auto",
-        tolerance=0.07,
     )
     assert region.shape == (TARGET, TARGET)
     assert region.size > 0
@@ -142,8 +145,135 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
             location=(x, y),
             size=(TARGET, TARGET),
             spacing_um=SPACING_UM,
+            reference_path=slide_path,
+            pixel_mapping=PIXEL_MAPPING,
             backend="auto",
-            tolerance=0.07,
         )
         union_labels.update(int(v) for v in np.unique(win))
     assert 1 in union_labels, "no sampled ROI window contained the tumor label"
+
+
+def _make_half_resolution_mask_fixture(root: Path) -> tuple[Path, Path]:
+    """A 256x256 slide at 0.5 µm/px and its label mask at half that resolution.
+
+    The 128x128 mask (1.0 µm/px) marks tumor in the slide's top-right quadrant
+    (slide x in [128, 256), y in [0, 128)), i.e. mask x in [64, 128), y in [0, 64).
+    """
+    image = np.full((256, 256, 3), 220, np.uint8)
+    mask = np.zeros((128, 128), np.uint8)
+    mask[0:64, 64:128] = 1
+    slide_path = root / "slide.tif"
+    label_mask_path = root / "mask_half.tif"
+    _write_pyramidal_tiff(slide_path, image, photometric="rgb")
+    _write_pyramidal_tiff(
+        label_mask_path, mask, photometric="minisblack", spacing_um=2 * SPACING_UM
+    )
+    return slide_path, label_mask_path
+
+
+def test_mask_region_location_is_in_slide_pixels_for_a_coarser_mask(tmp_path: Path):
+    """A region's location is in the *slide's* level-0 pixels, even when the mask's level
+    0 is coarser. hs2p 4.x read it in mask-file pixels, so slide (128, 0) landed at slide
+    (256, 0) — off the tumor quadrant."""
+    from soma.dense.reader import read_mask_region_at_spacing
+
+    slide_path, label_mask_path = _make_half_resolution_mask_fixture(tmp_path)
+
+    def region(x: int, y: int) -> np.ndarray:
+        return read_mask_region_at_spacing(
+            label_mask_path,
+            location=(x, y),
+            size=(TARGET, TARGET),
+            spacing_um=SPACING_UM,
+            reference_path=slide_path,
+            pixel_mapping=PIXEL_MAPPING,
+            backend="auto",
+        )
+
+    np.testing.assert_array_equal(region(128, 0), np.ones((TARGET, TARGET), np.uint8))
+    np.testing.assert_array_equal(region(64, 0), np.zeros((TARGET, TARGET), np.uint8))
+    np.testing.assert_array_equal(region(128, 128), np.zeros((TARGET, TARGET), np.uint8))
+
+
+def test_full_mask_read_registers_a_coarser_mask_to_the_image_grid(tmp_path: Path):
+    """A pre-cropped pyramidal mask coarser than its image is read on the image's grid."""
+    from soma.dense.reader import read_mask_at_spacing
+
+    slide_path, label_mask_path = _make_half_resolution_mask_fixture(tmp_path)
+    labels = read_mask_at_spacing(
+        label_mask_path,
+        spacing_um=SPACING_UM,
+        size=(256, 256),
+        reference_path=slide_path,
+        reference_backend="openslide",
+        pixel_mapping=PIXEL_MAPPING,
+        backend="auto",
+    )
+    expected = np.zeros((256, 256), np.uint8)
+    expected[0:128, 128:256] = 1
+    np.testing.assert_array_equal(labels, expected)
+
+
+def test_mask_read_rejects_a_value_outside_the_declared_vocabulary(tmp_path: Path):
+    from soma.dense.reader import read_mask_region_at_spacing
+
+    slide_path, label_mask_path = _make_half_resolution_mask_fixture(tmp_path)
+    with pytest.raises(ValueError, match="undeclared label IDs"):
+        read_mask_region_at_spacing(
+            label_mask_path,
+            location=(128, 0),
+            size=(TARGET, TARGET),
+            spacing_um=SPACING_UM,
+            reference_path=slide_path,
+            pixel_mapping={"background": 0},
+            backend="auto",
+        )
+
+
+def test_mask_read_rejects_a_mask_that_does_not_cover_the_slide(tmp_path: Path):
+    from soma.dense.reader import read_mask_at_spacing
+
+    slide_path, _ = _make_half_resolution_mask_fixture(tmp_path)
+    narrow = tmp_path / "narrow_mask.tif"
+    _write_pyramidal_tiff(
+        narrow, np.zeros((128, 96), np.uint8), photometric="minisblack", spacing_um=2 * SPACING_UM
+    )
+    with pytest.raises(ValueError, match="Mask alignment failed"):
+        read_mask_at_spacing(
+            narrow,
+            spacing_um=SPACING_UM,
+            size=(256, 256),
+            reference_path=slide_path,
+            pixel_mapping=PIXEL_MAPPING,
+            backend="auto",
+        )
+
+
+def test_segmentation_coverage_summarizes_every_label_of_the_fixture(tmp_path: Path):
+    """The coverage driver against real hs2p: every pixel_mapping label, background too."""
+    import pandas as pd
+
+    from soma.curation.segmentation_coverage import summarize_coverage
+
+    slide_path, label_mask_path = _make_fixture(tmp_path)
+    manifest = pd.DataFrame(
+        {
+            "sample_id": ["s0"],
+            "image_path": [str(slide_path)],
+            "label_mask_path": [str(label_mask_path)],
+        }
+    )
+
+    row = summarize_coverage(
+        manifest,
+        pixel_mapping=PIXEL_MAPPING,
+        min_coverage={"tumor": 0.5},
+        tile_size_px=TARGET,
+        spacing_um=SPACING_UM,
+        seg_downsample=4,
+    ).iloc[0]
+
+    # 256 px at 0.5 µm/px is 0.128 mm a side; tumor fills the top-left quarter.
+    assert row["area_mm2_tumor"] == pytest.approx(0.128**2 / 4)
+    assert row["area_mm2_background"] == pytest.approx(0.128**2 * 3 / 4)
+    assert row["est_tiles_tumor"] == 4

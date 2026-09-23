@@ -541,6 +541,7 @@ def _make_live_loaders(
     *,
     num_classes: int,
     ignore_index: int,
+    mask_vocabulary: dict[str, int],
 ) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
     """Live-path loaders: augmentation on the **train** split only, deterministic eval.
 
@@ -563,6 +564,7 @@ def _make_live_loaders(
             tolerance=source.tolerance,
             num_classes=num_classes,
             ignore_index=ignore_index,
+            mask_vocabulary=mask_vocabulary,
             augment=augment,
         )
 
@@ -1445,8 +1447,10 @@ def _build_segmentation_head(
             preprocessing.spacing_policy if preprocessing is not None else "strict"
         ),
         backend=preprocessing.mask_backend if preprocessing is not None else "auto",
+        image_backend=preprocessing.backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         label_remap=label_remap,
+        pixel_mapping=masks.pixel_mapping if masks is not None else None,
         **seg_params,
     )
 
@@ -1727,6 +1731,7 @@ def train_one_segmentation_fold(
             training,
             num_classes=num_classes,
             ignore_index=head.ignore_index,
+            mask_vocabulary=head.mask_vocabulary,
         )
     else:
         model = SegmentationModel(
@@ -2342,8 +2347,10 @@ def train_one_pixel_classifier_fold(
             preprocessing.spacing_policy if preprocessing is not None else "strict"
         ),
         backend=preprocessing.mask_backend if preprocessing is not None else "auto",
+        image_backend=preprocessing.backend if preprocessing is not None else "auto",
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         label_remap=label_remap,
+        pixel_mapping=masks.pixel_mapping if masks is not None else None,
         **seg_params,
     )
 

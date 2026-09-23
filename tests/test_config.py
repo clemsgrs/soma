@@ -805,6 +805,38 @@ def test_segmentation_slide_manifest_requires_task_classes():
         )
 
 
+def test_segmentation_slide_manifest_rejects_class_value_missing_from_pixel_mapping():
+    """hs2p 5 reads annotation rasters against the closed pixel_mapping vocabulary, so a
+    raw value the training scheme names must be declared there too."""
+    with pytest.raises(
+        ValueError, match=r"task\.params\.classes 'tumor' lists raw value 7.*pixel_mapping"
+    ):
+        _seg_config(
+            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+            task=TaskConfig(name="segmentation", params={"classes": {"tumor": [1, 7]}}),
+        )
+
+
+def test_segmentation_slide_manifest_rejects_ignored_value_missing_from_pixel_mapping():
+    with pytest.raises(
+        ValueError, match=r"task\.params\.ignore lists raw value 9.*pixel_mapping"
+    ):
+        _seg_config(
+            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+            task=TaskConfig(
+                name="segmentation", params={"classes": {"tumor": [1]}, "ignore": [0, 9]}
+            ),
+        )
+
+
+def test_segmentation_pre_cropped_classes_need_no_pixel_mapping():
+    # Without a masks block there is no sampling vocabulary to check against.
+    cfg = _seg_config(
+        task=TaskConfig(name="segmentation", params={"classes": {"tumor": [7]}, "ignore": [9]})
+    )
+    assert cfg.preprocessing.masks is None
+
+
 def test_segmentation_rejects_raw_value_in_two_classes():
     with pytest.raises(ValueError, match="'tumor' and 'stroma' both list raw value 2"):
         _seg_config(
@@ -989,13 +1021,15 @@ def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
     save_config(base, path)
     raw = yaml.safe_load(path.read_text())
     raw["preprocessing"]["masks"] = {
-        "pixel_mapping": [{"background": 0}, {"tumor": 1}, {"stroma": 2}],
+        "pixel_mapping": [{"background": 0}, {"tumor": 1}, {"stroma": 2}, {"necrosis": 3}],
         "min_coverage": [{"tumor": 0.1}],
     }
     raw["task"]["params"] = dict(_CLASS_SCHEME)
     path.write_text(yaml.safe_dump(raw))
     loaded = load_config(path)
-    assert loaded.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1, "stroma": 2}
+    assert loaded.preprocessing.masks.pixel_mapping == {
+        "background": 0, "tumor": 1, "stroma": 2, "necrosis": 3
+    }
     assert loaded.preprocessing.masks.min_coverage == {"tumor": 0.1}
 
 

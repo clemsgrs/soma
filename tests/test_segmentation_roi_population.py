@@ -276,3 +276,32 @@ def test_resolved_mask_backend_changes_population_identity(
     asap = resolve_segmentation_roi_population(**kwargs)
 
     assert openslide.cache_key != asap.cache_key
+
+
+def test_mask_backend_resolves_like_hs2p_mask_without_requiring_spacing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """hs2p 5 opens a mask without spacing metadata (untagged TIFF), so the population
+    key must resolve its backend the same way instead of failing on missing spacing."""
+    seen = []
+
+    def resolve_backend(backend, **kwargs):
+        seen.append((backend, kwargs))
+        return type("Selection", (), {"backend": "openslide"})()
+
+    monkeypatch.setattr(population_module, "resolve_backend", resolve_backend)
+    mask_path = tmp_path / "untagged_mask.tif"
+
+    backend = population_module._resolved_mask_backend(
+        str(mask_path), requested_backend="auto", spacing_aware=True
+    )
+
+    assert backend == "openslide"
+    assert seen == [("auto", {"wsi_path": mask_path, "require_spacing": False})]
+
+
+def test_mask_reader_schema_tracks_hs2p_5_mask_reads() -> None:
+    # hs2p 5 aligns masks to their slide and resamples by coordinate, so populations
+    # counted by the 4.x reader must not be reused.
+    assert population_module._MASK_READER_SCHEMA_VERSION == 2
