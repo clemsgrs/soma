@@ -92,7 +92,7 @@ class SegmentationHead(TaskHead):
         image_backend: str = "auto",
         tolerance: float = 0.05,
         label_remap: "np.ndarray | None" = None,
-        pixel_mapping: Mapping[str, int] | None = None,
+        pixel_mapping: Mapping[str, int | list[int]] | None = None,
     ) -> None:
         super().__init__()
         if num_classes < 1:

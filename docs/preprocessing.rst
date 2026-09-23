@@ -144,10 +144,25 @@ See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
 Annotation labels
 -----------------
 
-``pixel_mapping`` maps class names to raw mask values. It must be non-empty
-with unique values; ``min_coverage`` and ``colors`` may only name mapped classes.
-Coverage fractions must lie in ``[0, 1]`` and colors must be valid RGB triples.
-No reserved label name is required.
+``pixel_mapping`` maps class names to raw mask values. It must be non-empty,
+and each value is an integer in ``[0, 255]`` listed under one label only;
+``min_coverage`` and ``colors`` may only name mapped classes. Coverage fractions
+must lie in ``[0, 1]`` and colors must be valid RGB triples. No reserved label
+name is required.
+
+A label may list several raw values. They are sampled as one label whose
+coverage is their sum:
+
+.. code-block:: yaml
+
+   masks:
+     pixel_mapping: {background: 0, tumor: [1, 2], stroma: 3}
+     min_coverage: {tumor: 0.5}
+
+A tile that is 30% value ``1`` and 30% value ``2`` is 60% ``tumor`` and is
+sampled; with ``tumor: 1`` and a separate label for ``2``, neither reaches 0.5.
+The order of a list does not matter, and configurations without lists keep
+their cache keys.
 
 ``pixel_mapping`` must declare every value the annotation masks hold: a mask
 holding any other value fails. Declare a value that should never select a tile,
@@ -156,7 +171,8 @@ such as unannotated background, and leave it out of ``min_coverage``.
 These labels only select tiles and ROIs. For segmentation, the classes the model
 predicts are declared separately under ``task.params.classes`` and
 ``task.params.ignore`` (:doc:`segmentation`), so a label here may be split or
-merged differently at training time. Every raw value those list must also be in
+merged differently at training time: ``tumor: [1, 2]`` above may still train as
+two classes. Every raw value those list must also be in
 ``pixel_mapping``; the config is rejected otherwise.
 
 Annotation-restricted bags (``dataset_type: slide`` or ``patient``)

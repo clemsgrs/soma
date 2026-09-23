@@ -191,6 +191,32 @@ def _normalize_label_mapping(entries: Any, *, field_name: str) -> Any:
     raise TypeError(f"masks.{field_name} must be a mapping or a list of single-entry mappings")
 
 
+def _pixel_values(label: str, entry: Any) -> list[int]:
+    """One ``pixel_mapping`` entry (a raw value or a list of them) as validated integers."""
+    values = list(entry) if isinstance(entry, (list, tuple)) else [entry]
+    if not values:
+        raise ValueError(f"masks.pixel_mapping[{label!r}] lists no raw values.")
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, Integral) or not 0 <= value <= 255:
+            raise ValueError(
+                f"masks.pixel_mapping[{label!r}] raw values must be integers in [0, 255], "
+                f"got {value!r}."
+            )
+    return [int(value) for value in values]
+
+
+def canonical_pixel_mapping(pixel_mapping: dict[str, Any]) -> dict[str, Any]:
+    """``pixel_mapping`` with each list entry sorted, for cache identity.
+
+    Listing order does not change what is sampled, so ``[2, 1]`` keys like ``[1, 2]``;
+    scalars are untouched, which keeps scalar-only keys byte-stable.
+    """
+    return {
+        label: sorted(entry) if isinstance(entry, list) else entry
+        for label, entry in pixel_mapping.items()
+    }
+
+
 def _masks_from_dict(data: dict[str, Any]) -> "MasksConfig":
     data = dict(data)
     pixel_mapping = _normalize_label_mapping(data.pop("pixel_mapping", None), field_name="pixel_mapping")
@@ -205,7 +231,7 @@ def _masks_from_dict(data: dict[str, Any]) -> "MasksConfig":
     if pixel_mapping is None:
         raise ValueError("masks.pixel_mapping is required (class name → mask pixel value).")
     return MasksConfig(
-        pixel_mapping={str(k): int(v) for k, v in pixel_mapping.items()},
+        pixel_mapping={str(k): v for k, v in pixel_mapping.items()},
         min_coverage={str(k): float(v) for k, v in (min_coverage or {}).items()},
         colors=(
             {str(k): (list(v) if v is not None else None) for k, v in colors.items()}
@@ -931,29 +957,51 @@ class MasksConfig:
     input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), label_mask_path (annotation
     WSI))`` and soma samples ROIs from each slide, instead of the pre-cropped tile manifest.
 
-    * ``pixel_mapping`` — label name → mask pixel value; must be non-empty with unique pixel
-      values. No label name is reserved. It only selects samples: the classes a
-      segmentation model predicts are ``task.params.classes`` / ``ignore`` (see
-      :func:`soma.dense.reader.resolve_class_scheme`).
+    * ``pixel_mapping`` — label name → raw mask value, or a list of raw values sampled as
+      one label whose coverage is their sum. Values are integers in ``[0, 255]``, each
+      listed under one label only. No label name is reserved. It only selects samples:
+      the classes a segmentation model predicts are ``task.params.classes`` / ``ignore``
+      (see :func:`soma.dense.reader.resolve_class_scheme`), independent of these labels.
     * ``min_coverage`` — per-class minimum tile coverage (in ``[0, 1]``) to sample a tile;
       keys must be a subset of ``pixel_mapping``.
     * ``colors`` — optional class → ``[r, g, b]`` (or ``None``) overlay color for mask previews;
       keys must be a subset of ``pixel_mapping``.
     """
 
-    pixel_mapping: dict[str, int]
+    pixel_mapping: dict[str, int | list[int]]
     min_coverage: dict[str, float] = field(default_factory=dict)
     colors: dict[str, list[int] | None] | None = None
 
     def __post_init__(self) -> None:
         if not self.pixel_mapping:
             raise ValueError("masks.pixel_mapping is required and must be non-empty.")
-        values = list(self.pixel_mapping.values())
-        if len(set(values)) != len(values):
-            raise ValueError(
-                "masks.pixel_mapping must use unique pixel values (no two labels may "
-                f"share a raw value): {self.pixel_mapping!r}."
-            )
+        owners: dict[int, str] = {}
+        for label, entry in self.pixel_mapping.items():
+            values = _pixel_values(label, entry)
+            for index, value in enumerate(values):
+                if value in values[:index]:
+                    raise ValueError(
+                        f"masks.pixel_mapping[{label!r}] lists raw value {value} twice."
+                    )
+                if value in owners:
+                    raise ValueError(
+                        "masks.pixel_mapping must use unique pixel values: "
+                        f"{owners[value]!r} and {label!r} both list raw value {value}."
+                    )
+                owners[value] = label
+        # Scalars stay scalars and lists stay lists: hs2p receives the entries as written.
+        object.__setattr__(
+            self,
+            "pixel_mapping",
+            {
+                label: (
+                    [int(value) for value in entry]
+                    if isinstance(entry, (list, tuple))
+                    else int(entry)
+                )
+                for label, entry in self.pixel_mapping.items()
+            },
+        )
         unknown = sorted(set(self.min_coverage) - set(self.pixel_mapping))
         if unknown:
             raise ValueError(

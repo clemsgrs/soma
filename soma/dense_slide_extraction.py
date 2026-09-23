@@ -54,6 +54,7 @@ from soma.config import (
     MasksConfig,
     PreprocessingConfig,
     SamplingConfig,
+    canonical_pixel_mapping,
 )
 from soma.dense import DenseFeatureStore, normalize_hw
 from soma.slide2vec_adapter import build_execution_options
@@ -94,7 +95,7 @@ def sampling_signature(
     cache, even when two specs happen to yield colliding coordinates.
     """
     signature = {
-        "pixel_mapping": dict(masks.pixel_mapping),
+        "pixel_mapping": canonical_pixel_mapping(masks.pixel_mapping),
         "min_coverage": dict(masks.min_coverage),
         "colors": (
             None

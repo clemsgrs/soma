@@ -129,7 +129,7 @@ def accepted_mask_values(
 
 
 def check_classes_declared(
-    task_params: Mapping[str, Any], pixel_mapping: Mapping[str, int]
+    task_params: Mapping[str, Any], pixel_mapping: Mapping[str, int | list[int]]
 ) -> None:
     """Fail unless every raw value in ``task.params.classes`` / ``ignore`` is in ``pixel_mapping``.
 
@@ -138,7 +138,11 @@ def check_classes_declared(
     the sampling vocabulary omits could never be read. This is the one coupling between the
     two layers; call it after :func:`resolve_class_scheme` has validated the scheme.
     """
-    declared = {int(value) for value in pixel_mapping.values()}
+    declared = {
+        int(value)
+        for entry in pixel_mapping.values()
+        for value in (entry if isinstance(entry, (list, tuple)) else [entry])
+    }
     classes = task_params.get("classes") or {}
     owners = [(f"task.params.classes {name!r}", values) for name, values in classes.items()]
     owners.append(("task.params.ignore", task_params.get("ignore") or ()))
@@ -277,7 +281,7 @@ def _aligned_mask(
     reference_path: str | Path,
     reference_backend: str,
     spacing_at_level_0: float | None,
-    pixel_mapping: Mapping[str, int],
+    pixel_mapping: Mapping[str, int | list[int]],
     backend: str,
 ):
     """Open ``path`` as an hs2p annotation ``Mask`` aligned to its image's level-0 grid.
@@ -308,7 +312,7 @@ def read_mask_at_spacing(
     spacing_um: float | None,
     size: tuple[int, int],
     reference_path: str | Path,
-    pixel_mapping: Mapping[str, int],
+    pixel_mapping: Mapping[str, int | list[int]],
     reference_backend: str = "auto",
     spacing_at_level_0: float | None = None,
     backend: str = "auto",
@@ -344,7 +348,7 @@ def read_mask_region_at_spacing(
     size: tuple[int, int],
     spacing_um: float,
     reference_path: str | Path,
-    pixel_mapping: Mapping[str, int],
+    pixel_mapping: Mapping[str, int | list[int]],
     reference_backend: str = "auto",
     spacing_at_level_0: float | None = None,
     backend: str = "auto",

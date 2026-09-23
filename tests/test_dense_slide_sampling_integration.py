@@ -277,3 +277,70 @@ def test_segmentation_coverage_summarizes_every_label_of_the_fixture(tmp_path: P
     assert row["area_mm2_tumor"] == pytest.approx(0.128**2 / 4)
     assert row["area_mm2_background"] == pytest.approx(0.128**2 * 3 / 4)
     assert row["est_tiles_tumor"] == 4
+
+
+def _make_split_tumor_fixture(root: Path) -> tuple[Path, Path]:
+    """A 256x256 slide whose top-left 64 px tile is 20 columns of value 1, 20 of value 2
+    and 24 of background: 31% and 31% apart, 62.5% together. Nothing else is annotated."""
+    image = np.full((256, 256, 3), 220, np.uint8)
+    image[0:64, 0:64] = (150, 60, 80)
+    mask = np.zeros((256, 256), np.uint8)
+    mask[0:64, 0:20] = 1
+    mask[0:64, 20:40] = 2
+    slide_path = root / "slide.tif"
+    label_mask_path = root / "mask.tif"
+    _write_pyramidal_tiff(slide_path, image, photometric="rgb")
+    _write_pyramidal_tiff(label_mask_path, mask, photometric="minisblack")
+    return slide_path, label_mask_path
+
+
+def _sample_split_tumor(tmp_path: Path, masks: MasksConfig) -> list[tuple[int, int]]:
+    from soma.dense_slide_extraction import sample_slide_rois
+
+    tmp_path.mkdir()
+    slide_path, label_mask_path = _make_split_tumor_fixture(tmp_path)
+    dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
+    preprocessing = PreprocessingConfig(
+        backend="auto",
+        requested_tile_size_px=TARGET,
+        requested_spacing_um=SPACING_UM,
+        tolerance=0.07,
+        min_coverage={"tissue": 0.0},
+        overlap=0.0,
+    )
+    return sample_slide_rois(
+        dataset,
+        masks=masks,
+        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        preprocessing=preprocessing,
+    )["s0"]
+
+
+def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path: Path):
+    """#484: a list-valued pixel_mapping entry is one sampling label whose coverage is the
+    sum of its values, so a tile 31% value 1 + 31% value 2 passes min_coverage 0.5."""
+    from soma.dense.reader import read_mask_region_at_spacing
+
+    merged = MasksConfig(
+        pixel_mapping={"background": 0, "tumor": [1, 2]}, min_coverage={"tumor": 0.5}
+    )
+    coords = _sample_split_tumor(tmp_path / "merged", merged)
+    assert coords == [(0, 0)]
+
+    # The sampled ROI's mask reads back against the same list-valued vocabulary.
+    region = read_mask_region_at_spacing(
+        tmp_path / "merged" / "mask.tif",
+        location=coords[0],
+        size=(TARGET, TARGET),
+        spacing_um=SPACING_UM,
+        reference_path=tmp_path / "merged" / "slide.tif",
+        pixel_mapping=merged.pixel_mapping,
+        backend="auto",
+    )
+    assert sorted(np.unique(region).tolist()) == [0, 1, 2]
+
+    separate = MasksConfig(
+        pixel_mapping={"background": 0, "tumor_a": 1, "tumor_b": 2},
+        min_coverage={"tumor_a": 0.5, "tumor_b": 0.5},
+    )
+    assert _sample_split_tumor(tmp_path / "separate", separate) == []
