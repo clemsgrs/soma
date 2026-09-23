@@ -25,7 +25,7 @@ from torch.utils.data import Dataset
 from soma.dataset import SampleRecord
 from soma.dense import DenseFeatureSource
 from soma.dense.geometry import DenseGridGeometry
-from soma.dense.reader import accepted_mask_values
+from soma.dense.reader import accepted_mask_values, apply_label_remap
 
 
 class SegmentationDataset(Dataset):
@@ -104,9 +104,12 @@ class LiveSegmentationDataset(Dataset):
         tolerance: hs2p spacing tolerance.
         num_classes / ignore_index: validate mask label values (fail loud, with the
             sample id, before a cryptic device-side one_hot/CE assert).
+        label_remap: The head's raw-pixel → class-index LUT from ``task.params.classes``
+            / ``ignore``, applied before augmentation; ``None`` when masks already hold
+            class indices.
         mask_vocabulary: Label vocabulary hs2p reads spacing-aware masks against (the
-            head's ``mask_vocabulary``); ``None`` declares the class indices and
-            ``ignore_index``.
+            head's ``mask_vocabulary``); ``None`` declares the values ``label_remap``
+            maps, or the class indices and ``ignore_index``.
         augment: Joint ``(image, mask)`` v2 transform, or ``None`` for no augmentation.
     """
 
@@ -121,6 +124,7 @@ class LiveSegmentationDataset(Dataset):
         tolerance: float,
         num_classes: int,
         ignore_index: int,
+        label_remap: np.ndarray | None = None,
         mask_vocabulary: Mapping[str, int] | None = None,
         augment: Callable | None = None,
     ) -> None:
@@ -132,11 +136,14 @@ class LiveSegmentationDataset(Dataset):
         self._tolerance = float(tolerance)
         self._num_classes = int(num_classes)
         self._ignore_index = int(ignore_index)
+        self._label_remap = None if label_remap is None else np.asarray(label_remap)
         self._mask_vocabulary = (
             dict(mask_vocabulary)
             if mask_vocabulary is not None
             else accepted_mask_values(
-                num_classes=self._num_classes, ignore_index=self._ignore_index, label_remap=None
+                num_classes=self._num_classes,
+                ignore_index=self._ignore_index,
+                label_remap=self._label_remap,
             )
         )
         self._augment = augment
@@ -171,6 +178,11 @@ class LiveSegmentationDataset(Dataset):
             )
         except ValueError as error:
             raise ValueError(f"segmentation sample '{record.sample_id}': {error}") from error
+        if self._label_remap is not None:
+            # Before augmentation: its padding is ignore_index, which is no raw value.
+            mask_array = apply_label_remap(
+                mask_array, self._label_remap, sample_id=record.sample_id
+            )
 
         if self._augment is not None:
             from torchvision import tv_tensors

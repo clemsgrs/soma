@@ -111,6 +111,31 @@ def resolve_class_scheme(
     )
 
 
+def apply_label_remap(array: np.ndarray, label_remap: np.ndarray, *, sample_id: str) -> np.ndarray:
+    """Map a raw annotation raster onto class indices (+ ``ignore_index``) through the LUT.
+
+    ``label_remap`` comes from :func:`resolve_class_scheme`. Fails, naming the sample, on
+    a value outside the single byte the LUT covers and on a raw value declared in neither
+    ``task.params.classes`` nor ``ignore``. Every path that turns a mask into targets
+    (the head, the live dataset) goes through here, so they cannot diverge.
+    """
+    array = np.asarray(array, dtype=np.int64)
+    if int(array.max(initial=0)) > 255 or int(array.min(initial=0)) < 0:
+        raise ValueError(
+            f"mask for '{sample_id}' has raw pixel value(s) outside [0, 255]; "
+            "the label remap LUT only covers single-byte annotation rasters."
+        )
+    remapped = label_remap[array]
+    undeclared = remapped == UNDECLARED_LABEL
+    if undeclared.any():
+        raise ValueError(
+            f"mask for '{sample_id}' has raw value(s) "
+            f"{sorted(int(v) for v in np.unique(array[undeclared]))} declared in "
+            "neither task.params.classes nor task.params.ignore."
+        )
+    return remapped
+
+
 def accepted_mask_values(
     *, num_classes: int, ignore_index: int, label_remap: np.ndarray | None
 ) -> dict[str, int]:

@@ -1,5 +1,13 @@
 # Changelog
 
+- 2026-09-23: Fix live segmentation (`feature_mode: live`) ignoring
+  `task.params.classes` / `ignore`. The live path used raw mask values as class
+  indices, so a class scheme that is not the identity trained against the wrong
+  classes (or failed with a misleading out-of-range error), and ignored values
+  were never excluded. Live and cached runs now remap masks identically, and a
+  raw value declared in neither fails the run. Live runs with a class scheme
+  should be retrained; cached runs and feature caches are unaffected.
+
 - 2026-09-23: A `preprocessing.masks.pixel_mapping` label may list several raw
   mask values (`tumor: [1, 2]`). They are sampled as one label whose coverage is
   their sum, so a tile 30% value `1` and 30% value `2` passes `min_coverage:
