@@ -27,7 +27,7 @@ REQUIRED_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
 _METRICS = ("area_mm2", "frac", "est_tiles")
 
 
-def _coverage_columns(pixel_mapping: dict[str, int]) -> list[str]:
+def _coverage_columns(pixel_mapping: dict[str, int | list[int]]) -> list[str]:
     return ["sample_id"] + [
         f"{metric}_{name}" for name in pixel_mapping for metric in _METRICS
     ]
@@ -36,7 +36,7 @@ def _coverage_columns(pixel_mapping: dict[str, int]) -> list[str]:
 def summarize_coverage(
     manifest: pd.DataFrame | str | Path,
     *,
-    pixel_mapping: dict[str, int],
+    pixel_mapping: dict[str, int | list[int]],
     min_coverage: dict[str, float | None] | None,
     tile_size_px: int,
     spacing_um: float,

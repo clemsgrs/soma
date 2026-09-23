@@ -11,7 +11,7 @@ from hs2p.wsi.reader import resolve_backend
 from slide2vec.encoders.registry import encoder_registry
 
 from soma.cache._types import SCHEMA_VERSION, _FEATURE_TYPE_TO_RANK
-from soma.config import EncoderConfig, PreprocessingConfig
+from soma.config import EncoderConfig, PreprocessingConfig, canonical_pixel_mapping
 from soma.dataset import Dataset
 from soma.encoders.validation import resolve_encoder_precision
 
@@ -100,7 +100,9 @@ def annotation_sampling_signature(config: PreprocessingConfig) -> dict[str, Any]
         return None
     sampling = config.sampling
     return {
-        "pixel_mapping": {k: masks.pixel_mapping[k] for k in sorted(masks.pixel_mapping)},
+        "pixel_mapping": {
+            k: v for k, v in sorted(canonical_pixel_mapping(masks.pixel_mapping).items())
+        },
         "min_coverage": {k: masks.min_coverage[k] for k in sorted(masks.min_coverage)},
         "strategy": sampling.strategy if sampling is not None else "joint",
         "output_mode": sampling.output_mode if sampling is not None else "merged",

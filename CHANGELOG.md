@@ -1,5 +1,14 @@
 # Changelog
 
+- 2026-09-23: A `preprocessing.masks.pixel_mapping` label may list several raw
+  mask values (`tumor: [1, 2]`). They are sampled as one label whose coverage is
+  their sum, so a tile 30% value `1` and 30% value `2` passes `min_coverage:
+  {tumor: 0.5}`. This is the sampling layer only; `task.params.classes` still
+  decides what a segmentation model predicts. List order does not change cache
+  keys, and configs with scalar values only keep theirs. Config load now rejects
+  a value repeated within or across labels, an empty list, and a value that is
+  not an integer in `[0, 255]`. See `preprocessing.rst`.
+
 - 2026-09-23: **Breaking.** Require hs2p 5.0.0 and slide2vec 6.1.0. Source
   masks are now aligned to their slide: a mask may have a lower resolution than
   its slide but must cover it at one scale, within one mask pixel per axis, and a
