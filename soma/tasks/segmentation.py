@@ -20,8 +20,8 @@ from torch import Tensor
 
 from soma.dense.reader import load_mask as load_mask
 from soma.dense.reader import (
-    UNDECLARED_LABEL,
     accepted_mask_values,
+    apply_label_remap,
     read_mask_at_spacing,
     read_mask_region_at_spacing,
 )
@@ -165,6 +165,11 @@ class SegmentationHead(TaskHead):
         self.metrics = resolve_metrics("segmentation", metrics or [])
 
     @property
+    def label_remap(self) -> "np.ndarray | None":
+        """The raw-pixel → class-index LUT from ``task.params.classes`` (``None`` without)."""
+        return self._label_remap
+
+    @property
     def mask_vocabulary(self) -> dict[str, int]:
         """The label vocabulary spacing-aware masks are read against."""
         return dict(self._mask_vocabulary)
@@ -255,22 +260,8 @@ class SegmentationHead(TaskHead):
         array = np.ascontiguousarray(array).astype(np.int64)
         if self._label_remap is not None:
             # Raw annotation rasters carry the dataset's own pixel vocabulary; remap onto
-            # contiguous class indices (+ ignore) before validation. Guard against stray
-            # values > 255 that the 256-entry LUT cannot index.
-            if int(array.max(initial=0)) > 255 or int(array.min(initial=0)) < 0:
-                raise ValueError(
-                    f"mask for '{record.sample_id}' has raw pixel value(s) outside [0, 255]; "
-                    "the label remap LUT only covers single-byte annotation rasters."
-                )
-            remapped = self._label_remap[array]
-            undeclared = remapped == UNDECLARED_LABEL
-            if undeclared.any():
-                raise ValueError(
-                    f"mask for '{record.sample_id}' has raw value(s) "
-                    f"{sorted(int(v) for v in np.unique(array[undeclared]))} declared in "
-                    "neither task.params.classes nor task.params.ignore."
-                )
-            array = remapped
+            # contiguous class indices (+ ignore) before validation.
+            array = apply_label_remap(array, self._label_remap, sample_id=record.sample_id)
         mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy

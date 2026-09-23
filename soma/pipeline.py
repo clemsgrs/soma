@@ -541,6 +541,7 @@ def _make_live_loaders(
     *,
     num_classes: int,
     ignore_index: int,
+    label_remap: np.ndarray | None,
     mask_vocabulary: dict[str, int],
 ) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
     """Live-path loaders: augmentation on the **train** split only, deterministic eval.
@@ -564,6 +565,7 @@ def _make_live_loaders(
             tolerance=source.tolerance,
             num_classes=num_classes,
             ignore_index=ignore_index,
+            label_remap=label_remap,
             mask_vocabulary=mask_vocabulary,
             augment=augment,
         )
@@ -1731,6 +1733,7 @@ def train_one_segmentation_fold(
             training,
             num_classes=num_classes,
             ignore_index=head.ignore_index,
+            label_remap=head.label_remap,
             mask_vocabulary=head.mask_vocabulary,
         )
     else:

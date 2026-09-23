@@ -301,6 +301,132 @@ def test_live_dataset_defaults_to_class_indices_and_names_the_failing_sample(
     ]
 
 
+def _flat_live_dataset(root: Path, raw_mask: np.ndarray, classes, ignore=(), augment=None):
+    """A flat (PNG) live dataset over one tile whose mask holds ``raw_mask``, with the
+    class scheme's remap, plus the same record for the cached head to compare against."""
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import resolve_class_scheme
+    from soma.tasks.segmentation import SegmentationHead
+    from soma.training.segmentation_dataset import LiveSegmentationDataset
+
+    size = raw_mask.shape[0]
+    Image.fromarray(np.zeros((size, size, 3), np.uint8)).save(root / "tile.png")
+    Image.fromarray(raw_mask.astype(np.uint8), mode="L").save(root / "tile_mask.png")
+    record = SampleRecord(
+        sample_id="t0",
+        image_path=root / "tile.png",
+        label=None,
+        label_mask_path=root / "tile_mask.png",
+    )
+    params = {"classes": classes, "ignore": list(ignore)}
+    num_classes, _, label_remap = resolve_class_scheme(params, annotation_rasters=False)
+    geometry = compute_dense_geometry(target_size=size, patch_size=1)
+    head = SegmentationHead(num_classes=num_classes, geometry=geometry, label_remap=label_remap)
+    dataset = LiveSegmentationDataset(
+        [record],
+        geometry=geometry,
+        preprocessor=lambda item: item.float(),
+        spacing_um=None,
+        backend="auto",
+        tolerance=0.05,
+        num_classes=num_classes,
+        ignore_index=255,
+        label_remap=label_remap,
+        augment=augment,
+    )
+    return dataset, head, record
+
+
+def test_live_dataset_remaps_raw_values_like_the_cached_head(tmp_path: Path):
+    """#490: raw mask values go through task.params.classes on the live path too; here
+    raw 1 is class 0 and raw 0 is class 1, which the live path used to swap."""
+    raw = np.array([[0, 0, 1, 1]] * 4)
+    dataset, head, record = _flat_live_dataset(
+        tmp_path, raw, classes={"tumor": [1], "stroma": [0]}
+    )
+
+    _, targets, _ = dataset[0]
+
+    assert targets["mask"][0].tolist() == [1, 1, 0, 0]
+    assert torch.equal(targets["mask"], head.extract_targets(record)["mask"])
+
+
+def test_live_dataset_maps_ignored_values_to_ignore_index(tmp_path: Path):
+    raw = np.array([[0, 0, 1, 1]] * 4)
+    dataset, _, _ = _flat_live_dataset(tmp_path, raw, classes={"tumor": [1]}, ignore=[0])
+
+    _, targets, _ = dataset[0]
+
+    assert targets["mask"][0].tolist() == [255, 255, 0, 0]
+
+
+def test_live_dataset_rejects_an_undeclared_raw_value(tmp_path: Path):
+    raw = np.array([[0, 0, 1, 7]] * 4)
+    dataset, _, _ = _flat_live_dataset(tmp_path, raw, classes={"tumor": [1]}, ignore=[0])
+
+    with pytest.raises(
+        ValueError,
+        match=r"mask for 't0' has raw value\(s\) \[7\] declared in neither "
+        r"task\.params\.classes nor task\.params\.ignore",
+    ):
+        dataset[0]
+
+
+def test_live_dataset_remaps_before_augmentation_fills_with_ignore_index(tmp_path: Path):
+    """Augmentation pads masks with ignore_index, which is no raw value: the remap must
+    run before it, or the padding would be rejected as undeclared."""
+    raw = np.array([[1, 1, 1, 1]] * 4)
+
+    def pad_left_column(image, mask):
+        mask = mask.clone()
+        mask[:, 0] = 255
+        return image, mask
+
+    dataset, _, _ = _flat_live_dataset(
+        tmp_path, raw, classes={"tumor": [1]}, ignore=[0], augment=pad_left_column
+    )
+
+    _, targets, _ = dataset[0]
+
+    assert targets["mask"][0].tolist() == [255, 0, 0, 0]
+
+
+def test_live_fold_with_a_class_scheme_matches_the_cached_fold(tmp_path: Path):
+    """End-to-end: task.params.classes reaches the live loaders. Raw 1 is the only class
+    and raw 0 is ignored, so without the remap every raw 1 is out of range."""
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits = _build_run(tmp_path, sample_ids)
+    encoder = _encoder()
+    geom = compute_dense_geometry(target_size=TARGET, patch_size=encoder.patch_size)
+    _extract_cached_grids(
+        encoder, manifest.samples.values(), tmp_path / "dense", geometry=geom, batch_size=2
+    )
+    common = dict(
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(
+            name="segmentation", params={"classes": {"tumor": [1]}, "ignore": [0]}
+        ),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+    )
+
+    cached = train_one_segmentation_fold(
+        feature_store=DenseFeatureStore(tmp_path / "dense"),
+        fold_dir=tmp_path / "cached_fold",
+        **common,
+    )
+    live = train_one_segmentation_fold(
+        feature_store=_live_source(encoder), fold_dir=tmp_path / "live_fold", **common
+    )
+
+    for metric in ("mean_dice", "mean_iou"):
+        assert live.tune_report.metrics[metric] == pytest.approx(
+            cached.tune_report.metrics[metric], abs=1e-2
+        )
+
+
 def test_live_no_aug_metrics_match_cached(tmp_path: Path):
     """End-to-end: a live-no-aug fold reproduces the cached fold's metrics (≈, since
     eval batches the splits differently, the grids drift by encoder float noise)."""
