@@ -1,5 +1,22 @@
 # Changelog
 
+- 2026-09-23: **Breaking.** Require hs2p 5.0.0 and slide2vec 6.1.0. Source
+  masks are now aligned to their slide: a mask may have a lower resolution than
+  its slide but must cover it at one scale, within one mask pixel per axis, and a
+  spacing tag more than 5% off the dimension-derived spacing fails. This fixes
+  segmentation ROI targets read at the wrong place when the annotation mask was
+  coarser than its slide. Masks may hold only declared values: tissue masks `0`
+  and `1` (a `{1, 255}` mask now fails), annotation masks the values of
+  `preprocessing.masks.pixel_mapping`. For whole-slide segmentation, every value
+  in `task.params.classes` and `ignore` must also be in `pixel_mapping`; the
+  config is rejected otherwise. Slides without resolution metadata, including
+  untagged TIFFs read with VIPS, need `spacing_at_level_0`. For flat PNG/JPEG
+  slides, disable mask and tiling previews. Tiling and feature caches written
+  with hs2p 4 are reused; cached ROI class counts are recomputed once.
+  The coverage summary (`python -m soma.curation.segmentation_coverage`) no
+  longer requires a `background` label, reports every `pixel_mapping` label
+  (including `background`) and gains `--mask-backend`. See `preprocessing.rst`.
+
 - 2026-09-21: Detection takes the same class scheme as segmentation.
   `task.params.classes` maps each class name to the annotated point id(s) that
   form it (several ids merge into one class; ids need not be 0-based) and

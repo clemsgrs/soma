@@ -1,0 +1,2 @@
+sample_id,annotation,output_mode,image_path,mask_path,requested_backend,backend,requested_mask_backend,mask_backend,tiling_status,num_tiles,coordinates_npz_path,coordinates_meta_path,tiles_tar_path,mask_preview_path,tiling_preview_path,error,traceback
+s0,tissue,,@ROOT@/slide.tif,@ROOT@/tissue.tif,auto,cucim,auto,cucim,success,4,@ROOT@/tiling/tiles/s0.coordinates.npz,@ROOT@/tiling/tiles/s0.coordinates.meta.json,,,,,

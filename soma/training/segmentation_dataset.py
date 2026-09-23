@@ -14,7 +14,7 @@ stacks grids ``(B, d, h, w)`` and masks ``(B, H, W)`` as ``long`` (preserving
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
@@ -25,6 +25,7 @@ from torch.utils.data import Dataset
 from soma.dataset import SampleRecord
 from soma.dense import DenseFeatureSource
 from soma.dense.geometry import DenseGridGeometry
+from soma.dense.reader import accepted_mask_values
 
 
 class SegmentationDataset(Dataset):
@@ -103,6 +104,9 @@ class LiveSegmentationDataset(Dataset):
         tolerance: hs2p spacing tolerance.
         num_classes / ignore_index: validate mask label values (fail loud, with the
             sample id, before a cryptic device-side one_hot/CE assert).
+        mask_vocabulary: Label vocabulary hs2p reads spacing-aware masks against (the
+            head's ``mask_vocabulary``); ``None`` declares the class indices and
+            ``ignore_index``.
         augment: Joint ``(image, mask)`` v2 transform, or ``None`` for no augmentation.
     """
 
@@ -117,6 +121,7 @@ class LiveSegmentationDataset(Dataset):
         tolerance: float,
         num_classes: int,
         ignore_index: int,
+        mask_vocabulary: Mapping[str, int] | None = None,
         augment: Callable | None = None,
     ) -> None:
         self._records = records
@@ -127,6 +132,13 @@ class LiveSegmentationDataset(Dataset):
         self._tolerance = float(tolerance)
         self._num_classes = int(num_classes)
         self._ignore_index = int(ignore_index)
+        self._mask_vocabulary = (
+            dict(mask_vocabulary)
+            if mask_vocabulary is not None
+            else accepted_mask_values(
+                num_classes=self._num_classes, ignore_index=self._ignore_index, label_remap=None
+            )
+        )
         self._augment = augment
 
     def __len__(self) -> int:
@@ -145,12 +157,20 @@ class LiveSegmentationDataset(Dataset):
             backend=self._backend,
             tolerance=self._tolerance,
         )
-        mask_array = read_mask_at_spacing(
-            record.label_mask_path,
-            spacing_um=self._spacing_um,
-            backend=self._backend,
-            tolerance=self._tolerance,
-        )
+        target_h, target_w = self._geometry.target_size
+        try:
+            mask_array = read_mask_at_spacing(
+                record.label_mask_path,
+                spacing_um=self._spacing_um,
+                size=(target_w, target_h),
+                reference_path=record.image_path,
+                reference_backend=self._backend,
+                spacing_at_level_0=record.spacing_at_level_0,
+                pixel_mapping=self._mask_vocabulary,
+                backend=self._backend,
+            )
+        except ValueError as error:
+            raise ValueError(f"segmentation sample '{record.sample_id}': {error}") from error
 
         if self._augment is not None:
             from torchvision import tv_tensors

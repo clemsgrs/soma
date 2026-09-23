@@ -21,7 +21,8 @@ from soma.dataset import SampleRecord
 logger = logging.getLogger(__name__)
 
 _FLAT_MASK_SUFFIXES = {".png", ".jpg", ".jpeg"}
-_MASK_READER_SCHEMA_VERSION = 1
+# 2: hs2p 5 mask reads (aligned to the slide, resampled by coordinate).
+_MASK_READER_SCHEMA_VERSION = 2
 
 
 @contextmanager
@@ -117,7 +118,10 @@ def _resolved_mask_backend(
         return "pil"
     if requested_backend != "auto":
         return requested_backend
-    return str(resolve_backend("auto", wsi_path=Path(path)).backend)
+    # Resolved as hs2p.Mask resolves it: a mask needs no spacing metadata of its own.
+    return str(
+        resolve_backend("auto", wsi_path=Path(path), require_spacing=False).backend
+    )
 
 
 def _load_population(

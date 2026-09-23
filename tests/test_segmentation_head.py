@@ -323,7 +323,7 @@ def _roi_head_reading(monkeypatch, raw, *, classes, ignore):
     monkeypatch.setattr(
         segmod,
         "read_mask_region_at_spacing",
-        lambda path, *, location, size, spacing_um, backend, tolerance: raw,
+        lambda path, *, location, size, spacing_um, **kwargs: raw,
     )
     head = SegmentationHead(
         num_classes=len(classes),
@@ -365,6 +365,135 @@ def test_extract_targets_rejects_undeclared_raw_value(monkeypatch):
     )
     with pytest.raises(
         ValueError, match=r"'roi0' has raw value\(s\) \[7, 9\] declared in neither"
+    ):
+        head.extract_targets(record)
+
+
+def _capture_mask_reads(monkeypatch, raw):
+    """Stub both hs2p-backed mask readers; record each call's keyword arguments."""
+    import soma.tasks.segmentation as segmod
+
+    calls = []
+
+    def fake(path, **kwargs):
+        calls.append({"path": path, **kwargs})
+        return raw
+
+    monkeypatch.setattr(segmod, "read_mask_at_spacing", fake)
+    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", fake)
+    return calls
+
+
+def test_extract_targets_aligns_a_roi_mask_to_its_slide_with_the_sampling_vocabulary(
+    monkeypatch,
+):
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import build_label_remap
+
+    calls = _capture_mask_reads(monkeypatch, np.array([[0, 1], [1, 0]], dtype=np.uint8))
+    head = SegmentationHead(
+        num_classes=1,
+        geometry=compute_dense_geometry(target_size=2, patch_size=1),
+        spacing_um=0.5,
+        backend="openslide",
+        image_backend="cucim",
+        label_remap=build_label_remap({"tumor": [1]}, ignore=[0]),
+        pixel_mapping={"background": 0, "tumor": 1, "stroma": 2},
+    )
+    record = SampleRecord(
+        sample_id="roi0", image_path=Path("/slide.tif"), label=None,
+        label_mask_path=Path("/slide_mask.tif"), spacing_at_level_0=0.25, region=(8, 4),
+    )
+
+    head.extract_targets(record)
+
+    assert calls == [
+        {
+            "path": Path("/slide_mask.tif"),
+            "location": (8, 4),
+            "size": (2, 2),
+            "spacing_um": 0.5,
+            "reference_path": Path("/slide.tif"),
+            "reference_backend": "cucim",
+            "spacing_at_level_0": 0.25,
+            "pixel_mapping": {"background": 0, "tumor": 1, "stroma": 2},
+            "backend": "openslide",
+        }
+    ]
+
+
+def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask(
+    monkeypatch,
+):
+    """Pre-cropped tiles have no sampling vocabulary: the mask declares exactly the raw
+    values the head accepts (task.params.classes and ignore)."""
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import build_label_remap
+
+    calls = _capture_mask_reads(monkeypatch, np.array([[3, 7], [7, 5]], dtype=np.uint8))
+    head = SegmentationHead(
+        num_classes=2,
+        geometry=compute_dense_geometry(target_size=2, patch_size=1),
+        spacing_um=0.5,
+        label_remap=build_label_remap({"tumor": [7, 3], "stroma": [5]}, ignore=[0]),
+    )
+    record = SampleRecord(
+        sample_id="tile0", image_path=Path("/tile.tif"), label=None,
+        label_mask_path=Path("/tile_mask.tif"),
+    )
+
+    head.extract_targets(record)
+
+    (call,) = calls
+    assert call["size"] == (2, 2)
+    assert call["reference_path"] == Path("/tile.tif")
+    assert call["pixel_mapping"] == {"value_0": 0, "value_3": 3, "value_5": 5, "value_7": 7}
+
+
+def test_extract_targets_declares_class_indices_and_ignore_index_without_a_class_scheme(
+    monkeypatch,
+):
+    from soma.dataset import SampleRecord
+
+    calls = _capture_mask_reads(monkeypatch, np.array([[0, 1], [2, 255]], dtype=np.uint8))
+    head = SegmentationHead(
+        num_classes=3,
+        geometry=compute_dense_geometry(target_size=2, patch_size=1),
+        spacing_um=0.5,
+        ignore_index=255,
+    )
+    record = SampleRecord(
+        sample_id="tile0", image_path=Path("/tile.tif"), label=None,
+        label_mask_path=Path("/tile_mask.tif"),
+    )
+
+    head.extract_targets(record)
+
+    assert calls[0]["pixel_mapping"] == {
+        "value_0": 0, "value_1": 1, "value_2": 2, "value_255": 255
+    }
+
+
+def test_extract_targets_names_the_sample_when_the_mask_read_fails(monkeypatch):
+    import soma.tasks.segmentation as segmod
+    from soma.dataset import SampleRecord
+
+    def fail(path, **kwargs):
+        raise ValueError("Mask read produced invalid labels for path=/tile_mask.tif")
+
+    monkeypatch.setattr(segmod, "read_mask_at_spacing", fail)
+    head = SegmentationHead(
+        num_classes=2,
+        geometry=compute_dense_geometry(target_size=2, patch_size=1),
+        spacing_um=0.5,
+    )
+    record = SampleRecord(
+        sample_id="tile0", image_path=Path("/tile.tif"), label=None,
+        label_mask_path=Path("/tile_mask.tif"),
+    )
+
+    with pytest.raises(
+        ValueError, match=r"segmentation sample 'tile0': Mask read produced invalid labels"
     ):
         head.extract_targets(record)
 

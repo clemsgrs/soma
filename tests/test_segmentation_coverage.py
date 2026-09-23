@@ -5,6 +5,9 @@ here we stub the two hs2p calls and check soma's DataFrame shaping, column order
 None handling.
 """
 
+from contextlib import contextmanager
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -12,6 +15,7 @@ import soma.curation.segmentation_coverage as cov
 
 PIXEL_MAPPING = {"background": 0, "tumor": 1, "stroma": 2}
 _CANNED_SUMMARY = {
+    "background": {"area_mm2": 0.02, "frac": 0.0, "est_tiles": None},
     "tumor": {"area_mm2": 0.01, "frac": 0.6, "est_tiles": 5},
     "stroma": {"area_mm2": 0.005, "frac": 0.4, "est_tiles": None},
 }
@@ -19,13 +23,30 @@ _CANNED_SUMMARY = {
 
 @pytest.fixture
 def stub_hs2p(monkeypatch):
+    """Stub the hs2p calls; record how the slide and annotation mask were opened."""
+    calls: dict[str, list] = {"open_mask": [], "resolve": []}
+
+    @contextmanager
+    def open_annotation_mask(path, *, pixel_mapping, backend="auto"):
+        mask = object()
+        calls["open_mask"].append(
+            {"path": path, "pixel_mapping": pixel_mapping, "backend": backend, "mask": mask}
+        )
+        yield mask
+
+    def resolve_annotation_masks(**kwargs):
+        calls["resolve"].append(kwargs)
+        return object()
+
     monkeypatch.setattr(cov, "open_slide", lambda path, backend="auto": object())
-    monkeypatch.setattr(cov, "resolve_annotation_masks", lambda **kwargs: object())
+    monkeypatch.setattr(cov, "open_annotation_mask", open_annotation_mask)
+    monkeypatch.setattr(cov, "resolve_annotation_masks", resolve_annotation_masks)
     monkeypatch.setattr(
         cov,
         "summarize_annotation_coverage",
         lambda **kwargs: {k: dict(v) for k, v in _CANNED_SUMMARY.items()},
     )
+    return calls
 
 
 def _manifest(n=2) -> pd.DataFrame:
@@ -48,6 +69,9 @@ def test_summarize_coverage_wide_columns_grouped_by_class(stub_hs2p):
     )
     assert list(df.columns) == [
         "sample_id",
+        "area_mm2_background",
+        "frac_background",
+        "est_tiles_background",
         "area_mm2_tumor",
         "frac_tumor",
         "est_tiles_tumor",
@@ -84,15 +108,37 @@ def test_summarize_coverage_requires_manifest_columns(stub_hs2p):
         )
 
 
-def test_summarize_coverage_requires_background_label(stub_hs2p):
-    with pytest.raises(ValueError, match="background"):
-        cov.summarize_coverage(
-            _manifest(1),
-            pixel_mapping={"tumor": 1},
-            min_coverage=None,
-            tile_size_px=256,
-            spacing_um=0.5,
-        )
+def test_summarize_coverage_accepts_a_background_free_vocabulary(stub_hs2p):
+    # No label name is reserved: every pixel_mapping label gets its coverage columns.
+    df = cov.summarize_coverage(
+        _manifest(1),
+        pixel_mapping={"tumor": 1},
+        min_coverage={"tumor": 0.1},
+        tile_size_px=256,
+        spacing_um=0.5,
+    )
+    assert list(df.columns) == ["sample_id", "area_mm2_tumor", "frac_tumor", "est_tiles_tumor"]
+
+
+def test_summarize_coverage_opens_each_annotation_mask_with_the_full_vocabulary(stub_hs2p):
+    cov.summarize_coverage(
+        _manifest(2),
+        pixel_mapping=PIXEL_MAPPING,
+        min_coverage={"tumor": 0.1},
+        tile_size_px=256,
+        spacing_um=0.5,
+        seg_downsample=32,
+        mask_backend="openslide",
+    )
+    opened = stub_hs2p["open_mask"]
+    assert [call["path"] for call in opened] == [
+        Path("/fake/slide0_mask.tif"),
+        Path("/fake/slide1_mask.tif"),
+    ]
+    assert all(call["pixel_mapping"] == PIXEL_MAPPING for call in opened)
+    assert all(call["backend"] == "openslide" for call in opened)
+    assert [call["mask"] for call in stub_hs2p["resolve"]] == [call["mask"] for call in opened]
+    assert all(call["seg_downsample"] == 32 for call in stub_hs2p["resolve"])
 
 
 def test_write_coverage_csv_roundtrip(stub_hs2p, tmp_path):

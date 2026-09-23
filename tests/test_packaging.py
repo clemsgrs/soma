@@ -32,20 +32,19 @@ def test_pyproject_has_publish_ready_metadata():
     assert sdist_targets["only-include"] == ["LICENSE", "README.md", "pyproject.toml", "soma"]
 
 
-def test_slide2vec_minimum_includes_exact_declared_pooled_geometry():
-    # slide2vec 6.0 makes the requested pooled tile size the final encoder input;
-    # 6.0.1 stops multi-GPU runs from opening a CUDA context on every GPU.
+def test_slide2vec_minimum_is_aligned_with_hs2p_5():
+    # slide2vec 6.1 runs on hs2p 5 (first-class source masks); 6.0.1 required hs2p 4.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=6.0.1" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=6.1.0" in data["project"]["dependencies"]
 
 
-def test_hs2p_minimum_includes_fast_tiling_previews():
-    # hs2p 4.4.2 renders tiling previews in worker processes and draws the grid in
-    # place; 4.4.1 took ~19 s/slide on dense slides, stalling extraction for hours.
+def test_hs2p_minimum_provides_first_class_source_masks():
+    # hs2p 5.0 removed the label-read helpers soma's dense reader used; soma reads masks
+    # through hs2p.Mask, aligned to the slide's level-0 grid.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "hs2p>=4.4.2" in data["project"]["dependencies"]
+    assert "hs2p>=5.0.0" in data["project"]["dependencies"]
 
 
 def test_release_metadata_matches_license_and_verified_python_support():

@@ -226,6 +226,81 @@ def test_live_dataset_hands_augmented_uint8_pixels_to_kit_preprocessor(tmp_path:
     assert torch.equal(image, torch.full((3, TARGET, TARGET), 7.0))
 
 
+def _live_dataset_reading_pyramids(monkeypatch, record, *, read_mask, **kwargs):
+    """A spacing-aware live dataset over ``record`` with both hs2p readers stubbed."""
+    import soma.dense.reader as reader_mod
+    from soma.training.segmentation_dataset import LiveSegmentationDataset
+
+    monkeypatch.setattr(
+        reader_mod,
+        "read_image_at_spacing",
+        lambda path, **_: np.zeros((TARGET, TARGET, 3), dtype=np.uint8),
+    )
+    monkeypatch.setattr(reader_mod, "read_mask_at_spacing", read_mask)
+    return LiveSegmentationDataset(
+        [record],
+        geometry=compute_dense_geometry(target_size=TARGET, patch_size=PATCH),
+        preprocessor=lambda item: item.float(),
+        spacing_um=0.5,
+        backend="openslide",
+        tolerance=0.05,
+        num_classes=NUM_CLASSES,
+        ignore_index=255,
+        **kwargs,
+    )
+
+
+def test_live_dataset_aligns_a_pyramidal_mask_to_its_tile(tmp_path: Path, monkeypatch):
+    from dataclasses import replace
+
+    manifest, _ = _build_run(tmp_path, ["s0", "s1", "s2", "s3"])
+    record = replace(manifest.samples["s0"], spacing_at_level_0=0.25)
+    calls = []
+
+    def read_mask(path, **kwargs):
+        calls.append({"path": path, **kwargs})
+        return np.zeros((TARGET, TARGET), dtype=np.uint8)
+
+    dataset = _live_dataset_reading_pyramids(
+        monkeypatch, record, read_mask=read_mask, mask_vocabulary={"a": 0, "b": 1}
+    )
+
+    dataset[0]
+
+    assert calls == [
+        {
+            "path": record.label_mask_path,
+            "spacing_um": 0.5,
+            "size": (TARGET, TARGET),
+            "reference_path": record.image_path,
+            "reference_backend": "openslide",
+            "spacing_at_level_0": 0.25,
+            "pixel_mapping": {"a": 0, "b": 1},
+            "backend": "openslide",
+        }
+    ]
+
+
+def test_live_dataset_defaults_to_class_indices_and_names_the_failing_sample(
+    tmp_path: Path, monkeypatch
+):
+    manifest, _ = _build_run(tmp_path, ["s0", "s1", "s2", "s3"])
+    record = manifest.samples["s0"]
+    seen = []
+
+    def read_mask(path, **kwargs):
+        seen.append(kwargs["pixel_mapping"])
+        raise ValueError("Mask alignment failed for path=mask.tif")
+
+    dataset = _live_dataset_reading_pyramids(monkeypatch, record, read_mask=read_mask)
+
+    with pytest.raises(ValueError, match=r"segmentation sample 's0': Mask alignment failed"):
+        dataset[0]
+    assert seen == [
+        {f"value_{v}": v for v in [*range(NUM_CLASSES), 255]}
+    ]
+
+
 def test_live_no_aug_metrics_match_cached(tmp_path: Path):
     """End-to-end: a live-no-aug fold reproduces the cached fold's metrics (≈, since
     eval batches the splits differently, the grids drift by encoder float noise)."""

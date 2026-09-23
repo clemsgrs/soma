@@ -1629,9 +1629,11 @@ class PipelineConfig:
             task_params = self.task.params
             annotation_rasters = self.preprocessing.masks is not None
             if annotation_rasters or "classes" in task_params or "ignore" in task_params:
-                from soma.dense.reader import resolve_class_scheme
+                from soma.dense.reader import check_classes_declared, resolve_class_scheme
 
                 resolve_class_scheme(task_params, annotation_rasters=annotation_rasters)
+                if annotation_rasters:
+                    check_classes_declared(task_params, self.preprocessing.masks.pixel_mapping)
             # Cross-default feature_kind from the component when the user left it auto
             # (None): a pixel_classifier wants per-head CLS-attention, a decoder wants the
             # patch-feature grid. Both remain overridable (an explicit feature_kind wins).

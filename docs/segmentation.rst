@@ -36,7 +36,8 @@ What a row holds depends on whether ``preprocessing.masks`` is set:
    * - Mask values
      - Class indices ``0`` to ``num_classes - 1``, plus ``ignore_index``
        (255 by default); or any values with ``task.params.classes``
-     - Any values; ``task.params.classes`` is required
+     - Values declared by ``pixel_mapping``; ``task.params.classes`` is
+       required
 
 Whole slides
 ~~~~~~~~~~~~
@@ -60,6 +61,11 @@ its complete multi-class mask and belongs to the same split as its slide.
 :doc:`preprocessing` covers them. What the model predicts is set separately, by
 the task.
 
+The annotation mask may have a lower resolution than its slide. soma aligns it
+to the slide and reads each ROI's mask on the ROI's pixel grid, so the targets
+register to the features. :ref:`Source masks <preprocessing-source-masks>` gives
+the alignment rules.
+
 Classes
 -------
 
@@ -79,7 +85,9 @@ reserved.
 
 A raw value belongs to one class or to ``ignore``; listing it twice is a config
 error. A mask holding a value declared in neither fails the run and names the
-sample, so a typo cannot silently drop a class.
+sample, so a typo cannot silently drop a class. For whole slides, every value in
+``classes`` and ``ignore`` must also be in ``preprocessing.masks.pixel_mapping``,
+since the masks are read against that vocabulary.
 
 The class scheme is not part of the feature cache key: regrouping classes reuses
 the cached ROIs and features. ``num_classes`` is derived from ``classes``.

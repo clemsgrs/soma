@@ -4,7 +4,8 @@ A thin soma driver over hs2p's ``resolve_annotation_masks`` + ``summarize_annota
 (the preprocessing layer owns the scan; see the hs2p > slide2vec > soma hierarchy). Given a
 slide manifest (``sample_id, image_path, label_mask_path``) and a ``pixel_mapping`` / ``min_coverage``
 (mirroring hs2p's ``masks`` config 1:1), it emits a **wide** CSV — one row per slide with
-``area_mm2_<class>``, ``frac_<class>``, ``est_tiles_<class>`` columns.
+``area_mm2_<class>``, ``frac_<class>``, ``est_tiles_<class>`` columns for every
+``pixel_mapping`` label. The mask must hold only values ``pixel_mapping`` declares.
 
 This only *informs* the user's split (stratify on area / expected-tile-count, not mere
 presence). soma never partitions: split assignment stays a user, slide-level decision.
@@ -19,21 +20,16 @@ from pathlib import Path
 import pandas as pd
 
 from hs2p.api import resolve_annotation_masks, summarize_annotation_coverage
+from hs2p.tiling.mask import open_annotation_mask
 from hs2p.wsi.reader import open_slide
 
 REQUIRED_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
 _METRICS = ("area_mm2", "frac", "est_tiles")
 
 
-def _non_background_classes(pixel_mapping: dict[str, int]) -> list[str]:
-    return [name for name in pixel_mapping if name != "background"]
-
-
 def _coverage_columns(pixel_mapping: dict[str, int]) -> list[str]:
     return ["sample_id"] + [
-        f"{metric}_{name}"
-        for name in _non_background_classes(pixel_mapping)
-        for metric in _METRICS
+        f"{metric}_{name}" for name in pixel_mapping for metric in _METRICS
     ]
 
 
@@ -47,11 +43,13 @@ def summarize_coverage(
     seg_downsample: int = 64,
     overlap: float = 0.0,
     backend: str = "auto",
+    mask_backend: str = "auto",
 ) -> pd.DataFrame:
     """Return a wide coverage DataFrame, one row per manifest slide.
 
     ``manifest`` is a DataFrame or a path to a CSV with at least
-    ``sample_id, image_path, label_mask_path``.
+    ``sample_id, image_path, label_mask_path``. ``backend`` reads the slides and
+    ``mask_backend`` the annotation masks (``auto`` resolves from the mask path alone).
     """
     if isinstance(manifest, (str, Path)):
         manifest = pd.read_csv(manifest)
@@ -60,20 +58,18 @@ def summarize_coverage(
         raise ValueError(
             f"coverage manifest is missing required column(s): {sorted(missing)}"
         )
-    if "background" not in pixel_mapping:
-        raise ValueError("pixel_mapping must include a 'background' label")
-
-    classes = _non_background_classes(pixel_mapping)
     rows: list[dict[str, object]] = []
     for record in manifest.itertuples(index=False):
         slide = open_slide(Path(str(record.image_path)), backend=backend)
         try:
-            resolved = resolve_annotation_masks(
-                slide=slide,
-                mask_path=Path(str(record.label_mask_path)),
+            with open_annotation_mask(
+                Path(str(record.label_mask_path)),
                 pixel_mapping=pixel_mapping,
-                seg_downsample=seg_downsample,
-            )
+                backend=mask_backend,
+            ) as mask:
+                resolved = resolve_annotation_masks(
+                    slide=slide, mask=mask, seg_downsample=seg_downsample
+                )
             summary = summarize_annotation_coverage(
                 slide=slide,
                 resolved_masks=resolved,
@@ -87,7 +83,7 @@ def summarize_coverage(
             if callable(close):
                 close()
         row: dict[str, object] = {"sample_id": record.sample_id}
-        for name in classes:
+        for name in pixel_mapping:
             stats = summary.get(name, {})
             row[f"area_mm2_{name}"] = stats.get("area_mm2")
             row[f"frac_{name}"] = stats.get("frac")
@@ -130,7 +126,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--spacing-um", type=float, required=True)
     parser.add_argument("--seg-downsample", type=int, default=64)
     parser.add_argument("--overlap", type=float, default=0.0)
-    parser.add_argument("--backend", default="auto")
+    parser.add_argument("--backend", default="auto", help="slide reader")
+    parser.add_argument("--mask-backend", default="auto", help="annotation mask reader")
     args = parser.parse_args(argv)
 
     masks = _load_masks_config(args.masks_config)
@@ -143,6 +140,7 @@ def main(argv: list[str] | None = None) -> None:
         seg_downsample=args.seg_downsample,
         overlap=args.overlap,
         backend=args.backend,
+        mask_backend=args.mask_backend,
     )
     out = write_coverage_csv(args.out, coverage)
     print(f"Wrote coverage for {len(coverage)} slides to {out}")

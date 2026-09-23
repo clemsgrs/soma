@@ -50,7 +50,8 @@ Key settings
      - Slide reader (``auto`` resolves per slide)
      - Pin when a slide decodes correctly under only one reader
    * - ``mask_backend``
-     - Reader for tissue/annotation mask rasters (``auto`` follows the slide)
+     - Reader for tissue/annotation mask rasters (``auto`` resolves from the mask
+       file, ``pil`` for PNG/JPEG)
      - Set when a mask needs a different reader than its slide
 
 Tiling configuration
@@ -89,6 +90,32 @@ annotation-mask reads so targets remain registered to dense feature grids. The n
 policy participates in ROI and feature-cache identities, and the effective spacing is
 recorded in cache sidecars and run provenance.
 
+.. _preprocessing-source-masks:
+
+Source masks
+------------
+
+Tissue masks (``mask_path``) and annotation masks (``label_mask_path``) may have a
+lower resolution than their slide, but must cover the same field of view at one
+scale, within one mask pixel per axis. soma reads them on the slide's grid. A
+mask of another shape fails, as does one whose spacing tag is more than 5% off
+the spacing its dimensions imply; a tag 1–5% off logs a warning. PNG/JPEG and
+untagged TIFF masks need no spacing metadata.
+
+A mask may hold only the values it declares. A tissue mask holds ``0``
+(background) and ``1`` (tissue): a ``{1, 255}`` or ``{0, 255}`` mask fails and
+must be rewritten. An annotation mask holds only the values of ``pixel_mapping``
+(see `Annotation labels`_).
+
+A slide without resolution metadata needs ``spacing_at_level_0`` in
+``dataset.csv``, including an untagged TIFF read with ``vips``.
+
+Tiling artifacts record the mask level and spacing actually read
+(``mask_level``, ``mask_spacing_um``). Since hs2p 5 selects the mask level with
+a fixed 1% tolerance, these can differ from runs made with hs2p 4. Cache keys
+depend only on the configuration, so tiling and feature caches written with
+hs2p 4 are reused.
+
 Segmentation slide-manifest sampling
 ------------------------------------
 
@@ -122,10 +149,15 @@ with unique values; ``min_coverage`` and ``colors`` may only name mapped classes
 Coverage fractions must lie in ``[0, 1]`` and colors must be valid RGB triples.
 No reserved label name is required.
 
+``pixel_mapping`` must declare every value the annotation masks hold: a mask
+holding any other value fails. Declare a value that should never select a tile,
+such as unannotated background, and leave it out of ``min_coverage``.
+
 These labels only select tiles and ROIs. For segmentation, the classes the model
 predicts are declared separately under ``task.params.classes`` and
 ``task.params.ignore`` (:doc:`segmentation`), so a label here may be split or
-merged differently at training time.
+merged differently at training time. Every raw value those list must also be in
+``pixel_mapping``; the config is rejected otherwise.
 
 Annotation-restricted bags (``dataset_type: slide`` or ``patient``)
 -------------------------------------------------------------------
@@ -175,3 +207,8 @@ Preview rendering is inherited from :mod:`hs2p`:
 - :func:`soma.preprocessing.overlay_mask_on_slide` for tissue-mask overlays
 - :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
 - :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
+
+For flat PNG/JPEG slides, set ``preview.save_mask_preview`` and
+``preview.save_tiling_preview`` to ``false``: hs2p 5.0.0's preview renderers
+reopen the slide without its ``spacing_at_level_0``. PNG/JPEG masks on slides
+with native spacing work with previews enabled.

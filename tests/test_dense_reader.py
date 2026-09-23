@@ -9,36 +9,39 @@ from soma.dense.reader import (
     UNDECLARED_LABEL,
     build_label_remap,
     read_image_at_spacing,
-    read_mask_at_spacing,
+    read_image_region_at_spacing,
     resolve_class_scheme,
 )
 
 
-def test_non_flat_reader_uses_hs2p_spacing_apis(tmp_path: Path, monkeypatch):
-    """Non-flat inputs must route through hs2p's spacing-aware reader APIs.
+def test_non_flat_image_reader_uses_hs2p_spacing_apis(tmp_path: Path, monkeypatch):
+    """Non-flat images must route through hs2p's spacing-aware reader APIs, keyword-only.
 
-    This catches CI environments with an older hs2p package: the monkeypatches use
-    ``raising=True`` on the real API names, so the test fails if either API is absent.
+    The fakes take keyword-only arguments like hs2p 5, so a positional call fails here as
+    it would against the real reader; ``raising=True`` fails if an API is absent. The
+    mask reads are exercised against real pyramidal TIFFs in
+    ``test_dense_slide_sampling_integration.py``.
     """
-    import hs2p.wsi.masks as masks_mod
     import hs2p.wsi.wsi as wsi_mod
 
     calls: list[tuple] = []
 
-    def fake_init(self, path, *, backend="auto"):
+    def fake_init(self, *, path, backend="auto"):
         calls.append(("init", Path(path).name, backend))
 
     def fake_read_full_at_spacing(self, spacing_um, *, tolerance, interpolation):
-        calls.append(("image", spacing_um, tolerance, interpolation))
+        calls.append(("full", spacing_um, tolerance, interpolation))
         return np.array([[[1, 2, 3, 255], [4, 5, 6, 255]]], dtype=np.uint8)
 
-    def fake_read_label_at_spacing(wsi, spacing_um, *, tolerance):
-        calls.append(("mask", spacing_um, tolerance, type(wsi).__name__))
-        return np.array([[0, 1]], dtype=np.uint8)
+    def fake_read_region_at_spacing(
+        self, *, location, requested_spacing_um, size, tolerance, interpolation
+    ):
+        calls.append(("region", location, requested_spacing_um, size, tolerance, interpolation))
+        return np.array([[[7, 8, 9, 255]]], dtype=np.uint8)
 
     monkeypatch.setattr(wsi_mod.WSI, "__init__", fake_init)
     monkeypatch.setattr(wsi_mod.WSI, "read_full_at_spacing", fake_read_full_at_spacing)
-    monkeypatch.setattr(masks_mod, "read_label_at_spacing", fake_read_label_at_spacing)
+    monkeypatch.setattr(wsi_mod.WSI, "read_region_at_spacing", fake_read_region_at_spacing)
 
     tif_path = tmp_path / "roi.tif"
     image = read_image_at_spacing(
@@ -48,22 +51,22 @@ def test_non_flat_reader_uses_hs2p_spacing_apis(tmp_path: Path, monkeypatch):
         tolerance=0.02,
         interpolation="area",
     )
-    mask = read_mask_at_spacing(
+    region = read_image_region_at_spacing(
         tif_path,
+        location=(4, 2),
+        size=(1, 1),
         spacing_um=0.5,
         backend="openslide",
         tolerance=0.02,
     )
 
-    assert image.shape == (1, 2, 3)
-    assert image.dtype == np.uint8
     np.testing.assert_array_equal(image, np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8))
-    np.testing.assert_array_equal(mask, np.array([[0, 1]], dtype=np.uint8))
+    np.testing.assert_array_equal(region, np.array([[[7, 8, 9]]], dtype=np.uint8))
     assert calls == [
         ("init", "roi.tif", "openslide"),
-        ("image", 0.5, 0.02, "area"),
+        ("full", 0.5, 0.02, "area"),
         ("init", "roi.tif", "openslide"),
-        ("mask", 0.5, 0.02, "WSI"),
+        ("region", (4, 2), 0.5, (1, 1), 0.02, "area"),
     ]
 
 

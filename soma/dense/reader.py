@@ -7,10 +7,12 @@ Two input regimes, routed per file:
   resolution, so a requested spacing is **ignored** — there is no pyramid to resample
   from and nothing to select.
 * **Pyramidal / spacing-bearing** inputs (e.g. multi-resolution TIFF) are read
-  **spacing-aware** via hs2p (:meth:`hs2p.wsi.wsi.WSI.read_full_at_spacing` /
-  :func:`hs2p.wsi.masks.read_label_at_spacing`): the finest pyramid level ``<=`` the
-  requested µm/px is read and downscaled (never upsampled). Images use ``area``
-  interpolation; masks use ``nearest`` (label-preserving) and stay integer.
+  **spacing-aware** via hs2p. Images (:meth:`hs2p.wsi.wsi.WSI.read_full_at_spacing`)
+  read the finest pyramid level ``<=`` the requested µm/px and downscale it with
+  ``area`` interpolation (never upsampling). Masks are :class:`hs2p.Mask` objects
+  aligned to their image's level-0 grid and read ``nearest`` onto the image's read
+  size, so a mask coarser than its image still registers; values stay integer and
+  must be declared by the mask's label vocabulary.
 
 At an exact-level match (e.g. a 0.5 µm/px ROI read at 0.5) hs2p does no resize, so
 the result is byte-identical to the plain PIL page-0 read — the parity the cached
@@ -20,6 +22,8 @@ dense path is verified against.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +111,48 @@ def resolve_class_scheme(
     )
 
 
+def accepted_mask_values(
+    *, num_classes: int, ignore_index: int, label_remap: np.ndarray | None
+) -> dict[str, int]:
+    """The label vocabulary a mask is read against when no ``pixel_mapping`` applies.
+
+    Pre-cropped tiles have no sampling vocabulary, so their masks declare exactly the raw
+    values the head accepts: those ``label_remap`` maps (``task.params.classes`` and
+    ``ignore``), or, without a class scheme, the class indices and ``ignore_index``. Only
+    single-byte values can occur in a mask raster.
+    """
+    if label_remap is not None:
+        values = np.flatnonzero(np.asarray(label_remap) != UNDECLARED_LABEL).tolist()
+    else:
+        values = [*range(int(num_classes)), int(ignore_index)]
+    return {f"value_{value}": int(value) for value in sorted(set(values)) if 0 <= value <= 255}
+
+
+def check_classes_declared(
+    task_params: Mapping[str, Any], pixel_mapping: Mapping[str, int]
+) -> None:
+    """Fail unless every raw value in ``task.params.classes`` / ``ignore`` is in ``pixel_mapping``.
+
+    hs2p reads an annotation raster against the closed ``preprocessing.masks.pixel_mapping``
+    vocabulary and rejects any other value, so a raw value the training scheme names but
+    the sampling vocabulary omits could never be read. This is the one coupling between the
+    two layers; call it after :func:`resolve_class_scheme` has validated the scheme.
+    """
+    declared = {int(value) for value in pixel_mapping.values()}
+    classes = task_params.get("classes") or {}
+    owners = [(f"task.params.classes {name!r}", values) for name, values in classes.items()]
+    owners.append(("task.params.ignore", task_params.get("ignore") or ()))
+    for owner, values in owners:
+        for value in values if isinstance(values, (list, tuple)) else [values]:
+            if int(value) not in declared:
+                raise ValueError(
+                    f"{owner} lists raw value {int(value)}, which "
+                    "preprocessing.masks.pixel_mapping does not declare. Annotation masks "
+                    "are read against that vocabulary, so add the value to pixel_mapping; "
+                    "left out of min_coverage, its label is read but never selects a ROI."
+                )
+
+
 def _is_flat(path: str | Path, spacing_um: float | None) -> bool:
     """Read flat (PIL) when the format is flat or no spacing was requested."""
     return spacing_um is None or Path(path).suffix.lower() in _FLAT_SUFFIXES
@@ -169,7 +215,7 @@ def read_image_at_spacing(
             return np.ascontiguousarray(np.array(image.convert("RGB")))
     from hs2p.wsi.wsi import WSI
 
-    wsi = WSI(Path(path), backend=backend)
+    wsi = WSI(path=Path(path), backend=backend)
     arr = wsi.read_full_at_spacing(
         float(spacing_um), tolerance=float(tolerance), interpolation=interpolation
     )
@@ -195,29 +241,100 @@ def read_image_region_at_spacing(
     """
     from hs2p.wsi.wsi import WSI
 
-    wsi = WSI(Path(path), backend=backend)
+    wsi = WSI(path=Path(path), backend=backend)
     arr = wsi.read_region_at_spacing(
-        tuple(location), float(spacing_um), tuple(size),
-        tolerance=float(tolerance), interpolation=interpolation,
+        location=tuple(location),
+        requested_spacing_um=float(spacing_um),
+        size=tuple(size),
+        tolerance=float(tolerance),
+        interpolation=interpolation,
     )
     return np.ascontiguousarray(np.asarray(arr)[..., :3])
+
+
+@lru_cache(maxsize=1024)
+def _reference_geometry(
+    image_path: str, backend: str, spacing_at_level_0: float | None
+) -> tuple[float, tuple[int, int]]:
+    """``(level-0 spacing µm/px, level-0 (w, h))`` of the image a mask is aligned to.
+
+    Opened once per image per process: every ROI of a slide shares it. A declared
+    ``spacing_at_level_0`` overrides the file's own, as it does for the image reads.
+    """
+    from hs2p.wsi.reader import open_slide
+
+    with open_slide(
+        Path(image_path), backend, spacing_override=spacing_at_level_0
+    ) as slide:
+        width, height = slide.level_dimensions[0]
+        return float(slide.spacing), (int(width), int(height))
+
+
+@contextmanager
+def _aligned_mask(
+    path: str | Path,
+    *,
+    reference_path: str | Path,
+    reference_backend: str,
+    spacing_at_level_0: float | None,
+    pixel_mapping: Mapping[str, int],
+    backend: str,
+):
+    """Open ``path`` as an hs2p annotation ``Mask`` aligned to its image's level-0 grid.
+
+    ``reference_backend`` reads the image, ``backend`` the mask.
+    """
+    from hs2p import AnnotationLabels, Mask
+
+    reference_spacing_um, reference_dimensions = _reference_geometry(
+        str(reference_path),
+        reference_backend,
+        None if spacing_at_level_0 is None else float(spacing_at_level_0),
+    )
+    with Mask(
+        path=Path(path),
+        labels=AnnotationLabels(pixel_mapping=dict(pixel_mapping)),
+        backend=backend,
+    ) as mask:
+        yield mask.align_to(
+            reference_spacing_um=reference_spacing_um,
+            reference_dimensions=reference_dimensions,
+        )
 
 
 def read_mask_at_spacing(
     path: str | Path,
     *,
     spacing_um: float | None,
+    size: tuple[int, int],
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
     backend: str = "auto",
-    tolerance: float = 0.05,
 ) -> np.ndarray:
-    """Read a label mask as a 2-D integer class-index raster (flat PIL or spacing-aware hs2p)."""
+    """Read a label mask as a 2-D integer raster (flat PIL or spacing-aware hs2p).
+
+    A flat mask is read as is. Otherwise the mask is aligned to its image
+    (``reference_path``, read with ``reference_backend``; ``backend`` reads the mask) and
+    read as ``size=(w, h)`` labels at ``spacing_um``: the image's
+    own read size, so mask and image register whatever the mask's resolution. hs2p
+    rejects a mask that does not cover the image at one scale, and any value
+    ``pixel_mapping`` does not declare.
+    """
     if _is_flat(path, spacing_um):
         return _load_flat_mask(path)
-    from hs2p.wsi.masks import read_label_at_spacing
-    from hs2p.wsi.wsi import WSI
-
-    wsi = WSI(Path(path), backend=backend)
-    return read_label_at_spacing(wsi, float(spacing_um), tolerance=float(tolerance))
+    with _aligned_mask(
+        path,
+        reference_path=reference_path,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        pixel_mapping=pixel_mapping,
+        backend=backend,
+    ) as aligned:
+        return aligned.read_full(
+            target_spacing_um=float(spacing_um), target_dimensions=tuple(size)
+        ).labels
 
 
 def read_mask_region_at_spacing(
@@ -226,19 +343,29 @@ def read_mask_region_at_spacing(
     location: tuple[int, int],
     size: tuple[int, int],
     spacing_um: float,
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
     backend: str = "auto",
-    tolerance: float = 0.05,
 ) -> np.ndarray:
-    """Read a ``size=(w, h)`` label-mask region at ``(x, y)`` (level-0) and ``spacing_um``.
+    """Read a ``size=(w, h)`` label-mask region at ``(x, y)`` and ``spacing_um``.
 
     The region counterpart of :func:`read_mask_at_spacing` for slide-manifest ROIs:
     the mask is a whole-slide annotation raster, so each ROI reads its window at the
     same spacing/size as its dense grid (so the supervision registers to the features).
+    ``location`` is in the slide's (``reference_path``) level-0 pixels, not the mask's.
     """
-    from hs2p.wsi.masks import read_label_region_at_spacing
-    from hs2p.wsi.wsi import WSI
-
-    wsi = WSI(Path(path), backend=backend)
-    return read_label_region_at_spacing(
-        wsi, tuple(location), float(spacing_um), tuple(size), tolerance=float(tolerance)
-    )
+    with _aligned_mask(
+        path,
+        reference_path=reference_path,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        pixel_mapping=pixel_mapping,
+        backend=backend,
+    ) as aligned:
+        return aligned.read_region(
+            location=tuple(location),
+            target_spacing_um=float(spacing_um),
+            target_dimensions=tuple(size),
+        ).labels

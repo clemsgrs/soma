@@ -1,0 +1,76 @@
+{
+  "artifact": {
+    "annotation": null,
+    "coordinate_space": "level0_px",
+    "output_mode": "merged",
+    "selection_strategy": "merged_default_tiling",
+    "tile_order": "x_then_y"
+  },
+  "filtering": {
+    "a_h": 2,
+    "a_t": 4,
+    "black_threshold": 25,
+    "blur_threshold": 50.0,
+    "filter_black": false,
+    "filter_blur": false,
+    "filter_grayspace": false,
+    "filter_white": false,
+    "fraction_threshold": 0.9,
+    "grayspace_fraction_threshold": 0.6,
+    "grayspace_saturation_threshold": 0.05,
+    "qc_spacing_um": 2.0,
+    "white_threshold": 220
+  },
+  "provenance": {
+    "backend": "cucim",
+    "image_path": "@ROOT@/slide.tif",
+    "mask_backend": "cucim",
+    "mask_path": "@ROOT@/tissue.tif",
+    "requested_backend": "auto",
+    "requested_mask_backend": "auto",
+    "sample_id": "s0",
+    "spacing_at_level_0": null
+  },
+  "segmentation": {
+    "close": 4,
+    "mask_level": 0,
+    "mask_path": "@ROOT@/tissue.tif",
+    "mask_spacing_um": 0.5,
+    "mthresh": 7,
+    "ref_tile_size_px": 16,
+    "requested_seg_downsample": 64,
+    "sam2_checkpoint_path": null,
+    "sam2_config_path": null,
+    "seg_downsample": 1,
+    "seg_level": 0,
+    "seg_spacing_um": 0.5,
+    "sthresh": 8,
+    "sthresh_up": 255,
+    "tissue_mask_tissue_value": 1,
+    "tissue_method": "precomputed_mask"
+  },
+  "slide": {
+    "base_spacing_um": 0.5,
+    "dimensions": [
+      256,
+      256
+    ],
+    "level_downsamples": [
+      1.0
+    ]
+  },
+  "tiling": {
+    "is_within_tolerance": true,
+    "min_tissue_fraction": 0.1,
+    "n_tiles": 4,
+    "overlap": 0.0,
+    "read_level": 0,
+    "read_spacing_um": 0.5,
+    "read_tile_size_px": 64,
+    "requested_spacing_um": 0.5,
+    "requested_tile_size_px": 64,
+    "step_px_lv0": 64,
+    "tile_size_lv0": 64,
+    "tolerance": 0.05
+  }
+}
