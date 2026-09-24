@@ -9,9 +9,12 @@
   extends past the slide's right or bottom edge now trains with the part beyond
   the slide set to `ignore_index`, where it previously failed the run. Requires
   hs2p 5.0.2. Slide-manifest segmentation runs since the hs2p 5 upgrade should be
-  retrained; feature caches are reused and cached ROI class counts are
-  recomputed once. The coverage summary gains `tolerance` (`--tolerance`); pass
-  your `preprocessing.tolerance` so its tile estimate matches tiling.
+  retrained; cached ROI class counts are recomputed once. ROI feature grids must
+  record the spacing they were read at, which slide2vec does since 5.7. A cache
+  written by slide2vec 5.4–5.6 now fails the run and names the cache to delete
+  and re-extract; older flat-layout caches are not reused. The
+  coverage summary gains `tolerance` (`--tolerance`); pass your
+  `preprocessing.tolerance` so its tile estimate matches tiling.
 
 - 2026-09-23: Fix live segmentation (`feature_mode: live`) ignoring
   `task.params.classes` / `ignore`. The live path used raw mask values as class

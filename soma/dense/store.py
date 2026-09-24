@@ -346,9 +346,17 @@ class DenseFeatureStore:
 
     def spacing(self, sample_id: str) -> DenseSampleSpacing:
         """Resolved source and effective grid spacing persisted by slide2vec."""
-        return dense_sample_spacing_from_metadata(
-            self.metadata(sample_id), sample_id=sample_id
-        )
+        metadata = self.metadata(sample_id)
+        if metadata.get("source_spacing_um") is None or metadata.get("effective_spacing_um") is None:
+            # slide2vec 5.4-5.6 wrote ROI grids in today's layout, so their caches still
+            # hit, but without the read-plan spacing.
+            raise ValueError(
+                f"Dense feature '{sample_id}' is missing required source_spacing_um / "
+                "effective_spacing_um provenance: its grid predates slide2vec 5.7, which "
+                f"records the spacing it was read at. Delete the dense feature cache "
+                f"{self._feature_dir} and re-extract."
+            )
+        return dense_sample_spacing_from_metadata(metadata, sample_id=sample_id)
 
     @property
     def feature_dir(self) -> Path:
