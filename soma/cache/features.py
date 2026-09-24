@@ -53,6 +53,13 @@ from soma.cache.keys import (
 from soma.config import EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
 
+# Joins every slide-manifest ROI grid's cache identity. ROI masks are read at the spacing
+# slide2vec recorded for the grid (``effective_spacing_um``), which it records since 5.7;
+# grids cached under an identity without this marker may predate that, so they count as
+# missing. slide2vec then re-encodes only the ones whose sidecar lacks its current read
+# plan and skips the rest, so an up-to-date cache pays one encoder load, once.
+ROI_GRID_CONTRACT = "recorded-read-spacing"
+
 
 def _cache_dir(cache_root: Path, cache_kind: str, key: str) -> Path:
     return cache_root / cache_kind / key
@@ -1053,10 +1060,13 @@ def resolve_dense_cache(
         sampling_signature=sampling_signature,
         extraction_geometry=extraction_geometry,
     )
+    static_identity: dict[str, Any] = {"cache_key": metadata["cache_key"]}
+    if cache_kind == "dense":
+        static_identity["roi_grid_contract"] = ROI_GRID_CONTRACT
     cache_stem_by_id = _sample_stems_for_kind(
         dataset=dataset,
         cache_kind=cache_kind,
-        static_identity_payload={"cache_key": metadata["cache_key"]},
+        static_identity_payload=static_identity,
     )
     return _resolve_cache(
         cache_root=cache_root,

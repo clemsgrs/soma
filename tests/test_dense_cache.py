@@ -637,3 +637,45 @@ def test_dense_cache_identity_ignores_label_mask_path(tmp_path: Path):
     other_tissue = _sample_identity_payload(manifest("c", mask="/t2/s1.png", label_mask="/m/s1.png"))
     assert base == other_label
     assert base != other_tissue
+
+
+def _identities_without_roi_grid_contract(res, dataset, *, cache_kind: str = "dense") -> dict:
+    """The per-ROI identities soma recorded before ROI grids had to carry their read spacing."""
+    from soma.cache.keys import _sample_stems_for_kind
+
+    return _sample_stems_for_kind(
+        dataset=dataset,
+        cache_kind=cache_kind,
+        static_identity_payload={"cache_key": res.metadata["cache_key"]},
+    )
+
+
+def test_roi_grids_cached_before_the_recorded_spacing_contract_are_re_encoded(tmp_path: Path):
+    # slide2vec 5.4-5.6 grids share today's layout but not the recorded read spacing ROI
+    # mask reads need: their cache must resume as missing so slide2vec re-encodes them.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+    metadata = json.loads(res.metadata_path.read_text())
+    metadata["sample_identity_signature_by_id"] = _identities_without_roi_grid_contract(res, dataset)
+    res.metadata_path.write_text(json.dumps(metadata))
+
+    resumed = resolve_dense_cache(**kw)
+
+    assert resumed.complete is False
+    assert sorted(resumed.missing_sample_ids()) == sorted(dataset.sample_ids)
+    # Once the (re-)encoded grids are recorded under the current identity, the cache hits.
+    record_sample_identity_signatures(resumed, list(dataset.sample_ids))
+    assert resolve_dense_cache(**kw).complete is True
+
+
+def test_pre_cropped_dense_image_identities_are_unchanged(tmp_path: Path):
+    # Pre-cropped grids have no ROI mask read: their cached identities stay valid.
+    dataset = _make_dataset(tmp_path)
+
+    res = resolve_dense_cache(**_dense_kw(tmp_path, dataset), cache_kind="dense_image")
+
+    assert res.cache_stem_by_id == _identities_without_roi_grid_contract(
+        res, dataset, cache_kind="dense_image"
+    )

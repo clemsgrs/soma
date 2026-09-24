@@ -143,8 +143,8 @@ def test_dense_store_rejects_missing_or_invalid_resolved_spacing(
 
 
 def test_dense_store_says_how_to_recover_a_grid_without_resolved_spacing(tmp_path: Path):
-    # Grids written before slide2vec recorded its read plan still hit the cache, but
-    # cannot say what spacing they were read at: the only fix is re-extraction.
+    # Grids written before slide2vec recorded its read plan cannot say what spacing they
+    # were read at: pre-extracted features must be re-extracted.
     geometry = compute_dense_geometry(target_size=32, patch_size=16)
     metadata = dense_grid_metadata(geometry, feature_dim=3, pad_mode="reflect", spacing_um=0.5)
     write_dense_grid(tmp_path, "s0", torch.zeros(3, 2, 2), metadata)
@@ -155,4 +155,4 @@ def test_dense_store_says_how_to_recover_a_grid_without_resolved_spacing(tmp_pat
     message = str(excinfo.value)
     assert "'s0'" in message
     assert "slide2vec 5.7" in message
-    assert f"Delete the dense feature cache {tmp_path}" in message
+    assert f"Re-extract the features in {tmp_path}" in message

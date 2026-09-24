@@ -1420,6 +1420,29 @@ def _dense_spacings_match(a: float | None, b: float | None, *, tol: float = 1e-9
     return abs(float(a) - float(b)) <= tol
 
 
+def _check_segmentation_grid_spacing(feature_store, records, preprocessing) -> None:
+    """Fail when a cached grid was extracted at another spacing than the config requests.
+
+    ROI masks are read at each grid's recorded spacing, so they register either way; this
+    catches features extracted under another configuration, e.g. passed as
+    ``Pipeline(feature_dir=...)``. Under ``native_if_coarser`` the spacing differs per
+    source, so each record is checked against the extractor's own rule.
+    """
+    requested = preprocessing.requested_spacing_um if preprocessing is not None else None
+    for record in records:
+        expected_spacing_um = (
+            None if requested is None else preprocessing.effective_spacing_um(record.spacing_at_level_0)
+        )
+        grid_spacing_um = feature_store.spacing_um(record.sample_id)
+        if not _dense_spacings_match(grid_spacing_um, expected_spacing_um):
+            raise ValueError(
+                f"segmentation sample '{record.sample_id}' dense-grid spacing "
+                f"({grid_spacing_um} µm/px) does not match the configured spacing "
+                f"({expected_spacing_um} µm/px); re-extract the features for this "
+                "configuration."
+            )
+
+
 def _build_segmentation_head(
     *,
     task: TaskConfig,
@@ -1624,28 +1647,8 @@ def train_one_segmentation_fold(
                     f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
                     "size across the cohort."
                 )
-    # Masks are read spacing-aware (hs2p) at the same µm/px the dense grids were
-    # extracted at, so the target registers against the features. None ⇒ flat read.
-    mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    # Cached path: every grid records its actual read spacing. Under an explicit
-    # native-if-coarser policy that value may differ per source, so validate each record
-    # against the same effective-spacing rule the extractor and mask head use.
     if not is_live:
-        for record in all_records:
-            expected_spacing_um = (
-                preprocessing.effective_spacing_um(record.spacing_at_level_0)
-                if preprocessing is not None
-                and preprocessing.requested_spacing_um is not None
-                else mask_spacing_um
-            )
-            grid_spacing_um = feature_store.spacing_um(record.sample_id)
-            if not _dense_spacings_match(grid_spacing_um, expected_spacing_um):
-                raise ValueError(
-                    f"segmentation sample '{record.sample_id}' mask read-spacing "
-                    f"({expected_spacing_um} µm/px) does not match its cached dense-grid "
-                    f"spacing ({grid_spacing_um} µm/px); the mask would misregister "
-                    "against the features."
-                )
+        _check_segmentation_grid_spacing(feature_store, all_records, preprocessing)
     head = _build_segmentation_head(
         task=task,
         evaluation=evaluation,
@@ -2322,15 +2325,6 @@ def train_one_pixel_classifier_fold(
     all_records = fold_plan.all_records
     feature_store.validate_coverage([r.sample_id for r in all_records])
 
-    num_classes, _, label_remap = resolve_class_scheme(
-        task.params, annotation_rasters=masks is not None
-    )
-    seg_params = {
-        key: value
-        for key, value in task.params.items()
-        if key not in CLASS_SCHEME_KEYS
-    }
-
     # Geometry + feature_dim from one reference sample; assert cohort uniformity.
     ref_id = train_records[0].sample_id
     geometry = feature_store.geometry(ref_id)
@@ -2343,40 +2337,16 @@ def train_one_pixel_classifier_fold(
                 f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
                 "size across the cohort."
             )
-    # Masks read at the same µm/px the grids were extracted at (else misregistration).
-    mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    for record in all_records:
-        expected_spacing_um = (
-            preprocessing.effective_spacing_um(record.spacing_at_level_0)
-            if preprocessing is not None
-            and preprocessing.requested_spacing_um is not None
-            else mask_spacing_um
-        )
-        grid_spacing_um = feature_store.spacing_um(record.sample_id)
-        if not _dense_spacings_match(grid_spacing_um, expected_spacing_um):
-            raise ValueError(
-                f"segmentation sample '{record.sample_id}' mask read-spacing "
-                f"({expected_spacing_um} µm/px) does not match its cached dense-grid "
-                f"spacing ({grid_spacing_um} µm/px); the mask would misregister "
-                "against the features."
-            )
-
-    head = SegmentationHead(
-        num_classes=num_classes,
+    _check_segmentation_grid_spacing(feature_store, all_records, preprocessing)
+    head = _build_segmentation_head(
+        task=task,
+        evaluation=evaluation,
+        preprocessing=preprocessing,
+        masks=masks,
         geometry=geometry,
-        metrics=evaluation.metrics,
-        spacing_um=float(mask_spacing_um) if mask_spacing_um is not None else None,
-        spacing_policy=(
-            preprocessing.spacing_policy if preprocessing is not None else "strict"
-        ),
-        backend=preprocessing.mask_backend if preprocessing is not None else "auto",
-        image_backend=preprocessing.backend if preprocessing is not None else "auto",
-        tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
-        label_remap=label_remap,
-        pixel_mapping=masks.pixel_mapping if masks is not None else None,
         sample_spacings=_segmentation_roi_spacings(feature_store, all_records),
-        **seg_params,
     )
+    num_classes = head.num_classes
 
     # Build the classifier (num_classes injected like a decoder). ``class_balanced_weights``
     # is a fold-level knob (inverse-frequency per-pixel sample weights), not a classifier

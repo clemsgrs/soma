@@ -102,9 +102,17 @@ def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
     assert all(0 <= x < 256 and 0 <= y < 256 for x, y in coords)
 
 
+def _roi_labels(label_mask_path: Path, **kwargs) -> np.ndarray:
+    """A ROI's labels through soma's reader, for a ROI wholly on the slide."""
+    from soma.dense.reader import read_mask_region_within_slide
+
+    labels, inside = read_mask_region_within_slide(label_mask_path, **kwargs)
+    assert inside is None
+    return labels
+
+
 def test_mask_region_read_back_from_fixture(tmp_path: Path):
     """The same fixture's label mask reads back a non-empty window at a sampled ROI origin."""
-    from soma.dense.reader import read_mask_region_at_spacing
     from soma.dense_slide_extraction import sample_slide_rois
 
     slide_path, label_mask_path = _make_fixture(tmp_path)
@@ -125,7 +133,7 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
     )["s0"]
     # Read the label window registered to the first sampled ROI.
     x, y = coords[0]
-    region = read_mask_region_at_spacing(
+    region = _roi_labels(
         label_mask_path,
         location=(x, y),
         size=(TARGET, TARGET),
@@ -140,7 +148,7 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
     # The tumor quadrant guarantees at least one tile whose window contains tumor labels.
     union_labels = set()
     for x, y in coords:
-        win = read_mask_region_at_spacing(
+        win = _roi_labels(
             label_mask_path,
             location=(x, y),
             size=(TARGET, TARGET),
@@ -175,12 +183,11 @@ def test_mask_region_location_is_in_slide_pixels_for_a_coarser_mask(tmp_path: Pa
     """A region's location is in the *slide's* level-0 pixels, even when the mask's level
     0 is coarser. hs2p 4.x read it in mask-file pixels, so slide (128, 0) landed at slide
     (256, 0) — off the tumor quadrant."""
-    from soma.dense.reader import read_mask_region_at_spacing
 
     slide_path, label_mask_path = _make_half_resolution_mask_fixture(tmp_path)
 
     def region(x: int, y: int) -> np.ndarray:
-        return read_mask_region_at_spacing(
+        return _roi_labels(
             label_mask_path,
             location=(x, y),
             size=(TARGET, TARGET),
@@ -215,11 +222,10 @@ def test_full_mask_read_registers_a_coarser_mask_to_the_image_grid(tmp_path: Pat
 
 
 def test_mask_read_rejects_a_value_outside_the_declared_vocabulary(tmp_path: Path):
-    from soma.dense.reader import read_mask_region_at_spacing
 
     slide_path, label_mask_path = _make_half_resolution_mask_fixture(tmp_path)
     with pytest.raises(ValueError, match="undeclared label IDs"):
-        read_mask_region_at_spacing(
+        _roi_labels(
             label_mask_path,
             location=(128, 0),
             size=(TARGET, TARGET),
@@ -319,7 +325,6 @@ def _sample_split_tumor(tmp_path: Path, masks: MasksConfig) -> list[tuple[int, i
 def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path: Path):
     """#484: a list-valued pixel_mapping entry is one sampling label whose coverage is the
     sum of its values, so a tile 31% value 1 + 31% value 2 passes min_coverage 0.5."""
-    from soma.dense.reader import read_mask_region_at_spacing
 
     merged = MasksConfig(
         pixel_mapping={"background": 0, "tumor": [1, 2]}, min_coverage={"tumor": 0.5}
@@ -328,7 +333,7 @@ def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path
     assert coords == [(0, 0)]
 
     # The sampled ROI's mask reads back against the same list-valued vocabulary.
-    region = read_mask_region_at_spacing(
+    region = _roi_labels(
         tmp_path / "merged" / "mask.tif",
         location=coords[0],
         size=(TARGET, TARGET),
