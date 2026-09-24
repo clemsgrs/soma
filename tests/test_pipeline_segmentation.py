@@ -608,8 +608,8 @@ def test_segmentation_fold_requires_num_classes(tmp_path: Path):
 
 
 def test_segmentation_fold_rejects_mask_grid_spacing_mismatch(tmp_path: Path):
-    # Grids extracted at 0.5 µm/px but masks would be read at 1.0 — the supervision
-    # would misregister against the features. The fold must fail loud, not train.
+    # Grids extracted at 0.5 µm/px under a config requesting 1.0: the features come from
+    # another configuration. The fold must fail loud, not train.
     from soma.config import PreprocessingConfig
 
     manifest, splits, store = _build_dense_run(

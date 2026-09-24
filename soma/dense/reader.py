@@ -366,40 +366,6 @@ def read_mask_at_spacing(
         ).labels
 
 
-def read_mask_region_at_spacing(
-    path: str | Path,
-    *,
-    location: tuple[int, int],
-    size: tuple[int, int],
-    spacing_um: float,
-    reference_path: str | Path,
-    pixel_mapping: Mapping[str, int | list[int]],
-    reference_backend: str = "auto",
-    spacing_at_level_0: float | None = None,
-    backend: str = "auto",
-) -> np.ndarray:
-    """Read a ``size=(w, h)`` label-mask region at ``(x, y)`` and ``spacing_um``.
-
-    The region counterpart of :func:`read_mask_at_spacing` for slide-manifest ROIs:
-    the mask is a whole-slide annotation raster, so each ROI reads its window at the
-    same spacing/size as its dense grid (so the supervision registers to the features).
-    ``location`` is in the slide's (``reference_path``) level-0 pixels, not the mask's.
-    """
-    with _aligned_mask(
-        path,
-        reference_path=reference_path,
-        reference_backend=reference_backend,
-        spacing_at_level_0=spacing_at_level_0,
-        pixel_mapping=pixel_mapping,
-        backend=backend,
-    ) as aligned:
-        return aligned.read_region(
-            location=tuple(location),
-            target_spacing_um=float(spacing_um),
-            target_dimensions=tuple(size),
-        ).labels
-
-
 def read_mask_region_within_slide(
     path: str | Path,
     *,
@@ -412,7 +378,12 @@ def read_mask_region_within_slide(
     spacing_at_level_0: float | None = None,
     backend: str = "auto",
 ) -> tuple[np.ndarray, np.ndarray | None]:
-    """Read a ROI's labels like :func:`read_mask_region_at_spacing`, tolerating an overhang.
+    """Read a slide-manifest ROI's ``size=(w, h)`` labels at ``(x, y)`` and ``spacing_um``.
+
+    The region counterpart of :func:`read_mask_at_spacing`: the mask is a whole-slide
+    annotation raster, so each ROI reads its window at the same spacing/size as its dense
+    grid (so the supervision registers to the features). ``location`` is in the slide's
+    (``reference_path``) level-0 pixels, not the mask's.
 
     Tiling keeps a tile that starts inside the slide and extends past its right or bottom
     edge when its in-slide part meets ``min_coverage``; hs2p never pads a mask read past
