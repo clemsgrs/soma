@@ -24,7 +24,7 @@ _CANNED_SUMMARY = {
 @pytest.fixture
 def stub_hs2p(monkeypatch):
     """Stub the hs2p calls; record how the slide and annotation mask were opened."""
-    calls: dict[str, list] = {"open_mask": [], "resolve": []}
+    calls: dict[str, list] = {"open_mask": [], "resolve": [], "summarize": []}
 
     @contextmanager
     def open_annotation_mask(path, *, pixel_mapping, backend="auto"):
@@ -41,11 +41,11 @@ def stub_hs2p(monkeypatch):
     monkeypatch.setattr(cov, "open_slide", lambda path, backend="auto": object())
     monkeypatch.setattr(cov, "open_annotation_mask", open_annotation_mask)
     monkeypatch.setattr(cov, "resolve_annotation_masks", resolve_annotation_masks)
-    monkeypatch.setattr(
-        cov,
-        "summarize_annotation_coverage",
-        lambda **kwargs: {k: dict(v) for k, v in _CANNED_SUMMARY.items()},
-    )
+    def summarize_annotation_coverage(**kwargs):
+        calls["summarize"].append(kwargs)
+        return {k: dict(v) for k, v in _CANNED_SUMMARY.items()}
+
+    monkeypatch.setattr(cov, "summarize_annotation_coverage", summarize_annotation_coverage)
     return calls
 
 
@@ -139,6 +139,46 @@ def test_summarize_coverage_opens_each_annotation_mask_with_the_full_vocabulary(
     assert all(call["backend"] == "openslide" for call in opened)
     assert [call["mask"] for call in stub_hs2p["resolve"]] == [call["mask"] for call in opened]
     assert all(call["seg_downsample"] == 32 for call in stub_hs2p["resolve"])
+
+
+@pytest.mark.parametrize(("kwargs", "expected"), [({}, 0.05), ({"tolerance": 0.1}, 0.1)])
+def test_summarize_coverage_sizes_tiles_with_the_tilings_tolerance(stub_hs2p, kwargs, expected):
+    # A slide within tolerance is tiled at its own spacing; hs2p sizes the estimate's
+    # tiles the same way only when it is given the tiling's tolerance.
+    cov.summarize_coverage(
+        _manifest(1),
+        pixel_mapping=PIXEL_MAPPING,
+        min_coverage={"tumor": 0.1},
+        tile_size_px=512,
+        spacing_um=0.5,
+        **kwargs,
+    )
+    assert [call["tolerance"] for call in stub_hs2p["summarize"]] == [expected]
+
+
+def test_coverage_cli_passes_the_tiling_tolerance(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_summarize(manifest, **kwargs):
+        captured.update(kwargs)
+        return pd.DataFrame({"sample_id": []})
+
+    monkeypatch.setattr(cov, "summarize_coverage", fake_summarize)
+    masks_config = tmp_path / "masks.json"
+    masks_config.write_text('{"pixel_mapping": {"tumor": 1}}')
+
+    cov.main(
+        [
+            "--manifest", str(tmp_path / "manifest.csv"),
+            "--masks-config", str(masks_config),
+            "--out", str(tmp_path / "coverage.csv"),
+            "--tile-size-px", "512",
+            "--spacing-um", "0.5",
+            "--tolerance", "0.1",
+        ]
+    )
+
+    assert captured["tolerance"] == pytest.approx(0.1)
 
 
 def test_write_coverage_csv_roundtrip(stub_hs2p, tmp_path):

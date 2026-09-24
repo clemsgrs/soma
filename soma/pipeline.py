@@ -1427,6 +1427,7 @@ def _build_segmentation_head(
     preprocessing: PreprocessingConfig | None,
     masks: "MasksConfig | None",
     geometry,
+    sample_spacings: "Mapping[str, DenseSampleSpacing] | None" = None,
 ) -> SegmentationHead:
     """Build the fold-independent segmentation target contract."""
     num_classes, _, label_remap = resolve_class_scheme(
@@ -1453,8 +1454,26 @@ def _build_segmentation_head(
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         label_remap=label_remap,
         pixel_mapping=masks.pixel_mapping if masks is not None else None,
+        sample_spacings=sample_spacings,
         **seg_params,
     )
+
+
+def _segmentation_roi_spacings(
+    feature_store, records
+) -> "dict[str, DenseSampleSpacing] | None":
+    """Each slide-manifest ROI's recorded grid spacing, which its mask read must match.
+
+    ``None`` on the live path, where no grid exists yet: the head resolves the spacing
+    the live reader uses instead.
+    """
+    if isinstance(feature_store, LiveSegmentationSource):
+        return None
+    return {
+        str(record.sample_id): feature_store.spacing(str(record.sample_id))
+        for record in records
+        if record.region is not None
+    }
 
 
 def _segmentation_run_records(
@@ -1633,6 +1652,7 @@ def train_one_segmentation_fold(
         preprocessing=preprocessing,
         masks=masks,
         geometry=geometry,
+        sample_spacings=_segmentation_roi_spacings(feature_store, all_records),
     )
     num_classes = head.num_classes
     class_vocabulary = resolve_class_scheme(
@@ -2354,6 +2374,7 @@ def train_one_pixel_classifier_fold(
         tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
         label_remap=label_remap,
         pixel_mapping=masks.pixel_mapping if masks is not None else None,
+        sample_spacings=_segmentation_roi_spacings(feature_store, all_records),
         **seg_params,
     )
 
@@ -2805,6 +2826,7 @@ def train(
                     preprocessing=preprocessing,
                     masks=masks,
                     geometry=run_geometry,
+                    sample_spacings=_segmentation_roi_spacings(feature_store, run_records),
                 )
                 run_roi_population = _resolve_segmentation_roi_population(
                     cache_root=roi_population_cache_root,

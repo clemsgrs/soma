@@ -1,7 +1,7 @@
 """Un-stubbed slide-manifest sampling seam: real hs2p 4.1.1 ``merged`` mode + mask read.
 
 The companion to the (deliberately stubbed) ``test_pipeline_segmentation_slide_manifest``:
-where that test monkeypatches ``sample_slide_rois`` / ``read_mask_region_at_spacing`` to stay
+where that test monkeypatches ``sample_slide_rois`` / ``read_mask_region_within_slide`` to stay
 offline, this one drives the genuine soma↔hs2p contract end to end against a small,
 soma-owned **synthetic pyramidal WSI + multiresolution label mask** fixture.
 
@@ -344,3 +344,65 @@ def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path
         min_coverage={"tumor_a": 0.5, "tumor_b": 0.5},
     )
     assert _sample_split_tumor(tmp_path / "separate", separate) == []
+
+
+def _make_striped_fixture(root: Path, *, spacing_um: float) -> tuple[Path, Path, np.ndarray]:
+    """A 256x256 slide at ``spacing_um`` whose mask labels every 8th column 1."""
+    mask = np.zeros((256, 256), np.uint8)
+    mask[:, ::8] = 1
+    slide_path = root / "slide.tif"
+    label_mask_path = root / "mask.tif"
+    _write_pyramidal_tiff(
+        slide_path, np.full((256, 256, 3), 220, np.uint8), photometric="rgb", spacing_um=spacing_um
+    )
+    _write_pyramidal_tiff(label_mask_path, mask, photometric="minisblack", spacing_um=spacing_um)
+    return slide_path, label_mask_path, mask
+
+
+def test_roi_mask_read_at_the_grids_spacing_is_the_native_crop(tmp_path: Path):
+    """A 0.486 um/px slide is within tolerance of 0.5, so its ROI image is the native
+    64x64 crop. Read at that recorded spacing the mask is the same crop; read at the
+    requested 0.5 it covers ~66 px and drifts off the image."""
+    from soma.dense.reader import read_mask_region_within_slide
+
+    slide_path, label_mask_path, mask = _make_striped_fixture(tmp_path, spacing_um=0.4862)
+
+    def read(spacing_um: float) -> np.ndarray:
+        labels, inside = read_mask_region_within_slide(
+            label_mask_path,
+            location=(96, 32),
+            size=(TARGET, TARGET),
+            spacing_um=spacing_um,
+            reference_path=slide_path,
+            pixel_mapping=PIXEL_MAPPING,
+            backend="auto",
+        )
+        assert inside is None
+        return labels
+
+    np.testing.assert_array_equal(read(0.4862), mask[32:96, 96:160])
+    assert not np.array_equal(read(0.5), mask[32:96, 96:160])
+
+
+def test_roi_mask_read_marks_the_part_beyond_the_slide(tmp_path: Path):
+    """A 64 px ROI at x=224 on a 256 px slide overhangs by 32 px: hs2p never pads, so the
+    reader returns the in-slide labels and marks the rest as outside."""
+    from soma.dense.reader import read_mask_region_within_slide
+
+    slide_path, label_mask_path, mask = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
+
+    labels, inside = read_mask_region_within_slide(
+        label_mask_path,
+        location=(224, 200),
+        size=(TARGET, TARGET),
+        spacing_um=SPACING_UM,
+        reference_path=slide_path,
+        pixel_mapping=PIXEL_MAPPING,
+        backend="auto",
+    )
+
+    assert labels.shape == inside.shape == (TARGET, TARGET)
+    expected_inside = np.zeros((TARGET, TARGET), bool)
+    expected_inside[:56, :32] = True  # 256 - 224 columns, 256 - 200 rows
+    np.testing.assert_array_equal(inside, expected_inside)
+    np.testing.assert_array_equal(labels[inside].reshape(56, 32), mask[200:256, 224:256])

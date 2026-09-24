@@ -23,7 +23,7 @@ from soma.dense.reader import (
     accepted_mask_values,
     apply_label_remap,
     read_mask_at_spacing,
-    read_mask_region_at_spacing,
+    read_mask_region_within_slide,
 )
 from soma.evaluation.metrics import resolve_metrics
 from soma.spacing import resolve_effective_spacing_um
@@ -38,6 +38,7 @@ from soma.tasks.registry import task_registry
 if TYPE_CHECKING:
     from soma.dataset import SampleRecord
     from soma.dense.geometry import DenseGridGeometry
+    from soma.dense.source import DenseSampleSpacing
 
 
 class SegmentationHead(TaskHead):
@@ -64,6 +65,11 @@ class SegmentationHead(TaskHead):
             empty uses the default ``[mean_dice, mean_iou]``. Request
             ``dataset_global_mean_dice`` explicitly to sum counts over the split
             before averaging class Dice.
+        sample_spacings: Each slide-manifest ROI's recorded grid spacing, by sample ID.
+            A slide within ``tolerance`` of ``spacing_um`` is read natively, so its grid
+            covers ``target_size`` px at the slide's own spacing; the ROI mask is read at
+            that ``effective_spacing_um`` to cover the same area. ``None`` (the live path)
+            resolves the spacing from ``spacing_um`` and the policy instead.
     """
 
     target_dtypes = {"mask": torch.long}
@@ -93,6 +99,7 @@ class SegmentationHead(TaskHead):
         tolerance: float = 0.05,
         label_remap: "np.ndarray | None" = None,
         pixel_mapping: Mapping[str, int | list[int]] | None = None,
+        sample_spacings: Mapping[str, "DenseSampleSpacing"] | None = None,
     ) -> None:
         super().__init__()
         if num_classes < 1:
@@ -139,6 +146,11 @@ class SegmentationHead(TaskHead):
         # Reads each mask's image (the slide for an ROI) to align the mask to it.
         self._image_backend = image_backend
         self._tolerance = float(tolerance)
+        self._sample_spacings = (
+            None
+            if sample_spacings is None
+            else {str(sample_id): spacing for sample_id, spacing in sample_spacings.items()}
+        )
         # Optional raw-pixel → class-index LUT built from task.params.classes / ignore
         # (see soma.dense.reader.build_label_remap). None ⇒ masks are already contiguous
         # class indices.
@@ -235,15 +247,18 @@ class SegmentationHead(TaskHead):
             "pixel_mapping": self._mask_vocabulary,
             "backend": self._backend,
         }
+        inside = None
         try:
             if record.region is not None:
                 # Slide-manifest ROI: label_mask_path is the whole-slide annotation raster;
-                # read the ROI's window at the run's spacing.
-                array = read_mask_region_at_spacing(
+                # read the ROI's window at the spacing its grid was read at. A ROI kept at
+                # the slide's right or bottom edge may overhang it: only the in-slide part
+                # is read.
+                array, inside = read_mask_region_within_slide(
                     record.label_mask_path,
                     location=record.region,
                     size=(target_w, target_h),
-                    spacing_um=effective_spacing,
+                    spacing_um=self._roi_spacing_um(record, effective_spacing),
                     **aligned_to,
                 )
             else:
@@ -258,10 +273,18 @@ class SegmentationHead(TaskHead):
         except ValueError as error:
             raise ValueError(f"segmentation sample '{record.sample_id}': {error}") from error
         array = np.ascontiguousarray(array).astype(np.int64)
+        in_slide = array if inside is None else array[inside]
         if self._label_remap is not None:
             # Raw annotation rasters carry the dataset's own pixel vocabulary; remap onto
             # contiguous class indices (+ ignore) before validation.
-            array = apply_label_remap(array, self._label_remap, sample_id=record.sample_id)
+            in_slide = apply_label_remap(in_slide, self._label_remap, sample_id=record.sample_id)
+        if inside is None:
+            array = in_slide
+        else:
+            # Beyond the slide there is no annotation to learn from or score against; the
+            # filler read there is never remapped.
+            array = np.full(array.shape, self.ignore_index, dtype=np.int64)
+            array[inside] = in_slide
         mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy
@@ -274,6 +297,17 @@ class SegmentationHead(TaskHead):
                 f"[0, num_classes={self.num_classes}) ∪ {{ignore_index={self.ignore_index}}}."
             )
         return {"mask": mask}
+
+    def _roi_spacing_um(self, record: "SampleRecord", resolved_spacing_um: float) -> float:
+        """The spacing a ROI's grid was read at: recorded when known, else resolved."""
+        if self._sample_spacings is None:
+            return resolved_spacing_um
+        try:
+            return float(self._sample_spacings[str(record.sample_id)].effective_spacing_um)
+        except KeyError:
+            raise ValueError(
+                f"segmentation ROI '{record.sample_id}' has no recorded grid spacing."
+            ) from None
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
         return segmentation_loss(

@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 _FLAT_MASK_SUFFIXES = {".png", ".jpg", ".jpeg"}
 # 2: hs2p 5 mask reads (aligned to the slide, resampled by coordinate).
-_MASK_READER_SCHEMA_VERSION = 2
+# 3: ROI masks read at the grid's recorded spacing, the part beyond the slide ignored.
+_MASK_READER_SCHEMA_VERSION = 3
 
 
 @contextmanager

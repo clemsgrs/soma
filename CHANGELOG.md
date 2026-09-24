@@ -1,5 +1,18 @@
 # Changelog
 
+- 2026-09-24: Fix segmentation ROI masks misregistered against their features on
+  slides read at their own spacing. When a slide's spacing is within `tolerance`
+  of `requested_spacing_um` (say 0.486 µm/px for 0.5), its ROI features cover 512
+  px at 0.486 µm/px, but the mask was read at 0.5 µm/px, so it covered about 3%
+  more tissue per side and drifted up to 15 px from the image across the ROI.
+  Masks are now read at the spacing each ROI's feature grid recorded. A ROI that
+  extends past the slide's right or bottom edge now trains with the part beyond
+  the slide set to `ignore_index`, where it previously failed the run. Requires
+  hs2p 5.0.2. Slide-manifest segmentation runs since the hs2p 5 upgrade should be
+  retrained; feature caches are reused and cached ROI class counts are
+  recomputed once. The coverage summary gains `tolerance` (`--tolerance`); pass
+  your `preprocessing.tolerance` so its tile estimate matches tiling.
+
 - 2026-09-23: Fix live segmentation (`feature_mode: live`) ignoring
   `task.params.classes` / `ignore`. The live path used raw mask values as class
   indices, so a class scheme that is not the identity trained against the wrong

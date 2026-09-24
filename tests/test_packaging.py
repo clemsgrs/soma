@@ -39,12 +39,15 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_5():
     assert "slide2vec[fm]>=6.1.0" in data["project"]["dependencies"]
 
 
-def test_hs2p_minimum_provides_first_class_source_masks():
+def test_hs2p_minimum_provides_registered_roi_mask_reads():
     # hs2p 5.0 removed the label-read helpers soma's dense reader used; soma reads masks
-    # through hs2p.Mask, aligned to the slide's level-0 grid.
+    # through hs2p.Mask, aligned to the slide's level-0 grid. 5.0.1 sizes the coverage
+    # estimate's tiles like tiling (tolerance); 5.0.2 samples a region at the grid's
+    # recorded spacing without a float-noise shift and reports the in-canvas part of an
+    # overhanging ROI (AlignedMask.dimensions_within_canvas).
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "hs2p>=5.0.0" in data["project"]["dependencies"]
+    assert "hs2p>=5.0.2" in data["project"]["dependencies"]
 
 
 def test_release_metadata_matches_license_and_verified_python_support():
