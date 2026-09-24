@@ -301,7 +301,8 @@ def test_mask_backend_resolves_like_hs2p_mask_without_requiring_spacing(
     assert seen == [("auto", {"wsi_path": mask_path, "require_spacing": False})]
 
 
-def test_mask_reader_schema_tracks_hs2p_5_mask_reads() -> None:
-    # hs2p 5 aligns masks to their slide and resamples by coordinate, so populations
-    # counted by the 4.x reader must not be reused.
-    assert population_module._MASK_READER_SCHEMA_VERSION == 2
+def test_mask_reader_schema_tracks_grid_registered_roi_mask_reads() -> None:
+    # hs2p 5 aligns masks to their slide and resamples by coordinate (2); ROI masks are
+    # then read at their grid's recorded spacing, with any overhang ignored (3). A
+    # population counted by an earlier reader must not be reused.
+    assert population_module._MASK_READER_SCHEMA_VERSION == 3

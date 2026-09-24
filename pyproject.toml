@@ -37,7 +37,7 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "hs2p>=5.0.0",
+    "hs2p>=5.0.2",
     "slide2vec[fm]>=6.1.0",
     "matplotlib>=3.7",
     "croma>=0.3.0",

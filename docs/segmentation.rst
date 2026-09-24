@@ -66,6 +66,13 @@ to the slide and reads each ROI's mask on the ROI's pixel grid, so the targets
 register to the features. :ref:`Source masks <preprocessing-source-masks>` gives
 the alignment rules.
 
+A slide whose spacing is within ``tolerance`` of ``requested_spacing_um`` is read
+at its own spacing, so its ROIs cover ``requested_tile_size_px`` pixels at, for
+example, 0.486 µm/px rather than 0.5 µm/px. Each ROI's mask is read at the spacing
+its feature grid recorded, and so covers the same area. A ROI kept at the slide's
+right or bottom edge can extend past the slide; the pixels beyond it get
+``ignore_index`` and count in neither the loss nor the metrics.
+
 Classes
 -------
 

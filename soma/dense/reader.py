@@ -398,3 +398,50 @@ def read_mask_region_at_spacing(
             target_spacing_um=float(spacing_um),
             target_dimensions=tuple(size),
         ).labels
+
+
+def read_mask_region_within_slide(
+    path: str | Path,
+    *,
+    location: tuple[int, int],
+    size: tuple[int, int],
+    spacing_um: float,
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int | list[int]],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
+    backend: str = "auto",
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Read a ROI's labels like :func:`read_mask_region_at_spacing`, tolerating an overhang.
+
+    Tiling keeps a tile that starts inside the slide and extends past its right or bottom
+    edge when its in-slide part meets ``min_coverage``; hs2p never pads a mask read past
+    the canvas. The in-slide part, as hs2p measures it, is read at the same location and
+    spacing (output pixel ``i`` samples the same slide point as in a full read), and the
+    rest is reported as outside. Returns ``(labels, inside)``: ``inside`` is ``None`` when
+    the whole ROI lies on the slide, else a boolean array marking the pixels that do;
+    ``labels`` holds ``0`` outside, which carries no meaning.
+    """
+    width, height = (int(v) for v in size)
+    with _aligned_mask(
+        path,
+        reference_path=reference_path,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        pixel_mapping=pixel_mapping,
+        backend=backend,
+    ) as aligned:
+        region = dict(location=tuple(location), target_spacing_um=float(spacing_um))
+        inside_width, inside_height = aligned.dimensions_within_canvas(
+            **region, target_dimensions=(width, height)
+        )
+        if (inside_width, inside_height) == (width, height):
+            return aligned.read_region(**region, target_dimensions=(width, height)).labels, None
+        labels = np.zeros((height, width), dtype=np.uint8)
+        inside = np.zeros((height, width), dtype=bool)
+        if inside_width > 0 and inside_height > 0:
+            labels[:inside_height, :inside_width] = aligned.read_region(
+                **region, target_dimensions=(inside_width, inside_height)
+            ).labels
+            inside[:inside_height, :inside_width] = True
+        return labels, inside

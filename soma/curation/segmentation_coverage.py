@@ -42,6 +42,7 @@ def summarize_coverage(
     spacing_um: float,
     seg_downsample: int = 64,
     overlap: float = 0.0,
+    tolerance: float = 0.05,
     backend: str = "auto",
     mask_backend: str = "auto",
 ) -> pd.DataFrame:
@@ -50,6 +51,8 @@ def summarize_coverage(
     ``manifest`` is a DataFrame or a path to a CSV with at least
     ``sample_id, image_path, label_mask_path``. ``backend`` reads the slides and
     ``mask_backend`` the annotation masks (``auto`` resolves from the mask path alone).
+    ``tolerance`` is the tiling's (``preprocessing.tolerance``): a slide within it of
+    ``spacing_um`` is tiled at its own spacing, and the estimate sizes tiles the same way.
     """
     if isinstance(manifest, (str, Path)):
         manifest = pd.read_csv(manifest)
@@ -77,6 +80,7 @@ def summarize_coverage(
                 requested_tile_size_px=tile_size_px,
                 requested_spacing_um=spacing_um,
                 overlap=overlap,
+                tolerance=tolerance,
             )
         finally:
             close = getattr(slide, "close", None)
@@ -126,6 +130,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--spacing-um", type=float, required=True)
     parser.add_argument("--seg-downsample", type=int, default=64)
     parser.add_argument("--overlap", type=float, default=0.0)
+    parser.add_argument(
+        "--tolerance", type=float, default=0.05, help="tiling spacing tolerance (preprocessing.tolerance)"
+    )
     parser.add_argument("--backend", default="auto", help="slide reader")
     parser.add_argument("--mask-backend", default="auto", help="annotation mask reader")
     args = parser.parse_args(argv)
@@ -139,6 +146,7 @@ def main(argv: list[str] | None = None) -> None:
         spacing_um=args.spacing_um,
         seg_downsample=args.seg_downsample,
         overlap=args.overlap,
+        tolerance=args.tolerance,
         backend=args.backend,
         mask_backend=args.mask_backend,
     )

@@ -43,6 +43,9 @@ _DEFAULT_BEETLE_ROOT = _REPO_ROOT / "data" / "beetle"
 ANNOTATED_FRACTION_MIN = 0.05  # >=5% annotated to keep a tile
 CANONICAL_MPP = 0.5
 CROP_SIZE = 512
+# configs/base.yaml preprocessing.tolerance: slides within it of CANONICAL_MPP are tiled
+# at their own spacing, and the coverage estimate must size tiles the same way.
+TILING_TOLERANCE = 0.1
 IGNORE_INDEX = 255
 FULL_COHORT_SLIDES = 587
 FULL_COHORT_PATIENTS = 527
@@ -456,6 +459,7 @@ def _write_coverage(dataset_csv: Path, out_path: Path) -> None:
         min_coverage=min_cov,
         tile_size_px=CROP_SIZE,
         spacing_um=CANONICAL_MPP,
+        tolerance=TILING_TOLERANCE,
     )
     write_coverage_csv(out_path, coverage)
     print(f"Wrote coverage for {len(coverage)} slides to {out_path}")

@@ -491,3 +491,11 @@ def test_split_rotation_handles_non_contiguous_fold_numbers():
     with pytest.raises(ValueError, match="at least two validation folds"):
         build_split_rows(rows[:1])
     assert select_subset([], 4) == []
+
+
+def test_coverage_estimate_uses_the_beetle_tiling_tolerance():
+    from examples.beetle import curate
+
+    config = _load_beetle_config()
+
+    assert curate.TILING_TOLERANCE == pytest.approx(config.preprocessing.tolerance)

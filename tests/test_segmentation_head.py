@@ -322,8 +322,8 @@ def _roi_head_reading(monkeypatch, raw, *, classes, ignore):
 
     monkeypatch.setattr(
         segmod,
-        "read_mask_region_at_spacing",
-        lambda path, *, location, size, spacing_um, **kwargs: raw,
+        "read_mask_region_within_slide",
+        lambda path, *, location, size, spacing_um, **kwargs: (raw, None),
     )
     head = SegmentationHead(
         num_classes=len(classes),
@@ -379,8 +379,12 @@ def _capture_mask_reads(monkeypatch, raw):
         calls.append({"path": path, **kwargs})
         return raw
 
+    def fake_within_slide(path, **kwargs):
+        calls.append({"path": path, **kwargs})
+        return raw, None
+
     monkeypatch.setattr(segmod, "read_mask_at_spacing", fake)
-    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", fake)
+    monkeypatch.setattr(segmod, "read_mask_region_within_slide", fake_within_slide)
     return calls
 
 
@@ -420,6 +424,67 @@ def test_extract_targets_aligns_a_roi_mask_to_its_slide_with_the_sampling_vocabu
             "backend": "openslide",
         }
     ]
+
+
+def test_extract_targets_reads_a_roi_mask_at_the_grids_recorded_spacing(monkeypatch):
+    """A slide within tolerance of the request is read natively, so its grid covers
+    512 px at 0.486 um/px, not 0.5: the ROI mask must be read at the spacing the grid
+    recorded, or it covers a different area and misregisters (the ~0.486 BEETLE cohort)."""
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import build_label_remap
+    from soma.dense.source import DenseSampleSpacing
+
+    calls = _capture_mask_reads(monkeypatch, np.array([[0, 1], [1, 0]], dtype=np.uint8))
+    head = SegmentationHead(
+        num_classes=1,
+        geometry=compute_dense_geometry(target_size=2, patch_size=1),
+        spacing_um=0.5,
+        tolerance=0.1,
+        label_remap=build_label_remap({"tumor": [1]}, ignore=[0]),
+        pixel_mapping={"background": 0, "tumor": 1},
+        sample_spacings={
+            "roi0": DenseSampleSpacing(source_spacing_um=0.4862, effective_spacing_um=0.4862)
+        },
+    )
+    record = SampleRecord(
+        sample_id="roi0", image_path=Path("/slide.tif"), label=None,
+        label_mask_path=Path("/slide_mask.tif"), region=(8, 4),
+    )
+
+    head.extract_targets(record)
+
+    assert calls[0]["spacing_um"] == pytest.approx(0.4862)
+
+
+def test_extract_targets_ignores_the_part_of_a_roi_beyond_the_slide(monkeypatch):
+    """A ROI kept at the slide's right edge overhangs it: those pixels have no annotation
+    and become ignore_index instead of failing the run; the rest is remapped as usual.
+    The reader's filler outside (0 here) is not a declared raw value and is never remapped."""
+    import soma.tasks.segmentation as segmod
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import build_label_remap
+
+    raw = np.array([[1, 2, 0, 0], [2, 1, 0, 0]], dtype=np.uint8)
+    inside = np.array([[True, True, False, False]] * 2)
+    monkeypatch.setattr(
+        segmod, "read_mask_region_within_slide", lambda path, **kwargs: (raw, inside)
+    )
+    head = SegmentationHead(
+        num_classes=2,
+        geometry=compute_dense_geometry(target_size=(2, 4), patch_size=1),
+        spacing_um=0.5,
+        ignore_index=255,
+        label_remap=build_label_remap({"background": [2], "tumor": [1]}),
+        pixel_mapping={"background": 2, "tumor": 1},
+    )
+    record = SampleRecord(
+        sample_id="edge", image_path=Path("/slide.tif"), label=None,
+        label_mask_path=Path("/slide_mask.tif"), region=(250, 0),
+    )
+
+    mask = head.extract_targets(record)["mask"]
+
+    assert mask.tolist() == [[1, 0, 255, 255], [0, 1, 255, 255]]
 
 
 def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask(

@@ -132,15 +132,30 @@ class _FakeDenseModel:
                         annotation=region.annotation,
                         x=int(x),
                         y=int(y),
-                        metadata=_dense_sidecar(dense, geometry, grid),
+                        metadata=_dense_sidecar(
+                            dense, geometry, grid, source_spacing_um=region.spacing_at_level_0
+                        ),
                     )
                 )
         return artifacts
 
 
-def _dense_sidecar(dense, geometry, grid) -> dict:
-    """The geometry sidecar slide2vec writes next to every dense ROI grid."""
+#: Relative band within which the fake slide2vec reads a source natively (its read plan).
+_FAKE_READ_TOLERANCE = 0.05
+
+
+def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None) -> dict:
+    """The geometry sidecar slide2vec writes next to every dense ROI grid.
+
+    Like slide2vec's read plan, a source within tolerance of the request is read natively,
+    so the grid's ``effective_spacing_um`` is the source's own spacing, not the request.
+    """
+    requested = float(dense.spacing_um)
+    source = requested if source_spacing_um is None else float(source_spacing_um)
+    within = abs(source - requested) / requested <= _FAKE_READ_TOLERANCE
     return {
+        "source_spacing_um": source,
+        "effective_spacing_um": source if within else requested,
         "artifact_type": "dense_embeddings",
         "feature_dim": int(grid.shape[0]),
         "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
@@ -192,7 +207,9 @@ def _patch_extraction(monkeypatch):
             (h, w), 1 if x else 0, dtype=np.int64
         )  # ROI(0,0)→all bg, ROI(32,0)→all tumor
 
-    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake_mask_region)
+    monkeypatch.setattr(
+        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake_mask_region(path, **kw), None)
+    )
 
     # Image region read → a deterministic RGB window per ROI (the overlay writer reads the
     # ROI window from the whole-slide image_path, never opening the gigapixel slide).
@@ -303,7 +320,7 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     manifest.write_text(
         "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
         "s0,/fake/s0.tif,/fake/s0_mask.tif,0.5\n"
-        "s1,/fake/s1.tif,/fake/s1_mask.tif,0.5\n"
+        "s1,/fake/s1.tif,/fake/s1_mask.tif,0.4862\n"
         "s2,/fake/s2.tif,/fake/s2_mask.tif,0.5\n"
         "s3,/fake/s3.tif,/fake/s3_mask.tif,0.657476464\n"
     )
@@ -321,7 +338,9 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
         observed_slide_backends.add(kwargs["reference_backend"])
         return np.zeros((size[1], size[0]), dtype=np.int64)
 
-    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake_mask)
+    monkeypatch.setattr(
+        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake_mask(path, **kw), None)
+    )
     config = _config(tmp_path, manifest, splits, masks=None)
     config = replace(
         config,
@@ -336,6 +355,9 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     Pipeline(config).run()
 
     assert observed["s0_mask"] == {0.5}
+    # Within tolerance of 0.5, s1 is read natively: its grids record 0.4862 and its ROI
+    # masks must cover the same area, so they are read at 0.4862 too.
+    assert observed["s1_mask"] == {0.4862}
     assert observed["s3_mask"] == {0.657476464}
     assert observed_backends == {"openslide"}
     # The slide each mask is aligned to is opened with the slide reader, not the mask's.
@@ -659,7 +681,9 @@ def test_extract_targets_reads_mask_region_when_record_has_region(tmp_path: Path
         captured.update(location=location, size=size, spacing_um=spacing_um)
         return np.zeros((size[1], size[0]), dtype=np.int64)
 
-    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake)
+    monkeypatch.setattr(
+        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake(path, **kw), None)
+    )
     geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
     head = SegmentationHead(num_classes=NUM_CLASSES, geometry=geometry, spacing_um=0.5)
     record = SampleRecord(
@@ -688,7 +712,9 @@ def test_extract_targets_uses_native_spacing_for_a_coarser_roi(tmp_path: Path, m
         captured.update(location=location, size=size, spacing_um=spacing_um)
         return np.zeros((size[1], size[0]), dtype=np.int64)
 
-    monkeypatch.setattr(segmod, "read_mask_region_at_spacing", _fake)
+    monkeypatch.setattr(
+        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake(path, **kw), None)
+    )
     geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
     head = SegmentationHead(
         num_classes=NUM_CLASSES,
