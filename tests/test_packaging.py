@@ -34,9 +34,10 @@ def test_pyproject_has_publish_ready_metadata():
 
 def test_slide2vec_minimum_is_aligned_with_hs2p_5():
     # slide2vec 6.1 runs on hs2p 5 (first-class source masks); 6.0.1 required hs2p 4.
+    # 6.1.1 requires hs2p 5.0.2, the same floor soma declares.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=6.1.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=6.1.1" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_provides_registered_roi_mask_reads():

@@ -225,6 +225,6 @@ Preview rendering is inherited from :mod:`hs2p`:
 - :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
 
 For flat PNG/JPEG slides, set ``preview.save_mask_preview`` and
-``preview.save_tiling_preview`` to ``false``: hs2p 5.0.0's preview renderers
+``preview.save_tiling_preview`` to ``false``: hs2p's preview renderers
 reopen the slide without its ``spacing_at_level_0``. PNG/JPEG masks on slides
 with native spacing work with previews enabled.

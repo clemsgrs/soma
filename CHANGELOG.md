@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-09-28: Require slide2vec 6.1.1, which requires hs2p 5.0.2 like soma
+  already does. No behavior change in soma.
+
 - 2026-09-24: Fix segmentation ROI masks misregistered against their features on
   slides read at their own spacing. When a slide's spacing is within `tolerance`
   of `requested_spacing_um` (say 0.486 µm/px for 0.5), its ROI features cover 512
