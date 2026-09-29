@@ -37,7 +37,7 @@ from soma.cache import (
     write_tiling_cache_stub,
     write_cache_payload,
 )
-from soma.cache.features import _validate_feature_cache_contents
+from soma.cache.features import FeatureCacheResolution, _validate_feature_cache_contents
 from soma.cache.tiling import _validate_tiling_cache_contents
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
 from soma.dataset import Dataset
@@ -823,27 +823,25 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
     assert any("first issue: missing feature for" in message for message in messages)
 
 
-def _resolve_tile_cache_messages(cache_root: Path, dataset: Dataset) -> list[str]:
-    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
-        resolve_tile_cache(
-            cache_root=cache_root,
-            dataset=dataset,
-            tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
-        )
-    return [str(call.args[0]) for call in emit_progress_log.call_args_list]
-
-
-def _start_tile_cache_without_manifest(cache_root: Path, dataset: Dataset):
-    """A fresh tile cache whose manifest is gone, so identities are never backfilled."""
-    resolution = resolve_tile_cache(
+def _resolve_virchow_tile_cache(cache_root: Path, dataset: Dataset) -> FeatureCacheResolution:
+    return resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=PreprocessingConfig(),
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
+
+
+def _resolve_tile_cache_messages(cache_root: Path, dataset: Dataset) -> list[str]:
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        _resolve_virchow_tile_cache(cache_root, dataset)
+    return [str(call.args[0]) for call in emit_progress_log.call_args_list]
+
+
+def _start_tile_cache_without_manifest(cache_root: Path, dataset: Dataset) -> FeatureCacheResolution:
+    """A fresh tile cache whose manifest is gone, so identities are never backfilled."""
+    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
     resolution.manifest_path.unlink()
     return resolution
 
@@ -949,6 +947,30 @@ def test_feature_cache_validation_counts_requested_samples(tmp_path: Path):
     assert result.reason == "missing cache identity for s2"
     assert present == 1
     assert expected == 4
+
+
+def test_feature_cache_validation_empty_sample_with_feature_returns_counts_so_far(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    torch.save(torch.randn(4), feature_dir / "s2.pt")
+    cache_ids = ["s1", "s2", "s3"]
+    metadata = {
+        "feature_type": "bag",
+        "empty_sample_ids": ["s2"],
+        "sample_identity_signature_by_id": {"s2": "s2", "s3": "s3"},
+    }
+
+    result, present, expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=cache_ids,
+        cache_stem_by_id={cache_id: cache_id for cache_id in cache_ids},
+    )
+
+    assert result.complete is False
+    assert result.reason == "unexpected feature for empty sample s2"
+    assert present == 0
+    assert expected == 1  # s1, seen before the early return; s3 never reached
 
 
 def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp_path: Path):

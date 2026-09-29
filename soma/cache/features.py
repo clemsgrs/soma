@@ -526,7 +526,7 @@ def _validate_feature_cache_contents(
             feature_present = f"{payload_stem}.pt" in existing_filenames
             expected_signature = str(cache_stem_by_id[cache_id])
             cached_signature = cached_signature_by_id.get(cache_id)
-            if cached_signature is None or cached_signature != expected_signature:
+            if cached_signature != expected_signature:
                 if reason is None:
                     issue = "missing cache identity" if cached_signature is None else "cache identity mismatch"
                     reason = f"{issue} for {cache_id}"
