@@ -47,6 +47,7 @@ from soma.cache.keys import (
     build_slide_cache_key,
     build_tile_cache_key,
     dataset_manifest_rows,
+    dense_execution_signature,
     execution_signature,
     preprocessing_signature,
 )
@@ -283,11 +284,11 @@ def _build_dense_cache_metadata(
         "cache_key": key,
         "encoder_name": tile_encoder_name,
         "encoder_level": "tile",
-        "execution": execution_signature(
+        # The same signature the key hashes, so the recorded block and the key agree.
+        "execution": dense_execution_signature(
             execution,
             encoder_name=tile_encoder_name,
             preprocessing=preprocessing,
-            output_variant=None,
         ),
         "feature_type": "dense_grid",
         "dtype": str(dtype),
@@ -306,9 +307,6 @@ def _build_dense_cache_metadata(
         "pad_mode": str(pad_mode),
         "sample_identity_signature_by_id": {},
     }
-    # output_variant is intentionally not part of the dense key (pre-pooling grid),
-    # so drop it from the execution signature to keep metadata and key consistent.
-    metadata["execution"].pop("output_variant", None)
     if preprocessing is not None:
         metadata["preprocessing"] = preprocessing_signature(preprocessing)
     if sampling_signature is not None:
@@ -318,6 +316,14 @@ def _build_dense_cache_metadata(
     if backend_provenance is not None:
         metadata.update(backend_provenance)
     return metadata
+
+
+def dense_static_identity(*, cache_kind: str, cache_key: str) -> dict[str, Any]:
+    """The part of a dense sample identity that is the same for every sample of a cache."""
+    static_identity: dict[str, Any] = {"cache_key": str(cache_key)}
+    if cache_kind == "dense":
+        static_identity["roi_grid_contract"] = ROI_GRID_CONTRACT
+    return static_identity
 
 
 def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
@@ -1060,13 +1066,12 @@ def resolve_dense_cache(
         sampling_signature=sampling_signature,
         extraction_geometry=extraction_geometry,
     )
-    static_identity: dict[str, Any] = {"cache_key": metadata["cache_key"]}
-    if cache_kind == "dense":
-        static_identity["roi_grid_contract"] = ROI_GRID_CONTRACT
     cache_stem_by_id = _sample_stems_for_kind(
         dataset=dataset,
         cache_kind=cache_kind,
-        static_identity_payload=static_identity,
+        static_identity_payload=dense_static_identity(
+            cache_kind=cache_kind, cache_key=metadata["cache_key"]
+        ),
     )
     return _resolve_cache(
         cache_root=cache_root,

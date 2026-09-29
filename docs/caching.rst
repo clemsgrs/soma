@@ -68,6 +68,50 @@ does not invalidate caches by dependency version. Delete the affected cache
 directories, or select a fresh ``cache.root_dir``, when upgrading slide2vec
 across such a change.
 
+Dense cache key
+---------------
+
+A dense cache key depends on:
+
+- the encoder name, compute precision and storage dtype;
+- the target size, patch size and pad mode;
+- the dense input mode and, for sliding-window runs, the window size and overlap;
+- the preprocessing settings, including the requested spacing;
+- the annotation-sampling settings, for slide-level segmentation;
+- the feature kind and the attention selection, for attention grids.
+
+The key does not depend on the default ``input_size`` of the encoder registry.
+A dense extraction feeds the encoder the configured target or window, so a
+change of the registry default does not change the features. Pooled tile,
+slide, patient and hierarchical keys still include the registry ``input_size``.
+
+Migrate a legacy dense cache
+----------------------------
+
+Dense caches written by soma 1.16.0 or earlier include the registry
+``input_size`` in their key. soma no longer finds them. The features are still
+valid, so rename the caches instead of extracting again:
+
+.. code-block:: bash
+
+   # Dry run: print what would change.
+   python scripts/migrate_dense_cache_keys.py /path/to/feature_cache
+
+   # Rename the folders and update their metadata.
+   python scripts/migrate_dense_cache_keys.py /path/to/feature_cache --apply
+
+The script reads only the files recorded in each cache. It loads no encoder and
+needs no GPU. For each legacy cache under ``dense/`` and ``dense_image/`` it:
+
+- renames the folder to the new key;
+- updates ``cache_key``, ``execution`` and the sample identities in
+  ``cache_metadata.json``;
+- writes ``MIGRATION.json`` with the old key and the date.
+
+The script refuses a cache when the target folder already exists, and leaves
+it unchanged. Remove the target folder if it is empty, then run the script
+again. Do not migrate a cache while a job uses it.
+
 GPU count is not part of the dense cache key. Multi-GPU sharding can change
 grid bytes within slide2vec's tolerance contract, so a dense cache resumed at a
 different GPU count is equivalent but not byte-identical.
