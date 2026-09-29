@@ -526,13 +526,15 @@ def _validate_feature_cache_contents(
             feature_present = f"{payload_stem}.pt" in existing_filenames
             expected_signature = str(cache_stem_by_id[cache_id])
             cached_signature = cached_signature_by_id.get(cache_id)
-            if cached_signature is None:
-                if reason is None:
-                    reason = f"missing cache identity for {cache_id}"
-                continue
             if cached_signature != expected_signature:
                 if reason is None:
-                    reason = f"cache identity mismatch for {cache_id}"
+                    issue = "missing cache identity" if cached_signature is None else "cache identity mismatch"
+                    reason = f"{issue} for {cache_id}"
+                # The counts report against the requested scope: a sample without a
+                # trusted identity is expected and not present, even when a feature
+                # file with its name exists. Empty samples stay out of both counts.
+                if cache_id not in empty_sample_ids:
+                    expected += 1
                 continue
             if cache_id in empty_sample_ids:
                 if feature_present:
