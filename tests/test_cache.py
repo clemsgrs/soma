@@ -823,6 +823,134 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
     assert any("first issue: missing feature for" in message for message in messages)
 
 
+def _resolve_tile_cache_messages(cache_root: Path, dataset: Dataset) -> list[str]:
+    with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
+        resolve_tile_cache(
+            cache_root=cache_root,
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=PreprocessingConfig(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+    return [str(call.args[0]) for call in emit_progress_log.call_args_list]
+
+
+def _start_tile_cache_without_manifest(cache_root: Path, dataset: Dataset):
+    """A fresh tile cache whose manifest is gone, so identities are never backfilled."""
+    resolution = resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=PreprocessingConfig(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+    resolution.manifest_path.unlink()
+    return resolution
+
+
+def test_resolve_tile_cache_partial_message_counts_samples_without_identity(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = _start_tile_cache_without_manifest(cache_root, dataset)
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    record_sample_identity_signatures(resolution, ["s1"])
+
+    messages = _resolve_tile_cache_messages(cache_root, dataset)
+
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample; "
+        "first issue: missing cache identity for s2" in message
+        for message in messages
+    )
+
+
+def test_resolve_tile_cache_partial_message_counts_samples_with_mismatched_identity(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = _start_tile_cache_without_manifest(cache_root, dataset)
+    # s2's feature file exists, but under a stale identity: it is not trusted.
+    for sample_id in ("s1", "s2"):
+        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
+    record_sample_identity_signatures(resolution, ["s1", "s2"])
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata["sample_identity_signature_by_id"]["s2"] = "stale-identity"
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+
+    messages = _resolve_tile_cache_messages(cache_root, dataset)
+
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample; "
+        "first issue: cache identity mismatch for s2" in message
+        for message in messages
+    )
+
+
+def test_resolve_tile_cache_miss_message_counts_samples_without_identity(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    _start_tile_cache_without_manifest(cache_root, dataset)
+
+    messages = _resolve_tile_cache_messages(cache_root, dataset)
+
+    assert any("feature cache miss" in message for message in messages)
+    assert any(
+        "2/2 feature files missing; first issue: missing cache identity for" in message
+        for message in messages
+    )
+
+
+def test_resolve_tile_cache_partial_message_excludes_empty_samples(tmp_path: Path):
+    rows = [
+        {"sample_id": f"s{i}", "image_path": f"/slides/s{i}.svs", "label": "tumor"}
+        for i in range(1, 6)
+    ]
+    dataset = _make_dataset(tmp_path, rows=rows)
+    cache_root = tmp_path / "feature_cache"
+    resolution = _start_tile_cache_without_manifest(cache_root, dataset)
+    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    # s1: on disk. s2: empty, identity recorded. s3: empty, no identity.
+    # s4: empty, mismatched identity. s5: never reached.
+    record_sample_identity_signatures(resolution, ["s1", "s2", "s4"])
+    metadata = json.loads(resolution.metadata_path.read_text())
+    metadata["empty_sample_ids"] = ["s2", "s3", "s4"]
+    metadata["sample_identity_signature_by_id"]["s4"] = "stale-identity"
+    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+
+    messages = _resolve_tile_cache_messages(cache_root, dataset)
+
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample"
+        in message
+        for message in messages
+    )
+
+
+def test_feature_cache_validation_counts_requested_samples(tmp_path: Path):
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    for cache_id in ("s1", "s3"):
+        torch.save(torch.randn(4), feature_dir / f"{cache_id}.pt")
+    cache_ids = ["s1", "s2", "s3", "s4", "s5"]
+    metadata = {
+        "feature_type": "bag",
+        "empty_sample_ids": ["s4"],
+        # s2 has no identity, s3 a stale one; s4 is empty with no identity.
+        "sample_identity_signature_by_id": {"s1": "s1", "s3": "stale", "s5": "s5"},
+    }
+
+    result, present, expected = _validate_feature_cache_contents(
+        features_dir=feature_dir,
+        metadata=metadata,
+        cache_ids=cache_ids,
+        cache_stem_by_id={cache_id: cache_id for cache_id in cache_ids},
+    )
+
+    assert result.complete is False
+    assert result.reason == "missing cache identity for s2"
+    assert present == 1
+    assert expected == 4
+
+
 def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"

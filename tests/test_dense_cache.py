@@ -398,6 +398,39 @@ def _populate(res, dataset, *, d: int, gh: int, gw: int) -> None:
     record_sample_identity_signatures(res, list(dataset.sample_ids))
 
 
+def test_dense_cache_partial_message_counts_samples_without_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A cancelled extraction records no identity for the samples it never reached;
+    # the resume message must still count them against the requested scope.
+    import soma.cache.io as cache_io
+
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    res.manifest_path.unlink()  # no manifest, so identities are never backfilled
+    geom = compute_dense_geometry(target_size=(512, 512), patch_size=16)
+    meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
+    write_dense_grid(res.features_dir, "s1", torch.randn(8, 32, 32), meta)
+    record_feature_dim(res, 8)
+    record_sample_identity_signatures(res, ["s1"])
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        cache_io.slide2vec_progress,
+        "emit_progress_log",
+        lambda message, *args, **kwargs: messages.append(str(message)),
+    )
+    resumed = resolve_dense_cache(**kw)
+
+    assert resumed.complete is False
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample; "
+        "first issue: missing cache identity for s2" in message
+        for message in messages
+    )
+
+
 def test_dense_cache_validator_accepts_real_payloads(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     kw = _dense_kw(tmp_path, dataset)
