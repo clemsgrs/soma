@@ -222,6 +222,31 @@ def execution_signature(
     return signature
 
 
+def dense_execution_signature(
+    encoder_config: EncoderConfig,
+    *,
+    encoder_name: str | None = None,
+    preprocessing: PreprocessingConfig | None = None,
+) -> dict[str, Any]:
+    """Execution signature of a dense cache: the pooled one minus two fields.
+
+    ``output_variant`` only changes pooling, and a dense grid is pre-pooling. The
+    registry default ``input_size`` does not decide what a dense extraction computes:
+    the real encoder input is the configured target or window, which the dense key
+    carries itself. Keying on the registry default would move the key on a registry
+    edit that leaves the features byte-identical.
+    """
+    signature = execution_signature(
+        encoder_config,
+        encoder_name=encoder_name,
+        preprocessing=preprocessing,
+        output_variant=None,
+    )
+    signature.pop("output_variant", None)
+    signature.pop("input_size", None)
+    return signature
+
+
 def _maybe_fold_dtype(payload: dict[str, Any], dtype: str) -> None:
     """Fold the on-disk dtype into a pooled cache-key payload, in place.
 
@@ -411,15 +436,81 @@ def build_dense_cache_key(
     **only** for ``feature_kind != "patch_features"``, so legacy patch-feature keys are
     byte-stable.
     """
-    execution_payload = execution_signature(
-        execution,
-        encoder_name=tile_encoder_name,
-        preprocessing=preprocessing,
-        output_variant=None,
+    return _dense_cache_key(
+        schema_version=SCHEMA_VERSION,
+        tile_encoder_name=tile_encoder_name,
+        target_size=target_size,
+        patch_size=patch_size,
+        pad_mode=pad_mode,
+        execution_payload=dense_execution_signature(
+            execution,
+            encoder_name=tile_encoder_name,
+            preprocessing=preprocessing,
+        ),
+        preprocessing_payload=(
+            preprocessing_signature(preprocessing) if preprocessing is not None else None
+        ),
+        dense_input_mode=dense_input_mode,
+        window_size=window_size,
+        overlap=overlap,
+        feature_kind=feature_kind,
+        attention_blocks=attention_blocks,
+        attention_include_registers=attention_include_registers,
+        dtype=dtype,
+        sampling_signature=sampling_signature,
     )
-    execution_payload.pop("output_variant", None)
+
+
+def dense_cache_key_from_metadata(metadata: dict[str, Any]) -> str:
+    """The dense cache key that hashes to a recorded ``cache_metadata.json``.
+
+    Rebuilds the key from the recorded fields alone — no encoder, no registry, no
+    config — so a cache can be re-keyed offline. The recorded ``execution`` block is
+    hashed as found: pass legacy metadata to reproduce a legacy key, or metadata whose
+    ``execution`` was brought to :func:`dense_execution_signature` to get the current one.
+    """
+    window_size = metadata.get("window_size")
+    attention_blocks = metadata.get("attention_blocks")
+    return _dense_cache_key(
+        schema_version=str(metadata["schema_version"]),
+        tile_encoder_name=str(metadata["encoder_name"]),
+        target_size=metadata["target_size"],
+        patch_size=metadata["patch_size"],
+        pad_mode=metadata["pad_mode"],
+        execution_payload=dict(metadata["execution"]),
+        preprocessing_payload=metadata.get("preprocessing"),
+        dense_input_mode=metadata["dense_input_mode"],
+        window_size=window_size,
+        overlap=metadata.get("overlap", 0.0),
+        feature_kind=metadata.get("feature_kind", "patch_features"),
+        attention_blocks=tuple(attention_blocks) if attention_blocks is not None else None,
+        attention_include_registers=bool(metadata.get("attention_include_registers")),
+        # Metadata written before the dtype field existed is fp32 (the only dtype then).
+        dtype=metadata.get("dtype", "fp32"),
+        sampling_signature=metadata.get("sampling"),
+    )
+
+
+def _dense_cache_key(
+    *,
+    schema_version: str,
+    tile_encoder_name: str,
+    target_size: Sequence[int],
+    patch_size: Sequence[int],
+    pad_mode: str,
+    execution_payload: dict[str, Any],
+    preprocessing_payload: dict[str, Any] | None,
+    dense_input_mode: str,
+    window_size: int | None,
+    overlap: float,
+    feature_kind: str,
+    attention_blocks: Sequence[int] | None,
+    attention_include_registers: bool,
+    dtype: str,
+    sampling_signature: dict[str, Any] | None,
+) -> str:
     payload = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": schema_version,
         "artifact_kind": "dense",
         "tile_encoder_name": tile_encoder_name,
         "feature_type": "dense_grid",
@@ -444,8 +535,8 @@ def build_dense_cache_key(
         # when slide2vec force-upcast every grid) keep their byte-stable keys, while an
         # fp16 cache resolves to a distinct key so the two can never be mixed.
         payload["dtype"] = str(dtype)
-    if preprocessing is not None:
-        payload["preprocessing"] = preprocessing_signature(preprocessing)
+    if preprocessing_payload is not None:
+        payload["preprocessing"] = preprocessing_payload
     if sampling_signature is not None:
         # Slide-manifest segmentation: the ROIs (and thus the grids) are a function of the
         # annotation-sampling spec — pixel mapping, per-class coverage, strategy, output
@@ -545,16 +636,29 @@ def _sample_stems_for_kind(
 ) -> dict[str, str]:
     signature_by_sample_id = _sample_identity_payload(dataset)
     return {
-        sample_id: _sample_cache_stem(
+        sample_id: _sample_stem_for_kind(
             sample_signature=signature_by_sample_id[sample_id],
-            identity_payload={
-                "schema_version": SCHEMA_VERSION,
-                "artifact_kind": cache_kind,
-                **static_identity_payload,
-            },
+            cache_kind=cache_kind,
+            static_identity_payload=static_identity_payload,
         )
         for sample_id in sorted(dataset.sample_ids)
     }
+
+
+def _sample_stem_for_kind(
+    *,
+    sample_signature: str,
+    cache_kind: str,
+    static_identity_payload: dict[str, Any],
+) -> str:
+    return _sample_cache_stem(
+        sample_signature=sample_signature,
+        identity_payload={
+            "schema_version": SCHEMA_VERSION,
+            "artifact_kind": cache_kind,
+            **static_identity_payload,
+        },
+    )
 
 
 def _patient_stems_for_kind(
