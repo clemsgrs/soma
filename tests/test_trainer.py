@@ -830,3 +830,82 @@ class TestPeakPerMetric:
 
     def test_empty_history_is_empty(self):
         assert peak_per_metric([]) == {}
+
+
+class TestPatienceWarmup:
+    """Early stopping is held while the monitor still equals its epoch-1 value.
+
+    A detection F1 read at a fixed score threshold is exactly 0 until the heatmap
+    peaks clear it; counting those epochs early-stopped slow-warming runs at a model
+    that had never produced a detection.
+    """
+
+    def _fit(self, tmp_path: Path, monitor_values, *, patience, caplog=None):
+        from torch.utils.data import DataLoader
+
+        seed_everything(0)
+        loader = DataLoader(
+            _anticorrelated_bags(flip=False), batch_size=2, collate_fn=_CLS_COLLATE
+        )
+        config = TrainingConfig(
+            epochs=len(monitor_values),
+            learning_rate=1e-3,
+            patience=patience,
+            monitor="auroc",
+            monitor_mode="max",
+        )
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=loader,
+            tune_loader=loader,
+            config=config,
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        scripted = iter(monitor_values)
+        trainer._tune = lambda **_: (1.0, {"auroc": next(scripted)})
+        return trainer.fit()
+
+    def test_flat_floor_does_not_consume_patience(self, tmp_path: Path):
+        values = [0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.5, 0.4, 0.4]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 6
+        assert len(result.history) == len(values)
+
+    def test_monitor_that_moves_early_stops_as_before(self, tmp_path: Path):
+        values = [0.1, 0.2, 0.15, 0.1, 0.9, 0.9]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 1
+        assert len(result.history) == 4
+
+    def test_worsening_monitor_still_stops_early(self, tmp_path: Path):
+        values = [0.5, 0.4, 0.3, 0.2, 0.1, 0.0]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 3
+
+    def test_initial_tie_then_worsening_stops_as_before(self, tmp_path: Path):
+        values = [0.5, 0.5, 0.4, 0.9, 0.8, 0.7]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 3
+
+    def test_plateau_past_patience_then_worsening_stops_at_first_move(self, tmp_path: Path):
+        values = [0.5, 0.5, 0.5, 0.5, 0.4, 0.9]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 5
+
+    def test_monitor_that_never_moves_runs_to_the_cap_and_warns(self, tmp_path: Path, caplog):
+        values = [0.0] * 6
+        with caplog.at_level("WARNING", logger="soma.training.trainer"):
+            result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == len(values)
+        assert "never left its epoch-1 value" in caplog.text
