@@ -119,6 +119,10 @@ def _auroc(y_true, y_pred, y_prob) -> float:
 
 
 def _auroc_macro(y_true, y_pred, y_prob) -> float:
+    if y_prob.shape[1] == 2:
+        # sklearn rejects a (n, 2) score matrix for two classes; both one-vs-rest AUROCs
+        # then equal the binary AUROC of the positive column, and so does their mean.
+        return _auroc(y_true, y_pred, y_prob)
     try:
         value = float(
             roc_auc_score(y_true, y_prob, multi_class="ovr", average="macro")
