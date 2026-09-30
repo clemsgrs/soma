@@ -114,6 +114,30 @@ class TransMIL(Aggregator):
         self.norm = nn.LayerNorm(att_dim)
 
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
+        """Aggregate each bag on its own.
+
+        The square grid PPEG convolves over is sized by the bag, so bags of a padded
+        batch are run one at a time over their valid tiles: a bag's representation
+        must not depend on the length of the longest bag it is batched with.
+        """
+        B, bag_size, _ = X.shape
+        if mask is None:
+            return self._forward_bag(X)
+
+        representations = []
+        tile_attention = X.new_zeros(B, bag_size)
+        for index in range(B):
+            valid = mask[index].bool()
+            out = self._forward_bag(X[index, valid][None])
+            representations.append(out.bag_representation)
+            tile_attention[index, valid] = out.tile_attention[0]
+        return AggregatorOutput(
+            bag_representation=torch.cat(representations, dim=0),
+            tile_attention=tile_attention,
+        )
+
+    def _forward_bag(self, X: Tensor) -> AggregatorOutput:
+        """Aggregate unpadded bags of equal length, shape (B, N, D)."""
         B, bag_size, _ = X.shape
 
         X = self.fc1(X)  # (B, N, att_dim)
@@ -127,15 +151,10 @@ class TransMIL(Aggregator):
             # Repeat first tiles to fill the square
             X = torch.cat([X, X[:, :add_length, :]], dim=1)
 
-        # Build mask for padded+cls sequence
-        layer_mask = None
-        if mask is not None:
-            # Pad mask: duplicated tiles are marked as False (padding)
-            pad_mask = torch.zeros(B, add_length, dtype=torch.bool, device=X.device)
-            padded_mask = torch.cat([mask, pad_mask], dim=1) if add_length > 0 else mask
-            # Prepend True for cls_token
-            cls_mask = torch.ones(B, 1, dtype=torch.bool, device=X.device)
-            layer_mask = torch.cat([cls_mask, padded_mask], dim=1)
+        # Mask for the cls + square sequence: tiles duplicated to fill the square are
+        # padding (False), so attention reads each tile once.
+        layer_mask = torch.ones(B, total + 1, dtype=torch.bool, device=X.device)
+        layer_mask[:, bag_size + 1 :] = False
 
         # Add cls_token
         cls_tokens = self.cls_token.expand(B, -1, -1)
