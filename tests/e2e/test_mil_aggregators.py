@@ -58,8 +58,10 @@ TASK = {"clam_mb": "multiclass_classification"}
 AUROC = {"binary_classification": "auroc", "multiclass_classification": "auroc_macro"}
 #: z-score normalization is not supported on hierarchical (HIPT) feature streams.
 NORMALIZATION = {"hipt": "none"}
-#: Training overrides: max pooling feeds a linear head one feature per channel and
-#: converges slowly; HIPT's transformers collapse to a constant at the default rate.
+#: Training overrides. The scenario trains at 5e-3 (50x soma's 1e-4 default) so every
+#: aggregator converges in a few CPU epochs; max pooling (one feature per channel into
+#: a linear head) needs more epochs, and HIPT's transformers collapse to a constant
+#: at that rate.
 TRAINING = {
     "max_pool": {"epochs": 100},
     "hipt": {"epochs": 60, "learning_rate": 3e-4},

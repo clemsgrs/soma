@@ -24,7 +24,7 @@ well as checking its metric thresholds.
 ## Running
 
 ```bash
-python -m pytest tests/e2e          # ~1.5 min on 4 CPU cores
+python -m pytest tests/e2e          # ~3.5 min on 4 CPU cores
 python -m pytest -m "not e2e"       # everything else
 ```
 
