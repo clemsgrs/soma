@@ -4142,3 +4142,58 @@ def test_fallback_feature_manifest_publishes_only_in_run_directory(tmp_path: Pat
     assert torch.equal(store.load("s0"), torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
     manifest = pd.read_csv(local / "process_list.csv")
     assert manifest.loc[0, "feature_path"] == str(payload_dir / "s0.pt")
+
+
+def test_drop_stale_payloads_lists_directory_once_and_removes_only_stale_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Resuming a partial tile cache must not glob the features directory once per
+    # missing sample (cost = missing × present, minutes of idle GPU on ~100k tiles),
+    # and a sample id must never be interpreted as a glob pattern by code that deletes
+    # what it matches.
+    import soma.tile_extraction as tile_mod
+
+    features_dir = tmp_path / "image_embeddings"
+    features_dir.mkdir()
+    stale = ["s1", "a.b", "we[i]rd*?"]
+    keep = ["s10", "s1x", "a", "a.bc", "weird"]
+    for sample_id in stale + keep:
+        (features_dir / f"{sample_id}.pt").write_bytes(b"x")
+        (features_dir / f"{sample_id}.meta.json").write_text("{}")
+    (features_dir / "we[i]rd*?.extra.bin").write_bytes(b"x")
+    (features_dir / "a.b.c.pt").write_bytes(b"x")  # `<id>.<anything>` with id `a.b`
+    (features_dir / "wird.pt").write_bytes(b"x")  # what glob `we[i]rd*?.*` would match
+
+    list_calls = {"n": 0}
+    real_list = tile_mod._list_feature_filenames
+
+    def counting_list(directory: Path) -> set[str]:
+        list_calls["n"] += 1
+        return real_list(directory)
+
+    monkeypatch.setattr(tile_mod, "_list_feature_filenames", counting_list)
+
+    glob_patterns: list[str] = []
+    real_glob = Path.glob
+
+    def recording_glob(self, pattern, *args, **kwargs):
+        glob_patterns.append(str(pattern))
+        return real_glob(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "glob", recording_glob)
+
+    tile_mod._drop_stale_payloads(features_dir, stale)
+
+    assert list_calls["n"] == 1
+    assert not [pat for pat in glob_patterns if any(sid in pat for sid in stale)]
+    remaining = {p.name for p in features_dir.iterdir()}
+    for sample_id in stale:
+        assert f"{sample_id}.pt" not in remaining
+        assert f"{sample_id}.meta.json" not in remaining
+    assert "we[i]rd*?.extra.bin" not in remaining
+    assert "a.b.c.pt" not in remaining
+    assert remaining == {f"{sid}.{suffix}" for sid in keep for suffix in ("pt", "meta.json")} | {"wird.pt"}
+
+    list_calls["n"] = 0
+    tile_mod._drop_stale_payloads(features_dir, [])
+    assert list_calls["n"] <= 1

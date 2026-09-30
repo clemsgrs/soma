@@ -28,6 +28,7 @@ from soma.cache import (
     resolve_image_cache,
     resolve_cache_dtype,
 )
+from soma.cache._types import _list_feature_filenames
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
 from soma.cache.compute_key import resolved_output_variant
@@ -53,9 +54,31 @@ def _drop_stale_payloads(features_dir: Path, sample_ids: list[str]) -> None:
     resume check that cannot see identity signatures. Without it slide2vec would skip the
     sample and soma would then stamp the new signature onto the old features.
     """
-    for sample_id in sample_ids:
-        for path in features_dir.glob(f"{sample_id}.*"):
-            path.unlink(missing_ok=True)
+    stale = set(sample_ids)
+    if not stale:
+        return
+    for name in _list_feature_filenames(features_dir):
+        if _owning_sample_id(name, stale) is not None:
+            (features_dir / name).unlink(missing_ok=True)
+
+
+def _owning_sample_id(filename: str, sample_ids: set[str]) -> str | None:
+    """Return the id in ``sample_ids`` that ``filename`` belongs to, if any.
+
+    A payload belongs to a sample when its name is ``<sample_id>.<anything>`` — the
+    same rule as slide2vec's ``<sample_id>.pt`` / ``<sample_id>.meta.json`` layout.
+    Sample ids may contain dots, so every dot in the name is a candidate boundary;
+    checking each candidate against the set keeps the cost per file independent of how
+    many stale samples there are, and matching by string equality (never by glob) means
+    an id containing ``[``, ``]``, ``*`` or ``?`` only ever claims its own files.
+    """
+    start = 0
+    while (dot := filename.find(".", start)) != -1:
+        candidate = filename[:dot]
+        if candidate in sample_ids:
+            return candidate
+        start = dot + 1
+    return None
 
 
 class _TileFeatureExtractor:
