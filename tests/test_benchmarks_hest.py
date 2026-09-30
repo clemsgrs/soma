@@ -82,12 +82,14 @@ def test_build_config_defaults_to_uni2(tmp_path):
     assert config.encoder.name == hest.DEFAULT_ENCODER == "uni2"
 
 
-def test_build_config_pins_virchow2_cls_variant(tmp_path):
-    # Issue #261: virchow2 is the second encoder of the vertical slice. build_config must
-    # pin the CLS-only output variant (leaderboard-relevant; 1280-d, not slide2vec's 2560-d
-    # CLS+mean concat default) and otherwise emit the same valid spatial-expression probe
-    # recipe as uni2. "cls" is the exact token slide2vec's virchow2 encoder accepts for the
-    # CLS-only variant (slide2vec.encoders.models.virchow: output_variants={"cls": 1280, ...}).
+def test_build_config_pins_virchow2_cls_patch_mean_variant(tmp_path):
+    # Issue #261 / #504: virchow2 is the second encoder of the vertical slice. build_config
+    # must pin the 2560-d CLS+mean-patch concat explicitly (leaderboard-relevant: TRIDENT's
+    # Virchow2InferenceEncoder.forward concatenates unless built with return_cls=True, and
+    # HEST's bench uses a bare encoder_factory) and otherwise emit the same valid
+    # spatial-expression probe recipe as uni2. "cls_patch_mean" is the exact token slide2vec's
+    # virchow2 encoder accepts (slide2vec.encoders.models.virchow:
+    # output_variants={"cls": 1280, "cls_patch_mean": 2560}).
     config = get_benchmark("hest/IDC").build_config(
         encoder="virchow2",
         dataset_csv=tmp_path / "dataset.csv",
@@ -96,8 +98,8 @@ def test_build_config_pins_virchow2_cls_variant(tmp_path):
         seed=3,
     )
     assert config.encoder.name == "virchow2"
-    # HEST's virchow2 is CLS-only (1280-d); the 2560-d concat default would not match.
-    assert config.encoder.output_variant == "cls"
+    # HEST's virchow2 is the 2560-d CLS+mean concat; the 1280-d CLS-only variant would not match.
+    assert config.encoder.output_variant == "cls_patch_mean"
     # Everything else stays the fixed HEST probe recipe (identical to the uni2 build).
     assert config.dataset_type == "spatial_expression"
     assert config.task.name == "regression"
@@ -124,10 +126,11 @@ def test_build_config_h_optimus_1_uses_slide2vec_default_variant(tmp_path):
     assert config.training.method == "ridge_pca_probe"
 
 
-def test_output_variants_maps_only_virchow2_to_cls():
-    # The variant map is a targeted override: only virchow2 needs a non-default variant
-    # (CLS-only); uni2 and h-optimus-1 fall through to slide2vec's default (plain CLS token).
-    assert hest.OUTPUT_VARIANTS == {"virchow2": "cls"}
+def test_output_variants_maps_only_virchow2_to_cls_patch_mean():
+    # The variant map is a targeted, explicit pin: virchow2 is fixed to the CLS+mean-patch
+    # concat (what TRIDENT/HEST use) rather than left to slide2vec's default; uni2 and
+    # h-optimus-1 fall through to slide2vec's default (plain CLS token).
+    assert hest.OUTPUT_VARIANTS == {"virchow2": "cls_patch_mean"}
     assert hest.OUTPUT_VARIANTS.get("uni2") is None
     assert hest.OUTPUT_VARIANTS.get("h-optimus-1") is None
 

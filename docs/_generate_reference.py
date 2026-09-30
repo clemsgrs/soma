@@ -552,6 +552,15 @@ def build_eva_benchmark_rst() -> str:
     return "\n\n".join(sections).rstrip() + "\n"
 
 
+# The recorded virchow2 rows predate the OUTPUT_VARIANTS fix (#504): they were measured with
+# the CLS-only variant. Drop this note once the rows are re-recorded under "cls_patch_mean".
+_HEST_VIRCHOW2_VARIANT_NOTE = (
+    "The ``virchow2`` rows were recorded with the CLS-only feature variant, before the\n"
+    "benchmark's pin was corrected to ``cls_patch_mean`` (the 2560-d CLS + mean-patch\n"
+    "concatenation that HEST evaluates). They will be re-recorded with the corrected variant."
+)
+
+
 def _hest_results_section() -> str:
     """Render the public reproduced-versus-reference HEST comparison."""
     report = reproduction_report("hest")
@@ -592,10 +601,13 @@ def _hest_results_section() -> str:
             ]
         )
     intro = "Recorded mean Pearson scores alongside the packaged HEST references."
+    table = "\n".join(lines)
+    if any(cell.encoder == "virchow2" for cell in report.cells):
+        table += "\n\n" + _HEST_VIRCHOW2_VARIANT_NOTE
     if flagged:
         intro += " A value outside its reference band is shown in red."
-        return _RED_ROLE + "\n\n" + intro + "\n\n" + "\n".join(lines)
-    return intro + "\n\n" + "\n".join(lines)
+        return _RED_ROLE + "\n\n" + intro + "\n\n" + table
+    return intro + "\n\n" + table
 
 
 def build_hest_benchmark_rst() -> str:
