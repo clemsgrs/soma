@@ -276,16 +276,22 @@ def _format_patience(training_config: dict) -> str:
     return "off" if patience is None else str(patience)
 
 
+def _trained_epochs(history: list[dict]) -> int:
+    return history[-1]["epoch"] + 1 if history else 0
+
+
 def _training_summary_panel(run_data: RunData) -> str:
     cfg = run_data.config.get("training", {})
     if cfg.get("max_steps") is not None:
-        derived_epochs = [len(fold.training_history) for fold in run_data.folds]
+        # The last history row is the last trained epoch (tune is always evaluated on
+        # the final epoch), whatever the tune cadence.
+        derived_epochs = [_trained_epochs(fold.training_history) for fold in run_data.folds]
         derived_text = (
             str(derived_epochs[0])
             if derived_epochs and len(set(derived_epochs)) == 1
             else ", ".join(
-                f"fold {fold.fold}: {len(fold.training_history)}"
-                for fold in run_data.folds
+                f"fold {fold.fold}: {count}"
+                for fold, count in zip(run_data.folds, derived_epochs)
             )
         )
         budget_items = [

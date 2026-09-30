@@ -694,6 +694,40 @@ def test_step_budget_report_shows_budget_and_derived_epochs(tmp_path: Path) -> N
     assert ">2<" in html
 
 
+def test_step_budget_report_derives_epochs_from_sparse_history(tmp_path: Path) -> None:
+    """With tune evaluated every 3 epochs, history rows sit at epochs 2, 5, 8: 9 trained."""
+    run_dir = _make_run_dir(tmp_path)
+    config_path = run_dir / "config.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["training"]["epochs"] = None
+    config["training"]["max_steps"] = 5
+    config_path.write_text(_to_yaml(config))
+    history = [dict(row, epoch=epoch) for row, epoch in zip(_make_training_history(3), [2, 5, 8])]
+    (run_dir / "training_history.json").write_text(
+        json.dumps({"epochs": history, "peak_per_metric": {}})
+    )
+
+    html = generate_report(run_dir).read_text()
+
+    assert "Derived epochs" in html
+    assert ">9<" in html
+
+
+def test_cross_run_band_plots_sparse_history_at_true_epochs() -> None:
+    import matplotlib.pyplot as plt
+    from types import SimpleNamespace
+
+    from soma.reporting.charts import _add_mean_band
+
+    history = [dict(row, epoch=epoch) for row, epoch in zip(_make_training_history(3), [2, 5, 8])]
+    run = SimpleNamespace(folds=[SimpleNamespace(training_history=history)])
+    fig, ax = plt.subplots()
+    _add_mean_band(ax, run, "run", "#336699", key="tune_loss")
+
+    assert list(ax.lines[0].get_xdata()) == [2, 5, 8]
+    plt.close(fig)
+
+
 def test_load_run_data_tolerates_null_task_block(tmp_path: Path) -> None:
     """A task-free run persists ``task: null``; loading must not index into None."""
     import yaml as _yaml
