@@ -20,7 +20,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4)
+        model = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
         X = torch.randn(2, 12, 16)
         out = model(X)
         assert isinstance(out, AggregatorOutput)
@@ -31,7 +31,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4)
+        model = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
         X = torch.randn(2, 12, 16)
         out = model(X)
         assert out.tile_attention is not None
@@ -41,7 +41,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4)
+        model = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
         X = torch.randn(2, 12, 16)
         out = model(X)
         assert out.auxiliary is not None
@@ -51,14 +51,14 @@ class TestDTFDMIL:
     def test_output_dim(self):
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
-        model = DTFDMIL(input_dim=32, hidden_dim=16)
+        model = DTFDMIL(input_dim=32, embed_dim=32, hidden_dim=16)
         assert model.output_dim == 32
 
     def test_with_mask(self):
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(42)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=3)
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=3)
         X = torch.randn(1, 9, 8)
         mask = torch.tensor([[True] * 6 + [False] * 3])
         out = model(X, mask=mask)
@@ -68,7 +68,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=4, hidden_dim=3, n_groups=4, dropout=0.0)
+        model = DTFDMIL(input_dim=4, embed_dim=4, hidden_dim=3, n_groups=4, dropout=0.0)
         valid = torch.randn(1, 3, 4)
         padded = torch.full((1, 5, 4), 1_000_000.0)
         X = torch.cat([valid, padded], dim=1)
@@ -97,7 +97,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=100)
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=100)
         X = torch.randn(1, 3, 8)
         out = model(X)
         assert out.bag_representation.shape == (1, 8)
@@ -108,7 +108,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, distill_mode="maxmin")
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="maxmin")
         X = torch.randn(2, 8, 8)
         out = model(X)
         assert out.bag_representation.shape == (2, 8)
@@ -117,7 +117,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, distill_mode="max")
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="max")
         X = torch.randn(2, 8, 8)
         out = model(X)
         assert out.bag_representation.shape == (2, 8)
@@ -126,7 +126,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, distill_mode="afs")
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="afs")
         X = torch.randn(2, 8, 8)
         out = model(X)
         assert out.bag_representation.shape == (2, 8)
@@ -135,13 +135,13 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         with pytest.raises(ValueError, match="distill_mode"):
-            DTFDMIL(input_dim=8, hidden_dim=4, distill_mode="invalid")
+            DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="invalid")
 
     def test_gradient_flows(self):
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
         X = torch.randn(1, 6, 8, requires_grad=True)
         out = model(X)
         loss = out.bag_representation.sum()
@@ -159,7 +159,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        agg = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
         head = MulticlassClassificationHead(input_dim=8, num_classes=3)
         model = MILModel(aggregator=agg, task_head=head)
         X = torch.randn(2, 6, 8)
@@ -178,7 +178,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        agg = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
         head = OrdinalClassificationHead(input_dim=8, num_classes=5)
         model = MILModel(aggregator=agg, task_head=head)
         X = torch.randn(2, 6, 8)
@@ -199,7 +199,7 @@ class TestDTFDMIL:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        agg = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=2)
+        agg = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
         head = RegressionHead(input_dim=8)
         model = MILModel(aggregator=agg, task_head=head)
         X = torch.randn(2, 6, 8)
@@ -239,9 +239,9 @@ class TestDTFDMILDistillation:
 
         torch.manual_seed(0)
         X = torch.randn(1, 12, 8)
-        maxmin = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=4, distill_mode="maxmin")
+        maxmin = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=4, distill_mode="maxmin")
         assert self._distilled_count(maxmin, X) == 4 * 2
-        max_only = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=4, distill_mode="max")
+        max_only = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=4, distill_mode="max")
         assert self._distilled_count(max_only, X) == 4
 
     def test_instances_per_group_is_honoured_and_clamped(self):
@@ -262,13 +262,13 @@ class TestDTFDMILDistillation:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         with pytest.raises(ValueError, match="instances_per_group"):
-            DTFDMIL(input_dim=8, hidden_dim=4, instances_per_group=0)
+            DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, instances_per_group=0)
 
     def test_eval_partition_is_deterministic_without_seeding(self):
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).eval()
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).eval()
         X = torch.randn(1, 9, 8)
         first = model(X)
         second = model(X)
@@ -281,7 +281,7 @@ class TestDTFDMILDistillation:
         from soma.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
-        model = DTFDMIL(input_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).train()
+        model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).train()
         X = torch.randn(1, 9, 8)
         torch.manual_seed(7)
         a = model(X).auxiliary["pseudo_predictions"]

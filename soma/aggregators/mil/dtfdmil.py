@@ -1,6 +1,7 @@
 """DTFD-MIL — Double-Tier Feature Distillation MIL (Zhang et al., 2022).
 
 The two-tier mechanism:
+0. Project tile features into a learned embedding (the reference's ``DimReduction``).
 1. Randomly partition bag into pseudo-bags.
 2. Tier 1: AttentionPool each pseudo-bag, compute Grad-CAM importance.
 3. Feature distillation: select important instances based on CAM scores.
@@ -24,6 +25,11 @@ class DTFDMIL(Aggregator):
 
     Args:
         input_dim: Feature dimension of input tiles.
+        embed_dim: Width of the learned tile embedding every later step works in (the
+            reference's ``DimReduction`` to ``mDim`` = 512). Without it, pseudo-bag
+            pooling, CAM scoring and distillation all act on frozen encoder features,
+            and the default max-min distillation fails to learn even a task where one
+            marker tile decides the label.
         hidden_dim: Attention bottleneck dimension.
         n_groups: Number of pseudo-bags to partition into.
         distill_mode: Feature distillation mode ('maxmin', 'max', 'afs').
@@ -42,6 +48,7 @@ class DTFDMIL(Aggregator):
     def __init__(
         self,
         input_dim: int,
+        embed_dim: int = 512,
         hidden_dim: int = 128,
         n_groups: int = 8,
         distill_mode: str = "maxmin",
@@ -58,7 +65,7 @@ class DTFDMIL(Aggregator):
                 f"instances_per_group must be >= 1, got {instances_per_group}"
             )
 
-        self._input_dim = input_dim
+        self._embed_dim = embed_dim
         self.n_groups = n_groups
         self.distill_mode = distill_mode
         self.instances_per_group = instances_per_group
@@ -66,19 +73,20 @@ class DTFDMIL(Aggregator):
         self._t1_output_dim = 1
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.embed = nn.Sequential(nn.Linear(input_dim, embed_dim), nn.ReLU())
 
         # Tier 1: pseudo-bag aggregation + classifier (for Grad-CAM)
-        self.t1_pool = AttentionPool(input_dim=input_dim, hidden_dim=hidden_dim)
-        self.t1_classifier = nn.Linear(input_dim, 1)
+        self.t1_pool = AttentionPool(input_dim=embed_dim, hidden_dim=hidden_dim)
+        self.t1_classifier = nn.Linear(embed_dim, 1)
 
         # Tier 2: distilled feature aggregation
-        self.t2_pool = AttentionPool(input_dim=input_dim, hidden_dim=hidden_dim)
+        self.t2_pool = AttentionPool(input_dim=embed_dim, hidden_dim=hidden_dim)
 
     def _set_t1_output_dim(self, output_dim: int) -> None:
         if output_dim == self._t1_output_dim:
             return
         old_classifier = self.t1_classifier
-        new_classifier = nn.Linear(self._input_dim, output_dim)
+        new_classifier = nn.Linear(self._embed_dim, output_dim)
         new_classifier.to(
             device=old_classifier.weight.device,
             dtype=old_classifier.weight.dtype,
@@ -202,7 +210,7 @@ class DTFDMIL(Aggregator):
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
         B, bag_size, _ = X.shape
 
-        X = self.dropout(X)
+        X = self.embed(self.dropout(X))
         if mask is None:
             valid_mask = torch.ones((B, bag_size), device=X.device, dtype=torch.bool)
         else:
@@ -257,7 +265,7 @@ class DTFDMIL(Aggregator):
 
     @property
     def output_dim(self) -> int:
-        return self._input_dim
+        return self._embed_dim
 
     def compute_auxiliary_loss(
         self,
