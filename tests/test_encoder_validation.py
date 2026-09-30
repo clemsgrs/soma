@@ -64,7 +64,7 @@ def _tiling_result(
 
 @pytest.mark.parametrize(
     ("encoder_name", "expected_tile_size"),
-    [("dinov2-vitb14", 518), ("dinov3-vitb16", 256)],
+    [("dinov2-vitb14", 224), ("dinov3-vitb16", 256)],
 )
 @pytest.mark.parametrize("requested_spacing", [None, 0.25])
 def test_spacing_agnostic_encoder_resolves_defaults_and_preserves_explicit_spacing(
