@@ -12,6 +12,8 @@ if the correct pixels, features and labels reach it.
 | `slide_mil_binary_classification` | WSI tiling → extraction → cache → ABMIL → evaluation; a second run is a full cache hit (zero images encoded) with byte-identical predictions |
 | `slide_mil_{multiclass,ordinal,regression,survival_nll,survival_cox}` | every slide task head on one cohort; the feature cache is shared across tasks |
 | `slide_mil_cv_leaderboard` | 2-fold cross-validation for two aggregators, then `soma leaderboard` ranks them |
+| `mil_aggregator_<name>` | every registered aggregator on a rigged task (a slide is positive iff it has marker tiles): test accuracy and AUROC must be exactly 1, and re-scoring the trained model must give the same logits alone, in one padded batch, with garbage in the padding, and (for set-function aggregators) with tiles shuffled |
+| `mil_aggregator_control` | the same cohort with labels independent of the markers must stay near chance, so the perfect scores above cannot come from a label leak |
 | `tile_binary_classification` | `dataset_type: tile` (no bag, no aggregator) |
 | `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU |
 | `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance |

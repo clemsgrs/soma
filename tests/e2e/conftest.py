@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -52,6 +53,27 @@ def encoded_images(monkeypatch) -> list[int]:
 
         monkeypatch.setattr(_LiteralPatchEncoder, method, counting)
     return seen
+
+
+@pytest.fixture
+def scored_models(monkeypatch) -> dict[str, SimpleNamespace]:
+    """The trained model, loader and report each split was scored with, keyed by split.
+
+    Lets a scenario re-score the model the run selected under conditions the run never
+    saw (other batch sizes, tile orders, padding) without rebuilding it by hand.
+    """
+    import soma.pipeline as pipeline
+
+    scored: dict[str, SimpleNamespace] = {}
+    original = pipeline._evaluate
+
+    def spying(model, loader, split_name, device, **kwargs):
+        report = original(model, loader, split_name, device, **kwargs)
+        scored[split_name] = SimpleNamespace(model=model, loader=loader, report=report)
+        return report
+
+    monkeypatch.setattr(pipeline, "_evaluate", spying)
+    return scored
 
 
 @pytest.fixture

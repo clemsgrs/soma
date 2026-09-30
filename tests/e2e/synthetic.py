@@ -130,6 +130,112 @@ def make_slide_cohort(root: Path, n: int = 32, size: int = 384, seed: int = 0) -
     return SlideCohort(root=root, sample_ids=sample_ids, severity=severity, splits_csv=splits_csv)
 
 
+_MARKER_TILE_PX = 32
+#: Brighter than tissue in green and darker in red, so a marker moves one feature up
+#: (visible to max pooling) and one down. It has the tissue's HSV saturation (0.30):
+#: tissue detection thresholds saturation, and a marker that stood apart from tissue
+#: there would be split off from it.
+_MARKER = np.array([150, 215, 205])
+
+
+@dataclass(frozen=True)
+class MarkerCohort:
+    """Slides whose label is "contains marker tiles", with rigged, noise-free features.
+
+    Every tile is one flat colour, so the literal encoder returns exactly that colour as
+    the tile's feature: ordinary tissue tiles are jittered shades of ``_LIGHT``, marker
+    tiles jittered shades of ``_MARKER``. Slides come in pairs of equal bag size, one with
+    markers and one without, so bag size, sample order and split carry no label signal.
+    """
+
+    root: Path
+    sample_ids: list[str]
+    has_marker: np.ndarray
+    #: Pair index of each slide; the two slides of a pair share a bag size and a split.
+    pair: np.ndarray
+    bag_size: np.ndarray
+    splits_csv: Path
+
+    def manifest(self, *, control: bool = False) -> Path:
+        """``label`` = has_marker; with ``control``, labels independent of the markers.
+
+        The control flips the labels of every other round of the train/train/tune/test
+        deal, so within every split half the positives carry markers and half do not: a
+        model that reads the tiles scores at chance, and only a leak (labels reaching the
+        model some other way) scores higher.
+        """
+        label = self.has_marker.astype(int)
+        if control:
+            label = np.where((self.pair // 4) % 2 == 1, 1 - label, label)
+        path = self.root / ("dataset_control.csv" if control else "dataset.csv")
+        pd.DataFrame(
+            {
+                "sample_id": self.sample_ids,
+                "image_path": [str(self.root / "slides" / f"{s}.tif") for s in self.sample_ids],
+                "label": label,
+            }
+        ).to_csv(path, index=False)
+        return path
+
+
+def make_marker_cohort(root: Path, n_pairs: int = 24, seed: int = 0) -> MarkerCohort:
+    """``2 * n_pairs`` slides with a tissue block of 4 to 64 flat-colour tiles.
+
+    Blocks are aligned to a 64 px grid so that both 32 px tiles and HIPT's 2x2-tile
+    regions cover whole tiles. Each tile's colour is jittered by at most 10 per channel:
+    enough to make every tile distinct, too little to drop its saturation below the
+    tissue threshold (a desaturated tile is cut out of the tissue mask as a hole). A slide with markers has 25-50% marker tiles at random
+    positions. Pairs are dealt train/train/tune/test round-robin.
+    """
+    rng = np.random.default_rng(seed)
+    slides = root / "slides"
+    slides.mkdir(parents=True)
+    tile = _MARKER_TILE_PX
+    sides = np.array([2, 4, 6, 8])
+    size = 2 * tile + sides.max() * tile + 2 * tile
+
+    names = rng.permutation(2 * n_pairs)
+    sample_ids, has_marker, pair, bag_size = [], [], [], []
+    for index in range(n_pairs):
+        rows, cols = (int(v) for v in rng.choice(sides, 2))
+        if index < 4:
+            # The first deal round gives every split a 4-tile bag, so a batch there
+            # mixes a bag smaller than typical pseudo-bag / grid sizes with larger ones.
+            rows, cols = 2, 2
+        for marked in (index % 2 == 0, index % 2 == 1):
+            sample_id = f"slide{names[len(sample_ids)]:02d}"
+            n_tiles = rows * cols
+            colours = _LIGHT + rng.integers(-10, 11, (n_tiles, 3))
+            if marked:
+                n_markers = max(1, int(round(rng.uniform(0.25, 0.5) * n_tiles)))
+                where = rng.choice(n_tiles, n_markers, replace=False)
+                colours[where] = _MARKER + rng.integers(-10, 11, (n_markers, 3))
+            image = np.empty((size, size, 3), dtype=np.int16)
+            image[:] = _BACKGROUND
+            for k, colour in enumerate(colours):
+                y = 2 * tile + (k // cols) * tile
+                x = 2 * tile + (k % cols) * tile
+                image[y : y + tile, x : x + tile] = colour
+            write_tiff(slides / f"{sample_id}.tif", image.astype(np.uint8))
+            sample_ids.append(sample_id)
+            has_marker.append(marked)
+            pair.append(index)
+            bag_size.append(n_tiles)
+
+    pair = np.array(pair)
+    split = np.array([("train", "train", "tune", "test")[p % 4] for p in pair])
+    splits_csv = root / "splits.csv"
+    pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index=False)
+    return MarkerCohort(
+        root=root,
+        sample_ids=sample_ids,
+        has_marker=np.array(has_marker),
+        pair=pair,
+        bag_size=np.array(bag_size),
+        splits_csv=splits_csv,
+    )
+
+
 def make_tile_dataset(root: Path, n: int = 32, size: int = 64, seed: int = 0) -> tuple[Path, Path]:
     """Patch images for tile-level binary classification (light vs dark tissue)."""
     rng = np.random.default_rng(seed)
