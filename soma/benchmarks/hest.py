@@ -81,21 +81,29 @@ TASK = "IDC"
 # `encoder` is the varied axis; uni2 is the headline backbone. slide2vec validates the name,
 # so any registered encoder works. The three-model reproduction campaign benchmarks
 # {uni2, virchow2, h-optimus-1} — the top HEST cluster (published IDC 0.5898 / 0.5971 / 0.6024),
-# a deliberately fine-grained rank test. OUTPUT_VARIANTS only pins the feature variant for
-# backbones where the leaderboard used a non-default one:
-#   * virchow2 → "cls" (CLS-only 1280-d; slide2vec defaults to the 2560-d CLS+mean concat,
-#     which would NOT match TRIDENT). "cls" is the exact slide2vec token (virchow.py
-#     output_variants={"cls": 1280, "cls_patch_mean": 2560}, default "cls_patch_mean").
+# a deliberately fine-grained rank test. OUTPUT_VARIANTS pins the feature variant explicitly
+# for backbones where more than one variant exists, so the reproduction never depends on a
+# slide2vec default silently changing:
+#   * virchow2 → "cls_patch_mean" (2560-d CLS + mean-patch-token concat). This is what HEST
+#     actually evaluates: TRIDENT's Virchow2InferenceEncoder.forward returns
+#     torch.cat([class_token, patch_tokens.mean(1)]) unless the encoder was built with
+#     return_cls=True, and HEST's bench builds it with a bare encoder_factory(model_name)
+#     (return_cls appears nowhere in the HEST repository). The CLS-only 1280-d "cls"
+#     variant would NOT match TRIDENT (#504). "cls_patch_mean" is the exact slide2vec token
+#     (virchow.py output_variants={"cls": 1280, "cls_patch_mean": 2560}); it happens to be
+#     slide2vec's default too, but it is pinned here on purpose.
 #   * uni2, h-optimus-1 → no override: slide2vec's default for each is the plain CLS token
 #     (uni2 1536-d; h-optimus-1's only variant is the 1536-d "default" CLS), matching TRIDENT.
 # HEST extracts features via TRIDENT; soma re-extracts natively via slide2vec, so the
 # Measured-minus-Reference delta is the accepted, non-gating slide2vec<->TRIDENT parity gap.
-# TODO(#276): that gap is a median 0.21% relative over the first 9 cells, but LUNG/virchow2
-# (-2.90%) and COAD/uni2 (+2.99%) sit an order of magnitude off the family. virchow2 is the
-# only encoder here on a non-default output variant, so its transform path is the first
-# suspect. Explain them; do not widen a tolerance to hide them (ADR 0005).
+# TODO(#276): that gap is a median 0.21% relative over the first 9 cells. LUNG/virchow2
+# (-2.90%) is explained by the variant pin above: measured with "cls_patch_mean" it lands at
+# 0.5694 against HEST's 0.5685 (#504; the ledger rows recorded under "cls" await re-recording).
+# COAD/uni2 (+2.99%) is still open: an independent extraction reproduces soma's 0.3105
+# exactly, so the gap is deterministic, not extraction noise. Explain it; do not widen a
+# tolerance to hide it (ADR 0005).
 DEFAULT_ENCODER = "uni2"
-OUTPUT_VARIANTS: dict[str, str] = {"virchow2": "cls"}
+OUTPUT_VARIANTS: dict[str, str] = {"virchow2": "cls_patch_mean"}
 
 # The probe is closed-form and deterministic, so one seed suffices (unlike EVA's SGD head,
 # which averages five). random_state=seed only steers PCA's solver.
