@@ -215,13 +215,15 @@ class DTFDMIL(Aggregator):
         valid_counts = valid_mask.sum(dim=1)
         if (valid_counts == 0).any():
             raise ValueError("DTFD-MIL received an empty bag after applying mask.")
-        n_groups = min(self.n_groups, int(valid_counts.min().item()))
 
         outputs: list[AggregatorOutput] = []
         all_indices = torch.arange(bag_size, device=X.device)
         for batch_idx in range(B):
             original_indices = all_indices[valid_mask[batch_idx]]
             valid_tiles = X[batch_idx, original_indices, :]
+            # Pseudo-bags are counted per bag, never from the smallest bag in the batch:
+            # a bag's partition (and so its prediction) must not depend on its batch.
+            n_groups = min(self.n_groups, int(valid_counts[batch_idx]))
             outputs.append(
                 self._forward_one(
                     valid_tiles,
@@ -231,17 +233,26 @@ class DTFDMIL(Aggregator):
                 )
             )
 
-        pseudo_predictions = [
-            output.auxiliary["pseudo_predictions"]
-            for output in outputs
-            if output.auxiliary is not None
-        ]
+        # Bags in a batch can have different pseudo-bag counts: pad the tier-1
+        # predictions along the group axis and mark the real groups.
+        pseudo_predictions = [output.auxiliary["pseudo_predictions"] for output in outputs]
+        max_groups = max(pred.size(1) for pred in pseudo_predictions)
+        pseudo_mask = torch.zeros(B, max_groups, dtype=torch.bool, device=X.device)
+        padded = []
+        for batch_idx, pred in enumerate(pseudo_predictions):
+            n_groups = pred.size(1)
+            pseudo_mask[batch_idx, :n_groups] = True
+            pad = [0, 0] * (pred.ndim - 2) + [0, max_groups - n_groups]
+            padded.append(F.pad(pred, pad))
         return AggregatorOutput(
             bag_representation=torch.cat(
                 [output.bag_representation for output in outputs], dim=0
             ),
             tile_attention=torch.cat([output.tile_attention for output in outputs], dim=0),
-            auxiliary={"pseudo_predictions": torch.cat(pseudo_predictions, dim=0)},
+            auxiliary={
+                "pseudo_predictions": torch.cat(padded, dim=0),
+                "pseudo_mask": pseudo_mask,
+            },
         )
 
     @property
@@ -254,18 +265,29 @@ class DTFDMIL(Aggregator):
         labels: Tensor,
         mask: Tensor | None = None,
     ) -> Tensor:
-        """Pseudo-bag prediction loss (DTFD-MIL tier-1 auxiliary objective)."""
+        """Pseudo-bag prediction loss (DTFD-MIL tier-1 auxiliary objective).
+
+        Averaged over each bag's own pseudo-bags, then over bags, so a bag's weight
+        does not depend on how many pseudo-bags it was split into.
+        """
         pseudo_pred = auxiliary["pseudo_predictions"]
-        n_groups = pseudo_pred.size(1)
+        B, n_groups = pseudo_pred.shape[:2]
+        pseudo_mask = auxiliary.get("pseudo_mask")
+        if pseudo_mask is None:
+            pseudo_mask = torch.ones(B, n_groups, dtype=torch.bool, device=pseudo_pred.device)
         if self._auxiliary_mode == "binary":
             targets = labels.float().unsqueeze(1).expand(-1, n_groups)
-            return F.binary_cross_entropy_with_logits(pseudo_pred, targets)
-        if self._auxiliary_mode == "multiclass":
+            losses = F.binary_cross_entropy_with_logits(pseudo_pred, targets, reduction="none")
+        elif self._auxiliary_mode == "multiclass":
             targets = labels.long().unsqueeze(1).expand(-1, n_groups).reshape(-1)
             logits = pseudo_pred.reshape(-1, pseudo_pred.size(-1))
-            return F.cross_entropy(logits, targets)
-        targets = labels.float().unsqueeze(1).expand_as(pseudo_pred)
-        return F.mse_loss(pseudo_pred, targets)
+            losses = F.cross_entropy(logits, targets, reduction="none").reshape(B, n_groups)
+        else:
+            targets = labels.float().unsqueeze(1).expand_as(pseudo_pred)
+            losses = F.mse_loss(pseudo_pred, targets, reduction="none")
+        weights = pseudo_mask.float()
+        per_bag = (losses * weights).sum(dim=1) / weights.sum(dim=1)
+        return per_bag.mean()
 
 
 aggregator_registry.register("dtfdmil", DTFDMIL)
