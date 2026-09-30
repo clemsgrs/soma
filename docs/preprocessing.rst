@@ -65,7 +65,7 @@ Read-size fields such as ``read_tile_size_px`` are derived internally.
 
 Declared pooled extraction encodes exactly ``requested_tile_size_px``, applying
 only the encoder's photometric transform after tiling. Defaults describe the
-final model input: GigaPath uses 224 px, DINOv2 518 px, and DINOv3 256 px. At
+final model input: GigaPath uses 224 px, DINOv2 224 px, and DINOv3 256 px. At
 fixed spacing, changing this size changes the sampled physical extent.
 
 An explicit off-preset pooled size requires
