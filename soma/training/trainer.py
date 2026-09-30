@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections.abc import Callable
@@ -21,6 +22,8 @@ from rich.text import Text
 from soma.atomic_io import atomic_torch_save
 from soma.config import TrainingConfig
 from soma.evaluation.metrics import metric_higher_is_better
+
+logger = logging.getLogger(__name__)
 
 
 def model_input_device(model: torch.nn.Module, default: torch.device | str) -> torch.device:
@@ -69,6 +72,11 @@ class Trainer:
     ``config.patience`` epochs without improvement), ``last`` keeps the final epoch
     and never early-stops, while still evaluating the tune split every epoch so the
     history carries per-epoch diagnostics.
+
+    Patience only starts counting once the monitor has left its epoch-1 value, so a
+    thresholded metric that sits at its floor while the model warms up (detection F1
+    at a fixed score threshold) cannot stop a run before it has produced any signal.
+    A run whose monitor never moves trains to the epoch cap and logs a warning.
 
     Pure PyTorch training loop — no external frameworks needed.
 
@@ -125,6 +133,13 @@ class Trainer:
         selected_epoch = 0
         selected_tune_metrics: dict[str, float] = {}
         patience_counter = 0
+        # Patience only counts once the monitor has left its first-epoch value. A
+        # thresholded metric (detection F1 at a fixed score threshold) sits exactly at
+        # its floor until the model's outputs clear the threshold; counting those epochs
+        # stops a slow-warming run before it has produced a single detection. A monitor
+        # that moves early (either direction) is unaffected.
+        first_monitor_value: float | None = None
+        monitor_moved = False
         started_at = time.perf_counter()
         select_last = self._config.checkpoint_selection == "last"
         patience = self._config.patience
@@ -303,6 +318,10 @@ class Trainer:
                         _raise_non_finite_monitor(
                             self._config.monitor, monitor_value, epoch, self._fold
                         )
+                    if first_monitor_value is None:
+                        first_monitor_value = monitor_value
+                    elif monitor_value != first_monitor_value:
+                        monitor_moved = True
                     improved = _is_monitor_improvement(
                         monitor_value,
                         selected_monitor_value,
@@ -336,6 +355,8 @@ class Trainer:
                         selection=selection,
                     )
                     status = f"new selected checkpoint saved at epoch {epoch + 1}"
+                elif not monitor_moved:
+                    status = f"{monitor_name} unchanged since epoch 1 (patience not started)"
                 else:
                     patience_counter += 1
                     status = f"no improvement ({patience_counter}/{_format_patience(patience)})"
@@ -376,6 +397,15 @@ class Trainer:
                     optimizer_steps=self._optimizer_steps,
                 ),
                 refresh=True,
+            )
+
+        if not select_last and len(history) > 1 and not monitor_moved:
+            logger.warning(
+                "%s never left its epoch-1 value (%s) in %d epochs; the selected "
+                "checkpoint is epoch 1.",
+                monitor_name,
+                first_monitor_value,
+                len(history),
             )
 
         return TrainResult(
