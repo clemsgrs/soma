@@ -133,11 +133,12 @@ class Trainer:
         selected_epoch = 0
         selected_tune_metrics: dict[str, float] = {}
         patience_counter = 0
-        # Patience only counts once the monitor has left its first-epoch value. A
+        # Early stopping is held while the monitor still equals its first-epoch value. A
         # thresholded metric (detection F1 at a fixed score threshold) sits exactly at
-        # its floor until the model's outputs clear the threshold; counting those epochs
-        # stops a slow-warming run before it has produced a single detection. A monitor
-        # that moves early (either direction) is unaffected.
+        # its floor until the model's outputs clear the threshold; stopping during that
+        # plateau ends a slow-warming run before it has produced a single detection.
+        # Patience still counts the plateau, so a run that stops within its original
+        # patience window stops at the same epoch as before.
         first_monitor_value: float | None = None
         monitor_moved = False
         started_at = time.perf_counter()
@@ -355,16 +356,21 @@ class Trainer:
                         selection=selection,
                     )
                     status = f"new selected checkpoint saved at epoch {epoch + 1}"
-                elif not monitor_moved:
-                    status = f"{monitor_name} unchanged since epoch 1 (patience not started)"
                 else:
                     patience_counter += 1
                     status = f"no improvement ({patience_counter}/{_format_patience(patience)})"
+                    if not monitor_moved:
+                        status += f"; {monitor_name} unchanged since epoch 1, early stopping held"
 
                 current_status = status
                 render_panel()
 
-                if not improved and patience is not None and patience_counter >= patience:
+                if (
+                    not improved
+                    and monitor_moved
+                    and patience is not None
+                    and patience_counter >= patience
+                ):
                     current_status = "early stopping triggered"
                     render_panel()
                     break

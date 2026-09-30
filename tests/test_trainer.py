@@ -833,7 +833,7 @@ class TestPeakPerMetric:
 
 
 class TestPatienceWarmup:
-    """Patience starts only once the monitor leaves its epoch-1 value.
+    """Early stopping is held while the monitor still equals its epoch-1 value.
 
     A detection F1 read at a fixed score threshold is exactly 0 until the heatmap
     peaks clear it; counting those epochs early-stopped slow-warming runs at a model
@@ -886,6 +886,20 @@ class TestPatienceWarmup:
 
         assert result.selected_epoch == 0
         assert len(result.history) == 3
+
+    def test_initial_tie_then_worsening_stops_as_before(self, tmp_path: Path):
+        values = [0.5, 0.5, 0.4, 0.9, 0.8, 0.7]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 3
+
+    def test_plateau_past_patience_then_worsening_stops_at_first_move(self, tmp_path: Path):
+        values = [0.5, 0.5, 0.5, 0.5, 0.4, 0.9]
+        result = self._fit(tmp_path, values, patience=2)
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 5
 
     def test_monitor_that_never_moves_runs_to_the_cap_and_warns(self, tmp_path: Path, caplog):
         values = [0.0] * 6
