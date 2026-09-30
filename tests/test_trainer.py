@@ -833,7 +833,7 @@ class TestPeakPerMetric:
 
 
 class TestPatienceWarmup:
-    """Early stopping is held while the monitor still equals its epoch-1 value.
+    """Early stopping is held while the monitor still equals its first-evaluation value.
 
     A detection F1 read at a fixed score threshold is exactly 0 until the heatmap
     peaks clear it; counting those epochs early-stopped slow-warming runs at a model
@@ -908,4 +908,112 @@ class TestPatienceWarmup:
 
         assert result.selected_epoch == 0
         assert len(result.history) == len(values)
-        assert "never left its epoch-1 value" in caplog.text
+        assert "never left its first-evaluation value" in caplog.text
+
+
+class TestTuneEveryNEpochs:
+    """``tune_every_n_epochs`` evaluates tune after epochs N, 2N, ... and the last epoch."""
+
+    def _fit(
+        self, tmp_path: Path, monitor_values, *, epochs, every, patience, max_steps=None
+    ):
+        from torch.utils.data import DataLoader
+
+        seed_everything(0)
+        loader = DataLoader(
+            _anticorrelated_bags(flip=False), batch_size=2, collate_fn=_CLS_COLLATE
+        )
+        config = TrainingConfig(
+            epochs=epochs,
+            max_steps=max_steps,
+            learning_rate=1e-3,
+            scheduler="cosine",
+            patience=patience,
+            monitor="auroc",
+            monitor_mode="max",
+            tune_every_n_epochs=every,
+        )
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=loader,
+            tune_loader=loader,
+            config=config,
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        scripted = iter(monitor_values)
+        calls = []
+
+        def fake_tune(**_):
+            calls.append(1)
+            return 1.0, {"auroc": next(scripted)}
+
+        trainer._tune = fake_tune
+        return trainer.fit(), len(calls), trainer
+
+    def test_tune_runs_only_on_every_nth_epoch(self, tmp_path: Path):
+        result, n_calls, trainer = self._fit(
+            tmp_path, [0.1, 0.3, 0.2], epochs=9, every=3, patience=None
+        )
+
+        assert n_calls == 3
+        assert [log.epoch for log in result.history] == [2, 5, 8]
+        assert result.selected_epoch == 5
+        # The scheduler still advances once per trained epoch: cosine over 9 epochs ends at 0.
+        assert trainer._optimizer.param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-12)
+
+    def test_patience_counts_evaluations(self, tmp_path: Path):
+        result, n_calls, _ = self._fit(
+            tmp_path, [0.5, 0.4, 0.3, 0.2, 0.1], epochs=10, every=2, patience=2
+        )
+
+        assert n_calls == 3
+        assert [log.epoch for log in result.history] == [1, 3, 5]
+        assert result.selected_epoch == 1
+
+    def test_final_epoch_is_evaluated_off_cadence(self, tmp_path: Path):
+        result, n_calls, _ = self._fit(
+            tmp_path, [0.1, 0.2, 0.3], epochs=7, every=3, patience=None
+        )
+
+        assert n_calls == 3
+        assert [log.epoch for log in result.history] == [2, 5, 6]
+        assert result.selected_epoch == 6
+
+    def test_budget_shorter_than_cadence_still_saves_a_checkpoint(self, tmp_path: Path):
+        result, n_calls, _ = self._fit(
+            tmp_path, [0.4], epochs=2, every=3, patience=None
+        )
+
+        assert n_calls == 1
+        assert [log.epoch for log in result.history] == [1]
+        assert result.checkpoint_path.exists()
+
+    def test_step_budget_shorter_than_cadence_still_saves_a_checkpoint(
+        self, tmp_path: Path
+    ):
+        result, n_calls, _ = self._fit(
+            tmp_path, [0.4], epochs=None, every=5, patience=None, max_steps=2
+        )
+
+        assert n_calls == 1
+        assert len(result.history) == 1
+        assert result.checkpoint_path.exists()
+
+    def test_every_one_evaluates_each_epoch(self, tmp_path: Path):
+        result, n_calls, _ = self._fit(
+            tmp_path, [0.1, 0.2, 0.3, 0.4], epochs=4, every=1, patience=None
+        )
+
+        assert n_calls == 4
+        assert [log.epoch for log in result.history] == [0, 1, 2, 3]
+
+
+class TestTuneEveryNEpochsConfig:
+    def test_rejects_non_positive(self):
+        with pytest.raises(ValueError, match="tune_every_n_epochs must be >= 1"):
+            TrainingConfig(tune_every_n_epochs=0)
+
+    def test_rejects_last_selection(self):
+        with pytest.raises(ValueError, match="tune_every_n_epochs must be 1"):
+            TrainingConfig(checkpoint_selection="last", patience=None, tune_every_n_epochs=2)

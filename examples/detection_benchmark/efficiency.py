@@ -203,7 +203,7 @@ def write_split_variant(
 
 
 def recipe_scale(full_n: int, n: int, *, floor_divisor: int = STEP_FLOOR_DIVISOR) -> int:
-    """The integer multiplier for ``epochs``/``patience`` at rung ``n``.
+    """The integer multiplier for ``epochs`` and the tune-evaluation cadence at rung ``n``.
 
     ``max(1, ceil((full_n / floor_divisor) / n))`` — rungs at or above ``full/divisor`` run
     the committed recipe verbatim; smaller rungs are stretched so they see at least as many
@@ -219,11 +219,19 @@ def scaled_recipe(
     full_n: int, n: int, *, epochs: int, patience: int | None,
     floor_divisor: int = STEP_FLOOR_DIVISOR,
 ) -> dict[str, int]:
-    """``{"epochs", "patience", "scale"}`` for rung ``n`` (patience omitted when off)."""
+    """``{"epochs", "patience", "tune_every", "scale"}`` for rung ``n`` (patience omitted when off).
+
+    A stretched rung trains ``scale`` times the epochs but evaluates tune only every
+    ``scale`` epochs, so every rung gets at most ``epochs`` tune evaluations -- the same
+    number of looks at tune as the full rung, instead of ``scale`` times more (more looks
+    make tune selection more optimistic at exactly the rungs being compared, and tune
+    evaluation dominates small-rung cost). ``patience`` counts evaluations, so it is left
+    unscaled and still spans ``patience * scale`` epochs.
+    """
     scale = recipe_scale(full_n, n, floor_divisor=floor_divisor)
-    out = {"epochs": int(epochs) * scale, "scale": scale}
+    out = {"epochs": int(epochs) * scale, "tune_every": scale, "scale": scale}
     if patience is not None:
-        out["patience"] = int(patience) * scale
+        out["patience"] = int(patience)
     return out
 
 

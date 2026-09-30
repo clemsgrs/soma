@@ -155,7 +155,7 @@ def test_canonical_experiment_payload_names_checkpoint_selection_unconditionally
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
     assert payload["training"]["checkpoint_selection"] == "best"
-    assert payload["identity_version"] == 2
+    assert payload["identity_version"] == 3
 
 
 def test_canonical_epoch_experiment_payload_names_null_step_budget(tmp_path: Path):
@@ -681,8 +681,8 @@ def test_run_manifest_records_identity_version(tmp_path: Path):
         config=config, experiment=layout.experiment, run_dir=layout.run_dir,
         run_id=layout.run_id, status="running",
     )
-    assert run.to_dict()["identity_version"] == 2
-    assert layout.experiment.to_dict()["identity_version"] == 2
+    assert run.to_dict()["identity_version"] == 3
+    assert layout.experiment.to_dict()["identity_version"] == 3
 
 
 def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, monkeypatch):

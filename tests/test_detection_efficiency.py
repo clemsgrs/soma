@@ -157,9 +157,14 @@ def test_recipe_scale_floor_at_full_over_eight(full_n, n, expected):
     assert recipe_scale(full_n, n) == expected
 
 
-def test_scaled_recipe_scales_epochs_and_patience_together():
-    assert scaled_recipe(400, 8, epochs=50, patience=10) == {"epochs": 350, "patience": 70, "scale": 7}
-    assert scaled_recipe(400, 256, epochs=50, patience=None) == {"epochs": 50, "scale": 1}
+def test_scaled_recipe_stretches_epochs_and_tune_cadence_together():
+    # Patience counts tune evaluations, so it stays unscaled and spans 10 * 7 epochs.
+    assert scaled_recipe(400, 8, epochs=50, patience=10) == {
+        "epochs": 350, "patience": 10, "tune_every": 7, "scale": 7,
+    }
+    assert scaled_recipe(400, 256, epochs=50, patience=None) == {
+        "epochs": 50, "tune_every": 1, "scale": 1,
+    }
     with pytest.raises(ValueError):
         recipe_scale(0, 8)
 
@@ -295,6 +300,15 @@ def _write_cell(root: Path, dataset: str, encoder: str, rep: int, value: float, 
         run = d / "experiments" / "exp" / "runs" / "r"
         run.mkdir(parents=True)
         (run / "training_history.json").write_text(json.dumps({"epochs": [{"epoch": i} for i in range(epochs)]}))
+
+
+def test_driver_realized_epochs_counts_by_last_evaluated_epoch(tmp_path: Path):
+    # tune_every_n_epochs > 1 leaves one history row per tune evaluation (epochs 6, 13, 20).
+    m = _load_driver()
+    run = tmp_path / "experiments" / "exp" / "runs" / "r"
+    run.mkdir(parents=True)
+    (run / "training_history.json").write_text(json.dumps({"epochs": [{"epoch": e} for e in (6, 13, 20)]}))
+    assert m.realized_epochs(tmp_path) == 21
 
 
 def test_driver_full_references_sweep_then_report_fallback(tmp_path: Path):

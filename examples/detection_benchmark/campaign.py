@@ -837,7 +837,12 @@ def realized_epochs(cell_directory: Path) -> int | None:
         return None
     data = json.loads(hits[-1].read_text(encoding="utf-8"))
     epochs = data.get("epochs", data) if isinstance(data, dict) else data
-    return len(epochs) if isinstance(epochs, list) else None
+    if not isinstance(epochs, list) or not epochs:
+        return None
+    # One history row per tune evaluation (``tune_every_n_epochs``), so count by the last
+    # row's epoch index rather than the number of rows.
+    last = epochs[-1]
+    return int(last["epoch"]) + 1 if isinstance(last, dict) and "epoch" in last else len(epochs)
 
 
 def full_references(
@@ -1019,7 +1024,7 @@ def run_efficiency(
                     print(f"{tag} metrics cached, skip")
                     continue
                 if dry_run:
-                    print(f"{tag} would train+score (epochs={scaled['epochs']}, "
+                    print(f"{tag} would train+score (epochs={scaled['epochs']}, tune every {scaled['tune_every']}, "
                           f"train samples={variant.n_train_samples}, objects={variant.n_train_objects})")
                     continue
                 if not training_done(rung_root, dataset, entry.name, seed):
@@ -1027,6 +1032,7 @@ def run_efficiency(
                         f"data.dataset_csv={variant.dataset_path}",
                         f"data.splits_csv={variant.path}",
                         f"training.epochs={scaled['epochs']}",
+                        f"training.tune_every_n_epochs={scaled['tune_every']}",
                     ]
                     if "patience" in scaled:
                         sets.append(f"training.patience={scaled['patience']}")

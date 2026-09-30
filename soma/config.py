@@ -1183,6 +1183,10 @@ class TrainingConfig:
     is used for both checkpoint selection and test reporting. ``allow_missing_tune``
     enables a deliberate train-as-tune fallback when a fold has no tune split.
 
+    ``tune_every_n_epochs`` evaluates the tune split after every N-th epoch and after the
+    final epoch, for budgets where tune evaluation dominates the epoch cost; ``patience``
+    then counts tune evaluations rather than epochs.
+
     ``checkpoint_selection`` governs *which* epoch's weights are evaluated. ``best``
     (default) is the historical behavior: select by the monitored tune metric, with
     early stopping. ``last`` evaluates the **final-epoch** weights — model selection
@@ -1214,9 +1218,15 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     optimizer: str = "adam"
     scheduler: str = "cosine"
-    # Early-stopping patience in epochs, or ``None`` to disable early stopping and always
-    # train the full ``epochs`` budget. ``checkpoint_selection='last'`` *requires* ``None``.
+    # Early-stopping patience in tune evaluations (epochs, when ``tune_every_n_epochs`` is 1),
+    # or ``None`` to disable early stopping and always train the full ``epochs`` budget.
+    # ``checkpoint_selection='last'`` *requires* ``None``.
     patience: int | None = 10
+    # Evaluate the tune split after every N-th epoch (epochs N, 2N, ...) and after the
+    # final epoch of the budget. Checkpoint selection and early stopping see only
+    # evaluated epochs, so ``patience`` spans ``patience * N`` epochs. Requires
+    # ``checkpoint_selection='best'``.
+    tune_every_n_epochs: int = 1
     # Per-fold trainer selector within the shared training entry. ``"gradient"`` is the
     # default torch-based head/decoder loop; ``"ridge_pca_probe"`` selects the closed-form
     # Ridge+PCA probe (the HEST spatial_expression trainer — no gradient descent, no tune
@@ -1322,6 +1332,14 @@ class TrainingConfig:
             raise ValueError(
                 "TrainingConfig.method must be 'gradient' (torch head/decoder loop) or "
                 f"'ridge_pca_probe' (closed-form probe), got {self.method!r}."
+            )
+        if self.tune_every_n_epochs < 1:
+            raise ValueError("TrainingConfig.tune_every_n_epochs must be >= 1")
+        if self.checkpoint_selection == "last" and self.tune_every_n_epochs != 1:
+            raise ValueError(
+                "TrainingConfig.checkpoint_selection='last' keeps the final-epoch weights "
+                "and records tune metrics every epoch as diagnostics; "
+                "tune_every_n_epochs must be 1."
             )
         if self.checkpoint_selection == "last" and self.patience is not None:
             raise ValueError(

@@ -496,21 +496,22 @@ def _add_mean_band(
     if not folds_with_history:
         return
 
-    n_epochs = max(len(fd.training_history) for fd in folds_with_history)
-    epochs = list(range(n_epochs))
+    # History rows carry their true epoch; a run that evaluates tune every N epochs
+    # has sparse rows, so align folds on the epoch index rather than the row position.
+    epochs = sorted({e["epoch"] for fd in folds_with_history for e in fd.training_history})
     per_fold_values = []
 
     for fd in folds_with_history:
         if key is not None:
-            vals = [e[key] for e in fd.training_history]
+            by_epoch = {e["epoch"]: e[key] for e in fd.training_history}
         else:
-            vals = [e["tune_metrics"].get(metric_name) for e in fd.training_history]
-            if all(v is None for v in vals):
+            by_epoch = {
+                e["epoch"]: e["tune_metrics"].get(metric_name) for e in fd.training_history
+            }
+            if all(v is None for v in by_epoch.values()):
                 continue
-            vals = [v if v is not None else float("nan") for v in vals]
-        if len(vals) < n_epochs:
-            vals = vals + [float("nan")] * (n_epochs - len(vals))
-        per_fold_values.append(vals)
+        vals = [by_epoch.get(epoch) for epoch in epochs]
+        per_fold_values.append([v if v is not None else float("nan") for v in vals])
 
     if not per_fold_values:
         return

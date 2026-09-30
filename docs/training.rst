@@ -15,8 +15,11 @@ to match the selected budget.
 
 ``checkpoint_selection: best`` selects weights using ``monitor`` and
 ``monitor_mode`` (default: minimize tune loss). ``patience`` controls early
-stopping; ``null`` disables it. ``checkpoint_selection: last`` evaluates weights
-at the end of the budget and requires ``patience: null``. Tune metrics are still
+stopping; ``null`` disables it. ``tune_every_n_epochs: N`` evaluates the tune
+split after every N-th epoch and after the final epoch, for runs where tune
+evaluation dominates the epoch cost; selection and ``patience`` then count tune
+evaluations, not epochs. ``checkpoint_selection: last`` evaluates weights at the
+end of the budget and requires ``patience: null``. Tune metrics are still
 recorded for diagnostics.
 
 By default, training requires a tune split. Two explicit alternatives

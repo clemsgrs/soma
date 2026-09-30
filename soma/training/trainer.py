@@ -73,9 +73,13 @@ class Trainer:
     and never early-stops, while still evaluating the tune split every epoch so the
     history carries per-epoch diagnostics.
 
-    Patience only starts counting once the monitor has left its epoch-1 value, so a
-    thresholded metric that sits at its floor while the model warms up (detection F1
-    at a fixed score threshold) cannot stop a run before it has produced any signal.
+    ``config.tune_every_n_epochs`` evaluates the tune split after every N-th epoch
+    and after the final epoch of the budget; ``history`` then holds one entry per
+    evaluation (each carrying its true ``epoch``), and patience counts evaluations.
+
+    Early stopping is held while the monitor still equals its first-evaluation value,
+    so a thresholded metric that sits at its floor while the model warms up (detection
+    F1 at a fixed score threshold) cannot stop a run before it has produced any signal.
     A run whose monitor never moves trains to the epoch cap and logs a warning.
 
     Pure PyTorch training loop — no external frameworks needed.
@@ -133,8 +137,8 @@ class Trainer:
         selected_epoch = 0
         selected_tune_metrics: dict[str, float] = {}
         patience_counter = 0
-        # Early stopping is held while the monitor still equals its first-epoch value. A
-        # thresholded metric (detection F1 at a fixed score threshold) sits exactly at
+        # Early stopping is held while the monitor still equals its first-evaluation
+        # value. A thresholded metric (detection F1 at a fixed score threshold) sits exactly at
         # its floor until the model's outputs clear the threshold; stopping during that
         # plateau ends a slow-warming run before it has produced a single detection.
         # Patience still counts the plateau, so a run that stops within its original
@@ -144,6 +148,7 @@ class Trainer:
         started_at = time.perf_counter()
         select_last = self._config.checkpoint_selection == "last"
         patience = self._config.patience
+        tune_every = self._config.tune_every_n_epochs
         # Under `last` the configured monitor selects nothing, so labelling the panel's
         # tracked value with it would misreport which quantity is shown.
         monitor_name = "tune_loss" if select_last else self._config.monitor
@@ -257,17 +262,22 @@ class Trainer:
                     max_updates=remaining_updates,
                 )
 
-                current_subtitle = f"epoch {epoch + 1}/{total_epochs} | tune"
-                current_status = "evaluating tune split"
-                render_panel()
-                tune_loss, tune_metrics = self._tune(on_batch_progress=on_batch_progress)
+                # Tune is evaluated after epochs N, 2N, ... and after the final epoch, so
+                # every budget ends on an evaluation; selection and patience see evaluated
+                # epochs alone (``TrainingConfig.tune_every_n_epochs``).
+                evaluate_tune = (epoch + 1) % tune_every == 0 or epoch + 1 == total_epochs
+                if evaluate_tune:
+                    current_subtitle = f"epoch {epoch + 1}/{total_epochs} | tune"
+                    current_status = "evaluating tune split"
+                    render_panel()
+                    tune_loss, tune_metrics = self._tune(on_batch_progress=on_batch_progress)
 
                 lr = self._optimizer.param_groups[0]["lr"]
                 if self._scheduler is not None and self._config.max_steps is None:
                     self._scheduler.step()
 
                 elapsed_seconds = time.perf_counter() - started_at
-                completed_epochs = len(history) + 1
+                completed_epochs = epoch + 1
                 avg_epoch_seconds = elapsed_seconds / completed_epochs
                 if self._config.max_steps is None:
                     remaining_epochs = max(total_epochs - completed_epochs, 0)
@@ -280,6 +290,11 @@ class Trainer:
                     eta_seconds = avg_step_seconds * remaining_steps
                 current_avg_epoch_seconds = avg_epoch_seconds
                 current_eta_seconds = eta_seconds
+
+                if not evaluate_tune:
+                    current_status = f"tune evaluated every {tune_every} epochs"
+                    render_panel()
+                    continue
 
                 current_log = log = EpochLog(
                     epoch=epoch,
@@ -360,7 +375,7 @@ class Trainer:
                     patience_counter += 1
                     status = f"no improvement ({patience_counter}/{_format_patience(patience)})"
                     if not monitor_moved:
-                        status += f"; {monitor_name} unchanged since epoch 1, early stopping held"
+                        status += f"; {monitor_name} unchanged since first tune evaluation, early stopping held"
 
                 current_status = status
                 render_panel()
@@ -407,11 +422,12 @@ class Trainer:
 
         if not select_last and len(history) > 1 and not monitor_moved:
             logger.warning(
-                "%s never left its epoch-1 value (%s) in %d epochs; the selected "
-                "checkpoint is epoch 1.",
+                "%s never left its first-evaluation value (%s) over %d tune evaluations; "
+                "the selected checkpoint is epoch %d.",
                 monitor_name,
                 first_monitor_value,
                 len(history),
+                selected_epoch + 1,
             )
 
         return TrainResult(
