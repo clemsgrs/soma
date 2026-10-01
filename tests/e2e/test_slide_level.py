@@ -253,6 +253,6 @@ def test_flat_png_slides_render_their_previews(cohort, tmp_path, encoder_name, n
     artifact.check_training_reduced_loss("run", run)
     artifact.check_at_least("test/auroc", run.summary["test/auroc"], 0.95)
     for kind in ("mask", "tiling"):
-        previews = list((tmp_path / "cache").glob(f"**/{kind}/*.jpg"))
+        previews = list(tmp_path.glob(f"tiling_cache/*/previews/{kind}/*.jpg"))
         artifact.check_equal(f"previews/{kind}", len(previews), len(cohort.sample_ids))
     artifact.assert_passed()
