@@ -864,6 +864,8 @@ def test_build_preprocessing_config_accounts_for_slide2vec_surface():
         "read_coordinates_from",
         "read_tiles_from",
         "resume",
+        # Tile archives soma never reads; slide2vec writes one anyway when on_the_fly is off.
+        "save_tiles",
     }
     # Annotation-restricted merged bag (#110): the pooled adapter now forwards the full
     # masks block + the independent_sampling toggle (derived from sampling.strategy) when a

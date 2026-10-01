@@ -1,5 +1,20 @@
 # Changelog
 
+- 2026-10-01: Require hs2p 5.1.0 and slide2vec 6.3.1. Flat PNG/JPEG slides
+  (with `spacing_at_level_0` in `dataset.csv`) now run end to end with the default
+  mask and tiling previews; before, previews failed the slide and pooled extraction
+  failed with `Unknown backend: 'pil'`. `mask_backend: auto` now reads TIFF masks
+  that store samples other than 8-bit unsigned (16-bit labels, for example) with
+  the new lossless `tifffile` reader; the other readers decoded those values wrong,
+  and now refuse such masks. Fresh tilings can differ from hs2p 5.0.2 ones: the
+  tissue ring around a hole counts as tissue again, so tiles next to holes can
+  pass `min_coverage`, and runs with `overlap > 0` read above level 0 place tiles
+  on a slightly different stride. Tiling cache keys depend only on the
+  configuration, so tilings cached with hs2p 5.0.2 are reused; delete the tiling
+  cache to re-tile. The `gigapath-slide` encoder now runs in eval mode (dropout was
+  active before), so its embeddings change; delete slide feature caches written
+  with it and extract again.
+
 - 2026-09-28: Require slide2vec 6.1.1, which requires hs2p 5.0.2 like soma
   already does. No behavior change in soma.
 

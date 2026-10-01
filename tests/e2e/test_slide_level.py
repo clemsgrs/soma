@@ -229,3 +229,30 @@ def test_cross_validated_aggregators_are_ranked_on_a_leaderboard(
             run.summary["test/auroc_mean"],
         )
     artifact.assert_passed()
+
+
+def test_flat_png_slides_render_their_previews(cohort, tmp_path, encoder_name, new_artifact):
+    """PNG slides take their spacing from the manifest, previews included.
+
+    Both previews are on by default and reopen each slide; one that drops the
+    manifest's ``spacing_at_level_0`` cannot open a PNG and fails the slide.
+    """
+    artifact = new_artifact("slide_mil_flat_png")
+    config = _config(
+        cohort,
+        tmp_path,
+        encoder_name,
+        task={"name": "binary_classification"},
+        metrics=["auroc"],
+        cache_root=tmp_path / "cache",
+    )
+    config["data"]["dataset_csv"] = str(cohort.flat_manifest("binary_classification"))
+    config["preprocessing"]["backend"] = "auto"
+    run = run_soma(config, tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("test/auroc", run.summary["test/auroc"], 0.95)
+    for kind in ("mask", "tiling"):
+        previews = list(tmp_path.glob(f"tiling_cache/*/previews/{kind}/*.jpg"))
+        artifact.check_equal(f"previews/{kind}", len(previews), len(cohort.sample_ids))
+    artifact.assert_passed()

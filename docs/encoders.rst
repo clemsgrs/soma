@@ -134,6 +134,10 @@ Tile-level encoders
      - `Mascaret <https://huggingface.co/wearewaiv/mascaret>`_
      - 1536
      - ``0.5``
+   * - ``mettle``
+     - `Mettle <https://huggingface.co/slideflow-labs/Mettle>`_
+     - 1536 / 3072
+     - ``0.5``
    * - ``midnight``
      - `Midnight <https://huggingface.co/kaiko-ai/midnight>`_
      - 3072
