@@ -1,6 +1,7 @@
 """DTFD-MIL — Double-Tier Feature Distillation MIL (Zhang et al., 2022).
 
 The two-tier mechanism:
+0. Project tile features into a learned embedding (the reference's ``DimReduction``).
 1. Randomly partition bag into pseudo-bags.
 2. Tier 1: AttentionPool each pseudo-bag, compute Grad-CAM importance.
 3. Feature distillation: select important instances based on CAM scores.
@@ -24,6 +25,11 @@ class DTFDMIL(Aggregator):
 
     Args:
         input_dim: Feature dimension of input tiles.
+        embed_dim: Width of the learned tile embedding every later step works in (the
+            reference's ``DimReduction`` to ``mDim`` = 512). Without it, pseudo-bag
+            pooling, CAM scoring and distillation all act on frozen encoder features,
+            and the default max-min distillation fails to learn even a task where one
+            marker tile decides the label.
         hidden_dim: Attention bottleneck dimension.
         n_groups: Number of pseudo-bags to partition into.
         distill_mode: Feature distillation mode ('maxmin', 'max', 'afs').
@@ -42,6 +48,7 @@ class DTFDMIL(Aggregator):
     def __init__(
         self,
         input_dim: int,
+        embed_dim: int = 512,
         hidden_dim: int = 128,
         n_groups: int = 8,
         distill_mode: str = "maxmin",
@@ -58,7 +65,7 @@ class DTFDMIL(Aggregator):
                 f"instances_per_group must be >= 1, got {instances_per_group}"
             )
 
-        self._input_dim = input_dim
+        self._embed_dim = embed_dim
         self.n_groups = n_groups
         self.distill_mode = distill_mode
         self.instances_per_group = instances_per_group
@@ -66,19 +73,20 @@ class DTFDMIL(Aggregator):
         self._t1_output_dim = 1
 
         self.dropout = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.embed = nn.Sequential(nn.Linear(input_dim, embed_dim), nn.ReLU())
 
         # Tier 1: pseudo-bag aggregation + classifier (for Grad-CAM)
-        self.t1_pool = AttentionPool(input_dim=input_dim, hidden_dim=hidden_dim)
-        self.t1_classifier = nn.Linear(input_dim, 1)
+        self.t1_pool = AttentionPool(input_dim=embed_dim, hidden_dim=hidden_dim)
+        self.t1_classifier = nn.Linear(embed_dim, 1)
 
         # Tier 2: distilled feature aggregation
-        self.t2_pool = AttentionPool(input_dim=input_dim, hidden_dim=hidden_dim)
+        self.t2_pool = AttentionPool(input_dim=embed_dim, hidden_dim=hidden_dim)
 
     def _set_t1_output_dim(self, output_dim: int) -> None:
         if output_dim == self._t1_output_dim:
             return
         old_classifier = self.t1_classifier
-        new_classifier = nn.Linear(self._input_dim, output_dim)
+        new_classifier = nn.Linear(self._embed_dim, output_dim)
         new_classifier.to(
             device=old_classifier.weight.device,
             dtype=old_classifier.weight.dtype,
@@ -202,7 +210,7 @@ class DTFDMIL(Aggregator):
     def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
         B, bag_size, _ = X.shape
 
-        X = self.dropout(X)
+        X = self.embed(self.dropout(X))
         if mask is None:
             valid_mask = torch.ones((B, bag_size), device=X.device, dtype=torch.bool)
         else:
@@ -215,13 +223,15 @@ class DTFDMIL(Aggregator):
         valid_counts = valid_mask.sum(dim=1)
         if (valid_counts == 0).any():
             raise ValueError("DTFD-MIL received an empty bag after applying mask.")
-        n_groups = min(self.n_groups, int(valid_counts.min().item()))
 
         outputs: list[AggregatorOutput] = []
         all_indices = torch.arange(bag_size, device=X.device)
         for batch_idx in range(B):
             original_indices = all_indices[valid_mask[batch_idx]]
             valid_tiles = X[batch_idx, original_indices, :]
+            # Pseudo-bags are counted per bag, never from the smallest bag in the batch:
+            # a bag's partition (and so its prediction) must not depend on its batch.
+            n_groups = min(self.n_groups, int(valid_counts[batch_idx]))
             outputs.append(
                 self._forward_one(
                     valid_tiles,
@@ -231,22 +241,31 @@ class DTFDMIL(Aggregator):
                 )
             )
 
-        pseudo_predictions = [
-            output.auxiliary["pseudo_predictions"]
-            for output in outputs
-            if output.auxiliary is not None
-        ]
+        # Bags in a batch can have different pseudo-bag counts: pad the tier-1
+        # predictions along the group axis and mark the real groups.
+        pseudo_predictions = [output.auxiliary["pseudo_predictions"] for output in outputs]
+        max_groups = max(pred.size(1) for pred in pseudo_predictions)
+        pseudo_mask = torch.zeros(B, max_groups, dtype=torch.bool, device=X.device)
+        padded = []
+        for batch_idx, pred in enumerate(pseudo_predictions):
+            n_groups = pred.size(1)
+            pseudo_mask[batch_idx, :n_groups] = True
+            pad = [0, 0] * (pred.ndim - 2) + [0, max_groups - n_groups]
+            padded.append(F.pad(pred, pad))
         return AggregatorOutput(
             bag_representation=torch.cat(
                 [output.bag_representation for output in outputs], dim=0
             ),
             tile_attention=torch.cat([output.tile_attention for output in outputs], dim=0),
-            auxiliary={"pseudo_predictions": torch.cat(pseudo_predictions, dim=0)},
+            auxiliary={
+                "pseudo_predictions": torch.cat(padded, dim=0),
+                "pseudo_mask": pseudo_mask,
+            },
         )
 
     @property
     def output_dim(self) -> int:
-        return self._input_dim
+        return self._embed_dim
 
     def compute_auxiliary_loss(
         self,
@@ -254,18 +273,29 @@ class DTFDMIL(Aggregator):
         labels: Tensor,
         mask: Tensor | None = None,
     ) -> Tensor:
-        """Pseudo-bag prediction loss (DTFD-MIL tier-1 auxiliary objective)."""
+        """Pseudo-bag prediction loss (DTFD-MIL tier-1 auxiliary objective).
+
+        Averaged over each bag's own pseudo-bags, then over bags, so a bag's weight
+        does not depend on how many pseudo-bags it was split into.
+        """
         pseudo_pred = auxiliary["pseudo_predictions"]
-        n_groups = pseudo_pred.size(1)
+        B, n_groups = pseudo_pred.shape[:2]
+        pseudo_mask = auxiliary.get("pseudo_mask")
+        if pseudo_mask is None:
+            pseudo_mask = torch.ones(B, n_groups, dtype=torch.bool, device=pseudo_pred.device)
         if self._auxiliary_mode == "binary":
             targets = labels.float().unsqueeze(1).expand(-1, n_groups)
-            return F.binary_cross_entropy_with_logits(pseudo_pred, targets)
-        if self._auxiliary_mode == "multiclass":
+            losses = F.binary_cross_entropy_with_logits(pseudo_pred, targets, reduction="none")
+        elif self._auxiliary_mode == "multiclass":
             targets = labels.long().unsqueeze(1).expand(-1, n_groups).reshape(-1)
             logits = pseudo_pred.reshape(-1, pseudo_pred.size(-1))
-            return F.cross_entropy(logits, targets)
-        targets = labels.float().unsqueeze(1).expand_as(pseudo_pred)
-        return F.mse_loss(pseudo_pred, targets)
+            losses = F.cross_entropy(logits, targets, reduction="none").reshape(B, n_groups)
+        else:
+            targets = labels.float().unsqueeze(1).expand_as(pseudo_pred)
+            losses = F.mse_loss(pseudo_pred, targets, reduction="none")
+        weights = pseudo_mask.float()
+        per_bag = (losses * weights).sum(dim=1) / weights.sum(dim=1)
+        return per_bag.mean()
 
 
 aggregator_registry.register("dtfdmil", DTFDMIL)

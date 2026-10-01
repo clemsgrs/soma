@@ -112,3 +112,6 @@ only-include = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "e2e: end-to-end scenario through the soma CLI on synthetic data (tests/e2e/)",
+]

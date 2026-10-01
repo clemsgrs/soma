@@ -246,3 +246,6 @@ eva.csv
 !soma/benchmarks/results/eva.csv
 review.md
 scratch_logs/
+
+# End-to-end scenario artifacts (tests/e2e/)
+e2e-artifacts/

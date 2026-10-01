@@ -177,7 +177,7 @@ class TestAuxiliaryLossWiring:
     def test_dtfdmil_aux_loss_is_nonzero(self):
         """DTFD-MIL produces pseudo-bag predictions — aux loss should contribute."""
         torch.manual_seed(0)
-        agg = DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4)
+        agg = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
         X = torch.randn(2, 10, 16)
         labels = torch.tensor([0, 1])
         out = agg(X)
@@ -233,12 +233,12 @@ class TestAuxiliaryLossWiring:
 
     def test_dtfdmil_trainer_epoch_runs(self):
         """Trainer epoch with DTFD-MIL completes without error (aux loss wired)."""
-        loss = _train_one_epoch(DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4))
+        loss = _train_one_epoch(DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4))
         assert loss > 0
 
     def test_dtfdmil_multiclass_trainer_epoch_runs(self):
         loss = _train_one_epoch_with_head(
-            DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
+            DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4),
             MulticlassClassificationHead(input_dim=16, num_classes=3),
             n_classes=3,
         )
@@ -246,7 +246,7 @@ class TestAuxiliaryLossWiring:
 
     def test_dtfdmil_ordinal_trainer_epoch_runs(self):
         loss = _train_one_epoch_with_head(
-            DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
+            DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4),
             OrdinalClassificationHead(input_dim=16, num_classes=3),
             n_classes=3,
         )
@@ -254,7 +254,7 @@ class TestAuxiliaryLossWiring:
 
     def test_dtfdmil_regression_trainer_epoch_runs(self):
         loss = _train_one_epoch_with_head(
-            DTFDMIL(input_dim=16, hidden_dim=8, n_groups=4),
+            DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4),
             RegressionHead(input_dim=16),
         )
         assert loss > 0
