@@ -36,9 +36,10 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_5():
     # slide2vec 6.1 runs on hs2p 5 (first-class source masks); 6.0.1 required hs2p 4.
     # 6.1.1 requires hs2p 5.0.2, the same floor soma declares. 6.2.0 defaults
     # dinov2-vitb14 back to 224 px, which soma's resolved-preprocessing tests expect.
+    # 6.3.1 reads tiles of flat PNG/JPEG slides on the fly through hs2p's ``pil`` backend.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=6.2.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=6.3.1" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_provides_registered_roi_mask_reads():
@@ -46,10 +47,11 @@ def test_hs2p_minimum_provides_registered_roi_mask_reads():
     # through hs2p.Mask, aligned to the slide's level-0 grid. 5.0.1 sizes the coverage
     # estimate's tiles like tiling (tolerance); 5.0.2 samples a region at the grid's
     # recorded spacing without a float-noise shift and reports the in-canvas part of an
-    # overhanging ROI (AlignedMask.dimensions_within_canvas).
+    # overhanging ROI (AlignedMask.dimensions_within_canvas). 5.1.0 renders previews of
+    # flat PNG/JPEG slides with their manifest spacing.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "hs2p>=5.0.2" in data["project"]["dependencies"]
+    assert "hs2p>=5.1.0" in data["project"]["dependencies"]
 
 
 def test_release_metadata_matches_license_and_verified_python_support():

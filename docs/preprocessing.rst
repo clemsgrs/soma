@@ -51,7 +51,8 @@ Key settings
      - Pin when a slide decodes correctly under only one reader
    * - ``mask_backend``
      - Reader for tissue/annotation mask rasters (``auto`` resolves from the mask
-       file, ``pil`` for PNG/JPEG)
+       file: ``pil`` for PNG/JPEG, ``tifffile`` for TIFF masks that store
+       samples other than 8-bit unsigned, such as 16-bit labels)
      - Set when a mask needs a different reader than its slide
 
 Tiling configuration
@@ -114,7 +115,10 @@ Tiling artifacts record the mask level and spacing actually read
 (``mask_level``, ``mask_spacing_um``). Since hs2p 5 selects the mask level with
 a fixed 1% tolerance, these can differ from runs made with hs2p 4. Cache keys
 depend only on the configuration, so tiling and feature caches written with
-hs2p 4 are reused.
+hs2p 4 are reused. The same holds for tilings cached with hs2p 5.0.2, which
+hs2p 5.1.0 would tile differently next to tissue holes and, with ``overlap > 0``
+read above level 0, on a slightly different stride. Delete the tiling cache to
+re-tile.
 
 Segmentation slide-manifest sampling
 ------------------------------------
@@ -223,8 +227,3 @@ Preview rendering is inherited from :mod:`hs2p`:
 - :func:`soma.preprocessing.overlay_mask_on_slide` for tissue-mask overlays
 - :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
 - :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
-
-For flat PNG/JPEG slides, set ``preview.save_mask_preview`` and
-``preview.save_tiling_preview`` to ``false``: hs2p's preview renderers
-reopen the slide without its ``spacing_at_level_0``. PNG/JPEG masks on slides
-with native spacing work with previews enabled.

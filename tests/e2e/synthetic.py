@@ -85,6 +85,26 @@ class SlideCohort:
         frame.to_csv(path, index=False)
         return path
 
+    def flat_manifest(self, task: str) -> Path:
+        """``manifest(task)`` over PNG copies of the slides.
+
+        A PNG carries no spacing, so the manifest declares ``spacing_at_level_0``.
+        """
+        import tifffile
+
+        flat = self.root / "slides_png"
+        flat.mkdir(exist_ok=True)
+        frame = pd.read_csv(self.manifest(task))
+        for sample_id in self.sample_ids:
+            png = flat / f"{sample_id}.png"
+            if not png.is_file():
+                Image.fromarray(tifffile.imread(self.root / "slides" / f"{sample_id}.tif")).save(png)
+        frame["image_path"] = [str(flat / f"{s}.png") for s in frame["sample_id"]]
+        frame["spacing_at_level_0"] = SPACING_UM
+        path = self.root / f"dataset_{task}_png.csv"
+        frame.to_csv(path, index=False)
+        return path
+
     def cv_splits(self, n_folds: int) -> Path:
         """``splits_cv.csv``: each fold deals the severity ranking with rotated roles."""
         ranked = np.argsort(self.severity)
