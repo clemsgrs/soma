@@ -525,15 +525,8 @@ def slide_manifests(tmp_path_factory) -> dict[int, Path]:
     return manifests
 
 
-def _extract_slides(
-    dataset_csv: Path, root: Path, kind: str, *, scope: str = "", **cache_settings
-):
-    """Extract into ``<root>/<scope>cache``; every scope shares ``<root>/tiling_cache``."""
-    if kind == "patient" and not (root / "tiling_cache").exists():
-        # slide2vec refuses to tile for a patient-level model unless every slide spec
-        # carries a patient id, which soma does not pass. Fill the tiling cache with the
-        # tile encoder first, in a feature cache of its own.
-        _extract_slides(dataset_csv.with_name("dataset_4.csv"), root, "tile", scope="tiling-")
+def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
+    """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``."""
     return FeatureExtractor(
         Dataset(dataset_csv),
         EncoderConfig(name=_SLIDE_KINDS[kind], precision="fp32", batch_size=64),
@@ -548,9 +541,20 @@ def _extract_slides(
             region_tile_multiple=2 if kind == "hierarchical" else None,
         ),
         execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0),
-        cache=CacheConfig(enabled=True, root_dir=root / f"{scope}cache", **cache_settings),
-        output_root=root / f"{scope}run",
+        cache=CacheConfig(enabled=True, root_dir=root / "cache", **cache_settings),
+        output_root=root / "run",
     ).extract()
+
+
+def test_patient_level_extraction_tiles_the_slides_into_an_empty_tiling_cache(
+    tmp_path, encoder, slide_manifests
+):
+    assert not (tmp_path / "tiling_cache").exists()
+
+    extracted = _extract_slides(slide_manifests[4], tmp_path, "patient")
+
+    assert (tmp_path / "tiling_cache").is_dir()
+    _assert_same_features(_features(extracted), _expected_slide_features("patient", changed=False))
 
 
 @pytest.mark.parametrize("kind", _SLIDE_KINDS)

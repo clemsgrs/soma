@@ -1,5 +1,12 @@
 # Changelog
 
+- 2026-10-02: A run with a patient-level encoder no longer fails during tiling
+  with "Patient-level models require a 'patient_id' for every slide" when the
+  tiling cache is empty or incomplete. Before, such a run only worked after a
+  run with a tile- or slide-level encoder had filled the same tiling cache.
+  soma now requires slide2vec 6.3.3, which does not ask for patient ids when it
+  only tiles.
+
 - 2026-10-02: Pooled feature caches are checked against the encoder's
   preprocessing after a slide2vec upgrade. A pooled cache key does not cover the
   encoder's image transform, so a cache written before slide2vec 6.2.0 was reused
