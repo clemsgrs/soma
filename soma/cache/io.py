@@ -137,14 +137,53 @@ def write_cache_payload(
     return feature_dim
 
 
+def tile_artifact_metadata(
+    *,
+    sample_id: str,
+    feature_dim: int,
+    num_tiles: int,
+    image_path: object,
+    mask_path: object,
+    coordinates_npz_path: object,
+    coordinates_meta_path: object,
+    feature_identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Sidecar of a tile artifact rebuilt from a cached payload, for slide aggregation.
+
+    ``feature_identity`` is the identity the tile cache records for its features. It is
+    handed to slide2vec as the artifact's ``compatibility`` block, so slide2vec records
+    the tile geometry and transform in the slide embeddings it aggregates. None for a
+    tile cache that records no identity: the aggregated embeddings then record none.
+    """
+    metadata: dict[str, Any] = {
+        "sample_id": sample_id,
+        "artifact_type": "tile_embeddings",
+        "format": "pt",
+        "feature_dim": feature_dim,
+        "num_tiles": num_tiles,
+        "image_path": str(image_path),
+        "mask_path": str(mask_path),
+        "coordinates_npz_path": str(coordinates_npz_path),
+        "coordinates_meta_path": str(coordinates_meta_path),
+    }
+    if feature_identity is not None:
+        metadata["compatibility"] = feature_identity
+    return metadata
+
+
 def build_tile_artifacts_from_cache_payload(
     *,
     features_dir: Path,
     loaded_tilings: Sequence[object],
     work_dir: Path,
     feature_path_by_sample_id: dict[str, Path] | None = None,
+    feature_identity: dict[str, Any] | None = None,
 ) -> list[TileEmbeddingArtifact]:
-    """Reconstruct TileEmbeddingArtifact objects from cached .pt files."""
+    """Reconstruct TileEmbeddingArtifact objects from cached .pt files.
+
+    ``feature_identity`` is the identity the tile cache records (see
+    :func:`tile_artifact_metadata`).
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[TileEmbeddingArtifact] = []
     for loaded in loaded_tilings:
@@ -155,17 +194,16 @@ def build_tile_artifacts_from_cache_payload(
             feature_path = features_dir / f"{sample_id}.pt"
         tensor = torch.load(feature_path, weights_only=True, map_location="cpu")
         metadata_path = work_dir / f"{sample_id}.meta.json"
-        metadata = {
-            "sample_id": sample_id,
-            "artifact_type": "tile_embeddings",
-            "format": "pt",
-            "feature_dim": _feature_dim_from_tensor(tensor),
-            "num_tiles": int(tensor.shape[0]),
-            "image_path": str(loaded.slide.image_path),
-            "mask_path": str(loaded.slide.mask_path) if loaded.slide.mask_path is not None else "",
-            "coordinates_npz_path": str(getattr(loaded.tiling_result, "coordinates_npz_path", "")),
-            "coordinates_meta_path": str(getattr(loaded.tiling_result, "coordinates_meta_path", "")),
-        }
+        metadata = tile_artifact_metadata(
+            sample_id=sample_id,
+            feature_dim=_feature_dim_from_tensor(tensor),
+            num_tiles=int(tensor.shape[0]),
+            image_path=loaded.slide.image_path,
+            mask_path=loaded.slide.mask_path if loaded.slide.mask_path is not None else "",
+            coordinates_npz_path=getattr(loaded.tiling_result, "coordinates_npz_path", ""),
+            coordinates_meta_path=getattr(loaded.tiling_result, "coordinates_meta_path", ""),
+            feature_identity=feature_identity,
+        )
         metadata_path.write_text(
             json.dumps(metadata, indent=2, sort_keys=True),
             encoding="utf-8",

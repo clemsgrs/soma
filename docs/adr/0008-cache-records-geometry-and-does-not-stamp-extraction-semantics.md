@@ -1,5 +1,7 @@
 # The feature cache records geometry facts and accepts that pixel-policy changes are undetectable
 
+> Superseded in part by [ADR 0012](0012-pooled-caches-verify-slide2vec-feature-identity.md): pooled caches now record slide2vec's feature identity and verify the encoder's image transform after a slide2vec upgrade, with two config settings for what to do on a mismatch and for caches without a record. The geometry record below is unchanged, and a change in how slide2vec reads a tile is still undetectable.
+
 soma's feature cache records the geometry triple — requested tile size, per-slide read tile size, and **effective encoder input size** — in `cache_metadata.json`, and validates the encoder input size on reuse. It deliberately carries **no extraction-semantics stamp**, which means an upstream change to *how* pixels are produced at unchanged sizes cannot be detected, and the mitigation is deleting caches by hand on a slide2vec upgrade.
 
 ## The gap, stated precisely

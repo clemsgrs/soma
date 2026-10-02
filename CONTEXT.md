@@ -144,6 +144,10 @@ _Avoid_: treating an absent contract as Given geometry — absence is an error, 
 The hs2p `TilingConfig` a `PreprocessingConfig` resolves to (`tiling_config()`), built at **resolve** time rather than config-parse time because hs2p requires a spacing and a tile size that soma leaves unset until the encoder supplies them. The pooled adapter, the slide-manifest ROI sampler and the feature-cache key all read this one object, so the geometry a run used and the geometry its key describes cannot diverge.
 _Avoid_: "mirroring hs2p" (the fields are forwarded, not re-declared); treating it as a config-surface type — it exists only after resolution.
 
+**Feature identity**:
+slide2vec's record of what a pooled embedding was computed with beyond its pixels: the encoder, output variant, precision, tile geometry and image transform. slide2vec writes it in every sidecar (`compatibility`); soma copies it into a pooled cache's `cache_metadata.json` with the slide2vec version and verifies it when the cache is used under another version. soma never defines or edits it.
+_Avoid_: "cache key" (the key does not cover the transform); "sample identity" (the per-sample signature of `sample_id`, paths and spacing).
+
 ### Run identity (existing soma concepts, load-bearing for the Leaderboard)
 
 **Run**:

@@ -37,9 +37,10 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_5():
     # 6.1.1 requires hs2p 5.0.2, the same floor soma declares. 6.2.0 defaults
     # dinov2-vitb14 back to 224 px, which soma's resolved-preprocessing tests expect.
     # 6.3.1 reads tiles of flat PNG/JPEG slides on the fly through hs2p's ``pil`` backend.
+    # 6.3.2 exposes ``Model.pooled_identity_differences``, which soma's caches verify with.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=6.3.1" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=6.3.2" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_provides_registered_roi_mask_reads():

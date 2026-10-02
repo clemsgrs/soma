@@ -11,6 +11,7 @@ from typing import Callable
 
 import torch
 
+from soma.cache.io import tile_artifact_metadata
 from soma.extraction.orchestration import _aggregate_tiles
 
 # How long to keep draining the result queue after every worker process has
@@ -50,17 +51,16 @@ def _aggregate_slide_shard_worker(
             metadata_path = shard_dir / f"{sample_id}.meta.json"
             metadata_path.write_text(
                 json.dumps(
-                    {
-                        "sample_id": sample_id,
-                        "artifact_type": "tile_embeddings",
-                        "format": "pt",
-                        "feature_dim": feature_dim,
-                        "num_tiles": num_tiles,
-                        "image_path": str(payload["image_path"]),
-                        "mask_path": str(payload["mask_path"]),
-                        "coordinates_npz_path": str(payload["coordinates_npz_path"]),
-                        "coordinates_meta_path": str(payload["coordinates_meta_path"]),
-                    },
+                    tile_artifact_metadata(
+                        sample_id=sample_id,
+                        feature_dim=feature_dim,
+                        num_tiles=num_tiles,
+                        image_path=payload["image_path"],
+                        mask_path=payload["mask_path"],
+                        coordinates_npz_path=payload["coordinates_npz_path"],
+                        coordinates_meta_path=payload["coordinates_meta_path"],
+                        feature_identity=shared["tile_feature_identity"],
+                    ),
                     indent=2,
                     sort_keys=True,
                 ),
@@ -136,6 +136,7 @@ def spawn_slide_aggregation_workers(
     execution_output_dtype: str | None = None,
     output_dir: Path,
     shard_payloads_by_rank: list[list[dict[str, str]]],
+    tile_feature_identity: dict[str, object] | None = None,
     on_shard_complete: Callable[[list[str], int | None], None],
     on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[set[str], int | None]:
@@ -153,6 +154,7 @@ def spawn_slide_aggregation_workers(
         "execution_output_dtype": execution_output_dtype,
         "output_dir": str(output_dir),
         "shard_payloads_by_rank": shard_payloads_by_rank,
+        "tile_feature_identity": tile_feature_identity,
     }
 
     process_ctx = torch.multiprocessing.spawn(

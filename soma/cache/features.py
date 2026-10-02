@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import logging
 import math
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
@@ -23,6 +24,13 @@ from soma.cache._types import (
     _list_feature_filenames,
     CacheValidationResult,
     FeatureCacheResolution,
+)
+from soma.cache.feature_identity import (
+    FEATURE_IDENTITY_METADATA_KEY,
+    FeatureIdentityCheck,
+    pending_identity_record,
+    record_committed_identity,
+    stale_features_reason,
 )
 from soma.cache.geometry import (
     GEOMETRY_METADATA_KEY,
@@ -341,6 +349,9 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     # mismatch" comparison — and its per-slide read sizes are provenance that must not make
     # a cache look mismatched at all.
     comparable.pop(GEOMETRY_METADATA_KEY, None)
+    # The feature identity is known only once slide2vec has written a sample, and is
+    # verified on its own terms when the cache is resolved.
+    comparable.pop(FEATURE_IDENTITY_METADATA_KEY, None)
     return comparable
 
 
@@ -675,6 +686,7 @@ def _resolve_cache(
     complete_state: str = "hit",
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     cache_dir = _cache_dir(cache_root, cache_kind, key)
     features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
@@ -712,6 +724,25 @@ def _resolve_cache(
         )
         if mismatch_message:
             raise ValueError(mismatch_message)
+        # Before any sample is counted as a hit or handed to slide2vec as missing: a
+        # cache must never be reused, or completed, under another feature identity.
+        stale_reason = None
+        if feature_identity is not None:
+            stale_reason = stale_features_reason(
+                cache_dir=cache_dir,
+                features_dir=features_dir,
+                metadata_path=metadata_path,
+                existing=existing,
+                check=feature_identity,
+            )
+        if stale_reason is not None:
+            # No feature in the cache can be kept, whatever samples this run asks for:
+            # delete it, and initialize it below like a cache that never existed.
+            shutil.rmtree(cache_dir)
+            features_dir.mkdir(parents=True)
+            initial_reason = stale_reason
+
+    if metadata_path.is_file():
         validation, present, expected = _validate_feature_cache_contents(
             features_dir=features_dir,
             metadata=existing,
@@ -765,6 +796,9 @@ def _resolve_cache(
 
     if manifest_rows is not None:
         _write_manifest(manifest_path, manifest_rows)
+    identity_record = pending_identity_record(cache_kind)
+    if identity_record is not None:
+        metadata = {**metadata, FEATURE_IDENTITY_METADATA_KEY: identity_record}
     _write_metadata(metadata_path, metadata)
     _emit_cache_state_log(
         cache_label="feature",
@@ -804,6 +838,7 @@ def resolve_tile_cache(
     validate_payloads: bool = False,
     cache_kind: str = "tile",
     extraction_geometry: dict[str, Any] | None = None,
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_tile_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -832,6 +867,7 @@ def resolve_tile_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+        feature_identity=feature_identity,
     )
 
 
@@ -845,6 +881,7 @@ def resolve_image_cache(
     dtype: str = "fp32",
     complete_state: str = "hit",
     validate_payloads: bool = False,
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     """Resolve the cache for given-geometry images (pre-cropped patch datasets).
 
@@ -867,6 +904,7 @@ def resolve_image_cache(
         complete_state=complete_state,
         validate_payloads=validate_payloads,
         cache_kind="image",
+        feature_identity=feature_identity,
     )
 
 
@@ -885,6 +923,7 @@ def resolve_slide_cache(
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
     validate_payloads: bool = False,
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -922,6 +961,7 @@ def resolve_slide_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+        feature_identity=feature_identity,
     )
 
 
@@ -940,6 +980,7 @@ def resolve_patient_cache(
     backend_provenance: dict[str, Any] | None = None,
     complete_state: str = "hit",
     validate_payloads: bool = False,
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     tile_dependency_signature = {
         "tile_encoder_name": str(tile_encoder_name),
@@ -977,6 +1018,7 @@ def resolve_patient_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+        feature_identity=feature_identity,
     )
 
 
@@ -993,6 +1035,7 @@ def resolve_hierarchical_cache(
     complete_state: str = "hit",
     validate_payloads: bool = False,
     extraction_geometry: dict[str, Any] | None = None,
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_hierarchical_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -1020,6 +1063,7 @@ def resolve_hierarchical_cache(
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
+        feature_identity=feature_identity,
     )
 
 
@@ -1156,6 +1200,10 @@ def record_sample_identity_signatures(
         if metadata_path.is_file()
         else dict(resolution.metadata)
     )
+    # The first features of a cache complete its pending identity record. A cache
+    # without a record is never stamped: nothing proves its existing features were
+    # extracted with the identity of the samples added now.
+    record_committed_identity(metadata, resolution, cache_ids)
     signature_map = {
         str(cache_id): str(signature)
         for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()

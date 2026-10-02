@@ -670,6 +670,10 @@ class CompositeConfig:
                 )
 
 
+_ON_IDENTITY_MISMATCH = ("error", "reextract")
+_ON_UNRECORDED_IDENTITY = ("warn", "reextract")
+
+
 @dataclass(frozen=True)
 class CacheConfig:
     """Shared cache policy for tiling and extracted features.
@@ -693,12 +697,31 @@ class CacheConfig:
     # slide through slide2vec's persistence callback and ignore this setting.
     # Not part of any cache key.
     commit_every: int | None = None
+    # What to do with a pooled feature cache whose recorded feature identity (the
+    # encoder's image transform, mainly) differs from what the installed slide2vec
+    # extracts now: 'error' stops the run and names the differing fields, 'reextract'
+    # deletes the cache and extracts it again. Not part of any cache key.
+    on_identity_mismatch: str = "error"
+    # What to do with a pooled feature cache that records no feature identity (written
+    # by soma 1.17.0 or earlier), which cannot be verified: 'warn' reuses it and warns
+    # once, 'reextract' deletes it and extracts it again. Not part of any cache key.
+    on_unrecorded_identity: str = "warn"
 
     def __post_init__(self) -> None:
         if self.commit_every is not None and (
             isinstance(self.commit_every, bool) or int(self.commit_every) < 1
         ):
             raise ValueError(f"cache.commit_every must be >= 1, got {self.commit_every!r}")
+        if self.on_identity_mismatch not in _ON_IDENTITY_MISMATCH:
+            raise ValueError(
+                f"cache.on_identity_mismatch must be one of {list(_ON_IDENTITY_MISMATCH)}, "
+                f"got {self.on_identity_mismatch!r}"
+            )
+        if self.on_unrecorded_identity not in _ON_UNRECORDED_IDENTITY:
+            raise ValueError(
+                "cache.on_unrecorded_identity must be one of "
+                f"{list(_ON_UNRECORDED_IDENTITY)}, got {self.on_unrecorded_identity!r}"
+            )
 
 
 _NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")

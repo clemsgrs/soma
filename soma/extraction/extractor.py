@@ -31,6 +31,8 @@ import slide2vec.progress as slide2vec_progress
 
 from soma.cache import (
     FeatureCacheResolution,
+    FeatureIdentityCheck,
+    recorded_identity,
     pooled_extraction_geometry,
     build_tile_artifacts_from_cache_payload,
     preprocessing_backend_provenance,
@@ -908,6 +910,46 @@ class _PooledFeatureExtractor:
             read_tile_size_px_by_id=read_by_id or None,
         )
 
+    def _feature_identity_check(
+        self,
+        *,
+        encoder_name: str,
+        output_variant: str | None,
+        preprocessing: Slide2VecPreprocessingConfig,
+    ) -> FeatureIdentityCheck:
+        """Verify a cache against the identity slide2vec would give its features now.
+
+        ``encoder_name`` and ``output_variant`` are the ones the cache is populated
+        with. For a slide or patient encoder, slide2vec compares the transform of the
+        registered tile encoder, which the aggregated features went through.
+        """
+
+        def differing(recorded: dict[str, object]) -> dict[str, tuple[object, object]]:
+            model = _load_model(
+                encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=bool(self._encoder.allow_non_recommended_settings),
+            )
+            return model.pooled_identity_differences(
+                recorded,
+                preprocessing=preprocessing,
+                execution=build_execution_options(
+                    self._encoder,
+                    execution=self._execution,
+                    encoder_name=encoder_name,
+                    output_dir=self._output_root,
+                    num_gpus=self._execution.num_gpus,
+                    save_tile_embeddings=False,
+                    output_dtype=self._resolved_dtype(encoder_name=encoder_name),
+                ),
+            )
+
+        return FeatureIdentityCheck(
+            differing=differing,
+            on_mismatch=self._cache.on_identity_mismatch,
+            on_unrecorded=self._cache.on_unrecorded_identity,
+        )
+
     def _extract_tile_cached(
         self,
         *,
@@ -922,6 +964,11 @@ class _PooledFeatureExtractor:
         resolved_output_variant: str,
         num_gpus: int | None,
     ) -> FeatureStore:
+        feature_identity = self._feature_identity_check(
+            encoder_name=self._encoder.name,
+            output_variant=resolved_output_variant,
+            preprocessing=preprocessing,
+        )
         cache_resolution = resolve_tile_cache(
             cache_root=cache_root,
             dataset=self._dataset,
@@ -940,6 +987,7 @@ class _PooledFeatureExtractor:
                 resolved_preprocessing=resolved_preprocessing,
                 loaded_tilings=loaded_tilings,
             ),
+            feature_identity=feature_identity,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
@@ -976,6 +1024,7 @@ class _PooledFeatureExtractor:
                 resolved_preprocessing=resolved_preprocessing,
                 loaded_tilings=loaded_tilings,
             ),
+            feature_identity=feature_identity,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -995,6 +1044,11 @@ class _PooledFeatureExtractor:
         resolved_output_variant: str,
         num_gpus: int | None,
     ) -> FeatureStore:
+        feature_identity = self._feature_identity_check(
+            encoder_name=self._encoder.name,
+            output_variant=resolved_output_variant,
+            preprocessing=preprocessing,
+        )
         cache_resolution = resolve_hierarchical_cache(
             cache_root=cache_root,
             dataset=self._dataset,
@@ -1013,6 +1067,7 @@ class _PooledFeatureExtractor:
                 resolved_preprocessing=resolved_preprocessing,
                 loaded_tilings=loaded_tilings,
             ),
+            feature_identity=feature_identity,
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
@@ -1049,6 +1104,7 @@ class _PooledFeatureExtractor:
                 resolved_preprocessing=resolved_preprocessing,
                 loaded_tilings=loaded_tilings,
             ),
+            feature_identity=feature_identity,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1076,6 +1132,17 @@ class _PooledFeatureExtractor:
             self._encoder.name,
             metadata=encoder_info,
         )
+        tile_output_variant = str(tile_dependency_output["output_variant"])
+        tile_identity = self._feature_identity_check(
+            encoder_name=tile_encoder_name,
+            output_variant=tile_output_variant,
+            preprocessing=preprocessing,
+        )
+        slide_identity = self._feature_identity_check(
+            encoder_name=self._encoder.name,
+            output_variant=runtime_output_variant,
+            preprocessing=preprocessing,
+        )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,
             dataset=self._dataset,
@@ -1090,6 +1157,7 @@ class _PooledFeatureExtractor:
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=tile_identity,
         )
         slide_cache = resolve_slide_cache(
             cache_root=cache_root,
@@ -1112,6 +1180,7 @@ class _PooledFeatureExtractor:
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=slide_identity,
         )
         self._write_cache_marker(feature_dir, cache_resolution=slide_cache)
         if tile_cache.complete and slide_cache.complete:
@@ -1151,6 +1220,7 @@ class _PooledFeatureExtractor:
                 backend_provenance=backend_provenance,
                 complete_state="populated",
                 validate_payloads=self._cache.validate_payloads,
+                feature_identity=tile_identity,
             )
 
         self._populate_slide_cache(
@@ -1184,6 +1254,7 @@ class _PooledFeatureExtractor:
             backend_provenance=backend_provenance,
             complete_state="populated",
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=slide_identity,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1211,6 +1282,17 @@ class _PooledFeatureExtractor:
             self._encoder.name,
             metadata=encoder_info,
         )
+        tile_output_variant = str(tile_dependency_output["output_variant"])
+        tile_identity = self._feature_identity_check(
+            encoder_name=tile_encoder_name,
+            output_variant=tile_output_variant,
+            preprocessing=preprocessing,
+        )
+        patient_identity = self._feature_identity_check(
+            encoder_name=self._encoder.name,
+            output_variant=runtime_output_variant,
+            preprocessing=preprocessing,
+        )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,
             dataset=self._dataset,
@@ -1225,6 +1307,7 @@ class _PooledFeatureExtractor:
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=tile_identity,
         )
         patient_cache = resolve_patient_cache(
             cache_root=cache_root,
@@ -1247,6 +1330,7 @@ class _PooledFeatureExtractor:
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=patient_identity,
         )
         self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
         if tile_cache.complete and patient_cache.complete:
@@ -1281,6 +1365,7 @@ class _PooledFeatureExtractor:
             backend_provenance=backend_provenance,
             complete_state="populated",
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=tile_identity,
         )
         self._populate_patient_cache(
             patient_cache=patient_cache,
@@ -1313,6 +1398,7 @@ class _PooledFeatureExtractor:
             backend_provenance=backend_provenance,
             complete_state="populated",
             validate_payloads=self._cache.validate_payloads,
+            feature_identity=patient_identity,
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
@@ -1384,6 +1470,7 @@ class _PooledFeatureExtractor:
                     loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
                     for loaded in selected_loaded
                 },
+                feature_identity=recorded_identity(tile_cache.metadata),
             )
             patient_artifacts = _aggregate_patients(
                 model_name=model_name,
@@ -1664,6 +1751,7 @@ class _PooledFeatureExtractor:
                     execution_prefetch_factor=slide_execution.prefetch_factor,
                     output_dir=slide_cache.cache_dir,
                     shard_payloads_by_rank=shard_payloads,
+                    tile_feature_identity=recorded_identity(tile_cache.metadata),
                     on_progress=_on_aggregation_progress,
                     on_shard_complete=_commit_shard,
                 )
@@ -1684,6 +1772,7 @@ class _PooledFeatureExtractor:
                             loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
                             for loaded in selected_loaded
                         },
+                        feature_identity=recorded_identity(tile_cache.metadata),
                     )
                     slide_artifacts = _aggregate_tiles(
                         model_name=model_name,
