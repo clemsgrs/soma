@@ -118,9 +118,29 @@ def stale_features_reason(
     current one and ``check`` does not ask to extract again.
     """
     installed = slide2vec.__version__
+    populated = any(features_dir.glob("*.pt"))
     record = existing.get(FEATURE_IDENTITY_METADATA_KEY)
+    if record is not None and record.get("identity") is None:
+        # An extraction stopped before its first commit. What it left on disk is reused
+        # when the installed slide2vec wrote it, and takes its identity from a sidecar.
+        # What another version wrote was never committed, and is not kept.
+        if record.get("slide2vec_version") != installed:
+            return f"extraction was interrupted under slide2vec {record.get('slide2vec_version')}"
+        sidecar_path = next(features_dir.glob("*.meta.json"), None)
+        identity = None if sidecar_path is None else _sidecar_identity(sidecar_path)
+        if _is_verifiable(identity):
+            _write_record(
+                metadata_path, existing, {"slide2vec_version": installed, "identity": identity}
+            )
+            return None
+        if not populated:
+            return None
+        # Features with no identity to recover, as aggregated from tiles with no record:
+        # the cache drops its record and counts as one that never had any.
+        _write_record(metadata_path, existing, None)
+        record = None
     if record is None:
-        if not any(features_dir.glob("*.pt")):
+        if not populated:
             # Nothing to verify: an empty cache starts a record like a new one.
             _write_record(metadata_path, existing, {"slide2vec_version": installed, "identity": None})
             return None
@@ -146,19 +166,6 @@ def stale_features_reason(
             )
         return None
     verified_version = record.get("slide2vec_version")
-    if record.get("identity") is None:
-        # An extraction stopped before its first commit. What it left on disk is reused
-        # when the installed slide2vec wrote it, and takes its identity from a sidecar.
-        # What another version wrote was never committed, and is not kept.
-        if verified_version != installed:
-            return f"extraction was interrupted under slide2vec {verified_version}"
-        sidecar_path = next(features_dir.glob("*.meta.json"), None)
-        identity = None if sidecar_path is None else _sidecar_identity(sidecar_path)
-        if _is_verifiable(identity):
-            _write_record(
-                metadata_path, existing, {"slide2vec_version": installed, "identity": identity}
-            )
-        return None
     if verified_version == installed:
         return None
     differing = check.differing(dict(record["identity"]))
@@ -186,15 +193,21 @@ def stale_features_reason(
     )
 
 
-def _write_record(metadata_path: Path, existing: dict[str, Any], record: dict[str, Any]) -> None:
+def _write_record(
+    metadata_path: Path, existing: dict[str, Any], record: dict[str, Any] | None
+) -> None:
     """Set the identity record in ``existing`` and on disk, keeping what else is on disk.
 
-    The file is read again because the comparison that precedes a write loads an
-    encoder, long enough for another job to commit samples to the same cache.
+    ``record=None`` removes it. The file is read again because the comparison that
+    precedes a write loads an encoder, long enough for another job to commit samples to
+    the same cache.
     """
-    existing[FEATURE_IDENTITY_METADATA_KEY] = record
     on_disk = _load_metadata(metadata_path)
-    on_disk[FEATURE_IDENTITY_METADATA_KEY] = record
+    for metadata in (existing, on_disk):
+        if record is None:
+            metadata.pop(FEATURE_IDENTITY_METADATA_KEY, None)
+        else:
+            metadata[FEATURE_IDENTITY_METADATA_KEY] = record
     _write_metadata(metadata_path, on_disk)
 
 
