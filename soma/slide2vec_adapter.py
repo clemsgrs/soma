@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import torch
 from hs2p import SlideSpec
@@ -277,46 +276,6 @@ def build_execution_options(
         # exact dtype folded into the cache key (key and storage can never drift). None
         # would let slide2vec follow precision; soma always passes a resolved value.
         output_dtype=output_dtype,
-    )
-
-
-def pooled_identity_differences(
-    recorded: dict[str, Any],
-    *,
-    model: slide2vec_api.Model,
-    execution: ExecutionOptions,
-    preprocessing: Slide2VecPreprocessingConfig | None,
-    transform_model: slide2vec_api.Model | None = None,
-) -> dict[str, tuple[Any, Any]]:
-    """Fields of a recorded pooled feature identity that differ from the current one.
-
-    The current identity is the one slide2vec would write for this model, execution and
-    preprocessing; ``preprocessing=None`` is the Given regime (pre-cropped images).
-    ``transform_model`` is the tile encoder whose transform the features went through
-    when ``model`` is a slide or patient encoder aggregating cached tile features.
-    The comparison is slide2vec's own (``differing_fields``), as its resume check runs
-    it: a field either side does not hold is accepted. The encoder is loaded, on a CPU
-    copy, only when ``recorded`` holds a transform to verify.
-    """
-    # The feature identity is slide2vec's to define, and 6.3 exports none of it
-    # publicly: this function is the one place soma reaches for it (ADR 0012). Imported
-    # here so that an upstream move breaks this check, not every user of the adapter.
-    from slide2vec.runtime.feature_identity import (
-        deferred_transform_record,
-        differing_fields,
-        pooled_feature_identity,
-    )
-
-    if transform_model is None:
-        transform_model = model
-    if preprocessing is None:
-        transform_model._declare_given_encoder_input(emit_run_info=False)
-    return differing_fields(
-        recorded,
-        pooled_feature_identity(model, execution=execution, preprocessing=preprocessing),
-        resolve_transform=deferred_transform_record(
-            transform_model, on_cpu_copy=True, preprocessing=preprocessing
-        ),
     )
 
 

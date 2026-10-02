@@ -40,7 +40,7 @@ from soma.extraction.commit import (
     resolve_commit_every,
 )
 from soma.features import FeatureStore
-from soma.slide2vec_adapter import build_execution_options, pooled_identity_differences
+from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
 
@@ -228,13 +228,15 @@ class _TileFeatureExtractor:
         """Verify a cache against the identity slide2vec would give these images now."""
 
         def differing(recorded: dict) -> dict:
-            return pooled_identity_differences(
+            model = Model.from_preset(
+                self._encoder.name,
+                output_variant=self._encoder.output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+            )
+            return model.pooled_identity_differences(
                 recorded,
-                model=Model.from_preset(
-                    self._encoder.name,
-                    output_variant=self._encoder.output_variant,
-                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                ),
+                # Given geometry: pre-cropped images declare no tiling.
+                preprocessing=None,
                 execution=build_execution_options(
                     self._encoder,
                     execution=self._execution,
@@ -244,8 +246,6 @@ class _TileFeatureExtractor:
                     save_tile_embeddings=True,
                     output_dtype=dtype,
                 ),
-                # Given geometry: pre-cropped images declare no tiling.
-                preprocessing=None,
             )
 
         return FeatureIdentityCheck(

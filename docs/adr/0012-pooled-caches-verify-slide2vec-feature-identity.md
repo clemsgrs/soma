@@ -10,7 +10,7 @@ The stamp ADR 0008 rejected as too much machinery now exists upstream. slide2vec
 
 ## Decisions
 
-- **The identity is slide2vec's.** soma copies the `compatibility` block of a sidecar slide2vec just wrote, and compares with slide2vec's `differing_fields`. soma defines no identity of its own.
+- **The identity is slide2vec's.** soma copies the `compatibility` block of a sidecar slide2vec just wrote, and compares through slide2vec's public `Model.pooled_identity_differences`. soma defines no identity of its own.
 - **Validation, not keying.** Folding the transform into the key needs the transform before any encoder is loaded, which slide2vec cannot report yet, and it would move every pooled key once. Existing keys do not change.
 - **Hits stay cheap.** The current transform needs an instantiated encoder. The comparison runs only when the recorded slide2vec version differs from the installed one; a verified cache then records the installed version. A transform that changes without a slide2vec upgrade is not detected.
 - **A record has three states.** A new cache starts with a pending record (no identity yet), which its first commit completes. A cache with no record at all was written before this ADR and is unverifiable. The pending state is what tells the two apart after a run that stopped before its first commit. Features such a run left on disk are reused when the installed slide2vec wrote them, and dropped when another version did. When their sidecars hold no transform, because they were aggregated from tiles with no record, the cache drops its pending record and is handled as one with no record.
@@ -20,7 +20,7 @@ The stamp ADR 0008 rejected as too much machinery now exists upstream. slide2vec
 
 ## Consequences
 
-- `soma.slide2vec_adapter.pooled_identity_differences` imports `pooled_feature_identity`, `deferred_transform_record` and `differing_fields` from `slide2vec.runtime.feature_identity`, and calls `Model._declare_given_encoder_input` for pre-cropped images. slide2vec 6.3 exports none of these publicly, so this is an exception to ADR 0007, confined to that function. It should move to a public slide2vec entry point when one exists.
+- soma requires slide2vec 6.3.2, which added `Model.pooled_identity_differences` for this check (clemsgrs/slide2vec#357). The comparison stays within ADR 0007: soma imports nothing from `slide2vec.runtime`. For a slide or patient cache, slide2vec compares the transform of the encoder's registered tile encoder.
 - Caches written by soma 1.17.0 or earlier stay unverifiable, even when slide2vec 6.3 wrote their sidecars with an identity: soma does not adopt per-sample sidecar identities it did not see written.
 - Changes outside the recorded identity stay undetectable: how slide2vec reads and resamples a tile (the 5.4.0 example of ADR 0008), and encoder weights or code. Deleting caches by hand remains the mitigation for those.
 - Dense caches are out of scope: they record no identity in `cache_metadata.json` and a complete dense hit is not verified.

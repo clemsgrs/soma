@@ -16,8 +16,8 @@
   extracts them again with `cache.on_unrecorded_identity: reextract`. Cache keys
   do not change. Existing caches of the three encoders above still need to be
   deleted by hand, or with the second setting. Patient-level aggregation no
-  longer fails with "No encoder-input contract has been declared". See
-  `caching.rst`.
+  longer fails with "No encoder-input contract has been declared". soma now
+  requires slide2vec 6.3.2. See `caching.rst`.
 
 - 2026-10-01: Require hs2p 5.1.0 and slide2vec 6.3.1. Flat PNG/JPEG slides
   (with `spacing_at_level_0` in `dataset.csv`) now run end to end with the default

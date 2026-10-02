@@ -78,7 +78,6 @@ from soma.slide2vec_adapter import (
     build_slide_specs,
     ensure_supported_mask_value,
     load_tilings,
-    pooled_identity_differences,
     tiling_num_tiles,
 )
 
@@ -917,31 +916,23 @@ class _PooledFeatureExtractor:
         encoder_name: str,
         output_variant: str | None,
         preprocessing: Slide2VecPreprocessingConfig,
-        tile_encoder: tuple[str, str] | None = None,
     ) -> FeatureIdentityCheck:
         """Verify a cache against the identity slide2vec would give its features now.
 
         ``encoder_name`` and ``output_variant`` are the ones the cache is populated
-        with. ``tile_encoder`` is the (name, output variant) of the tile encoder a slide
-        or patient cache aggregates, whose transform its features went through.
+        with. For a slide or patient encoder, slide2vec compares the transform of the
+        registered tile encoder, which the aggregated features went through.
         """
 
         def differing(recorded: dict[str, object]) -> dict[str, tuple[object, object]]:
-            allow = bool(self._encoder.allow_non_recommended_settings)
-            return pooled_identity_differences(
+            model = _load_model(
+                encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=bool(self._encoder.allow_non_recommended_settings),
+            )
+            return model.pooled_identity_differences(
                 recorded,
-                model=_load_model(
-                    encoder_name, output_variant=output_variant, allow_non_recommended_settings=allow
-                ),
-                transform_model=(
-                    None
-                    if tile_encoder is None
-                    else _load_model(
-                        tile_encoder[0],
-                        output_variant=tile_encoder[1],
-                        allow_non_recommended_settings=allow,
-                    )
-                ),
+                preprocessing=preprocessing,
                 execution=build_execution_options(
                     self._encoder,
                     execution=self._execution,
@@ -951,7 +942,6 @@ class _PooledFeatureExtractor:
                     save_tile_embeddings=False,
                     output_dtype=self._resolved_dtype(encoder_name=encoder_name),
                 ),
-                preprocessing=preprocessing,
             )
 
         return FeatureIdentityCheck(
@@ -1152,7 +1142,6 @@ class _PooledFeatureExtractor:
             encoder_name=self._encoder.name,
             output_variant=runtime_output_variant,
             preprocessing=preprocessing,
-            tile_encoder=(tile_encoder_name, tile_output_variant),
         )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,
@@ -1303,7 +1292,6 @@ class _PooledFeatureExtractor:
             encoder_name=self._encoder.name,
             output_variant=runtime_output_variant,
             preprocessing=preprocessing,
-            tile_encoder=(tile_encoder_name, tile_output_variant),
         )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,

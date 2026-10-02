@@ -88,7 +88,7 @@ with the slide2vec version. For example:
 
    {
      "feature_identity": {
-       "slide2vec_version": "6.3.1",
+       "slide2vec_version": "6.3.2",
        "identity": {
          "encoder_name": "uni2",
          "output_variant": "default",
