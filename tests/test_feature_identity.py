@@ -13,6 +13,7 @@ import json
 import shutil
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import slide2vec
@@ -26,7 +27,7 @@ from soma.cache import CacheFeatureIdentityMismatch
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import Dataset, TileDataset
 from soma.extraction import FeatureExtractor
-from tests.e2e.synthetic import make_slide_cohort
+from tests.e2e.synthetic import write_tiff
 
 STUB_ENCODER = "soma512-switchable-transform"
 STUB_SLIDE_ENCODER = "soma512-slide"
@@ -35,11 +36,6 @@ _ORIGINAL_MEAN = [0.5, 0.5, 0.5]
 _CHANGED_MEAN = [0.25, 0.5, 0.5]
 _STD = [0.5, 0.5, 0.5]
 _UPGRADED_VERSION = "999.0.0"
-#: What the changed normalization mean does to a feature. The stub tile encoder and both
-#: stub aggregators are means, so every feature moves by (original - changed) / std.
-_CHANGED_RECIPE_SHIFT = torch.tensor(
-    [(old - new) / std for old, new, std in zip(_ORIGINAL_MEAN, _CHANGED_MEAN, _STD)]
-)
 
 #: Whole-slide cache kinds, and the encoder whose extraction fills each.
 _SLIDE_KINDS = {
@@ -230,9 +226,35 @@ def _assert_expected_features(actual: dict[str, torch.Tensor], expected: dict[st
         )
 
 
-def _features_of_the_changed_recipe(stale: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """What features extracted with the original mean become under the changed one."""
-    return {sample_id: feature + _CHANGED_RECIPE_SHIFT for sample_id, feature in stale.items()}
+def _expected_slide_features(kind: str, *, changed: bool) -> dict[str, torch.Tensor]:
+    """Literal mean RGB features of blue, magenta, green, and yellow slides.
+
+    Each 256px slide contains 64 tiles of 32px, or 16 regions of four tiles.
+    Patients p0/p1 average the first/last pair of slides. No output from
+    extraction determines the expected feature values or tensor shapes.
+    """
+    if kind == "patient":
+        values = (
+            {"p0": [0.5, -1.0, 1.0], "p1": [0.5, 1.0, -1.0]}
+            if changed
+            else {"p0": [0.0, -1.0, 1.0], "p1": [0.0, 1.0, -1.0]}
+        )
+    elif changed:
+        values = {
+            "slide00": [-0.5, -1.0, 1.0],
+            "slide01": [1.5, -1.0, 1.0],
+            "slide02": [-0.5, 1.0, -1.0],
+            "slide03": [1.5, 1.0, -1.0],
+        }
+    else:
+        values = {
+            "slide00": [-1.0, -1.0, 1.0],
+            "slide01": [1.0, -1.0, 1.0],
+            "slide02": [-1.0, 1.0, -1.0],
+            "slide03": [1.0, 1.0, -1.0],
+        }
+    shape = {"tile": (64, 3), "hierarchical": (16, 4, 3), "slide": (3,), "patient": (3,)}[kind]
+    return {sample_id: torch.tensor(vector).expand(shape) for sample_id, vector in values.items()}
 
 
 def _unverifiable_warnings(caplog) -> list[str]:
@@ -310,7 +332,7 @@ def test_cache_verified_after_an_upgrade_hits_cheaply_from_then_on(
 def test_reextract_setting_rebuilds_an_image_cache_with_the_current_recipe(
     tmp_path, encoder, monkeypatch, cached_samples
 ):
-    stale = _features(_extract_images(_image_dataset(tmp_path / "data", n=cached_samples), tmp_path))
+    _extract_images(_image_dataset(tmp_path / "data", n=cached_samples), tmp_path)
     encoded = encoder.encoded_images
     dataset = _image_dataset(tmp_path / "data", n=4)
 
@@ -321,10 +343,6 @@ def test_reextract_setting_rebuilds_an_image_cache_with_the_current_recipe(
     assert encoder.encoded_images == encoded + 4
     _assert_expected_features(
         _features(rebuilt), _expected_image_features(4, mean=_CHANGED_MEAN)
-    )
-    assert not torch.equal(_features(rebuilt)["s0"], stale["s0"])
-    _assert_same_features(
-        _features(rebuilt), _features(_extract_images(dataset, tmp_path / "clean"))
     )
     recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
@@ -364,9 +382,6 @@ def test_strict_setting_extracts_an_image_cache_without_a_recorded_identity_agai
     assert encoder.encoded_images == encoded + 4
     _assert_expected_features(
         _features(rebuilt), _expected_image_features(4, mean=_CHANGED_MEAN)
-    )
-    _assert_same_features(
-        _features(rebuilt), _features(_extract_images(dataset, tmp_path / "clean"))
     )
     recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
@@ -468,9 +483,6 @@ def test_extraction_interrupted_before_an_upgrade_restarts_with_the_current_reci
     _assert_expected_features(
         _features(resumed), _expected_image_features(4, mean=_CHANGED_MEAN)
     )
-    _assert_same_features(
-        _features(resumed), _features(_extract_images(dataset, tmp_path / "clean"))
-    )
     recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
     assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
@@ -487,13 +499,28 @@ def test_cache_config_rejects_an_unknown_identity_policy(setting):
 
 @pytest.fixture(scope="module")
 def slide_manifests(tmp_path_factory) -> dict[int, Path]:
-    """Manifests over the first 3 and all 4 slides of one cohort, two slides per patient."""
-    cohort = make_slide_cohort(tmp_path_factory.mktemp("slides"), n=4, size=256)
-    frame = pd.read_csv(cohort.manifest("binary_classification"))
-    frame["patient_id"] = [f"p{index // 2}" for index in range(len(frame))]
+    """Flat blue, magenta, green, yellow slides, paired into two patients.
+
+    Nonzero saturation lets real Otsu preprocessing mark the whole slide as tissue;
+    every tile has the same known RGB, with no random noise or boundary mixtures.
+    """
+    root = tmp_path_factory.mktemp("slides")
+    rows = []
+    for index, colour in enumerate(((0, 0, 255), (255, 0, 255), (0, 255, 0), (255, 255, 0))):
+        sample_id = f"slide{index:02d}"
+        image_path = root / f"{sample_id}.tif"
+        pixels = np.full((256, 256, 3), colour, dtype=np.uint8)
+        write_tiff(image_path, pixels)
+        rows.append({
+            "sample_id": sample_id,
+            "image_path": str(image_path),
+            "patient_id": f"p{index // 2}",
+            "label": index % 2,
+        })
+    frame = pd.DataFrame(rows)
     manifests = {}
     for n in (3, 4):
-        manifests[n] = cohort.root / f"dataset_{n}.csv"
+        manifests[n] = root / f"dataset_{n}.csv"
         frame.head(n).to_csv(manifests[n], index=False)
     return manifests
 
@@ -558,14 +585,14 @@ def test_slide_cache_is_refused_after_an_upgrade_changed_the_transform(
 def test_slide_cache_is_reused_after_an_upgrade_kept_the_identity(
     tmp_path, encoder, slide_manifests, monkeypatch, kind
 ):
-    features = _features(_extract_slides(slide_manifests[4], tmp_path, kind))
+    _extract_slides(slide_manifests[4], tmp_path, kind)
     encoded = encoder.encoded_images
 
     _upgrade_slide2vec(monkeypatch, encoder, mean=_ORIGINAL_MEAN)
     reused = _extract_slides(slide_manifests[4], tmp_path, kind)
 
     assert encoder.encoded_images == encoded
-    _assert_same_features(_features(reused), features)
+    _assert_same_features(_features(reused), _expected_slide_features(kind, changed=False))
     recorded = _cache_metadata(tmp_path, kind)["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
 
@@ -574,18 +601,14 @@ def test_slide_cache_is_reused_after_an_upgrade_kept_the_identity(
 def test_reextract_setting_rebuilds_slide_caches_and_what_is_aggregated_from_them(
     tmp_path, encoder, slide_manifests, monkeypatch, kind
 ):
-    stale = _features(_extract_slides(slide_manifests[4], tmp_path, kind))
+    _extract_slides(slide_manifests[4], tmp_path, kind)
 
     _upgrade_slide2vec(monkeypatch, encoder, mean=_CHANGED_MEAN)
     rebuilt = _extract_slides(
         slide_manifests[4], tmp_path, kind, on_identity_mismatch="reextract"
     )
 
-    _assert_expected_features(_features(rebuilt), _features_of_the_changed_recipe(stale))
-    _assert_same_features(
-        _features(rebuilt),
-        _features(_extract_slides(slide_manifests[4], tmp_path, kind, scope="clean-")),
-    )
+    _assert_same_features(_features(rebuilt), _expected_slide_features(kind, changed=True))
     recorded = _cache_metadata(tmp_path, kind)["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
     assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
@@ -595,7 +618,7 @@ def test_reextract_setting_rebuilds_slide_caches_and_what_is_aggregated_from_the
 def test_strict_setting_rebuilds_slide_caches_without_a_recorded_identity(
     tmp_path, encoder, slide_manifests, monkeypatch, kind
 ):
-    stale = _features(_extract_slides(slide_manifests[4], tmp_path, kind))
+    _extract_slides(slide_manifests[4], tmp_path, kind)
     for cache_kind in sorted({"tile", kind} - ({"tile"} if kind == "hierarchical" else set())):
         _forget_identity(tmp_path, cache_kind)
 
@@ -604,11 +627,7 @@ def test_strict_setting_rebuilds_slide_caches_without_a_recorded_identity(
         slide_manifests[4], tmp_path, kind, on_unrecorded_identity="reextract"
     )
 
-    _assert_expected_features(_features(rebuilt), _features_of_the_changed_recipe(stale))
-    _assert_same_features(
-        _features(rebuilt),
-        _features(_extract_slides(slide_manifests[4], tmp_path, kind, scope="clean-")),
-    )
+    _assert_same_features(_features(rebuilt), _expected_slide_features(kind, changed=True))
     recorded = _cache_metadata(tmp_path, kind)["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
 
@@ -617,7 +636,7 @@ def test_strict_setting_rebuilds_slide_caches_without_a_recorded_identity(
 def test_cache_aggregated_from_unverifiable_tiles_is_unverifiable_too(
     tmp_path, encoder, slide_manifests, monkeypatch, kind
 ):
-    stale = _features(_extract_slides(slide_manifests[4], tmp_path, kind))
+    _extract_slides(slide_manifests[4], tmp_path, kind)
     _forget_identity(tmp_path, "tile")
     shutil.rmtree(_cache_dir(tmp_path, kind))
 
@@ -632,24 +651,19 @@ def test_cache_aggregated_from_unverifiable_tiles_is_unverifiable_too(
     )
 
     # The strict setting then rebuilds the tiles and what was aggregated from them.
-    _assert_expected_features(_features(rebuilt), _features_of_the_changed_recipe(stale))
-    _assert_same_features(
-        _features(rebuilt),
-        _features(_extract_slides(slide_manifests[4], tmp_path, kind, scope="clean-")),
-    )
+    _assert_same_features(_features(rebuilt), _expected_slide_features(kind, changed=True))
 
 
 def _interrupt_slide_aggregation_from_unverifiable_tiles(
     root: Path, dataset_csv: Path, monkeypatch, encoder
-) -> dict[str, torch.Tensor]:
+) -> None:
     """Leave an uncommitted slide cache aggregated from tiles with no recorded identity.
 
     The tiles are extracted with the original recipe and lose their record, as a cache
     soma 1.17 wrote. After an upgrade that changed the recipe, a run accepts them,
-    aggregates every slide, and dies before soma commits the slide cache. Returns the
-    slide features of the original recipe, which are the ones left on disk.
+    aggregates every slide, and dies before soma commits the slide cache.
     """
-    stale = _features(_extract_slides(dataset_csv, root, "slide"))
+    _extract_slides(dataset_csv, root, "slide")
     _forget_identity(root, "tile")
     shutil.rmtree(_cache_dir(root, "slide"))
 
@@ -661,13 +675,12 @@ def _interrupt_slide_aggregation_from_unverifiable_tiles(
         )
         with pytest.raises(KeyboardInterrupt):
             _extract_slides(dataset_csv, root, "slide")
-    return stale
 
 
 def test_strict_setting_rebuilds_a_slide_cache_interrupted_while_aggregating_unverifiable_tiles(
     tmp_path, encoder, slide_manifests, monkeypatch
 ):
-    stale = _interrupt_slide_aggregation_from_unverifiable_tiles(
+    _interrupt_slide_aggregation_from_unverifiable_tiles(
         tmp_path, slide_manifests[4], monkeypatch, encoder
     )
 
@@ -676,7 +689,7 @@ def test_strict_setting_rebuilds_a_slide_cache_interrupted_while_aggregating_unv
     )
 
     # Nothing vouches for what the interrupted run left: it is not taken for a hit.
-    _assert_expected_features(_features(rebuilt), _features_of_the_changed_recipe(stale))
+    _assert_same_features(_features(rebuilt), _expected_slide_features("slide", changed=True))
     recorded = _cache_metadata(tmp_path, "slide")["feature_identity"]
     assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
 
@@ -684,7 +697,7 @@ def test_strict_setting_rebuilds_a_slide_cache_interrupted_while_aggregating_unv
 def test_slide_cache_interrupted_while_aggregating_unverifiable_tiles_is_reused_with_a_warning(
     tmp_path, encoder, slide_manifests, monkeypatch, caplog
 ):
-    stale = _interrupt_slide_aggregation_from_unverifiable_tiles(
+    _interrupt_slide_aggregation_from_unverifiable_tiles(
         tmp_path, slide_manifests[4], monkeypatch, encoder
     )
     encoded = encoder.encoded_images
@@ -697,7 +710,7 @@ def test_slide_cache_interrupted_while_aggregating_unverifiable_tiles_is_reused_
     (warning,) = _unverifiable_warnings(caplog)
     assert str(_cache_dir(tmp_path, "slide")) in warning
     assert encoder.encoded_images == encoded
-    _assert_same_features(_features(resumed), stale)
+    _assert_same_features(_features(resumed), _expected_slide_features("slide", changed=False))
     assert "feature_identity" not in _cache_metadata(tmp_path, "slide")
 
 
