@@ -103,6 +103,9 @@ with the slide2vec version. For example:
      }
    }
 
+A slide or patient cache records the identity of the tile cache it is aggregated
+from, so its record includes the transform of the tile encoder.
+
 When a pooled cache already holds features, soma checks the record before it
 reuses the cache or adds samples to it:
 
@@ -124,7 +127,8 @@ preprocessing changes to your encoder between the two versions, and delete the
 cache directory if there is one. Set ``cache.on_unrecorded_identity: reextract``
 to delete every such cache and extract it again. soma never adds a record to a
 cache it could not verify, so the warning repeats until the cache is extracted
-again.
+again. A slide or patient cache aggregated from such a tile cache records no
+identity either.
 
 ``reextract`` deletes the whole cache directory, including the features of
 samples that the current dataset does not use. Do not use it while another job

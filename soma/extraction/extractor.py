@@ -32,6 +32,7 @@ import slide2vec.progress as slide2vec_progress
 from soma.cache import (
     FeatureCacheResolution,
     FeatureIdentityCheck,
+    recorded_identity,
     pooled_extraction_geometry,
     build_tile_artifacts_from_cache_payload,
     preprocessing_backend_provenance,
@@ -1481,6 +1482,7 @@ class _PooledFeatureExtractor:
                     loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
                     for loaded in selected_loaded
                 },
+                feature_identity=recorded_identity(tile_cache.metadata),
             )
             patient_artifacts = _aggregate_patients(
                 model_name=model_name,
@@ -1761,6 +1763,7 @@ class _PooledFeatureExtractor:
                     execution_prefetch_factor=slide_execution.prefetch_factor,
                     output_dir=slide_cache.cache_dir,
                     shard_payloads_by_rank=shard_payloads,
+                    tile_feature_identity=recorded_identity(tile_cache.metadata),
                     on_progress=_on_aggregation_progress,
                     on_shard_complete=_commit_shard,
                 )
@@ -1781,6 +1784,7 @@ class _PooledFeatureExtractor:
                             loaded.slide.sample_id: tile_cache.feature_path_for_id(loaded.slide.sample_id)
                             for loaded in selected_loaded
                         },
+                        feature_identity=recorded_identity(tile_cache.metadata),
                     )
                     slide_artifacts = _aggregate_tiles(
                         model_name=model_name,

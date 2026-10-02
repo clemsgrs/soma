@@ -3354,11 +3354,12 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         execution_output_dtype="fp32",
         output_dir,
         shard_payloads_by_rank,
+        tile_feature_identity=None,
         on_shard_complete,
         on_progress=None,
     ):
         del model_name, output_variant, allow_non_recommended_settings, execution_batch_size
-        del execution_num_workers_per_gpu, execution_prefetch_factor
+        del execution_num_workers_per_gpu, execution_prefetch_factor, tile_feature_identity
         assert num_workers == 2
         submitted.append(
             {

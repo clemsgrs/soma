@@ -10,6 +10,7 @@ slide2vec version.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -326,6 +327,107 @@ def test_strict_setting_extracts_an_image_cache_without_a_recorded_identity_agai
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
 
 
+def _interrupt_before_first_commit(extract, *, written_batches: int) -> None:
+    """Run ``extract`` with an encoder that fails after ``written_batches`` batches.
+
+    soma commits the images of one run together, so the batches slide2vec wrote before
+    the failure stay on disk uncommitted.
+    """
+    encode = _SwitchableTransformEncoder.encode_tiles
+    batches = 0
+
+    def fail_later(self, batch):
+        nonlocal batches
+        batches += 1
+        if batches > written_batches:
+            raise RuntimeError("interrupted")
+        return encode(self, batch)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_SwitchableTransformEncoder, "encode_tiles", fail_later)
+        with pytest.raises(Exception, match="interrupted"):
+            extract()
+
+
+@pytest.mark.parametrize("written_batches", [0, 1])
+def test_extraction_interrupted_before_its_first_commit_still_records_its_identity(
+    tmp_path, encoder, caplog, written_batches
+):
+    dataset = _image_dataset(tmp_path / "data")
+    _interrupt_before_first_commit(
+        lambda: _extract_images(dataset, tmp_path), written_batches=written_batches
+    )
+
+    with caplog.at_level("WARNING"):
+        _extract_images(dataset, tmp_path)
+
+    assert not _unverifiable_warnings(caplog)
+    recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _ORIGINAL_MEAN
+
+
+def test_empty_cache_without_a_recorded_identity_records_one_with_its_first_features(
+    tmp_path, encoder, caplog
+):
+    dataset = _image_dataset(tmp_path / "data")
+    _interrupt_before_first_commit(lambda: _extract_images(dataset, tmp_path), written_batches=0)
+    _forget_identity(tmp_path, "image")
+
+    with caplog.at_level("WARNING"):
+        _extract_images(dataset, tmp_path)
+
+    # soma 1.17 created the cache and extracted nothing into it: there is nothing to verify.
+    assert not _unverifiable_warnings(caplog)
+    recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _ORIGINAL_MEAN
+
+
+def test_features_written_by_a_run_killed_before_its_commit_are_verified_like_any_other(
+    tmp_path, encoder, monkeypatch
+):
+    dataset = _image_dataset(tmp_path / "data")
+    with pytest.MonkeyPatch.context() as patch:
+        # Every image is written, then the process dies before soma commits them.
+        patch.setattr(
+            "soma.tile_extraction.record_sample_identity_signatures",
+            lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            _extract_images(dataset, tmp_path)
+    encoded = encoder.encoded_images
+
+    _extract_images(dataset, tmp_path)
+
+    # The same slide2vec wrote them: the next run reuses them and records their identity.
+    assert encoder.encoded_images == encoded
+    recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _ORIGINAL_MEAN
+
+    _upgrade_slide2vec(monkeypatch, encoder, mean=_CHANGED_MEAN)
+
+    with pytest.raises(CacheFeatureIdentityMismatch, match=r"transform\.normalize\.mean"):
+        _extract_images(dataset, tmp_path)
+
+
+def test_extraction_interrupted_before_an_upgrade_restarts_with_the_current_recipe(
+    tmp_path, encoder, monkeypatch, caplog
+):
+    dataset = _image_dataset(tmp_path / "data")
+    _interrupt_before_first_commit(lambda: _extract_images(dataset, tmp_path), written_batches=1)
+
+    _upgrade_slide2vec(monkeypatch, encoder, mean=_CHANGED_MEAN)
+    with caplog.at_level("WARNING"):
+        resumed = _extract_images(dataset, tmp_path)
+
+    assert not _unverifiable_warnings(caplog)
+    _assert_same_features(
+        _features(resumed), _features(_extract_images(dataset, tmp_path / "clean"))
+    )
+    recorded = _cache_metadata(tmp_path, "image")["feature_identity"]
+    assert recorded["slide2vec_version"] == _UPGRADED_VERSION
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
+
+
 @pytest.mark.parametrize("setting", ["on_identity_mismatch", "on_unrecorded_identity"])
 def test_cache_config_rejects_an_unknown_identity_policy(setting):
     with pytest.raises(ValueError, match=f"cache.{setting}"):
@@ -437,6 +539,48 @@ def test_reextract_setting_rebuilds_slide_caches_and_what_is_aggregated_from_the
     recorded = _cache_metadata(tmp_path, kind)["feature_identity"]
     assert recorded["slide2vec_version"] == _UPGRADED_VERSION
     assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
+
+
+@pytest.mark.parametrize("kind", _SLIDE_KINDS)
+def test_strict_setting_rebuilds_slide_caches_without_a_recorded_identity(
+    tmp_path, encoder, slide_manifests, monkeypatch, kind
+):
+    _extract_slides(slide_manifests[4], tmp_path, kind)
+    for cache_kind in sorted({"tile", kind} - ({"tile"} if kind == "hierarchical" else set())):
+        _forget_identity(tmp_path, cache_kind)
+
+    _upgrade_slide2vec(monkeypatch, encoder, mean=_CHANGED_MEAN)
+    rebuilt = _extract_slides(
+        slide_manifests[4], tmp_path, kind, on_unrecorded_identity="reextract"
+    )
+
+    current = _features(_extract_slides(slide_manifests[4], tmp_path, kind, scope="clean-"))
+    _assert_same_features(_features(rebuilt), current)
+    recorded = _cache_metadata(tmp_path, kind)["feature_identity"]
+    assert recorded["slide2vec_version"] == _UPGRADED_VERSION
+
+
+@pytest.mark.parametrize("kind", ["slide", "patient"])
+def test_cache_aggregated_from_unverifiable_tiles_is_unverifiable_too(
+    tmp_path, encoder, slide_manifests, monkeypatch, kind
+):
+    _extract_slides(slide_manifests[4], tmp_path, kind)
+    _forget_identity(tmp_path, "tile")
+    shutil.rmtree(_cache_dir(tmp_path, kind))
+
+    _extract_slides(slide_manifests[4], tmp_path, kind)
+
+    # Aggregated from tiles nothing vouches for: no identity is recorded for them either.
+    assert "feature_identity" not in _cache_metadata(tmp_path, kind)
+
+    _upgrade_slide2vec(monkeypatch, encoder, mean=_CHANGED_MEAN)
+    rebuilt = _extract_slides(
+        slide_manifests[4], tmp_path, kind, on_unrecorded_identity="reextract"
+    )
+
+    # The strict setting then rebuilds the tiles and what was aggregated from them.
+    current = _features(_extract_slides(slide_manifests[4], tmp_path, kind, scope="clean-"))
+    _assert_same_features(_features(rebuilt), current)
 
 
 def test_completing_a_slide_cache_without_a_recorded_identity_warns_once(

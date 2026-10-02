@@ -28,9 +28,9 @@ from soma.cache._types import (
 from soma.cache.feature_identity import (
     FEATURE_IDENTITY_METADATA_KEY,
     FeatureIdentityCheck,
-    discard_reason,
-    holds_features,
-    written_identity_record,
+    pending_identity_record,
+    record_committed_identity,
+    stale_features_reason,
 )
 from soma.cache.geometry import (
     GEOMETRY_METADATA_KEY,
@@ -726,20 +726,21 @@ def _resolve_cache(
             raise ValueError(mismatch_message)
         # Before any sample is counted as a hit or handed to slide2vec as missing: a
         # cache must never be reused, or completed, under another feature identity.
-        discard = None
+        stale_reason = None
         if feature_identity is not None:
-            discard = discard_reason(
+            stale_reason = stale_features_reason(
                 cache_dir=cache_dir,
+                features_dir=features_dir,
                 metadata_path=metadata_path,
                 existing=existing,
                 check=feature_identity,
             )
-        if discard is not None:
+        if stale_reason is not None:
             # No feature in the cache can be kept, whatever samples this run asks for:
             # delete it, and initialize it below like a cache that never existed.
             shutil.rmtree(cache_dir)
             features_dir.mkdir(parents=True)
-            initial_reason = discard
+            initial_reason = stale_reason
 
     if metadata_path.is_file():
         validation, present, expected = _validate_feature_cache_contents(
@@ -795,6 +796,9 @@ def _resolve_cache(
 
     if manifest_rows is not None:
         _write_manifest(manifest_path, manifest_rows)
+    identity_record = pending_identity_record(cache_kind)
+    if identity_record is not None:
+        metadata = {**metadata, FEATURE_IDENTITY_METADATA_KEY: identity_record}
     _write_metadata(metadata_path, metadata)
     _emit_cache_state_log(
         cache_label="feature",
@@ -1196,13 +1200,10 @@ def record_sample_identity_signatures(
         if metadata_path.is_file()
         else dict(resolution.metadata)
     )
-    # Record the feature identity with the first features of a cache. A cache that
-    # already holds features without a record is never stamped: nothing proves its
-    # existing features were extracted with the identity of the samples added now.
-    if FEATURE_IDENTITY_METADATA_KEY not in metadata and not holds_features(metadata):
-        identity_record = written_identity_record(resolution, cache_ids)
-        if identity_record is not None:
-            metadata[FEATURE_IDENTITY_METADATA_KEY] = identity_record
+    # The first features of a cache complete its pending identity record. A cache
+    # without a record is never stamped: nothing proves its existing features were
+    # extracted with the identity of the samples added now.
+    record_committed_identity(metadata, resolution, cache_ids)
     signature_map = {
         str(cache_id): str(signature)
         for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()

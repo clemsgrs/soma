@@ -19,13 +19,6 @@ from slide2vec import (
 )
 import slide2vec.api as slide2vec_api
 import slide2vec.progress as slide2vec_progress
-# The feature identity is slide2vec's to define. 6.3 does not export it publicly, so
-# this module is the one place soma reaches for it (see ``pooled_identity_differences``).
-from slide2vec.runtime.feature_identity import (
-    deferred_transform_record,
-    differing_fields,
-    pooled_feature_identity,
-)
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, PreviewConfig
@@ -305,7 +298,17 @@ def pooled_identity_differences(
     it: a field either side does not hold is accepted. The encoder is loaded, on a CPU
     copy, only when ``recorded`` holds a transform to verify.
     """
-    transform_model = transform_model or model
+    # The feature identity is slide2vec's to define, and 6.3 exports none of it
+    # publicly: this function is the one place soma reaches for it (ADR 0012). Imported
+    # here so that an upstream move breaks this check, not every user of the adapter.
+    from slide2vec.runtime.feature_identity import (
+        deferred_transform_record,
+        differing_fields,
+        pooled_feature_identity,
+    )
+
+    if transform_model is None:
+        transform_model = model
     if preprocessing is None:
         transform_model._declare_given_encoder_input(emit_run_info=False)
     return differing_fields(

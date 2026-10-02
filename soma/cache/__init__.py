@@ -4,6 +4,7 @@ from soma.cache.feature_identity import (
     FEATURE_IDENTITY_METADATA_KEY,
     CacheFeatureIdentityMismatch,
     FeatureIdentityCheck,
+    recorded_identity,
 )
 from soma.cache.geometry import (
     GEOMETRY_METADATA_KEY,
@@ -145,6 +146,7 @@ __all__ = [
     "record_empty_sample_ids",
     "record_feature_dim",
     "record_sample_identity_signatures",
+    "recorded_identity",
     "resolve_cache_root",
     "resolve_dense_cache",
     "resolve_feature_payload_dir",
