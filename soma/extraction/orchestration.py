@@ -238,6 +238,13 @@ def _aggregate_patients(
 
     # Step 2: Group slide embeddings by patient_id.
     patient_slide_embs: dict[str, list[torch.Tensor]] = {}
+    # Every slide embedding of one aggregation shares its feature identity; a patient
+    # embedding pools them, so it carries the same one.
+    patient_metadata: dict[str, object] = {"encoder_name": model_name, "encoder_level": "patient"}
+    if slide_artifacts:
+        identity = slide_artifacts[0].metadata.get("compatibility")
+        if identity:
+            patient_metadata["compatibility"] = identity
     for art in slide_artifacts:
         try:
             pid = patient_id_map[art.sample_id]
@@ -250,8 +257,9 @@ def _aggregate_patients(
             emb = torch.as_tensor(emb)
         patient_slide_embs.setdefault(pid, []).append(emb)
 
-    # Step 3: Patient encoding.
-    loaded = model._load_backend()
+    # Step 3: Patient encoding. It consumes slide embeddings and reads no tile transform,
+    # so no encoder input is declared (slide2vec refuses ``_load_backend`` without one).
+    loaded = model._load_backend_without_transform()
     patient_artifacts = []
     for pid, slide_embs_list in patient_slide_embs.items():
         stacked = torch.stack(slide_embs_list, dim=0).to(loaded.device)
@@ -262,7 +270,7 @@ def _aggregate_patients(
             patient_emb,
             output_dir=patient_execution.output_dir,
             output_format=patient_execution.output_format,
-            metadata={"encoder_name": model_name, "encoder_level": "patient"},
+            metadata=patient_metadata,
             num_slides=len(slide_embs_list),
         )
         patient_artifacts.append(artifact)

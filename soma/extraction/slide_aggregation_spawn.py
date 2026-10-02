@@ -11,6 +11,7 @@ from typing import Callable
 
 import torch
 
+from soma.cache.io import tile_artifact_metadata
 from soma.extraction.orchestration import _aggregate_tiles
 
 # How long to keep draining the result queue after every worker process has
@@ -50,17 +51,16 @@ def _aggregate_slide_shard_worker(
             metadata_path = shard_dir / f"{sample_id}.meta.json"
             metadata_path.write_text(
                 json.dumps(
-                    {
-                        "sample_id": sample_id,
-                        "artifact_type": "tile_embeddings",
-                        "format": "pt",
-                        "feature_dim": feature_dim,
-                        "num_tiles": num_tiles,
-                        "image_path": str(payload["image_path"]),
-                        "mask_path": str(payload["mask_path"]),
-                        "coordinates_npz_path": str(payload["coordinates_npz_path"]),
-                        "coordinates_meta_path": str(payload["coordinates_meta_path"]),
-                    },
+                    tile_artifact_metadata(
+                        sample_id=sample_id,
+                        feature_path=feature_path,
+                        feature_dim=feature_dim,
+                        num_tiles=num_tiles,
+                        image_path=payload["image_path"],
+                        mask_path=payload["mask_path"],
+                        coordinates_npz_path=payload["coordinates_npz_path"],
+                        coordinates_meta_path=payload["coordinates_meta_path"],
+                    ),
                     indent=2,
                     sort_keys=True,
                 ),

@@ -1,5 +1,10 @@
 """Cache layer for tiling and feature artifacts."""
 
+from soma.cache.feature_identity import (
+    FEATURE_IDENTITY_METADATA_KEY,
+    CacheFeatureIdentityMismatch,
+    FeatureIdentityCheck,
+)
 from soma.cache.geometry import (
     GEOMETRY_METADATA_KEY,
     CacheGeometryMismatch,
@@ -105,7 +110,10 @@ from soma.cache.features import (
 )
 
 __all__ = [
+    "CacheFeatureIdentityMismatch",
     "CacheGeometryMismatch",
+    "FEATURE_IDENTITY_METADATA_KEY",
+    "FeatureIdentityCheck",
     "GEOMETRY_METADATA_KEY",
     "dense_extraction_geometry",
     "pooled_extraction_geometry",

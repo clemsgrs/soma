@@ -23,7 +23,8 @@ annotation-sampling mask; segmentation's ``label_mask_path`` is excluded from
 ordinary feature identity but participates in the separate ROI-sampling cache.
 Delete affected caches before replacing source files in place.
 
-On a complete cache hit, soma does not load the foundation encoder. On a miss,
+On a complete cache hit, soma does not load the foundation encoder, except once
+after a slide2vec upgrade (see `Feature identity`_). On a miss,
 slide2vec extracts and persists features through its public ``Model`` interfaces.
 For pooled slide encoders, soma passes the artifacts from ``Model.embed_tiles``
 to ``Model.aggregate_tiles``. soma owns cache identity and completeness checks;
@@ -62,11 +63,76 @@ A mismatch raises ``CacheGeometryMismatch`` with both sizes. Delete the cache
 directory to re-extract or choose a different cache root. This prevents reuse of
 features whose spatial extent differs from the current encoder input.
 
-Geometry checks cannot detect pixel-processing changes that preserve size,
-such as a different interpolation kernel or photometric transform, and soma
-does not invalidate caches by dependency version. Delete the affected cache
+Geometry checks cannot detect pixel-processing changes that preserve size. A
+change of the encoder's image transform is detected by the feature identity
+check below. A change in how slide2vec reads a tile from the slide, such as a
+different interpolation kernel, is not detected: delete the affected cache
 directories, or select a fresh ``cache.root_dir``, when upgrading slide2vec
 across such a change.
+
+Feature identity
+----------------
+
+A pooled cache key covers the encoder name, the output variant, the precision,
+the registry ``input_size`` and the spacing. It does not cover the encoder's
+image transform. A slide2vec release can change that transform (normalization
+statistics, resize, crop) and leave the key unchanged.
+
+slide2vec records the feature identity of every embedding it writes: the encoder,
+the output variant, the precision, the tile geometry and the image transform.
+When soma writes the first features of a tile, image, hierarchical, slide or
+patient cache, it copies this identity into ``cache_metadata.json`` together
+with the slide2vec version. For example:
+
+.. code-block:: json
+
+   {
+     "feature_identity": {
+       "slide2vec_version": "6.3.1",
+       "identity": {
+         "encoder_name": "uni2",
+         "output_variant": "default",
+         "precision": "fp16",
+         "feature_dtype": "fp16",
+         "transform": {
+           "normalize": {"mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225]},
+           "resize": null,
+           "center_crop": null
+         }
+       }
+     }
+   }
+
+When a pooled cache already holds features, soma checks the record before it
+reuses the cache or adds samples to it:
+
+- The recorded slide2vec version is the installed one. soma reuses the cache and
+  does not load the encoder.
+- The versions differ. soma loads the encoder once, on CPU, and compares the
+  recorded identity with the one the installed slide2vec produces.
+
+  - No field differs: soma reuses the cache and records the installed version,
+    so later runs do not load the encoder.
+  - A field differs: the run stops with ``CacheFeatureIdentityMismatch``, which
+    names the fields. Set ``cache.on_identity_mismatch: reextract`` to delete the
+    cache and extract it again instead.
+
+A cache written by soma 1.17.0 or earlier records no feature identity, so soma
+cannot verify it. By default soma reuses it and logs one warning. Check the
+`slide2vec release notes <https://github.com/clemsgrs/slide2vec/releases>`_ for
+preprocessing changes to your encoder between the two versions, and delete the
+cache directory if there is one. Set ``cache.on_unrecorded_identity: reextract``
+to delete every such cache and extract it again. soma never adds a record to a
+cache it could not verify, so the warning repeats until the cache is extracted
+again.
+
+``reextract`` deletes the whole cache directory, including the features of
+samples that the current dataset does not use. Do not use it while another job
+reads the cache.
+
+The check runs only when the slide2vec version changes. A transform that changes
+without a slide2vec upgrade, for example after an upgrade of ``timm``, is not
+detected. Dense caches are not checked.
 
 Dense cache key
 ---------------

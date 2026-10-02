@@ -22,6 +22,7 @@ from slide2vec import ImageSpec, Model
 
 from soma.cache import (
     FeatureCacheResolution,
+    FeatureIdentityCheck,
     record_feature_dim,
     record_sample_identity_signatures,
     resolve_cache_root,
@@ -39,7 +40,7 @@ from soma.extraction.commit import (
     resolve_commit_every,
 )
 from soma.features import FeatureStore
-from soma.slide2vec_adapter import build_execution_options
+from soma.slide2vec_adapter import build_execution_options, pooled_identity_differences
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,7 @@ class _TileFeatureExtractor:
                 output_variant=output_variant,
                 dtype=dtype,
                 validate_payloads=self._cache.validate_payloads,
+                feature_identity=self._feature_identity_check(feature_dir, dtype=dtype),
             )
             if cache_resolution.complete:
                 logger.info(
@@ -221,6 +223,36 @@ class _TileFeatureExtractor:
             logger.info("Saved tile features to %s (dim=%s)", out_root, feature_dim)
 
         return FeatureStore(out_root)
+
+    def _feature_identity_check(self, feature_dir: Path, *, dtype: str) -> FeatureIdentityCheck:
+        """Verify a cache against the identity slide2vec would give these images now."""
+
+        def differing(recorded: dict) -> dict:
+            return pooled_identity_differences(
+                recorded,
+                model=Model.from_preset(
+                    self._encoder.name,
+                    output_variant=self._encoder.output_variant,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                ),
+                execution=build_execution_options(
+                    self._encoder,
+                    execution=self._execution,
+                    encoder_name=self._encoder.name,
+                    output_dir=feature_dir,
+                    num_gpus=self._execution.num_gpus,
+                    save_tile_embeddings=True,
+                    output_dtype=dtype,
+                ),
+                # Given geometry: pre-cropped images declare no tiling.
+                preprocessing=None,
+            )
+
+        return FeatureIdentityCheck(
+            differing=differing,
+            on_mismatch=self._cache.on_identity_mismatch,
+            on_unrecorded=self._cache.on_unrecorded_identity,
+        )
 
 
 def _log_legacy_image_cache_key(

@@ -1,5 +1,24 @@
 # Changelog
 
+- 2026-10-02: Pooled feature caches are checked against the encoder's
+  preprocessing after a slide2vec upgrade. A pooled cache key does not cover the
+  encoder's image transform, so a cache written before slide2vec 6.2.0 was reused
+  for `lunit`, `dinov2-vitb14` and `mstar` although their features changed, and a
+  partly filled cache was completed with features of the new transform. soma now
+  records slide2vec's feature identity and version in `cache_metadata.json` when
+  it writes a tile, image, hierarchical, slide or patient cache. The first time
+  such a cache is used with another slide2vec version, soma loads the encoder
+  once and compares the two identities, before it reuses the cache or adds
+  samples to it. If they differ, the run stops with `CacheFeatureIdentityMismatch`
+  and names the differing fields; set `cache.on_identity_mismatch: reextract` to
+  delete the cache and extract it again. Caches written by soma 1.17.0 or
+  earlier record no identity: soma reuses them and warns once, or deletes and
+  extracts them again with `cache.on_unrecorded_identity: reextract`. Cache keys
+  do not change. Existing caches of the three encoders above still need to be
+  deleted by hand, or with the second setting. Patient-level aggregation no
+  longer fails with "No encoder-input contract has been declared". See
+  `caching.rst`.
+
 - 2026-10-01: Require hs2p 5.1.0 and slide2vec 6.3.1. Flat PNG/JPEG slides
   (with `spacing_at_level_0` in `dataset.csv`) now run end to end with the default
   mask and tiling previews; before, previews failed the slide and pooled extraction
