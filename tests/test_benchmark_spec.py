@@ -119,6 +119,51 @@ def test_benchmark_spec_rejects_invalid_canonical_seeds(canonical_seeds):
         )
 
 
+def _pipeline_result(run_dir, test_checksum="test-digest"):
+    from soma.pipeline import PipelineResult
+
+    return PipelineResult(
+        fold_results=[],
+        summary={},
+        run_dir=Path(run_dir),
+        dataset_checksum="dataset-digest",
+        splits_checksum="splits-digest",
+        test_checksum=test_checksum,
+    )
+
+
+def test_run_benchmark_spec_rejects_seeds_that_ran_against_different_manifests(
+    tmp_path, monkeypatch
+):
+    spec = BenchmarkSpec(
+        name="fmtf/example",
+        canonical_seeds=(0, 1),
+        primary_metric="metric/a",
+        build_config=lambda **kwargs: kwargs,
+        score=lambda run_dir: {"metric/a": 1.0},
+    )
+
+    class FakePipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            return _pipeline_result(
+                self.config["output_root"], test_checksum=f"test-{self.config['seed']}"
+            )
+
+    monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: FakePipeline)
+
+    with pytest.raises(ValueError, match="different manifests"):
+        run_benchmark_spec(
+            spec,
+            dataset_csv=tmp_path / "dataset.csv",
+            splits_csv=tmp_path / "splits.csv",
+            encoder="fmtf-encoder",
+            output_root=tmp_path / "evidence",
+        )
+
+
 def test_run_benchmark_spec_runs_canonical_seeds_with_shared_cache_and_aggregates(
     tmp_path, monkeypatch
 ):
@@ -149,6 +194,7 @@ def test_run_benchmark_spec_runs_canonical_seeds_with_shared_cache_and_aggregate
 
         def run(self):
             ran.append(self.config)
+            return _pipeline_result(self.config["output_root"])
 
     monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: FakePipeline)
     output_root = tmp_path / "evidence"
@@ -171,6 +217,9 @@ def test_run_benchmark_spec_runs_canonical_seeds_with_shared_cache_and_aggregate
             MetricResult("metric/b", 6.0, 2.0, 3),
         ),
         seed_roots=seed_roots,
+        dataset_checksum="dataset-digest",
+        splits_checksum="splits-digest",
+        test_checksum="test-digest",
     )
     assert ran == built
     assert [config["seed"] for config in built] == [7, 3, 11]
@@ -203,7 +252,7 @@ def test_run_benchmark_spec_uses_exact_explicit_seed_and_cache_root(tmp_path, mo
             self.config = config
 
         def run(self):
-            pass
+            return _pipeline_result(self.config["output_root"])
 
     monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: FakePipeline)
     output_root = tmp_path / "evidence"
@@ -223,6 +272,9 @@ def test_run_benchmark_spec_uses_exact_explicit_seed_and_cache_root(tmp_path, mo
         status=0,
         metrics=(MetricResult("metric/a", 5.0, 0.0, 1),),
         seed_roots=(output_root / "seed_42",),
+        dataset_checksum="dataset-digest",
+        splits_checksum="splits-digest",
+        test_checksum="test-digest",
     )
     assert [config["seed"] for config in built] == [42]
     assert built[0]["overrides"] == {
@@ -267,10 +319,10 @@ def test_run_benchmark_spec_missing_reported_metric_raises_value_error(
 
     class FakePipeline:
         def __init__(self, config):
-            pass
+            self.config = config
 
         def run(self):
-            pass
+            return _pipeline_result(self.config["output_root"])
 
     monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: FakePipeline)
 

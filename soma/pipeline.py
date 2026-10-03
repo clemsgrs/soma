@@ -181,6 +181,13 @@ class PipelineResult:
     #: Folds still without a ``metrics.json`` when this launch ended (``run.folds`` left
     #: them to another launch). Non-empty means no ``summary.json`` was written.
     pending_folds: tuple[int, ...] = ()
+    #: The manifests this run trained and scored against, as ``experiment.json`` and
+    #: ``run.yaml`` record them: the dataset and splits identity digests and the
+    #: test-identity digest (issue #247). Empty for the layer-1 helpers, which have no
+    #: managed run; :meth:`Pipeline.run` always fills them.
+    dataset_checksum: str = ""
+    splits_checksum: str = ""
+    test_checksum: str = ""
 
 
 @dataclass(frozen=True)
@@ -3218,6 +3225,16 @@ class _RunRecorder:
         """This launch trained its ``run.folds`` share; other folds are still pending."""
         self._pending_folds = pending_folds
 
+    def with_identity(self, result: "PipelineResult") -> "PipelineResult":
+        """The result with the manifest checksums the run's metadata files record."""
+        experiment = self._layout.experiment
+        return replace(
+            result,
+            dataset_checksum=experiment.dataset_checksum,
+            splits_checksum=experiment.splits_checksum,
+            test_checksum=self._metadata.test_checksum,
+        )
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         layout = self._layout
         if exc_type is not None:
@@ -3472,7 +3489,7 @@ class Pipeline:
                     handle.write("Completed task-free CRoMa representation evaluation.\n")
                 Console().print(_build_completed_run_panel(summary_metrics=result.summary))
                 recorder.complete(result.summary)
-                return result
+                return recorder.with_identity(result)
 
             preprocessing = resolve_pipeline_preprocessing(self._config)
             Console().print(
@@ -3530,7 +3547,7 @@ class Pipeline:
             if result.pending_folds:
                 # Heatmaps, the report and the completed status describe a whole run.
                 recorder.partial(result.pending_folds)
-                return result
+                return recorder.with_identity(result)
 
             if self._config.heatmaps.enabled:
                 from soma.heatmaps import render_heatmaps
@@ -3554,7 +3571,7 @@ class Pipeline:
             Console().print(_build_completed_run_panel(summary_metrics=result.summary))
             recorder.complete(result.summary)
 
-        return result
+        return recorder.with_identity(result)
 
     def _get_feature_source_context(self, *, run_dir: Path) -> _FeatureSourceContext:
         is_dense = self._config.dataset_type in ("segmentation", "detection")

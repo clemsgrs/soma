@@ -1317,6 +1317,35 @@ class TestPipeline:
         assert len(result.fold_results) == 1
         assert result.run_dir == _expected_run_dir(config)
 
+    def test_run_result_carries_the_checksums_its_metadata_files_record(
+        self, tmp_path: Path
+    ):
+        import json
+
+        import yaml
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "output",
+            dataset_type="slide",
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        )
+        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, feature_dir=feature_dir).run()
+
+        run_dir = _expected_run_dir(config)
+        experiment = json.loads(
+            (run_dir.parents[1] / "experiment.json").read_text(encoding="utf-8")
+        )
+        run = yaml.safe_load((run_dir / "run.yaml").read_text(encoding="utf-8"))
+        assert result.dataset_checksum == experiment["dataset_checksum"] != ""
+        assert result.splits_checksum == experiment["splits_checksum"] != ""
+        assert result.test_checksum == run["test_checksum"] != ""
+
     def test_run_ignores_samples_without_features(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         (feature_dir / "s5.pt").unlink()
