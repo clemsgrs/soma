@@ -1,5 +1,13 @@
 # Changelog
 
+- 2026-10-03: `Pipeline.run()` and `run_benchmark_spec()` return the manifest
+  checksums of the run. `PipelineResult` and `BenchmarkRunResult` gain
+  `dataset_checksum`, `splits_checksum` and `test_checksum`, the same values
+  `experiment.json` and `run.yaml` record, so a caller that pins a benchmark's
+  data can read them from the result instead of soma's run directories.
+  `run_benchmark_spec()` raises `ValueError` if its seeds ran against different
+  manifests. `run_benchmark()` leaves the three fields empty.
+
 - 2026-10-02: A run with a patient-level encoder no longer fails during tiling
   with "Patient-level models require a 'patient_id' for every slide" when the
   tiling cache is empty or incomplete. Before, such a run only worked after a

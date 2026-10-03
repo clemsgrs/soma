@@ -75,11 +75,20 @@ class BenchmarkRunResult:
 
     ``seed_roots`` holds the per-seed output roots of a canonical-seed run; for a
     ``from_run_dir`` re-score it holds the single resolved run directory that was scored.
+
+    The three checksums are the manifest identity every seed of a
+    :func:`run_benchmark_spec` run trained and scored against (dataset, splits and test
+    set, as ``experiment.json`` and ``run.yaml`` record them), so a caller can pin a
+    benchmark's data without reading soma's run directories. :func:`run_benchmark`
+    leaves them empty.
     """
 
     status: int
     metrics: tuple[MetricResult, ...]
     seed_roots: tuple[Path, ...]
+    dataset_checksum: str = ""
+    splits_checksum: str = ""
+    test_checksum: str = ""
 
 
 def _run_return(
@@ -813,6 +822,7 @@ def run_benchmark_spec(
     reported_metrics = get_reported_metrics(spec)
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     seed_roots: list[Path] = []
+    identities: set[tuple[str, str, str]] = set()
     pipeline_cls = _pipeline_cls()
 
     for seed in selected_seeds:
@@ -826,7 +836,8 @@ def run_benchmark_spec(
             overrides=overrides,
             encoder=encoder,
         )
-        pipeline_cls(config).run()
+        run = pipeline_cls(config).run()
+        identities.add((run.dataset_checksum, run.splits_checksum, run.test_checksum))
         scores = spec.score(seed_root)
         error = _missing_reported_score_message(
             spec, scores, reported_metrics=reported_metrics
@@ -836,6 +847,12 @@ def run_benchmark_spec(
         for metric in reported_metrics:
             measured_values[metric].append(float(scores[metric]))
 
+    if len(identities) != 1:
+        raise ValueError(
+            f"benchmark {spec.name!r} seeds ran against different manifests: "
+            f"{sorted(identities)}"
+        )
+    (dataset_checksum, splits_checksum, test_checksum), = identities
     return BenchmarkRunResult(
         status=0,
         metrics=tuple(
@@ -848,4 +865,7 @@ def run_benchmark_spec(
             for metric, values in measured_values.items()
         ),
         seed_roots=tuple(seed_roots),
+        dataset_checksum=dataset_checksum,
+        splits_checksum=splits_checksum,
+        test_checksum=test_checksum,
     )
