@@ -251,7 +251,8 @@ run it with ``soma config.yaml``:
 Selected dataset rows require non-empty ``label``, literal ``group_id``, and
 ``medical_center`` columns. The selected split must occur in exactly one fold;
 cross-validation is unsupported. The cohort must provide enough same- and
-other-confounder neighbours for ``m=5``; undefined scores cause an error.
+other-confounder neighbours for ``m=5``; CRoMa raises if any selected sample
+lacks them.
 
 Representation runs return metrics in ``result.summary`` with an empty
 ``fold_results`` list. They fit no task head and write no task report. Provenance

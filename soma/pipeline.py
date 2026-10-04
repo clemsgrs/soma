@@ -331,11 +331,6 @@ def evaluate_representation(
         m=representation.m,
         alpha=representation.alpha,
     )
-    if float(result.undefined_frac) != 0.0:
-        raise ValueError(
-            "CRoMa left selected samples undefined; the cohort lacks the required "
-            "same/other-confounder neighbour support for m=5."
-        )
     metric_values = (float(result.value), float(result.f0), float(result.ltm_alpha))
     if not all(math.isfinite(value) for value in metric_values):
         raise ValueError(
