@@ -1,5 +1,14 @@
 # Changelog
 
+- 2026-10-04: CRoMa representation runs work with croma 1.0. soma read
+  `CRoMaResult.undefined_frac`, which croma 1.0 removed, so every CRoMa run on a
+  fresh install failed with `AttributeError` after feature extraction. croma 1.0
+  scores every selected sample or raises `RuntimeError` naming the samples it
+  could not score, so soma no longer checks for undefined samples itself. soma
+  now requires croma 1.0.0. Metric values are unchanged: a CRoMa run of
+  `dinov2-vitb14` on the PathoROB camelyon cohort gives byte-identical summary
+  and per-sample values under croma 0.3.0 and 1.0.0.
+
 - 2026-10-03: `Pipeline.run()` and `run_benchmark_spec()` return the manifest
   checksums of the run. `PipelineResult` and `BenchmarkRunResult` gain
   `dataset_checksum`, `splits_checksum` and `test_checksum`, the same values

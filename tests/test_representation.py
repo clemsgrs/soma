@@ -446,6 +446,23 @@ def _representation_inputs(
     return dataset, Splits(splits_csv, dataset), FeatureStore(feature_dir)
 
 
+def _croma_cohort(
+    sites: tuple[str, ...] = ("north", "south"), per_cell: int = 6
+) -> list[tuple[str, str, str, str]]:
+    """Rows with ``per_cell`` samples for every label and site, one group per sample."""
+    return [
+        (f"{site}-{label}-{index}", label, f"{site}-{label}-{index}", site)
+        for site in sites
+        for label in ("A", "B")
+        for index in range(per_cell)
+    ]
+
+
+def _random_tensors(rows: list[tuple[str, str, str, str]]) -> dict[str, torch.Tensor]:
+    generator = torch.Generator().manual_seed(0)
+    return {row[0]: torch.randn(4, generator=generator) for row in rows}
+
+
 def test_representation_forwards_manifest_order_and_maps_croma_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -466,7 +483,6 @@ def test_representation_forwards_manifest_order_and_maps_croma_result(
             value=0.61,
             f0=0.25,
             ltm_alpha=0.42,
-            undefined_frac=0.0,
             sample_values_aligned=np.array([0.5, 0.7]),
         )
 
@@ -507,16 +523,44 @@ def test_representation_forwards_manifest_order_and_maps_croma_result(
     ]
 
 
+def test_representation_runs_the_installed_croma(tmp_path: Path):
+    rows = _croma_cohort()
+    dataset, splits, store = _representation_inputs(
+        tmp_path,
+        rows=rows,
+        split_rows=[(0, row[0], "test") for row in rows],
+        tensors=_random_tensors(rows),
+    )
+
+    result = evaluate_representation(
+        feature_store=store,
+        dataset=dataset,
+        splits=splits,
+        representation=RepresentationConfig(
+            kind="croma", confounder_column="site", split="test"
+        ),
+        run_dir=tmp_path / "run",
+    )
+
+    assert set(result.summary) == {
+        "test/croma_median",
+        "test/croma_f0",
+        "test/croma_ltm10",
+    }
+    assert all(np.isfinite(value) for value in result.summary.values())
+    samples = pd.read_csv(tmp_path / "run" / "croma_samples.csv")
+    assert samples["sample_id"].tolist() == [row[0] for row in rows]
+
+
 @pytest.mark.parametrize(
     ("result_overrides", "message"),
     [
-        ({"undefined_frac": 0.1}, "undefined"),
         ({"value": float("nan")}, "non-finite"),
         ({"f0": float("inf")}, "non-finite"),
         ({"ltm_alpha": float("-inf")}, "non-finite"),
     ],
 )
-def test_representation_rejects_partial_or_nonfinite_croma_results(
+def test_representation_rejects_nonfinite_croma_results(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     result_overrides: dict[str, float],
@@ -527,7 +571,7 @@ def test_representation_rejects_partial_or_nonfinite_croma_results(
         rows=[("s0", "A", "g0", "north")],
         split_rows=[(0, "s0", "test")],
     )
-    values = {"value": 0.6, "f0": 0.2, "ltm_alpha": 0.4, "undefined_frac": 0.0}
+    values = {"value": 0.6, "f0": 0.2, "ltm_alpha": 0.4}
     values.update(result_overrides)
     monkeypatch.setattr(
         "croma.CRoMa.compute",
@@ -549,31 +593,22 @@ def test_representation_rejects_partial_or_nonfinite_croma_results(
     assert not (tmp_path / "run" / "summary.json").exists()
 
 
-def test_invalid_representation_rerun_removes_stale_summary(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_invalid_representation_rerun_removes_stale_summary(tmp_path: Path):
+    # A single site leaves no other-confounder neighbours, so CRoMa cannot score any sample.
+    rows = _croma_cohort(sites=("north",))
     dataset, splits, store = _representation_inputs(
         tmp_path,
-        rows=[("s0", "A", "g0", "north")],
-        split_rows=[(0, "s0", "test")],
+        rows=rows,
+        split_rows=[(0, row[0], "test") for row in rows],
+        tensors=_random_tensors(rows),
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     (run_dir / "summary.json").write_text(
         '{"test/croma_median": 0.9}\n', encoding="utf-8"
     )
-    monkeypatch.setattr(
-        "croma.CRoMa.compute",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            value=0.6,
-            f0=0.2,
-            ltm_alpha=0.4,
-            undefined_frac=0.5,
-            sample_values_aligned=np.array([0.6]),
-        ),
-    )
 
-    with pytest.raises(ValueError, match="undefined"):
+    with pytest.raises(RuntimeError, match="scoreable"):
         evaluate_representation(
             feature_store=store,
             dataset=dataset,
@@ -776,7 +811,6 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
             value=0.6,
             f0=0.2,
             ltm_alpha=0.4,
-            undefined_frac=0.0,
             sample_values_aligned=np.array([0.6]),
         ),
     )
