@@ -458,9 +458,17 @@ def _croma_cohort(
     ]
 
 
-def _random_tensors(rows: list[tuple[str, str, str, str]]) -> dict[str, torch.Tensor]:
-    generator = torch.Generator().manual_seed(0)
-    return {row[0]: torch.randn(4, generator=generator) for row in rows}
+def _croma_tensors(rows: list[tuple[str, str, str, str]]) -> dict[str, torch.Tensor]:
+    """Orthogonal label/site cells give equal SO/OS distances and zero margins."""
+    vectors = {
+        ("north", "A"): torch.tensor([1.0, 0.0, 0.0, 0.0]),
+        ("north", "B"): torch.tensor([0.0, 1.0, 0.0, 0.0]),
+        ("south", "A"): torch.tensor([0.0, 0.0, 1.0, 0.0]),
+        ("south", "B"): torch.tensor([0.0, 0.0, 0.0, 1.0]),
+    }
+    return {
+        sample_id: vectors[(site, label)] for sample_id, label, _group_id, site in rows
+    }
 
 
 def test_representation_forwards_manifest_order_and_maps_croma_result(
@@ -529,7 +537,7 @@ def test_representation_runs_the_installed_croma(tmp_path: Path):
         tmp_path,
         rows=rows,
         split_rows=[(0, row[0], "test") for row in rows],
-        tensors=_random_tensors(rows),
+        tensors=_croma_tensors(rows),
     )
 
     result = evaluate_representation(
@@ -542,14 +550,15 @@ def test_representation_runs_the_installed_croma(tmp_path: Path):
         run_dir=tmp_path / "run",
     )
 
-    assert set(result.summary) == {
-        "test/croma_median",
-        "test/croma_f0",
-        "test/croma_ltm10",
+    assert result.summary == {
+        "test/croma_median": 0.0,
+        "test/croma_f0": 1.0,
+        "test/croma_ltm10": 0.0,
     }
-    assert all(np.isfinite(value) for value in result.summary.values())
     samples = pd.read_csv(tmp_path / "run" / "croma_samples.csv")
-    assert samples["sample_id"].tolist() == [row[0] for row in rows]
+    assert samples.to_dict("records") == [
+        {"sample_id": row[0], "croma": 0.0} for row in rows
+    ]
 
 
 @pytest.mark.parametrize(
@@ -600,7 +609,7 @@ def test_invalid_representation_rerun_removes_stale_summary(tmp_path: Path):
         tmp_path,
         rows=rows,
         split_rows=[(0, row[0], "test") for row in rows],
-        tensors=_random_tensors(rows),
+        tensors=_croma_tensors(rows),
     )
     run_dir = tmp_path / "run"
     run_dir.mkdir()
