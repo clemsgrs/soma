@@ -8,6 +8,7 @@ name, and reference that name from the config. Validation keys on the registered
 
 from __future__ import annotations
 
+import pytest
 import torch
 from torch import Tensor, nn
 
@@ -61,17 +62,22 @@ class TwoStageConvDecoder(Decoder):
         return self._num_classes
 
 
-def _register() -> None:
-    if CUSTOM_HEAD not in task_registry:
-        task_registry.register(CUSTOM_HEAD, DiceOnlySegmentationHead)
-    if CUSTOM_DECODER not in decoder_registry:
-        decoder_registry.register(CUSTOM_DECODER, TwoStageConvDecoder)
+@pytest.fixture
+def registered_extensions(monkeypatch):
+    """Register the custom head and decoder for one test, then restore both registries.
+
+    Without the restore, the names would leak into every later test that lists the
+    registries (CI runs the unit and E2E suites in a single pytest session).
+    """
+    monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
+    monkeypatch.setattr(decoder_registry, "_entries", dict(decoder_registry._entries))
+    task_registry.register(CUSTOM_HEAD, DiceOnlySegmentationHead)
+    decoder_registry.register(CUSTOM_DECODER, TwoStageConvDecoder)
 
 
 def test_custom_head_and_decoder_train_through_cli(
-    tmp_path, encoder_name, encoded_images, new_artifact
+    tmp_path, encoder_name, encoded_images, new_artifact, registered_extensions
 ):
-    _register()
     CALLS["loss"] = CALLS["decoder"] = 0
     artifact = new_artifact("extension_custom_head_decoder")
 
