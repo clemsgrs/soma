@@ -123,6 +123,35 @@ def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
     assert str(config.cache.root_dir) == str(tmp_path / "cache")
 
 
+def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
+    """The private head/decoder resolve without the caller importing ``soma.benchmarks``."""
+    import os
+    import subprocess
+    import sys
+
+    import soma
+    from soma.config import save_config
+
+    config = get_benchmark("eva/monusac").build_config(
+        dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
+    )
+    path = tmp_path / "config.yaml"
+    save_config(config, path)
+    script = (
+        "import sys\n"
+        "from soma.config import load_config\n"
+        f"config = load_config({str(path)!r})\n"
+        "assert 'soma.benchmarks' in sys.modules, 'registries import the bundled module'\n"
+        "print(config.task.name, config.decoder.name)\n"
+    )
+    # Import the same soma as this process (the checkout may shadow an installed copy).
+    env = {**os.environ, "PYTHONPATH": str(Path(soma.__file__).resolve().parents[1])}
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True, cwd=tmp_path, env=env
+    )
+    assert result.stdout.strip() == "eva_segmentation eva_conv_ms"
+
+
 def test_curate_delegates_to_the_segmentation_curator(monkeypatch, tmp_path):
     calls = {}
 

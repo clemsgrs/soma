@@ -17,8 +17,10 @@ spacing-less, so what the decoder sees is what EVA's decoder saw.
   ``Ambiguous`` = 5), then the whole image is ``Resize(224)`` on its short side +
   ``CenterCrop(224)``. Train is soma ``train``, test is soma ``test``.
 
-Images are resized bilinearly with antialiasing (PIL), masks with nearest-neighbour, the
-same interpolation torchvision v2 applies to an ``Image`` and a ``Mask``.
+Resizing and cropping go through torchvision v2 on a ``tv_tensors.Image`` and a
+``tv_tensors.Mask`` exactly as EVA's ``ResizeAndCrop`` does (antialiased bilinear for the
+image, nearest for the mask), and MoNuSAC polygons are filled with ``skimage.draw.polygon``
+as EVA's reader does, so the curated pixels match EVA's byte for byte.
 
 CoNSeP's official download link is dead; the archive is mirrored from the HoVer-Net
 repository's issue #267. MoNuSAC is two Google Drive archives distributed under
@@ -174,28 +176,20 @@ def curate_consep(raw_root: str | Path, output_dir: str | Path) -> CuratedManife
 def polygon_pixels(
     xs: np.ndarray, ys: np.ndarray, *, width: int, height: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Integer pixel coordinates ``(rows, cols)`` inside a polygon, like ``skimage.draw.polygon``.
+    """Integer pixel coordinates ``(rows, cols)`` filled by ``skimage.draw.polygon``.
 
-    Tests every lattice point of the polygon's bounding box (clipped to the image) with a
-    point-in-polygon rule, so a vertex list given in image ``(x, y)`` coordinates fills the
-    pixels whose centres fall inside it.
+    EVA's MoNuSAC reader calls ``draw.polygon(X, Y, (width, height))`` and indexes the
+    mask as ``[Y, X]``; this is the same fill expressed row-major, so boundary pixels and
+    vertex winding are handled exactly as upstream (clipped to the image).
     """
-    from matplotlib.path import Path as MplPath
+    from skimage import draw
 
     xs = np.asarray(xs, dtype=float)
     ys = np.asarray(ys, dtype=float)
     if xs.size < 3:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
-    x0 = max(int(np.floor(xs.min())), 0)
-    x1 = min(int(np.ceil(xs.max())), width - 1)
-    y0 = max(int(np.floor(ys.min())), 0)
-    y1 = min(int(np.ceil(ys.max())), height - 1)
-    if x1 < x0 or y1 < y0:
-        return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
-    grid_y, grid_x = np.mgrid[y0 : y1 + 1, x0 : x1 + 1]
-    points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
-    inside = MplPath(np.column_stack([xs, ys])).contains_points(points)
-    return grid_y.ravel()[inside].astype(np.int64), grid_x.ravel()[inside].astype(np.int64)
+    rows, cols = draw.polygon(ys, xs, (height, width))
+    return rows.astype(np.int64), cols.astype(np.int64)
 
 
 def rasterize_monusac_annotations(
@@ -273,23 +267,23 @@ def curate_monusac(raw_root: str | Path, output_dir: str | Path) -> CuratedManif
 
 
 def resize_and_center_crop(array: np.ndarray, *, size: int, nearest: bool) -> np.ndarray:
-    """torchvision ``Resize(size)`` (short side, aspect kept) + ``CenterCrop(size)``.
+    """torchvision v2 ``Resize(size)`` (short side, aspect kept) + ``CenterCrop(size)``.
 
-    ``nearest`` selects the mask interpolation; images are resized bilinearly with PIL's
-    antialiasing. The output is always ``(size, size[, 3])``.
+    ``nearest=True`` treats ``array`` as a ``tv_tensors.Mask`` (nearest-neighbour, like
+    EVA's mask target); otherwise it is a ``tv_tensors.Image`` (antialiased bilinear on
+    the uint8 tensor, like EVA's image). The output is always ``(size, size[, 3])``.
     """
-    height, width = array.shape[:2]
-    short, long = (width, height) if width <= height else (height, width)
-    if short != size:
-        new_short = size
-        new_long = int(size * long / short)
-        new_w, new_h = (new_short, new_long) if width <= height else (new_long, new_short)
-        resample = Image.NEAREST if nearest else Image.BILINEAR
-        array = np.asarray(Image.fromarray(array).resize((new_w, new_h), resample=resample))
-        height, width = array.shape[:2]
-    top = int(round((height - size) / 2.0))
-    left = int(round((width - size) / 2.0))
-    return np.ascontiguousarray(array[top : top + size, left : left + size])
+    import torch
+    from torchvision import tv_tensors
+    from torchvision.transforms import v2
+
+    transform = v2.Compose([v2.Resize(size), v2.CenterCrop(size)])
+    if nearest:
+        tensor = tv_tensors.Mask(torch.from_numpy(np.ascontiguousarray(array)).to(torch.int64))
+        return transform(tensor).numpy().astype(array.dtype)
+    chw = np.ascontiguousarray(np.moveaxis(array, -1, 0))
+    tensor = tv_tensors.Image(torch.from_numpy(chw))
+    return np.ascontiguousarray(np.moveaxis(transform(tensor).numpy(), 0, -1))
 
 
 def _write_sample(

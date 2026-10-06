@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 
 
@@ -10,11 +11,26 @@ class Registry:
 
     Used by aggregators, task heads, evaluators, and encoders to register
     components by name for discovery and instantiation.
+
+    ``bundled_module`` names a module that registers components shipped with soma but
+    defined outside the registry's own package (the benchmark-private heads and decoders
+    under :mod:`soma.benchmarks`). It is imported once, on the first lookup that misses,
+    so a saved config naming one of those components loads in a fresh process without the
+    caller importing that module first.
     """
 
-    def __init__(self, domain: str) -> None:
+    def __init__(self, domain: str, *, bundled_module: str | None = None) -> None:
         self._domain = domain
         self._entries: dict[str, _Entry] = {}
+        self._bundled_module = bundled_module
+        self._bundled_loaded = bundled_module is None
+
+    def _load_bundled(self) -> None:
+        if self._bundled_loaded:
+            return
+        # Set first: the bundled module checks ``name in registry`` while it is importing.
+        self._bundled_loaded = True
+        importlib.import_module(self._bundled_module)  # type: ignore[arg-type]
 
     def register(
         self, name: str, cls: type, *, metadata: dict[str, Any] | None = None
@@ -39,12 +55,16 @@ class Registry:
     def get(self, name: str) -> type:
         """Retrieve a registered class by name."""
         if name not in self._entries:
+            self._load_bundled()
+        if name not in self._entries:
             available = ", ".join(sorted(self._entries)) or "(none)"
             msg = f"'{name}' not found in {self._domain} registry. Available: {available}"
             raise KeyError(msg)
         return self._entries[name].cls
 
     def __contains__(self, name: str) -> bool:
+        if name not in self._entries:
+            self._load_bundled()
         return name in self._entries
 
     def list(self) -> list[str]:

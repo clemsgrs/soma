@@ -116,12 +116,38 @@ def test_resize_and_center_crop_matches_torchvision_short_side_rule():
     assert resize_and_center_crop(square, size=224, nearest=True).shape == (224, 224)
 
 
-def test_polygon_pixels_fill_interior_lattice_points():
-    rows, cols = polygon_pixels(np.array([2, 6, 6, 2]), np.array([1, 1, 4, 4]), width=10, height=10)
+def test_mask_resize_is_torchvision_tensor_nearest_not_pil():
+    # torchvision v2 ``Resize`` on a ``Mask`` picks source index floor(dst * scale):
+    # 3x3 -> 2x2 keeps rows/cols 0 and 1. PIL's NEAREST would pick [[0, 2], [6, 8]].
+    mask = np.arange(9, dtype=np.uint8).reshape(3, 3)
+    assert resize_and_center_crop(mask, size=2, nearest=True).tolist() == [[0, 1], [3, 4]]
+
+
+def test_image_resize_matches_torchvision_v2_on_the_uint8_tensor():
+    import torch
+    from torchvision import tv_tensors
+    from torchvision.transforms import v2
+
+    image = np.random.default_rng(0).integers(0, 255, (300, 200, 3), dtype=np.uint8)
+    out = resize_and_center_crop(image, size=224, nearest=False)
+    reference = v2.Compose([v2.Resize(224), v2.CenterCrop(224)])(
+        tv_tensors.Image(torch.from_numpy(image.transpose(2, 0, 1)))
+    )
+    assert np.array_equal(out, reference.numpy().transpose(1, 2, 0))
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_polygon_pixels_match_skimage_draw_polygon_for_both_windings(reverse):
+    # skimage fills every lattice point on or inside the polygon, whichever way it winds.
+    xs, ys = np.array([2, 6, 6, 2]), np.array([1, 1, 4, 4])
+    if reverse:
+        xs, ys = xs[::-1], ys[::-1]
+    rows, cols = polygon_pixels(xs, ys, width=10, height=10)
     filled = set(zip(rows.tolist(), cols.tolist()))
-    assert (2, 3) in filled and (3, 5) in filled
-    assert (0, 0) not in filled and (5, 7) not in filled
-    assert cols.max() <= 6 and rows.max() <= 4
+    assert filled == {(r, c) for r in range(1, 5) for c in range(2, 7)}
+    # Clipped to the image like ``draw.polygon(..., shape)``.
+    rows, cols = polygon_pixels(xs, ys, width=5, height=3)
+    assert set(zip(rows.tolist(), cols.tolist())) == {(r, c) for r in range(1, 3) for c in range(2, 5)}
 
 
 def test_rasterize_monusac_assigns_classes_and_ambiguous(tmp_path: Path):
