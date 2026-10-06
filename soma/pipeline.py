@@ -16,7 +16,7 @@ import csv
 import functools
 import math
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -1047,17 +1047,16 @@ def train_one_fold(
     task_cls = task_registry.get(task.name)
     # Validate survival columns before auto_params reads them, so a missing/
     # malformed column raises a clear message instead of a cryptic KeyError.
-    # ``task.params.loss`` (nll | cox) selects the discrete-NLL or continuous-Cox
-    # head; it is a routing key, not a head constructor argument, so it is
-    # validated here and stripped from the params before instantiation.
-    if task.name == "survival":
-        from soma.tasks.survival import resolve_survival_head, validate_survival_dataset
+    # Every head of the survival family is validated, built-in or registered.
+    if task_cls.task_family == "survival":
+        from soma.tasks.survival import validate_survival_dataset
 
-        survival_loss = task.params.get("loss", "nll")
+        task_cls, survival_loss = _survival_head_class(
+            task_cls, task_name=task.name, task_params=task.params
+        )
         validate_survival_dataset(
             dataset, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
         )
-        task_cls = resolve_survival_head(survival_loss)
     task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
     task_params.pop("loss", None)
 
@@ -1432,6 +1431,24 @@ def _check_segmentation_grid_spacing(feature_store, records, preprocessing) -> N
                 f"({expected_spacing_um} µm/px); re-extract the features for this "
                 "configuration."
             )
+
+
+def _survival_head_class(
+    task_cls: type, *, task_name: str, task_params: Mapping[str, object]
+) -> tuple[type, str]:
+    """Resolve the survival head class and the loss its dataset validation must check.
+
+    For the built-in ``survival`` name, ``task.params.loss`` (``nll`` | ``cox``) selects
+    the discrete-NLL or continuous-Cox head; it is a routing key, not a constructor
+    argument, and is stripped from the params before instantiation. A registered
+    subclass is kept as is, and its loss follows from the base it extends.
+    """
+    from soma.tasks.survival import CoxSurvivalHead, resolve_survival_head
+
+    if task_name == "survival":
+        task_cls = resolve_survival_head(str(task_params.get("loss", "nll")))
+    loss = "cox" if issubclass(task_cls, CoxSurvivalHead) else "nll"
+    return task_cls, loss
 
 
 def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> type:
