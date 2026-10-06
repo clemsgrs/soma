@@ -1234,10 +1234,11 @@ def train_one_fold(
             # clam_mb emits one branch per class and needs the branch-aware head;
             # every other task family (binary, ordinal, regression, survival, ...)
             # has no per-class branch to route through.
-            if task.name != "multiclass_classification":
+            if task_family != "multiclass_classification":
                 raise ValueError(
-                    f"clam_mb does not support task '{task.name}'; it only supports "
-                    "multiclass_classification. Use a different aggregator."
+                    f"clam_mb does not support task '{task.name}' (family "
+                    f"'{task_family}'); it only supports the multiclass_classification "
+                    "family. Use a different aggregator."
                 )
             head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
         else:
@@ -1385,7 +1386,6 @@ def train_one_fold(
     _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
     _save_training_history(train_result.history, fold_dir / "training_history.json")
 
-    task_family = task.name
     resolved_metrics = resolve_metrics(task_family, evaluation.metrics)
     for split_name, test_report in test_reports.items():
         predictions_path = fold_dir / f"predictions_{split_name}.csv"
@@ -1454,7 +1454,12 @@ def _build_segmentation_head(
     geometry,
     sample_spacings: "Mapping[str, DenseSampleSpacing] | None" = None,
 ) -> SegmentationHead:
-    """Build the fold-independent segmentation target contract."""
+    """Build the fold-independent segmentation target contract.
+
+    The head class is the one registered under ``task.name`` (a user subclass of
+    :class:`SegmentationHead` with a custom loss or metric reduction, or the built-in).
+    """
+    head_cls = task_registry.get(task.name)
     num_classes, _, label_remap = resolve_class_scheme(
         task.params, annotation_rasters=masks is not None
     )
@@ -1466,7 +1471,7 @@ def _build_segmentation_head(
     mask_spacing_um = (
         preprocessing.requested_spacing_um if preprocessing is not None else None
     )
-    return SegmentationHead(
+    return head_cls(
         num_classes=num_classes,
         geometry=geometry,
         metrics=evaluation.metrics,
@@ -2025,7 +2030,9 @@ def train_one_detection_fold(
         else delta_px
     )
 
-    head = DetectionHead(
+    # The head class registered under ``task.name``: the built-in DetectionHead or a
+    # user subclass of it.
+    head = task_registry.get(task.name)(
         num_classes=num_classes,
         geometry=geometry,
         delta_px=delta_px,

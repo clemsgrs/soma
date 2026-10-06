@@ -20,6 +20,7 @@ import pandas as pd
 import yaml
 
 from soma.evaluation.metrics import probability_columns, resolve_metrics
+from soma.tasks.registry import task_family_of
 from soma.reporting.subgroups import enrich_predictions_with_subgroups, subgroup_report_for_predictions
 from soma.training.trainer import epoch_log_to_dict
 
@@ -287,7 +288,7 @@ def run_data_from_result(
     """
     from soma.config import _config_to_layout_dict
 
-    task_family = config.task.name
+    task_family = task_family_of(config.task.name)
     metrics = resolve_metrics(task_family, config.evaluation.metrics)
     subgroup_columns = list(config.evaluation.subgroups.columns)
 

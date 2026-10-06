@@ -386,6 +386,7 @@ def build_live_segmentation_models(
     normalization=None,
     projection=None,
     encoder_identity: str = "",
+    task_name: str = "segmentation",
 ):
     """Reconstruct trained :class:`LiveSegmentationModel`\\ s from a source + checkpoints.
 
@@ -401,9 +402,12 @@ def build_live_segmentation_models(
     below rejects the adaptor's buffer keys, *and* the decoder would be built against the
     encoder's native dim while the checkpoint carries ``target_dim`` shapes. The adaptor is
     rebuilt **unfitted** — the checkpoint's buffers are the fitted state.
+
+    ``task_name`` selects the registered head class (the run's ``task.name``), so a user
+    subclass with a custom ``postprocess`` is replayed with its own head.
     """
     from soma.decoders.registry import build_decoder_for_grid
-    from soma.tasks.segmentation import SegmentationHead
+    from soma.tasks.registry import task_registry
     from soma.training.feature_adaptor import (
         build_feature_adaptor,
         feature_adaptor_output_dim,
@@ -434,8 +438,9 @@ def build_live_segmentation_models(
         )
 
     models = []
+    head_cls = task_registry.get(task_name)
     for ckpt in ckpt_paths:
-        head = SegmentationHead(
+        head = head_cls(
             num_classes=num_classes,
             geometry=source.geometry,
             spacing_um=source.spacing_um,

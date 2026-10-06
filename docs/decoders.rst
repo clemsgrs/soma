@@ -6,6 +6,9 @@ predictions. They are used for :doc:`segmentation` and :doc:`detection`; only
 the downstream model is trained. Segmentation also supports a decoder-free
 :doc:`pixel classifier <decoders/pixel-classifier>`.
 
+To add your own decoder, subclass :class:`soma.decoders.base.Decoder` and
+register it; see :doc:`extending`.
+
 Choose a decoder
 ----------------
 

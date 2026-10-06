@@ -18,6 +18,7 @@ if the correct pixels, features and labels reach it.
 | `tile_binary_classification` | `dataset_type: tile` (no bag, no aggregator) |
 | `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU |
 | `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance |
+| `extension_custom_head_decoder` | a user-registered `SegmentationHead` subclass (pure Dice loss) and a user-registered `Decoder` train through the CLI; both overrides are proven to run |
 
 Every scenario checks that training loss fell (last epoch ≤ 0.9 × first epoch), as
 well as checking its metric thresholds.

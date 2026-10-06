@@ -696,7 +696,7 @@ def test_segmentation_rejects_aggregator():
 
 
 def test_segmentation_requires_segmentation_task():
-    with pytest.raises(ValueError, match="task.name='segmentation'"):
+    with pytest.raises(ValueError, match="'segmentation' family"):
         _seg_config(task=TaskConfig(name="binary_classification"))
 
 
