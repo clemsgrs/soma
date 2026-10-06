@@ -9,6 +9,7 @@ function. See ``survival-design.md`` for the full design.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from numbers import Integral
 from typing import TYPE_CHECKING, Any
 
@@ -330,6 +331,20 @@ def resolve_survival_head(loss: str = "nll") -> type[TaskHead]:
     if loss == "cox":
         return CoxSurvivalHead
     raise ValueError(f"Unknown survival loss {loss!r}; use 'nll' or 'cox'.")
+
+
+def resolve_survival_task(
+    task_name: str, task_params: Mapping[str, Any]
+) -> tuple[type[TaskHead], str]:
+    """Resolve the head and objective shared by config and dataset validation.
+
+    The loss selector switches the built-in ``survival`` head only. Registered
+    subclasses keep their class and inherit the objective of their base.
+    """
+    builtin_head = resolve_survival_head(task_params.get("loss", "nll"))
+    head_cls = builtin_head if task_name == "survival" else task_registry.get(task_name)
+    loss = "cox" if issubclass(head_cls, CoxSurvivalHead) else "nll"
+    return head_cls, loss
 
 
 def validate_survival_dataset(

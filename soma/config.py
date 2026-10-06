@@ -1872,6 +1872,8 @@ class PipelineConfig:
                     f"task.params.dropout must be a probability in [0.0, 1.0), got {head_dropout!r}."
                 )
         if task_family_of(self.task.name) == "survival":
+            from soma.tasks.survival import resolve_survival_task
+
             if self.dataset_type == "tile":
                 raise ValueError(
                     "dataset_type='tile' is not supported for survival tasks — "
@@ -1888,12 +1890,7 @@ class PipelineConfig:
                     "tasks — its label-aware auxiliary loss assumes classification. "
                     "Use a survival-compatible aggregator (e.g. abmil, transmil, mean_pool)."
                 )
-            survival_loss = self.task.params.get("loss", "nll")
-            if survival_loss not in {"nll", "cox"}:
-                raise ValueError(
-                    f"Unknown survival loss {survival_loss!r}; use 'nll' (discrete-time) "
-                    "or 'cox' (continuous-time CoxPH)."
-                )
+            _, survival_loss = resolve_survival_task(self.task.name, self.task.params)
             if survival_loss == "cox":
                 # ``cox_window`` is the mode switch: unset/1 = padded mode (the risk
                 # set is the batch; single-embedding slide/patient, or padded MIL via

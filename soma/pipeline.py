@@ -89,7 +89,10 @@ from soma.output_layout import (
     write_run_metadata,
 )
 from soma.preprocessing.resolution import resolve_pipeline_preprocessing
-from soma.tasks.classification import BranchAwareClassificationHead
+from soma.tasks.classification import (
+    BranchAwareClassificationHead,
+    MulticlassClassificationHead,
+)
 from soma.tasks.registry import task_registry
 from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
@@ -1049,11 +1052,9 @@ def train_one_fold(
     # malformed column raises a clear message instead of a cryptic KeyError.
     # Every head of the survival family is validated, built-in or registered.
     if task_cls.task_family == "survival":
-        from soma.tasks.survival import validate_survival_dataset
+        from soma.tasks.survival import resolve_survival_task, validate_survival_dataset
 
-        task_cls, survival_loss = _survival_head_class(
-            task_cls, task_name=task.name, task_params=task.params
-        )
+        task_cls, survival_loss = resolve_survival_task(task.name, task.params)
         validate_survival_dataset(
             dataset, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
         )
@@ -1433,24 +1434,6 @@ def _check_segmentation_grid_spacing(feature_store, records, preprocessing) -> N
             )
 
 
-def _survival_head_class(
-    task_cls: type, *, task_name: str, task_params: Mapping[str, object]
-) -> tuple[type, str]:
-    """Resolve the survival head class and the loss its dataset validation must check.
-
-    For the built-in ``survival`` name, ``task.params.loss`` (``nll`` | ``cox``) selects
-    the discrete-NLL or continuous-Cox head; it is a routing key, not a constructor
-    argument, and is stripped from the params before instantiation. A registered
-    subclass is kept as is, and its loss follows from the base it extends.
-    """
-    from soma.tasks.survival import CoxSurvivalHead, resolve_survival_head
-
-    if task_name == "survival":
-        task_cls = resolve_survival_head(str(task_params.get("loss", "nll")))
-    loss = "cox" if issubclass(task_cls, CoxSurvivalHead) else "nll"
-    return task_cls, loss
-
-
 def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> type:
     """Pick the head class for a bag-level run.
 
@@ -1472,7 +1455,13 @@ def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> 
         )
     if getattr(task_cls, "supports_branch_representation", False):
         return task_cls
-    return BranchAwareClassificationHead
+    if task_cls is MulticlassClassificationHead:
+        return BranchAwareClassificationHead
+    raise ValueError(
+        f"clam_mb requires custom task head '{task_name}' to support branch "
+        "representations. Subclass BranchAwareClassificationHead to preserve "
+        "your custom loss and metrics."
+    )
 
 
 def _build_segmentation_head(

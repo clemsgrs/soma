@@ -29,9 +29,8 @@ def test_registered_subclass_inherits_family(monkeypatch):
     assert task_family_of("_test_family_subclass") == "segmentation"
 
 
-def test_survival_head_class_keeps_a_registered_subclass_and_infers_its_loss():
-    from soma.pipeline import _survival_head_class
-    from soma.tasks.survival import CoxSurvivalHead, SurvivalHead
+def test_survival_task_keeps_a_registered_subclass_and_infers_its_loss(monkeypatch):
+    from soma.tasks.survival import CoxSurvivalHead, SurvivalHead, resolve_survival_task
 
     class MyNll(SurvivalHead):
         pass
@@ -39,15 +38,16 @@ def test_survival_head_class_keeps_a_registered_subclass_and_infers_its_loss():
     class MyCox(CoxSurvivalHead):
         pass
 
-    assert _survival_head_class(SurvivalHead, task_name="survival", task_params={}) == (
+    monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
+    task_registry.register("my_nll", MyNll)
+    task_registry.register("my_cox", MyCox)
+    assert resolve_survival_task("survival", {}) == (
         SurvivalHead,
         "nll",
     )
-    assert _survival_head_class(
-        SurvivalHead, task_name="survival", task_params={"loss": "cox"}
-    ) == (CoxSurvivalHead, "cox")
-    assert _survival_head_class(MyNll, task_name="my_nll", task_params={}) == (MyNll, "nll")
-    assert _survival_head_class(MyCox, task_name="my_cox", task_params={}) == (MyCox, "cox")
+    assert resolve_survival_task("survival", {"loss": "cox"}) == (CoxSurvivalHead, "cox")
+    assert resolve_survival_task("my_nll", {}) == (MyNll, "nll")
+    assert resolve_survival_task("my_cox", {}) == (MyCox, "cox")
 
 
 def test_registered_survival_subclass_still_validates_the_dataset(tmp_path, monkeypatch):
@@ -92,6 +92,28 @@ def test_registered_survival_subclass_still_validates_the_dataset(tmp_path, monk
         Pipeline(config, feature_dir=features).run()
 
 
+def test_registered_cox_head_rejects_wrong_window_batch_size(tmp_path, monkeypatch):
+    """A Cox subclass inherits window constraints without a redundant loss selector."""
+    from soma.config import PipelineConfig, TaskConfig, TrainingConfig
+    from soma.tasks.survival import CoxSurvivalHead
+
+    class MyCox(CoxSurvivalHead):
+        pass
+
+    monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
+    task_registry.register("_test_my_cox", MyCox)
+    with pytest.raises(ValueError, match="Cox accumulation mode .*batch_size = 1"):
+        PipelineConfig(
+            dataset_csv=tmp_path / "dataset.csv",
+            splits_csv=tmp_path / "splits.csv",
+            output_root=tmp_path / "out",
+            dataset_type="slide",
+            aggregator=None,
+            task=TaskConfig(name="_test_my_cox", params={"cox_window": 2}),
+            training=TrainingConfig(batch_size=2),
+        )
+
+
 def test_clam_mb_keeps_a_registered_branch_aware_subclass():
     """A user subclass of the branch-aware head survives the clam_mb swap."""
     from soma.pipeline import _bag_head_class
@@ -127,3 +149,44 @@ def test_clam_mb_keeps_a_registered_branch_aware_subclass():
     )
     with pytest.raises(ValueError, match="clam_mb does not support task 'segmentation'"):
         _bag_head_class(SegmentationHead, task_name="segmentation", aggregator_name="clam_mb")
+
+
+def test_clam_mb_rejects_custom_heads_without_branch_representations(tmp_path, monkeypatch):
+    """CLAM-MB must not silently replace a registered head's custom objective."""
+    import torch
+
+    from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, TaskConfig, TrainingConfig
+    from soma.pipeline import Pipeline
+    from soma.tasks.classification import MulticlassClassificationHead
+
+    class SevenLossHead(MulticlassClassificationHead):
+        def compute_loss(self, predictions, targets):
+            return predictions.sum() * 0 + 7
+
+    monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
+    task_registry.register("_test_seven_loss", SevenLossHead)
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label\n"
+        "a,/a.svs,0\nb,/b.svs,1\nc,/c.svs,0\nd,/d.svs,1\ne,/e.svs,0\nf,/f.svs,1\n"
+    )
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text(
+        "sample_id,split\na,train\nb,train\nc,tune\nd,tune\ne,test\nf,test\n"
+    )
+    features = tmp_path / "features"
+    features.mkdir()
+    for sid in "abcdef":
+        torch.save(torch.zeros(2, 4), features / f"{sid}.pt")
+    config = PipelineConfig(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "out",
+        dataset_type="slide",
+        aggregator=AggregatorConfig(name="clam_mb", params={"hidden_dim": 4, "attn_dim": 2}),
+        task=TaskConfig(name="_test_seven_loss"),
+        evaluation=EvalConfig(metrics=["accuracy"]),
+        training=TrainingConfig(epochs=1, batch_size=2, num_workers=0, seed=0),
+    )
+    with pytest.raises(ValueError, match="BranchAwareClassificationHead"):
+        Pipeline(config, feature_dir=features).run()
