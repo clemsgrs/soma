@@ -16,7 +16,10 @@ from soma.decoders import (  # noqa: E402
 
 
 def test_registry_lists_all_decoders():
-    assert list_decoders() == ["heavy_conv", "lightweight_conv", "linear"]
+    # Benchmark-private decoders (soma.benchmarks.eva_segmentation) register under an
+    # ``eva_`` prefix whenever the benchmarks package is imported in the same session.
+    builtin = [name for name in list_decoders() if not name.startswith("eva_")]
+    assert builtin == ["heavy_conv", "lightweight_conv", "linear"]
 
 
 def test_linear_decoder_preserves_grid_resolution():

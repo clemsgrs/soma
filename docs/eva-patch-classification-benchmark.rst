@@ -2,13 +2,16 @@ EVA
 ===
 
 Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_
-patch-classification leaderboard with frozen tile encoders and linear
-:doc:`classification` heads.
+pathology leaderboard: patch classification with frozen tile encoders and
+linear :doc:`classification` heads, and patch :doc:`segmentation` with a
+small convolutional decoder on the frozen dense feature grid.
 
-EVA provides 6 registered datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon. All share the same linear-probe protocol; see :doc:`benchmarking` for
+EVA provides 6 registered classification datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon, and 2 segmentation datasets: consep and monusac. Each group shares one protocol; see :doc:`benchmarking` for
 the shared workflow.
 
-**Pipeline:** labelled patches → frozen encoder → linear head → balanced accuracy
+**Pipeline (classification):** labelled patches → frozen encoder → linear head → balanced accuracy
+
+**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid → ``eva_conv_ms`` decoder → foreground mean Dice
 
 Prepare the data
 ----------------
@@ -35,6 +38,19 @@ source and unpack it in the directory you will pass as ``--raw-root``:
    * - `PatchCamelyon <https://zenodo.org/records/2546921>`__ (``patch_camelyon``)
      - the six ``camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5`` files
 
+The segmentation datasets use the same ``--raw-root`` convention:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 62
+
+   * - Dataset and source
+     - Raw-root contents
+   * - `CoNSeP <https://github.com/vqdang/hover_net/issues/267>`__ (``consep``)
+     - ``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` (HoVer-Net layout; the official link is dead, the issue holds a mirror)
+   * - `MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)
+     - ``MoNuSAC_images_and_annotations/`` and ``MoNuSAC Testing Data and Annotations/`` (one ``.tif`` + ``.xml`` per image; CC BY-NC-SA 4.0)
+
 Run the benchmark
 -----------------
 
@@ -48,6 +64,13 @@ To run the whole family, prepare one subdirectory per dataset under
 ``/path/to/eva``::
 
     soma reproduce eva --encoder virchow2 --raw-root /path/to/eva
+
+A segmentation member runs the same way::
+
+    soma reproduce eva/consep --encoder virchow2 --raw-root /path/to/eva/consep
+
+Its curator writes the 224 px tiles and masks under ``--out-dir`` (default
+``<raw-root>/curated``), so point ``--out-dir`` at a directory with room for them.
 
 Results
 -------
@@ -94,6 +117,12 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - 0.778 ± 0.010
      - 0.783
 
+No foreground mean Dice cells have been recorded yet. Run, for example::
+
+    soma reproduce eva/consep --encoder virchow2 --raw-root /path/to/eva/consep --record
+
+to record a soma score next to the published EVA reference.
+
 See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
 
 Protocol details
@@ -121,3 +150,47 @@ Protocol details
      - ``test/balanced_accuracy`` (from ``summary.json``)
    * - canonical seeds
      - ``0, 1, 2, 3, 4`` (averaged)
+
+Segmentation protocol
+---------------------
+
+The curators reproduce EVA's sample geometry: CoNSeP is cut into 250 px grid
+tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px;
+a MoNuSAC image is resized on its short side to 224 px and centre-cropped. CoNSeP
+merges HoVer-Net's seven nucleus types into background, other, inflammatory,
+epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is
+excluded from the loss and the metric. Both datasets report on EVA's validation
+split, which is soma's ``test`` split (``tune_is_test``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Setting
+     - Value
+   * - samples
+     - 224 px tiles and class-index masks materialised by the curator
+   * - decoder
+     - ``eva_conv_ms``: nearest ×2 → 3x3 conv (64) → nearest ×2 → 3x3 conv (classes); no normalisation
+   * - loss
+     - pure soft Dice over softmax, background included (``eva_segmentation`` head)
+   * - optimizer
+     - AdamW, lr ``0.002``, weight_decay ``0.01``
+   * - batch size
+     - ``64``
+   * - budget
+     - fixed step budget: ``max_steps=2000`` optimizer updates
+   * - metric
+     - ``foreground_mean_dice`` — per-image mean Dice over the foreground classes, empty targets skipped (MONAI ``DiceMetric(include_background=False)``)
+   * - varied axis
+     - ``encoder``
+   * - primary metric
+     - ``test/foreground_mean_dice`` (from ``summary.json``)
+   * - canonical seeds
+     - ``0, 1, 2, 3, 4`` (averaged)
+
+The decoder, loss and confusion counting exist only for this benchmark and are
+registered under ``eva_`` names; they are not general soma components. One known
+difference remains: EVA taps the last block's patch tokens before the backbone's
+final normalisation layer, whereas slide2vec's dense grid is taken after it
+(`#526 <https://github.com/clemsgrs/soma/issues/526>`__).

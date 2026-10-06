@@ -18,6 +18,7 @@ from soma.tasks.dense_metrics import (
     dense_confusion_matrices,
     focal_tversky_loss,
     reduce_dice_iou,
+    reduce_foreground_dice,
     segmentation_loss,
     soft_dice_loss,
 )
@@ -54,6 +55,34 @@ def test_dice_iou_exact_values_with_ignore_and_absent_class():
     assert out["dice_class_0"] == pytest.approx(2 / 3)
     assert out["dice_class_1"] == pytest.approx(2 / 3)
     assert out["dice_class_2"] == 0.0  # fully undefined -> reported 0.0
+
+
+def test_foreground_dice_skips_background_and_empty_targets():
+    # Two images, three classes. Image 0: class 1 half right, class 2 predicted but absent
+    # from the target (skipped, unlike mean_dice). Image 1: no foreground target at all
+    # (dropped from the mean).
+    counts = torch.tensor(
+        [
+            [[2, 4, 4], [1, 2, 2], [0, 3, 0]],
+            [[5, 5, 5], [0, 0, 0], [0, 2, 0]],
+        ]
+    )
+    assert reduce_foreground_dice(counts, num_classes=3) == pytest.approx(0.5)
+    # mean_dice would score the false-positive class 2 of image 0 as 0 and include background.
+    assert reduce_dice_iou(counts, num_classes=3)["mean_dice"] < 0.5
+    # Nothing defined -> 0.0, never NaN; a single-class problem has no foreground.
+    empty = torch.zeros(2, 3, 3, dtype=torch.long)
+    assert reduce_foreground_dice(empty, num_classes=3) == 0.0
+    assert reduce_foreground_dice(counts[:, :1], num_classes=1) == 0.0
+
+
+def test_head_reports_foreground_mean_dice_when_requested():
+    geom = compute_dense_geometry(target_size=4, patch_size=1)
+    mask = torch.zeros(1, 4, 4, dtype=torch.long)
+    mask[0, :, :2] = 1
+    logits = _logits_from_pred(mask, num_classes=2)
+    head = SegmentationHead(num_classes=2, geometry=geom, metrics=["foreground_mean_dice"])
+    assert head.compute_metrics(logits, {"mask": mask}) == {"foreground_mean_dice": pytest.approx(1.0)}
 
 
 def test_full_confusion_matrix_is_exact_and_excludes_ignore_pixels():

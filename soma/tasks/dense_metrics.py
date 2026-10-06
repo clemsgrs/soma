@@ -349,6 +349,25 @@ def reduce_confusion_matrix_dice(matrix: Tensor) -> tuple[float, tuple[float, ..
     return micro_value, tuple(float(value) for value in per_class)
 
 
+def reduce_foreground_dice(counts: Tensor, *, num_classes: int) -> float:
+    """Per-image mean Dice over the foreground classes ``1..C-1``, skipping empty targets.
+
+    The MONAI ``DiceMetric(include_background=False, ignore_empty=True, reduction="mean")``
+    convention the kaiko-ai/eva segmentation leaderboard reports: a class with no target
+    pixels in an image is undefined for that image whatever was predicted there (unlike
+    ``mean_dice``, which scores a false-positive-only class as 0), each image averages its
+    defined classes, and images with no defined foreground class are dropped before the
+    final mean. Returns ``0.0`` when nothing is defined.
+    """
+    if num_classes < 2:
+        return 0.0
+    inter = counts[:, 1:, 0].float()
+    pred = counts[:, 1:, 1].float()
+    target = counts[:, 1:, 2].float()
+    dice = torch.where(target > 0, 2.0 * inter / (pred + target), torch.nan)  # (N, C-1)
+    return _nanmean_to_float(torch.nanmean(dice, dim=1))
+
+
 def reduce_dice_iou(
     counts: Tensor,
     *,

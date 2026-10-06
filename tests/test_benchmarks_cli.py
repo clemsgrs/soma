@@ -1946,6 +1946,8 @@ def test_reproduce_eva_family_fans_out_over_members(monkeypatch, capsys, tmp_pat
         "eva/mhist",
         "eva/gleason_arvaniti",
         "eva/patch_camelyon",
+        "eva/consep",
+        "eva/monusac",
     }
 
 

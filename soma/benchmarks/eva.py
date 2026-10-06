@@ -1,4 +1,4 @@
-"""kaiko-ai/eva patch-level benchmark — registered per-dataset sub-benchmarks (issue #219).
+"""kaiko-ai/eva patch-classification benchmarks — registered per-dataset sub-benchmarks (issue #219).
 
 This module promotes the EVA patch-level linear-probe reproduction (PR #87) onto the
 landed Benchmark registry (#213), reconciled against the unified Manifest (#212). EVA is
@@ -7,7 +7,9 @@ registered as **one sub-benchmark per dataset** — ``eva/bach``, ``eva/breakhis
 exposing ``encoder`` as a ``build_config`` axis (the dataset × encoder grid). The recipe
 encodes the offline linear-probe protocol of the `kaiko-ai/eva
 <https://github.com/kaiko-ai/eva>`_ leaderboard so it reproduces with soma's tile path
-(``dataset_type="tile"``).
+(``dataset_type="tile"``). The leaderboard's two segmentation tasks (``eva/consep``,
+``eva/monusac``) live in :mod:`soma.benchmarks.eva_segmentation` and share this module's
+encoder table, reference ledger and family fan-out.
 
 Protocol points that matter for matching the leaderboard:
 
@@ -201,7 +203,7 @@ def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheConfig | Non
     return replace(CacheConfig(), **cache_over)
 
 
-class EvaBenchmark:
+class EvaTileClassificationBenchmark:
     """One EVA patch-classification dataset registered as ``eva/<dataset>`` (protocol-as-code).
 
     The sub-benchmark fixes its dataset (and the EVA linear-probe recipe) and varies the
@@ -285,9 +287,9 @@ class EvaBenchmark:
         return score_from_summary(run_dir)
 
 
-# Register one sub-benchmark per curatable EVA dataset (name == "eva/<dataset>").
-EVA_BENCHMARKS: dict[str, EvaBenchmark] = {}
+# Register one sub-benchmark per curatable EVA classification dataset (name == "eva/<dataset>").
+EVA_BENCHMARKS: dict[str, EvaTileClassificationBenchmark] = {}
 for _dataset in DATASETS:
-    _bench = EvaBenchmark(_dataset)
+    _bench = EvaTileClassificationBenchmark(_dataset)
     EVA_BENCHMARKS[_bench.name] = _bench
     register_benchmark(_bench)
