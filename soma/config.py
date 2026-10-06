@@ -24,6 +24,7 @@ from hs2p import PreviewConfig
 from hs2p.configs import TilingConfig
 
 from soma.evaluation.metrics import resolve_metrics
+from soma.tasks.registry import task_family_of
 
 
 RoiBatchSamplingStrategy = Literal["uniform", "class_conditioned"]
@@ -1653,10 +1654,11 @@ class PipelineConfig:
                     "aggregator must be None for dataset_type='spatial_expression' — the "
                     "spatial-expression probe consumes per-spot tile features, not MIL bags."
                 )
-            if self.task.name != "regression":
+            if task_family_of(self.task.name) != "regression":
                 raise ValueError(
-                    "dataset_type='spatial_expression' requires task.name='regression' "
-                    f"(the multi-target gene-expression head), got {self.task.name!r}."
+                    "dataset_type='spatial_expression' requires a task head of the "
+                    "'regression' family (the multi-target gene-expression head), got "
+                    f"{self.task.name!r}."
                 )
             if self.training.method != "ridge_pca_probe":
                 raise ValueError(
@@ -1707,10 +1709,10 @@ class PipelineConfig:
                     "segmentation uses a decoder or pixel-classifier (dense per-pixel), "
                     "not MIL aggregation."
                 )
-            if self.task.name != "segmentation":
+            if task_family_of(self.task.name) != "segmentation":
                 raise ValueError(
-                    "dataset_type='segmentation' requires task.name='segmentation', "
-                    f"got {self.task.name!r}."
+                    "dataset_type='segmentation' requires a task head of the "
+                    f"'segmentation' family, got {self.task.name!r}."
                 )
             # The training class scheme (task.params.classes / ignore) is validated here so
             # a bad scheme fails at config load, not after extraction. A bare num_classes
@@ -1759,10 +1761,10 @@ class PipelineConfig:
                     "aggregator must be None for dataset_type='detection' — detection is a "
                     "dense per-pixel task, not MIL aggregation."
                 )
-            if self.task.name != "detection":
+            if task_family_of(self.task.name) != "detection":
                 raise ValueError(
-                    "dataset_type='detection' requires task.name='detection', "
-                    f"got {self.task.name!r}."
+                    "dataset_type='detection' requires a task head of the 'detection' "
+                    f"family, got {self.task.name!r}."
                 )
             # A bad class scheme fails at load, not at the first fold. A bare ``num_classes``
             # (point files already hold class indices) stays the pipeline's to require.
@@ -1869,7 +1871,9 @@ class PipelineConfig:
                 raise ValueError(
                     f"task.params.dropout must be a probability in [0.0, 1.0), got {head_dropout!r}."
                 )
-        if self.task.name == "survival":
+        if task_family_of(self.task.name) == "survival":
+            from soma.tasks.survival import resolve_survival_task
+
             if self.dataset_type == "tile":
                 raise ValueError(
                     "dataset_type='tile' is not supported for survival tasks — "
@@ -1886,12 +1890,7 @@ class PipelineConfig:
                     "tasks — its label-aware auxiliary loss assumes classification. "
                     "Use a survival-compatible aggregator (e.g. abmil, transmil, mean_pool)."
                 )
-            survival_loss = self.task.params.get("loss", "nll")
-            if survival_loss not in {"nll", "cox"}:
-                raise ValueError(
-                    f"Unknown survival loss {survival_loss!r}; use 'nll' (discrete-time) "
-                    "or 'cox' (continuous-time CoxPH)."
-                )
+            _, survival_loss = resolve_survival_task(self.task.name, self.task.params)
             if survival_loss == "cox":
                 # ``cox_window`` is the mode switch: unset/1 = padded mode (the risk
                 # set is the batch; single-embedding slide/patient, or padded MIL via
@@ -1940,7 +1939,7 @@ class PipelineConfig:
         # Validate that requested metrics and the training monitor are valid for the task
         # family.  ``last`` ignores the monitor for checkpoint selection, but the monitor is
         # still part of the declared protocol and must name a diagnostic the run computes.
-        resolved_metrics = resolve_metrics(self.task.name, self.evaluation.metrics)
+        resolved_metrics = resolve_metrics(task_family_of(self.task.name), self.evaluation.metrics)
         if (
             self.training.monitor != "tune_loss"
             and self.training.monitor not in resolved_metrics

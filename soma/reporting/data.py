@@ -20,6 +20,7 @@ import pandas as pd
 import yaml
 
 from soma.evaluation.metrics import probability_columns, resolve_metrics
+from soma.tasks.registry import task_family_of
 from soma.reporting.subgroups import enrich_predictions_with_subgroups, subgroup_report_for_predictions
 from soma.training.trainer import epoch_log_to_dict
 
@@ -199,7 +200,10 @@ def load_run_data(run_dir: str | Path) -> RunData:
 
     # ``task: null`` is a valid persisted config (task-free representation runs), so the
     # block must be treated as absent rather than indexed.
-    task_family = (config.get("task") or {}).get("name", "binary_classification")
+    # The persisted name may be a user-registered head, so resolve its family through
+    # the registry (the registering module must be imported before loading the run).
+    task_name = (config.get("task") or {}).get("name", "binary_classification")
+    task_family = task_family_of(task_name)
     evaluation = config.get("evaluation", {}) or {}
     metrics = resolve_metrics(task_family, evaluation.get("metrics") or [])
     subgroup_columns = list((evaluation.get("subgroups", {}) or {}).get("columns", []) or [])
@@ -287,7 +291,7 @@ def run_data_from_result(
     """
     from soma.config import _config_to_layout_dict
 
-    task_family = config.task.name
+    task_family = task_family_of(config.task.name)
     metrics = resolve_metrics(task_family, config.evaluation.metrics)
     subgroup_columns = list(config.evaluation.subgroups.columns)
 

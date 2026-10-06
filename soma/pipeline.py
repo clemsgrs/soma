@@ -16,7 +16,7 @@ import csv
 import functools
 import math
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -89,7 +89,10 @@ from soma.output_layout import (
     write_run_metadata,
 )
 from soma.preprocessing.resolution import resolve_pipeline_preprocessing
-from soma.tasks.classification import BranchAwareClassificationHead
+from soma.tasks.classification import (
+    BranchAwareClassificationHead,
+    MulticlassClassificationHead,
+)
 from soma.tasks.registry import task_registry
 from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
@@ -1047,17 +1050,14 @@ def train_one_fold(
     task_cls = task_registry.get(task.name)
     # Validate survival columns before auto_params reads them, so a missing/
     # malformed column raises a clear message instead of a cryptic KeyError.
-    # ``task.params.loss`` (nll | cox) selects the discrete-NLL or continuous-Cox
-    # head; it is a routing key, not a head constructor argument, so it is
-    # validated here and stripped from the params before instantiation.
-    if task.name == "survival":
-        from soma.tasks.survival import resolve_survival_head, validate_survival_dataset
+    # Every head of the survival family is validated, built-in or registered.
+    if task_cls.task_family == "survival":
+        from soma.tasks.survival import resolve_survival_task, validate_survival_dataset
 
-        survival_loss = task.params.get("loss", "nll")
+        task_cls, survival_loss = resolve_survival_task(task.name, task.params)
         validate_survival_dataset(
             dataset, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
         )
-        task_cls = resolve_survival_head(survival_loss)
     task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
     task_params.pop("loss", None)
 
@@ -1230,18 +1230,8 @@ def train_one_fold(
         )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=adapted_dim, **aggregator.params)
-        if aggregator.name == "clam_mb":
-            # clam_mb emits one branch per class and needs the branch-aware head;
-            # every other task family (binary, ordinal, regression, survival, ...)
-            # has no per-class branch to route through.
-            if task.name != "multiclass_classification":
-                raise ValueError(
-                    f"clam_mb does not support task '{task.name}'; it only supports "
-                    "multiclass_classification. Use a different aggregator."
-                )
-            head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
-        else:
-            head = task_cls(input_dim=agg.output_dim, **task_params)
+        head_cls = _bag_head_class(task_cls, task_name=task.name, aggregator_name=aggregator.name)
+        head = head_cls(input_dim=agg.output_dim, **task_params)
         target_fn = head.extract_targets
         _bag_collate = functools.partial(bag_collate_fn, target_dtypes=head.target_dtypes)
         train_loader, tune_loader, test_loaders = _make_loaders(
@@ -1385,7 +1375,6 @@ def train_one_fold(
     _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
     _save_training_history(train_result.history, fold_dir / "training_history.json")
 
-    task_family = task.name
     resolved_metrics = resolve_metrics(task_family, evaluation.metrics)
     for split_name, test_report in test_reports.items():
         predictions_path = fold_dir / f"predictions_{split_name}.csv"
@@ -1445,6 +1434,36 @@ def _check_segmentation_grid_spacing(feature_store, records, preprocessing) -> N
             )
 
 
+def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> type:
+    """Pick the head class for a bag-level run.
+
+    ``clam_mb`` emits one branch per class and needs a branch-aware head; every other
+    task family (binary, ordinal, regression, survival, ...) has no per-class branch to
+    route through. A registered head that already handles branch representations (the
+    built-in ``branch_aware_classification`` or a user subclass of it) is kept as is, so
+    its custom loss, metrics and constructor parameters survive; the ordinary multiclass
+    head is swapped for the built-in branch-aware one.
+    """
+    if aggregator_name != "clam_mb":
+        return task_cls
+    task_family = str(task_cls.task_family)
+    if task_family != "multiclass_classification":
+        raise ValueError(
+            f"clam_mb does not support task '{task_name}' (family "
+            f"'{task_family}'); it only supports the multiclass_classification "
+            "family. Use a different aggregator."
+        )
+    if getattr(task_cls, "supports_branch_representation", False):
+        return task_cls
+    if task_cls is MulticlassClassificationHead:
+        return BranchAwareClassificationHead
+    raise ValueError(
+        f"clam_mb requires custom task head '{task_name}' to support branch "
+        "representations. Subclass BranchAwareClassificationHead to preserve "
+        "your custom loss and metrics."
+    )
+
+
 def _build_segmentation_head(
     *,
     task: TaskConfig,
@@ -1454,7 +1473,12 @@ def _build_segmentation_head(
     geometry,
     sample_spacings: "Mapping[str, DenseSampleSpacing] | None" = None,
 ) -> SegmentationHead:
-    """Build the fold-independent segmentation target contract."""
+    """Build the fold-independent segmentation target contract.
+
+    The head class is the one registered under ``task.name`` (a user subclass of
+    :class:`SegmentationHead` with a custom loss or metric reduction, or the built-in).
+    """
+    head_cls = task_registry.get(task.name)
     num_classes, _, label_remap = resolve_class_scheme(
         task.params, annotation_rasters=masks is not None
     )
@@ -1466,7 +1490,7 @@ def _build_segmentation_head(
     mask_spacing_um = (
         preprocessing.requested_spacing_um if preprocessing is not None else None
     )
-    return SegmentationHead(
+    return head_cls(
         num_classes=num_classes,
         geometry=geometry,
         metrics=evaluation.metrics,
@@ -2025,7 +2049,9 @@ def train_one_detection_fold(
         else delta_px
     )
 
-    head = DetectionHead(
+    # The head class registered under ``task.name``: the built-in DetectionHead or a
+    # user subclass of it.
+    head = task_registry.get(task.name)(
         num_classes=num_classes,
         geometry=geometry,
         delta_px=delta_px,

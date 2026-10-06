@@ -318,6 +318,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "tasks",
         "training",
         "evaluation",
+        "extending",
         "tutorials/index",
         "benchmarking",
         "reference",
