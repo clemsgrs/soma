@@ -48,7 +48,10 @@ The methods worth overriding are:
   for a custom metric reduction. Metric *names* are validated against the
   family's list in :mod:`soma.evaluation.metrics`, so a new name must be added
   there before a config can request it.
-* ``postprocess(raw_output)`` for a custom prediction format.
+* ``postprocess(raw_output)`` for a custom prediction format. It is applied by
+  the training-time evaluation of every family. Whole-slide sliding-window
+  segmentation inference does not call it: the predictor blends the folds'
+  softmaxes across tiles and takes the argmax itself.
 
 Every head family can be subclassed this way: classification, regression,
 survival, segmentation and detection.
@@ -110,3 +113,7 @@ run soma from a small script that imports your module and then calls
 
 The names ``soma list tasks`` and ``soma list decoders`` print include every
 registered component, built-in or not.
+
+The same import is needed later for anything that reopens the run, such as
+``soma report`` or the Python reporting API: the persisted config names the
+custom head, and soma resolves its family through the registry.

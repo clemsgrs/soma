@@ -33,13 +33,13 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from soma.dense.geometry import DenseGridGeometry
-from soma.dense.reader import read_image_at_spacing
+from soma.dense.reader import CLASS_SCHEME_KEYS, read_image_at_spacing
 from soma.dense.sliding import cover_origins
 
 __all__ = [
@@ -387,6 +387,7 @@ def build_live_segmentation_models(
     projection=None,
     encoder_identity: str = "",
     task_name: str = "segmentation",
+    task_params: Mapping[str, object] | None = None,
 ):
     """Reconstruct trained :class:`LiveSegmentationModel`\\ s from a source + checkpoints.
 
@@ -403,8 +404,12 @@ def build_live_segmentation_models(
     encoder's native dim while the checkpoint carries ``target_dim`` shapes. The adaptor is
     rebuilt **unfitted** — the checkpoint's buffers are the fitted state.
 
-    ``task_name`` selects the registered head class (the run's ``task.name``), so a user
-    subclass with a custom ``postprocess`` is replayed with its own head.
+    ``task_name`` selects the registered head class (the run's ``task.name``) and
+    ``task_params`` forwards the run's ``task.params`` to its constructor (class-scheme
+    keys are resolved into ``num_classes`` and skipped), so a user subclass is rebuilt
+    exactly as it was trained. Note that the head's ``postprocess`` is **not** part of
+    sliding-window inference: :class:`SlidingWindowSegmentationPredictor` blends the
+    models' softmaxes across tiles and folds and takes the argmax itself.
     """
     from soma.decoders.registry import build_decoder_for_grid
     from soma.tasks.registry import task_registry
@@ -439,6 +444,11 @@ def build_live_segmentation_models(
 
     models = []
     head_cls = task_registry.get(task_name)
+    head_params = {
+        key: value
+        for key, value in dict(task_params or {}).items()
+        if key not in CLASS_SCHEME_KEYS
+    }
     for ckpt in ckpt_paths:
         head = head_cls(
             num_classes=num_classes,
@@ -446,6 +456,7 @@ def build_live_segmentation_models(
             spacing_um=source.spacing_um,
             backend=source.backend,
             tolerance=source.tolerance,
+            **head_params,
         )
         adaptor = _make_adaptor()
         model = LiveSegmentationModel(

@@ -1230,19 +1230,8 @@ def train_one_fold(
         )
         aggregator_cls = aggregator_registry.get(aggregator.name)
         agg = aggregator_cls(input_dim=adapted_dim, **aggregator.params)
-        if aggregator.name == "clam_mb":
-            # clam_mb emits one branch per class and needs the branch-aware head;
-            # every other task family (binary, ordinal, regression, survival, ...)
-            # has no per-class branch to route through.
-            if task_family != "multiclass_classification":
-                raise ValueError(
-                    f"clam_mb does not support task '{task.name}' (family "
-                    f"'{task_family}'); it only supports the multiclass_classification "
-                    "family. Use a different aggregator."
-                )
-            head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
-        else:
-            head = task_cls(input_dim=agg.output_dim, **task_params)
+        head_cls = _bag_head_class(task_cls, task_name=task.name, aggregator_name=aggregator.name)
+        head = head_cls(input_dim=agg.output_dim, **task_params)
         target_fn = head.extract_targets
         _bag_collate = functools.partial(bag_collate_fn, target_dtypes=head.target_dtypes)
         train_loader, tune_loader, test_loaders = _make_loaders(
@@ -1443,6 +1432,30 @@ def _check_segmentation_grid_spacing(feature_store, records, preprocessing) -> N
                 f"({expected_spacing_um} µm/px); re-extract the features for this "
                 "configuration."
             )
+
+
+def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> type:
+    """Pick the head class for a bag-level run.
+
+    ``clam_mb`` emits one branch per class and needs a branch-aware head; every other
+    task family (binary, ordinal, regression, survival, ...) has no per-class branch to
+    route through. A registered head that already handles branch representations (the
+    built-in ``branch_aware_classification`` or a user subclass of it) is kept as is, so
+    its custom loss, metrics and constructor parameters survive; the ordinary multiclass
+    head is swapped for the built-in branch-aware one.
+    """
+    if aggregator_name != "clam_mb":
+        return task_cls
+    task_family = str(task_cls.task_family)
+    if task_family != "multiclass_classification":
+        raise ValueError(
+            f"clam_mb does not support task '{task_name}' (family "
+            f"'{task_family}'); it only supports the multiclass_classification "
+            "family. Use a different aggregator."
+        )
+    if getattr(task_cls, "supports_branch_representation", False):
+        return task_cls
+    return BranchAwareClassificationHead
 
 
 def _build_segmentation_head(

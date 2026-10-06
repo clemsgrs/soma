@@ -15,6 +15,7 @@ from soma.dataset import Dataset
 from soma.evaluation.metrics import DEFAULT_METRICS, resolve_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
+from soma.tasks.registry import task_family_of
 from soma.reporting.data import FoldData, FoldSlice, RunData, aggregate_slice_predictions, run_data_from_result
 from soma.reporting.subgroups import subgroup_data_for_predictions
 from soma.reporting.html import render_report
@@ -114,7 +115,7 @@ def _make_run_dir(
     }
     (run_dir / "run.yaml").write_text(_to_yaml(run_metadata))
 
-    resolved = resolve_metrics(task_name, metrics or [])
+    resolved = resolve_metrics(task_family_of(task_name), metrics or [])
     single_fold = n_folds == 1
 
     # summary keys: plain for single fold, mean/std for multi-fold
@@ -261,6 +262,24 @@ def test_load_run_data_binary(tmp_path: Path) -> None:
     assert "avg_epoch_seconds" in run_data.folds[0].training_history[0]
     assert "auroc" in run_data.folds[0].tune_metrics
     assert "prob_1" in run_data.folds[0].predictions["test"].columns
+
+
+def test_load_run_data_resolves_a_registered_custom_head(tmp_path: Path, monkeypatch) -> None:
+    """A persisted run naming a user-registered head is reopened through its family."""
+    from soma.tasks.registry import task_registry
+    from soma.tasks.classification import BinaryClassificationHead
+
+    class MyBinaryHead(BinaryClassificationHead):
+        pass
+
+    monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
+    task_registry.register("my_binary", MyBinaryHead)
+
+    run_dir = _make_run_dir(tmp_path, task_name="my_binary", metrics=["auroc"])
+    run_data = load_run_data(run_dir)
+
+    assert run_data.task_family == "binary_classification"
+    assert "auroc" in run_data.folds[0].tune_metrics
 
 
 def test_load_run_data_ignores_peak_per_metric_diagnostic(tmp_path: Path) -> None:

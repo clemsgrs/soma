@@ -1842,6 +1842,56 @@ def test_live_prediction_models_reconstruct_a_cached_trained_projected_checkpoin
     assert logits.shape[:2] == (1, _DENSE_CLASSES)
 
 
+def test_live_prediction_models_forward_task_params_to_a_registered_head(
+    tmp_path: Path, monkeypatch
+):
+    """Live reconstruction rebuilds a user head with the run's ``task.params``."""
+    from soma.config import AugmentationConfig
+    from soma.dense.geometry import compute_dense_geometry
+    from soma.dense.live import LiveSegmentationSource
+    from soma.dense.predict import build_live_segmentation_models
+    from soma.tasks.registry import task_registry
+    from soma.tasks.segmentation import SegmentationHead
+
+    class SmoothedHead(SegmentationHead):
+        def __init__(self, *, smoothing: float, **kwargs):
+            super().__init__(**kwargs)
+            self.smoothing = smoothing
+
+    monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
+    task_registry.register("_test_smoothed_segmentation", SmoothedHead)
+
+    normalization = NormalizationConfig(method="zscore")
+    projection = ProjectionConfig(method="random", target_dim=3)
+    fold_dir, _, _ = _run_dense_fold(tmp_path, normalization, projection)
+    geometry = compute_dense_geometry(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH)
+    source = LiveSegmentationSource(
+        kit=_literal_dense_kit(geometry),
+        device="cpu",
+        feature_dim=_DENSE_DIM,
+        augmentation=AugmentationConfig(),
+        spacing_um=None,
+    )
+    build = dict(
+        decoder_name="lightweight_conv",
+        decoder_params=None,
+        num_classes=_DENSE_CLASSES,
+        ckpt_paths=[fold_dir / "best_model.pt"],
+        normalization=normalization,
+        projection=projection,
+        task_name="_test_smoothed_segmentation",
+    )
+
+    with pytest.raises(TypeError, match="smoothing"):
+        build_live_segmentation_models(source, **build)
+
+    models = build_live_segmentation_models(
+        source, **build, task_params={"num_classes": _DENSE_CLASSES, "smoothing": 0.25}
+    )
+    assert isinstance(models[0].task_head, SmoothedHead)
+    assert models[0].task_head.smoothing == 0.25
+
+
 # Provenance on this path (reused seams — identity, cache key, saved config).
 
 
