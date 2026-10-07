@@ -10,7 +10,7 @@
   `coordinates_path` column: one hs2p tiling artifact per slide (the `.coordinates.npz`
   written by `hs2p.artifacts.save_tiling_result`). soma then skips tissue segmentation
   and tiling and slide2vec embeds exactly those tiles. Each artifact is checked against
-  its manifest row (`sample_id`, `image_path`) and against `preprocessing` (requested
+  its manifest row (`sample_id`, `image_path`, `spacing_at_level_0`) and against `preprocessing` (requested
   spacing and tile size); the column must be set for every row or none, and tile,
   segmentation and detection manifests reject it. The artifact's content joins the
   slide's feature-cache identity, so another tile set is extracted again. Datasets

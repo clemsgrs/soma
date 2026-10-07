@@ -87,9 +87,10 @@ def _check_supported(preprocessing: PreprocessingConfig) -> None:
 def load_supplied_tiling(record: SampleRecord, preprocessing: PreprocessingConfig):
     """Load ``record``'s supplied artifact and check it against the row and the run.
 
-    The artifact must name the row's ``sample_id`` and ``image_path``, and must have been
-    tiled at the run's requested spacing and tile size: slide2vec embeds the tiles as
-    given, so a mismatch would silently feed the encoder another geometry.
+    The artifact must name the row's ``sample_id``, ``image_path`` and
+    ``spacing_at_level_0``, and must have been tiled at the run's requested spacing and
+    tile size: slide2vec embeds the tiles as given, so a mismatch would silently feed the
+    encoder another geometry.
     """
     assert record.coordinates_path is not None
     source = f"supplied coordinates {str(record.coordinates_path)!r}"
@@ -106,6 +107,14 @@ def load_supplied_tiling(record: SampleRecord, preprocessing: PreprocessingConfi
         raise ValueError(
             f"Sample {record.sample_id!r}: {source} were made for image {actual_image!r}, "
             f"but the manifest row names {expected_image!r}."
+        )
+    if result.spacing_at_level_0 != record.spacing_at_level_0:
+        # The artifact's level-0 read geometry assumes its own source spacing; under
+        # another declaration the same reads would cover another physical field.
+        raise ValueError(
+            f"Sample {record.sample_id!r}: {source} were made with spacing_at_level_0 "
+            f"{result.spacing_at_level_0} (manifest: {record.spacing_at_level_0}). "
+            "Declare the same level-0 spacing in both, or regenerate the artifact."
         )
     mismatches = []
     if float(result.requested_spacing_um) != float(preprocessing.requested_spacing_um):

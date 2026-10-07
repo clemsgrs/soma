@@ -241,7 +241,8 @@ it. The artifact holds level-0 tile origins and the read geometry (``read_level`
 soma then skips tissue segmentation and tiling, and slide2vec embeds exactly the
 listed tiles. soma checks each artifact first and stops with an error when:
 
-- its ``sample_id`` or ``image_path`` differs from the manifest row;
+- its ``sample_id``, ``image_path`` or ``spacing_at_level_0`` differs from the
+  manifest row;
 - its ``requested_spacing_um`` or ``requested_tile_size_px`` differs from
   ``preprocessing``;
 - only some rows set ``coordinates_path``.

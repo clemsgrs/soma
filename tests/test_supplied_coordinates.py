@@ -122,6 +122,18 @@ def test_mismatched_artifact_fails_staging(tmp_path: Path, artifact_kwargs: dict
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing())
 
 
+def test_artifact_made_for_another_source_spacing_fails_staging(tmp_path: Path):
+    """The row declares 1.0 µm/px at level 0; tiles read for a 0.5 µm/px slide would
+    cover another physical field."""
+    written = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
+    manifest = _manifest(tmp_path, {"a": written})
+    frame = pd.read_csv(manifest)
+    frame["spacing_at_level_0"] = 1.0
+    frame.to_csv(manifest, index=False)
+    with pytest.raises(ValueError, match=r"spacing_at_level_0 None .*manifest: 1.0"):
+        stage_supplied_coordinates(Dataset(manifest), tmp_path / "tiling", _preprocessing())
+
+
 def test_missing_artifact_fails_staging(tmp_path: Path):
     dataset = Dataset(_manifest(tmp_path, {"a": tmp_path / "a.coordinates.npz"}))
     with pytest.raises(FileNotFoundError, match="'a'.*does not exist"):

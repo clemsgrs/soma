@@ -352,6 +352,7 @@ def write_coordinates_artifact(
     tile_size_px: int,
     spacing_um: float = SPACING_UM,
     slide_size: int,
+    spacing_at_level_0: float | None = None,
 ) -> Path:
     """Hand-write one hs2p tiling artifact (level-0 tile origins) and return its ``.npz``.
 
@@ -386,6 +387,7 @@ def write_coordinates_artifact(
         image_path=image_path,
         backend="openslide",
         requested_backend="openslide",
+        spacing_at_level_0=spacing_at_level_0,
         tolerance=0.05,
         step_px_lv0=tile_size_px,
         tissue_method="user",
