@@ -14,6 +14,7 @@ from soma.cache._types import SCHEMA_VERSION, _FEATURE_TYPE_TO_RANK
 from soma.config import EncoderConfig, PreprocessingConfig, canonical_pixel_mapping
 from soma.dataset import Dataset
 from soma.encoders.validation import resolve_encoder_precision
+from soma.preprocessing.supplied_coordinates import coordinates_digest
 
 
 def _resolve_encoder_precision(
@@ -67,6 +68,7 @@ def sample_identity_signature(
     image_path: Path | str,
     mask_path: Path | str | None,
     spacing_at_level_0: float | None = None,
+    coordinates_digest: str | None = None,
 ) -> str:
     payload = {
         "sample_id": str(sample_id),
@@ -74,6 +76,10 @@ def sample_identity_signature(
         "mask_path": str(mask_path) if mask_path is not None else None,
         "spacing_at_level_0": spacing_at_level_0,
     }
+    if coordinates_digest is not None:
+        # User-supplied tiles are part of what a slide's features are: another tile set
+        # is another sample. Injected only when set, so soma-tiled identities stay stable.
+        payload["coordinates_digest"] = str(coordinates_digest)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -623,6 +629,11 @@ def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
             image_path=sample.image_path,
             mask_path=sample.mask_path,
             spacing_at_level_0=sample.spacing_at_level_0,
+            coordinates_digest=(
+                coordinates_digest(sample.coordinates_path, sample_id=sample.sample_id)
+                if sample.coordinates_path is not None
+                else None
+            ),
         )
         for sample_id, sample in dataset.samples.items()
     }

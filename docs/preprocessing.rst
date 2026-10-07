@@ -219,6 +219,41 @@ on ``dataset_type: tile``.
 
 A ready-to-run example lives at ``examples/slide_tumor_restricted_bag.yaml``.
 
+.. _preprocessing-supplied-coordinates:
+
+Bring your own coordinates
+--------------------------
+
+soma normally tiles each slide itself. To use a fixed tile set instead (a benchmark's
+own sampler, coordinates released with a paper, or a frozen set for an ablation), add a
+``coordinates_path`` column to a slide-level ``dataset.csv``. Each row names one hs2p
+tiling artifact: the ``<name>.coordinates.npz`` written by
+``hs2p.artifacts.save_tiling_result``, with its ``<name>.coordinates.meta.json`` beside
+it. The artifact holds level-0 tile origins and the read geometry (``read_level``,
+``read_tile_size_px``, ``requested_tile_size_px``, ``requested_spacing_um``).
+
+.. code-block:: text
+
+   sample_id,image_path,label,coordinates_path
+   s01,/slides/s01.tif,1,/coords/s01.coordinates.npz
+   s02,/slides/s02.tif,0,/coords/s02.coordinates.npz
+
+soma then skips tissue segmentation and tiling, and slide2vec embeds exactly the
+listed tiles. soma checks each artifact first and stops with an error when:
+
+- its ``sample_id`` or ``image_path`` differs from the manifest row;
+- its ``requested_spacing_um`` or ``requested_tile_size_px`` differs from
+  ``preprocessing``;
+- only some rows set ``coordinates_path``.
+
+The content of each artifact is part of the slide's feature-cache identity. The same
+artifact reuses its features across runs; a different tile set is extracted again.
+
+Supplied coordinates work for pooled whole-slide bags (``dataset_type: slide``).
+They cannot be combined with ``preprocessing.masks`` or hierarchical regions, and
+tile, segmentation, and detection manifests reject the column. ``tissue_method`` is
+still required by the configuration, but it is not used.
+
 Tissue mask preview
 -------------------
 

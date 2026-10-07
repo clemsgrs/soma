@@ -47,6 +47,9 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     # The parent slide an ROI was sampled from; typed onto SampleRecord.slide_id.
     "slide_id",
     "spacing_at_level_0",
+    # User-supplied tile coordinates: one hs2p tiling artifact per slide, which replaces
+    # soma's own tiling of that slide. Slide-level datasets only.
+    "coordinates_path",
 }
 REQUIRED_SPLITS_COLUMNS = {"sample_id", "split"}
 
@@ -130,6 +133,29 @@ def _optional_path_column(row: pd.Series, column: str) -> Path | None:
     return Path(text) if text is not None else None
 
 
+def validate_coordinates_column(df: pd.DataFrame, *, supported: bool) -> None:
+    """Reject a ``coordinates_path`` column where it cannot apply, or that only some rows fill.
+
+    Supplied coordinates replace the tiling of whole slides, so only the slide-level
+    ``Dataset`` accepts them. Within it the column is all-or-nothing: a dataset is tiled
+    either by soma or by the user, never partly by each.
+    """
+    if "coordinates_path" not in df.columns:
+        return
+    if not supported:
+        raise ValueError(
+            "Manifest column 'coordinates_path' (user-supplied tile coordinates) is only "
+            "supported for slide-level datasets (dataset_type: slide); drop the column."
+        )
+    missing = df.loc[df["coordinates_path"].isna(), "sample_id"].astype(str).tolist()
+    if missing and len(missing) < len(df):
+        raise ValueError(
+            "Manifest column 'coordinates_path' must be set for every row or for none; "
+            f"missing for {len(missing)} sample(s): {missing[:20]}"
+            f"{' ...' if len(missing) > 20 else ''}."
+        )
+
+
 def _is_valid_split_name(name: str) -> bool:
     """A split name is valid if it is 'train', 'tune', or starts with 'test'."""
     return name in ("train", "tune") or name.startswith("test")
@@ -154,6 +180,9 @@ class SampleRecord:
     # Optional caller declaration for ``image_path``'s physical level-0 pixel size.
     # Extraction resolves and persists the authoritative source spacing separately.
     spacing_at_level_0: float | None = None
+    # User-supplied tile coordinates: the ``.coordinates.npz`` of an hs2p tiling artifact
+    # (its ``.coordinates.meta.json`` sits beside it). Set, the slide is not tiled by soma.
+    coordinates_path: Path | None = None
     # Slide-manifest segmentation: an ROI's (x, y) top-left in level-0 pixel space.
     # image_path/label_mask_path then point at the parent *slide* (+ annotation slide), and
     # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
@@ -195,12 +224,16 @@ class Dataset:
         self._validate_columns(df)
         self._samples = self._build_samples(df)
 
+    #: Whether rows may name user-supplied tile coordinates (whole-slide tiling only).
+    _accepts_coordinates = True
+
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
         if "tissue_mask_path" in df.columns:
             raise ValueError(
                 "Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'."
             )
+        validate_coordinates_column(df, supported=self._accepts_coordinates)
         for col in REQUIRED_DATASET_COLUMNS:
             if col not in df.columns:
                 msg = f"Required column '{col}' not found. Available: {list(df.columns)}"
@@ -244,6 +277,7 @@ class Dataset:
                 patient_id=patient_id,
                 group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
+                coordinates_path=_optional_path_column(row, "coordinates_path"),
                 metadata=metadata,
             )
         return samples
@@ -255,6 +289,11 @@ class Dataset:
     @property
     def sample_ids(self) -> list[str]:
         return list(self._samples.keys())
+
+    @property
+    def supplies_coordinates(self) -> bool:
+        """True when the manifest names each slide's tile coordinates (no soma tiling)."""
+        return any(r.coordinates_path is not None for r in self._samples.values())
 
     @property
     def has_patient_ids(self) -> bool:
@@ -304,10 +343,13 @@ class Dataset:
 class TileDataset(Dataset):
     """Scalar-supervised pre-cropped images with Given encoder geometry.
 
-    The distinct type is intentionally behavior-free: it prevents persistent extraction
-    from guessing whether a generic ``Dataset`` row names a whole slide or a tile by
-    inspecting paths, pixels, or CSV columns.
+    The distinct type is intentionally behavior-free (beyond refusing supplied tile
+    coordinates, which only whole slides have): it prevents persistent extraction from
+    guessing whether a generic ``Dataset`` row names a whole slide or a tile by inspecting
+    paths, pixels, or CSV columns.
     """
+
+    _accepts_coordinates = False
 
 
 REQUIRED_SEGMENTATION_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
@@ -334,6 +376,7 @@ class SegmentationManifest:
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
+        validate_coordinates_column(df, supported=False)
         if "tissue_mask_path" in df.columns:
             raise ValueError(
                 "Use 'mask_path' (the tissue mask column) instead of 'tissue_mask_path'."
@@ -450,6 +493,7 @@ class DetectionManifest:
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
+        validate_coordinates_column(df, supported=False)
         for col in REQUIRED_DETECTION_COLUMNS:
             if col not in df.columns:
                 raise ValueError(
@@ -550,6 +594,7 @@ class SpatialExpressionManifest:
 
     def _validate_columns(self, df: pd.DataFrame) -> None:
         validate_spacing_declaration_columns(df)
+        validate_coordinates_column(df, supported=False)
         for col in REQUIRED_SPATIAL_EXPRESSION_COLUMNS:
             if col not in df.columns:
                 raise ValueError(

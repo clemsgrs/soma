@@ -14,7 +14,7 @@ Dataset format
 
 ``dataset.csv``
   | Required columns: ``sample_id``, ``image_path``, ``label``.
-  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``).
+  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``), ``coordinates_path`` (user-supplied tile coordinates for whole slides; see :ref:`preprocessing-supplied-coordinates`).
   | Additional, unrecognized columns are carried along as per-sample metadata.
 
 Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)

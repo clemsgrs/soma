@@ -71,6 +71,7 @@ from soma.extraction.reporters import (
 )
 from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
 from soma.features import PACKED_FILENAME, FeatureStore
+from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from soma.slide2vec_adapter import (
     LoadedTiling,
     build_execution_options,
@@ -336,6 +337,10 @@ class _PooledFeatureExtractor:
             encoder=self._encoder,
             preprocessing=cfg,
         )
+        if self._dataset.supplies_coordinates:
+            # The user tiled the slides: list their artifacts where hs2p's would be.
+            stage_supplied_coordinates(self._dataset, tiling_dir, cfg)
+            return
         process_list_path = tiling_dir / "process_list.csv"
         if not self._cache.enabled:
             if skip_existing and process_list_path.is_file():
