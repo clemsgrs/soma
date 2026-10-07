@@ -86,6 +86,7 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert config.task.name == "eva_segmentation"
     assert config.task.params == {"num_classes": 5}
     assert config.preprocessing.requested_tile_size_px == 224
+    assert config.preprocessing.feature_kind == "patch_features_prenorm"  # EVA's timm tap
     assert config.evaluation.metrics[0] == "foreground_mean_dice"
     training = config.training
     assert (training.optimizer, training.scheduler) == ("adamw", "none")

@@ -139,12 +139,13 @@ def dense_grid_metadata(
     against the features. (It is also part of the cache *key*, via the plumbed
     ``PreprocessingConfig``, so two spacings can never alias to one cache entry.)
 
-    ``feature_kind`` records what the channels mean: ``patch_features`` (ViT patch
-    tokens) or ``cls_attention`` (per-head prefix-token self-attention). For the latter
+    ``feature_kind`` records what the channels mean: ``patch_features`` /
+    ``patch_features_prenorm`` (ViT patch tokens after / before the final norm) or
+    ``cls_attention`` (per-head prefix-token self-attention). For the latter
     the ``attention_*`` fields and ``channel_order`` describe the channel layout
     (``[block][cls, reg…][head]``) so a loader / multi-encoder concat can interpret it.
     """
-    is_attention = feature_kind != "patch_features"
+    is_attention = feature_kind == "cls_attention"
     return {
         "artifact_type": DENSE_ARTIFACT_TYPE,
         "feature_type": DENSE_ARTIFACT_TYPE,

@@ -1781,3 +1781,36 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
     )
     defaults.update(overrides)
     return PipelineConfig(**defaults)
+
+
+def test_prenorm_patch_features_is_a_valid_feature_kind():
+    from soma.config import VALID_FEATURE_KINDS, EncoderMemberConfig
+
+    assert "patch_features_prenorm" in VALID_FEATURE_KINDS
+    pre = PreprocessingConfig(requested_spacing_um=0.5, feature_kind="patch_features_prenorm")
+    assert pre.feature_kind == "patch_features_prenorm"
+    assert EncoderMemberConfig(name="uni", feature_kind="patch_features_prenorm").feature_kind == (
+        "patch_features_prenorm"
+    )
+    with pytest.raises(ValueError, match="Invalid feature_kind 'tokens'"):
+        PreprocessingConfig(requested_spacing_um=0.5, feature_kind="tokens")
+    with pytest.raises(ValueError, match="patch_features_prenorm"):
+        EncoderMemberConfig(name="uni", feature_kind="tokens")
+
+
+def test_composite_prenorm_member_norm_defaults_like_patch_features():
+    from soma.config import CompositeConfig, EncoderMemberConfig
+
+    cfg = _seg_config(
+        composite=CompositeConfig(
+            encoders=[
+                EncoderMemberConfig(name="uni", feature_kind="patch_features_prenorm"),
+                EncoderMemberConfig(name="phikon"),
+            ]
+        ),
+    )
+    assert [m.feature_kind for m in cfg.composite.encoders] == [
+        "patch_features_prenorm",
+        "patch_features",
+    ]
+    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)

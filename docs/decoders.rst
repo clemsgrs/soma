@@ -40,7 +40,12 @@ Choose the input features
 
 ``preprocessing.feature_kind`` selects the dense grid:
 
-* ``patch_features`` (default with a decoder) supplies patch-token embeddings.
+* ``patch_features`` (default with a decoder) supplies patch-token embeddings
+  after the backbone's final normalisation layer.
+* ``patch_features_prenorm`` supplies the same grid tapped one step earlier,
+  before the final normalisation (timm's ``features_only`` output). Use it when
+  the decoder was designed against a timm feature backbone, as the EVA
+  segmentation benchmarks are. timm ViT encoders only.
 * ``cls_attention`` supplies per-head prefix-token attention maps. Configure
   the selected blocks and register tokens through ``preprocessing.attention``.
 

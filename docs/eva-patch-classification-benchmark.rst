@@ -190,7 +190,8 @@ split, which is soma's ``test`` split (``tune_is_test``).
      - ``0, 1, 2, 3, 4`` (averaged)
 
 The decoder, loss and confusion counting exist only for this benchmark and are
-registered under ``eva_`` names; they are not general soma components. One known
-difference remains: EVA taps the last block's patch tokens before the backbone's
-final normalisation layer, whereas slide2vec's dense grid is taken after it
-(`#526 <https://github.com/clemsgrs/soma/issues/526>`__).
+registered under ``eva_`` names; they are not general soma components. The dense
+grid is tapped where EVA taps it: the last block's patch tokens *before* the
+backbone's final normalisation layer (``feature_kind: patch_features_prenorm``,
+timm's ``features_only`` output), so the decoder sees the same token scale as the
+leaderboard decoders.

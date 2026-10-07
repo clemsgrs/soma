@@ -111,4 +111,5 @@ def test_reproduce_eva_consep_curates_trains_and_scores(
     text = run.config_path.read_text()
     artifact.check_equal("decoder_is_eva_conv_ms", "eva_conv_ms" in text, True)
     artifact.check_equal("head_is_eva_segmentation", "eva_segmentation" in text, True)
+    artifact.check_equal("prenorm_feature_tap", "patch_features_prenorm" in text, True)
     artifact.assert_passed()

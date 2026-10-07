@@ -1963,3 +1963,21 @@ def test_reproduce_unknown_eva_family_member_exits_nonzero(capsys):
     err = capsys.readouterr().err
     assert code == 2
     assert "Unknown benchmark" in err
+
+
+def test_preflight_rejects_prenorm_tap_when_slide2vec_reports_no_support():
+    from types import SimpleNamespace
+
+    from soma.benchmarks import get_benchmark
+    from soma.cli import _preflight_config_compatibility
+
+    benchmark = get_benchmark("eva/consep")
+    config = benchmark.build_config(
+        encoder="uni2", dataset_csv="d.csv", splits_csv="s.csv", output_root="out"
+    )
+    capabilities = SimpleNamespace(
+        name="uni2", level="tile", pooled=True, dense=True, dense_prenorm=False, attention=True
+    )
+    message = _preflight_config_compatibility(benchmark, "uni2", config, capabilities, {})
+    assert message is not None and "missing pre-norm dense capability" in message
+    assert "patch_features_prenorm" in message

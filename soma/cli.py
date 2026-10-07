@@ -231,6 +231,13 @@ def _preflight_config_compatibility(
             "patch features, but slide2vec reports dense=False. Select a compatible "
             "Benchmark or change the Encoder plugin implementation."
         )
+    if feature_kind == "patch_features_prenorm" and not capabilities.dense_prenorm:
+        return (
+            f"missing pre-norm dense capability: Benchmark {benchmark.name!r} requires the "
+            "pre-norm patch grid (feature_kind='patch_features_prenorm'), but slide2vec "
+            "reports dense_prenorm=False (timm ViT encoders only). Select a compatible "
+            "Benchmark or change the Encoder plugin implementation."
+        )
     if feature_kind == "cls_attention" and not capabilities.attention:
         return (
             f"missing attention capability: Benchmark {benchmark.name!r} requires CLS "

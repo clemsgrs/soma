@@ -26,6 +26,11 @@ from hs2p.configs import TilingConfig
 from soma.evaluation.metrics import resolve_metrics
 from soma.tasks.registry import task_family_of
 
+#: ``preprocessing.feature_kind`` values; ``None`` is auto (cross-defaulted from the
+#: trainable component). The two ``patch_features*`` kinds are the ViT patch-token grid
+#: after / before the backbone's final norm; ``cls_attention`` is per-head CLS attention.
+VALID_FEATURE_KINDS = frozenset({None, "patch_features", "patch_features_prenorm", "cls_attention"})
+
 
 RoiBatchSamplingStrategy = Literal["uniform", "class_conditioned"]
 ROI_BATCH_SAMPLING_STRATEGIES = frozenset({"uniform", "class_conditioned"})
@@ -397,6 +402,9 @@ class PreprocessingConfig:
     # cross-defaults it from the trainable component (decoder ⇒ patch_features,
     # pixel_classifier ⇒ cls_attention) — both overridable by setting this explicitly.
     # Orthogonal to the component (either grid feeds a decoder or a pixel-classifier).
+    # ``patch_features_prenorm`` is the same patch grid tapped before the backbone's final
+    # norm (timm's ``features_only`` tap; timm ViT encoders only) — what decoders trained
+    # on timm feature backbones expect (the EVA segmentation benchmarks).
     # ``attention`` selects which blocks / whether to keep register rows for cls_attention.
     feature_kind: str | None = None
     attention: AttentionConfig = field(default_factory=AttentionConfig)
@@ -416,11 +424,10 @@ class PreprocessingConfig:
                 "spacing_policy must be 'strict' or 'native_if_coarser', got "
                 f"{self.spacing_policy!r}"
             )
-        _valid_feature_kinds = {None, "patch_features", "cls_attention"}
-        if self.feature_kind not in _valid_feature_kinds:
+        if self.feature_kind not in VALID_FEATURE_KINDS:
             raise ValueError(
                 f"Invalid feature_kind {self.feature_kind!r}; must be 'patch_features', "
-                "'cls_attention', or None (auto)."
+                "'patch_features_prenorm', 'cls_attention', or None (auto)."
             )
         if self.dense_window_size is not None and int(self.dense_window_size) <= 0:
             raise ValueError(
@@ -610,10 +617,11 @@ class EncoderMemberConfig:
     dense_window_overlap: float | None = None
 
     def __post_init__(self) -> None:
-        if self.feature_kind not in {None, "patch_features", "cls_attention"}:
+        if self.feature_kind not in VALID_FEATURE_KINDS:
             raise ValueError(
                 f"EncoderMemberConfig.feature_kind must be 'patch_features', "
-                f"'cls_attention', or None (auto), got {self.feature_kind!r}."
+                f"'patch_features_prenorm', 'cls_attention', or None (auto), got "
+                f"{self.feature_kind!r}."
             )
         if self.member_norm not in {None, "none", "l2", "layernorm"}:
             raise ValueError(
@@ -1976,7 +1984,7 @@ class PipelineConfig:
             resolved_members = []
             for member in self.composite.encoders:
                 fk = member.feature_kind or consumer_kind
-                norm = member.member_norm or ("l2" if fk == "patch_features" else "none")
+                norm = member.member_norm or ("none" if fk == "cls_attention" else "l2")
                 resolved_members.append(replace(member, feature_kind=fk, member_norm=norm))
             concat_resolution = self.composite.concat_resolution or (
                 "target" if self.pixel_classifier is not None else "grid"

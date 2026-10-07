@@ -102,6 +102,8 @@ METRICS = ["foreground_mean_dice", "mean_dice", "mean_iou"]
 
 DECODER_NAME = "eva_conv_ms"
 HEAD_NAME = "eva_segmentation"
+#: Dense feature tap: the pre-norm last-block patch grid (timm ``features_only``), as EVA.
+FEATURE_KIND = "patch_features_prenorm"
 
 
 # --- Benchmark-private components -----------------------------------------------------
@@ -296,6 +298,9 @@ def _build_eva_segmentation_config(
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=OUTPUT_PX,
             requested_spacing_um=NOMINAL_SPACING_UM,
+            # EVA builds its backbones with timm ``features_only=True, out_indices=1``:
+            # the last block's patch grid *before* the final norm. Match that tap.
+            feature_kind=FEATURE_KIND,
         ),
         encoder=EncoderConfig(
             name=encoder,

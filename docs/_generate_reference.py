@@ -625,10 +625,11 @@ def build_eva_benchmark_rst() -> str:
         "split, which is soma's ``test`` split (``tune_is_test``).\n\n"
         + _kv_table("Setting", "Value", seg_protocol_rows)
         + "\n\nThe decoder, loss and confusion counting exist only for this benchmark and are\n"
-        "registered under ``eva_`` names; they are not general soma components. One known\n"
-        "difference remains: EVA taps the last block's patch tokens before the backbone's\n"
-        "final normalisation layer, whereas slide2vec's dense grid is taken after it\n"
-        "(`#526 <https://github.com/clemsgrs/soma/issues/526>`__).",
+        "registered under ``eva_`` names; they are not general soma components. The dense\n"
+        "grid is tapped where EVA taps it: the last block's patch tokens *before* the\n"
+        "backbone's final normalisation layer (``feature_kind: patch_features_prenorm``,\n"
+        "timm's ``features_only`` output), so the decoder sees the same token scale as the\n"
+        "leaderboard decoders.",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 
