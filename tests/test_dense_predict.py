@@ -378,6 +378,21 @@ def test_image_prior_decoder_receives_each_tiles_pixels(shared_kit):
 
 
 @pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
+def test_mixed_ensemble_passes_pixels_only_to_image_prior_members(shared_kit):
+    # A grid-only member (one-argument forward) ensembled with an image-prior member:
+    # only the latter gets the pixels. Both predict the painted colour.
+    geom = _geom()
+    if shared_kit:
+        kit = _ZeroGridKit()
+        models = [_GridModel(geom, kit), _live_model(kit, _ImageColorDecoder())]
+    else:
+        models = [_ColorModel(geom), _live_model(_ZeroGridKit(), _ImageColorDecoder())]
+    out = _predictor(models).predict_array(_painted(96, 160), overlap=0.5)
+    assert (out.labels[:, :70] == 0).all()
+    assert (out.labels[:, 90:] == 2).all()
+
+
+@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
 def test_eva_image_decoder_predicts_through_both_routes(shared_kit):
     from soma.benchmarks.eva_segmentation import EvaConvWithImageDecoder
 
