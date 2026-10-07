@@ -1,5 +1,14 @@
 # Changelog
 
+- 2026-10-07: `TrainingConfig` gains `lr_warmup_epochs` and `lr_warmup_factor`, a
+  `ConstantLR`-style warm-up that scales the learning rate for the first epochs
+  under both the epoch and the step budget and composes with the cosine
+  scheduler. The EVA segmentation recipe sets EVA's default (lr/3 for five
+  epochs); without it two of five `eva/consep` seeds collapsed to a foreground
+  Dice of 0 because the first AdamW steps on the unnormalised pre-norm grid
+  saturated the softmax. The canonical experiment payload now carries the two
+  fields, so `identity_version` is 4 and experiment ids change for every run.
+
 - 2026-10-07: A detection run without a tune split keeps the configured score
   threshold. With `training.allow_missing_tune`, train stands in for tune, and
   soma swept the per-class score threshold on the training samples. The decoder

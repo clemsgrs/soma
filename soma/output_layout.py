@@ -52,7 +52,7 @@ def _stable_json(payload: dict[str, Any]) -> str:
 
 #: Bump when the canonical payload changes shape. Recorded on every run and
 #: experiment manifest so ids minted under different rules are never compared as equal.
-IDENTITY_VERSION = 3
+IDENTITY_VERSION = 4
 
 # Loader plumbing: changes throughput, never the trained model or its evaluation.
 _TRAINING_IDENTITY_EXCLUDED = ("seed", "num_workers", "pin_memory", "persistent_workers")
@@ -70,7 +70,7 @@ _EVALUATION_IDENTITY_EXCLUDED = (
 def _training_identity(config: PipelineConfig) -> dict[str, Any]:
     """Every ``TrainingConfig`` field except the explicit exclusions, emitted
     unconditionally (identity v2 dropped the "only when non-default" guards; v3 added
-    ``tune_every_n_epochs``)."""
+    ``tune_every_n_epochs``; v4 added ``lr_warmup_epochs`` / ``lr_warmup_factor``)."""
     training = asdict(config.training)
     for key in _TRAINING_IDENTITY_EXCLUDED:
         training.pop(key, None)
