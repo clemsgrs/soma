@@ -338,8 +338,9 @@ class _PooledFeatureExtractor:
             preprocessing=cfg,
         )
         if self._dataset.supplies_coordinates:
-            # The user tiled the slides: list their artifacts where hs2p's would be.
-            stage_supplied_coordinates(self._dataset, tiling_dir, cfg)
+            # The user tiled the slides: list their artifacts where hs2p's would be, and
+            # key the run on the copies it embeds.
+            self._dataset = stage_supplied_coordinates(self._dataset, tiling_dir, cfg)
             return
         process_list_path = tiling_dir / "process_list.csv"
         if not self._cache.enabled:

@@ -92,8 +92,9 @@ def _snapshot(record: SampleRecord, snapshot_dir: Path) -> tuple[Path, Path]:
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     npz_copy = snapshot_dir / f"{record.sample_id}{_NPZ_SUFFIX}"
     meta_copy = snapshot_dir / f"{record.sample_id}{_META_SUFFIX}"
-    shutil.copyfile(record.coordinates_path, npz_copy)
-    shutil.copyfile(meta_path, meta_copy)
+    if Path(record.coordinates_path).resolve() != npz_copy.resolve():  # not yet staged
+        shutil.copyfile(record.coordinates_path, npz_copy)
+        shutil.copyfile(meta_path, meta_copy)
     return npz_copy.resolve(), meta_copy.resolve()
 
 
@@ -160,17 +161,21 @@ def stage_supplied_coordinates(
     dataset: Dataset,
     tiling_dir: Path,
     preprocessing: PreprocessingConfig,
-) -> None:
+) -> Dataset:
     """Copy each slide's supplied artifact into ``tiling_dir`` and list it there.
 
     It is the tiling directory hs2p would have written, so slide2vec embeds from it
-    unchanged. The copies, not the user's files, are checked and listed: replacing an
-    artifact later leaves this run's tiles (and the heatmaps drawn over them) intact.
+    unchanged. The copies, not the user's files, are checked and listed, and the
+    returned dataset names them: its cache identity is that of the tiles this run
+    embeds, and replacing an artifact later leaves the run's tiles (and the heatmaps
+    drawn over them) intact.
     """
     _check_supported(preprocessing)
     rows = []
+    snapshots: dict[str, Path] = {}
     for record in dataset.samples.values():
         npz_path, meta_path = _snapshot(record, tiling_dir / "coordinates")
+        snapshots[record.sample_id] = npz_path
         result = _load_checked(record, preprocessing, npz_path=npz_path, meta_path=meta_path)
         rows.append(
             {
@@ -197,3 +202,4 @@ def stage_supplied_coordinates(
         )
     tiling_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(tiling_dir / "process_list.csv", index=False)
+    return dataset.with_coordinates(snapshots)

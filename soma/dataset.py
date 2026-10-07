@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -294,6 +295,15 @@ class Dataset:
     def supplies_coordinates(self) -> bool:
         """True when the manifest names each slide's tile coordinates (no soma tiling)."""
         return any(r.coordinates_path is not None for r in self._samples.values())
+
+    def with_coordinates(self, coordinates_paths: dict[str, Path]) -> "Dataset":
+        """A copy whose rows name ``coordinates_paths`` (a run's snapshot of the artifacts)."""
+        clone = copy.copy(self)
+        clone._samples = {
+            sample_id: replace(record, coordinates_path=Path(coordinates_paths[sample_id]))
+            for sample_id, record in self._samples.items()
+        }
+        return clone
 
     @property
     def has_patient_ids(self) -> bool:

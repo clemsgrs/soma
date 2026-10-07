@@ -202,3 +202,18 @@ def test_tissue_mask_value_guard_does_not_apply_to_supplied_coordinates(tmp_path
     frame["mask_path"] = str(tmp_path / "a_mask.tif")
     frame.to_csv(manifest, index=False)
     ensure_supported_mask_value(Dataset(manifest), _preprocessing(tissue_mask_tissue_value=255))
+
+
+def test_staged_dataset_is_keyed_on_the_tiles_the_run_embeds(tmp_path: Path):
+    """Once staged, the cache identity follows the run's copies, not the user's files."""
+    paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
+    staged = stage_supplied_coordinates(
+        Dataset(_manifest(tmp_path, paths)), tmp_path / "tiling", _preprocessing()
+    )
+    before = _sample_identity_payload(staged)
+
+    _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif", x=(0, 32, 96))
+    paths["b"].unlink()
+    assert _sample_identity_payload(staged) == before
+    restaged = stage_supplied_coordinates(staged, tmp_path / "tiling", _preprocessing())
+    assert _sample_identity_payload(restaged) == before
