@@ -120,6 +120,7 @@ class Trainer:
 
         self._optimizer = _build_optimizer(model, config)
         self._scheduler = _build_scheduler(self._optimizer, config)
+        self._warmup = _build_warmup(self._optimizer, config)
         self._optimizer_steps = 0
 
     def fit(self) -> TrainResult:
@@ -275,6 +276,8 @@ class Trainer:
                 lr = self._optimizer.param_groups[0]["lr"]
                 if self._scheduler is not None and self._config.max_steps is None:
                     self._scheduler.step()
+                if self._warmup is not None:
+                    self._warmup.step()  # warm-up is epoch-shaped under both budgets
 
                 elapsed_seconds = time.perf_counter() - started_at
                 completed_epochs = epoch + 1
@@ -750,6 +753,22 @@ def _optimizer_updates_per_epoch(
     if prediction_accumulation:
         return max(batches, 1)
     return max(math.ceil(batches / gradient_accumulation), 1)
+
+
+def _build_warmup(
+    optimizer: torch.optim.Optimizer, config: TrainingConfig
+) -> torch.optim.lr_scheduler.LRScheduler | None:
+    """``ConstantLR`` warm-up: ``lr * factor`` for the first ``lr_warmup_epochs`` epochs.
+
+    Chainable like the main scheduler (both rescale the live group rate), so the two
+    compose multiplicatively; the trainer advances this one once per epoch in both
+    budgets, matching Lightning's epoch-interval default that EVA's recipes rely on.
+    """
+    if config.lr_warmup_epochs == 0:
+        return None
+    return torch.optim.lr_scheduler.ConstantLR(
+        optimizer, factor=config.lr_warmup_factor, total_iters=config.lr_warmup_epochs
+    )
 
 
 def _derived_epoch_count(max_steps: int | None, updates_per_epoch: int) -> int:

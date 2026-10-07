@@ -22,10 +22,11 @@ Protocol points that matter for matching the leaderboard (offline segmentation c
 * The curators (:mod:`soma.curation.eva_segmentation`) materialise EVA's geometry: CoNSeP
   250 px grid tiles at native 0.25 µm/px resized to 224, MoNuSAC whole images resized on
   the short side to 224 and centre-cropped. soma trains on the flat 224 px PNGs.
-* Dense features are the last block's patch-token grid. EVA taps it **before** the
-  backbone's final LayerNorm (timm ``features_only`` with ``norm=False``); slide2vec's
-  grid is taken **after** it. Closing that gap is issue #526.
-* AdamW ``lr=2e-3`` (torch's default ``weight_decay=0.01``), batch size 64, a fixed
+* Dense features are the last block's patch-token grid taken **before** the backbone's
+  final LayerNorm (timm ``features_only`` with ``norm=False``): slide2vec's
+  ``patch_features_prenorm`` feature kind.
+* AdamW ``lr=2e-3`` (torch's default ``weight_decay=0.01``) behind eva's default
+  ``ConstantLR`` warm-up (lr/3 for the first five epochs), batch size 64, a fixed
   budget of ``max_steps=2000`` optimizer updates, no scheduler, best checkpoint on the
   validation foreground Dice, early-stopping patience 200 (CoNSeP) / 100 (MoNuSAC)
   validation rounds, five seeds.
@@ -93,6 +94,12 @@ MAX_STEPS = 2000
 BATCH_SIZE = 64
 LEARNING_RATE = 2.0e-3
 WEIGHT_DECAY = 0.01  # eva sets only lr; torch.optim.AdamW default weight_decay
+# eva's ``SemanticSegmentationModule`` defaults ``lr_scheduler`` to torch ``ConstantLR``
+# (factor 1/3 for 5 epochs, stepped per epoch by Lightning) and no segmentation config
+# overrides it. Without this warm-up the first AdamW steps at 2e-3 on the unnormalised
+# pre-norm grid (|x| up to ~700 for uni2) saturate the softmax and some seeds never recover.
+WARMUP_EPOCHS = 5
+WARMUP_FACTOR = 1 / 3
 DECODER_HIDDEN_DIM = 64  # ConvDecoderMS's fixed intermediate width
 #: MONAI DiceLoss smoothing constants (numerator / denominator).
 DICE_SMOOTH = 1.0e-5
@@ -322,6 +329,8 @@ def _build_eva_segmentation_config(
             weight_decay=WEIGHT_DECAY,
             optimizer="adamw",
             scheduler="none",
+            lr_warmup_epochs=WARMUP_EPOCHS,
+            lr_warmup_factor=WARMUP_FACTOR,
             patience=patience,
             monitor="foreground_mean_dice",
             monitor_mode="max",

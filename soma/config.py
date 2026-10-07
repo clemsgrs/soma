@@ -1207,7 +1207,9 @@ class TrainingConfig:
     ``learning_rate``, ``optimizer``, ``scheduler``, and ``patience`` define the
     optimization schedule. Cosine scheduling advances once per epoch with
     ``T_max=epochs`` in epoch mode and once per optimizer update with
-    ``T_max=max_steps`` in step mode. ``monitor`` and
+    ``T_max=max_steps`` in step mode. ``lr_warmup_epochs`` and ``lr_warmup_factor`` scale the
+    rate for the first epochs in either mode and compose multiplicatively with the
+    scheduler. ``monitor`` and
     ``monitor_mode`` choose the tune loss or metric used for selected-checkpoint
     selection and early stopping. ``tune_is_test`` ties the tune and test
     splits to the same samples for protocols with a single held-out set: a fold
@@ -1250,6 +1252,12 @@ class TrainingConfig:
     weight_decay: float = 1e-5
     optimizer: str = "adam"
     scheduler: str = "cosine"
+    # Linear-rate warm-up with torch ``ConstantLR`` semantics: the learning rate is
+    # multiplied by ``lr_warmup_factor`` for the first ``lr_warmup_epochs`` epochs (counted
+    # in epochs under both budgets, like Lightning's epoch-interval default), then the base
+    # rate and any ``scheduler`` take over. ``0`` disables the warm-up.
+    lr_warmup_epochs: int = 0
+    lr_warmup_factor: float = 1.0
     # Early-stopping patience in tune evaluations (epochs, when ``tune_every_n_epochs`` is 1),
     # or ``None`` to disable early stopping and always train the full ``epochs`` budget.
     # ``checkpoint_selection='last'`` *requires* ``None``.
@@ -1291,6 +1299,14 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.epochs must be >= 1")
         if self.max_train_pixels < 1:
             raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
+        if self.lr_warmup_epochs < 0:
+            raise ValueError("TrainingConfig.lr_warmup_epochs must be >= 0")
+        if not 0.0 < self.lr_warmup_factor <= 1.0:
+            raise ValueError("TrainingConfig.lr_warmup_factor must be in (0, 1]")
+        if self.lr_warmup_epochs == 0 and self.lr_warmup_factor != 1.0:
+            raise ValueError(
+                "TrainingConfig.lr_warmup_factor requires lr_warmup_epochs >= 1 to take effect"
+            )
         if self.batch_size < 1:
             raise ValueError("TrainingConfig.batch_size must be >= 1")
         if (

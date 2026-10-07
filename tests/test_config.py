@@ -1814,3 +1814,23 @@ def test_composite_prenorm_member_norm_defaults_like_patch_features():
         "patch_features",
     ]
     assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
+
+
+def test_training_config_defaults_to_no_lr_warmup():
+    cfg = TrainingConfig()
+    assert cfg.lr_warmup_epochs == 0
+    assert cfg.lr_warmup_factor == 1.0
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"lr_warmup_epochs": -1},
+        {"lr_warmup_epochs": 5, "lr_warmup_factor": 0.0},
+        {"lr_warmup_epochs": 5, "lr_warmup_factor": 1.5},
+        {"lr_warmup_epochs": 0, "lr_warmup_factor": 0.5},
+    ],
+)
+def test_training_config_rejects_malformed_lr_warmup(kwargs):
+    with pytest.raises(ValueError, match="lr_warmup"):
+        TrainingConfig(**kwargs)

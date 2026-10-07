@@ -1017,3 +1017,66 @@ class TestTuneEveryNEpochsConfig:
     def test_rejects_last_selection(self):
         with pytest.raises(ValueError, match="tune_every_n_epochs must be 1"):
             TrainingConfig(checkpoint_selection="last", patience=None, tune_every_n_epochs=2)
+
+
+class TestLrWarmup:
+    """``lr_warmup_epochs`` / ``lr_warmup_factor`` scale the LR for the first epochs.
+
+    Mirrors torch's ``ConstantLR`` (and Lightning's epoch-interval default): the factor
+    applies for exactly ``lr_warmup_epochs`` epochs in both the epoch and the step budget,
+    then the base LR (and any configured scheduler) takes over.
+    """
+
+    def _history_lrs(self, tmp_path: Path, **training_kwargs) -> list[float]:
+        from torch.utils.data import DataLoader
+
+        seed_everything(0)
+        loader = DataLoader(
+            _anticorrelated_bags(flip=False), batch_size=2, collate_fn=_CLS_COLLATE
+        )
+        config = TrainingConfig(
+            learning_rate=1e-3,
+            patience=None,
+            monitor="auroc",
+            monitor_mode="max",
+            lr_warmup_epochs=2,
+            lr_warmup_factor=0.25,
+            **training_kwargs,
+        )
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=loader,
+            tune_loader=loader,
+            config=config,
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+        )
+        trainer._tune = lambda **_: (1.0, {"auroc": 0.5})
+        return [log.lr for log in trainer.fit().history]
+
+    def test_epoch_budget_scales_the_first_epochs_then_restores_the_base_lr(
+        self, tmp_path: Path
+    ):
+        lrs = self._history_lrs(tmp_path, epochs=4, scheduler="none")
+
+        assert lrs == pytest.approx([2.5e-4, 2.5e-4, 1e-3, 1e-3])
+
+    def test_step_budget_counts_warmup_in_epochs_not_updates(self, tmp_path: Path):
+        # 3 updates per epoch (6 bags / batch 2); 12 steps = 4 epochs.
+        lrs = self._history_lrs(tmp_path, epochs=None, max_steps=12, scheduler="none")
+
+        assert lrs == pytest.approx([2.5e-4, 2.5e-4, 1e-3, 1e-3])
+
+    def test_warmup_composes_with_cosine_in_step_mode(self, tmp_path: Path):
+        import math
+
+        lrs = self._history_lrs(tmp_path, epochs=None, max_steps=12, scheduler="cosine")
+        # The trainer logs the group rate at the end of each epoch, i.e. after that
+        # epoch's 3 per-update cosine steps; the warm-up factor applies to the first two.
+        cosine = [
+            1e-3 * (1 + math.cos(math.pi * (3 * (epoch + 1)) / 12)) / 2 for epoch in range(4)
+        ]
+
+        assert lrs == pytest.approx(
+            [cosine[0] * 0.25, cosine[1] * 0.25, cosine[2], cosine[3]], rel=1e-6
+        )
