@@ -1068,15 +1068,10 @@ class TestLrWarmup:
         assert lrs == pytest.approx([2.5e-4, 2.5e-4, 1e-3, 1e-3])
 
     def test_warmup_composes_with_cosine_in_step_mode(self, tmp_path: Path):
-        import math
-
         lrs = self._history_lrs(tmp_path, epochs=None, max_steps=12, scheduler="cosine")
         # The trainer logs the group rate at the end of each epoch, i.e. after that
         # epoch's 3 per-update cosine steps; the warm-up factor applies to the first two.
-        cosine = [
-            1e-3 * (1 + math.cos(math.pi * (3 * (epoch + 1)) / 12)) / 2 for epoch in range(4)
-        ]
-
         assert lrs == pytest.approx(
-            [cosine[0] * 0.25, cosine[1] * 0.25, cosine[2], cosine[3]], rel=1e-6
+            [0.00021338834764831845, 0.000125, 0.00014644660940672626, 0.0],
+            rel=1e-6,
         )

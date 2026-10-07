@@ -1299,8 +1299,8 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.epochs must be >= 1")
         if self.max_train_pixels < 1:
             raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
-        if self.lr_warmup_epochs < 0:
-            raise ValueError("TrainingConfig.lr_warmup_epochs must be >= 0")
+        if not _is_exact_integer(self.lr_warmup_epochs) or self.lr_warmup_epochs < 0:
+            raise ValueError("TrainingConfig.lr_warmup_epochs must be an integer >= 0")
         if not 0.0 < self.lr_warmup_factor <= 1.0:
             raise ValueError("TrainingConfig.lr_warmup_factor must be in (0, 1]")
         if self.lr_warmup_epochs == 0 and self.lr_warmup_factor != 1.0:
