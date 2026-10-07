@@ -39,7 +39,7 @@ dependencies = [
     "safetensors",
     "transformers",
     "hs2p>=5.1.0",
-    "slide2vec[fm]>=6.3.3",
+    "slide2vec[fm]>=6.3.4",
     "matplotlib>=3.7",
     "croma>=1.0.0",
 ]
