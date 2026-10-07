@@ -239,7 +239,9 @@ it. The artifact holds level-0 tile origins and the read geometry (``read_level`
    s02,/slides/s02.tif,0,/coords/s02.coordinates.npz
 
 soma then skips tissue segmentation and tiling, and slide2vec embeds exactly the
-listed tiles. soma checks each artifact first and stops with an error when:
+listed tiles. soma copies each artifact into the run's ``tiling`` directory, so the
+run keeps its tiles if the original changes. It checks each artifact first and
+stops with an error when:
 
 - its ``sample_id``, ``image_path`` or ``spacing_at_level_0`` differs from the
   manifest row;

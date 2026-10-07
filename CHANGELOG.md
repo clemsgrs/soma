@@ -9,12 +9,14 @@
 - 2026-10-07: A slide-level `dataset.csv` may name each slide's tiles with a new
   `coordinates_path` column: one hs2p tiling artifact per slide (the `.coordinates.npz`
   written by `hs2p.artifacts.save_tiling_result`). soma then skips tissue segmentation
-  and tiling and slide2vec embeds exactly those tiles. Each artifact is checked against
-  its manifest row (`sample_id`, `image_path`, `spacing_at_level_0`) and against `preprocessing` (requested
-  spacing and tile size); the column must be set for every row or none, and tile,
-  segmentation and detection manifests reject it. The artifact's content joins the
-  slide's feature-cache identity, so another tile set is extracted again. Datasets
-  without the column keep their cache keys.
+  and tiling and slide2vec embeds exactly those tiles. Each artifact is checked
+  against its manifest row (`sample_id`, `image_path`, `spacing_at_level_0`) and
+  against `preprocessing` (requested spacing and tile size); the column must be set
+  for every row or none, and tile, segmentation and detection manifests reject it. The artifact's content joins the
+  slide's feature-cache identity, so another tile set is extracted again; each run
+  keeps a copy of the artifacts in its `tiling` directory. Like the other path
+  columns, `coordinates_path` is left out of the dataset checksum. Datasets without
+  the column keep their cache keys.
 
 - 2026-10-07: The `eva/consep` and `eva/monusac` benchmarks follow EVA's online
   segmentation protocol, which produces the leaderboard numbers. The decoder is

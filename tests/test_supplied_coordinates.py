@@ -77,13 +77,23 @@ def test_soma_tiled_identities_are_unchanged(tmp_path: Path):
     )
 
 
-def test_staging_lists_the_supplied_artifacts(tmp_path: Path):
+def test_staging_lists_a_snapshot_of_the_supplied_artifacts(tmp_path: Path):
+    """The run keeps the tiles it validated, even if the user's artifact changes later."""
+    from hs2p.artifacts import load_tiling_result
+
     paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
-    stage_supplied_coordinates(Dataset(_manifest(tmp_path, paths)), tmp_path / "tiling", _preprocessing())
-    rows = pd.read_csv(tmp_path / "tiling" / "process_list.csv").set_index("sample_id")
-    assert rows.loc["a", "coordinates_npz_path"] == str(paths["a"].resolve())
+    tiling_dir = tmp_path / "tiling"
+    stage_supplied_coordinates(Dataset(_manifest(tmp_path, paths)), tiling_dir, _preprocessing())
+    rows = pd.read_csv(tiling_dir / "process_list.csv").set_index("sample_id")
     assert rows["num_tiles"].tolist() == [3, 3]
     assert set(rows["tiling_status"]) == {"success"}
+
+    _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif", x=(0, 32, 96))
+    staged = load_tiling_result(
+        Path(rows.loc["a", "coordinates_npz_path"]), Path(rows.loc["a", "coordinates_meta_path"])
+    )
+    assert Path(rows.loc["a", "coordinates_npz_path"]).is_relative_to(tiling_dir.resolve())
+    assert staged.x.tolist() == [0, 32, 64]
 
 
 def test_partially_filled_column_is_rejected(tmp_path: Path):
