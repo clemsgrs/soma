@@ -5,8 +5,8 @@
   `eva_conv_with_image` (EVA's `ConvDecoderWithImage`): it concatenates the
   normalised input tile to the upsampled feature grid. To feed it, a decoder can
   now set `Decoder.consumes_image`; soma then passes the tile's pixels (float
-  RGB in [0, 1], at the mask size) to `forward(X, image)` on both the cached and
-  the live path. Existing decoders are unchanged. MoNuSAC trains on a new random
+  RGB in [0, 1], at the mask size) to `forward(X, image)` on the cached and live
+  training paths and in sliding-window prediction. Existing decoders are unchanged. MoNuSAC trains on a new random
   resized crop of each whole train image every step, so its curator keeps train
   images whole and the benchmark runs live with the new
   `augmentation.random_resized_crop_scale` (a `RandomResizedCrop` to the target

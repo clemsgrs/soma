@@ -81,6 +81,13 @@ class _ResamplePlan:
     native_mismatch_pct: float | None  # set only when predicting at native despite a mismatch
 
 
+def _image_prior(crops: Sequence[np.ndarray]) -> torch.Tensor:
+    """``(H, W, 3)`` uint8 tile crops -> the ``(B, 3, H, W)`` ``[0, 1]`` batch an image-prior
+    decoder consumes, exactly as the segmentation datasets build ``targets["image"]``."""
+    pixels = torch.from_numpy(np.ascontiguousarray(np.stack(crops)))
+    return pixels.permute(0, 3, 1, 2).float() / 255.0
+
+
 def _hann2d(height: int, width: int) -> np.ndarray:
     """Separable raised-cosine window, **strictly positive** everywhere (float32).
 
@@ -192,9 +199,10 @@ class SlidingWindowSegmentationPredictor:
 
         for start in range(0, len(origins), max(1, int(batch_size))):
             batch = origins[start : start + max(1, int(batch_size))]
-            tiles = [self._tile_to_encoded(arr[y : y + th, x : x + tw]) for (y, x) in batch]
-            X = torch.stack(tiles)  # public kit owns CPU -> encoder-device transfer
-            soft = self._ensemble_softmax(X)  # (B, C, th, tw) on cpu, float32
+            crops = [arr[y : y + th, x : x + tw] for (y, x) in batch]
+            X = torch.stack([self._tile_to_encoded(c) for c in crops])  # kit owns transfer
+            image = _image_prior(crops) if self._wants_image() else None
+            soft = self._ensemble_softmax(X, image)  # (B, C, th, tw) on cpu, float32
             for k, (y, x) in enumerate(batch):
                 prob[:, y : y + th, x : x + tw] += soft[k] * window
                 wsum[y : y + th, x : x + tw] += window
@@ -279,8 +287,17 @@ class SlidingWindowSegmentationPredictor:
         pixels = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)
         return self.preprocessor(pixels)
 
-    def _ensemble_softmax(self, X: torch.Tensor) -> np.ndarray:
+    def _wants_image(self) -> bool:
+        """True when any fold's decoder is an image-prior decoder (``consumes_image``)."""
+        return any(
+            getattr(getattr(m, "decoder", None), "consumes_image", False) for m in self.models
+        )
+
+    def _ensemble_softmax(self, X: torch.Tensor, image: torch.Tensor | None = None) -> np.ndarray:
         """Mean softmax across folds for a padded batch -> ``(B, C, th, tw)`` cpu float32.
+
+        ``image`` is the batch's ``[0, 1]`` RGB tiles for an image-prior decoder (the
+        pixels training hands it in ``targets["image"]``), or ``None``.
 
         When the fold models **share the frozen encoder** (the multi-fold case built by
         :func:`build_live_segmentation_models` — the same public kit object), the
@@ -290,11 +307,12 @@ class SlidingWindowSegmentationPredictor:
         fold — correct, just N× the encoder cost.
         """
         models = list(self.models)
+        extra = () if image is None else (image.to(self.device),)
         acc: torch.Tensor | None = None
         if self._models_share_encoder(models):
             grid = models[0].encode(X)  # one ViT forward, reused by every fold
             for model in models:
-                s = torch.softmax(model.forward_from_grid(grid).logits, dim=1)
+                s = torch.softmax(model.forward_from_grid(grid, *extra).logits, dim=1)
                 acc = s if acc is None else acc + s
         else:
             for model in models:
@@ -303,7 +321,7 @@ class SlidingWindowSegmentationPredictor:
                 input_device = torch.device(
                     getattr(model, "input_device", self.device)
                 )
-                s = torch.softmax(model(X.to(input_device)).logits, dim=1)
+                s = torch.softmax(model(X.to(input_device), *extra).logits, dim=1)
                 acc = s if acc is None else acc + s
         return (acc / len(models)).float().cpu().numpy()
 
