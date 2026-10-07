@@ -44,7 +44,7 @@ def encoder_name() -> str:
 def encoded_images(monkeypatch) -> list[int]:
     """Counts images the encoder sees, so a scenario can prove a cache hit encoded nothing."""
     seen: list[int] = []
-    for method in ("encode_tiles", "encode_tiles_dense"):
+    for method in ("encode_tiles", "encode_tiles_dense", "encode_tiles_dense_prenorm"):
         original = getattr(_LiteralPatchEncoder, method)
 
         def counting(self, batch, _original=original):

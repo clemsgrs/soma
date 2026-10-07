@@ -712,3 +712,12 @@ def test_pre_cropped_dense_image_identities_are_unchanged(tmp_path: Path):
     assert res.cache_stem_by_id == _identities_without_roi_grid_contract(
         res, dataset, cache_kind="dense_image"
     )
+
+
+def test_dense_key_prenorm_never_aliases_the_post_norm_or_attention_grid():
+    # The pre-norm tap is a different tensor from the post-norm grid of the same encoder,
+    # so the two must live under different keys (and apart from attention grids).
+    pre = _key(feature_kind="patch_features_prenorm")
+    assert pre != _key()
+    assert pre != _key(feature_kind="cls_attention", attention_blocks=(-1,))
+    assert pre == _key(feature_kind="patch_features_prenorm")

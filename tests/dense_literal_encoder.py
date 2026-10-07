@@ -42,6 +42,11 @@ def literal_rgb_tensor(image: Image.Image) -> torch.Tensor:
     return torch.from_numpy(pixels).permute(2, 0, 1)
 
 
+def _literal_grid(batch: torch.Tensor) -> torch.Tensor:
+    size = LITERAL_PATCH_SIZE
+    return batch.unfold(2, size, size).unfold(3, size, size).mean(dim=(-1, -2))
+
+
 class _LiteralPatchEncoder(TileEncoder):
     """Mean RGB per non-overlapping ``8x8`` patch — no weights, no randomness."""
 
@@ -75,8 +80,15 @@ class _LiteralPatchEncoder(TileEncoder):
         return batch.mean(dim=(-1, -2))
 
     def encode_tiles_dense(self, batch: torch.Tensor) -> torch.Tensor:
-        size = LITERAL_PATCH_SIZE
-        return batch.unfold(2, size, size).unfold(3, size, size).mean(dim=(-1, -2))
+        return _literal_grid(batch)
+
+    def encode_tiles_dense_prenorm(self, batch: torch.Tensor) -> torch.Tensor:
+        """The literal grid has no final norm to skip, so the pre-norm tap is the same grid.
+
+        Computed directly (not via ``encode_tiles_dense``) so the E2E call counter sees
+        one encode per batch whichever tap a scenario requests.
+        """
+        return _literal_grid(batch)
 
     def encode_tiles_attention(
         self,

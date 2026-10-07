@@ -425,3 +425,35 @@ def test_extract_lock_serializes_holders(tmp_path: Path, monkeypatch):
     with open(lock_path, "w") as probe:
         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(probe, fcntl.LOCK_UN)
+
+
+def test_prenorm_run_forwards_the_feature_kind_without_attention_knobs(tmp_path: Path, fake_model):
+    from soma.config import PreprocessingConfig, PreviewConfig
+
+    preprocessing = PreprocessingConfig(
+        requested_spacing_um=0.5,
+        min_coverage={},
+        feature_kind="patch_features_prenorm",
+        preview=PreviewConfig(),
+    )
+    dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
+    _extractor(dataset, tmp_path, preprocessing=preprocessing).run(tmp_path / "features")
+
+    dense = fake_model.calls[0]["dense"]
+    assert dense.feature_kind == "patch_features_prenorm"
+    assert tuple(dense.attention_blocks) == (-1,) and dense.attention_include_registers is False
+
+
+def test_dense_grid_metadata_treats_prenorm_as_patch_tokens_not_attention():
+    from soma.dense import compute_dense_geometry
+    from soma.dense.store import dense_grid_metadata
+
+    geometry = compute_dense_geometry(target_size=16, patch_size=8)
+    pre = dense_grid_metadata(
+        geometry, feature_dim=4, pad_mode="reflect", feature_kind="patch_features_prenorm"
+    )
+    post = dense_grid_metadata(geometry, feature_dim=4, pad_mode="reflect", feature_kind="patch_features")
+    assert pre["feature_kind"] == "patch_features_prenorm"
+    assert {k: v for k, v in pre.items() if k != "feature_kind"} == {
+        k: v for k, v in post.items() if k != "feature_kind"
+    }

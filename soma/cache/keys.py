@@ -429,8 +429,8 @@ def build_dense_cache_key(
     pre-pooling (``forward_features`` → reshape), so the variant (which only changes
     pooling) does not affect it; keying on it would split identical caches.
 
-    ``feature_kind`` discriminates a patch-feature grid from a CLS-attention grid (an
-    attention grid must never alias a feature grid); the attention sub-knobs
+    ``feature_kind`` discriminates the post-norm patch grid from the pre-norm grid and
+    from a CLS-attention grid (none may alias another); the attention sub-knobs
     (``attention_blocks``/``attention_include_registers``) join the key too, since
     different blocks / register inclusion yield different channels. These are injected
     **only** for ``feature_kind != "patch_features"``, so legacy patch-feature keys are
