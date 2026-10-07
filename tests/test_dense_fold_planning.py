@@ -145,6 +145,7 @@ def test_plan_dense_fold_uses_train_as_tune_when_missing_tune_is_allowed():
     )
 
     assert _ids(plan.tune_records) == ["train_a", "train_b"]
+    assert plan.tune_from_train
 
 
 def test_plan_dense_fold_warns_when_missing_tune_uses_train(
@@ -207,3 +208,18 @@ def test_plan_dense_fold_rejects_empty_test_split():
             training=TrainingConfig(),
             fold_label="Run",
         )
+
+
+def test_plan_dense_fold_with_a_tune_split_is_not_a_train_fallback():
+    dataset = _dataset("train", "tune", "test")
+    fold_split = FoldSplit(train=("train",), tune=("tune",), tests={"test": ("test",)})
+
+    plan = plan_dense_fold(
+        dataset=dataset,
+        fold_split=fold_split,
+        training=TrainingConfig(allow_missing_tune=True),
+        fold_label="Run",
+    )
+
+    assert _ids(plan.tune_records) == ["tune"]
+    assert not plan.tune_from_train

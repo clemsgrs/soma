@@ -164,6 +164,11 @@ unmatched GT FN.
 
 * **Score threshold** — swept per class on the **tune** split to maximise F1, frozen
   into ``detection_thresholds.json``, and applied unchanged at test (no test leakage).
+  A run without a tune split (``training.allow_missing_tune``) keeps the configured
+  ``task.params.score_threshold`` (default ``0.5``) instead: train stands in for tune
+  there, and a sweep on the training samples picks an in-sample cut.
+  ``detection_thresholds.json`` records which happened as ``source``
+  (``tune_sweep`` or ``configured``).
 * **Aggregation** — the headline ``mean_f1`` is **dataset-global** (counts pooled per
   class → one F1 per class → mean across classes, OCELOT-faithful). ``mean_f1_per_image``
   is available as a secondary (per-image macro). Per-class F1 / precision / recall are

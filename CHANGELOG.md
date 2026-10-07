@@ -1,5 +1,17 @@
 # Changelog
 
+- 2026-10-07: A detection run without a tune split keeps the configured score
+  threshold. With `training.allow_missing_tune`, train stands in for tune, and
+  soma swept the per-class score threshold on the training samples. The decoder
+  fits those closely, so the sweep picked an in-sample cut that does not hold on
+  test. soma now keeps `task.params.score_threshold` (default 0.5) in that case
+  and sweeps only on a real tune split. `detection_thresholds.json` gains
+  `source`: `tune_sweep` or `configured`. Runs with a tune split are unchanged.
+
+- 2026-10-07: `lightweight_conv` takes `decoder.params.dropout` (default 0), a
+  channel dropout before the class-output convolution. At 0 the decoder trains
+  exactly as before and its checkpoints keep the same keys.
+
 - 2026-10-04: CRoMa representation runs work with croma 1.0. soma read
   `CRoMaResult.undefined_frac`, which croma 1.0 removed, so every CRoMa run on a
   fresh install failed with `AttributeError` after feature extraction. croma 1.0

@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 
 from soma.config import (
@@ -155,9 +156,40 @@ def test_train_one_detection_fold_end_to_end(tmp_path: Path):
     # Frozen thresholds + per-split prediction CSVs are written.
     thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
     assert len(thr["score_threshold_per_class"]) == NUM_CLASSES
+    assert thr["source"] == "tune_sweep"
     assert (tmp_path / "fold" / "predictions_test.csv").exists()
     header = (tmp_path / "fold" / "predictions_test.csv").read_text().splitlines()[0]
     assert header == "sample_id,x,y,class,score"
+
+
+@pytest.mark.parametrize("configured,expected", [(None, [0.5, 0.5]), (0.7, [0.7, 0.7]), ([0.4, 0.6], [0.4, 0.6])])
+def test_detection_fold_without_tune_keeps_the_configured_threshold(tmp_path: Path, configured, expected):
+    # No tune split: train stands in for tune (allow_missing_tune), so a sweep would pick an
+    # in-sample cut. The configured threshold is kept and applied at test.
+    manifest, _, store = _build_detection_run(tmp_path, ["s0", "s1", "s2", "s3"])
+    splits_csv = tmp_path / "splits_no_tune.csv"
+    splits_csv.write_text("sample_id,split,fold\ns0,train,0\ns1,train,0\ns2,train,0\ns3,test,0\n")
+    params = {"num_classes": NUM_CLASSES, "match_distance": 0.6, "sigma": 0.3}
+    if configured is not None:
+        params["score_threshold"] = configured
+
+    train_one_detection_fold(
+        feature_store=store,
+        dataset=manifest,
+        fold_split=Splits(splits_csv, manifest).folds[0],
+        task=TaskConfig(name="detection", params=params),
+        training=TrainingConfig(epochs=2, batch_size=2, allow_missing_tune=True),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_f1"]),
+        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    )
+
+    thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
+    assert thr == {"score_threshold_per_class": expected, "source": "configured"}
+    for row in (tmp_path / "fold" / "predictions_test.csv").read_text().splitlines()[1:]:
+        _, _, _, cls, score = row.split(",")
+        assert float(score) >= expected[int(cls)]
 
 
 def test_train_one_detection_fold_with_class_scheme(tmp_path: Path):

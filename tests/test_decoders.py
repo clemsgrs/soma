@@ -149,3 +149,40 @@ def test_heavy_conv_validates_ctor_params():
         HeavyConvDecoder(input_dim=8, num_classes=2, hidden_dim=0)
     with pytest.raises(ValueError, match="pool_scales"):
         HeavyConvDecoder(input_dim=8, num_classes=2, pool_scales=())
+
+
+def test_lightweight_conv_dropout_defaults_off_and_draws_no_random_numbers():
+    dec = LightweightConvDecoder(input_dim=16, num_classes=2, hidden_dim=8, num_upsample_blocks=0)
+    assert isinstance(dec.dropout, torch.nn.Identity)
+    dec.train()
+    x = torch.randn(1, 16, 4, 4)
+    torch.manual_seed(0)
+    dec(x)
+    after = torch.rand(1)
+    torch.manual_seed(0)
+    assert torch.equal(torch.rand(1), after)
+
+
+def test_lightweight_conv_dropout_drops_channels_in_train_only():
+    dec = LightweightConvDecoder(
+        input_dim=16, num_classes=2, hidden_dim=8, num_upsample_blocks=0, dropout=0.5
+    )
+    assert isinstance(dec.dropout, torch.nn.Dropout2d)
+    x = torch.randn(1, 16, 4, 4)
+    dec.eval()
+    assert torch.equal(dec(x), dec(x))
+    dec.train()
+    torch.manual_seed(0)
+    assert not torch.equal(dec(x), dec.eval()(x))
+
+
+def test_lightweight_conv_dropout_keeps_the_state_dict():
+    plain = LightweightConvDecoder(input_dim=16, num_classes=2, hidden_dim=8)
+    dropped = LightweightConvDecoder(input_dim=16, num_classes=2, hidden_dim=8, dropout=0.3)
+    assert plain.state_dict().keys() == dropped.state_dict().keys()
+
+
+@pytest.mark.parametrize("dropout", [-0.1, 1.0])
+def test_lightweight_conv_rejects_dropout_outside_unit_interval(dropout: float):
+    with pytest.raises(ValueError, match="dropout"):
+        LightweightConvDecoder(input_dim=16, num_classes=2, dropout=dropout)

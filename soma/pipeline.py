@@ -2141,11 +2141,17 @@ def train_one_detection_fold(
     model.to(device)
     model.eval()
 
-    # Freeze the per-class score threshold on the tune split (design §7), then score.
-    thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
+    # Freeze the per-class score threshold (design §7), then score. It is swept on a real
+    # tune split. Without one, train stands in for tune and a sweep there picks an
+    # in-sample cut, so the configured task.params.score_threshold is kept instead.
+    if fold_plan.tune_from_train:
+        thresholds, source = _configured_thresholds(head), "configured"
+    else:
+        thresholds, source = _sweep_detection_thresholds(model, tune_loader, device, head), "tune_sweep"
     head.score_threshold = thresholds
     (fold_dir / "detection_thresholds.json").write_text(
-        json.dumps({"score_threshold_per_class": thresholds}, indent=2), encoding="utf-8"
+        json.dumps({"score_threshold_per_class": thresholds, "source": source}, indent=2),
+        encoding="utf-8",
     )
 
     tune_report = _evaluate_detection(
@@ -2172,6 +2178,19 @@ def train_one_detection_fold(
         tune_report=tune_report,
         test_reports=test_reports,
     )
+
+
+def _configured_thresholds(head: DetectionHead) -> list[float]:
+    """The head's configured score threshold as one value per class."""
+    configured = head.score_threshold
+    if isinstance(configured, (int, float)):
+        return [float(configured)] * head.num_classes
+    if len(configured) != head.num_classes:
+        raise ValueError(
+            f"task.params.score_threshold has {len(configured)} values for "
+            f"{head.num_classes} classes"
+        )
+    return [float(t) for t in configured]
 
 
 @torch.inference_mode()
