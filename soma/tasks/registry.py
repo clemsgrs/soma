@@ -2,7 +2,7 @@
 
 from soma.registry import Registry
 
-task_registry = Registry("tasks")
+task_registry = Registry("tasks", bundled_module="soma.benchmarks")
 
 
 def task_family_of(name: str) -> str:

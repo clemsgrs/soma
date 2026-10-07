@@ -31,6 +31,7 @@ from soma.tasks.base import TaskHead
 from soma.tasks.dense_metrics import (
     dense_confusion_counts,
     reduce_dice_iou,
+    reduce_foreground_dice,
     segmentation_loss,
 )
 from soma.tasks.registry import task_registry
@@ -64,7 +65,8 @@ class SegmentationHead(TaskHead):
         metrics: Metric names (validated against the ``segmentation`` family);
             empty uses the default ``[mean_dice, mean_iou]``. Request
             ``dataset_global_mean_dice`` explicitly to sum counts over the split
-            before averaging class Dice.
+            before averaging class Dice, or ``foreground_mean_dice`` for the
+            background-free, empty-target-skipping per-image mean.
         sample_spacings: Each slide-manifest ROI's recorded grid spacing, by sample ID.
             A slide within ``tolerance`` of ``spacing_um`` is read natively, so its grid
             covers ``target_size`` px at the slide's own spacing; the ROI mask is read at
@@ -354,6 +356,10 @@ class SegmentationHead(TaskHead):
                 aggregation="dataset_global",
             )
             selected["dataset_global_mean_dice"] = dataset_global["mean_dice"]
+        if "foreground_mean_dice" in self.metrics:
+            selected["foreground_mean_dice"] = reduce_foreground_dice(
+                counts, num_classes=self.num_classes
+            )
         if "mean_iou" in self.metrics:
             selected["mean_iou"] = per_image_metrics["mean_iou"]
         if "dice_per_class" in self.metrics:

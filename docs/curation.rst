@@ -75,6 +75,11 @@ orientation for binary tasks.
 ``soma reproduce eva/<dataset>`` runs this curation for you (see the
 :doc:`EVA benchmark <eva-patch-classification-benchmark>`).
 
+The EVA segmentation datasets have their own curators, ``curate_consep`` and
+``curate_monusac`` (``soma.curation.eva_segmentation``). They write 224 px
+tiles and class-index masks that reproduce EVA's sample geometry, so the
+curated directory holds images as well as the manifest.
+
 Split policy
 ~~~~~~~~~~~~
 

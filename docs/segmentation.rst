@@ -173,8 +173,15 @@ classes defined in that sample, then averages the sample values.
 ``dataset_global_mean_dice`` sums the confusion counts over the complete split,
 computes one Dice value per class, and averages the classes; a class absent from
 both predictions and targets is excluded. This weights larger samples more
-heavily through their pixel counts. To select checkpoints on it, request it as
-an evaluation metric and monitor it in maximum mode:
+heavily through their pixel counts.
+
+``foreground_mean_dice`` leaves out the background class and, within each
+sample, skips a class that has no target pixels even when it was predicted.
+It is the convention of the kaiko-ai/eva segmentation leaderboard; see the
+:doc:`EVA benchmark <eva-patch-classification-benchmark>`.
+
+To select checkpoints on one of these, request it as an evaluation metric and
+monitor it in maximum mode:
 
 .. code-block:: yaml
 

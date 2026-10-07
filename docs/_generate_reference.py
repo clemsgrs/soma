@@ -23,6 +23,7 @@ from soma.benchmarks import (
 )
 from soma.benchmarks import croma as croma_bench
 from soma.benchmarks import eva as eva_bench
+from soma.benchmarks import eva_segmentation as eva_seg_bench
 from soma.benchmarks import ocelot as ocelot_bench
 from soma.training.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 
@@ -316,17 +317,29 @@ _RAW_ROOT_SENTENCE = (
 
 
 def _eva_results_section() -> str:
-    """Render the public reproduced-versus-reference EVA comparison."""
+    """Render the public reproduced-versus-reference EVA comparison, one table per metric."""
     rows = _latest_rows(load_results("eva"))
-    if not rows:
-        return (
-            "No reproduced cells have been recorded yet. Run, for example::\n\n"
-            "    soma reproduce eva/bach --encoder virchow2 "
-            "--raw-root /path/to/eva/bach --record\n\n"
-            "to record a soma score next to the published EVA reference."
-        )
+    sections = []
+    for metric, label, example in (
+        ("test/balanced_accuracy", "balanced accuracy", "eva/bach"),
+        ("test/foreground_mean_dice", "foreground mean Dice", "eva/consep"),
+    ):
+        metric_rows = [r for r in rows if r.metric == metric]
+        if not metric_rows:
+            sections.append(
+                f"No {label} cells have been recorded yet. Run, for example::\n\n"
+                f"    soma reproduce {example} --encoder virchow2 "
+                f"--raw-root /path/to/{example} --record\n\n"
+                "to record a soma score next to the published EVA reference."
+            )
+        else:
+            sections.append(_eva_results_table(metric_rows, label))
+    return "\n\n".join(sections)
+
+
+def _eva_results_table(rows, label: str) -> str:
     lines = [
-        "Recorded balanced accuracy scores alongside the packaged EVA references.\n",
+        f"Recorded {label} scores alongside the packaged EVA references.\n",
         ".. list-table::",
         "   :header-rows: 1",
         "",
@@ -469,7 +482,9 @@ def build_ocelot_benchmark_rst() -> str:
 
 def build_eva_benchmark_rst() -> str:
     """Generate the EVA benchmark page from the registered ``eva/<dataset>`` family."""
-    family = [get_benchmark(n) for n in list_benchmarks() if n.startswith("eva/")]
+    members = [get_benchmark(n) for n in list_benchmarks() if n.startswith("eva/")]
+    family = [b for b in members if b.facet.fixed.get("protocol") == "eva-linear-probe"]
+    seg_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-segmentation-decoder"]
     head = family[0]  # protocol constants are shared across the family
     seeds = ", ".join(str(s) for s in head.canonical_seeds)
     protocol_rows = [
@@ -520,27 +535,79 @@ def build_eva_benchmark_rst() -> str:
         ),
     ]
 
+    seg_names = [str(b.facet.fixed["dataset"]) for b in seg_family]
+    seg_list = " and ".join(seg_names)
+    seg_head = seg_family[0]
+    seg_protocol_rows = [
+        ("samples", "224 px tiles and class-index masks materialised by the curator"),
+        (
+            "decoder",
+            "``eva_conv_ms``: nearest ×2 → 3x3 conv (64) → nearest ×2 → 3x3 conv (classes); "
+            "no normalisation",
+        ),
+        ("loss", "pure soft Dice over softmax, background included (``eva_segmentation`` head)"),
+        (
+            "optimizer",
+            f"AdamW, lr ``{eva_seg_bench.LEARNING_RATE:g}``, "
+            f"weight_decay ``{eva_seg_bench.WEIGHT_DECAY:g}``",
+        ),
+        ("batch size", f"``{eva_seg_bench.BATCH_SIZE}``"),
+        ("budget", f"fixed step budget: ``max_steps={eva_seg_bench.MAX_STEPS}`` optimizer updates"),
+        (
+            "metric",
+            "``foreground_mean_dice`` — per-image mean Dice over the foreground classes, "
+            "empty targets skipped (MONAI ``DiceMetric(include_background=False)``)",
+        ),
+        ("varied axis", "``encoder``"),
+        ("primary metric", f"``{seg_head.primary_metric}`` (from ``summary.json``)"),
+        ("canonical seeds", f"``{seeds}`` (averaged)"),
+    ]
+    seg_raw_layout_rows = [
+        (
+            "`CoNSeP <https://github.com/vqdang/hover_net/issues/267>`__ (``consep``)",
+            "``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` "
+            "(HoVer-Net layout; the official link is dead, the issue holds a mirror)",
+        ),
+        (
+            "`MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)",
+            "``MoNuSAC_images_and_annotations/`` and ``MoNuSAC Testing Data and Annotations/`` "
+            "(one ``.tif`` + ``.xml`` per image; CC BY-NC-SA 4.0)",
+        ),
+    ]
+
     sections = [
         "EVA\n===",
         "Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_\n"
-        "patch-classification leaderboard with frozen tile encoders and linear\n"
-        ":doc:`classification` heads.\n\n"
-        "EVA provides 6 registered datasets: "
+        "pathology leaderboard: patch classification with frozen tile encoders and\n"
+        "linear :doc:`classification` heads, and patch :doc:`segmentation` with a\n"
+        "small convolutional decoder on the frozen dense feature grid.\n\n"
+        f"EVA provides {len(family)} registered classification datasets: "
         + dataset_list
-        + ". All share the same linear-probe protocol; see :doc:`benchmarking` for\n"
+        + f", and {len(seg_family)} segmentation datasets: "
+        + seg_list
+        + ". Each group shares one protocol; see :doc:`benchmarking` for\n"
         "the shared workflow.\n\n"
-        "**Pipeline:** labelled patches → frozen encoder → linear head → balanced accuracy",
+        "**Pipeline (classification):** labelled patches → frozen encoder → linear head → "
+        "balanced accuracy\n\n"
+        "**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid → "
+        "``eva_conv_ms`` decoder → foreground mean Dice",
         "Prepare the data\n----------------\n\n"
         "Download one EVA dataset from its official\n"
         "source and unpack it in the directory you will pass as ``--raw-root``:\n\n"
-        + _kv_table("Dataset and source", "Raw-root contents", raw_layout_rows, widths="38 62"),
+        + _kv_table("Dataset and source", "Raw-root contents", raw_layout_rows, widths="38 62")
+        + "\n\nThe segmentation datasets use the same ``--raw-root`` convention:\n\n"
+        + _kv_table("Dataset and source", "Raw-root contents", seg_raw_layout_rows, widths="38 62"),
         "Run the benchmark\n-----------------\n\n"
         + _RAW_ROOT_SENTENCE
         + "::\n\n"
         "    soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach\n\n"
         "To run the whole family, prepare one subdirectory per dataset under\n"
         "``/path/to/eva``::\n\n"
-        "    soma reproduce eva --encoder virchow2 --raw-root /path/to/eva",
+        "    soma reproduce eva --encoder virchow2 --raw-root /path/to/eva\n\n"
+        "A segmentation member runs the same way::\n\n"
+        "    soma reproduce eva/consep --encoder virchow2 --raw-root /path/to/eva/consep\n\n"
+        "Its curator writes the 224 px tiles and masks under ``--out-dir`` (default\n"
+        "``<raw-root>/curated``), so point ``--out-dir`` at a directory with room for them.",
         "Results\n-------\n\n"
         + _eva_results_section()
         + "\n\nSee the "
@@ -548,6 +615,20 @@ def build_eva_benchmark_rst() -> str:
         + " for the official reference leaderboard.",
         "Protocol details\n----------------\n\n"
         + _kv_table("Setting", "Value", protocol_rows),
+        "Segmentation protocol\n---------------------\n\n"
+        "The curators reproduce EVA's sample geometry: CoNSeP is cut into 250 px grid\n"
+        "tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px;\n"
+        "a MoNuSAC image is resized on its short side to 224 px and centre-cropped. CoNSeP\n"
+        "merges HoVer-Net's seven nucleus types into background, other, inflammatory,\n"
+        "epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is\n"
+        "excluded from the loss and the metric. Both datasets report on EVA's validation\n"
+        "split, which is soma's ``test`` split (``tune_is_test``).\n\n"
+        + _kv_table("Setting", "Value", seg_protocol_rows)
+        + "\n\nThe decoder, loss and confusion counting exist only for this benchmark and are\n"
+        "registered under ``eva_`` names; they are not general soma components. One known\n"
+        "difference remains: EVA taps the last block's patch tokens before the backbone's\n"
+        "final normalisation layer, whereas slide2vec's dense grid is taken after it\n"
+        "(`#526 <https://github.com/clemsgrs/soma/issues/526>`__).",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 

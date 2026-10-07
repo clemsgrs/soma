@@ -49,6 +49,12 @@ def test_eva_subbenchmarks_registered():
         assert isinstance(bench, Benchmark)  # structural protocol conformance
 
 
+def test_tile_classification_benchmark_class_is_named_by_its_family_role():
+    assert isinstance(get_benchmark("eva/bach"), eva.EvaTileClassificationBenchmark)
+    assert not hasattr(eva, "EvaBenchmark")
+    assert set(eva.EVA_BENCHMARKS) == {f"eva/{d}" for d in EVA_DATASETS}
+
+
 def test_eva_facet_fixes_dataset_and_varies_encoder():
     facet = get_benchmark("eva/bach").facet
     assert facet.varied == ("encoder",)

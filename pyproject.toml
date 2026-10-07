@@ -28,6 +28,7 @@ dependencies = [
     "h5py",
     "torch",
     "torchvision",
+    "scikit-image",
     "scikit-learn",
     "scikit-survival",
     "scipy>=1.11",

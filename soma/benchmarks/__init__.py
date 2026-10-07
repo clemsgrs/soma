@@ -7,7 +7,8 @@ package registers every bundled benchmark, so ``soma list benchmarks`` and
 ``soma reproduce <name>`` drive the registry directly.
 
 This package registers ``ocelot`` (OCELOT 2023 cell detection), the ``eva/<dataset>``
-family (kaiko-ai/eva patch classification, one sub-benchmark per dataset),
+family (kaiko-ai/eva patch classification and patch segmentation, one sub-benchmark per
+dataset),
 ``detection/<dataset>`` (per-dataset views of the multi-dataset encoder-ranking harness, issue #246), and
 the HEST and CRoMa benchmark families.
 """
@@ -36,6 +37,7 @@ from soma.benchmarks.registry import (
 # family) into the registry.
 from soma.benchmarks import ocelot as _ocelot  # noqa: F401
 from soma.benchmarks import eva as _eva  # noqa: F401
+from soma.benchmarks import eva_segmentation as _eva_segmentation  # noqa: F401
 from soma.benchmarks import detection_benchmark as _detection_benchmark  # noqa: F401
 from soma.benchmarks import hest as _hest  # noqa: F401
 from soma.benchmarks import croma as _croma  # noqa: F401

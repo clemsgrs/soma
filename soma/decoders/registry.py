@@ -11,7 +11,7 @@ from soma.registry import Registry
 if TYPE_CHECKING:
     from soma.dense.geometry import DenseGridGeometry
 
-decoder_registry = Registry("decoders")
+decoder_registry = Registry("decoders", bundled_module="soma.benchmarks")
 
 __all__ = ["decoder_registry", "build_decoder_for_grid"]
 
