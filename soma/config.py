@@ -1409,8 +1409,11 @@ class AugmentationConfig:
     ``saturation``/``hue``) apply to the **image only**. ``rotation_degrees``,
     ``translate``, and ``scale`` together drive a single ``RandomAffine``; affine
     out-of-canvas pixels fill the image with 0 and the mask with ``ignore_index`` (so
-    they are excluded from loss/metrics). All-default = no-op (legal: the live-no-aug
-    parity / future ``sliding_window`` case).
+    they are excluded from loss/metrics). ``random_resized_crop_scale`` (``(min, max)``
+    area fraction, e.g. ``(0.08, 1.0)``) runs first: a ``RandomResizedCrop`` of the
+    whole image and mask to the run's ``target_size`` (aspect ratio in ``[3/4, 4/3]``),
+    so train images may be any size while the tune/test images stay at ``target_size``.
+    All-default = no-op (legal: the live-no-aug parity / future ``sliding_window`` case).
     """
 
     horizontal_flip: float = 0.0  # probability in [0, 1]
@@ -1422,8 +1425,17 @@ class AugmentationConfig:
     contrast: float = 0.0
     saturation: float = 0.0
     hue: float = 0.0
+    random_resized_crop_scale: tuple[float, float] | None = None
 
     def __post_init__(self) -> None:
+        if self.random_resized_crop_scale is not None:
+            scale = tuple(float(v) for v in self.random_resized_crop_scale)
+            if len(scale) != 2 or not 0.0 < scale[0] <= scale[1] <= 1.0:
+                raise ValueError(
+                    "AugmentationConfig.random_resized_crop_scale must be (min, max) with "
+                    f"0 < min <= max <= 1, got {self.random_resized_crop_scale}"
+                )
+            object.__setattr__(self, "random_resized_crop_scale", scale)
         for name in ("horizontal_flip", "vertical_flip"):
             value = getattr(self, name)
             if not 0.0 <= float(value) <= 1.0:
@@ -1440,6 +1452,8 @@ class AugmentationConfig:
 
     def is_enabled(self) -> bool:
         """True if any field departs from its no-op default."""
+        if self.random_resized_crop_scale is not None:
+            return True
         return any(
             float(v) != 0.0
             for v in (

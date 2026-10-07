@@ -1,6 +1,6 @@
 """Curators for the kaiko-ai/eva patch-segmentation datasets (CoNSeP, MoNuSAC).
 
-Both curators materialise EVA's exact sample geometry as flat 224 px RGB PNG tiles with
+Both curators materialise EVA's online-protocol sample geometry as flat RGB PNGs with
 8-bit class-index PNG masks, and write the unified Manifest (``dataset.csv`` with
 ``label_mask_path``, ``splits.csv``, ``summary.json``). soma's dense path reads flat PNGs
 spacing-less, so what the decoder sees is what EVA's decoder saw.
@@ -14,16 +14,19 @@ spacing-less, so what the decoder sees is what EVA's decoder saw.
 * **MoNuSAC** (challenge layout: one ``.tif`` + ``.xml`` per image under
   ``MoNuSAC_images_and_annotations`` / ``MoNuSAC Testing Data and Annotations``): the XML
   polygons are rasterised to a semantic mask (annotation name -> class, anything else ->
-  ``Ambiguous`` = 5), then the whole image is ``Resize(224)`` on its short side +
-  ``CenterCrop(224)``. Train is soma ``train``, test is soma ``test``.
+  ``Ambiguous`` = 5). EVA's online config trains on a ``RandomResizedCrop(224)`` of the
+  whole image drawn every step, so train images are written whole at their native size
+  (the benchmark crops them on soma's live path); test images are ``Resize(224)`` on
+  their short side + ``CenterCrop(224)`` (EVA's ``ResizeAndCrop``). Train is soma
+  ``train``, test is soma ``test``.
 
 Resizing and cropping go through torchvision v2 on a ``tv_tensors.Image`` and a
 ``tv_tensors.Mask`` exactly as EVA's ``ResizeAndCrop`` does (antialiased bilinear for the
 image, nearest for the mask), and MoNuSAC polygons are filled with ``skimage.draw.polygon``
 as EVA's reader does, so the curated pixels match EVA's byte for byte.
 
-CoNSeP's official download link is dead; the archive is mirrored from the HoVer-Net
-repository's issue #267. MoNuSAC is two Google Drive archives distributed under
+CoNSeP's official Warwick download requires a login; the Kaggle mirror
+``karthikperupogu/consep`` carries the same HoVer-Net layout. MoNuSAC is two Google Drive archives distributed under
 CC BY-NC-SA 4.0 (https://monusac-2020.grand-challenge.org/Data/).
 """
 
@@ -221,7 +224,7 @@ def rasterize_monusac_annotations(
 
 
 def curate_monusac(raw_root: str | Path, output_dir: str | Path) -> CuratedManifest:
-    """Curate MoNuSAC into one resized + centre-cropped 224 px sample per image."""
+    """Curate MoNuSAC: whole train images, resized + centre-cropped 224 px test images."""
     raw_root = Path(raw_root)
     output_dir = Path(output_dir)
     samples: list[dict[str, Any]] = []
@@ -241,7 +244,9 @@ def curate_monusac(raw_root: str | Path, output_dir: str | Path) -> CuratedManif
             height, width = image.shape[:2]
             mask = rasterize_monusac_annotations(xml_path, width=width, height=height)
             sample_id = "monusac_" + _relative_stem(image_path, split_root)
-            tile_png, mask_png = _write_sample(output_dir, split, sample_id, image, mask)
+            tile_png, mask_png = _write_sample(
+                output_dir, split, sample_id, image, mask, resize=split == "test"
+            )
             samples.append(
                 {
                     "sample_id": sample_id,
@@ -258,7 +263,7 @@ def curate_monusac(raw_root: str | Path, output_dir: str | Path) -> CuratedManif
         "num_classes": MONUSAC_IGNORE_INDEX,
         "ignore_index": MONUSAC_IGNORE_INDEX,
         "output_px": OUTPUT_PX,
-        "protocol": "eva-whole-image-resize-224-center-crop",
+        "protocol": "eva-online-train-whole-image-test-resize-224-center-crop",
     }
     return _write_segmentation_manifest(samples, output_dir, summary)
 
@@ -287,10 +292,19 @@ def resize_and_center_crop(array: np.ndarray, *, size: int, nearest: bool) -> np
 
 
 def _write_sample(
-    output_dir: Path, split: str, sample_id: str, image: np.ndarray, mask: np.ndarray
+    output_dir: Path,
+    split: str,
+    sample_id: str,
+    image: np.ndarray,
+    mask: np.ndarray,
+    *,
+    resize: bool = True,
 ) -> tuple[Path, Path]:
-    image_out = resize_and_center_crop(image.astype(np.uint8), size=OUTPUT_PX, nearest=False)
-    mask_out = resize_and_center_crop(mask.astype(np.uint8), size=OUTPUT_PX, nearest=True)
+    image_out = image.astype(np.uint8)
+    mask_out = mask.astype(np.uint8)
+    if resize:
+        image_out = resize_and_center_crop(image_out, size=OUTPUT_PX, nearest=False)
+        mask_out = resize_and_center_crop(mask_out, size=OUTPUT_PX, nearest=True)
     images_dir = output_dir / "images" / split
     masks_dir = output_dir / "masks" / split
     images_dir.mkdir(parents=True, exist_ok=True)

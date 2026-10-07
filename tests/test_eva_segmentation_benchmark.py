@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
 from soma.benchmarks import eva_segmentation as seg
 from soma.benchmarks.eva import EvaTileClassificationBenchmark
+from soma.config import AugmentationConfig
 from soma.curation.manifest import CuratedManifest
 from soma.decoders.registry import decoder_registry
 from soma.dense import compute_dense_geometry
@@ -42,6 +43,7 @@ def test_segmentation_subbenchmarks_join_the_eva_family():
 
 def test_private_components_are_registered_under_eva_names():
     assert "eva_conv_ms" in decoder_registry
+    assert "eva_conv_with_image" in decoder_registry
     assert "eva_segmentation" in task_registry
     assert task_family_of("eva_segmentation") == "segmentation"
 
@@ -82,7 +84,7 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
         seed=3,
     )
     assert config.dataset_type == "segmentation"
-    assert config.decoder.name == "eva_conv_ms" and config.decoder.params == {}
+    assert config.decoder.name == "eva_conv_with_image" and config.decoder.params == {}
     assert config.task.name == "eva_segmentation"
     assert config.task.params == {"num_classes": 5}
     assert config.preprocessing.requested_tile_size_px == 224
@@ -104,6 +106,9 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert training.seed == 3
     assert config.encoder.output_variant is None
     assert config.tags == ["eva", "consep", "uni2", "segmentation"]
+    # CoNSeP's online transforms are deterministic: the cached grids are EVA's samples.
+    assert config.feature_mode == "cached"
+    assert not config.augmentation.is_enabled()
 
 
 def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
@@ -113,6 +118,17 @@ def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
     assert config.task.params == {"num_classes": 5, "ignore_index": 5}
     assert config.training.patience == 100
     assert config.encoder.name == "uni2"  # DEFAULT_ENCODER shared with the family
+
+
+def test_monusac_config_random_resized_crops_whole_train_images_live(tmp_path: Path):
+    """EVA's online MoNuSAC config trains on torchvision ``RandomResizedCrop(224)``
+    (default scale (0.08, 1.0)) drawn every step, so the run re-encodes live."""
+    config = get_benchmark("eva/monusac").build_config(
+        dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
+    )
+    assert config.feature_mode == "live"
+    assert config.augmentation.random_resized_crop_scale == (0.08, 1.0)
+    assert config.augmentation == AugmentationConfig(random_resized_crop_scale=(0.08, 1.0))
 
 
 def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
@@ -154,7 +170,7 @@ def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
     result = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, check=True, cwd=tmp_path, env=env
     )
-    assert result.stdout.strip() == "eva_segmentation eva_conv_ms"
+    assert result.stdout.strip() == "eva_segmentation eva_conv_with_image"
 
 
 def test_curate_delegates_to_the_segmentation_curator(monkeypatch, tmp_path):
@@ -263,3 +279,42 @@ def test_eva_head_reports_foreground_mean_dice_through_the_built_in_reduction():
     assert head.compute_loss(logits, {"mask": mask}) == pytest.approx(
         seg.eva_dice_loss(logits, mask, num_classes=3, ignore_index=5)
     )
+
+
+def test_conv_with_image_decoder_matches_eva_online_shape_and_layers():
+    decoder = seg.EvaConvWithImageDecoder(input_dim=7, num_classes=5)
+    grid = torch.randn(2, 7, 16, 16)
+    image = torch.rand(2, 3, 224, 224)
+    out = decoder(grid, image=image)
+    assert tuple(out.shape) == (2, 5, 224, 224)  # logits at the image resolution
+    assert decoder.num_classes == 5 and decoder.consumes_image is True
+    assert [type(m).__name__ for m in decoder.layers] == ["Upsample", "Conv2dBnReLU"]
+    assert [type(m).__name__ for m in decoder.image_block] == ["Conv2dBnReLU", "Conv2dBnReLU"]
+    assert decoder.image_block[0][0].in_channels == 64 + 3  # features + RGB
+    assert decoder.classifier.kernel_size == (1, 1) and decoder.classifier.out_channels == 5
+    with pytest.raises(ValueError, match="image"):
+        decoder(grid, image=torch.rand(2, 1, 224, 224))
+
+
+def test_conv_with_image_decoder_normalises_the_image_like_eva():
+    decoder = seg.EvaConvWithImageDecoder(input_dim=2, num_classes=3).eval()
+    grid = torch.zeros(1, 2, 2, 2)
+    mean = torch.tensor(seg.IMAGE_MEAN).view(1, 3, 1, 1).expand(1, 3, 8, 8)
+    seen = {}
+
+    def spy(module, inputs):
+        seen["image"] = inputs[0][:, 64:]
+
+    decoder.image_block.register_forward_pre_hook(spy)
+    decoder(grid, image=mean)
+    assert torch.allclose(seen["image"], torch.zeros(1, 3, 8, 8), atol=1e-6)
+
+
+def test_conv_with_image_decoder_builds_through_the_registry_for_a_grid():
+    from soma.decoders.registry import build_decoder_for_grid
+
+    geometry = compute_dense_geometry(target_size=224, patch_size=14)
+    decoder = build_decoder_for_grid(
+        "eva_conv_with_image", None, geometry=geometry, input_dim=3, num_classes=5
+    )
+    assert isinstance(decoder, seg.EvaConvWithImageDecoder)

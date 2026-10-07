@@ -151,6 +151,7 @@ augmentation:
   contrast: 0.0
   saturation: 0.0
   hue: 0.0
+  random_resized_crop_scale: null  # [min, max] area fraction, e.g. [0.08, 1.0]; crops to the tile size first
 
 # Per-feature normalization of frozen encoder features, applied by the feature adaptor
 # (a buffer-carrying front module) ahead of the aggregator/head. 'none' (default) means

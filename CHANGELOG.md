@@ -1,5 +1,19 @@
 # Changelog
 
+- 2026-10-07: The `eva/consep` and `eva/monusac` benchmarks follow EVA's online
+  segmentation protocol, which produces the leaderboard numbers. The decoder is
+  `eva_conv_with_image` (EVA's `ConvDecoderWithImage`): it concatenates the
+  normalised input tile to the upsampled feature grid. To feed it, a decoder can
+  now set `Decoder.consumes_image`; soma then passes the tile's pixels (float
+  RGB in [0, 1], at the mask size) to `forward(X, image)` on the cached and live
+  training paths and in sliding-window prediction. Existing decoders are unchanged. MoNuSAC trains on a new random
+  resized crop of each whole train image every step, so its curator keeps train
+  images whole and the benchmark runs live with the new
+  `augmentation.random_resized_crop_scale` (a `RandomResizedCrop` to the target
+  size, applied before the other ops). Re-curate MoNuSAC. The augmentation block
+  is part of the experiment identity, so `identity_version` is 5 and experiment
+  ids change for every run.
+
 - 2026-10-07: `TrainingConfig` gains `lr_warmup_epochs` and `lr_warmup_factor`, a
   `ConstantLR`-style warm-up that scales the learning rate for the first epochs
   under both the epoch and the step budget and composes with the cosine

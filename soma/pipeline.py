@@ -117,6 +117,7 @@ from soma.training.fold_planning import plan_dense_fold
 from soma.training.segmentation_dataset import (
     LiveSegmentationDataset,
     SegmentationDataset,
+    attach_image_targets,
     segmentation_collate_fn,
 )
 from soma.training.seed import seed_everything
@@ -548,6 +549,7 @@ def _make_live_loaders(
     ignore_index: int,
     label_remap: np.ndarray | None,
     mask_vocabulary: dict[str, int],
+    emit_image: bool = False,
 ) -> tuple[DataLoader, DataLoader, dict[str, DataLoader]]:
     """Live-path loaders: augmentation on the **train** split only, deterministic eval.
 
@@ -558,7 +560,11 @@ def _make_live_loaders(
     from soma.dense.augment import build_segmentation_augmentation
 
     loader_kwargs = _loader_kwargs(training)
-    train_augment = build_segmentation_augmentation(source.augmentation, ignore_index=ignore_index)
+    train_augment = build_segmentation_augmentation(
+        source.augmentation,
+        ignore_index=ignore_index,
+        target_size=source.geometry.target_size,
+    )
 
     def _make(records: list[SampleRecord], augment) -> LiveSegmentationDataset:
         return LiveSegmentationDataset(
@@ -573,6 +579,7 @@ def _make_live_loaders(
             label_remap=label_remap,
             mask_vocabulary=mask_vocabulary,
             augment=augment,
+            emit_image=emit_image,
         )
 
     train_loader = DataLoader(
@@ -1732,6 +1739,18 @@ def train_one_segmentation_fold(
             f"decoder num_classes ({decoder_obj.num_classes}) != head num_classes "
             f"({head.num_classes}) — a mismatch would misregister the logits."
         )
+    wants_image = bool(getattr(decoder_obj, "consumes_image", False))
+    if wants_image:
+        # An image-prior decoder emits logits at the mask resolution; the head's
+        # resize-to-encoded + crop must then be the identity, or pixels and logits would
+        # be registered against different canvases.
+        if tuple(geometry.encoded_size) != tuple(geometry.target_size):
+            raise ValueError(
+                f"decoder '{decoder.name}' consumes the image and emits logits at the mask "
+                f"size {tuple(geometry.target_size)}, but the encoder input is padded to "
+                f"{tuple(geometry.encoded_size)}; image-prior decoders need an unpadded tile."
+            )
+        target_fn = attach_image_targets(target_fn)
 
     seg_collate = functools.partial(segmentation_collate_fn, target_dtypes=head.target_dtypes)
     roi_batch_sampler = None
@@ -1784,6 +1803,7 @@ def train_one_segmentation_fold(
             ignore_index=head.ignore_index,
             label_remap=head.label_remap,
             mask_vocabulary=head.mask_vocabulary,
+            emit_image=wants_image,
         )
     else:
         model = SegmentationModel(

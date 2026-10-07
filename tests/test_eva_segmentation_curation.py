@@ -214,19 +214,31 @@ def test_curate_consep_requires_hovernet_layout(tmp_path: Path):
         curate_consep(tmp_path / "empty", tmp_path / "out")
 
 
-def test_curate_monusac_resizes_whole_images_and_keeps_ambiguous(tmp_path: Path):
+def test_curate_monusac_keeps_whole_train_images_and_resizes_test(tmp_path: Path):
+    """EVA's online protocol: train is RandomResizedCrop'd from the whole image at train
+    time, so train keeps its native size; test is ResizeAndCrop(224) once, here."""
     raw = tmp_path / "raw"
-    write_monusac_raw(raw)
+    sizes = write_monusac_raw(raw)
     manifest = curate_monusac(raw, tmp_path / "out")
 
     dataset = pd.read_csv(manifest.dataset_csv)
     splits = pd.read_csv(manifest.splits_csv)
     assert len(dataset) == 3
     assert splits["split"].value_counts().to_dict() == {"train": 2, "test": 1}
-    for path in dataset.image_path:
-        assert np.asarray(Image.open(path)).shape == (OUTPUT_PX, OUTPUT_PX, 3)
+    split_of = dict(zip(splits.sample_id, splits.split))
+    for row in dataset.itertuples():
+        image = np.asarray(Image.open(row.image_path))
+        mask = np.asarray(Image.open(row.label_mask_path))
+        if split_of[row.sample_id] == "train":
+            width, height = sizes[row.source_image]
+            assert image.shape == (height, width, 3)
+            assert mask.shape == (height, width)
+            source = next(raw.rglob(f"{row.source_image}.tif"))
+            assert np.array_equal(image, np.asarray(Image.open(source).convert("RGB")))
+        else:
+            assert image.shape == (OUTPUT_PX, OUTPUT_PX, 3)
+            assert mask.shape == (OUTPUT_PX, OUTPUT_PX)
     masks = {Path(p).stem: np.asarray(Image.open(p)) for p in dataset.label_mask_path}
-    assert all(m.shape == (OUTPUT_PX, OUTPUT_PX) for m in masks.values())
     # Every image carries the Epithelial rectangle and the unknown-name region (Ambiguous=5).
     for mask in masks.values():
         values = set(np.unique(mask).tolist())
@@ -237,6 +249,7 @@ def test_curate_monusac_resizes_whole_images_and_keeps_ambiguous(tmp_path: Path)
     summary = json.loads(manifest.summary_json.read_text())
     assert summary["num_classes"] == 5 and summary["ignore_index"] == 5
     assert summary["class_names"] == list(MONUSAC_CLASSES)
+    assert summary["protocol"] == "eva-online-train-whole-image-test-resize-224-center-crop"
 
 
 def test_curate_monusac_requires_both_archives(tmp_path: Path):

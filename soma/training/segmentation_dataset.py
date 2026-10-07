@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
 
@@ -26,6 +27,44 @@ from soma.dataset import SampleRecord
 from soma.dense import DenseFeatureSource
 from soma.dense.geometry import DenseGridGeometry
 from soma.dense.reader import accepted_mask_values, apply_label_remap
+
+
+def load_image_target(record: SampleRecord, *, mask_shape: tuple[int, int]) -> Tensor:
+    """The sample's pixels as a float ``(3, H, W)`` tensor in ``[0, 1]`` at the mask size.
+
+    Flat image files only (the cached path reads the curated tile next to its grid); a
+    size that differs from the mask is an error rather than a silent resample, because
+    an image-prior decoder registers pixels against the mask pixel for pixel.
+    """
+    if record.region is not None:
+        raise ValueError(
+            f"segmentation sample '{record.sample_id}' is a slide region; image-prior "
+            "decoders read flat image files only."
+        )
+    with Image.open(record.image_path) as handle:
+        pixels = np.array(handle.convert("RGB"))
+    if tuple(pixels.shape[:2]) != tuple(mask_shape):
+        raise ValueError(
+            f"image for '{record.sample_id}' is {pixels.shape[0]}x{pixels.shape[1]} but its "
+            f"mask is {mask_shape[0]}x{mask_shape[1]}; an image-prior decoder needs them aligned."
+        )
+    return torch.from_numpy(np.ascontiguousarray(pixels)).permute(2, 0, 1).float() / 255.0
+
+
+def attach_image_targets(
+    target_fn: Callable[[SampleRecord], dict[str, Tensor]],
+) -> Callable[[SampleRecord], dict[str, Tensor]]:
+    """Wrap a head's ``extract_targets`` so each targets dict also carries ``"image"``."""
+
+    def with_image(record: SampleRecord) -> dict[str, Tensor]:
+        targets = dict(target_fn(record))
+        mask = targets["mask"]
+        targets["image"] = load_image_target(
+            record, mask_shape=(int(mask.shape[-2]), int(mask.shape[-1]))
+        )
+        return targets
+
+    return with_image
 
 
 class SegmentationDataset(Dataset):
@@ -127,9 +166,11 @@ class LiveSegmentationDataset(Dataset):
         label_remap: np.ndarray | None = None,
         mask_vocabulary: Mapping[str, int] | None = None,
         augment: Callable | None = None,
+        emit_image: bool = False,
     ) -> None:
         self._records = records
         self._geometry = geometry
+        self._emit_image = bool(emit_image)
         self._preprocessor = preprocessor
         self._spacing_um = float(spacing_um) if spacing_um is not None else None
         self._backend = backend
@@ -216,7 +257,12 @@ class LiveSegmentationDataset(Dataset):
                 f"mask for '{record.sample_id}' has label value(s) {invalid} outside "
                 f"[0, num_classes={self._num_classes}) ∪ {{ignore_index={self._ignore_index}}}."
             )
-        return padded, {"mask": mask}, record.sample_id
+        targets = {"mask": mask}
+        if self._emit_image:
+            # The same (augmented) pixels the encoder sees, before the kit's normalisation
+            # and padding, for an image-prior decoder.
+            targets["image"] = image.float() / 255.0
+        return padded, targets, record.sample_id
 
 
 @dataclass
@@ -257,8 +303,19 @@ def segmentation_collate_fn(
         raise ValueError(
             f"masks in a batch must share shape (H, W); got {shapes}."
         ) from exc
+    targets: dict[str, Tensor] = {"mask": masks}
+    for key in target_dicts[0]:
+        if key == "mask":
+            continue
+        try:
+            targets[key] = torch.stack([t[key] for t in target_dicts])
+        except (RuntimeError, KeyError) as exc:
+            shapes = sorted({tuple(t[key].shape) for t in target_dicts if key in t})
+            raise ValueError(
+                f"target '{key}' must be present with one shape across the batch; got {shapes}."
+            ) from exc
     return SegmentationBatch(
         features=features,
-        targets={"mask": masks},
+        targets=targets,
         sample_ids=tuple(sample_ids),
     )

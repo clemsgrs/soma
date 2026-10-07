@@ -322,6 +322,92 @@ def test_plain_callable_models_use_fallback():
     assert (out.labels == 0).all()
 
 
+# --- image-prior decoders ------------------------------------------------------------
+
+
+class _ZeroGridKit:
+    """Frozen-encoder stand-in: a zero ``(B, d, h, w)`` grid, so only the pixels carry signal."""
+
+    def encode(self, X):
+        gh, gw = (int(s) // PATCH for s in X.shape[-2:])
+        return torch.zeros(X.shape[0], 8, gh, gw)
+
+
+class _ImageColorDecoder(torch.nn.Module):
+    """Image-prior decoder whose logits are the RGB pixels (class = dominant colour)."""
+
+    consumes_image = True
+
+    def forward(self, X, image):
+        return image * 10.0
+
+
+class _Head(torch.nn.Module):
+    num_classes = 3
+
+    def forward(self, logits):
+        return logits
+
+
+def _live_model(kit, decoder):
+    from soma.training.model import LiveSegmentationModel
+
+    return LiveSegmentationModel(kit=kit, decoder=decoder, task_head=_Head()).eval()
+
+
+def _painted(h, w):
+    """Left half red, right half blue."""
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, : w // 2, 0] = 255
+    img[:, w // 2 :, 2] = 255
+    return img
+
+
+@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
+def test_image_prior_decoder_receives_each_tiles_pixels(shared_kit):
+    # Both predictor routes hand an image-prior decoder the tile's own [0, 1] RGB crop,
+    # so a pixel-driven prediction lands where the colours are painted.
+    kit = _ZeroGridKit()
+    models = [
+        _live_model(kit if shared_kit else _ZeroGridKit(), _ImageColorDecoder())
+        for _ in range(2)
+    ]
+    out = _predictor(models).predict_array(_painted(96, 160), overlap=0.5)
+    assert (out.labels[:, :70] == 0).all()
+    assert (out.labels[:, 90:] == 2).all()
+
+
+@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
+def test_mixed_ensemble_passes_pixels_only_to_image_prior_members(shared_kit):
+    # A grid-only member (one-argument forward) ensembled with an image-prior member:
+    # only the latter gets the pixels. Both predict the painted colour.
+    geom = _geom()
+    if shared_kit:
+        kit = _ZeroGridKit()
+        models = [_GridModel(geom, kit), _live_model(kit, _ImageColorDecoder())]
+    else:
+        models = [_ColorModel(geom), _live_model(_ZeroGridKit(), _ImageColorDecoder())]
+    out = _predictor(models).predict_array(_painted(96, 160), overlap=0.5)
+    assert (out.labels[:, :70] == 0).all()
+    assert (out.labels[:, 90:] == 2).all()
+
+
+@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
+def test_eva_image_decoder_predicts_through_both_routes(shared_kit):
+    from soma.benchmarks.eva_segmentation import EvaConvWithImageDecoder
+
+    kit = _ZeroGridKit()
+    models = [
+        _live_model(
+            kit if shared_kit else _ZeroGridKit(),
+            EvaConvWithImageDecoder(input_dim=8, num_classes=3),
+        )
+        for _ in range(2)
+    ]
+    out = _predictor(models).predict_array(_painted(80, 100), overlap=0.25)
+    assert out.labels.shape == (80, 100)
+
+
 # --- predict_image: spacing resample + native-dim mapping ---------------------------
 
 

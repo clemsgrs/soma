@@ -475,7 +475,7 @@ class Trainer:
             if hasattr(batch, "mask"):
                 out = self._model(features, mask=batch.mask.to(self._device))
             else:
-                out = self._model(features)
+                out = self._model(features, **_model_side_inputs(targets))
             loss = self._model.task_head.compute_loss(out.logits, targets)
 
             if hasattr(self._model, "aggregator"):
@@ -607,7 +607,7 @@ class Trainer:
             if hasattr(batch, "mask"):
                 out = self._model(features, mask=batch.mask.to(self._device))
             else:
-                out = self._model(features)
+                out = self._model(features, **_model_side_inputs(targets))
             if not full_cohort_loss:
                 loss = self._model.task_head.compute_loss(out.logits, targets)
                 total_loss += loss.item()
@@ -702,7 +702,7 @@ def accumulate_dense_stats(
             on_batch_progress(progress_label, processed_items, total_items)
         features = batch.features.to(model_input_device(model, device))
         targets = {key: value.to(device) for key, value in batch.targets.items()}
-        out = model(features)
+        out = model(features, **_model_side_inputs(targets))
         if compute_loss:
             total_loss += head.compute_loss(out.logits, targets).item()
         num_batches += 1
@@ -1038,6 +1038,12 @@ def _resolve_total_items(loader: object, *, fallback: int) -> int:
         except TypeError:
             pass
     return max(0, int(fallback))
+
+
+def _model_side_inputs(targets: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Batch tensors the model consumes alongside the features (an image-prior decoder's
+    pixels ride in ``targets["image"]``); every other target stays with the head."""
+    return {"image": targets["image"]} if "image" in targets else {}
 
 
 def _auxiliary_target(targets: dict[str, torch.Tensor]) -> torch.Tensor | None:

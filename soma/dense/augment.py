@@ -11,7 +11,9 @@ Affine out-of-canvas pixels fill the **image with 0** and the **mask with
 from loss/metrics rather than mislabeled as a real class.
 
 The transform set mirrors the paper's "affine + color jitter": ``RandomHorizontalFlip``,
-``RandomVerticalFlip``, ``RandomAffine`` (rotation/translate/scale), ``ColorJitter``.
+``RandomVerticalFlip``, ``RandomAffine`` (rotation/translate/scale), ``ColorJitter``. An
+optional ``RandomResizedCrop`` to the run's ``target_size`` runs before them, so train
+images of any size reach the encoder at the supervision size.
 Only the ops the config actually enables are added, so an all-default
 :class:`~soma.config.AugmentationConfig` yields ``None`` (no-op = the live-no-aug parity
 case). A registry-backed/swept transform list (stain/HED jitter, elastic) is deferred
@@ -29,11 +31,13 @@ def build_segmentation_augmentation(
     augmentation: AugmentationConfig,
     *,
     ignore_index: int,
+    target_size: tuple[int, int],
 ) -> Callable | None:
     """Build a joint image+mask v2 transform, or ``None`` when augmentation is disabled.
 
     The returned callable takes ``(image, mask)`` as a ``tv_tensors.Image`` /
-    ``tv_tensors.Mask`` pair and returns the transformed pair.
+    ``tv_tensors.Mask`` pair and returns the transformed pair. ``target_size`` is the
+    run's ``(H, W)`` supervision size, the output size of ``random_resized_crop_scale``.
     """
     if not augmentation.is_enabled():
         return None
@@ -42,6 +46,14 @@ def build_segmentation_augmentation(
     from torchvision.transforms import v2
 
     transforms: list = []
+    if augmentation.random_resized_crop_scale is not None:
+        # Image antialiased bilinear, mask nearest (v2 routes on the tv_tensor type).
+        transforms.append(
+            v2.RandomResizedCrop(
+                size=tuple(int(v) for v in target_size),
+                scale=augmentation.random_resized_crop_scale,
+            )
+        )
     if augmentation.horizontal_flip > 0.0:
         transforms.append(v2.RandomHorizontalFlip(p=float(augmentation.horizontal_flip)))
     if augmentation.vertical_flip > 0.0:

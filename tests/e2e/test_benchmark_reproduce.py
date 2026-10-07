@@ -1,7 +1,7 @@
 """``soma reproduce eva/consep`` end to end on a synthetic HoVer-Net layout (issue #522).
 
 The CLI curates the raw root with the EVA geometry, trains the benchmark-private
-``eva_conv_ms`` decoder + ``eva_segmentation`` head on the dense path with the weight-free
+``eva_conv_with_image`` decoder + ``eva_segmentation`` head on the dense path with the weight-free
 literal encoder, and scores ``test/foreground_mean_dice`` from the run's ``summary.json``.
 The protocol's fixed step budget and patience are shrunk in-process so the scenario stays
 CPU-sized; everything else is the registered benchmark's own config.
@@ -109,7 +109,7 @@ def test_reproduce_eva_consep_curates_trains_and_scores(
     artifact.check_at_least("test/foreground_mean_dice", run.summary["test/foreground_mean_dice"], 0.0)
     artifact.check_equal("has_mean_dice", "test/mean_dice" in run.summary, True)
     text = run.config_path.read_text()
-    artifact.check_equal("decoder_is_eva_conv_ms", "eva_conv_ms" in text, True)
+    artifact.check_equal("decoder_is_eva_conv_with_image", "eva_conv_with_image" in text, True)
     artifact.check_equal("head_is_eva_segmentation", "eva_segmentation" in text, True)
     artifact.check_equal("prenorm_feature_tap", "patch_features_prenorm" in text, True)
     artifact.assert_passed()

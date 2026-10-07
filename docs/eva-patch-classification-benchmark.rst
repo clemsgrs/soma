@@ -11,7 +11,7 @@ the shared workflow.
 
 **Pipeline (classification):** labelled patches → frozen encoder → linear head → balanced accuracy
 
-**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid → ``eva_conv_ms`` decoder → foreground mean Dice
+**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid + the tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice
 
 Prepare the data
 ----------------
@@ -47,7 +47,7 @@ The segmentation datasets use the same ``--raw-root`` convention:
    * - Dataset and source
      - Raw-root contents
    * - `CoNSeP <https://github.com/vqdang/hover_net/issues/267>`__ (``consep``)
-     - ``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` (HoVer-Net layout; the official link is dead, the issue holds a mirror)
+     - ``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` (HoVer-Net layout; the official Warwick download is login-walled and the linked issue tracks that, so use a public mirror such as the Kaggle ``consep`` dataset)
    * - `MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)
      - ``MoNuSAC_images_and_annotations/`` and ``MoNuSAC Testing Data and Annotations/`` (one ``.tif`` + ``.xml`` per image; CC BY-NC-SA 4.0)
 
@@ -155,8 +155,10 @@ Segmentation protocol
 ---------------------
 
 The curators reproduce EVA's sample geometry: CoNSeP is cut into 250 px grid
-tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px;
-a MoNuSAC image is resized on its short side to 224 px and centre-cropped. CoNSeP
+tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px.
+MoNuSAC test images are resized on their short side to 224 px and centre-cropped;
+MoNuSAC train images are kept whole, and each training step draws a new random
+resized 224 px crop from them, as EVA's online config does. CoNSeP
 merges HoVer-Net's seven nucleus types into background, other, inflammatory,
 epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is
 excluded from the loss and the metric. Both datasets report on EVA's validation
@@ -169,13 +171,17 @@ split, which is soma's ``test`` split (``tune_is_test``).
    * - Setting
      - Value
    * - samples
-     - 224 px tiles and class-index masks materialised by the curator
+     - 224 px tiles and class-index masks materialised by the curator (MoNuSAC train: whole images)
+   * - features
+     - CoNSeP: cached dense grids. MoNuSAC: re-encoded every step (``feature_mode: live``) because its train crops are random
+   * - augmentation
+     - MoNuSAC train only: ``random_resized_crop_scale: [0.08, 1.0]`` (torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none
    * - decoder
-     - ``eva_conv_ms``: nearest ×2 → 3x3 conv (64) → nearest ×2 → 3x3 conv (classes); no normalisation
+     - ``eva_conv_with_image`` (EVA's online ``ConvDecoderWithImage``, the leaderboard decoder): nearest ×2 → 3x3 conv-BN-ReLU (64) → bilinear to the tile size → concat the ImageNet-normalised RGB tile → 2 × 3x3 conv-BN-ReLU (32) → 1x1 conv (classes). ``eva_conv_ms`` (the offline ``ConvDecoderMS``) stays registered for reference
    * - loss
      - pure soft Dice over softmax, background included (``eva_segmentation`` head)
    * - optimizer
-     - AdamW, lr ``0.002``, weight_decay ``0.01``
+     - AdamW, lr ``0.002``, weight_decay ``0.01``, EVA's default ``ConstantLR`` warm-up (lr/3 for the first 5 epochs)
    * - batch size
      - ``64``
    * - budget
