@@ -57,7 +57,8 @@ class LightweightConvDecoder(Decoder):
 
     Output grid is ``(h * 2**k, w * 2**k)`` for ``k = num_upsample_blocks``; the
     head interpolates that to the mask's target size and crops. ``num_upsample_blocks=0``
-    degenerates to a conv head at grid resolution.
+    degenerates to a conv head at grid resolution. ``dropout`` drops whole channels
+    (Dropout2d) before the classifier; at 0 the decoder is unchanged.
     """
 
     def __init__(
@@ -68,6 +69,7 @@ class LightweightConvDecoder(Decoder):
         hidden_dim: int = 256,
         num_upsample_blocks: int = 2,
         num_groups: int = 32,
+        dropout: float = 0.0,
     ) -> None:
         super().__init__()
         if input_dim < 1:
@@ -80,6 +82,8 @@ class LightweightConvDecoder(Decoder):
             raise ValueError(f"num_groups must be >= 1, got {num_groups}")
         if num_upsample_blocks < 0:
             raise ValueError(f"num_upsample_blocks must be >= 0, got {num_upsample_blocks}")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError(f"dropout must be in [0, 1), got {dropout}")
         self._num_classes = int(num_classes)
 
         self.proj = nn.Sequential(
@@ -96,12 +100,14 @@ class LightweightConvDecoder(Decoder):
                 nn.ReLU(inplace=True),
             ]
         self.blocks = nn.Sequential(*blocks)
+        # Identity at 0, so the default draws no random numbers and trains as before.
+        self.dropout = nn.Dropout2d(dropout) if dropout > 0 else nn.Identity()
         self.classifier = nn.Conv2d(hidden_dim, num_classes, kernel_size=1)
 
     def forward(self, X: Tensor) -> Tensor:
         if X.ndim != 4:
             raise ValueError(f"decoder expects a (B, d, h, w) grid, got shape {tuple(X.shape)}")
-        return self.classifier(self.blocks(self.proj(X)))
+        return self.classifier(self.dropout(self.blocks(self.proj(X))))
 
     @property
     def num_classes(self) -> int:

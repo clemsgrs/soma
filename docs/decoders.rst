@@ -30,6 +30,10 @@ The two convolutional decoders project the input channels to ``hidden_dim``.
 Only this input projection depends on the encoder's embedding width; subsequent
 layers have fixed width.
 
+``lightweight_conv`` takes ``decoder.params.dropout`` (default ``0``). It drops
+whole channels before the class-output convolution; at ``0`` the decoder is
+unchanged.
+
 The task head interpolates decoder outputs to the padded ``encoded_size``, then
 uses ``crop_box`` to recover the supervision ``target_size``. Segmentation uses
 per-pixel class logits; detection applies a sigmoid to produce one heatmap per

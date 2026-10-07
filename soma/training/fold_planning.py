@@ -16,6 +16,7 @@ class DenseFoldPlan:
     train_records: list[SampleRecord]
     tune_records: list[SampleRecord]
     test_records_by_split: dict[str, list[SampleRecord]]
+    tune_from_train: bool = False  # no tune split: train stands in (allow_missing_tune)
 
     @property
     def all_records(self) -> list[SampleRecord]:
@@ -68,7 +69,8 @@ def plan_dense_fold(
             )
         test_split_name = fold_split.test_split_names[0]
         tune_records = list(test_records_by_split[test_split_name])
-    if not tune_records:
+    tune_from_train = not tune_records
+    if tune_from_train:
         if not training.allow_missing_tune:
             raise ValueError(f"{fold_label} has no tuning samples")
         if logger is not None:
@@ -88,4 +90,5 @@ def plan_dense_fold(
         train_records=train_records,
         tune_records=tune_records,
         test_records_by_split=test_records_by_split,
+        tune_from_train=tune_from_train,
     )
