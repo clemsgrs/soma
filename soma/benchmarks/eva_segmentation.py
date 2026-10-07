@@ -107,7 +107,13 @@ DICE_SMOOTH = 1.0e-5
 PRIMARY_METRIC = "test/foreground_mean_dice"
 METRICS = ["foreground_mean_dice", "mean_dice", "mean_iou"]
 
-DECODER_NAME = "eva_conv_ms"
+DECODER_NAME = "eva_conv_with_image"
+OFFLINE_DECODER_NAME = "eva_conv_ms"
+# eva's online configs normalise every backbone's input with these ImageNet statistics
+# (``NORMALIZE_MEAN`` / ``NORMALIZE_STD`` defaults); the decoder sees the same tensor.
+IMAGE_MEAN = (0.485, 0.456, 0.406)
+IMAGE_STD = (0.229, 0.224, 0.225)
+IMAGE_HIDDEN_DIMS = (64, 32, 32)  # ConvDecoderWithImage's fixed widths
 HEAD_NAME = "eva_segmentation"
 #: Dense feature tap: the pre-norm last-block patch grid (timm ``features_only``), as EVA.
 FEATURE_KIND = "patch_features_prenorm"
@@ -140,6 +146,60 @@ class EvaConvMSDecoder(Decoder):
 
     def forward(self, X: Tensor) -> Tensor:
         return self.layers(X)
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+
+class Conv2dBnReLU(nn.Sequential):
+    """``Conv2d(3x3, pad 1) -> BatchNorm2d -> ReLU``, eva's decoder block."""
+
+    def __init__(self, in_channels: int, out_channels: int) -> None:
+        super().__init__(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+        )
+
+
+class EvaConvWithImageDecoder(Decoder):
+    """EVA's ``ConvDecoderWithImage`` (the leaderboard's online decoder), byte-faithful.
+
+    ``(B, d, h, w) + (B, 3, H, W) -> (B, C, H, W)``: nearest x2 upsample, 3x3 conv-BN-ReLU
+    to 64 channels, bilinear resize to the image size, concatenation with the normalised
+    RGB image, two 3x3 conv-BN-ReLU blocks (32, 32), and a 1x1 classifier. The pixels
+    arrive in ``[0, 1]`` and are normalised here with the ImageNet statistics eva feeds
+    the backbone, so the decoder sees exactly eva's ``DecoderInputs.images``.
+    """
+
+    consumes_image = True
+
+    def __init__(self, *, input_dim: int, num_classes: int) -> None:
+        super().__init__()
+        if input_dim < 1:
+            raise ValueError(f"input_dim must be >= 1, got {input_dim}")
+        if num_classes < 1:
+            raise ValueError(f"num_classes must be >= 1, got {num_classes}")
+        self._num_classes = int(num_classes)
+        first, second, third = IMAGE_HIDDEN_DIMS
+        self.layers = nn.Sequential(nn.Upsample(scale_factor=2), Conv2dBnReLU(input_dim, first))
+        self.image_block = nn.Sequential(Conv2dBnReLU(first + 3, second), Conv2dBnReLU(second, third))
+        self.classifier = nn.Conv2d(third, num_classes, kernel_size=1)
+        self.register_buffer("_mean", torch.tensor(IMAGE_MEAN).view(1, 3, 1, 1))
+        self.register_buffer("_std", torch.tensor(IMAGE_STD).view(1, 3, 1, 1))
+
+    def forward(self, X: Tensor, image: Tensor) -> Tensor:
+        if image.ndim != 4 or image.shape[1] != 3 or image.shape[0] != X.shape[0]:
+            raise ValueError(
+                f"{type(self).__name__} expects an RGB image batch (B, 3, H, W) matching the "
+                f"grid batch; got {tuple(image.shape)} for grid {tuple(X.shape)}"
+            )
+        features = nn.functional.interpolate(
+            self.layers(X), size=image.shape[-2:], mode="bilinear", align_corners=False
+        )
+        normalised = (image.to(features.dtype) - self._mean) / self._std
+        return self.classifier(self.image_block(torch.cat([features, normalised], dim=1)))
 
     @property
     def num_classes(self) -> int:
@@ -226,11 +286,20 @@ class EvaSegmentationHead(SegmentationHead):
         )
 
 
+if OFFLINE_DECODER_NAME not in decoder_registry:
+    decoder_registry.register(
+        OFFLINE_DECODER_NAME,
+        EvaConvMSDecoder,
+        metadata={"description": "EVA ConvDecoderMS, the offline-config decoder (benchmark-private)"},
+    )
 if DECODER_NAME not in decoder_registry:
     decoder_registry.register(
         DECODER_NAME,
-        EvaConvMSDecoder,
-        metadata={"description": "EVA ConvDecoderMS (benchmark-private, eva/consep + eva/monusac)"},
+        EvaConvWithImageDecoder,
+        metadata={
+            "description": "EVA ConvDecoderWithImage, the leaderboard's online decoder "
+            "(benchmark-private, eva/consep + eva/monusac)"
+        },
     )
 if HEAD_NAME not in task_registry:
     task_registry.register(HEAD_NAME, EvaSegmentationHead)

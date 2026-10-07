@@ -793,3 +793,55 @@ def test_unpinned_resume_refuses_multiple_compatible_mirrored_runs(tmp_path: Pat
             replace(config, run_id=None, resume=True),
             feature_dir=tmp_path / "dense",
         ).run()
+
+
+def _materialise_tile_images(tmp_path: Path, sample_ids: list[str], *, size: int = TARGET) -> None:
+    """Write a real RGB tile per sample at the mask size and point the manifest at it."""
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    rng = np.random.default_rng(1)
+    for sid in sample_ids:
+        Image.fromarray(rng.integers(0, 255, size=(size, size, 3), dtype=np.uint8)).save(
+            images_dir / f"{sid}.png"
+        )
+    manifest_csv = tmp_path / "manifest.csv"
+    manifest_csv.write_text(
+        manifest_csv.read_text(encoding="utf-8").replace(".jpg,", ".png,").replace(
+            ",s", f",{images_dir}/s"
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_pipeline_runs_an_image_prior_decoder_on_cached_grids(tmp_path: Path):
+    """An image-prior decoder (EVA's online decoder) trains and evaluates through the real
+    cached entry point: the fold attaches each tile's pixels next to its grid."""
+    import soma.benchmarks.eva_segmentation  # registers eva_conv_with_image
+    from soma.pipeline import Pipeline
+
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    _build_dense_run(tmp_path, sample_ids)
+    _materialise_tile_images(tmp_path, sample_ids)
+    config = replace(
+        _seg_pipeline_config(tmp_path), decoder=DecoderConfig(name="eva_conv_with_image")
+    )
+
+    result = Pipeline(config, feature_dir=tmp_path / "dense").run()
+
+    assert "test/mean_dice" in result.summary
+    assert list((tmp_path / "out").rglob("preds/test/s3.png"))
+
+
+def test_pipeline_rejects_an_image_prior_decoder_whose_image_misses_the_mask_size(tmp_path: Path):
+    import soma.benchmarks.eva_segmentation  # registers eva_conv_with_image
+    from soma.pipeline import Pipeline
+
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    _build_dense_run(tmp_path, sample_ids)
+    _materialise_tile_images(tmp_path, sample_ids, size=TARGET + 1)
+    config = replace(
+        _seg_pipeline_config(tmp_path), decoder=DecoderConfig(name="eva_conv_with_image")
+    )
+
+    with pytest.raises(ValueError, match="image-prior decoder needs them aligned"):
+        Pipeline(config, feature_dir=tmp_path / "dense").run()

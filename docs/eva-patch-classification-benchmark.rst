@@ -11,7 +11,7 @@ the shared workflow.
 
 **Pipeline (classification):** labelled patches → frozen encoder → linear head → balanced accuracy
 
-**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid → ``eva_conv_ms`` decoder → foreground mean Dice
+**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid + the tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice
 
 Prepare the data
 ----------------
@@ -47,7 +47,7 @@ The segmentation datasets use the same ``--raw-root`` convention:
    * - Dataset and source
      - Raw-root contents
    * - `CoNSeP <https://github.com/vqdang/hover_net/issues/267>`__ (``consep``)
-     - ``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` (HoVer-Net layout; the official link is dead, the issue holds a mirror)
+     - ``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` (HoVer-Net layout; the official Warwick download is login-walled and the linked issue tracks that, so use a public mirror such as the Kaggle ``consep`` dataset)
    * - `MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)
      - ``MoNuSAC_images_and_annotations/`` and ``MoNuSAC Testing Data and Annotations/`` (one ``.tif`` + ``.xml`` per image; CC BY-NC-SA 4.0)
 
@@ -171,11 +171,11 @@ split, which is soma's ``test`` split (``tune_is_test``).
    * - samples
      - 224 px tiles and class-index masks materialised by the curator
    * - decoder
-     - ``eva_conv_ms``: nearest ×2 → 3x3 conv (64) → nearest ×2 → 3x3 conv (classes); no normalisation
+     - ``eva_conv_with_image`` (EVA's online ``ConvDecoderWithImage``, the leaderboard decoder): nearest ×2 → 3x3 conv-BN-ReLU (64) → bilinear to the tile size → concat the ImageNet-normalised RGB tile → 2 × 3x3 conv-BN-ReLU (32) → 1x1 conv (classes). ``eva_conv_ms`` (the offline ``ConvDecoderMS``) stays registered for reference
    * - loss
      - pure soft Dice over softmax, background included (``eva_segmentation`` head)
    * - optimizer
-     - AdamW, lr ``0.002``, weight_decay ``0.01``
+     - AdamW, lr ``0.002``, weight_decay ``0.01``, EVA's default ``ConstantLR`` warm-up (lr/3 for the first 5 epochs)
    * - batch size
      - ``64``
    * - budget

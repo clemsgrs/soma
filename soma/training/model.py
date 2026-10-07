@@ -179,10 +179,22 @@ class SegmentationModel(nn.Module):
         self.task_head = task_head
         self.feature_adaptor = feature_adaptor
 
-    def forward(self, X: Tensor) -> SegmentationModelOutput:
+    def forward(self, X: Tensor, image: Tensor | None = None) -> SegmentationModelOutput:
         if self.feature_adaptor is not None:
             X = self.feature_adaptor.forward_grid(X)
-        return SegmentationModelOutput(logits=self.task_head(self.decoder(X)))
+        return SegmentationModelOutput(logits=self.task_head(_decode(self.decoder, X, image)))
+
+
+def _decode(decoder: Decoder, grid: Tensor, image: Tensor | None) -> Tensor:
+    """Run the decoder, handing an image-prior decoder the batch pixels it declared."""
+    if not getattr(decoder, "consumes_image", False):
+        return decoder(grid)
+    if image is None:
+        raise ValueError(
+            f"decoder {type(decoder).__name__} sets consumes_image but the batch carries no "
+            "'image' target; the segmentation datasets attach it when the decoder asks."
+        )
+    return decoder(grid, image)
 
 
 class LiveSegmentationModel(nn.Module):
@@ -260,11 +272,13 @@ class LiveSegmentationModel(nn.Module):
         """
         return self.kit.encode(X).float()  # mirror persisted dense feature dtype at the decoder
 
-    def forward_from_grid(self, grid: Tensor) -> SegmentationModelOutput:
+    def forward_from_grid(
+        self, grid: Tensor, image: Tensor | None = None
+    ) -> SegmentationModelOutput:
         """Decoder + head on a precomputed dense grid — the trainable half of the forward."""
         if self.feature_adaptor is not None:
             grid = self.feature_adaptor.forward_grid(grid)
-        return SegmentationModelOutput(logits=self.task_head(self.decoder(grid)))
+        return SegmentationModelOutput(logits=self.task_head(_decode(self.decoder, grid, image)))
 
-    def forward(self, X: Tensor) -> SegmentationModelOutput:
-        return self.forward_from_grid(self.encode(X))
+    def forward(self, X: Tensor, image: Tensor | None = None) -> SegmentationModelOutput:
+        return self.forward_from_grid(self.encode(X), image)
