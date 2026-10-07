@@ -191,6 +191,7 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      contrast: 0.0
      saturation: 0.0
      hue: 0.0
+     random_resized_crop_scale: null  # [min, max] area fraction, e.g. [0.08, 1.0]; crops to the tile size first
 
    normalization:
      method: none  # none | zscore | l2 | layernorm

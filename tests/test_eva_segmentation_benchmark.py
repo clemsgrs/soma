@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
 from soma.benchmarks import eva_segmentation as seg
 from soma.benchmarks.eva import EvaTileClassificationBenchmark
+from soma.config import AugmentationConfig
 from soma.curation.manifest import CuratedManifest
 from soma.decoders.registry import decoder_registry
 from soma.dense import compute_dense_geometry
@@ -105,6 +106,9 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert training.seed == 3
     assert config.encoder.output_variant is None
     assert config.tags == ["eva", "consep", "uni2", "segmentation"]
+    # CoNSeP's online transforms are deterministic: the cached grids are EVA's samples.
+    assert config.feature_mode == "cached"
+    assert not config.augmentation.is_enabled()
 
 
 def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
@@ -114,6 +118,17 @@ def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
     assert config.task.params == {"num_classes": 5, "ignore_index": 5}
     assert config.training.patience == 100
     assert config.encoder.name == "uni2"  # DEFAULT_ENCODER shared with the family
+
+
+def test_monusac_config_random_resized_crops_whole_train_images_live(tmp_path: Path):
+    """EVA's online MoNuSAC config trains on torchvision ``RandomResizedCrop(224)``
+    (default scale (0.08, 1.0)) drawn every step, so the run re-encodes live."""
+    config = get_benchmark("eva/monusac").build_config(
+        dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
+    )
+    assert config.feature_mode == "live"
+    assert config.augmentation.random_resized_crop_scale == (0.08, 1.0)
+    assert config.augmentation == AugmentationConfig(random_resized_crop_scale=(0.08, 1.0))
 
 
 def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):

@@ -560,7 +560,11 @@ def _make_live_loaders(
     from soma.dense.augment import build_segmentation_augmentation
 
     loader_kwargs = _loader_kwargs(training)
-    train_augment = build_segmentation_augmentation(source.augmentation, ignore_index=ignore_index)
+    train_augment = build_segmentation_augmentation(
+        source.augmentation,
+        ignore_index=ignore_index,
+        target_size=source.geometry.target_size,
+    )
 
     def _make(records: list[SampleRecord], augment) -> LiveSegmentationDataset:
         return LiveSegmentationDataset(

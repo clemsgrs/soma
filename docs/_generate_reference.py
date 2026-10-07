@@ -539,17 +539,36 @@ def build_eva_benchmark_rst() -> str:
     seg_list = " and ".join(seg_names)
     seg_head = seg_family[0]
     seg_protocol_rows = [
-        ("samples", "224 px tiles and class-index masks materialised by the curator"),
+        (
+            "samples",
+            "224 px tiles and class-index masks materialised by the curator "
+            "(MoNuSAC train: whole images)",
+        ),
+        (
+            "features",
+            "CoNSeP: cached dense grids. MoNuSAC: re-encoded every step "
+            "(``feature_mode: live``) because its train crops are random",
+        ),
+        (
+            "augmentation",
+            "MoNuSAC train only: ``random_resized_crop_scale: [0.08, 1.0]`` "
+            "(torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none",
+        ),
         (
             "decoder",
-            "``eva_conv_ms``: nearest ×2 → 3x3 conv (64) → nearest ×2 → 3x3 conv (classes); "
-            "no normalisation",
+            "``eva_conv_with_image`` (EVA's online ``ConvDecoderWithImage``, the leaderboard "
+            "decoder): nearest ×2 → 3x3 conv-BN-ReLU (64) → bilinear to the tile size → "
+            "concat the ImageNet-normalised RGB tile → 2 × 3x3 conv-BN-ReLU (32) → 1x1 conv "
+            "(classes). ``eva_conv_ms`` (the offline ``ConvDecoderMS``) stays registered for "
+            "reference",
         ),
         ("loss", "pure soft Dice over softmax, background included (``eva_segmentation`` head)"),
         (
             "optimizer",
             f"AdamW, lr ``{eva_seg_bench.LEARNING_RATE:g}``, "
-            f"weight_decay ``{eva_seg_bench.WEIGHT_DECAY:g}``",
+            f"weight_decay ``{eva_seg_bench.WEIGHT_DECAY:g}``, EVA's default ``ConstantLR`` "
+            f"warm-up (lr/{round(1 / eva_seg_bench.WARMUP_FACTOR)} for the first "
+            f"{eva_seg_bench.WARMUP_EPOCHS} epochs)",
         ),
         ("batch size", f"``{eva_seg_bench.BATCH_SIZE}``"),
         ("budget", f"fixed step budget: ``max_steps={eva_seg_bench.MAX_STEPS}`` optimizer updates"),
@@ -566,7 +585,8 @@ def build_eva_benchmark_rst() -> str:
         (
             "`CoNSeP <https://github.com/vqdang/hover_net/issues/267>`__ (``consep``)",
             "``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` "
-            "(HoVer-Net layout; the official link is dead, the issue holds a mirror)",
+            "(HoVer-Net layout; the official Warwick download is login-walled and the linked "
+            "issue tracks that, so use a public mirror such as the Kaggle ``consep`` dataset)",
         ),
         (
             "`MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)",
@@ -589,8 +609,8 @@ def build_eva_benchmark_rst() -> str:
         "the shared workflow.\n\n"
         "**Pipeline (classification):** labelled patches → frozen encoder → linear head → "
         "balanced accuracy\n\n"
-        "**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid → "
-        "``eva_conv_ms`` decoder → foreground mean Dice",
+        "**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid + the "
+        "tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice",
         "Prepare the data\n----------------\n\n"
         "Download one EVA dataset from its official\n"
         "source and unpack it in the directory you will pass as ``--raw-root``:\n\n"
@@ -617,8 +637,10 @@ def build_eva_benchmark_rst() -> str:
         + _kv_table("Setting", "Value", protocol_rows),
         "Segmentation protocol\n---------------------\n\n"
         "The curators reproduce EVA's sample geometry: CoNSeP is cut into 250 px grid\n"
-        "tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px;\n"
-        "a MoNuSAC image is resized on its short side to 224 px and centre-cropped. CoNSeP\n"
+        "tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px.\n"
+        "MoNuSAC test images are resized on their short side to 224 px and centre-cropped;\n"
+        "MoNuSAC train images are kept whole, and each training step draws a new random\n"
+        "resized 224 px crop from them, as EVA's online config does. CoNSeP\n"
         "merges HoVer-Net's seven nucleus types into background, other, inflammatory,\n"
         "epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is\n"
         "excluded from the loss and the metric. Both datasets report on EVA's validation\n"

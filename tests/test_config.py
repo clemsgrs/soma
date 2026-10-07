@@ -1762,6 +1762,38 @@ def test_augmentation_rejects_out_of_range():
         AugmentationConfig(hue=0.9)
 
 
+def test_augmentation_random_resized_crop_scale_enables_and_coerces():
+    from soma.config import AugmentationConfig
+
+    assert AugmentationConfig().random_resized_crop_scale is None
+    config = AugmentationConfig(random_resized_crop_scale=[0.08, 1.0])
+    assert config.random_resized_crop_scale == (0.08, 1.0)
+    assert config.is_enabled()
+
+
+@pytest.mark.parametrize("scale", [(0.0, 1.0), (0.5, 0.4), (0.5, 1.5), (0.5,), (0.1, 0.5, 1.0)])
+def test_augmentation_rejects_malformed_random_resized_crop_scale(scale):
+    from soma.config import AugmentationConfig
+
+    with pytest.raises(ValueError, match="random_resized_crop_scale"):
+        AugmentationConfig(random_resized_crop_scale=scale)
+
+
+def test_random_resized_crop_scale_roundtrips(tmp_path: Path):
+    from soma.config import AugmentationConfig
+
+    config = PipelineConfig(
+        **_seg_kwargs(
+            encoder=EncoderConfig(name="uni2"),
+            feature_mode="live",
+            augmentation=AugmentationConfig(random_resized_crop_scale=(0.08, 1.0)),
+        )
+    )
+    path = tmp_path / "config.yaml"
+    save_config(config, path)
+    assert load_config(path).augmentation == config.augmentation
+
+
 # --- Helpers ---
 
 

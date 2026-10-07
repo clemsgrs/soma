@@ -720,3 +720,53 @@ def test_build_live_source_forwards_output_variant_and_attention_recipe(tmp_path
     assert calls["execution"].precision == "fp32"
     assert source.kit is kit
     assert source.feature_dim == 6
+
+
+def test_random_resized_crop_maps_any_image_and_mask_to_the_target_size():
+    from torchvision import tv_tensors
+
+    from soma.dense.augment import build_segmentation_augmentation
+
+    augment = build_segmentation_augmentation(
+        AugmentationConfig(random_resized_crop_scale=(0.08, 1.0)),
+        ignore_index=255,
+        target_size=(TARGET, TARGET),
+    )
+    torch.manual_seed(0)
+    image = tv_tensors.Image(torch.randint(0, 256, (3, 50, 70), dtype=torch.uint8))
+    mask = tv_tensors.Mask(torch.randint(0, NUM_CLASSES, (50, 70), dtype=torch.int64))
+    for _ in range(5):
+        out_image, out_mask = augment(image, mask)
+        assert tuple(out_image.shape) == (3, TARGET, TARGET)
+        assert out_image.dtype == torch.uint8
+        assert tuple(out_mask.shape) == (TARGET, TARGET)
+        # Nearest-neighbour on the mask: only the source labels survive.
+        assert set(torch.unique(out_mask).tolist()) <= set(range(NUM_CLASSES))
+
+
+def test_live_fold_random_resized_crops_whole_train_images(tmp_path: Path):
+    """Train images of any size are cropped to target_size; tune/test stay deterministic."""
+    sample_ids = ["s0", "s1", "s2", "s3"]
+    manifest, splits = _build_run(tmp_path, sample_ids)
+    rng = np.random.default_rng(1)
+    for sid, (h, w) in {"s0": (48, 80), "s1": (64, 40)}.items():
+        Image.fromarray((rng.random((h, w, 3)) * 255).astype(np.uint8)).save(
+            tmp_path / "images" / f"{sid}.png"
+        )
+        Image.fromarray(
+            rng.integers(0, NUM_CLASSES, size=(h, w), dtype=np.uint8), mode="L"
+        ).save(tmp_path / "masks" / f"{sid}.png")
+    source = _live_source(
+        _encoder(), augmentation=AugmentationConfig(random_resized_crop_scale=(0.08, 1.0))
+    )
+    result = train_one_segmentation_fold(
+        feature_store=source,
+        dataset=manifest,
+        fold_split=splits.folds[0],
+        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
+        training=TrainingConfig(epochs=2, batch_size=2),
+        fold_dir=tmp_path / "fold",
+        decoder=DecoderConfig(name="lightweight_conv"),
+        evaluation=EvalConfig(metrics=["mean_dice"]),
+    )
+    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0

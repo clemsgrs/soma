@@ -6,8 +6,12 @@ pathology leaderboard join the ``eva`` family next to the tile-classification me
 ``soma reproduce eva`` fan-out, and run on soma's dense (``dataset_type="segmentation"``)
 path with components that exist only to reproduce EVA's decoder protocol:
 
-* ``eva_conv_ms`` — EVA's ``ConvDecoderMS``: ``Upsample(x2) -> Conv3x3(in, 64) ->
-  Upsample(x2) -> Conv3x3(64, classes)``, no normalisation, no activation.
+* ``eva_conv_with_image`` — EVA's online ``ConvDecoderWithImage``, the leaderboard
+  decoder: it concatenates the ImageNet-normalised input tile to the upsampled grid, so
+  it rides soma's image-prior decoder seam (``Decoder.consumes_image``).
+* ``eva_conv_ms`` — EVA's offline ``ConvDecoderMS``: ``Upsample(x2) -> Conv3x3(in, 64)
+  -> Upsample(x2) -> Conv3x3(64, classes)``, no normalisation, no activation. Kept for
+  reference; EVA publishes no numbers for it.
 * ``eva_segmentation`` — a :class:`~soma.tasks.segmentation.SegmentationHead` whose loss is
   EVA's pure soft Dice (MONAI ``DiceLoss(softmax=True, batch=True)``, background included,
   no cross-entropy term) and whose confusion counts follow EVA's metric wrapper.
@@ -16,12 +20,16 @@ Both are registered under ``eva_`` names when this module is imported (``soma li
 / ``soma list decoders`` show them) but are benchmark-private: they are not general soma
 components and are not documented as such.
 
-Protocol points that matter for matching the leaderboard (offline segmentation configs
-``configs/vision/pathology/offline/segmentation/{consep,monusac}.yaml``):
+Protocol points that matter for matching the leaderboard (online segmentation configs
+``configs/vision/pathology/online/segmentation/{consep,monusac}.yaml``, which EVA's
+``replicate_evaluations`` guide prescribes for segmentation):
 
 * The curators (:mod:`soma.curation.eva_segmentation`) materialise EVA's geometry: CoNSeP
-  250 px grid tiles at native 0.25 µm/px resized to 224, MoNuSAC whole images resized on
-  the short side to 224 and centre-cropped. soma trains on the flat 224 px PNGs.
+  250 px grid tiles at native 0.25 µm/px resized to 224 (deterministic, so the run reads
+  cached grids), MoNuSAC test images resized on the short side to 224 and centre-cropped.
+  MoNuSAC train images stay whole: EVA draws a ``RandomResizedCrop(224)`` from them every
+  step, so that run re-encodes live (``feature_mode='live'``) with
+  ``augmentation.random_resized_crop_scale=(0.08, 1.0)``.
 * Dense features are the last block's patch-token grid taken **before** the backbone's
   final LayerNorm (timm ``features_only`` with ``norm=False``): slide2vec's
   ``patch_features_prenorm`` feature kind.
@@ -64,6 +72,7 @@ from soma.benchmarks.registry import (
     score_from_summary,
 )
 from soma.config import (
+    AugmentationConfig,
     CacheConfig,
     DecoderConfig,
     EncoderConfig,
@@ -89,7 +98,7 @@ from soma.tasks.dense_metrics import _validate_dense_shapes
 from soma.tasks.registry import task_registry
 from soma.tasks.segmentation import SegmentationHead
 
-# --- Protocol constants (eva offline segmentation configs) ----------------------------
+# --- Protocol constants (eva online segmentation configs) -----------------------------
 MAX_STEPS = 2000
 BATCH_SIZE = 64
 LEARNING_RATE = 2.0e-3
@@ -315,12 +324,19 @@ class SegmentationDatasetSpec:
     class_names: tuple[str, ...]  # decoder classes, background first
     patience: int  # eva's per-dataset EarlyStopping patience (validation rounds)
     ignore_index: int | None  # mask value excluded from the loss (MoNuSAC's Ambiguous)
+    #: eva's online train ``RandomResizedCrop`` area scale; ``None`` = deterministic
+    #: transforms, so the cached grids are eva's samples.
+    train_crop_scale: tuple[float, float] | None = None
 
 
 DATASETS: dict[str, SegmentationDatasetSpec] = {
     "consep": SegmentationDatasetSpec(CONSEP_CLASSES, 200, None),
     # The decoder predicts five classes; Ambiguous (5) exists only in the test masks.
-    "monusac": SegmentationDatasetSpec(MONUSAC_CLASSES[:MONUSAC_IGNORE_INDEX], 100, MONUSAC_IGNORE_INDEX),
+    # Online MoNuSAC trains on ``RandomResizedCrop(224)`` (torchvision's default scale) of
+    # the whole image every step, so the run re-encodes live.
+    "monusac": SegmentationDatasetSpec(
+        MONUSAC_CLASSES[:MONUSAC_IGNORE_INDEX], 100, MONUSAC_IGNORE_INDEX, (0.08, 1.0)
+    ),
 }
 
 
@@ -362,11 +378,14 @@ def _build_eva_segmentation_config(
     if spec.ignore_index is not None:
         task_params["ignore_index"] = spec.ignore_index
 
+    live = spec.train_crop_scale is not None
     return PipelineConfig(
         dataset_csv=str(dataset_csv),
         splits_csv=str(splits_csv),
         output_root=Path(output_root),
         dataset_type="segmentation",
+        feature_mode="live" if live else "cached",
+        augmentation=AugmentationConfig(random_resized_crop_scale=spec.train_crop_scale),
         execution=execution or ExecutionConfig(),
         cache=cache or CacheConfig(enabled=True),
         # The curated PNGs declare NOMINAL_SPACING_UM; requesting the same value reads
