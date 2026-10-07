@@ -146,3 +146,49 @@ def test_annotation_masks_cannot_reselect_supplied_tiles(tmp_path: Path):
     masks = MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5})
     with pytest.raises(ValueError, match="cannot be combined with preprocessing.masks"):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing(masks=masks))
+
+
+def test_unsigned_legacy_cache_is_not_adopted_for_supplied_coordinates(tmp_path: Path):
+    """A cache that predates per-sample signatures cannot prove which tiles it holds."""
+    import json
+
+    import torch
+
+    from soma.cache import resolve_tile_cache
+    from soma.config import EncoderConfig
+
+    paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
+    manifest = _manifest(tmp_path, paths)
+    soma_tiled = pd.read_csv(manifest).drop(columns="coordinates_path")
+    soma_tiled.to_csv(tmp_path / "soma_tiled.csv", index=False)
+
+    def resolve(dataset):
+        return resolve_tile_cache(
+            cache_root=tmp_path / "cache",
+            dataset=dataset,
+            tile_encoder_name="virchow",
+            preprocessing=_preprocessing(),
+            execution=EncoderConfig(name="virchow", precision="fp16"),
+        )
+
+    legacy = resolve(Dataset(tmp_path / "soma_tiled.csv"))
+    metadata = json.loads(legacy.metadata_path.read_text())
+    metadata.pop("sample_identity_signature_by_id", None)
+    metadata["feature_dim"] = 16
+    legacy.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    torch.save(torch.randn(4, 16), legacy.feature_path_for_id("a"))
+
+    supplied = resolve(Dataset(manifest))
+    assert supplied.missing_sample_ids() == ["a", "b"]
+
+
+def test_tissue_mask_value_guard_does_not_apply_to_supplied_coordinates(tmp_path: Path):
+    """The tiler that guard protects never runs: supplied tiles are not mask-sampled."""
+    from soma.slide2vec_adapter import ensure_supported_mask_value
+
+    path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
+    manifest = _manifest(tmp_path, {"a": path})
+    frame = pd.read_csv(manifest)
+    frame["mask_path"] = str(tmp_path / "a_mask.tif")
+    frame.to_csv(manifest, index=False)
+    ensure_supported_mask_value(Dataset(manifest), _preprocessing(tissue_mask_tissue_value=255))

@@ -378,6 +378,10 @@ def _backfill_feature_cache_identity_metadata(
 ) -> dict[str, Any]:
     if not _manifest_matches_dataset(metadata_path.parent / MANIFEST_NAME, dataset):
         return metadata
+    if any(sample.coordinates_path is not None for sample in dataset.samples.values()):
+        # The manifest records no tile set, so nothing proves an unsigned cache's
+        # features came from the supplied coordinates.
+        return metadata
 
     signature_map = {
         str(cache_id): str(signature)
