@@ -13,3 +13,5 @@ breakhis,uni2,test/balanced_accuracy,0.855133503843,0.00713001524327,5,2026-08-3
 breakhis,virchow2,test/balanced_accuracy,0.812221377913,0.00849989861585,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
 gleason_arvaniti,uni2,test/balanced_accuracy,0.77886752902,0.00494223989809,5,2026-08-31,3330c1d,5.8.2,soma reproduce --record
 gleason_arvaniti,virchow2,test/balanced_accuracy,0.777876078535,0.0101208062815,5,2026-09-01,3330c1d,5.8.2,soma reproduce --record
+mhist,uni2,test/balanced_accuracy,0.824360705925,0.00324312462903,5,2026-10-08,4d58e6f,6.3.4,soma reproduce --record
+mhist,virchow2,test/balanced_accuracy,0.861141725194,0.00115072352295,5,2026-10-08,4d58e6f,6.3.4,soma reproduce --record
