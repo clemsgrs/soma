@@ -1262,6 +1262,13 @@ class TrainingConfig:
     # or ``None`` to disable early stopping and always train the full ``epochs`` budget.
     # ``checkpoint_selection='last'`` *requires* ``None``.
     patience: int | None = 10
+    # Hold the early stop while the monitor still equals its first tune evaluation, so a
+    # thresholded metric sitting at its floor during warm-up cannot end a run before it
+    # produces any signal (patience still counts those evaluations; a monitor that never
+    # moves trains to the budget). ``False`` gives Lightning's plain
+    # ``EarlyStopping(min_delta=0)``: stop after ``patience`` non-improving evaluations
+    # whatever the monitor did, keeping the first epoch on an initial plateau.
+    hold_patience_until_monitor_moves: bool = True
     # Evaluate the tune split after every N-th epoch (epochs N, 2N, ...) and after the
     # final epoch of the budget. Checkpoint selection and early stopping see only
     # evaluated epochs, so ``patience`` spans ``patience * N`` epochs. Requires
@@ -1362,6 +1369,8 @@ class TrainingConfig:
             )
         if self.gradient_accumulation < 1:
             raise ValueError("TrainingConfig.gradient_accumulation must be >= 1")
+        if not isinstance(self.hold_patience_until_monitor_moves, bool):
+            raise ValueError("TrainingConfig.hold_patience_until_monitor_moves must be a boolean")
         if self.patience is not None and self.patience < 1:
             raise ValueError("TrainingConfig.patience must be >= 1 (or null to disable)")
         if not self.monitor:

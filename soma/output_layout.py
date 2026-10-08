@@ -52,8 +52,9 @@ def _stable_json(payload: dict[str, Any]) -> str:
 
 #: Bump when the canonical payload changes shape. Recorded on every run and
 #: experiment manifest so ids minted under different rules are never compared as equal.
-#: v5 added ``augmentation.random_resized_crop_scale`` to the augmentation block.
-IDENTITY_VERSION = 5
+#: v5 added ``augmentation.random_resized_crop_scale`` to the augmentation block; v6 added
+#: ``training.hold_patience_until_monitor_moves``.
+IDENTITY_VERSION = 6
 
 # Loader plumbing: changes throughput, never the trained model or its evaluation.
 _TRAINING_IDENTITY_EXCLUDED = ("seed", "num_workers", "pin_memory", "persistent_workers")

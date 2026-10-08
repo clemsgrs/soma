@@ -31,7 +31,9 @@ Protocol points that matter for matching the leaderboard:
   EVA's default ``ConstantLR`` warm-up (lr/3 for the first five epochs), batch size 32
   (bags padded and masked, shuffled, last batch kept), 100 epochs (EVA's leaderboard
   quotes a 12,500-step cap that these configs never reach), early-stopping patience 20
-  validation rounds, best checkpoint on the validation balanced accuracy, 20 seeds.
+  validation rounds counted as Lightning's ``EarlyStopping(min_delta=0)`` does (an initial
+  plateau counts, ``hold_patience_until_monitor_moves=False``), best checkpoint on the
+  validation balanced accuracy, 20 seeds.
 * Both datasets have a real validation split (soma ``tune``) and test split, so the run
   reports on soma's ``test`` split (``tune_is_test=False``): the leaderboard numbers are
   test balanced accuracy.
@@ -390,6 +392,9 @@ def _build_eva_slide_config(
             lr_warmup_epochs=WARMUP_EPOCHS,
             lr_warmup_factor=WARMUP_FACTOR,
             patience=PATIENCE if patience is None else patience,
+            # EVA's Lightning EarlyStopping(min_delta=0) counts an initial plateau too:
+            # it stops at patience and keeps the first epoch.
+            hold_patience_until_monitor_moves=False,
             monitor="balanced_accuracy",
             monitor_mode="max",
             batch_size=BATCH_SIZE,

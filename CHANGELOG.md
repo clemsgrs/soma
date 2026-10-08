@@ -17,6 +17,12 @@
   uni2 / virchow2) and 0.657 / 0.646 (PANDASmall). The aggregator registry now
   imports `soma.benchmarks` on a missed lookup, as the task and decoder registries
   do, so a saved config naming `eva_abmil` loads in a fresh process.
+  A new `training.hold_patience_until_monitor_moves` setting (default `true`, the
+  current behaviour) can turn off the hold on early stopping while the monitor sits
+  at its first value. Both benchmarks set it to `false`, so patience counts as in
+  EVA's Lightning `EarlyStopping`: a validation balanced accuracy flat at its first
+  value for 20 more epochs stops the run and keeps the first epoch. The new field
+  joins the experiment identity, now v6, so existing runs get new experiment ids.
 
 - 2026-10-08: `soma reproduce` now frees each seed's pipeline before it starts
   the next seed. A live segmentation run keeps its frozen encoder in a reference

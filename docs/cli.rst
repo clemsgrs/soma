@@ -168,6 +168,8 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      scheduler: cosine
      checkpoint_selection: best
      patience: 10
+     # Hold the early stop while the monitor sits at its first value; false = plain patience.
+     hold_patience_until_monitor_moves: true
      monitor: tune_loss
      monitor_mode: min
      batch_size: 1

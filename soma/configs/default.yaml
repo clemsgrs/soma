@@ -110,6 +110,8 @@ training:
   # Early-stopping patience in epochs; null disables early stopping (required by
   # checkpoint_selection: last).
   patience: 10
+  # Hold the early stop while the monitor sits at its first value; false = plain patience.
+  hold_patience_until_monitor_moves: true
   monitor: tune_loss
   monitor_mode: min
   batch_size: 1

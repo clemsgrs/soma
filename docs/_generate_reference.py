@@ -637,7 +637,9 @@ def build_eva_benchmark_rst() -> str:
         (
             "budget",
             f"``{eva_slide_bench.EPOCHS}`` epochs, early-stopping patience "
-            f"``{eva_slide_bench.PATIENCE}``, best checkpoint on the validation balanced accuracy",
+            f"``{eva_slide_bench.PATIENCE}`` counted as Lightning's ``EarlyStopping`` does "
+            "(an initial plateau counts too, ``hold_patience_until_monitor_moves: false``), "
+            "best checkpoint on the validation balanced accuracy",
         ),
         ("splits", "EVA's validation split is soma ``tune``; the reported split is ``test``"),
         ("metric", "``balanced_accuracy``"),

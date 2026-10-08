@@ -272,7 +272,7 @@ EVA's stratified split by ISUP grade: 952 / 475 / 475 slides for train / tune / 
    * - batch size
      - ``32`` bags, padded and masked, shuffled, last batch kept
    * - budget
-     - ``100`` epochs, early-stopping patience ``20``, best checkpoint on the validation balanced accuracy
+     - ``100`` epochs, early-stopping patience ``20`` counted as Lightning's ``EarlyStopping`` does (an initial plateau counts too, ``hold_patience_until_monitor_moves: false``), best checkpoint on the validation balanced accuracy
    * - splits
      - EVA's validation split is soma ``tune``; the reported split is ``test``
    * - metric

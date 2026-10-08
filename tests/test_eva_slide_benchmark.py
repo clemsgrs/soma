@@ -104,6 +104,8 @@ def test_config_transcribes_the_eva_offline_protocol(dataset, target_mpp, head, 
     assert training.lr_warmup_epochs == 5
     assert training.lr_warmup_factor == pytest.approx(1 / 3)
     assert training.patience == 20
+    # EVA's Lightning EarlyStopping: plain patience, no hold on an initial plateau.
+    assert training.hold_patience_until_monitor_moves is False
     assert (training.monitor, training.monitor_mode) == ("balanced_accuracy", "max")
     assert training.batch_size == 32
     assert training.tune_is_test is False
