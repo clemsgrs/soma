@@ -151,11 +151,31 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - 0.861 ± 0.001
      - 0.861
 
-No foreground mean Dice cells have been recorded yet. Run, for example::
+Recorded foreground mean Dice scores alongside the packaged EVA references.
 
-    soma reproduce eva/consep --encoder virchow2 --raw-root /path/to/eva/consep --record
+.. list-table::
+   :header-rows: 1
 
-to record a soma score next to the published EVA reference.
+   * - Dataset
+     - Encoder
+     - soma (mean ± std)
+     - EVA reference
+   * - consep
+     - uni2
+     - 0.630 ± 0.003
+     - 0.630
+   * - consep
+     - virchow2
+     - 0.642 ± 0.001
+     - 0.640
+   * - monusac
+     - uni2
+     - 0.642 ± 0.004
+     - 0.642
+   * - monusac
+     - virchow2
+     - 0.673 ± 0.002
+     - 0.669
 
 See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
 
