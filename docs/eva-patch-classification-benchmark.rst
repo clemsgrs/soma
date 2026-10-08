@@ -116,6 +116,14 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - virchow2
      - 0.778 ± 0.010
      - 0.783
+   * - mhist
+     - uni2
+     - 0.824 ± 0.003
+     - 0.824
+   * - mhist
+     - virchow2
+     - 0.861 ± 0.001
+     - 0.861
 
 No foreground mean Dice cells have been recorded yet. Run, for example::
 
