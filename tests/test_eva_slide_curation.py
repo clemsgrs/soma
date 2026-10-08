@@ -328,7 +328,7 @@ def test_camelyon16_small_curator_writes_eva_tiles_and_a_slide_manifest(tmp_path
         assert sorted(zip(result.x.tolist(), result.y.tolist())) == sorted(map(tuple, reference.x_y))
         assert (result.read_level, result.read_tile_size_px) == (reference.level_idx, reference.width)
         assert result.requested_tile_size_px == 224 and result.requested_spacing_um == 0.25
-        assert row.spacing_at_level_0 == reference_mpp(Path(row.image_path))
+        assert row.spacing_at_level_0 == pytest.approx(reference_mpp(Path(row.image_path)), rel=1e-12)
         assert result.spacing_at_level_0 == row.spacing_at_level_0
         assert row.num_tiles == len(reference.x_y)
 
@@ -384,3 +384,36 @@ def test_curation_is_byte_identical_on_rerun(tmp_path):
     before = {p: p.read_bytes() for p in (first.dataset_csv, first.splits_csv, first.summary_json)}
     again = eva_slide.curate_camelyon16_small(raw, tmp_path / "a", workers=3)
     assert {p: p.read_bytes() for p in (again.dataset_csv, again.splits_csv, again.summary_json)} == before
+
+
+#: Native spacings of real slides that pandas' default CSV parser does not read back
+#: exactly (Camelyon16 normal_001, a PANDA slide).
+UNSTABLE_SPACINGS = [0.24309399999999998, 0.45201826153776614]
+
+
+@pytest.mark.parametrize("mpp", UNSTABLE_SPACINGS)
+def test_curated_spacing_survives_the_manifest_round_trip(tmp_path, monkeypatch, mpp):
+    """The manifest and the artifacts must declare the same spacing after ``Dataset`` reads it.
+
+    soma's staging compares the two exactly, and ``Dataset`` parses the manifest with
+    pandas' default (not round-trip exact) float parser.
+    """
+    raw = write_fake_camelyon16(tmp_path / "raw")
+    monkeypatch.setattr(eva_slide, "eva_slide_mpp", lambda properties: mpp)
+    manifest = eva_slide.curate_camelyon16_small(raw, tmp_path / "curated", workers=1)
+    staged = _stage(manifest, 0.25, tmp_path)
+    record = next(iter(staged.samples.values()))
+    assert record.spacing_at_level_0 == pytest.approx(mpp, rel=1e-12)
+    # The tiles are still EVA's, sampled at EVA's exact spacing.
+    assert eva_slide_artifact(str(record.coordinates_path)).tile_size_lv0 == int(0.25 / mpp * 224)
+
+
+def test_manifest_spacing_is_a_fixed_point_of_the_csv_round_trip():
+    import io
+
+    rng = np.random.default_rng(0)
+    for value in [*UNSTABLE_SPACINGS, *rng.uniform(0.1, 1.0, 2000).tolist()]:
+        declared = eva_slide.manifest_spacing(value)
+        assert declared == pytest.approx(value, rel=1e-12)
+        text = pd.DataFrame({"spacing_at_level_0": [declared]}).to_csv(index=False)
+        assert pd.read_csv(io.StringIO(text))["spacing_at_level_0"].iloc[0] == declared

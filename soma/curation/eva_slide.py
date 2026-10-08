@@ -12,7 +12,8 @@ Tile selection ports EVA's ``PatchCoordinates.from_file`` with a
 * **Spacing.** EVA's openslide rule: the mean of ``openslide.mpp-x`` and
   ``openslide.mpp-y``, else the TIFF resolution tags (:func:`eva_slide_mpp`). It is
   written as the manifest's ``spacing_at_level_0`` and into each artifact, so soma and
-  slide2vec use EVA's value, not hs2p's own spacing resolution.
+  slide2vec use EVA's value, not hs2p's own spacing resolution (to the last few units
+  in the last place: see :func:`manifest_spacing`).
 * **Grid.** Level 0, no overlap, cell side ``int(target_mpp / mpp * 224)``. Cells are
   listed x-outer / y-inner and their indices shuffled with ``np.random.default_rng(42)``.
 * **Foreground.** HSV saturation above 20 (no blur, no hole filling) at the coarsest
@@ -149,6 +150,28 @@ def eva_slide_mpp(properties: Mapping[str, str]) -> float:
     else:
         raise ValueError("`mpp` cannot be obtained for this slide.")
     return (x_mpp + y_mpp) / 2.0
+
+
+def manifest_spacing(mpp: float) -> float:
+    """The value of ``mpp`` that the slide manifest declares, unchanged by its CSV round trip.
+
+    ``write_manifest`` writes floats exactly, but ``Dataset`` reads the manifest with
+    pandas' default float parser, which is not exact: ``0.24309399999999998`` reads back
+    as ``0.2430939999999999``. soma's staging compares the manifest's
+    ``spacing_at_level_0`` with the artifact's exactly, so both declare the value the
+    parser returns (at most a few units in the last place from EVA's). Tile selection
+    still uses EVA's exact spacing.
+    """
+    import io
+
+    value = float(mpp)
+    for _ in range(8):
+        text = pd.DataFrame({"spacing_at_level_0": [value]}).to_csv(index=False)
+        parsed = float(pd.read_csv(io.StringIO(text))["spacing_at_level_0"].iloc[0])
+        if parsed == value:
+            return value
+        value = parsed
+    raise ValueError(f"No CSV-stable spacing found near {mpp!r}.")
 
 
 def eva_closest_level(mpp: float, level_downsamples: Sequence[float], target_mpp: float) -> int:
@@ -303,14 +326,17 @@ def write_eva_tiling_artifact(
     image_path: str | Path,
     target_mpp: float,
     output_dir: Path,
+    spacing_at_level_0: float | None = None,
     tile_px: int = TILE_PX,
 ) -> Path:
     """Write ``coordinates`` as an hs2p tiling artifact and return its ``.coordinates.npz``.
 
-    The artifact declares EVA's level-0 spacing (``spacing_at_level_0``) and read plan, so
-    slide2vec reads each tile at ``read_level`` with side ``read_tile_size_px`` and
-    resizes it to ``tile_px``.
+    The artifact declares EVA's read plan, so slide2vec reads each tile at ``read_level``
+    with side ``read_tile_size_px`` and resizes it to ``tile_px``. Its level-0 spacing is
+    ``spacing_at_level_0`` (default: EVA's ``coordinates.mpp``), which must equal the
+    manifest's declaration.
     """
+    declared = coordinates.mpp if spacing_at_level_0 is None else float(spacing_at_level_0)
     from hs2p import TileGeometry, TilingResult
     from hs2p.artifacts import save_tiling_result
 
@@ -328,7 +354,7 @@ def write_eva_tiling_artifact(
         read_spacing_um=read_spacing,
         tile_size_lv0=coordinates.tile_size_lv0,
         is_within_tolerance=abs(read_spacing - target_mpp) / target_mpp <= _TOLERANCE,
-        base_spacing_um=coordinates.mpp,
+        base_spacing_um=declared,
         slide_dimensions=list(coordinates.level_dimensions[0]),
         level_downsamples=list(coordinates.level_downsamples),
         overlap=0.0,
@@ -341,7 +367,7 @@ def write_eva_tiling_artifact(
         image_path=Path(image_path),
         backend="openslide",
         requested_backend="openslide",
-        spacing_at_level_0=coordinates.mpp,
+        spacing_at_level_0=declared,
         tolerance=_TOLERANCE,
         step_px_lv0=coordinates.tile_size_lv0,
         tissue_method="eva_saturation",
@@ -493,6 +519,7 @@ def _curate_slides(
             image_path=row.image_path,
             target_mpp=spec.target_mpp,
             output_dir=coordinates_dir,
+            spacing_at_level_0=manifest_spacing(coordinates.mpp),
         )
         return coordinates, path
 
@@ -517,7 +544,7 @@ def _curate_slides(
                 "sample_id": row.sample_id,
                 "image_path": str(row.image_path),
                 "label": row.label,
-                "spacing_at_level_0": coordinates.mpp,
+                "spacing_at_level_0": manifest_spacing(coordinates.mpp),
                 "coordinates_path": str(path),
                 "num_tiles": len(coordinates.x),
                 "read_level": coordinates.read_level,
