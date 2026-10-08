@@ -96,12 +96,13 @@ TASK = "IDC"
 #     (uni2 1536-d; h-optimus-1's only variant is the 1536-d "default" CLS), matching TRIDENT.
 # HEST extracts features via TRIDENT; soma re-extracts natively via slide2vec, so the
 # Measured-minus-Reference delta is the accepted, non-gating slide2vec<->TRIDENT parity gap.
-# TODO(#276): that gap is a median 0.21% relative over the first 9 cells. The LUNG/virchow2
-# gap (-2.90% under the old "cls" pin) is resolved by the variant pin above: the virchow2 rows
-# were re-recorded with "cls_patch_mean" (#508), and LUNG now lands at 0.5692 against HEST's
-# 0.5685. COAD/uni2 (+2.99%) is still open: an independent extraction reproduces soma's
-# 0.3105 exactly, so the gap is deterministic, not extraction noise. Explain it; do not widen
-# a tolerance to hide it (ADR 0005).
+# The LUNG/virchow2 gap (-2.90% under the old "cls" pin) is resolved by the variant pin
+# above: the virchow2 rows were re-recorded with "cls_patch_mean", and LUNG now lands at
+# 0.5692 against HEST's 0.5685. COAD/uni2 (+2.99%, 0.3105 vs 0.3015) is an accepted
+# residual: an independent extraction reproduces 0.3105 exactly, so it is deterministic, not
+# extraction noise; it changes no rank on COAD; and uni2 lands within ~0.1% of HEST on PAAD
+# and LUNG. Revisit it only if a uni2-specific tail shows up on a further task or encoder.
+# Do not widen a tolerance to hide it (ADR 0005).
 DEFAULT_ENCODER = "uni2"
 OUTPUT_VARIANTS: dict[str, str] = {"virchow2": "cls_patch_mean"}
 
