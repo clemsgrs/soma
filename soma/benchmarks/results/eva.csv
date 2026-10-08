@@ -15,3 +15,7 @@ gleason_arvaniti,uni2,test/balanced_accuracy,0.77886752902,0.00494223989809,5,20
 gleason_arvaniti,virchow2,test/balanced_accuracy,0.777876078535,0.0101208062815,5,2026-09-01,3330c1d,5.8.2,soma reproduce --record
 mhist,uni2,test/balanced_accuracy,0.824360705925,0.00324312462903,5,2026-10-08,4d58e6f,6.3.4,soma reproduce --record
 mhist,virchow2,test/balanced_accuracy,0.861141725194,0.00115072352295,5,2026-10-08,4d58e6f,6.3.4,soma reproduce --record
+consep,uni2,test/foreground_mean_dice,0.630372583866,0.00296262087595,5,2026-10-07,5a6f284,6.3.4,soma reproduce --record
+consep,virchow2,test/foreground_mean_dice,0.642353022099,0.00128481641234,5,2026-10-08,5a6f284-dirty,6.3.4,soma reproduce --record
+monusac,uni2,test/foreground_mean_dice,0.642385053635,0.00433774668775,5,2026-10-08,5a6f284-dirty,6.3.4,soma reproduce --record
+monusac,virchow2,test/foreground_mean_dice,0.673100435734,0.00235266445486,5,2026-10-08,5a6f284-dirty,6.3.4,soma reproduce --record
