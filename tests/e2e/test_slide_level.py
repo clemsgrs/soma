@@ -5,12 +5,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from soma.cli import main as soma_main
 
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma, sha256
-from tests.e2e.synthetic import SPACING_UM, SlideCohort, make_slide_cohort
+from soma.features import FeatureStore
+from soma.preprocessing.supplied_coordinates import coordinates_meta_path
+from tests.e2e.synthetic import (
+    SPACING_UM,
+    SlideCohort,
+    make_slide_cohort,
+    write_coordinates_artifact,
+)
 
 TILE_PX = 32
 
@@ -255,4 +264,129 @@ def test_flat_png_slides_render_their_previews(cohort, tmp_path, encoder_name, n
     for kind in ("mask", "tiling"):
         previews = list(tmp_path.glob(f"tiling_cache/*/previews/{kind}/*.jpg"))
         artifact.check_equal(f"previews/{kind}", len(previews), len(cohort.sample_ids))
+    artifact.assert_passed()
+
+
+def _tissue_cells(size: int = 384, tile: int = TILE_PX) -> list[tuple[int, int]]:
+    """Level-0 origins of the grid cells that lie wholly inside the cohort's tissue disc."""
+    centre, radius = size / 2, size * 0.4
+    cells = []
+    for y in range(0, size - tile + 1, tile):
+        for x in range(0, size - tile + 1, tile):
+            corners = [(x, y), (x + tile, y), (x, y + tile), (x + tile, y + tile)]
+            if all((cx - centre) ** 2 + (cy - centre) ** 2 < radius**2 for cx, cy in corners):
+                cells.append((x, y))
+    return cells
+
+
+def _bring_own_coordinates(cohort: SlideCohort, root: Path) -> tuple[Path, dict[str, int]]:
+    """Write one tiling artifact per slide (3 to 8 tissue tiles) and a manifest naming it."""
+    rng = np.random.default_rng(0)
+    cells = _tissue_cells()
+    frame = pd.read_csv(cohort.manifest("binary_classification"))
+    paths, counts = [], {}
+    for index, row in frame.iterrows():
+        count = 3 + index % 6
+        chosen = rng.choice(len(cells), count, replace=False)
+        paths.append(
+            str(
+                write_coordinates_artifact(
+                    root,
+                    sample_id=row["sample_id"],
+                    image_path=Path(row["image_path"]),
+                    x=np.array([cells[i][0] for i in chosen]),
+                    y=np.array([cells[i][1] for i in chosen]),
+                    tile_size_px=TILE_PX,
+                    slide_size=384,
+                )
+            )
+        )
+        counts[row["sample_id"]] = count
+    frame["coordinates_path"] = paths
+    manifest = root / "dataset.csv"
+    frame.to_csv(manifest, index=False)
+    return manifest, counts
+
+
+def test_user_supplied_coordinates_replace_tiling(
+    cohort, tmp_path, encoder_name, encoded_images, new_artifact
+):
+    """A manifest's ``coordinates_path`` tiles each slide with exactly the supplied set.
+
+    No hs2p tiling runs: every slide's bag holds as many tiles as its artifact lists. A
+    second run reuses the feature cache; editing one slide's artifact re-encodes only
+    that slide, because the feature cache identity folds in the artifact's content.
+    """
+    artifact = new_artifact("slide_mil_supplied_coordinates")
+    manifest, counts = _bring_own_coordinates(cohort, tmp_path / "coordinates")
+    config = _config(
+        cohort,
+        tmp_path,
+        encoder_name,
+        task={"name": "binary_classification"},
+        metrics=["auroc"],
+        cache_root=tmp_path / "cache",
+    )
+    config["data"]["dataset_csv"] = str(manifest)
+
+    cold = run_soma(config, tmp_path / "config.yaml")
+    artifact.record_run("cold", cold)
+    artifact.check_training_reduced_loss("cold", cold)
+    artifact.check_at_least("cold/test/auroc", cold.summary["test/auroc"], 0.95)
+    store = FeatureStore(cold.run_dir / "features")
+    bag_sizes = {sid: int(store.load(sid).shape[0]) for sid in counts}
+    artifact.check_equal("cold/bag_sizes", bag_sizes, counts)
+    artifact.check_equal("cold/tiles_encoded", sum(encoded_images), sum(counts.values()))
+    artifact.check_equal(
+        "cold/no_hs2p_tiling", sorted(p.name for p in tmp_path.glob("**/previews/*/*.jpg")), []
+    )
+
+    artifact.check_equal(
+        "cold/no_scratch_left", sorted(p.name for p in tmp_path.glob("cache/tile/*/.slide2vec-*")), []
+    )
+
+    encoded_images.clear()
+    run_soma(config, tmp_path / "config.yaml")
+    artifact.check_equal("warm/tiles_encoded", sum(encoded_images), 0)
+
+    # Drop one tile from one slide's artifact: only that slide is encoded again.
+    edited = pd.read_csv(manifest).iloc[0]
+    original = Path(edited["coordinates_path"])
+    original_meta = coordinates_meta_path(original)
+    backup = {path: path.read_bytes() for path in (original, original_meta)}
+    cells = _tissue_cells()[: counts[edited["sample_id"]] - 1]
+    write_coordinates_artifact(
+        tmp_path / "coordinates",
+        sample_id=edited["sample_id"],
+        image_path=Path(edited["image_path"]),
+        x=np.array([c[0] for c in cells]),
+        y=np.array([c[1] for c in cells]),
+        tile_size_px=TILE_PX,
+        slide_size=384,
+    )
+    encoded_images.clear()
+    edited_run = run_soma(config, tmp_path / "config.yaml")
+    artifact.check_equal("edited/tiles_encoded", sum(encoded_images), len(cells))
+    artifact.check_equal(
+        "edited/bag_size",
+        int(FeatureStore(edited_run.run_dir / "features").load(edited["sample_id"]).shape[0]),
+        len(cells),
+    )
+    # The cold run's features are untouched by the edited tile set, and returning to the
+    # original artifact reuses them without encoding anything.
+    artifact.check_equal(
+        "edited/cold_bag_size",
+        int(store.load(edited["sample_id"]).shape[0]),
+        counts[edited["sample_id"]],
+    )
+    for path, content in backup.items():
+        path.write_bytes(content)
+    encoded_images.clear()
+    restored = run_soma(config, tmp_path / "config.yaml")
+    artifact.check_equal("restored/tiles_encoded", sum(encoded_images), 0)
+    artifact.check_equal(
+        "restored/bag_size",
+        int(FeatureStore(restored.run_dir / "features").load(edited["sample_id"]).shape[0]),
+        counts[edited["sample_id"]],
+    )
     artifact.assert_passed()

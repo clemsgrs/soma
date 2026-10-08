@@ -14,7 +14,7 @@ Dataset format
 
 ``dataset.csv``
   | Required columns: ``sample_id``, ``image_path``, ``label``.
-  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``).
+  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``), ``coordinates_path`` (user-supplied tile coordinates for whole slides; see :ref:`preprocessing-supplied-coordinates`).
   | Additional, unrecognized columns are carried along as per-sample metadata.
 
 Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)
@@ -62,8 +62,8 @@ training experiment. Representation-only runs use their configured evaluation
 split instead. See :doc:`outputs` for the identity and provenance rules.
 
 Dataset checksums exclude only the storage-location columns ``image_path``,
-``mask_path``, ``label_mask_path``, and ``points_path``, so relocating files does
-not change data identity. Split assignments have their own checksum. To make
+``mask_path``, ``label_mask_path``, ``points_path``, and ``coordinates_path``, so
+relocating files does not change data identity. Split assignments have their own checksum. To make
 artifact contents part of identity, add an explicit ``<path_column>_sha256``
 column such as ``image_path_sha256``; soma never opens referenced files to derive
 checksums itself.

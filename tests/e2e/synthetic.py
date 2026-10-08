@@ -340,3 +340,75 @@ def make_dense_dataset(
     splits_csv = root / "splits.csv"
     pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index=False)
     return dataset_csv, splits_csv
+
+
+def write_coordinates_artifact(
+    output_dir: Path,
+    *,
+    sample_id: str,
+    image_path: Path,
+    x: np.ndarray,
+    y: np.ndarray,
+    tile_size_px: int,
+    spacing_um: float = SPACING_UM,
+    slide_size: int,
+    spacing_at_level_0: float | None = None,
+) -> Path:
+    """Hand-write one hs2p tiling artifact (level-0 tile origins) and return its ``.npz``.
+
+    It is what a user who brings their own tile set writes: hs2p's own artifact format,
+    built without running hs2p tiling. Every tile is read at level 0, at the size asked for.
+    """
+    from hs2p import TileGeometry, TilingResult
+    from hs2p.artifacts import save_tiling_result
+
+    n = len(x)
+    tiles = TileGeometry(
+        x=np.asarray(x, dtype=np.int64),
+        y=np.asarray(y, dtype=np.int64),
+        tissue_fractions=np.ones(n, dtype=np.float32),
+        tile_index=np.arange(n, dtype=np.int32),
+        requested_tile_size_px=tile_size_px,
+        requested_spacing_um=spacing_um,
+        read_level=0,
+        read_tile_size_px=tile_size_px,
+        read_spacing_um=spacing_um,
+        tile_size_lv0=tile_size_px,
+        is_within_tolerance=True,
+        base_spacing_um=spacing_um,
+        slide_dimensions=[slide_size, slide_size],
+        level_downsamples=[1.0],
+        overlap=0.0,
+        min_tissue_fraction=0.0,
+    )
+    result = TilingResult(
+        tiles=tiles,
+        sample_id=sample_id,
+        image_path=image_path,
+        backend="openslide",
+        requested_backend="openslide",
+        spacing_at_level_0=spacing_at_level_0,
+        tolerance=0.05,
+        step_px_lv0=tile_size_px,
+        tissue_method="user",
+        requested_seg_downsample=1,
+        seg_downsample=1,
+        seg_level=0,
+        seg_spacing_um=spacing_um,
+        seg_sthresh=0,
+        seg_sthresh_up=255,
+        seg_mthresh=0,
+        seg_close=0,
+        ref_tile_size_px=tile_size_px,
+        a_t=0,
+        a_h=0,
+        filter_white=False,
+        filter_black=False,
+        white_threshold=255,
+        black_threshold=0,
+        fraction_threshold=0.0,
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = save_tiling_result(result, output_dir, tiles_dir=output_dir)
+    assert artifacts.coordinates_npz_path is not None
+    return Path(artifacts.coordinates_npz_path)

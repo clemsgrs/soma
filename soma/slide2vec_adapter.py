@@ -105,6 +105,9 @@ def ensure_supported_mask_value(
         return
     if int(preprocessing.tissue_mask_tissue_value) == 1:
         return
+    # Supplied coordinates skip tiling, so no tissue mask is ever sampled.
+    if dataset.supplies_coordinates:
+        return
     if not any(record.mask_path is not None for record in dataset.samples.values()):
         return
     raise ValueError(
@@ -319,20 +322,24 @@ def load_tilings(
             tiling_result = load_tiling_result_from_row(row)
             requested_backend = str(getattr(tiling_result, "requested_backend", "auto"))
             actual_backend = str(getattr(tiling_result, "backend", requested_backend))
-            validate_tiling_result_provenance(
-                tiling_result,
-                sample_id=record.sample_id,
-                image_path=record.image_path,
-                mask_path=record.mask_path,
-                tissue_mask_tissue_value=(
-                    effective_tissue_value if record.mask_path is not None else None
-                ),
-            )
-            validate_tiling_result_segmentation(
-                tiling_result,
-                requested_seg_downsample=requested_seg_downsample,
-                sample_id=record.sample_id,
-            )
+            # Supplied coordinates were checked against their row when they were staged,
+            # and no tissue segmentation made them: the tissue provenance checks below
+            # would test settings the artifact never used.
+            if record.coordinates_path is None:
+                validate_tiling_result_provenance(
+                    tiling_result,
+                    sample_id=record.sample_id,
+                    image_path=record.image_path,
+                    mask_path=record.mask_path,
+                    tissue_mask_tissue_value=(
+                        effective_tissue_value if record.mask_path is not None else None
+                    ),
+                )
+                validate_tiling_result_segmentation(
+                    tiling_result,
+                    requested_seg_downsample=requested_seg_downsample,
+                    sample_id=record.sample_id,
+                )
             loaded.append(
                 LoadedTiling(
                     slide=to_slide_spec(record),

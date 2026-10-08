@@ -12,6 +12,7 @@ if the correct pixels, features and labels reach it.
 | `slide_mil_binary_classification` | WSI tiling → extraction → cache → ABMIL → evaluation; a second run is a full cache hit (zero images encoded) with byte-identical predictions |
 | `slide_mil_{multiclass,ordinal,regression,survival_nll,survival_cox}` | every slide task head on one cohort; the feature cache is shared across tasks |
 | `slide_mil_flat_png` | flat PNG slides with `spacing_at_level_0` in the manifest: tiling, both default previews, on-the-fly extraction and training |
+| `slide_mil_supplied_coordinates` | a `coordinates_path` manifest column (one hand-written hs2p tiling artifact per slide) replaces tiling: every bag holds exactly the supplied tiles, a second run is a full cache hit, and editing one slide's artifact re-encodes only that slide |
 | `slide_mil_cv_leaderboard` | 2-fold cross-validation for two aggregators, then `soma leaderboard` ranks them |
 | `mil_aggregator_<name>` | every registered aggregator on a rigged task (a slide is positive iff it has marker tiles): test accuracy and AUROC must be exactly 1, and re-scoring the trained model must give the same logits alone, in one padded batch, with garbage in the padding, and (for set-function aggregators) with tiles shuffled |
 | `mil_aggregator_control` | the same cohort with labels independent of the markers must stay near chance, so the perfect scores above cannot come from a label leak |

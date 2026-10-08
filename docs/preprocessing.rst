@@ -219,6 +219,63 @@ on ``dataset_type: tile``.
 
 A ready-to-run example lives at ``examples/slide_tumor_restricted_bag.yaml``.
 
+.. _preprocessing-supplied-coordinates:
+
+Bring your own coordinates
+--------------------------
+
+soma normally tiles each slide itself. To use a fixed tile set instead (a benchmark's
+own sampler, coordinates released with a paper, or a frozen set for an ablation), add a
+``coordinates_path`` column to a slide-level ``dataset.csv``. Each row names one hs2p
+tiling artifact: the ``<name>.coordinates.npz`` written by
+``hs2p.artifacts.save_tiling_result``, with its ``<name>.coordinates.meta.json`` beside
+it. The artifact holds level-0 tile origins and the read geometry (``read_level``,
+``read_tile_size_px``, ``requested_tile_size_px``, ``requested_spacing_um``).
+
+.. code-block:: text
+
+   sample_id,image_path,label,coordinates_path
+   s01,/slides/s01.tif,1,/coords/s01.coordinates.npz
+   s02,/slides/s02.tif,0,/coords/s02.coordinates.npz
+
+soma then skips tissue segmentation and tiling, and slide2vec embeds exactly the
+listed tiles. soma copies each artifact into the run's ``tiling`` directory, so the
+run keeps its tiles if the original changes. It checks each artifact first and
+stops with an error when:
+
+- its ``sample_id``, ``image_path`` or ``spacing_at_level_0`` differs from the
+  manifest row;
+- its ``requested_spacing_um`` or ``requested_tile_size_px`` differs from
+  ``preprocessing``;
+- only some rows set ``coordinates_path``.
+
+The content of each artifact is part of the slide's feature-cache identity. The same
+artifact reuses its features across runs; a different tile set is extracted again, and
+its features are cached next to the first set's, not over them.
+
+A resumed run keeps the copies it made when it started. If an original artifact was
+deleted since, the run uses its copy; if it was changed, the run stops rather than
+train its remaining folds on other tiles.
+
+The experiment identity does not follow the artifacts. Like the other path columns,
+``coordinates_path`` is left out of the dataset checksum, and soma does not open the
+artifacts to compute one (see :doc:`dataset`). Two runs that differ only in their tile
+sets therefore share an experiment identity and a leaderboard row. To compare tile sets,
+give each its own identity with an extra column, such as a checksum of each artifact
+(``coordinates_path_sha256``) or the name and version of the sampler that made it:
+
+.. code-block:: text
+
+   sample_id,image_path,label,coordinates_path,coordinates_path_sha256
+   s01,/slides/s01.tif,1,/coords/s01.coordinates.npz,9f2c...
+   s02,/slides/s02.tif,0,/coords/s02.coordinates.npz,41ab...
+
+Supplied coordinates work for pooled whole-slide bags (``dataset_type: slide``) built
+from a tile encoder; slide- and patient-level encoders reject them.
+They cannot be combined with ``preprocessing.masks`` or hierarchical regions, and
+tile, segmentation, and detection manifests reject the column. ``tissue_method`` is
+still required by the configuration, but it is not used.
+
 Tissue mask preview
 -------------------
 

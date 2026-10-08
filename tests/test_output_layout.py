@@ -796,16 +796,18 @@ def test_classification_manifest_identity_is_portable_across_storage_roots(
     local = _make_config_with_manifests(
         tmp_path / "local",
         dataset_csv_text=(
-            "sample_id,image_path,mask_path,label,site\n"
-            "s0,/local/images/s0.svs,/local/masks/s0.png,tumor,north\n"
+            "sample_id,image_path,mask_path,coordinates_path,label,site\n"
+            "s0,/local/images/s0.svs,/local/masks/s0.png,"
+            "/local/coords/s0.coordinates.npz,tumor,north\n"
         ),
         splits_csv_text="fold,sample_id,split\n0,s0,train\n",
     )
     relocated = _make_config_with_manifests(
         tmp_path / "relocated",
         dataset_csv_text=(
-            "sample_id,image_path,mask_path,label,site\n"
-            "s0,/archive/images/s0.svs,/archive/masks/s0.png,tumor,north\n"
+            "sample_id,image_path,mask_path,coordinates_path,label,site\n"
+            "s0,/archive/images/s0.svs,/archive/masks/s0.png,"
+            "/archive/coords/s0.coordinates.npz,tumor,north\n"
         ),
         splits_csv_text="fold,sample_id,split\n0,s0,train\n",
     )

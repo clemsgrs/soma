@@ -378,6 +378,10 @@ def _backfill_feature_cache_identity_metadata(
 ) -> dict[str, Any]:
     if not _manifest_matches_dataset(metadata_path.parent / MANIFEST_NAME, dataset):
         return metadata
+    if any(sample.coordinates_path is not None for sample in dataset.samples.values()):
+        # The manifest records no tile set, so nothing proves an unsigned cache's
+        # features came from the supplied coordinates.
+        return metadata
 
     signature_map = {
         str(cache_id): str(signature)
@@ -495,13 +499,16 @@ def _validate_feature_cache_contents(
     cache_stem_by_id: dict[str, str],
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
+    identity_key_by_id: dict[str, str] | None = None,
 ) -> tuple[CacheValidationResult, int, int]:
     feature_type = str(metadata.get("feature_type", ""))
     if feature_type not in _FEATURE_TYPE_TO_RANK:
         return CacheValidationResult(complete=False, reason="unsupported feature_type metadata"), 0, 0
     empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
     expected_ids = {str(cache_id) for cache_id in cache_ids}
-    if not empty_sample_ids.issubset(expected_ids):
+    # A content-addressed cache holds the records of every tile set it has seen, not
+    # only this dataset's.
+    if identity_key_by_id is None and not empty_sample_ids.issubset(expected_ids):
         return CacheValidationResult(complete=False, reason="empty sample metadata mismatch"), 0, 0
     cached_signature_by_id = {
         str(cache_id): str(signature)
@@ -535,8 +542,10 @@ def _validate_feature_cache_contents(
             payload_stem = str(cache_id) if payload_stem_by_id is None else str(payload_stem_by_id[cache_id])
             path = features_dir / f"{payload_stem}.pt"
             feature_present = f"{payload_stem}.pt" in existing_filenames
+            identity_key = cache_id if identity_key_by_id is None else str(identity_key_by_id[cache_id])
+            is_empty = identity_key in empty_sample_ids
             expected_signature = str(cache_stem_by_id[cache_id])
-            cached_signature = cached_signature_by_id.get(cache_id)
+            cached_signature = cached_signature_by_id.get(identity_key)
             if cached_signature != expected_signature:
                 if reason is None:
                     issue = "missing cache identity" if cached_signature is None else "cache identity mismatch"
@@ -544,10 +553,10 @@ def _validate_feature_cache_contents(
                 # The counts report against the requested scope: a sample without a
                 # trusted identity is expected and not present, even when a feature
                 # file with its name exists. Empty samples stay out of both counts.
-                if cache_id not in empty_sample_ids:
+                if not is_empty:
                     expected += 1
                 continue
-            if cache_id in empty_sample_ids:
+            if is_empty:
                 if feature_present:
                     return (
                         CacheValidationResult(complete=False, reason=f"unexpected feature for empty sample {cache_id}"),
@@ -662,6 +671,8 @@ def _refresh_feature_cache_resolution(
         cache_ids=resolution.cache_ids,
         cache_stem_by_id=resolution.cache_stem_by_id,
         validate_payloads=validate_payloads,
+        payload_stem_by_id=resolution.payload_stem_by_id,
+        identity_key_by_id=resolution.identity_key_by_id,
     )
     return replace(
         resolution,
@@ -691,6 +702,16 @@ def _resolve_cache(
     cache_dir = _cache_dir(cache_root, cache_kind, key)
     features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
     metadata_path = cache_dir / CACHE_METADATA_NAME
+    identity_key_by_id: dict[str, str] | None = None
+    if cache_kind == "tile" and getattr(dataset, "supplies_coordinates", False):
+        # Supplied tile sets are content-addressed: each sample's payload is named after
+        # its full identity, tile set included, so runs over different tile sets of one
+        # slide keep their own features side by side and each reuses its own. (Only tile
+        # encoders accept supplied coordinates.)
+        identity_key_by_id = {
+            str(cache_id): f"{cache_id}.{cache_stem_by_id[cache_id]}" for cache_id in cache_ids
+        }
+        payload_stem_by_id = identity_key_by_id
     manifest_path = cache_dir / MANIFEST_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
     features_dir.mkdir(parents=True, exist_ok=True)
@@ -750,6 +771,7 @@ def _resolve_cache(
             cache_stem_by_id=cache_stem_by_id,
             validate_payloads=validate_payloads,
             payload_stem_by_id=payload_stem_by_id,
+            identity_key_by_id=identity_key_by_id,
         )
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
@@ -792,6 +814,7 @@ def _resolve_cache(
             cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
             validation=validation,
             payload_stem_by_id=payload_stem_by_id,
+            identity_key_by_id=identity_key_by_id,
         )
 
     if manifest_rows is not None:
@@ -820,6 +843,7 @@ def _resolve_cache(
         cache_stem_by_id={str(cache_id): str(stem) for cache_id, stem in cache_stem_by_id.items()},
         validation=CacheValidationResult(complete=False, reason=initial_reason),
         payload_stem_by_id=payload_stem_by_id,
+        identity_key_by_id=identity_key_by_id,
     )
 
 
@@ -1174,8 +1198,9 @@ def record_empty_sample_ids(
     for sample_id in empty_sample_ids:
         sample_id = str(sample_id)
         if sample_id in resolution.cache_stem_by_id:
-            empty_ids.add(sample_id)
-            signature_map[sample_id] = str(resolution.cache_stem_by_id[sample_id])
+            identity_key = resolution.identity_key(sample_id)
+            empty_ids.add(identity_key)
+            signature_map[identity_key] = str(resolution.cache_stem_by_id[sample_id])
     metadata["empty_sample_ids"] = sorted(empty_ids)
     metadata["sample_identity_signature_by_id"] = signature_map
     _write_metadata(resolution.metadata_path, metadata)
@@ -1208,10 +1233,17 @@ def record_sample_identity_signatures(
         str(cache_id): str(signature)
         for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
     }
+    empty_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
     for cache_id in cache_ids:
         cache_id = str(cache_id)
         if cache_id in resolution.cache_stem_by_id:
-            signature_map[cache_id] = str(resolution.cache_stem_by_id[cache_id])
+            identity_key = resolution.identity_key(cache_id)
+            signature_map[identity_key] = str(resolution.cache_stem_by_id[cache_id])
+            # Features were just committed under this identity: an empty marker left
+            # by an earlier identity of the sample no longer holds.
+            empty_ids.discard(identity_key)
+    if "empty_sample_ids" in metadata:
+        metadata["empty_sample_ids"] = sorted(empty_ids)
     metadata["sample_identity_signature_by_id"] = signature_map
     _write_metadata(metadata_path, metadata)
     return _refresh_feature_cache_resolution(
