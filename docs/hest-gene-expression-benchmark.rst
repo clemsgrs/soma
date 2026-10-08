@@ -56,7 +56,7 @@ Recorded mean Pearson scores alongside the packaged HEST references.
      - 0.500
    * - PAAD
      - ``virchow2``
-     - 0.477
+     - 0.472
      - 0.478
    * - PAAD
      - ``h-optimus-1``
@@ -80,16 +80,12 @@ Recorded mean Pearson scores alongside the packaged HEST references.
      - 0.559
    * - LUNG
      - ``virchow2``
-     - 0.552
+     - 0.569
      - 0.569
    * - LUNG
      - ``h-optimus-1``
      - 0.577
      - 0.578
-
-The ``virchow2`` rows were recorded with the CLS-only feature variant, before the
-benchmark's pin was corrected to ``cls_patch_mean`` (the 2560-d CLS + mean-patch
-concatenation that HEST evaluates). They will be re-recorded with the corrected variant.
 
 See the `HEST-Benchmark leaderboard (mahmoodlab/HEST) <https://github.com/mahmoodlab/HEST#hest-benchmark>`__ for the official reference leaderboard.
 

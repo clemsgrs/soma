@@ -8,3 +8,6 @@ COAD,h-optimus-1,test/mean_pearson_mean,0.3190,0.0000,1,2026-07-10,e9fb89c,5.3.0
 LUNG,uni2,test/mean_pearson_mean,0.5593,0.0000,1,2026-07-10,e9fb89c,5.3.0,soma reproduce --record
 LUNG,virchow2,test/mean_pearson_mean,0.5520,0.0000,1,2026-07-10,e9fb89c,5.3.0,soma reproduce --record
 LUNG,h-optimus-1,test/mean_pearson_mean,0.5768,0.0000,1,2026-07-10,e9fb89c,5.3.0,soma reproduce --record
+PAAD,virchow2,test/mean_pearson_mean,0.471707365952,0,1,2026-10-08,2934740,6.3.4,soma reproduce --record
+COAD,virchow2,test/mean_pearson_mean,0.261554051188,0,1,2026-10-08,2934740,6.3.4,soma reproduce --record
+LUNG,virchow2,test/mean_pearson_mean,0.569232436966,0,1,2026-10-08,2934740,6.3.4,soma reproduce --record
