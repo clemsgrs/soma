@@ -14,6 +14,7 @@ like the CLI — protocol violations inside one scoring attempt may raise ``Syst
 
 from __future__ import annotations
 
+import gc
 import sys
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -668,6 +669,11 @@ def _reproduce_one(
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     seed_roots: list[Path] = []
     for seed in seeds:
+        # Free the previous seed's pipeline before building the next. A live segmentation
+        # run holds its frozen encoder inside a reference cycle, which only the cyclic GC
+        # reclaims; left to chance, each seed adds a GB-sized encoder to GPU memory until
+        # one runs out.
+        gc.collect()
         seed_root = output_root / f"seed_{seed}"
         seed_roots.append(seed_root)
         config = benchmark.build_config(

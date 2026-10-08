@@ -1,5 +1,11 @@
 # Changelog
 
+- 2026-10-08: `soma reproduce` now frees each seed's pipeline before it starts
+  the next seed. A live segmentation run keeps its frozen encoder in a reference
+  cycle, so without this every seed left one encoder on the GPU, and a
+  five-seed `eva/monusac` run on an 11 GB GPU ran out of memory at seed 2.
+  Results are unchanged.
+
 - 2026-10-07: The `eva/consep` and `eva/monusac` benchmarks follow EVA's online
   segmentation protocol, which produces the leaderboard numbers. The decoder is
   `eva_conv_with_image` (EVA's `ConvDecoderWithImage`): it concatenates the
