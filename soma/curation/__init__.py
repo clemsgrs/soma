@@ -16,6 +16,11 @@ from soma.curation.eva_segmentation import (
     curate_eva_segmentation_dataset,
     curate_monusac,
 )
+from soma.curation.eva_slide import (
+    curate_camelyon16_small,
+    curate_eva_slide_dataset,
+    curate_panda_small,
+)
 from soma.curation.hest import curate_hest
 from soma.curation.manifest import (
     SUPERVISION_COLUMN,
@@ -40,11 +45,14 @@ __all__ = [
     "SUPERVISION_COLUMN",
     "CuratedManifest",
     "Curator",
+    "curate_camelyon16_small",
     "curate_consep",
     "curate_eva_patch_dataset",
     "curate_eva_patch_datasets",
     "curate_eva_segmentation_dataset",
+    "curate_eva_slide_dataset",
     "curate_monusac",
+    "curate_panda_small",
     "curate_hest",
     "curate_midog_detection",
     "curate_monkey_detection",

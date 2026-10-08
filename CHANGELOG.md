@@ -1,5 +1,23 @@
 # Changelog
 
+- 2026-10-08: New benchmarks `eva/camelyon16_small` and `eva/panda_small` reproduce
+  EVA's offline slide-level classification configs. Their curators port EVA's tile
+  sampler: a shuffled non-overlapping level-0 grid, EVA's saturation foreground mask
+  and 0.35 foreground ratio, at most 1000 tiles at 0.25 µm/px (Camelyon16Small) or
+  200 at 0.5 µm/px (PANDASmall), with the slide spacing read by EVA's OpenSlide rule.
+  They write one hs2p tiling artifact per slide and a slide manifest with
+  `coordinates_path`, so soma embeds exactly EVA's tiles. Camelyon16Small splits the
+  399 official slides 216 / 54 / 129 (EVA's validation slides are `tune`); PANDASmall
+  keeps EVA's 9555 slides and its stratified split, 952 / 475 / 475. The runs train
+  the benchmark-private `eva_abmil` aggregator (EVA's `ABMIL`: a 128-d projection and
+  gated attention) and the `eva_mil_binary` / `eva_mil_multiclass` heads (EVA's MLP;
+  one logit with `BCEWithLogitsLoss` for binary) with AdamW at lr 1e-3, EVA's
+  `ConstantLR` warm-up, batch 32, 100 epochs, patience 20, and 20 seeds. The
+  reference rows are EVA's test balanced accuracy: 0.849 / 0.861 (Camelyon16Small,
+  uni2 / virchow2) and 0.657 / 0.646 (PANDASmall). The aggregator registry now
+  imports `soma.benchmarks` on a missed lookup, as the task and decoder registries
+  do, so a saved config naming `eva_abmil` loads in a fresh process.
+
 - 2026-10-08: `soma reproduce` now frees each seed's pipeline before it starts
   the next seed. A live segmentation run keeps its frozen encoder in a reference
   cycle, so without this every seed left one encoder on the GPU, and a

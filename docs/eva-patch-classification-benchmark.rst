@@ -3,15 +3,18 @@ EVA
 
 Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_
 pathology leaderboard: patch classification with frozen tile encoders and
-linear :doc:`classification` heads, and patch :doc:`segmentation` with a
-small convolutional decoder on the frozen dense feature grid.
+linear :doc:`classification` heads, patch :doc:`segmentation` with a
+small convolutional decoder on the frozen dense feature grid, and slide
+classification with an attention-MIL head over a fixed set of tiles per slide.
 
-EVA provides 6 registered classification datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon, and 2 segmentation datasets: consep and monusac. Each group shares one protocol; see :doc:`benchmarking` for
+EVA provides 6 registered classification datasets: bach, breakhis, crc, gleason_arvaniti, mhist, and patch_camelyon, 2 segmentation datasets: consep and monusac, and 2 slide-level datasets: camelyon16_small and panda_small. Each group shares one protocol; see :doc:`benchmarking` for
 the shared workflow.
 
 **Pipeline (classification):** labelled patches → frozen encoder → linear head → balanced accuracy
 
 **Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid + the tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice
+
+**Pipeline (slide):** EVA's tiles per slide → frozen encoder → ``eva_abmil`` attention pooling → MLP head → balanced accuracy
 
 Prepare the data
 ----------------
@@ -51,6 +54,20 @@ The segmentation datasets use the same ``--raw-root`` convention:
    * - `MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)
      - ``MoNuSAC_images_and_annotations/`` and ``MoNuSAC Testing Data and Annotations/`` (one ``.tif`` + ``.xml`` per image; CC BY-NC-SA 4.0)
 
+So do the slide-level datasets. Their curators read the slides with OpenSlide
+(``pip install openslide-python openslide-bin``):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 38 62
+
+   * - Dataset and source
+     - Raw-root contents
+   * - `Camelyon16 <https://camelyon17.grand-challenge.org/Data/>`__ (``camelyon16_small``)
+     - ``images/*.tif`` (the 399 slides of the official release) and ``evaluation/reference.csv``
+   * - `PANDA <https://www.kaggle.com/c/prostate-cancer-grade-assessment/data>`__ (``panda_small``)
+     - ``train_images/*.tiff`` and EVA's noisy-label table ``train_with_noisy_labels.csv`` (the ``train.csv`` of ``analokmaus/kaggle-panda-challenge-public``)
+
 Run the benchmark
 -----------------
 
@@ -71,6 +88,15 @@ A segmentation member runs the same way::
 
 Its curator writes the 224 px tiles and masks under ``--out-dir`` (default
 ``<raw-root>/curated``), so point ``--out-dir`` at a directory with room for them.
+
+A slide-level member runs the same way::
+
+    soma reproduce eva/panda_small --encoder virchow2 --raw-root /path/to/eva/panda_small
+
+Its curator reads a low-resolution level of every slide, so it takes a while on
+the full datasets. Reuse a finished curation with ``--curated-dir`` instead of
+``--raw-root``. In a family run (``soma reproduce eva``), the raw roots are
+``<raw-root>/camelyon16_small`` and ``<raw-root>/panda_small``.
 
 Results
 -------
@@ -209,3 +235,56 @@ grid is tapped where EVA taps it: the last block's patch tokens *before* the
 backbone's final normalisation layer (``feature_kind: patch_features_prenorm``,
 timm's ``features_only`` output), so the decoder sees the same token scale as the
 leaderboard decoders.
+
+Slide-level protocol
+--------------------
+
+The curators choose the tiles EVA chooses and write them as one hs2p tiling
+artifact per slide, named by the manifest's ``coordinates_path`` column (see
+:ref:`bring your own coordinates <preprocessing-supplied-coordinates>`); soma skips its
+own tiling. EVA lays a non-overlapping grid over level 0, with a cell side of
+224 px at the target spacing, shuffles the cells with a fixed seed, and keeps the
+first cells whose foreground fraction is at least 0.35. Foreground is HSV
+saturation above 20 at a low-resolution level. The slide spacing is EVA's: the
+OpenSlide ``mpp`` properties, else the TIFF resolution tags. The curator writes it
+as ``spacing_at_level_0``.
+
+Camelyon16Small uses the 399 slides of the official release. The 54 training slides
+that EVA holds out for validation (the PatchCamelyon validation slides) are soma
+``tune``, and the official test slides are ``test`` (216 / 54 / 129 slides).
+PANDASmall keeps the 9555 PANDA slides that EVA does not filter as noisy and takes
+EVA's stratified split by ISUP grade: 952 / 475 / 475 slides for train / tune / test.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Setting
+     - Value
+   * - tiles
+     - chosen by the curator with EVA's sampler: at most 1000 at 0.25 µm/px (camelyon16_small), 200 at 0.5 µm/px (panda_small); read at level 0 and resized to 224 px by slide2vec
+   * - aggregator
+     - ``eva_abmil`` (EVA's ``ABMIL``): ``Linear(D → 128)`` projection, then gated attention pooling (``tanh`` × ``sigmoid``, hidden width 128). No dropout
+   * - head
+     - ``eva_mil_binary`` (one logit, ``BCEWithLogitsLoss``, positive when the logit is above 0) and ``eva_mil_multiclass`` (one logit per class, cross entropy): an MLP 128 → 128 → 64 → output with ReLU
+   * - optimizer
+     - AdamW, lr ``0.001``, weight_decay ``0.01``, EVA's default ``ConstantLR`` warm-up (lr/3 for the first 5 epochs)
+   * - batch size
+     - ``32`` bags, padded and masked, shuffled, last batch kept
+   * - budget
+     - ``100`` epochs, early-stopping patience ``20``, best checkpoint on the validation balanced accuracy
+   * - splits
+     - EVA's validation split is soma ``tune``; the reported split is ``test``
+   * - metric
+     - ``balanced_accuracy``
+   * - varied axis
+     - ``encoder``
+   * - primary metric
+     - ``test/balanced_accuracy`` (from ``summary.json``)
+   * - canonical seeds
+     - ``0``–``19`` (20 seeds, averaged)
+
+The aggregator and heads exist only for this benchmark and are registered under
+``eva_`` names; they are not general soma components. EVA resizes each tile with
+bilinear, antialiased interpolation; slide2vec uses area interpolation. soma
+accepts this difference and measures its effect when the benchmark is recorded.

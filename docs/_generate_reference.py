@@ -24,6 +24,7 @@ from soma.benchmarks import (
 from soma.benchmarks import croma as croma_bench
 from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import eva_segmentation as eva_seg_bench
+from soma.benchmarks import eva_slide as eva_slide_bench
 from soma.benchmarks import ocelot as ocelot_bench
 from soma.training.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 
@@ -485,6 +486,7 @@ def build_eva_benchmark_rst() -> str:
     members = [get_benchmark(n) for n in list_benchmarks() if n.startswith("eva/")]
     family = [b for b in members if b.facet.fixed.get("protocol") == "eva-linear-probe"]
     seg_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-segmentation-decoder"]
+    slide_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-slide-abmil"]
     head = family[0]  # protocol constants are shared across the family
     seeds = ", ".join(str(s) for s in head.canonical_seeds)
     protocol_rows = [
@@ -595,28 +597,100 @@ def build_eva_benchmark_rst() -> str:
         ),
     ]
 
+    slide_names = [str(b.facet.fixed["dataset"]) for b in slide_family]
+    slide_list = " and ".join(slide_names)
+    slide_head = slide_family[0]
+    slide_seeds = f"``0``–``{slide_head.canonical_seeds[-1]}`` ({len(slide_head.canonical_seeds)} seeds, averaged)"
+    slide_specs = eva_slide_bench.DATASETS
+    slide_protocol_rows = [
+        (
+            "tiles",
+            "chosen by the curator with EVA's sampler: at most "
+            + ", ".join(
+                f"{spec.max_tiles} at {spec.target_mpp:g} µm/px ({name})"
+                for name, spec in slide_specs.items()
+            )
+            + "; read at level 0 and resized to 224 px by slide2vec",
+        ),
+        (
+            "aggregator",
+            "``eva_abmil`` (EVA's ``ABMIL``): ``Linear(D → 128)`` projection, then gated "
+            "attention pooling (``tanh`` × ``sigmoid``, hidden width 128). No dropout",
+        ),
+        (
+            "head",
+            "``eva_mil_binary`` (one logit, ``BCEWithLogitsLoss``, positive when the logit is "
+            "above 0) and ``eva_mil_multiclass`` (one logit per class, cross entropy): an MLP "
+            "128 → 128 → 64 → output with ReLU",
+        ),
+        (
+            "optimizer",
+            f"AdamW, lr ``{eva_slide_bench.LEARNING_RATE:g}``, "
+            f"weight_decay ``{eva_slide_bench.WEIGHT_DECAY:g}``, EVA's default ``ConstantLR`` "
+            f"warm-up (lr/{round(1 / eva_slide_bench.WARMUP_FACTOR)} for the first "
+            f"{eva_slide_bench.WARMUP_EPOCHS} epochs)",
+        ),
+        (
+            "batch size",
+            f"``{eva_slide_bench.BATCH_SIZE}`` bags, padded and masked, shuffled, last batch kept",
+        ),
+        (
+            "budget",
+            f"``{eva_slide_bench.EPOCHS}`` epochs, early-stopping patience "
+            f"``{eva_slide_bench.PATIENCE}``, best checkpoint on the validation balanced accuracy",
+        ),
+        ("splits", "EVA's validation split is soma ``tune``; the reported split is ``test``"),
+        ("metric", "``balanced_accuracy``"),
+        ("varied axis", "``encoder``"),
+        ("primary metric", f"``{slide_head.primary_metric}`` (from ``summary.json``)"),
+        ("canonical seeds", slide_seeds),
+    ]
+    slide_raw_layout_rows = [
+        (
+            "`Camelyon16 <https://camelyon17.grand-challenge.org/Data/>`__ "
+            "(``camelyon16_small``)",
+            "``images/*.tif`` (the 399 slides of the official release) and "
+            "``evaluation/reference.csv``",
+        ),
+        (
+            "`PANDA <https://www.kaggle.com/c/prostate-cancer-grade-assessment/data>`__ "
+            "(``panda_small``)",
+            "``train_images/*.tiff`` and EVA's noisy-label table "
+            "``train_with_noisy_labels.csv`` (the ``train.csv`` of "
+            "``analokmaus/kaggle-panda-challenge-public``)",
+        ),
+    ]
+
     sections = [
         "EVA\n===",
         "Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_\n"
         "pathology leaderboard: patch classification with frozen tile encoders and\n"
-        "linear :doc:`classification` heads, and patch :doc:`segmentation` with a\n"
-        "small convolutional decoder on the frozen dense feature grid.\n\n"
+        "linear :doc:`classification` heads, patch :doc:`segmentation` with a\n"
+        "small convolutional decoder on the frozen dense feature grid, and slide\n"
+        "classification with an attention-MIL head over a fixed set of tiles per slide.\n\n"
         f"EVA provides {len(family)} registered classification datasets: "
         + dataset_list
-        + f", and {len(seg_family)} segmentation datasets: "
+        + f", {len(seg_family)} segmentation datasets: "
         + seg_list
+        + f", and {len(slide_family)} slide-level datasets: "
+        + slide_list
         + ". Each group shares one protocol; see :doc:`benchmarking` for\n"
         "the shared workflow.\n\n"
         "**Pipeline (classification):** labelled patches → frozen encoder → linear head → "
         "balanced accuracy\n\n"
         "**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid + the "
-        "tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice",
+        "tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice\n\n"
+        "**Pipeline (slide):** EVA's tiles per slide → frozen encoder → ``eva_abmil`` "
+        "attention pooling → MLP head → balanced accuracy",
         "Prepare the data\n----------------\n\n"
         "Download one EVA dataset from its official\n"
         "source and unpack it in the directory you will pass as ``--raw-root``:\n\n"
         + _kv_table("Dataset and source", "Raw-root contents", raw_layout_rows, widths="38 62")
         + "\n\nThe segmentation datasets use the same ``--raw-root`` convention:\n\n"
-        + _kv_table("Dataset and source", "Raw-root contents", seg_raw_layout_rows, widths="38 62"),
+        + _kv_table("Dataset and source", "Raw-root contents", seg_raw_layout_rows, widths="38 62")
+        + "\n\nSo do the slide-level datasets. Their curators read the slides with OpenSlide\n"
+        "(``pip install openslide-python openslide-bin``):\n\n"
+        + _kv_table("Dataset and source", "Raw-root contents", slide_raw_layout_rows, widths="38 62"),
         "Run the benchmark\n-----------------\n\n"
         + _RAW_ROOT_SENTENCE
         + "::\n\n"
@@ -627,7 +701,13 @@ def build_eva_benchmark_rst() -> str:
         "A segmentation member runs the same way::\n\n"
         "    soma reproduce eva/consep --encoder virchow2 --raw-root /path/to/eva/consep\n\n"
         "Its curator writes the 224 px tiles and masks under ``--out-dir`` (default\n"
-        "``<raw-root>/curated``), so point ``--out-dir`` at a directory with room for them.",
+        "``<raw-root>/curated``), so point ``--out-dir`` at a directory with room for them.\n\n"
+        "A slide-level member runs the same way::\n\n"
+        "    soma reproduce eva/panda_small --encoder virchow2 --raw-root /path/to/eva/panda_small\n\n"
+        "Its curator reads a low-resolution level of every slide, so it takes a while on\n"
+        "the full datasets. Reuse a finished curation with ``--curated-dir`` instead of\n"
+        "``--raw-root``. In a family run (``soma reproduce eva``), the raw roots are\n"
+        "``<raw-root>/camelyon16_small`` and ``<raw-root>/panda_small``.",
         "Results\n-------\n\n"
         + _eva_results_section()
         + "\n\nSee the "
@@ -652,6 +732,26 @@ def build_eva_benchmark_rst() -> str:
         "backbone's final normalisation layer (``feature_kind: patch_features_prenorm``,\n"
         "timm's ``features_only`` output), so the decoder sees the same token scale as the\n"
         "leaderboard decoders.",
+        "Slide-level protocol\n--------------------\n\n"
+        "The curators choose the tiles EVA chooses and write them as one hs2p tiling\n"
+        "artifact per slide, named by the manifest's ``coordinates_path`` column (see\n"
+        ":ref:`bring your own coordinates <preprocessing-supplied-coordinates>`); soma skips its\n"
+        "own tiling. EVA lays a non-overlapping grid over level 0, with a cell side of\n"
+        "224 px at the target spacing, shuffles the cells with a fixed seed, and keeps the\n"
+        "first cells whose foreground fraction is at least 0.35. Foreground is HSV\n"
+        "saturation above 20 at a low-resolution level. The slide spacing is EVA's: the\n"
+        "OpenSlide ``mpp`` properties, else the TIFF resolution tags. The curator writes it\n"
+        "as ``spacing_at_level_0``.\n\n"
+        "Camelyon16Small uses the 399 slides of the official release. The 54 training slides\n"
+        "that EVA holds out for validation (the PatchCamelyon validation slides) are soma\n"
+        "``tune``, and the official test slides are ``test`` (216 / 54 / 129 slides).\n"
+        "PANDASmall keeps the 9555 PANDA slides that EVA does not filter as noisy and takes\n"
+        "EVA's stratified split by ISUP grade: 952 / 475 / 475 slides for train / tune / test.\n\n"
+        + _kv_table("Setting", "Value", slide_protocol_rows)
+        + "\n\nThe aggregator and heads exist only for this benchmark and are registered under\n"
+        "``eva_`` names; they are not general soma components. EVA resizes each tile with\n"
+        "bilinear, antialiased interpolation; slide2vec uses area interpolation. soma\n"
+        "accepts this difference and measures its effect when the benchmark is recorded.",
     ]
     return "\n\n".join(sections).rstrip() + "\n"
 
