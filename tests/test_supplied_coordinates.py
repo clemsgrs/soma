@@ -54,6 +54,30 @@ def _preprocessing(**overrides) -> PreprocessingConfig:
     )
 
 
+def _resolve_tile_cache(cache_root: Path, dataset: Dataset):
+    from soma.cache import resolve_tile_cache
+    from soma.config import EncoderConfig
+
+    return resolve_tile_cache(
+        cache_root=cache_root,
+        dataset=dataset,
+        tile_encoder_name="virchow",
+        preprocessing=_preprocessing(),
+        execution=EncoderConfig(name="virchow", precision="fp16"),
+    )
+
+
+def _commit(resolution, sample_id: str, tensor):
+    """Write one sample's features the way extraction commits them."""
+    import torch
+
+    from soma.cache import record_feature_dim, record_sample_identity_signatures
+
+    torch.save(tensor, resolution.feature_path_for_id(sample_id))
+    record_feature_dim(resolution, int(tensor.shape[-1]))
+    return record_sample_identity_signatures(resolution, [sample_id])
+
+
 def test_changing_one_coordinate_changes_the_cache_key(tmp_path: Path):
     artifacts = tmp_path / "coordinates"
     paths = {s: _artifact(artifacts, s, tmp_path / f"{s}.tif") for s in ("a", "b")}
@@ -71,9 +95,14 @@ def test_changing_one_coordinate_changes_the_cache_key(tmp_path: Path):
 
 def test_soma_tiled_identities_are_unchanged(tmp_path: Path):
     """A slide without supplied coordinates keeps the identity it always had."""
-    signature = sample_identity_signature(sample_id="a", image_path="/a.tif", mask_path=None)
-    assert signature == sample_identity_signature(
-        sample_id="a", image_path="/a.tif", mask_path=None, coordinates_digest=None
+    # The signature soma recorded for this sample before supplied coordinates existed.
+    historical = "2a28f51893731bf0"
+    assert sample_identity_signature(sample_id="a", image_path="/a.tif", mask_path=None) == historical
+    assert (
+        sample_identity_signature(
+            sample_id="a", image_path="/a.tif", mask_path=None, coordinates_digest=None
+        )
+        == historical
     )
 
 
@@ -164,29 +193,20 @@ def test_unsigned_legacy_cache_is_not_adopted_for_supplied_coordinates(tmp_path:
 
     import torch
 
-    from soma.cache import resolve_tile_cache
-    from soma.config import EncoderConfig
-
     paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
     manifest = _manifest(tmp_path, paths)
     soma_tiled = pd.read_csv(manifest).drop(columns="coordinates_path")
     soma_tiled.to_csv(tmp_path / "soma_tiled.csv", index=False)
 
     def resolve(dataset):
-        return resolve_tile_cache(
-            cache_root=tmp_path / "cache",
-            dataset=dataset,
-            tile_encoder_name="virchow",
-            preprocessing=_preprocessing(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
-        )
+        return _resolve_tile_cache(tmp_path / "cache", dataset)
 
     legacy = resolve(Dataset(tmp_path / "soma_tiled.csv"))
     metadata = json.loads(legacy.metadata_path.read_text())
     metadata.pop("sample_identity_signature_by_id", None)
     metadata["feature_dim"] = 16
     legacy.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 16), legacy.feature_path_for_id("a"))
+    torch.save(torch.zeros(4, 16), legacy.feature_path_for_id("a"))
 
     supplied = resolve(Dataset(manifest))
     assert supplied.missing_sample_ids() == ["a", "b"]
@@ -217,3 +237,119 @@ def test_staged_dataset_is_keyed_on_the_tiles_the_run_embeds(tmp_path: Path):
     assert _sample_identity_payload(staged) == before
     restaged = stage_supplied_coordinates(staged, tmp_path / "tiling", _preprocessing())
     assert _sample_identity_payload(restaged) == before
+
+
+def test_each_supplied_tile_set_keeps_its_own_cached_features(tmp_path: Path):
+    """Two tile sets of one slide share a cache without overwriting each other's features,
+    and each reuses its own on a later run."""
+    import torch
+
+    tile_sets = {"first": (0, 32, 64), "second": (0, 96)}
+    datasets = {}
+    for name, x in tile_sets.items():
+        written = _artifact(tmp_path / name, "a", tmp_path / "a.tif", x=x)
+        datasets[name] = Dataset(_manifest(tmp_path / name, {"a": written}))
+    features = {name: torch.full((len(x), 4), float(len(x))) for name, x in tile_sets.items()}
+
+    for name, dataset in datasets.items():
+        resolution = _resolve_tile_cache(tmp_path / "cache", dataset)
+        assert resolution.missing_sample_ids() == ["a"]
+        _commit(resolution, "a", features[name])
+
+    for name, dataset in datasets.items():
+        resolution = _resolve_tile_cache(tmp_path / "cache", dataset)
+        assert resolution.complete, resolution.validation.reason
+        assert resolution.missing_sample_ids() == []
+        loaded = torch.load(resolution.feature_path_for_id("a"), weights_only=True)
+        assert torch.equal(loaded, features[name])
+
+
+def test_soma_tiled_payloads_keep_their_flat_layout(tmp_path: Path):
+    """Content addressing applies to supplied coordinates only: existing caches stay valid."""
+    paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
+    frame = pd.read_csv(_manifest(tmp_path, paths)).drop(columns="coordinates_path")
+    frame.to_csv(tmp_path / "soma_tiled.csv", index=False)
+    resolution = _resolve_tile_cache(tmp_path / "cache", Dataset(tmp_path / "soma_tiled.csv"))
+    assert resolution.feature_path_for_id("a").name == "a.pt"
+
+
+@pytest.mark.parametrize("change", ["image_path", "coordinates"])
+def test_a_stale_empty_marker_does_not_hide_a_sample(tmp_path: Path, change: str):
+    """A slide recorded empty under one identity is extracted again under another."""
+    import torch
+
+    from soma.cache import record_empty_sample_ids
+
+    frame = pd.read_csv(
+        _manifest(tmp_path, {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")})
+    ).drop(columns="coordinates_path")
+    frame.to_csv(tmp_path / "soma_tiled.csv", index=False)
+    empty = _resolve_tile_cache(tmp_path / "cache", Dataset(tmp_path / "soma_tiled.csv"))
+    record_empty_sample_ids(empty, ["a"])
+
+    if change == "image_path":
+        frame["image_path"] = str(tmp_path / "a_rescanned.tif")
+        frame.to_csv(tmp_path / "changed.csv", index=False)
+        changed = Dataset(tmp_path / "changed.csv")
+    else:
+        written = _artifact(tmp_path / "supplied", "a", tmp_path / "a.tif")
+        changed = Dataset(_manifest(tmp_path / "supplied", {"a": written}))
+    resolution = _resolve_tile_cache(tmp_path / "cache", changed)
+    assert resolution.empty_sample_ids == set()
+    assert resolution.missing_sample_ids() == ["a"]
+
+    committed = _commit(resolution, "a", torch.zeros(3, 4))
+    assert committed.complete, committed.validation.reason
+    assert committed.empty_sample_ids == set()
+
+
+def test_resume_keeps_the_run_snapshot_when_the_artifact_is_gone(tmp_path: Path):
+    """A resume reloads the original manifest; the run's snapshot outlives the source."""
+    from hs2p.artifacts import load_tiling_result
+
+    paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
+    manifest = _manifest(tmp_path, paths)
+    tiling_dir = tmp_path / "tiling"
+    stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+
+    paths["a"].unlink()
+    resumed = stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+    snapshot = resumed.samples["a"].coordinates_path
+    meta = snapshot.with_name("a.coordinates.meta.json")
+    assert load_tiling_result(snapshot, meta).x.tolist() == [0, 32, 64]
+
+
+def test_resume_rejects_an_artifact_changed_since_the_run_started(tmp_path: Path):
+    """Finished folds used the snapshot's tiles; pending ones must not use other tiles."""
+    from hs2p.artifacts import load_tiling_result
+
+    paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
+    manifest = _manifest(tmp_path, paths)
+    tiling_dir = tmp_path / "tiling"
+    staged = stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+
+    stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())  # unchanged
+    _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif", x=(0, 96))
+    with pytest.raises(ValueError, match="'a'.*changed after this run copied them"):
+        stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+    snapshot = staged.samples["a"].coordinates_path
+    meta = snapshot.with_name("a.coordinates.meta.json")
+    assert load_tiling_result(snapshot, meta).x.tolist() == [0, 32, 64]
+
+
+@pytest.mark.parametrize("encoder", ["prism", "moozy"])
+def test_supplied_coordinates_need_a_tile_encoder(tmp_path: Path, encoder: str):
+    """Supplied tiles form bags of tile features; slide and patient encoders are refused."""
+    from soma import EncoderConfig, FeatureExtractor
+    from soma.config import CacheConfig
+
+    path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
+    extractor = FeatureExtractor(
+        Dataset(_manifest(tmp_path, {"a": path})),
+        EncoderConfig(name=encoder),
+        preprocessing=_preprocessing(),
+        cache=CacheConfig(enabled=False),
+        output_root=tmp_path / "output",
+    )
+    with pytest.raises(ValueError, match="support tile encoders only"):
+        extractor.extract()

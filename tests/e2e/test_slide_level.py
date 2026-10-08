@@ -13,6 +13,7 @@ from soma.cli import main as soma_main
 
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma, sha256
 from soma.features import FeatureStore
+from soma.preprocessing.supplied_coordinates import coordinates_meta_path
 from tests.e2e.synthetic import (
     SPACING_UM,
     SlideCohort,
@@ -340,12 +341,19 @@ def test_user_supplied_coordinates_replace_tiling(
         "cold/no_hs2p_tiling", sorted(p.name for p in tmp_path.glob("**/previews/*/*.jpg")), []
     )
 
+    artifact.check_equal(
+        "cold/no_scratch_left", sorted(p.name for p in tmp_path.glob("cache/tile/*/.slide2vec-*")), []
+    )
+
     encoded_images.clear()
     run_soma(config, tmp_path / "config.yaml")
     artifact.check_equal("warm/tiles_encoded", sum(encoded_images), 0)
 
     # Drop one tile from one slide's artifact: only that slide is encoded again.
     edited = pd.read_csv(manifest).iloc[0]
+    original = Path(edited["coordinates_path"])
+    original_meta = coordinates_meta_path(original)
+    backup = {path: path.read_bytes() for path in (original, original_meta)}
     cells = _tissue_cells()[: counts[edited["sample_id"]] - 1]
     write_coordinates_artifact(
         tmp_path / "coordinates",
@@ -363,5 +371,22 @@ def test_user_supplied_coordinates_replace_tiling(
         "edited/bag_size",
         int(FeatureStore(edited_run.run_dir / "features").load(edited["sample_id"]).shape[0]),
         len(cells),
+    )
+    # The cold run's features are untouched by the edited tile set, and returning to the
+    # original artifact reuses them without encoding anything.
+    artifact.check_equal(
+        "edited/cold_bag_size",
+        int(store.load(edited["sample_id"]).shape[0]),
+        counts[edited["sample_id"]],
+    )
+    for path, content in backup.items():
+        path.write_bytes(content)
+    encoded_images.clear()
+    restored = run_soma(config, tmp_path / "config.yaml")
+    artifact.check_equal("restored/tiles_encoded", sum(encoded_images), 0)
+    artifact.check_equal(
+        "restored/bag_size",
+        int(FeatureStore(restored.run_dir / "features").load(edited["sample_id"]).shape[0]),
+        counts[edited["sample_id"]],
     )
     artifact.assert_passed()

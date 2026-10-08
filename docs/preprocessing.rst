@@ -250,9 +250,28 @@ stops with an error when:
 - only some rows set ``coordinates_path``.
 
 The content of each artifact is part of the slide's feature-cache identity. The same
-artifact reuses its features across runs; a different tile set is extracted again.
+artifact reuses its features across runs; a different tile set is extracted again, and
+its features are cached next to the first set's, not over them.
 
-Supplied coordinates work for pooled whole-slide bags (``dataset_type: slide``).
+A resumed run keeps the copies it made when it started. If an original artifact was
+deleted since, the run uses its copy; if it was changed, the run stops rather than
+train its remaining folds on other tiles.
+
+The experiment identity does not follow the artifacts. Like the other path columns,
+``coordinates_path`` is left out of the dataset checksum, and soma does not open the
+artifacts to compute one (see :doc:`dataset`). Two runs that differ only in their tile
+sets therefore share an experiment identity and a leaderboard row. To compare tile sets,
+give each its own identity with an extra column, such as a checksum of each artifact
+(``coordinates_path_sha256``) or the name and version of the sampler that made it:
+
+.. code-block:: text
+
+   sample_id,image_path,label,coordinates_path,coordinates_path_sha256
+   s01,/slides/s01.tif,1,/coords/s01.coordinates.npz,9f2c...
+   s02,/slides/s02.tif,0,/coords/s02.coordinates.npz,41ab...
+
+Supplied coordinates work for pooled whole-slide bags (``dataset_type: slide``) built
+from a tile encoder; slide- and patient-level encoders reject them.
 They cannot be combined with ``preprocessing.masks`` or hierarchical regions, and
 tile, segmentation, and detection manifests reject the column. ``tissue_method`` is
 still required by the configuration, but it is not used.

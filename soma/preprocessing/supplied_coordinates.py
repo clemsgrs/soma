@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from hs2p.tiling.io import normalize_artifact_path
 
 from soma.config import PreprocessingConfig
 from soma.dataset import Dataset, SampleRecord
+
+logger = logging.getLogger(__name__)
 
 _NPZ_SUFFIX = ".coordinates.npz"
 _META_SUFFIX = ".coordinates.meta.json"
@@ -86,15 +89,43 @@ def _check_supported(preprocessing: PreprocessingConfig) -> None:
 
 
 def _snapshot(record: SampleRecord, snapshot_dir: Path) -> tuple[Path, Path]:
-    """Copy ``record``'s artifact into the run, so the run keeps the tiles it checked."""
+    """Copy ``record``'s artifact into the run, so the run keeps the tiles it checked.
+
+    A run that already holds a snapshot (a resume, which reloads the original manifest)
+    keeps it: its finished folds were trained on those tiles. The user's artifact may
+    since have been deleted; if it was changed instead, the run stops rather than mix
+    two tile sets.
+    """
     assert record.coordinates_path is not None
-    meta_path = _require_files(record.coordinates_path, sample_id=record.sample_id)
-    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    source = Path(record.coordinates_path)
     npz_copy = snapshot_dir / f"{record.sample_id}{_NPZ_SUFFIX}"
     meta_copy = snapshot_dir / f"{record.sample_id}{_META_SUFFIX}"
-    if Path(record.coordinates_path).resolve() != npz_copy.resolve():  # not yet staged
-        shutil.copyfile(record.coordinates_path, npz_copy)
-        shutil.copyfile(meta_path, meta_copy)
+    if source.resolve() == npz_copy.resolve():  # the dataset already names the snapshot
+        return npz_copy.resolve(), meta_copy.resolve()
+    if npz_copy.is_file() and meta_copy.is_file():
+        source_present = source.is_file() and coordinates_meta_path(source).is_file()
+        if source_present and coordinates_digest(
+            source, sample_id=record.sample_id
+        ) != coordinates_digest(npz_copy, sample_id=record.sample_id):
+            raise ValueError(
+                f"Sample {record.sample_id!r}: supplied coordinates {str(source)!r} changed "
+                f"after this run copied them to {str(npz_copy)!r}. A run keeps the tiles it "
+                "started with: restore the original artifact to resume it, or start the "
+                "new tile set as a new run (another output directory, or a manifest "
+                "column such as coordinates_path_sha256 that gives it its own identity)."
+            )
+        if not source_present:
+            logger.info(
+                "Sample %r: supplied coordinates %s are gone; reusing this run's copy %s.",
+                record.sample_id,
+                source,
+                npz_copy,
+            )
+        return npz_copy.resolve(), meta_copy.resolve()
+    meta_path = _require_files(source, sample_id=record.sample_id)
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, npz_copy)
+    shutil.copyfile(meta_path, meta_copy)
     return npz_copy.resolve(), meta_copy.resolve()
 
 

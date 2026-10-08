@@ -11,7 +11,7 @@ import shutil
 import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Iterator, Sequence
 
 import torch
 from slide2vec import (
@@ -177,6 +177,25 @@ def _feature_rank_from_type(feature_type: str) -> int:
     raise ValueError(f"Unsupported feature type {feature_type}")
 
 
+@contextlib.contextmanager
+def _slide2vec_output_dir(cache_resolution: FeatureCacheResolution) -> Iterator[Path]:
+    """Where slide2vec writes the features soma commits to ``cache_resolution``.
+
+    slide2vec names its outputs ``<sample_id>.pt``, which is the cache's own layout, so it
+    writes straight into the cache. A content-addressed cache names payloads by identity
+    instead: slide2vec then writes to a scratch directory inside the cache (so commits
+    hard-link rather than copy), which is removed once its features are committed.
+    """
+    if cache_resolution.identity_key_by_id is None:
+        yield cache_resolution.cache_dir
+        return
+    scratch = Path(tempfile.mkdtemp(prefix=".slide2vec-", dir=cache_resolution.cache_dir))
+    try:
+        yield scratch
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def _feature_rank_from_artifact_type(artifact_type: str) -> int:
     normalized = artifact_type.removesuffix("_embeddings")
     if normalized in {"slide", "patient"}:
@@ -330,6 +349,14 @@ class _PooledFeatureExtractor:
         """Preprocess all slides via slide2vec/hs2p tiling orchestration."""
         tiling_dir = Path(tiling_dir).resolve()
         tiling_dir.mkdir(parents=True, exist_ok=True)
+        if self._dataset.supplies_coordinates:
+            level = resolve_encoder_level(self._encoder.name, encoder_registry.info(self._encoder.name))
+            if level != "tile":
+                raise ValueError(
+                    "Supplied coordinates (manifest column 'coordinates_path') support tile "
+                    f"encoders only, whose features form the slide bags; '{self._encoder.name}' "
+                    f"is a {level}-level encoder."
+                )
         cfg = self._effective_preprocessing()
         ensure_supported_mask_value(self._dataset, cfg)
         _validate_preprocessing_runtime(
@@ -1528,12 +1555,23 @@ class _PooledFeatureExtractor:
             destination = cache_resolution.feature_path_for_id(cache_id)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if source.resolve() != destination.resolve():
-                if destination.exists():
-                    destination.unlink()
-                try:
-                    os.link(source, destination)
-                except OSError:
-                    shutil.copyfile(source, destination)
+                pairs = [(source, destination)]
+                if cache_resolution.identity_key_by_id is not None:
+                    # A content-addressed payload keeps slide2vec's sidecar under its own
+                    # name: the cache reads the feature identity from it.
+                    pairs.append(
+                        (
+                            Path(artifact.metadata_path),
+                            destination.with_name(f"{destination.stem}.meta.json"),
+                        )
+                    )
+                for pair_source, pair_destination in pairs:
+                    if pair_destination.exists():
+                        pair_destination.unlink()
+                    try:
+                        os.link(pair_source, pair_destination)
+                    except OSError:
+                        shutil.copyfile(pair_source, pair_destination)
             if feature_dim is None:
                 dim = getattr(artifact, "feature_dim", None)
                 if dim is not None:
@@ -1586,29 +1624,30 @@ class _PooledFeatureExtractor:
             if empty_sample_ids:
                 record_empty_sample_ids(cache_resolution, empty_sample_ids)
             return
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
-            encoder_name=encoder_name,
-            output_dir=cache_resolution.cache_dir,
-            num_gpus=num_gpus,
-            save_tile_embeddings=True,
-            output_dtype=self._resolved_dtype(encoder_name=encoder_name),
-        )
-        commit = self._artifact_cache_committer(cache_resolution)
+        with _slide2vec_output_dir(cache_resolution) as output_dir:
+            execution = build_execution_options(
+                self._encoder,
+                execution=self._execution,
+                encoder_name=encoder_name,
+                output_dir=output_dir,
+                num_gpus=num_gpus,
+                save_tile_embeddings=True,
+                output_dtype=self._resolved_dtype(encoder_name=encoder_name),
+            )
+            commit = self._artifact_cache_committer(cache_resolution)
 
-        artifacts = _embed_tile_artifacts_with_coordinates(
-            model_name=encoder_name,
-            output_variant=output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            preprocessing=preprocessing,
-            execution=execution,
-            tiling_dir=tiling_dir,
-            slides=[loaded.slide for loaded in selected_loaded],
-            on_slide_persisted=lambda artifact: commit([artifact]),
-        )
-        # Reconcile returned artifacts in case upstream omitted a callback.
-        commit(artifacts)
+            artifacts = _embed_tile_artifacts_with_coordinates(
+                model_name=encoder_name,
+                output_variant=output_variant,
+                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                preprocessing=preprocessing,
+                execution=execution,
+                tiling_dir=tiling_dir,
+                slides=[loaded.slide for loaded in selected_loaded],
+                on_slide_persisted=lambda artifact: commit([artifact]),
+            )
+            # Reconcile returned artifacts in case upstream omitted a callback.
+            commit(artifacts)
         if empty_sample_ids:
             record_empty_sample_ids(cache_resolution, empty_sample_ids)
 

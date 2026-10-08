@@ -94,10 +94,31 @@ class FeatureCacheResolution(BaseCacheResolution):
     # it with slide2vec's per-slide namespacing, ``<slide_id>/<x>_<y>`` — recorded by the
     # caller from its manifest, never re-derived by splitting the ROI id apart (ADR 0007).
     payload_stem_by_id: dict[str, str] | None = None
+    # The key each id's identity signature and empty marker are recorded under. Defaults
+    # to the cache id. Content-addressed caches (supplied coordinates) key them by the
+    # payload stem instead, so the records of several tile sets of one sample coexist.
+    identity_key_by_id: dict[str, str] | None = None
+
+    def identity_key(self, cache_id: str) -> str:
+        if self.identity_key_by_id is None:
+            return str(cache_id)
+        return str(self.identity_key_by_id[str(cache_id)])
 
     @property
     def empty_sample_ids(self) -> set[str]:
-        return {str(s) for s in self.metadata.get("empty_sample_ids", [])}
+        """Ids recorded empty under the identity they have now.
+
+        An empty marker recorded under another identity (the slide's image or tile set
+        changed since) is stale: the sample must be extracted again.
+        """
+        recorded_empty = {str(s) for s in self.metadata.get("empty_sample_ids", [])}
+        signatures = self.metadata.get("sample_identity_signature_by_id", {})
+        empty: set[str] = set()
+        for cache_id in self.cache_ids:
+            key = self.identity_key(cache_id)
+            if key in recorded_empty and str(signatures.get(key)) == str(self.cache_stem_by_id[str(cache_id)]):
+                empty.add(str(cache_id))
+        return empty
 
     def payload_stem(self, cache_id: str) -> str:
         if self.payload_stem_by_id is None:
@@ -135,7 +156,7 @@ class FeatureCacheResolution(BaseCacheResolution):
             if cache_id in empty:
                 continue
             expected_signature = str(self.cache_stem_by_id[cache_id])
-            cached_signature = cached_signature_by_id.get(cache_id)
+            cached_signature = cached_signature_by_id.get(self.identity_key(cache_id))
             if cached_signature is None or cached_signature != expected_signature:
                 missing.append(cache_id)
                 continue
