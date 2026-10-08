@@ -318,23 +318,50 @@ _RAW_ROOT_SENTENCE = (
 
 
 def _eva_results_section() -> str:
-    """Render the public reproduced-versus-reference EVA comparison, one table per metric."""
+    """Render the public reproduced-versus-reference EVA comparison, one table per group.
+
+    Groups follow the dataset families, not the metric: patch and slide-level
+    classification both report balanced accuracy but are different protocols.
+    """
     rows = _latest_rows(load_results("eva"))
     sections = []
-    for metric, label, example in (
-        ("test/balanced_accuracy", "balanced accuracy", "eva/bach"),
-        ("test/foreground_mean_dice", "foreground mean Dice", "eva/consep"),
+    for title, datasets, metric, label, example in (
+        (
+            "Patch classification",
+            eva_bench.DATASETS,
+            "test/balanced_accuracy",
+            "balanced accuracy",
+            "eva/bach",
+        ),
+        (
+            "Segmentation",
+            eva_seg_bench.DATASETS,
+            "test/foreground_mean_dice",
+            "foreground mean Dice",
+            "eva/consep",
+        ),
+        (
+            "Slide-level classification",
+            eva_slide_bench.DATASETS,
+            "test/balanced_accuracy",
+            "balanced accuracy",
+            "eva/panda_small",
+        ),
     ):
-        metric_rows = [r for r in rows if r.metric == metric]
-        if not metric_rows:
+        heading = f"{title}\n{'~' * len(title)}\n\n"
+        group_rows = [
+            r for r in rows if r.metric == metric and r.key.get("dataset") in datasets
+        ]
+        if not group_rows:
             sections.append(
-                f"No {label} cells have been recorded yet. Run, for example::\n\n"
+                heading
+                + f"No {label} cells have been recorded yet. Run, for example::\n\n"
                 f"    soma reproduce {example} --encoder virchow2 "
                 f"--raw-root /path/to/{example} --record\n\n"
                 "to record a soma score next to the published EVA reference."
             )
         else:
-            sections.append(_eva_results_table(metric_rows, label))
+            sections.append(heading + _eva_results_table(group_rows, label))
     return "\n\n".join(sections)
 
 

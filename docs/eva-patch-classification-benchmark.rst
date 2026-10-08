@@ -101,6 +101,9 @@ the full datasets. Reuse a finished curation with ``--curated-dir`` instead of
 Results
 -------
 
+Patch classification
+~~~~~~~~~~~~~~~~~~~~
+
 Recorded balanced accuracy scores alongside the packaged EVA references.
 
 .. list-table::
@@ -126,14 +129,6 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - virchow2
      - 0.812 ± 0.008
      - 0.821
-   * - camelyon16_small
-     - uni2
-     - 0.854 ± 0.013
-     - 0.849
-   * - camelyon16_small
-     - virchow2
-     - 0.858 ± 0.011
-     - 0.861
    * - crc
      - uni2
      - 0.966 ± 0.001
@@ -158,14 +153,9 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - virchow2
      - 0.861 ± 0.001
      - 0.861
-   * - panda_small
-     - uni2
-     - 0.649 ± 0.017
-     - 0.657
-   * - panda_small
-     - virchow2
-     - 0.652 ± 0.017
-     - 0.646
+
+Segmentation
+~~~~~~~~~~~~
 
 Recorded foreground mean Dice scores alongside the packaged EVA references.
 
@@ -192,6 +182,35 @@ Recorded foreground mean Dice scores alongside the packaged EVA references.
      - virchow2
      - 0.673 ± 0.002
      - 0.669
+
+Slide-level classification
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Recorded balanced accuracy scores alongside the packaged EVA references.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Dataset
+     - Encoder
+     - soma (mean ± std)
+     - EVA reference
+   * - camelyon16_small
+     - uni2
+     - 0.854 ± 0.013
+     - 0.849
+   * - camelyon16_small
+     - virchow2
+     - 0.858 ± 0.011
+     - 0.861
+   * - panda_small
+     - uni2
+     - 0.649 ± 0.017
+     - 0.657
+   * - panda_small
+     - virchow2
+     - 0.652 ± 0.017
+     - 0.646
 
 See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
 
