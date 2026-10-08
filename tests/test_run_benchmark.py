@@ -171,6 +171,42 @@ def test_run_benchmark_runs_canonical_seed_loop_by_default(
     assert roots == {str(tmp_path / "out" / "feature_cache")}
 
 
+def test_run_benchmark_frees_each_seeds_pipeline_before_the_next_seed_starts(
+    tmp_path, ledger_benchmark, monkeypatch
+):
+    # A live segmentation seed holds the frozen encoder (GBs of GPU memory) inside a
+    # reference cycle; if the loop leaves it to the cyclic GC, seeds pile up encoders
+    # until one runs out of GPU memory. Each seed must start with the last one freed.
+    import gc
+    import weakref
+
+    gc.disable()
+    previous: list[weakref.ref] = []
+    alive_at_start: list[bool] = []
+
+    class CyclicPipeline:
+        def __init__(self, config):
+            alive_at_start.append(bool(previous) and previous[-1]() is not None)
+            self.cycle = self
+
+        def run(self):
+            previous.append(weakref.ref(self))
+
+    monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: CyclicPipeline)
+    try:
+        code = run_benchmark(
+            ledger_benchmark.name,
+            encoder="fixture-encoder",
+            raw_root=tmp_path / "raw",
+            output_root=tmp_path / "out",
+        )
+    finally:
+        gc.enable()
+
+    assert code == 0
+    assert alive_at_start == [False, False, False]
+
+
 def test_run_benchmark_can_return_the_completed_measurements(
     tmp_path, ledger_benchmark, stub_pipeline
 ):
