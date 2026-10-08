@@ -19,3 +19,7 @@ consep,uni2,test/foreground_mean_dice,0.630372583866,0.00296262087595,5,2026-10-
 consep,virchow2,test/foreground_mean_dice,0.642353022099,0.00128481641234,5,2026-10-08,5a6f284-dirty,6.3.4,soma reproduce --record
 monusac,uni2,test/foreground_mean_dice,0.642385053635,0.00433774668775,5,2026-10-08,5a6f284-dirty,6.3.4,soma reproduce --record
 monusac,virchow2,test/foreground_mean_dice,0.673100435734,0.00235266445486,5,2026-10-08,5a6f284-dirty,6.3.4,soma reproduce --record
+camelyon16_small,uni2,test/balanced_accuracy,0.854068877551,0.0126315783052,20,2026-10-08,441c694,6.3.4,soma reproduce --record
+camelyon16_small,virchow2,test/balanced_accuracy,0.858150510204,0.0109575083053,20,2026-10-08,441c694,6.3.4,soma reproduce --record
+panda_small,uni2,test/balanced_accuracy,0.648950236855,0.0173246676352,20,2026-10-08,441c694,6.3.4,soma reproduce --record
+panda_small,virchow2,test/balanced_accuracy,0.651814341704,0.0170866340823,20,2026-10-08,441c694,6.3.4,soma reproduce --record
