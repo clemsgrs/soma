@@ -1,10 +1,12 @@
-"""``soma reproduce eva/consep`` end to end on a synthetic HoVer-Net layout (issue #522).
+"""``soma reproduce`` end to end for the EVA benchmarks on synthetic raw roots.
+
+``eva/consep`` (issue #522) runs on a synthetic HoVer-Net layout; ``eva/camelyon16_small``
+and ``eva/panda_small`` (issue #535) on tiny pyramidal-TIFF cohorts.
 
 The CLI curates the raw root with the EVA geometry, trains the benchmark-private
-``eva_conv_with_image`` decoder + ``eva_segmentation`` head on the dense path with the weight-free
-literal encoder, and scores ``test/foreground_mean_dice`` from the run's ``summary.json``.
-The protocol's fixed step budget and patience are shrunk in-process so the scenario stays
-CPU-sized; everything else is the registered benchmark's own config.
+components with the weight-free literal encoder, and scores the primary metric from the
+run's ``summary.json``. The protocol's training budget and patience are shrunk in-process
+so the scenarios stay CPU-sized; everything else is the registered benchmark's own config.
 """
 
 from __future__ import annotations
@@ -15,13 +17,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from PIL import Image
 from scipy.io import savemat
 
 from soma.benchmarks import eva_segmentation as seg
+from soma.benchmarks import eva_slide as eva_slide_bench
 from soma.cli import main as soma_main
 from soma.curation.eva_segmentation import CONSEP_TILE_PX, OUTPUT_PX
 from tests.e2e.harness import Run
+from tests.eva_slide_raw import write_fake_camelyon16, write_fake_panda
 from tests.e2e.synthetic import _BACKGROUND, _CLASS_COLOURS, _noisy
 
 #: Synthetic CoNSeP images: 2 x 2 grid tiles of 250 px (EVA's 1000 px images give 4 x 4).
@@ -112,4 +117,106 @@ def test_reproduce_eva_consep_curates_trains_and_scores(
     artifact.check_equal("decoder_is_eva_conv_with_image", "eva_conv_with_image" in text, True)
     artifact.check_equal("head_is_eva_segmentation", "eva_segmentation" in text, True)
     artifact.check_equal("prenorm_feature_tap", "patch_features_prenorm" in text, True)
+    artifact.assert_passed()
+
+
+def _reproduce(name: str, raw_root: Path, out_dir: Path, output_root: Path, encoder: str) -> int:
+    try:
+        soma_main(
+            [
+                "reproduce",
+                name,
+                "--raw-root",
+                str(raw_root),
+                "--out-dir",
+                str(out_dir),
+                "--output-root",
+                str(output_root),
+                "--encoder",
+                encoder,
+                "--seeds",
+                "1",
+            ]
+        )
+    except SystemExit as exc:
+        return int(exc.code or 0)
+    return 0
+
+
+def _single_run(output_root: Path) -> Run:
+    (summary_path,) = sorted((output_root / "seed_0").glob("**/summary.json"))
+    run_dir = summary_path.parent
+    return Run(
+        run_dir=run_dir,
+        summary=json.loads(summary_path.read_text()),
+        config_path=run_dir / "config.yaml",
+    )
+
+
+@pytest.mark.parametrize(
+    ("dataset", "write_raw", "splits", "head", "epochs"),
+    [
+        (
+            "camelyon16_small",
+            write_fake_camelyon16,
+            {"train": 7, "tune": 4, "test": 4},
+            "eva_mil_binary",
+            60,
+        ),
+        # Six grades from one training slide each: more steps to separate them.
+        (
+            "panda_small",
+            write_fake_panda,
+            {"train": 6, "tune": 6, "test": 6},
+            "eva_mil_multiclass",
+            300,
+        ),
+    ],
+)
+def test_reproduce_eva_slide_benchmark_curates_trains_and_scores(
+    dataset,
+    write_raw,
+    splits,
+    head,
+    epochs,
+    tmp_path,
+    monkeypatch,
+    encoder_name,
+    encoded_images,
+    new_artifact,
+):
+    """``soma reproduce eva/<slide dataset>`` on a tiny synthetic raw root.
+
+    The curator samples EVA's tiles into one hs2p artifact per slide; soma skips tiling,
+    embeds exactly those tiles, and trains ``eva_abmil`` + the EVA head. Only the epoch
+    budget and patience are shrunk; the rest is the registered benchmark's own config.
+    """
+    artifact = new_artifact(f"reproduce_eva_{dataset}")
+    raw_root = write_raw(tmp_path / "raw")
+    monkeypatch.setattr(eva_slide_bench, "EPOCHS", epochs)
+    monkeypatch.setattr(eva_slide_bench, "PATIENCE", epochs)
+
+    out_dir, output_root = tmp_path / "curated", tmp_path / "runs"
+    code = _reproduce(f"eva/{dataset}", raw_root, out_dir, output_root, encoder_name)
+    artifact.check_equal("exit_code", code, 0)
+
+    manifest = pd.read_csv(out_dir / "dataset.csv")
+    split = pd.read_csv(out_dir / "splits.csv")["split"].value_counts().to_dict()
+    artifact.check_equal("curated_splits", split, splits)
+    artifact.check_equal(
+        "every_row_supplies_coordinates", bool(manifest["coordinates_path"].notna().all()), True
+    )
+    # slide2vec embedded exactly the curated tiles and nothing else.
+    artifact.check_equal("tiles_encoded", sum(encoded_images), int(manifest["num_tiles"].sum()))
+    artifact.check_equal(
+        "no_hs2p_tiling", sorted(p.name for p in tmp_path.glob("runs/**/previews/*/*.jpg")), []
+    )
+
+    run = _single_run(output_root)
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("test/balanced_accuracy", run.summary["test/balanced_accuracy"], 0.75)
+    text = run.config_path.read_text()
+    artifact.check_equal("aggregator_is_eva_abmil", "eva_abmil" in text, True)
+    artifact.check_equal(f"head_is_{head}", head in text, True)
     artifact.assert_passed()

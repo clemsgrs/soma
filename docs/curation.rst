@@ -80,6 +80,13 @@ The EVA segmentation datasets have their own curators, ``curate_consep`` and
 tiles and class-index masks that reproduce EVA's sample geometry, so the
 curated directory holds images as well as the manifest.
 
+The EVA slide-level datasets have ``curate_camelyon16_small`` and
+``curate_panda_small`` (``soma.curation.eva_slide``). They choose each slide's
+tiles with EVA's sampler and write one hs2p tiling artifact per slide; the
+slide manifest names it in ``coordinates_path`` (see
+:ref:`preprocessing-supplied-coordinates`). The curated directory holds these
+artifacts and the manifest, not tile images.
+
 Split policy
 ~~~~~~~~~~~~
 

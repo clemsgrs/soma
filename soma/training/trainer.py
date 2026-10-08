@@ -81,6 +81,8 @@ class Trainer:
     so a thresholded metric that sits at its floor while the model warms up (detection
     F1 at a fixed score threshold) cannot stop a run before it has produced any signal.
     A run whose monitor never moves trains to the epoch cap and logs a warning.
+    ``config.hold_patience_until_monitor_moves=False`` drops the hold (Lightning's plain
+    ``EarlyStopping``); a monitor that never moves then stops at patience, still warned.
 
     Pure PyTorch training loop — no external frameworks needed.
 
@@ -143,12 +145,14 @@ class Trainer:
         # its floor until the model's outputs clear the threshold; stopping during that
         # plateau ends a slow-warming run before it has produced a single detection.
         # Patience still counts the plateau, so a run that stops within its original
-        # patience window stops at the same epoch as before.
+        # patience window stops at the same epoch as before. Off when
+        # ``hold_patience_until_monitor_moves`` is False (plain Lightning patience).
         first_monitor_value: float | None = None
         monitor_moved = False
         started_at = time.perf_counter()
         select_last = self._config.checkpoint_selection == "last"
         patience = self._config.patience
+        hold_patience = self._config.hold_patience_until_monitor_moves
         tune_every = self._config.tune_every_n_epochs
         # Under `last` the configured monitor selects nothing, so labelling the panel's
         # tracked value with it would misreport which quantity is shown.
@@ -377,7 +381,7 @@ class Trainer:
                 else:
                     patience_counter += 1
                     status = f"no improvement ({patience_counter}/{_format_patience(patience)})"
-                    if not monitor_moved:
+                    if hold_patience and not monitor_moved:
                         status += f"; {monitor_name} unchanged since first tune evaluation, early stopping held"
 
                 current_status = status
@@ -385,7 +389,7 @@ class Trainer:
 
                 if (
                     not improved
-                    and monitor_moved
+                    and (monitor_moved or not hold_patience)
                     and patience is not None
                     and patience_counter >= patience
                 ):

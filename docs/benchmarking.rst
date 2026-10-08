@@ -67,8 +67,8 @@ See :doc:`cli` for command options, :doc:`outputs` for run artifacts, and
 Included benchmarks
 -------------------
 
-* :doc:`EVA <eva-patch-classification-benchmark>`: patch classification and
-  patch segmentation with frozen tile encoders.
+* :doc:`EVA <eva-patch-classification-benchmark>`: patch classification, patch
+  segmentation, and slide classification with frozen tile encoders.
 * :doc:`OCELOT <ocelot-detection-benchmark>`: cell detection with dense encoders.
 * :doc:`HEST <hest-gene-expression-benchmark>`: spatial gene-expression prediction
   with frozen encoders.

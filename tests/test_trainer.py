@@ -840,7 +840,7 @@ class TestPatienceWarmup:
     that had never produced a detection.
     """
 
-    def _fit(self, tmp_path: Path, monitor_values, *, patience, caplog=None):
+    def _fit(self, tmp_path: Path, monitor_values, *, patience, caplog=None, **training):
         from torch.utils.data import DataLoader
 
         seed_everything(0)
@@ -853,6 +853,7 @@ class TestPatienceWarmup:
             patience=patience,
             monitor="auroc",
             monitor_mode="max",
+            **training,
         )
         trainer = Trainer(
             model=_make_model(),
@@ -908,6 +909,41 @@ class TestPatienceWarmup:
 
         assert result.selected_epoch == 0
         assert len(result.history) == len(values)
+        assert "never left its first-evaluation value" in caplog.text
+
+
+    def test_hold_is_on_by_default(self):
+        assert TrainingConfig().hold_patience_until_monitor_moves is True
+
+    def test_plain_patience_stops_on_an_initial_plateau(self, tmp_path: Path):
+        """Lightning ``EarlyStopping(min_delta=0, patience=N)``: a monitor sitting at its
+        first value for N more evaluations stops the run and keeps the first epoch."""
+        values = [0.5] * 21 + [0.9] * 9
+        result = self._fit(
+            tmp_path, values, patience=20, hold_patience_until_monitor_moves=False
+        )
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 21
+
+    def test_default_holds_the_same_plateau(self, tmp_path: Path):
+        values = [0.5] * 21 + [0.9] * 9
+        result = self._fit(tmp_path, values, patience=20)
+
+        assert result.selected_epoch == 21
+        assert len(result.history) == len(values)
+
+    def test_plain_patience_stops_a_monitor_that_never_moves_and_warns(
+        self, tmp_path: Path, caplog
+    ):
+        values = [0.0] * 6
+        with caplog.at_level("WARNING", logger="soma.training.trainer"):
+            result = self._fit(
+                tmp_path, values, patience=2, hold_patience_until_monitor_moves=False
+            )
+
+        assert result.selected_epoch == 0
+        assert len(result.history) == 3
         assert "never left its first-evaluation value" in caplog.text
 
 
