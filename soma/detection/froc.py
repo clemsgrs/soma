@@ -32,6 +32,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from soma.detection.matching import _match_single_class
 
@@ -44,6 +45,7 @@ __all__ = [
     "FrocResult",
     "patch_area_mm2",
     "score_monkey_froc",
+    "suppress_cross_class_duplicates",
     "MONKEY_CLASS_NAMES",
     "MONKEY_MATCH_UM",
     "MNL_CLASS_NAME",
@@ -60,7 +62,8 @@ MONKEY_CLASS_NAMES: tuple[str, ...] = ("lymphocytes", "monocytes")
 MONKEY_MATCH_UM: tuple[float, ...] = (4.0, 5.0)
 
 # The merged "MNL" / inflammatory-cells leaderboard: both classes pooled into one, scored
-# at the 5µm inflammation margin.
+# at the 5µm inflammation margin. Pooling first drops cross-class duplicates within that
+# margin (see :func:`suppress_cross_class_duplicates`).
 MNL_CLASS_NAME = "inflammatory-cells"
 MNL_MATCH_UM = 5.0
 
@@ -240,6 +243,29 @@ def patch_area_mm2(width_px: int, height_px: int, spacing_um: float) -> float:
     return (float(width_px) * float(spacing_um) / 1000.0) * (float(height_px) * float(spacing_um) / 1000.0)
 
 
+def suppress_cross_class_duplicates(
+    xy: np.ndarray, scores: np.ndarray, classes: np.ndarray, *, delta: float
+) -> np.ndarray:
+    """Boolean keep-mask that drops cross-class duplicates before classes are pooled.
+
+    A multi-class detector can fire on one object in several class channels. Pooled into a
+    single class, those copies become one true positive plus false positives. Greedy by
+    score: a prediction is dropped when a kept, higher-scoring prediction of a *different*
+    class lies within ``delta`` (same unit as the points, inclusive like the matcher).
+    Same-class neighbours are left alone; the per-class peak NMS already separated them.
+    """
+    xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+    classes = np.asarray(classes).reshape(-1)
+    keep = np.zeros(xy.shape[0], dtype=bool)
+    if xy.shape[0] == 0:
+        return keep
+    neighbours = cKDTree(xy).query_ball_point(xy, r=float(delta))
+    for i in np.argsort(-scores, kind="stable"):
+        keep[i] = not any(keep[j] and classes[j] != classes[i] for j in neighbours[i])
+    return keep
+
+
 def score_monkey_froc(
     per_image_pred_xy: list[np.ndarray],
     per_image_pred_class: list[np.ndarray],
@@ -263,7 +289,10 @@ def score_monkey_froc(
 
     Returns a dict with one :class:`FrocResult` per class name, a ``mean_froc`` float (the
     Task-2 ranking = mean of the per-class scores), and one :class:`FrocResult` under
-    :data:`MNL_CLASS_NAME` for the merged inflammatory-cells (Task-1) leaderboard.
+    :data:`MNL_CLASS_NAME` for the merged inflammatory-cells (Task-1) leaderboard. Before
+    pooling, :func:`suppress_cross_class_duplicates` drops a prediction when a higher-scoring
+    one of the other class lies within the MNL margin, so a cell found in both channels
+    counts once (as a single-class MNL submission would).
     """
     if spacing_um <= 0:
         raise ValueError(f"spacing_um must be > 0, got {spacing_um}.")
@@ -290,12 +319,24 @@ def score_monkey_froc(
         per_class_scores.append(froc.score)
     result["mean_froc"] = float(np.mean(per_class_scores)) if per_class_scores else 0.0
 
-    # MNL: pool both classes into one merged inflammatory-cells detection problem.
+    # MNL: pool both classes into one merged inflammatory-cells detection problem, after
+    # dropping the cross-class duplicates of each object.
+    mnl_delta_px = float(mnl_match_um) / float(spacing_um)
+    keeps = [
+        suppress_cross_class_duplicates(xy, score, cls, delta=mnl_delta_px)
+        for xy, score, cls in zip(per_image_pred_xy, per_image_pred_score, per_image_pred_class)
+    ]
     result[MNL_CLASS_NAME] = compute_froc(
-        per_image_pred_xy=per_image_pred_xy,
-        per_image_pred_score=per_image_pred_score,
+        per_image_pred_xy=[
+            np.asarray(xy, dtype=np.float64).reshape(-1, 2)[keep]
+            for xy, keep in zip(per_image_pred_xy, keeps)
+        ],
+        per_image_pred_score=[
+            np.asarray(score, dtype=np.float64).reshape(-1)[keep]
+            for score, keep in zip(per_image_pred_score, keeps)
+        ],
         per_image_gt_xy=per_image_gt_xy,
-        delta=float(mnl_match_um) / float(spacing_um),
+        delta=mnl_delta_px,
         per_image_area_mm2=per_image_area_mm2,
         fp_thresholds=fp_thresholds,
     )
