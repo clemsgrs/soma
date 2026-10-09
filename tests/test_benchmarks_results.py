@@ -66,9 +66,9 @@ def test_load_results_requires_metric_and_measured(tmp_path, monkeypatch):
 
 def test_reproduced_rows_filters_by_axes_and_metric():
     rows = reproduced_rows("eva", dataset="crc", encoder="virchow2", metric="test/balanced_accuracy")
-    assert len(rows) == 1
-    assert rows[0].key == {"dataset": "crc", "encoder": "virchow2"}
-    assert rows[0].measured == pytest.approx(0.966)
+    assert len(rows) == 2  # historical epoch-mapping row + fixed-step re-record
+    assert all(row.key == {"dataset": "crc", "encoder": "virchow2"} for row in rows)
+    assert all(row.measured == pytest.approx(0.966, abs=1e-3) for row in rows)
     # A non-existent cell selects nothing (rather than erroring).
     assert reproduced_rows("eva", dataset="crc", encoder="nope") == []
 
