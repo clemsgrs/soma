@@ -1,7 +1,10 @@
 """Tests for the CI workflows that build Docker images from Docker Hub bases."""
 
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 DOCKERHUB_USERNAME = "${{ secrets.DOCKERHUB_USERNAME }}"
@@ -96,5 +99,189 @@ def test_every_docker_hub_pull_is_preceded_by_a_docker_hub_login():
 
     assert ("pr-test.yaml", "docker-test", "Set up Docker Buildx") in pulls
     assert ("pr-test.yaml", "docker-test", "Build CI image") in pulls
+    assert ("pr-test.yaml", "prism-regression", "Set up Docker Buildx") in pulls
+    assert ("pr-test.yaml", "prism-regression", "Build CI image") in pulls
     assert ("docker.yaml", "docker", "Set up Docker Buildx") in pulls
     assert ("docker.yaml", "docker", "Build and push Docker image") in pulls
+
+
+PRISM_TEST = "prism_slide_feature_matches_slide2vec_gt"
+SAME_REPO_GUARD = (
+    "(github.event_name != 'pull_request' || "
+    "github.event.pull_request.head.repo.full_name == github.repository)"
+)
+
+
+def _pr_test_jobs() -> dict:
+    return _load_workflow(".github/workflows/pr-test.yaml")["jobs"]
+
+
+def _prism_steps() -> list[dict]:
+    return _pr_test_jobs()["prism-regression"]["steps"]
+
+
+def test_prism_regression_runs_in_its_own_parallel_job():
+    jobs = _pr_test_jobs()
+    prism = jobs["prism-regression"]
+
+    # Parallel with the suite: no dependency on docker-test.
+    assert "needs" not in prism
+    run = _prism_steps()[_step_index(_prism_steps(), "Run PRISM regression in container")]
+    assert f"-k {PRISM_TEST}" in run["run"]
+    assert "--shm-size=2g" in run["run"]
+    assert run["env"]["SOMA_RUN_PRISM_REGRESSION"] == "1"
+    assert prism["env"]["HF_TOKEN"] == "${{ secrets.HF_TOKEN }}"
+
+
+def test_docker_test_no_longer_runs_the_prism_regression():
+    steps = _docker_test_steps()
+    runs = [step.get("run", "") for step in steps]
+
+    assert not any("SOMA_RUN_PRISM_REGRESSION" in run for run in runs)
+    assert all(step.get("name") != "Run PRISM regression in container" for step in steps)
+    suite = steps[_step_index(steps, "Run full test suite in container")]["run"]
+    assert f"-k 'not {PRISM_TEST}'" in suite
+
+
+PRISM_SCOPE_STEP = "Determine whether extraction code changed"
+SCOPE_ENV = {
+    "EVENT_NAME": "${{ github.event_name }}",
+    "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+    "HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+    "HEAD_REF": "${{ github.head_ref }}",
+    "HEAD_REPO": "${{ github.event.pull_request.head.repo.full_name }}",
+    "REPO": "${{ github.repository }}",
+}
+
+
+def _run_prism_scope(
+    tmp_path: Path,
+    *,
+    event: str = "pull_request",
+    changed: tuple[str, ...] = (),
+    head_ref: str = "some-feature",
+    head_repo: str = "clemsgrs/soma",
+) -> str:
+    """Execute the real scope step with a stub ``git`` that reports ``changed``."""
+    steps = _prism_steps()
+    script = steps[_step_index(steps, PRISM_SCOPE_STEP)]["run"]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    diff = tmp_path / "diff.txt"
+    diff.write_text("".join(f"{path}\n" for path in changed))
+    git = bin_dir / "git"
+    git.write_text(f'#!/usr/bin/env bash\n[ "$1" = diff ] && cat "{diff}"\n')
+    git.chmod(0o755)
+    output = tmp_path / "github_output"
+    output.write_text("")
+    env = {
+        **os.environ,
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_OUTPUT": str(output),
+        "EVENT_NAME": event,
+        "BASE_SHA": "base",
+        "HEAD_SHA": "head",
+        "HEAD_REF": head_ref if event == "pull_request" else "",
+        "HEAD_REPO": head_repo if event == "pull_request" else "",
+        "REPO": "clemsgrs/soma",
+    }
+    subprocess.run(["bash", "-c", script], env=env, check=True, capture_output=True)
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    return outputs["run"]
+
+
+def test_prism_scope_step_reads_the_event_from_its_env():
+    steps = _prism_steps()
+    scope = steps[_step_index(steps, PRISM_SCOPE_STEP)]
+
+    assert scope["id"] == "scope"
+    assert scope["env"] == SCOPE_ENV
+    # Event data reaches the script only through env, never interpolated inline.
+    assert "${{" not in scope["run"]
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+def test_prism_regression_always_runs_outside_pull_requests(tmp_path, event):
+    assert _run_prism_scope(tmp_path, event=event) == "true"
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        ("pyproject.toml",),
+        ("Dockerfile.ci",),
+        ("docs/index.md", "soma/extraction/extractor.py"),
+        ("soma/encoders/validation.py",),
+        ("soma/cache/keys.py",),
+        ("soma/preprocessing/supplied_coordinates.py",),
+        ("soma/slide2vec_adapter.py",),
+        ("tests/fixtures/regression/gt/test-wsi.pt",),
+        ("tests/test_regression_fixtures.py",),
+        (".github/workflows/pr-test.yaml",),
+    ],
+)
+def test_prism_regression_runs_when_a_pr_touches_the_extraction_path(tmp_path, changed):
+    assert _run_prism_scope(tmp_path, changed=changed) == "true"
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        ("docs/index.md",),
+        ("soma/training/trainer.py", "soma/aggregators/mil/abmil.py"),
+        ("soma/tasks/segmentation.py", "tests/test_pipeline.py"),
+        ("soma/dense_extraction.py", "soma/decoders/heavy_conv.py"),
+        # Look-alike names must not match by prefix.
+        ("soma/features_extra.py", "soma/configs/eva/bach.yaml", "pyproject.toml.bak"),
+    ],
+)
+def test_prism_regression_skips_prs_off_the_extraction_path(tmp_path, changed):
+    assert _run_prism_scope(tmp_path, changed=changed) == "false"
+
+
+def test_prism_regression_skips_fork_prs_which_get_no_secrets(tmp_path):
+    changed = ("soma/extraction/extractor.py",)
+
+    assert _run_prism_scope(tmp_path, changed=changed, head_repo="someone/soma") == "false"
+
+
+def test_prism_regression_skips_release_version_bump_prs_like_docker_test(tmp_path):
+    changed = ("pyproject.toml",)
+
+    assert _run_prism_scope(tmp_path, changed=changed, head_ref="release-1.20.0") == "false"
+
+
+def test_prism_regression_job_always_reports_and_skips_only_its_docker_steps():
+    # Should the ruleset require `prism-regression`, the job must report a status
+    # on every PR: no job-level `if`, the scope step always runs, and every other
+    # step after checkout is gated on the scope output.
+    job = _pr_test_jobs()["prism-regression"]
+    steps = job["steps"]
+    scope = _step_index(steps, PRISM_SCOPE_STEP)
+
+    assert "if" not in job
+    assert "if" not in steps[scope]
+    assert scope < _step_index(steps, "Log in to Docker Hub")
+    for step in steps[scope + 1 :]:
+        assert "steps.scope.outputs.run == 'true'" in step["if"], step["name"]
+
+
+def test_prism_regression_keeps_the_fork_pr_and_hf_token_guards():
+    steps = _prism_steps()
+    guard = steps[_step_index(steps, "Guard required secret")]
+
+    assert 'test -n "${HF_TOKEN:-}"' in guard["run"]
+    for name in ("Log in to Docker Hub", "Guard required secret", "Run PRISM regression in container"):
+        condition = steps[_step_index(steps, name)]["if"]
+        assert SAME_REPO_GUARD in condition, name
+    assert _step_index(steps, "Guard required secret") < _step_index(
+        steps, "Run PRISM regression in container"
+    )
+
+
+def test_prism_regression_reuses_the_shared_gha_build_cache():
+    steps = _prism_steps()
+    build = steps[_step_index(steps, "Build CI image")]
+
+    assert build["with"]["file"] == "Dockerfile.ci"
+    assert build["with"]["cache-from"] == "type=gha"

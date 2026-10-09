@@ -106,6 +106,135 @@ jobs:
             soma-ci:${{ github.sha }} \
             bash -lc "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt '/opt/app[dev]' pytest pytest-cov && python -m pytest -q tests -k 'not prism_slide_feature_matches_slide2vec_gt'"
 
+  prism-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # The PRISM regression checks one thing: the uncached WSI -> slide-feature
+      # path (FeatureExtractor with EncoderConfig(name="prism")) still matches the
+      # slide2vec ground truth. On PRs it runs only when the diff touches a path
+      # below; push to main and workflow_dispatch always run it, to catch anything
+      # this list misses right after merge. Should this check become required,
+      # the job must always report, so only the Docker steps are skipped, never
+      # the job itself.
+      - name: Determine whether extraction code changed
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Bash globs: `*` also matches `/`, so `dir/*` covers the whole tree.
+          # Every soma module whose code runs on the uncached WSI pooled path is
+          # listed; modules soma/config.py only imports for unrelated validation
+          # (tasks, evaluation, aggregators, decoders, dense, pixel_classifiers)
+          # cannot move the embedding, and docker-test already catches import errors.
+          prism_paths=(
+            'pyproject.toml'                     # dependency floors: slide2vec/hs2p/torch/transformers bumps move PRISM output
+            'Dockerfile.ci'                      # CI image, incl. the torch constraints file it writes inline
+            'soma/extraction/*'                  # FeatureExtractor, pooled extractor, orchestration, slide aggregation
+            'soma/features.py'                   # FeatureStore the extracted embedding is loaded from
+            'soma/slide2vec_adapter.py'          # maps soma configs and samples onto the slide2vec pipeline
+            'soma/extraction_contracts.py'       # FeatureSource/provenance types the result is built from
+            'soma/encoders/*'                    # encoder precision and preprocessing resolution
+            'soma/preprocessing/*'               # tiling inputs (supplied coordinates, preprocessing hierarchy)
+            'soma/cache/*'                       # cache keys/io/tile artifact metadata, used even with the cache off
+            'soma/atomic_io.py'                  # writes the config and cache metadata files on this path
+            'soma/_logging.py'                   # FeatureExtractor sets up default logging on every run
+            'soma/config.py'                     # EncoderConfig/PreprocessingConfig/CacheConfig the test builds
+            'soma/dataset.py'                    # Dataset/SampleRecord the slides are read through
+            'soma/spacing.py'                    # effective spacing resolution used by config
+            'tests/conftest.py'                  # shared pytest setup the regression runs under
+            'tests/test_regression_fixtures.py'  # the regression test itself
+            'tests/fixtures/regression/*'        # input WSI/mask and slide2vec ground-truth embedding
+            '.github/workflows/pr-test.yaml'     # this job and its path list
+          )
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Non-PR event: running the PRISM regression."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "Fork PR: no HF_TOKEN secret, skipping the PRISM regression."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$HEAD_REF" == release-* ]]; then
+            echo "Release version-bump PR: skipping the PRISM regression, like docker-test."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")"
+          echo "Changed files:"
+          echo "$files"
+          while IFS= read -r file; do
+            for pattern in "${prism_paths[@]}"; do
+              # Unquoted right-hand side: glob match, not string equality.
+              if [[ "$file" == $pattern ]]; then
+                echo "$file matches $pattern -> running the PRISM regression."
+                echo "run=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+            done
+          done <<< "$files"
+          echo "No extraction-path change -> skipping the PRISM regression."
+          echo "run=false" >> "$GITHUB_OUTPUT"
+
+      # Same rule as docker-test: log in before Buildx setup (it pulls
+      # moby/buildkit from Docker Hub) and before the image build.
+      - name: Log in to Docker Hub
+        if: ${{ steps.scope.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.scope.outputs.run == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Free disk space on runner
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          set -euxo pipefail
+          df -h
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          docker system prune -af || true
+          sudo apt-get clean
+          df -h
+
+      - name: Build CI image
+        if: steps.scope.outputs.run == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ci
+          push: false
+          load: true
+          tags: soma-ci:${{ github.sha }}
+          # Read the cache docker-test writes for the same Dockerfile.ci; one
+          # writer avoids two parallel jobs exporting the same layers.
+          cache-from: type=gha
+
       - name: Guard required secret
         if: ${{ steps.scope.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
         run: |
