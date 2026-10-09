@@ -1,5 +1,20 @@
 # Changelog
 
+- 2026-10-09: The Monkey curator now reads the public training data exactly as
+  `aws s3 sync s3://monkey-training` downloads it (`images/pas-cpg/`,
+  `annotations/json_mm/`) and fails with that command when an input is missing.
+  It writes one sample per ROI polygon instead of one per slide: the polygon's
+  level-0 bounding box, read with hs2p's slide reader, as a PNG, the points in crop
+  coordinates, and an ignore mask whose valid region is the polygon dilated by
+  5 µm. Points further than 5 µm from their polygon are dropped; `summary.json`
+  records the kept and dropped counts, the valid area and `area_rois`, and each row
+  records `source_slide`, `crop_x` and `crop_y`. The single 70/15/15 split
+  (`assign_patient_splits`) is replaced by a 5-fold patient cross-validation with
+  each centre spread evenly and the BEETLE rotation (fold k is `test`, fold k+1 is
+  `tune`). The `detection/monkey` benchmark now tiles the ROI manifest like MIDOG:
+  its `DatasetSpec` sets 1024 px tiles with 128 px overlap, and `monkey.yaml` uses
+  `requested_tile_size_px: 1024` with a 448 px dense window.
+
 - 2026-10-09: Training progress is now visible when stdout is not a terminal (a SLURM
   `.out` file, `nohup`, redirected output). Rich redraws the training panel only on a
   terminal, so before this change the log stayed empty for the whole fit and showed

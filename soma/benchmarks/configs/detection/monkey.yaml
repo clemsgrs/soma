@@ -5,8 +5,15 @@
 # scored with the MONKEY-native FROC (mean of the per-class FROC scores; lymphocytes 4 µm /
 # monocytes 5 µm matching margins). Only ``encoder.name`` varies across the roster.
 #
-# Data paths are the curator's author-machine defaults; the driver repoints them per
-# replicate.
+# MONKEY annotates cells only inside ROI polygons on whole slides. The curator crops one
+# flat PNG per ROI with an ignore mask (the polygon dilated by 5 µm), and the manifest the
+# sweep consumes (``curated``) is the TILED one (soma.curation.tile_detection), produced
+# from that ROI-level output (kept alongside as ``curated/roi/``). The geometry is MIDOG's:
+# fixed 1024² tiles at 128 px overlap, supervised at requested_tile_size_px 1024 with a
+# 448 px encoder sliding window. The score path stitches per-tile detections back to each
+# ROI, and FROC divides false positives by the ROI's valid area. The splits are a 5-fold
+# patient cross-validation, so each fold is one replicate. Data paths are the curator's
+# author-machine defaults; the driver repoints them per replicate.
 
 run:
   output_root: output/detection_benchmark/monkey
@@ -14,9 +21,9 @@ run:
   tags: [detection-benchmark, monkey, detection, lightweight_conv]
 
 preprocessing:
-  requested_tile_size_px: 512
+  requested_tile_size_px: 1024      # tile/supervision size (MIDOG geometry; tiled ROIs)
   requested_spacing_um: 0.242
-  dense_window_size: 512
+  dense_window_size: 448            # encoder sliding window within each 1024 tile
   dense_window_overlap: 0.25
 
 data:

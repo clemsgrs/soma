@@ -214,10 +214,11 @@ DATASETS: dict[str, DatasetSpec] = {
         tolerance=None,
         test_source="local_holdout",
         config_file="monkey.yaml",
-        # MONKEY's curator still references whole WSIs in place; its WSI -> fixed-tile
-        # curation step is pending (#375), after which it stitches like MIDOG. Until that
-        # lands no MONKEY cell can extract, so the flag documents the intended protocol.
         stitch_to_roi=True,
+        # The same fixed geometry as MIDOG: the curator crops one sample per ROI polygon
+        # and these tile it.
+        tile_px=1024,
+        tile_overlap_px=128,
     ),
 }
 
@@ -1156,35 +1157,41 @@ class DetectionBenchmark:
             from soma.curation.ocelot import curate_ocelot_detection
 
             return curate_ocelot_detection(raw_root, out_dir)
+        if dataset not in ("midog", "monkey"):
+            raise KeyError(f"unknown detection dataset {dataset!r}; known: {sorted(DATASETS)}.")
+        from soma.curation.tile_detection import tile_detection_manifest
+
+        # MIDOG and MONKEY curate one sample per large ROI under ``roi/`` and tile it into
+        # fixed tiles at ``out_dir``, the manifest the runs consume.
+        out = Path(out_dir)
+        spec = dataset_spec(dataset)
         if dataset == "midog":
             from soma.curation.midog import curate_midog_detection
-            from soma.curation.tile_detection import tile_detection_manifest
 
-            out = Path(out_dir)
-            spec = dataset_spec("midog")
             roi_manifest = curate_midog_detection(
                 raw_root,
                 out / "roi",
                 annotations_json=Path(raw_root) / "MIDOG2022_training_enriched.json",
                 force_spacing_at_level_0=spec.spacing_um,
             )
-            tile_detection_manifest(
-                roi_manifest.dataset_csv.parent,
-                out,
-                tile_size=spec.tile_px,
-                overlap=spec.tile_overlap_px,
-                target_spacing=spec.spacing_um,
-            )
-            return CuratedManifest(
-                dataset_csv=out / "dataset.csv",
-                splits_csv=out / "splits.csv",
-                summary_json=out / "summary.json",
-            )
-        if dataset == "monkey":
+        else:
             from soma.curation.monkey import curate_monkey_detection
 
-            return curate_monkey_detection(raw_root, out_dir)
-        raise KeyError(f"unknown detection dataset {dataset!r}; known: {sorted(DATASETS)}.")
+            roi_manifest = curate_monkey_detection(
+                raw_root, out / "roi", spacing_at_level_0=spec.spacing_um
+            )
+        tile_detection_manifest(
+            roi_manifest.dataset_csv.parent,
+            out,
+            tile_size=spec.tile_px,
+            overlap=spec.tile_overlap_px,
+            target_spacing=spec.spacing_um,
+        )
+        return CuratedManifest(
+            dataset_csv=out / "dataset.csv",
+            splits_csv=out / "splits.csv",
+            summary_json=out / "summary.json",
+        )
 
     def build_config(
         self,
