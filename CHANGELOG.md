@@ -15,6 +15,14 @@
   its `DatasetSpec` sets 1024 px tiles with 128 px overlap, and `monkey.yaml` uses
   `requested_tile_size_px: 1024` with a 448 px dense window.
 
+- 2026-10-09: The detection benchmark's tile stitch now merges the overlap copies
+  of a ground-truth point that lie within 0.01 px of each other, instead of only
+  exact coordinate matches. The head stores tile-local points as float32, so the
+  two copies of an arbitrary-float annotation (Monkey's mm-converted points) lifted
+  to slightly different ROI coordinates and both were kept: on one Monkey fold the
+  stitched ground truth had 1.6% extra points, which counted as misses. MIDOG's
+  half-pixel box centres round-trip exactly, so its scores do not change.
+
 - 2026-10-09: Training progress is now visible when stdout is not a terminal (a SLURM
   `.out` file, `nohup`, redirected output). Rich redraws the training panel only on a
   terminal, so before this change the log stayed empty for the whole fit and showed
