@@ -1,5 +1,16 @@
 # Changelog
 
+- 2026-10-09: Training progress is now visible when stdout is not a terminal (a SLURM
+  `.out` file, `nohup`, redirected output). Rich redraws the training panel only on a
+  terminal, so before this change the log stayed empty for the whole fit and showed
+  the panel once, at the end. On a non-terminal console the trainer now prints plain,
+  flushed lines instead: one when the fit starts (fold, epoch or step budget, trainable
+  parameters), one per epoch (train loss, tune loss, monitor value with the selected
+  value, patience, learning rate, elapsed time and ETA, status), one in-epoch line
+  after 30 s without output (items processed so far), and a final summary (epochs run,
+  early stopping, the selected checkpoint and its tune metrics). The panel on a
+  terminal or in Jupyter does not change.
+
 - 2026-10-09: Detection manifests accept an optional `ignore_mask_path` column: a
   flat uint8 PNG in the image's pixel frame, 255 where nothing is annotated and 0
   where it is (any other value fails and names the file and the sample). Ignored

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import math
 import time
@@ -24,6 +25,10 @@ from soma.config import TrainingConfig
 from soma.evaluation.metrics import metric_higher_is_better
 
 logger = logging.getLogger(__name__)
+
+# On a console that cannot redraw, an in-epoch progress line is written once this many
+# seconds have passed without any progress line, so a long epoch is visibly alive.
+PROGRESS_HEARTBEAT_SECONDS = 30.0
 
 
 def model_input_device(model: torch.nn.Module, default: torch.device | str) -> torch.device:
@@ -149,6 +154,7 @@ class Trainer:
         # ``hold_patience_until_monitor_moves`` is False (plain Lightning patience).
         first_monitor_value: float | None = None
         monitor_moved = False
+        early_stopped = False
         started_at = time.perf_counter()
         select_last = self._config.checkpoint_selection == "last"
         patience = self._config.patience
@@ -180,6 +186,8 @@ class Trainer:
         )
 
         def render_panel() -> None:
+            if live is None:
+                return
             elapsed_seconds = time.perf_counter() - started_at
             live.update(
                 _build_training_panel(
@@ -208,35 +216,53 @@ class Trainer:
                 refresh=True,
             )
 
-        with Live(
-            _build_training_panel(
-                title="Training progress",
-                subtitle="starting",
-                log=None,
+        # Rich redraws a ``Live`` panel only on a real terminal (or in Jupyter). On a file
+        # (a SLURM ``.out``, ``nohup``, redirected stdout) it writes the panel once, when
+        # the fit ends, so progress goes out as plain lines instead.
+        plain: _PlainProgressLog | None = None
+        if console.is_terminal or console.is_jupyter:
+            live_context = Live(
+                _build_training_panel(
+                    title="Training progress",
+                    subtitle="starting",
+                    log=None,
+                    total_epochs=total_epochs,
+                    selected_epoch=selected_epoch,
+                    selected_tune_loss=selected_tune_loss,
+                    selected_tune_metrics=selected_tune_metrics,
+                    monitor_name=monitor_name,
+                    selected_monitor_value=selected_monitor_value,
+                    patience_counter=patience_counter,
+                    patience_limit=patience,
+                    status="waiting for epoch 1",
+                    trainable_param_count=self._trainable_param_count,
+                    fold=self._fold,
+                    num_folds=self._num_folds,
+                    elapsed_seconds=0.0,
+                    avg_epoch_seconds=None,
+                    eta_seconds=None,
+                    batch_progress=None,
+                    total_steps=self._config.max_steps,
+                    optimizer_steps=self._optimizer_steps,
+                ),
+                console=console,
+                refresh_per_second=8,
+                transient=False,
+            )
+        else:
+            live_context = contextlib.nullcontext()
+            plain = _PlainProgressLog(
+                console,
+                started_at=started_at,
                 total_epochs=total_epochs,
-                selected_epoch=selected_epoch,
-                selected_tune_loss=selected_tune_loss,
-                selected_tune_metrics=selected_tune_metrics,
-                monitor_name=monitor_name,
-                selected_monitor_value=selected_monitor_value,
-                patience_counter=patience_counter,
-                patience_limit=patience,
-                status="waiting for epoch 1",
-                trainable_param_count=self._trainable_param_count,
+                total_steps=self._config.max_steps,
                 fold=self._fold,
                 num_folds=self._num_folds,
-                elapsed_seconds=0.0,
-                avg_epoch_seconds=None,
-                eta_seconds=None,
-                batch_progress=None,
-                total_steps=self._config.max_steps,
-                optimizer_steps=self._optimizer_steps,
-            ),
-            console=console,
-            refresh_per_second=8,
-            transient=False,
-        ) as live:
+            )
+        with live_context as live:
             render_panel()
+            if plain is not None:
+                plain.start(trainable_param_count=self._trainable_param_count)
 
             def on_batch_progress(phase: str, processed_items: int, total_items: int) -> None:
                 nonlocal current_batch_progress, current_status
@@ -247,6 +273,14 @@ class Trainer:
                 )
                 current_status = f"{phase} items {processed_items}/{total_items}"
                 render_panel()
+                if plain is not None:
+                    plain.heartbeat(
+                        epoch=epoch,
+                        phase=phase,
+                        processed_items=processed_items,
+                        total_items=total_items,
+                        optimizer_steps=self._optimizer_steps,
+                    )
 
             for epoch in range(total_epochs):
                 batch_sampler = getattr(self._train_loader, "batch_sampler", None)
@@ -301,6 +335,14 @@ class Trainer:
                 if not evaluate_tune:
                     current_status = f"tune evaluated every {tune_every} epochs"
                     render_panel()
+                    if plain is not None:
+                        plain.epoch_end(
+                            epoch=epoch,
+                            train_loss=train_loss,
+                            eta_seconds=eta_seconds,
+                            status=current_status,
+                            optimizer_steps=self._optimizer_steps,
+                        )
                     continue
 
                 current_log = log = EpochLog(
@@ -386,6 +428,22 @@ class Trainer:
 
                 current_status = status
                 render_panel()
+                if plain is not None:
+                    plain.epoch_end(
+                        epoch=epoch,
+                        train_loss=train_loss,
+                        eta_seconds=eta_seconds,
+                        status=status,
+                        optimizer_steps=self._optimizer_steps,
+                        tune_loss=tune_loss,
+                        lr=lr,
+                        monitor_name=monitor_name,
+                        monitor_value=monitor_value,
+                        selected_monitor_value=selected_monitor_value,
+                        selected_epoch=selected_epoch,
+                        patience_counter=patience_counter,
+                        patience_limit=patience,
+                    )
 
                 if (
                     not improved
@@ -395,37 +453,23 @@ class Trainer:
                 ):
                     current_status = "early stopping triggered"
                     render_panel()
+                    early_stopped = True
                     break
 
             current_subtitle = "complete"
             current_status = "training complete"
-            elapsed_seconds = time.perf_counter() - started_at
-            live.update(
-                _build_training_panel(
-                    title="Training progress",
-                    subtitle=current_subtitle,
-                    log=history[-1] if history else None,
-                    total_epochs=total_epochs,
+            render_panel()
+            if plain is not None:
+                plain.finish(
+                    epochs_run=history[-1].epoch + 1 if history else 0,
+                    early_stopped=early_stopped,
+                    optimizer_steps=self._optimizer_steps,
+                    monitor_name=monitor_name,
+                    selected_monitor_value=selected_monitor_value,
                     selected_epoch=selected_epoch,
                     selected_tune_loss=selected_tune_loss,
                     selected_tune_metrics=selected_tune_metrics,
-                    monitor_name=monitor_name,
-                    selected_monitor_value=selected_monitor_value,
-                    patience_counter=patience_counter,
-                    patience_limit=patience,
-                    status=current_status,
-                    trainable_param_count=self._trainable_param_count,
-                    fold=self._fold,
-                    num_folds=self._num_folds,
-                    elapsed_seconds=elapsed_seconds,
-                    avg_epoch_seconds=current_avg_epoch_seconds,
-                    eta_seconds=current_eta_seconds,
-                    batch_progress=current_batch_progress,
-                    total_steps=self._config.max_steps,
-                    optimizer_steps=self._optimizer_steps,
-                ),
-                refresh=True,
-            )
+                )
 
         if not select_last and len(history) > 1 and not monitor_moved:
             logger.warning(
@@ -903,6 +947,153 @@ def peak_per_metric(history: list[EpochLog]) -> dict[str, dict[str, float | int]
             if better:
                 peaks[name] = {"epoch": log.epoch + 1, "value": value}
     return peaks
+
+
+class _PlainProgressLog:
+    """Training progress as one plain line per event, for consoles that cannot redraw.
+
+    Each line goes through ``console.print`` and is flushed at once, so a log file shows
+    progress while the fit runs whether or not the caller configured :mod:`logging`.
+    """
+
+    def __init__(
+        self,
+        console: Console,
+        *,
+        started_at: float,
+        total_epochs: int,
+        total_steps: int | None,
+        fold: int | None,
+        num_folds: int,
+    ) -> None:
+        self._console = console
+        self._started_at = started_at
+        self._total_epochs = total_epochs
+        self._total_steps = total_steps
+        self._fold_text = (
+            f"fold {fold + 1}/{num_folds}" if fold is not None and num_folds > 1 else None
+        )
+        self._last_line_at = started_at
+
+    def _emit(self, *parts: str | None) -> None:
+        # markup off: "[ETA ...]" and user metric names must print verbatim.
+        line = " | ".join(part for part in parts if part)
+        self._console.print(line, markup=False, highlight=False, soft_wrap=True)
+        self._console.file.flush()
+        self._last_line_at = time.perf_counter()
+
+    def _elapsed_seconds(self) -> float:
+        return time.perf_counter() - self._started_at
+
+    def _epoch_text(self, epoch: int) -> str:
+        return f"epoch {epoch + 1:02d}/{self._total_epochs:02d}"
+
+    def _steps_text(self, optimizer_steps: int) -> str | None:
+        if self._total_steps is None:
+            return None
+        return f"steps {optimizer_steps}/{self._total_steps}"
+
+    def start(self, *, trainable_param_count: int) -> None:
+        budget = (
+            f"{self._total_epochs} epochs"
+            if self._total_steps is None
+            else f"{self._total_steps} steps ({self._total_epochs} epochs)"
+        )
+        self._emit(
+            "training started",
+            self._fold_text,
+            budget,
+            f"{trainable_param_count:,} trainable params",
+        )
+
+    def heartbeat(
+        self,
+        *,
+        epoch: int,
+        phase: str,
+        processed_items: int,
+        total_items: int,
+        optimizer_steps: int,
+    ) -> None:
+        """In-epoch line, throttled to one per ``PROGRESS_HEARTBEAT_SECONDS`` of silence."""
+        if time.perf_counter() - self._last_line_at < PROGRESS_HEARTBEAT_SECONDS:
+            return
+        self._emit(
+            self._fold_text,
+            self._epoch_text(epoch),
+            self._steps_text(optimizer_steps),
+            f"{phase} items {processed_items}/{total_items}",
+            f"elapsed {_format_elapsed_seconds(self._elapsed_seconds())}",
+        )
+
+    def epoch_end(
+        self,
+        *,
+        epoch: int,
+        train_loss: float,
+        eta_seconds: float | None,
+        status: str,
+        optimizer_steps: int,
+        tune_loss: float | None = None,
+        lr: float | None = None,
+        monitor_name: str | None = None,
+        monitor_value: float | None = None,
+        selected_monitor_value: float | None = None,
+        selected_epoch: int | None = None,
+        patience_counter: int | None = None,
+        patience_limit: int | None = None,
+    ) -> None:
+        """One line per epoch end; the tune fields are absent on an epoch without tune."""
+        tune_parts: tuple[str | None, ...] = ()
+        if tune_loss is not None:
+            selected_text = (
+                f"{selected_monitor_value:.4f} @ {selected_epoch + 1:02d}"
+                if selected_monitor_value is not None and np.isfinite(selected_monitor_value)
+                else "n/a"
+            )
+            tune_parts = (
+                f"tune {tune_loss:.4f}",
+                f"{monitor_name}={monitor_value:.4f} (selected {selected_text})",
+                f"patience {patience_counter}/{_format_patience(patience_limit)}",
+                f"lr {lr:.2e}",
+            )
+        self._emit(
+            self._fold_text,
+            self._epoch_text(epoch),
+            self._steps_text(optimizer_steps),
+            f"train {train_loss:.4f}",
+            *tune_parts,
+            f"elapsed {_format_elapsed_with_eta(self._elapsed_seconds(), eta_seconds)}",
+            status,
+        )
+
+    def finish(
+        self,
+        *,
+        epochs_run: int,
+        early_stopped: bool,
+        optimizer_steps: int,
+        monitor_name: str,
+        selected_monitor_value: float,
+        selected_epoch: int,
+        selected_tune_loss: float,
+        selected_tune_metrics: dict[str, float],
+    ) -> None:
+        """The summary the panel's final state carries: run length and the selection."""
+        ran = "early stopped after" if early_stopped else "ran"
+        selected = _format_selected_monitor(monitor_name, selected_monitor_value)
+        if np.isfinite(selected_monitor_value):
+            selected += f" @ {selected_epoch + 1:02d}"
+        self._emit(
+            "training complete",
+            self._fold_text,
+            f"{ran} {epochs_run}/{self._total_epochs} epochs",
+            self._steps_text(optimizer_steps),
+            f"selected {selected}",
+            f"tune_loss={selected_tune_loss:.4f}" if np.isfinite(selected_tune_loss) else None,
+            _format_metrics(selected_tune_metrics),
+            f"elapsed {_format_elapsed_seconds(self._elapsed_seconds())}",
+        )
 
 
 def _build_training_panel(
