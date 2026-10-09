@@ -1,6 +1,10 @@
 name: PR Test Suite
 
 on:
+  # PRs need not be up to date with main before merging, so re-test main after
+  # each merge to catch semantic conflicts between independently-green PRs
+  push:
+    branches: [main]
   pull_request:
     types: [opened, synchronize, reopened]
   workflow_dispatch:
