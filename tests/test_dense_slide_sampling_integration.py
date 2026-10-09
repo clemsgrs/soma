@@ -468,3 +468,48 @@ def test_stored_roi_mask_crop_is_the_in_slide_part_of_the_window_read(
     assert stored.tobytes() == np.ascontiguousarray(labels[:height, :width]).astype(np.uint8).tobytes()
     if inside is not None:
         assert inside[:height, :width].all() and inside.sum() == height * width
+
+
+def test_roi_with_no_in_slide_pixel_stores_an_all_outside_crop(tmp_path: Path):
+    """A ROI kept at x=255 on a 256 px slide and read at twice the slide's spacing has
+    less than one target pixel on the slide: its crop is written, and reads back as the
+    window read does (all outside, so the head's target is all ``ignore_index``)."""
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import read_mask_crop, read_mask_region_within_slide
+    from soma.dense_slide_extraction import write_roi_mask_crops
+
+    slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
+    location, spacing_um = (255, 0), 2 * SPACING_UM
+    crop_path = tmp_path / "masks" / "s0" / "255_0.png"
+    record = SampleRecord(
+        sample_id="s0__x255_y0",
+        image_path=slide_path,
+        label=None,
+        label_mask_path=label_mask_path,
+        region=location,
+        slide_id="s0",
+        label_mask_crop_path=crop_path,
+    )
+
+    write_roi_mask_crops(
+        [record],
+        spacing_um_by_sample_id={record.sample_id: spacing_um},
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        preprocessing=PreprocessingConfig(
+            backend="auto", requested_tile_size_px=TARGET, requested_spacing_um=spacing_um
+        ),
+    )
+
+    live_labels, live_inside = read_mask_region_within_slide(
+        label_mask_path,
+        location=location,
+        size=(TARGET, TARGET),
+        spacing_um=spacing_um,
+        reference_path=slide_path,
+        pixel_mapping=PIXEL_MAPPING,
+        backend="auto",
+    )
+    labels, inside = read_mask_crop(crop_path, size=(TARGET, TARGET))
+    assert live_inside is not None and not live_inside.any()
+    np.testing.assert_array_equal(inside, live_inside)
+    np.testing.assert_array_equal(labels, live_labels)

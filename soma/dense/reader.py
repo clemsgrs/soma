@@ -194,14 +194,19 @@ def _load_flat_mask(path: str | Path) -> np.ndarray:
     smeared across channels) and on non-integer dtypes.
     """
     with Image.open(path) as image:
-        # Palette ("P"/"PA") images load as a 2-D index array and would pass the
-        # rank/dtype checks below, but palette indices are NOT class ids.
-        if image.mode in ("P", "PA"):
-            raise ValueError(
-                f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
-                "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
-            )
-        array = np.array(image)
+        return _flat_mask_array(image, path)
+
+
+def _flat_mask_array(image: Image.Image, path: str | Path) -> np.ndarray:
+    """:func:`_load_flat_mask` on an already opened image."""
+    # Palette ("P"/"PA") images load as a 2-D index array and would pass the
+    # rank/dtype checks below, but palette indices are NOT class ids.
+    if image.mode in ("P", "PA"):
+        raise ValueError(
+            f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
+            "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
+        )
+    array = np.array(image)
     if array.ndim != 2:
         raise ValueError(
             f"mask '{path}' must be a 2-D single-channel class-index raster, got shape "
@@ -472,21 +477,37 @@ def pad_in_slide_labels(
     return labels, inside
 
 
+# PNG text key of a crop with no in-slide pixel; its value is the empty rectangle's
+# ``<height>x<width>``.
+_EMPTY_CROP_SHAPE_KEY = "soma-empty-in-slide-shape"
+
+
 def write_mask_crop(path: str | Path, labels: np.ndarray) -> None:
     """Persist a ROI's in-slide raw labels as a lossless PNG, atomically.
 
     Raw values are kept as they are (no class remap): 8-bit when every value fits, else
-    16-bit. A value outside ``[0, 65535]`` or an empty rectangle cannot be stored.
+    16-bit. A value outside ``[0, 65535]`` cannot be stored. An empty rectangle (an edge
+    ROI whose overhang holds less than one target pixel on an axis, which tiling keeps
+    under a zero ``min_coverage``) cannot be a PNG, so it is stored as a 1x1 placeholder
+    whose text chunk records the empty shape; :func:`read_mask_crop` reads it back as an
+    all-outside window.
     """
     from io import BytesIO
+
+    from PIL.PngImagePlugin import PngInfo
 
     from soma.atomic_io import atomic_write_bytes
 
     array = np.asarray(labels)
-    if array.ndim != 2 or array.size == 0:
-        raise ValueError(f"mask crop for '{path}' must be a non-empty 2-D array, got {array.shape}.")
+    if array.ndim != 2:
+        raise ValueError(f"mask crop for '{path}' must be a 2-D array, got {array.shape}.")
     if not np.issubdtype(array.dtype, np.integer):
         raise ValueError(f"mask crop for '{path}' must hold integer labels, got {array.dtype}.")
+    pnginfo = None
+    if array.size == 0:
+        pnginfo = PngInfo()
+        pnginfo.add_text(_EMPTY_CROP_SHAPE_KEY, "x".join(str(int(v)) for v in array.shape))
+        array = np.zeros((1, 1), dtype=np.uint8)
     low, high = int(array.min()), int(array.max())
     if low < 0 or high > np.iinfo(np.uint16).max:
         raise ValueError(
@@ -495,7 +516,9 @@ def write_mask_crop(path: str | Path, labels: np.ndarray) -> None:
         )
     dtype = np.uint8 if high <= np.iinfo(np.uint8).max else np.uint16
     buffer = BytesIO()
-    Image.fromarray(np.ascontiguousarray(array.astype(dtype))).save(buffer, format="PNG")
+    Image.fromarray(np.ascontiguousarray(array.astype(dtype))).save(
+        buffer, format="PNG", pnginfo=pnginfo
+    )
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(Path(path), buffer.getvalue())
 
@@ -507,6 +530,14 @@ def read_mask_crop(
 
     The crop's shape encodes ``inside``: a full-size crop is a ROI wholly on the slide
     (``inside`` is ``None``), a smaller one is the in-slide part of an edge ROI, padded
-    back as :func:`read_mask_region_within_slide` returns it.
+    back as :func:`read_mask_region_within_slide` returns it, and an empty one (see
+    :func:`write_mask_crop`) is a ROI with no pixel on the slide.
     """
-    return pad_in_slide_labels(_load_flat_mask(path), size=size)
+    with Image.open(path) as image:
+        empty_shape = image.info.get(_EMPTY_CROP_SHAPE_KEY)
+        if empty_shape is None:
+            in_slide = _flat_mask_array(image, path)
+        else:
+            height, width = (int(v) for v in str(empty_shape).split("x"))
+            in_slide = np.zeros((height, width), dtype=np.uint8)
+    return pad_in_slide_labels(in_slide, size=size)

@@ -249,14 +249,7 @@ def test_resolved_mask_backend_changes_population_identity(
 ) -> None:
     mask_path = tmp_path / "mask.tif"
     mask_path.write_bytes(b"mask bytes")
-    records = [
-        replace(
-            _record("a"),
-            label_mask_path=mask_path,
-            region=(0, 0, 2, 1),
-            spacing_at_level_0=0.5,
-        )
-    ]
+    records = [replace(_record("a"), label_mask_path=mask_path, spacing_at_level_0=0.5)]
     selected_backend = "openslide"
 
     def resolve_backend(*_args, **_kwargs):
@@ -303,6 +296,94 @@ def test_mask_backend_resolves_like_hs2p_mask_without_requiring_spacing(
 
 def test_mask_reader_schema_tracks_grid_registered_roi_mask_reads() -> None:
     # hs2p 5 aligns masks to their slide and resamples by coordinate (2); ROI masks are
-    # then read at their grid's recorded spacing, with any overhang ignored (3). A
-    # population counted by an earlier reader must not be reused.
-    assert population_module._MASK_READER_SCHEMA_VERSION == 3
+    # then read at their grid's recorded spacing, with any overhang ignored (3), and
+    # finally from the crops ROI sampling stores (4). A population counted by an
+    # earlier reader must not be reused.
+    assert population_module._MASK_READER_SCHEMA_VERSION == 4
+
+
+def _roi_record(tmp_path: Path) -> SampleRecord:
+    raster = tmp_path / "annotation.tif"
+    raster.write_bytes(b"raster")
+    crop = tmp_path / "masks" / "s0" / "0_0.png"
+    crop.parent.mkdir(parents=True)
+    crop.write_bytes(b"crop")
+    return replace(
+        _record("s0__x0_y0"),
+        label_mask_path=raster,
+        region=(0, 0),
+        spacing_at_level_0=0.5,
+        slide_id="s0",
+        label_mask_crop_path=crop,
+    )
+
+
+def _counting_resolve(tmp_path: Path, records, calls: list[str]):
+    def target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
+        calls.append(record.sample_id)
+        return {"mask": torch.tensor([[0, 1]])}
+
+    return resolve_segmentation_roi_population(
+        tmp_path / "populations",
+        records,
+        target_fn,
+        num_classes=2,
+        target_identity={"backend": "auto", "spacing_um": 0.5},
+    )
+
+
+def test_replaced_roi_mask_crop_does_not_reuse_stale_counts(tmp_path: Path) -> None:
+    """A slide-manifest ROI's target is its stored crop: replacing that crop (e.g. one a
+    hand-built ROI dataset supplies) recounts it."""
+    record = _roi_record(tmp_path)
+    calls: list[str] = []
+
+    first = _counting_resolve(tmp_path, [record], calls)
+    record.label_mask_crop_path.write_bytes(b"replaced crop")
+    second = _counting_resolve(tmp_path, [record], calls)
+
+    assert calls == [record.sample_id, record.sample_id]
+    assert first.cache_key != second.cache_key
+
+
+def test_roi_crop_path_is_part_of_the_population_identity(tmp_path: Path) -> None:
+    record = _roi_record(tmp_path)
+    other_crop = tmp_path / "other" / "0_0.png"
+    other_crop.parent.mkdir()
+    other_crop.write_bytes(b"crop")
+    calls: list[str] = []
+
+    first = _counting_resolve(tmp_path, [record], calls)
+    second = _counting_resolve(
+        tmp_path, [replace(record, label_mask_crop_path=other_crop)], calls
+    )
+
+    assert first.cache_key != second.cache_key
+
+
+def test_roi_population_identity_never_reads_the_annotation_raster(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """ROI targets never open the annotation raster, so neither does their population
+    key: a warm launch does not hash a multi-GB raster or resolve its reader backend."""
+    record = _roi_record(tmp_path)
+    hashed: list[Path] = []
+    real_sha256 = population_module._sha256_file
+
+    def tracking_sha256(path: Path) -> str:
+        hashed.append(Path(path))
+        return real_sha256(path)
+
+    def no_backend(*_args, **_kwargs):
+        raise AssertionError("a ROI population must not resolve the raster's backend")
+
+    monkeypatch.setattr(population_module, "_sha256_file", tracking_sha256)
+    monkeypatch.setattr(population_module, "resolve_backend", no_backend)
+    calls: list[str] = []
+
+    _counting_resolve(tmp_path, [record], calls)
+    record.label_mask_path.write_bytes(b"edited raster")
+    _counting_resolve(tmp_path, [record], calls)
+
+    assert calls == [record.sample_id]
+    assert record.label_mask_path.resolve() not in {path.resolve() for path in hashed}
