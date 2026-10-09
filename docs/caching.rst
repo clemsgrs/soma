@@ -88,7 +88,7 @@ with the slide2vec version. For example:
 
    {
      "feature_identity": {
-       "slide2vec_version": "6.3.2",
+       "slide2vec_version": "7.0.0",
        "identity": {
          "encoder_name": "uni2",
          "output_variant": "default",
@@ -116,9 +116,11 @@ reuses the cache or adds samples to it:
 
   - No field differs: soma reuses the cache and records the installed version,
     so later runs do not load the encoder.
-  - A field differs: the run stops with ``CacheFeatureIdentityMismatch``, which
-    names the fields. Set ``cache.on_identity_mismatch: reextract`` to delete the
-    cache and extract it again instead.
+  - A field differs, or the record lacks a field the installed slide2vec
+    requires (reported as ``MISSING_FIELD``): the run stops with
+    ``CacheFeatureIdentityMismatch``, which names the fields. Set
+    ``cache.on_identity_mismatch: reextract`` to delete the cache and extract it
+    again instead.
 
 A cache written by soma 1.17.0 or earlier records no feature identity, so soma
 cannot verify it. By default soma reuses it and logs one warning. Check the

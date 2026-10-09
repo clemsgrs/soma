@@ -38,8 +38,8 @@ dependencies = [
     "huggingface-hub",
     "safetensors",
     "transformers",
-    "hs2p>=5.1.0",
-    "slide2vec[fm]>=6.3.4",
+    "hs2p>=6.0.0",
+    "slide2vec[fm]>=7.0.0",
     "matplotlib>=3.7",
     "croma>=1.0.0",
 ]
