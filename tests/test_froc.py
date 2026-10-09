@@ -22,6 +22,7 @@ from soma.detection.froc import (
     froc_score_at_thresholds,
     label_detections,
     score_monkey_froc,
+    suppress_cross_class_duplicates,
 )
 
 
@@ -269,6 +270,63 @@ def test_score_monkey_mnl_merges_all_classes():
     mnl = out[MNL_CLASS_NAME]
     assert mnl.num_targets == 3  # all GT, regardless of class
     assert mnl.score == pytest.approx(expected.score)
+
+
+def test_suppress_cross_class_duplicates_keeps_the_higher_scoring_copy():
+    # One object found in both channels (2 px apart) plus a far monocyte.
+    xy = np.array([[10.0, 10.0], [12.0, 10.0], [80.0, 80.0]])
+    keep = suppress_cross_class_duplicates(
+        xy, np.array([0.6, 0.9, 0.7]), np.array([0, 1, 1]), delta=5.0
+    )
+    assert keep.tolist() == [False, True, True]
+
+
+def test_suppress_cross_class_duplicates_leaves_same_class_neighbours():
+    # Same-class peaks were already separated by the per-class NMS; never merge them.
+    xy = np.array([[10.0, 10.0], [12.0, 10.0]])
+    keep = suppress_cross_class_duplicates(xy, np.array([0.9, 0.8]), np.array([0, 0]), delta=5.0)
+    assert keep.tolist() == [True, True]
+
+
+def test_suppress_cross_class_duplicates_is_greedy_by_score():
+    # b (class 1) is within delta of a and c (class 0); a and c are 8 px apart. b is
+    # dropped by the higher-scoring a, so it cannot suppress c in turn.
+    xy = np.array([[0.0, 0.0], [4.0, 0.0], [8.0, 0.0]])
+    keep = suppress_cross_class_duplicates(
+        xy, np.array([0.9, 0.8, 0.7]), np.array([0, 1, 0]), delta=5.0
+    )
+    assert keep.tolist() == [True, False, True]
+
+
+def test_suppress_cross_class_duplicates_empty():
+    keep = suppress_cross_class_duplicates(
+        np.zeros((0, 2)), np.zeros(0), np.zeros(0, dtype=np.int64), delta=5.0
+    )
+    assert keep.shape == (0,)
+
+
+def test_score_monkey_mnl_counts_a_cross_class_duplicate_once():
+    # A lymphocyte found by both channels, plus a missed far monocyte. Pooled as-is, the
+    # monocyte copy would be an MNL false positive; after suppression it is not.
+    spacing_um = 0.5
+    pred_xy = [np.array([[10.0, 10.0], [11.0, 10.0]])]
+    pred_class = [np.array([0, 1])]
+    pred_score = [np.array([0.9, 0.4])]
+    gt_xy = [np.array([[10.0, 10.0], [90.0, 90.0]])]
+    gt_class = [np.array([0, 1])]
+    area = [0.02]
+
+    out = score_monkey_froc(pred_xy, pred_class, pred_score, gt_xy, gt_class, area, spacing_um=spacing_um)
+
+    expected = compute_froc(
+        per_image_pred_xy=[pred_xy[0][:1]], per_image_pred_score=[pred_score[0][:1]],
+        per_image_gt_xy=gt_xy, delta=5.0 / spacing_um, per_image_area_mm2=area,
+    )
+    mnl = out[MNL_CLASS_NAME]
+    assert mnl.score == pytest.approx(expected.score)
+    assert mnl.fp_per_mm2.max() == pytest.approx(0.0)
+    # The per-class paths still see the monocyte copy (a monocyte FP), unchanged.
+    assert out["monocytes"].fp_per_mm2.max() == pytest.approx(1 / 0.02)
 
 
 def test_score_monkey_spacing_scales_matching_distance():

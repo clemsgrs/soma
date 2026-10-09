@@ -1,5 +1,13 @@
 # Changelog
 
+- 2026-10-09: The Monkey FROC scorer now removes cross-class duplicates before it
+  pools lymphocytes and monocytes into the merged inflammatory-cells (Task 1) score.
+  A 2-class model can fire on one cell in both channels. Before this change, the
+  second copy counted as a false positive, so the Task 1 score was too low. A
+  prediction is now dropped when a higher-scoring prediction of the other class lies
+  within the 5 µm MNL margin, as in a single-class submission. The per-class scores
+  and `mean_froc` (Task 2) do not change.
+
 - 2026-10-09: The `dev` and `croma` extras now cap pyarrow below 26. pyarrow 26.0.0
   requires NumPy 2, but the rest of the dependency set still resolves NumPy 1.26, so
   `import pyarrow` failed and every test module that imports it failed to collect.
