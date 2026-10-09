@@ -4,11 +4,13 @@ The ``roi_sampling`` kind (sibling of ``tiling``) caches, per slide, the list of
 level-0 integer ``(x, y)`` ROI origins that hs2p annotation sampling produced — the
 entire contract the downstream slide-manifest dense path consumes. Layout is
 ``<cache_root>/roi_sampling/<key>/`` with ``cache_metadata.json``, ``manifest.csv``
-(dataset rows, as in the other kinds) and one human-readable ``coords/<stem>.csv``
-per slide. A slide hits iff its coords artifact loads successfully — loading *is*
-the validation, so there is no ``validate_payloads`` plumbing for this kind; a
-missing or unparseable file is a miss for that slide only, and a header-only CSV is
-a legitimate cached zero-ROI answer.
+(dataset rows, as in the other kinds), one human-readable ``coords/<stem>.csv`` per
+slide and one raw-value mask crop per ROI at ``masks/<stem>/<x>_<y>.png`` (see
+:func:`soma.dense.reader.write_mask_crop`). A slide hits iff its coords artifact loads
+successfully and every ROI it lists has its crop — loading the coords *is* their
+validation and the crops are only checked for presence, so there is no
+``validate_payloads`` plumbing for this kind; a missing or unparseable artifact is a
+miss for that slide only, and a header-only CSV is a legitimate cached zero-ROI answer.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from soma.cache._types import (
     CACHE_METADATA_NAME,
     MANIFEST_NAME,
     RoiSamplingCacheResolution,
+    mask_crop_name,
 )
 from soma.cache.io import (
     _emit_cache_resolve_log,
@@ -42,6 +45,7 @@ from soma.cache.keys import (
 from soma.config import PreprocessingConfig
 
 COORDS_DIR_NAME = "coords"
+MASKS_DIR_NAME = "masks"
 _COORDS_FIELDNAMES = ("x", "y")
 
 
@@ -80,6 +84,17 @@ def _load_coords_artifact(path: Path) -> list[tuple[int, int]] | None:
     return coords
 
 
+def _has_mask_crops(crop_dir: Path, coords: list[tuple[int, int]]) -> bool:
+    """Whether every listed ROI has its crop in ``crop_dir`` (one listing per slide)."""
+    if not coords:
+        return True
+    try:
+        present = set(os.listdir(crop_dir))
+    except OSError:
+        return False
+    return all(mask_crop_name(x, y) in present for x, y in coords)
+
+
 def resolve_roi_sampling_cache(
     *,
     cache_root: Path,
@@ -90,8 +105,8 @@ def resolve_roi_sampling_cache(
 
     Initializes a fresh directory (metadata + manifest) when none exists, hard-errors
     on a metadata mismatch (the existing cache-metadata contract), and otherwise loads
-    every slide's coords artifact — hits land in ``coords_by_id``, the rest are misses
-    to re-sample. ``dataset`` is duck-typed over ``samples``/``sample_ids`` so the
+    every slide's coords artifact and checks its ROIs' mask crops — hits land in
+    ``coords_by_id``, the rest are misses to re-sample. ``dataset`` is duck-typed over ``samples``/``sample_ids`` so the
     segmentation slide manifest fits.
     """
     metadata = _build_roi_sampling_cache_metadata(preprocessing=preprocessing)
@@ -102,6 +117,7 @@ def resolve_roi_sampling_cache(
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
     coords_dir = cache_dir / COORDS_DIR_NAME
+    masks_dir = cache_dir / MASKS_DIR_NAME
     cache_dir.mkdir(parents=True, exist_ok=True)
     coords_dir.mkdir(parents=True, exist_ok=True)
     _emit_cache_resolve_log(
@@ -129,8 +145,9 @@ def resolve_roi_sampling_cache(
 
     coords_by_id: dict[str, list[tuple[int, int]]] = {}
     for cache_id in cache_ids:
-        coords = _load_coords_artifact(coords_dir / f"{cache_stem_by_id[cache_id]}.csv")
-        if coords is not None:
+        stem = cache_stem_by_id[cache_id]
+        coords = _load_coords_artifact(coords_dir / f"{stem}.csv")
+        if coords is not None and _has_mask_crops(masks_dir / stem, coords):
             coords_by_id[cache_id] = coords
     missing = len(cache_ids) - len(coords_by_id)
     complete = missing == 0
@@ -150,6 +167,7 @@ def resolve_roi_sampling_cache(
         complete=complete,
         metadata=metadata,
         coords_dir=coords_dir,
+        masks_dir=masks_dir,
         cache_ids=cache_ids,
         cache_stem_by_id=cache_stem_by_id,
         coords_by_id=coords_by_id,

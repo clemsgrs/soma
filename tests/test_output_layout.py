@@ -928,6 +928,43 @@ def test_segmentation_manifest_identity_ignores_label_mask_storage_root(
     assert relocated_spec.experiment_id == local_spec.experiment_id
 
 
+def test_segmentation_roi_manifest_identity_ignores_mask_crop_storage_root(
+    tmp_path: Path,
+):
+    """Relocating an explicit ROI manifest's stored mask crops keeps its identity."""
+    common = {
+        "splits_csv_text": "fold,sample_id,split\n0,s0_0_0,train\n",
+        "dataset_type": "segmentation",
+        "aggregator": None,
+        "decoder": DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+        "task": TaskConfig(name="segmentation", params={"num_classes": 2}),
+    }
+    header = (
+        "sample_id,image_path,label_mask_path,slide_id,region_x,region_y,"
+        "label_mask_crop_path,class_names\n"
+    )
+    local = _make_config_with_manifests(
+        tmp_path / "local",
+        dataset_csv_text=header
+        + "s0_0_0,/slides/s0.tif,/labels/s0.tif,s0,0,0,"
+        "/local/roi_sampling/k/masks/s0/0_0.png,background|tumor\n",
+        **common,
+    )
+    relocated = _make_config_with_manifests(
+        tmp_path / "relocated",
+        dataset_csv_text=header
+        + "s0_0_0,/slides/s0.tif,/labels/s0.tif,s0,0,0,"
+        "/archive/roi_sampling/k/masks/s0/0_0.png,background|tumor\n",
+        **common,
+    )
+
+    local_spec = build_experiment_spec(local)
+    relocated_spec = build_experiment_spec(relocated)
+
+    assert relocated_spec.dataset_checksum == local_spec.dataset_checksum
+    assert relocated_spec.experiment_id == local_spec.experiment_id
+
+
 def test_detection_manifest_identity_ignores_points_and_ignore_mask_storage_roots(tmp_path: Path):
     common = {
         "splits_csv_text": "fold,sample_id,split\n0,s0,train\n",

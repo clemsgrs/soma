@@ -564,8 +564,15 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
                 )
             ]
 
+    def fake_mask_regions(path, *, regions, size, **_kwargs):
+        assert (str(path), regions) == ("s0-mask.tif", [((0, 0), 0.5)])
+        return [np.ones((size[1], size[0]), dtype=np.uint8)]
+
     monkeypatch.setattr("hs2p.tile_slide", fake_tile_slide)
     monkeypatch.setattr("soma.dense_slide_extraction.Model", RegionBoundaryModel)
+    monkeypatch.setattr(
+        "soma.dense.reader.read_mask_regions_within_slide", fake_mask_regions
+    )
     preprocessing = PreprocessingConfig(
         requested_tile_size_px=32,
         requested_spacing_um=0.5,
@@ -593,10 +600,17 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
         result.artifacts.dataset_csv
         == tmp_path / "output/segmentation_rois/dataset.csv"
     )
+    crop_path = roi.label_mask_crop_path
+    assert crop_path.parent.parent.parent.parent == tmp_path / "cache" / "roi_sampling"
+    assert crop_path.parent.parent.name == "masks" and crop_path.name == "0_0.png"
+    from PIL import Image
+
+    with Image.open(crop_path) as crop:
+        assert np.asarray(crop).tolist() == [[1] * 32] * 32
     expected_csv = (
         "sample_id,slide_id,image_path,mask_path,label_mask_path,patient_id,"
-        "spacing_at_level_0,region_x,region_y\n"
-        "s0__x0_y0,s0,s0.svs,,s0-mask.tif,,,0,0\n"
+        "spacing_at_level_0,region_x,region_y,label_mask_crop_path\n"
+        f"s0__x0_y0,s0,s0.svs,,s0-mask.tif,,,0,0,{crop_path}\n"
     )
     assert result.artifacts.dataset_csv.read_text(encoding="utf-8") == expected_csv
 

@@ -23,6 +23,14 @@ def atomic_write_text(
     os.replace(staging, path)
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` so readers never observe a partial file."""
+    path = Path(path)
+    staging = _staging_path(path)
+    staging.write_bytes(data)
+    os.replace(staging, path)
+
+
 def atomic_write_json(path: Path, data: Any, *, indent: int = 2, **kwargs: Any) -> None:
     atomic_write_text(Path(path), json.dumps(data, indent=indent, **kwargs))
 

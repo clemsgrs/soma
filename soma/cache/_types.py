@@ -175,11 +175,12 @@ class RoiSamplingCacheResolution(BaseCacheResolution):
 
     ``coords_by_id`` holds the hits only — each value is the slide's list of level-0
     integer ``(x, y)`` ROI origins, possibly empty (a cached zero-ROI answer). A slide
-    absent from it is a miss: its coords artifact was missing or failed to load.
-    ``complete`` (and ``reused``) mean every slide hit.
+    absent from it is a miss: its coords artifact was missing or failed to load, or one
+    of its ROIs has no mask crop. ``complete`` (and ``reused``) mean every slide hit.
     """
 
     coords_dir: Path
+    masks_dir: Path
     cache_ids: tuple[str, ...]
     cache_stem_by_id: dict[str, str]
     coords_by_id: dict[str, list[tuple[int, int]]]
@@ -187,6 +188,19 @@ class RoiSamplingCacheResolution(BaseCacheResolution):
     @property
     def miss_sample_ids(self) -> list[str]:
         return [cache_id for cache_id in self.cache_ids if cache_id not in self.coords_by_id]
+
+    def mask_crop_dir(self, sample_id: str) -> Path:
+        """Directory holding one slide's ROI mask crops."""
+        return self.masks_dir / self.cache_stem_by_id[str(sample_id)]
+
+    def mask_crop_path(self, sample_id: str, x: int, y: int) -> Path:
+        """Where the mask crop of the slide's ROI at level-0 ``(x, y)`` lives."""
+        return self.mask_crop_dir(sample_id) / mask_crop_name(x, y)
+
+
+def mask_crop_name(x: int, y: int) -> str:
+    """File name of a ROI's mask crop within its slide's directory."""
+    return f"{int(x)}_{int(y)}.png"
 
 
 @dataclass(frozen=True)

@@ -21,7 +21,7 @@ dense path is verified against.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -194,14 +194,19 @@ def _load_flat_mask(path: str | Path) -> np.ndarray:
     smeared across channels) and on non-integer dtypes.
     """
     with Image.open(path) as image:
-        # Palette ("P"/"PA") images load as a 2-D index array and would pass the
-        # rank/dtype checks below, but palette indices are NOT class ids.
-        if image.mode in ("P", "PA"):
-            raise ValueError(
-                f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
-                "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
-            )
-        array = np.array(image)
+        return _flat_mask_array(image, path)
+
+
+def _flat_mask_array(image: Image.Image, path: str | Path) -> np.ndarray:
+    """:func:`_load_flat_mask` on an already opened image."""
+    # Palette ("P"/"PA") images load as a 2-D index array and would pass the
+    # rank/dtype checks below, but palette indices are NOT class ids.
+    if image.mode in ("P", "PA"):
+        raise ValueError(
+            f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
+            "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
+        )
+    array = np.array(image)
     if array.ndim != 2:
         raise ValueError(
             f"mask '{path}' must be a 2-D single-channel class-index raster, got shape "
@@ -393,6 +398,39 @@ def read_mask_region_within_slide(
     the whole ROI lies on the slide, else a boolean array marking the pixels that do;
     ``labels`` holds ``0`` outside, which carries no meaning.
     """
+    (in_slide,) = read_mask_regions_within_slide(
+        path,
+        regions=[(location, spacing_um)],
+        size=size,
+        reference_path=reference_path,
+        pixel_mapping=pixel_mapping,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        backend=backend,
+    )
+    return pad_in_slide_labels(in_slide, size=size)
+
+
+def read_mask_regions_within_slide(
+    path: str | Path,
+    *,
+    regions: Sequence[tuple[tuple[int, int], float]],
+    size: tuple[int, int],
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int | list[int]],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
+    backend: str = "auto",
+) -> Iterator[np.ndarray]:
+    """The in-slide labels of several ROIs of one slide, ``(location, spacing_um)`` each.
+
+    Opens and aligns the annotation raster once for all of them and yields one ROI at a
+    time, so a slide's crops are never all held in memory; the raster closes once the
+    iterator is exhausted. Each result is the top-left ``(inside_h, inside_w)`` rectangle
+    of the ROI's ``size=(w, h)`` window that lies on the slide — the whole window for an
+    interior ROI; see :func:`read_mask_region_within_slide` for the edge semantics and
+    :func:`pad_in_slide_labels` for the padding back to ``size``.
+    """
     width, height = (int(v) for v in size)
     with _aligned_mask(
         path,
@@ -402,17 +440,104 @@ def read_mask_region_within_slide(
         pixel_mapping=pixel_mapping,
         backend=backend,
     ) as aligned:
-        region = dict(location=tuple(location), target_spacing_um=float(spacing_um))
-        inside_width, inside_height = aligned.dimensions_within_canvas(
-            **region, target_dimensions=(width, height)
-        )
-        if (inside_width, inside_height) == (width, height):
-            return aligned.read_region(**region, target_dimensions=(width, height)).labels, None
-        labels = np.zeros((height, width), dtype=np.uint8)
-        inside = np.zeros((height, width), dtype=bool)
-        if inside_width > 0 and inside_height > 0:
-            labels[:inside_height, :inside_width] = aligned.read_region(
+        for location, spacing_um in regions:
+            region = dict(location=tuple(location), target_spacing_um=float(spacing_um))
+            inside_width, inside_height = aligned.dimensions_within_canvas(
+                **region, target_dimensions=(width, height)
+            )
+            if inside_width <= 0 or inside_height <= 0:
+                yield np.zeros((max(inside_height, 0), max(inside_width, 0)), np.uint8)
+                continue
+            yield aligned.read_region(
                 **region, target_dimensions=(inside_width, inside_height)
             ).labels
-            inside[:inside_height, :inside_width] = True
-        return labels, inside
+
+
+def pad_in_slide_labels(
+    in_slide: np.ndarray, *, size: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Pad a ROI's in-slide label rectangle back to its ``size=(w, h)`` window.
+
+    Returns ``(labels, inside)`` as :func:`read_mask_region_within_slide` does: ``inside``
+    is ``None`` for a full window, else marks the top-left rectangle the labels came from;
+    the padding is ``0``, which carries no meaning.
+    """
+    width, height = (int(v) for v in size)
+    inside_height, inside_width = in_slide.shape
+    if (inside_width, inside_height) == (width, height):
+        return in_slide, None
+    if inside_width > width or inside_height > height:
+        raise ValueError(
+            f"in-slide labels {in_slide.shape} exceed the ROI window {(height, width)}."
+        )
+    labels = np.zeros((height, width), dtype=in_slide.dtype)
+    inside = np.zeros((height, width), dtype=bool)
+    labels[:inside_height, :inside_width] = in_slide
+    inside[:inside_height, :inside_width] = True
+    return labels, inside
+
+
+# PNG text key of a crop with no in-slide pixel; its value is the empty rectangle's
+# ``<height>x<width>``.
+_EMPTY_CROP_SHAPE_KEY = "soma-empty-in-slide-shape"
+
+
+def write_mask_crop(path: str | Path, labels: np.ndarray) -> None:
+    """Persist a ROI's in-slide raw labels as a lossless PNG, atomically.
+
+    Raw values are kept as they are (no class remap): 8-bit when every value fits, else
+    16-bit. A value outside ``[0, 65535]`` cannot be stored. An empty rectangle (an edge
+    ROI whose overhang holds less than one target pixel on an axis, which tiling keeps
+    under a zero ``min_coverage``) cannot be a PNG, so it is stored as a 1x1 placeholder
+    whose text chunk records the empty shape; :func:`read_mask_crop` reads it back as an
+    all-outside window.
+    """
+    from io import BytesIO
+
+    from PIL.PngImagePlugin import PngInfo
+
+    from soma.atomic_io import atomic_write_bytes
+
+    array = np.asarray(labels)
+    if array.ndim != 2:
+        raise ValueError(f"mask crop for '{path}' must be a 2-D array, got {array.shape}.")
+    if not np.issubdtype(array.dtype, np.integer):
+        raise ValueError(f"mask crop for '{path}' must hold integer labels, got {array.dtype}.")
+    pnginfo = None
+    if array.size == 0:
+        pnginfo = PngInfo()
+        pnginfo.add_text(_EMPTY_CROP_SHAPE_KEY, "x".join(str(int(v)) for v in array.shape))
+        array = np.zeros((1, 1), dtype=np.uint8)
+    low, high = int(array.min()), int(array.max())
+    if low < 0 or high > np.iinfo(np.uint16).max:
+        raise ValueError(
+            f"mask crop for '{path}' holds raw values in [{low}, {high}]; a PNG crop stores "
+            "values in [0, 65535] only."
+        )
+    dtype = np.uint8 if high <= np.iinfo(np.uint8).max else np.uint16
+    buffer = BytesIO()
+    Image.fromarray(np.ascontiguousarray(array.astype(dtype))).save(
+        buffer, format="PNG", pnginfo=pnginfo
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(Path(path), buffer.getvalue())
+
+
+def read_mask_crop(
+    path: str | Path, *, size: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Load a stored ROI mask crop as ``(labels, inside)`` on its ``size=(w, h)`` window.
+
+    The crop's shape encodes ``inside``: a full-size crop is a ROI wholly on the slide
+    (``inside`` is ``None``), a smaller one is the in-slide part of an edge ROI, padded
+    back as :func:`read_mask_region_within_slide` returns it, and an empty one (see
+    :func:`write_mask_crop`) is a ROI with no pixel on the slide.
+    """
+    with Image.open(path) as image:
+        empty_shape = image.info.get(_EMPTY_CROP_SHAPE_KEY)
+        if empty_shape is None:
+            in_slide = _flat_mask_array(image, path)
+        else:
+            height, width = (int(v) for v in str(empty_shape).split("x"))
+            in_slide = np.zeros((height, width), dtype=np.uint8)
+    return pad_in_slide_labels(in_slide, size=size)

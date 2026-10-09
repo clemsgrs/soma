@@ -187,3 +187,71 @@ def test_resolve_class_scheme_accepts_a_scalar_zero_ignore():
 
     assert lut[0] == 255
     assert lut[1] == 0
+
+
+def test_mask_crop_keeps_raw_values_above_255_in_a_16_bit_png(tmp_path: Path):
+    from PIL import Image
+
+    from soma.dense.reader import read_mask_crop, write_mask_crop
+
+    raw = np.array([[0, 255], [256, 65535]], dtype=np.int64)
+    path = tmp_path / "masks" / "slide" / "0_0.png"
+    write_mask_crop(path, raw)
+
+    with Image.open(path) as image:
+        assert image.format == "PNG"
+        assert np.asarray(image).max() == 65535
+    labels, inside = read_mask_crop(path, size=(2, 2))
+    assert inside is None
+    assert labels.tolist() == [[0, 255], [256, 65535]]
+
+
+def test_mask_crop_pads_an_in_slide_rectangle_back_to_its_window(tmp_path: Path):
+    from soma.dense.reader import read_mask_crop, write_mask_crop
+
+    path = tmp_path / "edge.png"
+    write_mask_crop(path, np.array([[7, 7, 3]], dtype=np.uint8))
+
+    labels, inside = read_mask_crop(path, size=(4, 2))
+    assert labels.tolist() == [[7, 7, 3, 0], [0, 0, 0, 0]]
+    assert inside.tolist() == [[True, True, True, False], [False, False, False, False]]
+    with pytest.raises(ValueError, match="exceed"):
+        read_mask_crop(path, size=(2, 2))
+
+
+@pytest.mark.parametrize("value", [-1, 65536])
+def test_mask_crop_rejects_raw_values_a_png_cannot_hold(tmp_path: Path, value):
+    from soma.dense.reader import write_mask_crop
+
+    path = tmp_path / "bad.png"
+    with pytest.raises(ValueError, match=r"\[0, 65535\]"):
+        write_mask_crop(path, np.array([[0, value]], dtype=np.int64))
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("in_slide_shape", [(2, 0), (0, 3), (0, 0)])
+def test_mask_crop_stores_a_roi_with_no_in_slide_pixel(tmp_path: Path, in_slide_shape):
+    """An edge ROI whose overhang holds less than one target pixel on an axis has an
+    empty in-slide rectangle: it is stored all the same, and reads back as all outside."""
+    from soma.dense.reader import pad_in_slide_labels, read_mask_crop, write_mask_crop
+
+    path = tmp_path / "empty.png"
+    write_mask_crop(path, np.zeros(in_slide_shape, dtype=np.uint8))
+
+    labels, inside = read_mask_crop(path, size=(3, 2))
+    expected_labels, expected_inside = pad_in_slide_labels(
+        np.zeros(in_slide_shape, dtype=np.uint8), size=(3, 2)
+    )
+    np.testing.assert_array_equal(labels, expected_labels)
+    np.testing.assert_array_equal(inside, expected_inside)
+    assert not inside.any()
+
+
+def test_a_one_pixel_mask_crop_is_not_read_as_empty(tmp_path: Path):
+    from soma.dense.reader import read_mask_crop, write_mask_crop
+
+    path = tmp_path / "one.png"
+    write_mask_crop(path, np.array([[0]], dtype=np.uint8))
+
+    labels, inside = read_mask_crop(path, size=(2, 2))
+    assert inside.tolist() == [[True, False], [False, False]]

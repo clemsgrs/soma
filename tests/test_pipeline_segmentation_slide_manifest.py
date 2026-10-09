@@ -182,11 +182,26 @@ def _patch_dense_model(monkeypatch) -> type[_FakeDenseModel]:
     return _FakeDenseModel
 
 
+def _patch_mask_regions(monkeypatch, window, *, calls: list[dict] | None = None):
+    """Stub the annotation-raster read at its seam: ``window(path, location=, spacing_um=,
+    size=, **aligned_to)`` gives each ROI's labels; each slide opening is one ``calls`` entry."""
+    import soma.dense.reader as reader_mod
+
+    def _fake(path, *, regions, size, **kwargs):
+        if calls is not None:
+            calls.append({"path": path, "regions": list(regions), "size": size, **kwargs})
+        return [
+            window(path, location=location, spacing_um=spacing_um, size=size, **kwargs)
+            for location, spacing_um in regions
+        ]
+
+    monkeypatch.setattr(reader_mod, "read_mask_regions_within_slide", _fake)
+
+
 def _patch_extraction(monkeypatch):
     """Stub hs2p sampling + slide2vec encode + the WSI mask/image region reads (offline)."""
     import soma.dense_slide_extraction as dse
     import soma.dense.reader as reader_mod
-    import soma.tasks.segmentation as segmod
 
     # hs2p sampling → known coords per slide.
     monkeypatch.setattr(
@@ -196,19 +211,15 @@ def _patch_extraction(monkeypatch):
     )
     _patch_dense_model(monkeypatch)
 
-    # Mask region read → a deterministic label window per ROI origin.
+    # Annotation raster read (ROI sampling's crop writer) → a deterministic label window
+    # per ROI origin; one call per slide opening.
     mask_reads: list[dict] = []
-
-    def _fake_mask_region(path, *, location, size, spacing_um, **kwargs):
-        mask_reads.append(kwargs)
-        x, _ = location
-        w, h = size
-        return np.full(
-            (h, w), 1 if x else 0, dtype=np.int64
-        )  # ROI(0,0)→all bg, ROI(32,0)→all tumor
-
-    monkeypatch.setattr(
-        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake_mask_region(path, **kw), None)
+    _patch_mask_regions(
+        monkeypatch,
+        lambda path, *, location, spacing_um, size, **kw: np.full(
+            (size[1], size[0]), 1 if location[0] else 0, dtype=np.uint8
+        ),  # ROI(0,0)→all bg, ROI(32,0)→all tumor
+        calls=mask_reads,
     )
 
     # Image region read → a deterministic RGB window per ROI (the overlay writer reads the
@@ -266,12 +277,16 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     pipeline = Pipeline(_config(tmp_path, manifest, splits, masks=None))
     result = pipeline.run()
 
-    # Each ROI mask is aligned to its own slide and read against the sampling vocabulary.
-    assert mask_reads
-    assert all(read["pixel_mapping"] == PIXEL_MAPPING for read in mask_reads)
-    assert {str(read["reference_path"]) for read in mask_reads} == {
+    # Each slide's annotation raster is opened once, at ROI sampling, aligned to its own
+    # slide and read against the sampling vocabulary; training and evaluation read the
+    # stored crops instead.
+    assert sorted(str(read["reference_path"]) for read in mask_reads) == [
         f"/fake/{sid}.tif" for sid in ["s0", "s1", "s2", "s3"]
-    }
+    ]
+    assert all(read["pixel_mapping"] == PIXEL_MAPPING for read in mask_reads)
+    assert all(
+        read["regions"] == [((0, 0), 0.5), ((TARGET, 0), 0.5)] for read in mask_reads
+    )
 
     assert "test/mean_dice" in result.summary
     assert result.fold_results[0].test_reports["test"].metrics["mean_dice"] >= 0.0
@@ -306,6 +321,17 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     assert set(roi_df["region_x"]) == {0, TARGET}
     assert not list((tmp_path / "out").rglob("roi_splits.csv"))
 
+    # One raw-value crop per ROI under the ROI sampling entry, addressed by the dataset.
+    (sampling_entry,) = (tmp_path / "out").rglob("roi_sampling/*")
+    from PIL import Image
+
+    for row in roi_df.itertuples():
+        crop_path = Path(row.label_mask_crop_path)
+        assert crop_path.parent.parent == sampling_entry / "masks"
+        assert crop_path.name == f"{row.region_x}_{row.region_y}.png"
+        with Image.open(crop_path) as crop:
+            assert np.asarray(crop).tolist() == [[1 if row.region_x else 0] * TARGET] * TARGET
+
 
 def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     tmp_path: Path, monkeypatch
@@ -313,7 +339,6 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     from dataclasses import replace
 
     from soma.pipeline import Pipeline
-    import soma.tasks.segmentation as segmod
 
     _patch_extraction(monkeypatch)
     manifest = tmp_path / "slides.csv"
@@ -336,11 +361,9 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
         observed.setdefault(Path(path).stem, set()).add(spacing_um)
         observed_backends.add(backend)
         observed_slide_backends.add(kwargs["reference_backend"])
-        return np.zeros((size[1], size[0]), dtype=np.int64)
+        return np.zeros((size[1], size[0]), dtype=np.uint8)
 
-    monkeypatch.setattr(
-        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake_mask(path, **kw), None)
-    )
+    _patch_mask_regions(monkeypatch, _fake_mask)
     config = _config(tmp_path, manifest, splits, masks=None)
     config = replace(
         config,
@@ -665,84 +688,6 @@ def test_spacing_policy_changes_sampling_cache_key():
 
 
 # --------------------------------------------------------------------------- #
-# Region-aware mask target read.
-# --------------------------------------------------------------------------- #
-
-
-def test_extract_targets_reads_mask_region_when_record_has_region(tmp_path: Path, monkeypatch):
-    from soma.dense.geometry import compute_dense_geometry
-    from soma.dataset import SampleRecord
-    from soma.tasks.segmentation import SegmentationHead
-    import soma.tasks.segmentation as segmod
-
-    captured = {}
-
-    def _fake(path, *, location, size, spacing_um, **kwargs):
-        captured.update(location=location, size=size, spacing_um=spacing_um)
-        return np.zeros((size[1], size[0]), dtype=np.int64)
-
-    monkeypatch.setattr(
-        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake(path, **kw), None)
-    )
-    geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
-    head = SegmentationHead(num_classes=NUM_CLASSES, geometry=geometry, spacing_um=0.5)
-    record = SampleRecord(
-        sample_id="s0__x64_y0",
-        image_path=Path("/fake/s0.tif"),
-        label=None,
-        label_mask_path=Path("/fake/s0_mask.tif"),
-        region=(64, 0),
-    )
-    targets = head.extract_targets(record)
-    assert tuple(targets["mask"].shape) == (TARGET, TARGET)
-    assert captured["location"] == (64, 0)
-    assert captured["size"] == (TARGET, TARGET)
-    assert captured["spacing_um"] == 0.5
-
-
-def test_extract_targets_uses_native_spacing_for_a_coarser_roi(tmp_path: Path, monkeypatch):
-    from soma.dense.geometry import compute_dense_geometry
-    from soma.dataset import SampleRecord
-    from soma.tasks.segmentation import SegmentationHead
-    import soma.tasks.segmentation as segmod
-
-    captured = {}
-
-    def _fake(path, *, location, size, spacing_um, **kwargs):
-        captured.update(location=location, size=size, spacing_um=spacing_um)
-        return np.zeros((size[1], size[0]), dtype=np.int64)
-
-    monkeypatch.setattr(
-        segmod, "read_mask_region_within_slide", lambda path, **kw: (_fake(path, **kw), None)
-    )
-    geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
-    head = SegmentationHead(
-        num_classes=NUM_CLASSES,
-        geometry=geometry,
-        spacing_um=0.5,
-        spacing_policy="native_if_coarser",
-        tolerance=0.05,
-    )
-    record = SampleRecord(
-        sample_id="coarse__x64_y0",
-        image_path=Path("/fake/coarse.tif"),
-        label=None,
-        label_mask_path=Path("/fake/coarse_mask.tif"),
-        spacing_at_level_0=0.657476464,
-        region=(64, 0),
-    )
-
-    targets = head.extract_targets(record)
-
-    assert tuple(targets["mask"].shape) == (TARGET, TARGET)
-    assert captured == {
-        "location": (64, 0),
-        "size": (TARGET, TARGET),
-        "spacing_um": 0.657476464,
-    }
-
-
-# --------------------------------------------------------------------------- #
 # Deferred-combo guards.
 # --------------------------------------------------------------------------- #
 
@@ -998,6 +943,64 @@ def test_slide_manifest_cache_disabled_samples_everything_without_cache_io(
     all_slides = ["s0", "s1", "s2", "s3"]
     assert sampler.calls == [all_slides, all_slides]
     assert not list((tmp_path / "out").rglob("roi_sampling"))
+
+
+def test_slide_manifest_relaunch_reads_no_annotation_raster(tmp_path: Path, monkeypatch):
+    """A warm relaunch finds every ROI's crop in the cache: no raster is opened again."""
+    sampler = _CountingSampler()
+    _install_counting_sampler(monkeypatch, sampler)
+    mask_reads: list[dict] = []
+    _patch_mask_regions(
+        monkeypatch,
+        lambda path, *, size, **kw: np.zeros((size[1], size[0]), np.uint8),
+        calls=mask_reads,
+    )
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    _launch(tmp_path, manifest, splits, "run1")
+    assert len(mask_reads) == 4
+    _launch(tmp_path, manifest, splits, "run2")
+    assert len(mask_reads) == 4
+
+
+def test_slide_manifest_missing_crops_resample_the_slide_and_reuse_its_grids(
+    tmp_path: Path, monkeypatch
+):
+    """A slide whose crops are gone (e.g. a cache from before crops existed) is re-sampled
+    and re-cropped; re-sampling yields the same coords, so its dense grids still hit."""
+    sampler = _CountingSampler()
+    _install_counting_sampler(monkeypatch, sampler)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+    _launch(tmp_path, manifest, splits, "run1")
+    import pandas as pd
+
+    roi_df = pd.read_csv(tmp_path / "out" / "run1" / "segmentation_rois" / "dataset.csv")
+    s1_crops = [Path(p) for p in roi_df.loc[roi_df["slide_id"] == "s1", "label_mask_crop_path"]]
+    s1_crops[0].unlink()
+    _FakeDenseModel.calls.clear()
+
+    _launch(tmp_path, manifest, splits, "run2")
+
+    assert sampler.calls == [["s0", "s1", "s2", "s3"], ["s1"]]
+    assert all(path.is_file() for path in s1_crops)
+    assert all(region_ids == [] for call in _FakeDenseModel.calls for _, region_ids in call["regions"])
+    assert _roi_csv_bytes(tmp_path, "run1") == _roi_csv_bytes(tmp_path, "run2")
+
+
+def test_slide_manifest_cache_disabled_writes_crops_into_the_run(tmp_path: Path, monkeypatch):
+    sampler = _CountingSampler()
+    _install_counting_sampler(monkeypatch, sampler)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+
+    _launch(tmp_path, manifest, splits, "run1", cache_enabled=False)
+
+    import pandas as pd
+
+    run_dir = tmp_path / "out" / "run1"
+    roi_df = pd.read_csv(run_dir / "segmentation_rois" / "dataset.csv")
+    crops = [Path(p) for p in roi_df["label_mask_crop_path"]]
+    assert len(crops) == 8
+    assert all(p.is_file() and run_dir / "segmentation_rois" / "masks" in p.parents for p in crops)
 
 
 def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, monkeypatch):

@@ -253,6 +253,7 @@ class FeatureExtractor:
             _SlideRegionExtractor,
             build_roi_dataset,
             sample_slide_rois,
+            write_roi_mask_crops,
         )
         from soma.extraction.orchestration import _release_parent_cuda_state
 
@@ -286,6 +287,12 @@ class FeatureExtractor:
                     coords_by_sample_id=fresh,
                 )
             merged = {**sampling_cache.coords_by_id, **fresh}
+            mask_crop_dirs = {
+                sample_id: sampling_cache.mask_crop_dir(sample_id)
+                for sample_id in self._dataset.sample_ids
+            }
+            # A hit slide's crops are all present; only freshly sampled slides need theirs.
+            crop_slide_ids = set(fresh)
         else:
             merged = sample_slide_rois(
                 self._dataset,
@@ -293,6 +300,11 @@ class FeatureExtractor:
                 sampling=sampling,
                 preprocessing=preprocessing,
             )
+            crops_root = self._output_root / "segmentation_rois" / "masks"
+            mask_crop_dirs = {
+                sample_id: crops_root / sample_id for sample_id in self._dataset.sample_ids
+            }
+            crop_slide_ids = set(self._dataset.sample_ids)
         coords_by_slide = {
             sample_id: merged[sample_id] for sample_id in self._dataset.sample_ids
         }
@@ -305,6 +317,7 @@ class FeatureExtractor:
             self._dataset,
             coords_by_slide,
             out_dir=self._output_root / "segmentation_rois",
+            mask_crop_dirs=mask_crop_dirs,
         )
         effective_dataset = SegmentationManifest(effective_csv)
         extractor = _SlideRegionExtractor(
@@ -321,6 +334,23 @@ class FeatureExtractor:
             store.validate_coverage(list(effective_dataset.sample_ids))
         finally:
             _release_parent_cuda_state()
+        # Crops are read at each grid's recorded spacing (a slide within tolerance is read
+        # natively), so they are written once the grids exist; a crash before this point
+        # leaves the slide's coords without crops, a miss that re-samples next launch.
+        crop_records = [
+            record
+            for record in effective_dataset.samples.values()
+            if record.slide_id in crop_slide_ids
+        ]
+        write_roi_mask_crops(
+            crop_records,
+            spacing_um_by_sample_id={
+                record.sample_id: store.spacing(record.sample_id).effective_spacing_um
+                for record in crop_records
+            },
+            masks=masks,
+            preprocessing=preprocessing,
+        )
         source = CacheBackedDenseSource(
             store,
             provenance=DenseSourceProvenance(

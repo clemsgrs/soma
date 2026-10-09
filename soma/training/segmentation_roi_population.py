@@ -23,7 +23,8 @@ logger = logging.getLogger(__name__)
 _FLAT_MASK_SUFFIXES = {".png", ".jpg", ".jpeg"}
 # 2: hs2p 5 mask reads (aligned to the slide, resampled by coordinate).
 # 3: ROI masks read at the grid's recorded spacing, the part beyond the slide ignored.
-_MASK_READER_SCHEMA_VERSION = 3
+# 4: ROI masks read from the crops ROI sampling stores, keyed by the crop, not the raster.
+_MASK_READER_SCHEMA_VERSION = 4
 
 
 @contextmanager
@@ -109,6 +110,21 @@ def _mask_source_fingerprint(path: str) -> dict[str, object]:
     }
 
 
+def _mask_crop_fingerprint(path: str) -> dict[str, object]:
+    """A stored ROI mask crop's identity: its path, size and modification time.
+
+    Unlike a mask source, a crop is not content-hashed: a population holds one per ROI
+    (~100k small files), and ROI sampling writes each once, atomically, under a key that
+    already fingerprints its annotation raster. Size and mtime catch a crop replaced in
+    place, such as one a hand-built ROI dataset supplies.
+    """
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return {"path": path, "missing": True}
+    return {"path": path, "size_bytes": int(stat.st_size), "mtime_ns": int(stat.st_mtime_ns)}
+
+
 def _resolved_mask_backend(
     path: str,
     *,
@@ -163,18 +179,33 @@ def resolve_segmentation_roi_population(
     source_fingerprint_cache: MutableMapping[str, dict[str, object]] | None = None,
     resolved_backend_cache: MutableMapping[tuple[str, str, bool], str] | None = None,
 ) -> SegmentationRoiPopulation:
-    """Load exact ROI class counts, or compute and publish them atomically once."""
+    """Load exact ROI class counts, or compute and publish them atomically once.
+
+    The key fingerprints what each target is read from: a slide-manifest ROI's stored
+    mask crop (``label_mask_crop_path``), never its annotation raster, and any other
+    record's mask (``label_mask_path``).
+    """
     mask_paths = sorted(
         {
             str(record.label_mask_path)
             for record in records
-            if record.label_mask_path is not None
+            if record.region is None and record.label_mask_path is not None
+        }
+    )
+    crop_paths = sorted(
+        {
+            str(record.label_mask_crop_path)
+            for record in records
+            if record.region is not None and record.label_mask_crop_path is not None
         }
     )
     fingerprints = source_fingerprint_cache if source_fingerprint_cache is not None else {}
     for path in mask_paths:
         if path not in fingerprints:
             fingerprints[path] = _mask_source_fingerprint(path)
+    for path in crop_paths:
+        if path not in fingerprints:
+            fingerprints[path] = _mask_crop_fingerprint(path)
     requested_backend = str(target_identity.get("backend", "auto"))
     spacing_aware = target_identity.get("spacing_um") is not None
     backends = resolved_backend_cache if resolved_backend_cache is not None else {}
@@ -189,6 +220,7 @@ def resolve_segmentation_roi_population(
     identity_payload = {
         "artifact_kind": "segmentation_roi_population",
         "mask_sources": [fingerprints[path] for path in mask_paths],
+        "mask_crops": [fingerprints[path] for path in crop_paths],
         "mask_reader": {
             "schema_version": _MASK_READER_SCHEMA_VERSION,
             "requested_backend": requested_backend,
@@ -204,6 +236,11 @@ def resolve_segmentation_roi_population(
                     "slide_id": record.slide_id,
                     "label_mask_path": (
                         None if record.label_mask_path is None else str(record.label_mask_path)
+                    ),
+                    "label_mask_crop_path": (
+                        None
+                        if record.label_mask_crop_path is None
+                        else str(record.label_mask_crop_path)
                     ),
                     "region": None if record.region is None else list(record.region),
                     "spacing_at_level_0": record.spacing_at_level_0,

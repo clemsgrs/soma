@@ -411,3 +411,105 @@ def test_roi_mask_read_marks_the_part_beyond_the_slide(tmp_path: Path):
     expected_inside[:56, :32] = True  # 256 - 224 columns, 256 - 200 rows
     np.testing.assert_array_equal(inside, expected_inside)
     np.testing.assert_array_equal(labels[inside].reshape(56, 32), mask[200:256, 224:256])
+
+
+@pytest.mark.parametrize(
+    "location,stored_shape",
+    [((96, 32), (TARGET, TARGET)), ((224, 200), (56, 32))],
+    ids=["interior", "edge"],
+)
+def test_stored_roi_mask_crop_is_the_in_slide_part_of_the_window_read(
+    tmp_path: Path, location, stored_shape
+):
+    """ROI sampling persists each ROI's mask crop as a raw-value PNG: byte for byte the
+    window ``read_mask_region_within_slide`` returns, cut to its in-slide rectangle (the
+    whole window for an interior ROI, 56x32 for one overhanging the slide's corner)."""
+    from PIL import Image
+
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import read_mask_region_within_slide
+    from soma.dense_slide_extraction import write_roi_mask_crops
+
+    slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
+    crop_path = tmp_path / "masks" / "s0" / f"{location[0]}_{location[1]}.png"
+    record = SampleRecord(
+        sample_id=f"s0__x{location[0]}_y{location[1]}",
+        image_path=slide_path,
+        label=None,
+        label_mask_path=label_mask_path,
+        region=location,
+        slide_id="s0",
+        label_mask_crop_path=crop_path,
+    )
+
+    write_roi_mask_crops(
+        [record],
+        spacing_um_by_sample_id={record.sample_id: SPACING_UM},
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        preprocessing=PreprocessingConfig(
+            backend="auto", requested_tile_size_px=TARGET, requested_spacing_um=SPACING_UM
+        ),
+    )
+
+    labels, inside = read_mask_region_within_slide(
+        label_mask_path,
+        location=location,
+        size=(TARGET, TARGET),
+        spacing_um=SPACING_UM,
+        reference_path=slide_path,
+        pixel_mapping=PIXEL_MAPPING,
+        backend="auto",
+    )
+    with Image.open(crop_path) as image:
+        assert image.format == "PNG" and image.mode == "L"
+        stored = np.asarray(image)
+    height, width = stored_shape
+    assert stored.shape == stored_shape
+    assert stored.tobytes() == np.ascontiguousarray(labels[:height, :width]).astype(np.uint8).tobytes()
+    if inside is not None:
+        assert inside[:height, :width].all() and inside.sum() == height * width
+
+
+def test_roi_with_no_in_slide_pixel_stores_an_all_outside_crop(tmp_path: Path):
+    """A ROI kept at x=255 on a 256 px slide and read at twice the slide's spacing has
+    less than one target pixel on the slide: its crop is written, and reads back as the
+    window read does (all outside, so the head's target is all ``ignore_index``)."""
+    from soma.dataset import SampleRecord
+    from soma.dense.reader import read_mask_crop, read_mask_region_within_slide
+    from soma.dense_slide_extraction import write_roi_mask_crops
+
+    slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
+    location, spacing_um = (255, 0), 2 * SPACING_UM
+    crop_path = tmp_path / "masks" / "s0" / "255_0.png"
+    record = SampleRecord(
+        sample_id="s0__x255_y0",
+        image_path=slide_path,
+        label=None,
+        label_mask_path=label_mask_path,
+        region=location,
+        slide_id="s0",
+        label_mask_crop_path=crop_path,
+    )
+
+    write_roi_mask_crops(
+        [record],
+        spacing_um_by_sample_id={record.sample_id: spacing_um},
+        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
+        preprocessing=PreprocessingConfig(
+            backend="auto", requested_tile_size_px=TARGET, requested_spacing_um=spacing_um
+        ),
+    )
+
+    live_labels, live_inside = read_mask_region_within_slide(
+        label_mask_path,
+        location=location,
+        size=(TARGET, TARGET),
+        spacing_um=spacing_um,
+        reference_path=slide_path,
+        pixel_mapping=PIXEL_MAPPING,
+        backend="auto",
+    )
+    labels, inside = read_mask_crop(crop_path, size=(TARGET, TARGET))
+    assert live_inside is not None and not live_inside.any()
+    np.testing.assert_array_equal(inside, live_inside)
+    np.testing.assert_array_equal(labels, live_labels)

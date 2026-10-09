@@ -30,7 +30,7 @@ import csv
 import io
 import logging
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,7 +60,7 @@ from soma.dense import DenseFeatureStore, normalize_hw
 from soma.slide2vec_adapter import build_execution_options
 
 if TYPE_CHECKING:
-    from soma.dataset import SegmentationManifest
+    from soma.dataset import SampleRecord, SegmentationManifest
 
 logger = logging.getLogger(__name__)
 
@@ -191,14 +191,26 @@ def build_roi_dataset(
     coords_by_slide: dict[str, list[tuple[int, int]]],
     *,
     out_dir: Path,
+    mask_crop_dirs: Mapping[str, Path] | None = None,
 ) -> Path:
-    """Persist the deterministic effective ROI dataset without depending on splits."""
+    """Persist the deterministic effective ROI dataset without depending on splits.
+
+    ``mask_crop_dirs`` gives each slide's mask crop directory; each ROI's
+    ``label_mask_crop_path`` is then ``<dir>/<x>_<y>.png`` there (left empty without it).
+    """
+    from soma.cache._types import mask_crop_name
+
     out_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = out_dir / "dataset.csv"
     rows: list[dict] = []
     for slide_id in dataset.sample_ids:
         record = dataset.samples[slide_id]
         for x, y in coords_by_slide.get(slide_id, []):
+            crop_path = (
+                ""
+                if mask_crop_dirs is None
+                else str(Path(mask_crop_dirs[slide_id]) / mask_crop_name(x, y))
+            )
             rows.append(
                 {
                     "sample_id": f"{slide_id}__x{x}_y{y}",
@@ -210,6 +222,7 @@ def build_roi_dataset(
                     "spacing_at_level_0": record.spacing_at_level_0,
                     "region_x": int(x),
                     "region_y": int(y),
+                    "label_mask_crop_path": crop_path,
                 }
             )
     _write_csv(
@@ -224,10 +237,66 @@ def build_roi_dataset(
             "spacing_at_level_0",
             "region_x",
             "region_y",
+            "label_mask_crop_path",
         ],
         rows,
     )
     return manifest_path
+
+
+def write_roi_mask_crops(
+    records: Sequence["SampleRecord"],
+    *,
+    spacing_um_by_sample_id: Mapping[str, float],
+    masks: MasksConfig,
+    preprocessing: PreprocessingConfig,
+) -> None:
+    """Write each ROI's mask crop to its ``label_mask_crop_path``.
+
+    The one place a slide-manifest ROI's annotation window is read: each slide's raster is
+    opened and aligned once for all its ROIs, and each ROI is read at its grid's recorded
+    spacing (``spacing_um_by_sample_id``) and the run's tile size — the read the
+    segmentation head used to repeat on every step. The crop keeps the raw values and only
+    the ROI's in-slide part (see :func:`soma.dense.reader.read_mask_crop`).
+    """
+    from soma.dense.reader import read_mask_regions_within_slide, write_mask_crop
+
+    if preprocessing.requested_tile_size_px is None:
+        raise ValueError("Writing ROI mask crops requires preprocessing.requested_tile_size_px.")
+    height, width = normalize_hw(int(preprocessing.requested_tile_size_px), name="tile_size_px")
+    by_slide: dict[tuple, list] = defaultdict(list)
+    for record in records:
+        if record.region is None or record.label_mask_crop_path is None:
+            raise ValueError(
+                f"ROI '{record.sample_id}' needs a region and a label_mask_crop_path to "
+                "write its mask crop."
+            )
+        by_slide[
+            (str(record.label_mask_path), str(record.image_path), record.spacing_at_level_0)
+        ].append(record)
+    for (label_mask_path, image_path, spacing_at_level_0), slide_records in by_slide.items():
+        try:
+            crops = read_mask_regions_within_slide(
+                label_mask_path,
+                regions=[
+                    (record.region, float(spacing_um_by_sample_id[record.sample_id]))
+                    for record in slide_records
+                ],
+                size=(width, height),
+                reference_path=image_path,
+                reference_backend=preprocessing.backend,
+                spacing_at_level_0=spacing_at_level_0,
+                pixel_mapping=masks.pixel_mapping,
+                backend=preprocessing.mask_backend,
+            )
+            # strict: exhausts the reader, which closes the raster.
+            for record, crop in zip(slide_records, crops, strict=True):
+                try:
+                    write_mask_crop(record.label_mask_crop_path, crop)
+                except ValueError as error:
+                    raise ValueError(f"segmentation ROI '{record.sample_id}': {error}") from error
+        except ValueError as error:
+            raise ValueError(f"annotation raster '{label_mask_path}': {error}") from error
 
 
 def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
