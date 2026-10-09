@@ -218,14 +218,19 @@ In a Python script, soma checks the logging setup when you create a
 ``Pipeline`` or a ``FeatureExtractor``:
 
 - If you have not configured logging (no handler on the root logger or on the
-  ``soma`` logger), soma adds one stderr handler to the ``soma`` logger and,
-  unless you set a level on it, sets that logger to INFO. You see messages such
-  as the fold summary without any setup. soma adds this handler only once.
+  ``soma`` logger), soma adds one stderr handler to the ``soma`` logger and
+  sets that logger to INFO. You see messages such as the fold summary without
+  any setup. soma adds this handler only once. A level you set yourself is
+  kept: on the ``soma`` logger, or on the root logger when it is not Python's
+  default WARNING (``logging.getLogger().setLevel(logging.ERROR)`` keeps soma
+  quiet).
 - If you have configured logging, for example with ``logging.basicConfig``,
   soma changes nothing and your configuration decides what is shown.
 - If you configure logging after you create a ``Pipeline``, soma's handler
   stops writing as soon as the root logger has a handler, so each message
-  prints once, through your handlers. The ``soma`` logger stays at INFO.
+  prints once, through your handlers. The ``soma`` logger stays at INFO. If
+  you set ``propagate = False`` on the ``soma`` logger, its messages never reach
+  your handlers, so soma's handler keeps printing them.
 
 To change the output:
 

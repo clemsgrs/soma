@@ -181,3 +181,35 @@ def test_an_explicit_debug_level_on_the_soma_logger_reaches_the_default_handler(
     assert err.count("set before construction") == 1
     assert "hidden at info" not in err
     assert err.count("set after construction") == 1
+
+
+def test_a_caller_root_level_set_without_a_handler_is_kept(tmp_path: Path, capsys):
+    config, feature_dir = _slide_config(tmp_path)
+
+    with no_logging_setup():
+        logging.getLogger().setLevel(logging.ERROR)
+        Pipeline(config, feature_dir=feature_dir)
+        logging.getLogger("soma.pipeline").info("fold summary")
+        logging.getLogger("soma.pipeline").warning("a warning")
+        logging.getLogger("soma.pipeline").error("an error")
+
+    err = capsys.readouterr().err
+    assert "fold summary" not in err
+    assert "a warning" not in err
+    assert err.count("an error") == 1
+
+
+def test_records_still_print_when_soma_does_not_propagate_to_a_later_root_setup(
+    tmp_path: Path, capsys
+):
+    config, feature_dir = _slide_config(tmp_path)
+
+    with no_logging_setup():
+        logging.getLogger("soma").propagate = False
+        Pipeline(config, feature_dir=feature_dir)
+        logging.basicConfig(level=logging.INFO, format="caller: %(message)s")
+        logging.getLogger("soma.pipeline").error("an error")
+
+    err = capsys.readouterr().err
+    assert err.count("an error") == 1
+    assert "caller: an error" not in err

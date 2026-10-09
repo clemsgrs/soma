@@ -34,15 +34,17 @@ class _StderrHandler(logging.StreamHandler):
 
 
 class _UntilRootConfigured(logging.Filter):
-    """Drop records once the root logger has handlers of its own.
+    """Drop records once they reach root handlers of the caller's own.
 
     A caller who configures logging after soma's first use receives soma's records
     through their root handlers; soma's handler then stays quiet so no line prints
-    twice.
+    twice. When the ``soma`` logger does not propagate, the root handlers never see
+    soma's records, so soma's handler keeps printing them.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return not logging.getLogger().handlers
+        reaches_root = logging.getLogger("soma").propagate
+        return not (reaches_root and logging.getLogger().handlers)
 
 
 def ensure_default_logging() -> None:
@@ -56,7 +58,11 @@ def ensure_default_logging() -> None:
     handler.setFormatter(logging.Formatter(_FORMAT, datefmt=_DATEFMT))
     handler.addFilter(_UntilRootConfigured())
     soma_logger.addHandler(handler)
-    if soma_logger.level == logging.NOTSET:
+    # Raise soma to INFO only when no level was chosen: a level set on the ``soma``
+    # logger, or a root level other than Python's default WARNING (for example a
+    # script that sets the root to ERROR to stay quiet), is the caller's and is kept.
+    root_level_is_default = logging.getLogger().level == logging.WARNING
+    if soma_logger.level == logging.NOTSET and root_level_is_default:
         soma_logger.setLevel(logging.INFO)
 
 
