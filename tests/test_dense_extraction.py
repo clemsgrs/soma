@@ -14,6 +14,7 @@ which is the point of the migration.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -230,6 +231,20 @@ def test_run_writes_grids_into_slide2vecs_image_payload_dir(tmp_path: Path, fake
     assert store.feature_dim == FEATURE_DIM
     assert store.grid_shape == (2, 2)
     assert tuple(store.load("s0").shape) == (FEATURE_DIM, 2, 2)
+
+
+def test_run_logs_the_dense_mode_it_resolved(tmp_path: Path, fake_model, caplog):
+    dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
+
+    with caplog.at_level(logging.INFO, logger="soma"):
+        _extractor(dataset, tmp_path).run(tmp_path / "features")
+
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "soma.dense_extraction"
+        and record.getMessage().startswith("Dense extraction mode: ")
+    ] == ["Dense extraction mode: whole (single padded forward)"]
 
 
 def test_run_states_the_read_and_encode_recipe_it_wants(tmp_path: Path, fake_model):

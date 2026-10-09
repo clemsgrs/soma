@@ -6,12 +6,14 @@ identity, transform included, in each sidecar's ``compatibility`` block. soma co
 block into ``cache_metadata.json`` with the slide2vec version, so a later run can tell
 whether the installed slide2vec would still extract the same features.
 
-The record lives under ``feature_identity`` and goes through three states:
+The record lives under ``feature_identity`` and is in one of two states:
 
-* absent: the cache was written before soma recorded identities, and cannot be verified;
 * pending (``identity`` is null): the cache was created, and no feature is committed yet;
 * recorded: ``identity`` is the block slide2vec wrote with the first committed features,
   and ``slide2vec_version`` the version it was last verified with.
+
+A cache whose record is absent cannot be verified. When it holds features it is a miss:
+it is deleted and extracted again. When it holds none it starts a pending record.
 """
 
 from __future__ import annotations
@@ -30,11 +32,6 @@ from soma.cache.io import _load_metadata, _write_metadata
 logger = logging.getLogger(__name__)
 
 FEATURE_IDENTITY_METADATA_KEY = "feature_identity"
-
-SLIDE2VEC_RELEASE_NOTES_URL = "https://github.com/clemsgrs/slide2vec/releases"
-
-# Caches already reported as unverifiable: a run resolves a cache it completes twice.
-_WARNED_UNRECORDED: set[Path] = set()
 
 # Cache kinds whose payloads are pooled embeddings. Dense caches record no identity.
 _POOLED_CACHE_KINDS = frozenset({"tile", "image", "slide", "patient", "hierarchical"})
@@ -57,8 +54,6 @@ class FeatureIdentityCheck:
     differing: Callable[[dict[str, Any]], dict[str, tuple[Any, Any]]]
     # ``cache.on_identity_mismatch``: 'error' or 'reextract'.
     on_mismatch: str = "error"
-    # ``cache.on_unrecorded_identity``: 'warn' or 'reextract'.
-    on_unrecorded: str = "warn"
 
 
 def pending_identity_record(cache_kind: str) -> dict[str, Any] | None:
@@ -73,6 +68,10 @@ def recorded_identity(metadata: dict[str, Any]) -> dict[str, Any] | None:
     return (metadata.get(FEATURE_IDENTITY_METADATA_KEY) or {}).get("identity")
 
 
+class MissingFeatureIdentity(ValueError):
+    """slide2vec wrote features without the feature identity a pooled cache records."""
+
+
 def record_committed_identity(
     metadata: dict[str, Any],
     resolution: FeatureCacheResolution,
@@ -82,8 +81,8 @@ def record_committed_identity(
 
     The identity is the ``compatibility`` block slide2vec wrote in the sidecar of the
     first committed sample: every sample of one extraction shares it. Features whose
-    sidecar holds no transform cannot be verified later, so the cache then drops its
-    record and counts as one that never had any.
+    sidecar holds no identity cannot be verified later, so they are not committed:
+    :class:`MissingFeatureIdentity` is raised and the record stays pending.
     """
     record = metadata.get(FEATURE_IDENTITY_METADATA_KEY)
     if record is None or record.get("identity") is not None:
@@ -92,14 +91,18 @@ def record_committed_identity(
     if not committed:
         return
     payload_path = resolution.feature_path_for_id(committed[0])
-    identity = _sidecar_identity(payload_path.with_name(f"{payload_path.stem}.meta.json"))
-    if _is_verifiable(identity):
-        metadata[FEATURE_IDENTITY_METADATA_KEY] = {
-            "slide2vec_version": slide2vec.__version__,
-            "identity": identity,
-        }
-    else:
-        del metadata[FEATURE_IDENTITY_METADATA_KEY]
+    sidecar_path = payload_path.with_name(f"{payload_path.stem}.meta.json")
+    identity = _sidecar_identity(sidecar_path)
+    if not identity:
+        raise MissingFeatureIdentity(
+            f"slide2vec wrote no feature identity ('compatibility') for {committed[0]} "
+            f"in {sidecar_path}, so soma cannot verify the features of the cache at "
+            f"{resolution.cache_dir} and does not commit them."
+        )
+    metadata[FEATURE_IDENTITY_METADATA_KEY] = {
+        "slide2vec_version": slide2vec.__version__,
+        "identity": identity,
+    }
 
 
 def stale_features_reason(
@@ -118,53 +121,27 @@ def stale_features_reason(
     current one and ``check`` does not ask to extract again.
     """
     installed = slide2vec.__version__
-    populated = any(features_dir.glob("*.pt"))
     record = existing.get(FEATURE_IDENTITY_METADATA_KEY)
     if record is not None and record.get("identity") is None:
-        # An extraction stopped before its first commit. What it left on disk is reused
-        # when the installed slide2vec wrote it, and takes its identity from a sidecar.
-        # What another version wrote was never committed, and is not kept.
+        # An extraction stopped before its first commit. Its unsigned outputs are handed
+        # back to slide2vec, which validates their provenance or encodes them again, and
+        # the next commit completes the record. What another version wrote is not kept.
         if record.get("slide2vec_version") != installed:
             return f"extraction was interrupted under slide2vec {record.get('slide2vec_version')}"
-        sidecar_path = next(features_dir.glob("*.meta.json"), None)
-        identity = None if sidecar_path is None else _sidecar_identity(sidecar_path)
-        if _is_verifiable(identity):
-            _write_record(
-                metadata_path, existing, {"slide2vec_version": installed, "identity": identity}
-            )
-            return None
-        if not populated:
-            return None
-        # Features with no identity to recover, as aggregated from tiles with no record:
-        # the cache drops its record and counts as one that never had any.
-        _write_record(metadata_path, existing, None)
-        record = None
+        return None
     if record is None:
-        if not populated:
+        if not any(features_dir.glob("*.pt")):
             # Nothing to verify: an empty cache starts a record like a new one.
             _write_record(metadata_path, existing, {"slide2vec_version": installed, "identity": None})
             return None
-        message = (
-            f"Feature cache at {cache_dir} records no feature identity, so soma cannot "
-            f"verify that slide2vec {installed} would extract the same features."
+        logger.warning(
+            "Feature cache at %s holds features but records no feature identity, so soma "
+            "cannot verify that slide2vec %s would extract the same features. Extracting "
+            "the cache again.",
+            cache_dir,
+            installed,
         )
-        if check.on_unrecorded == "reextract":
-            logger.warning(
-                "%s Extracting the cache again (cache.on_unrecorded_identity).", message
-            )
-            return "no recorded feature identity"
-        if cache_dir not in _WARNED_UNRECORDED:
-            _WARNED_UNRECORDED.add(cache_dir)
-            logger.warning(
-                "%s It is reused as is. If it was written with an older slide2vec, check "
-                "the slide2vec release notes (%s) for changes to the preprocessing of "
-                "'%s'. To extract it again, delete the cache directory or set "
-                "cache.on_unrecorded_identity: reextract.",
-                message,
-                SLIDE2VEC_RELEASE_NOTES_URL,
-                existing.get("encoder_name"),
-            )
-        return None
+        return "no recorded feature identity"
     verified_version = record.get("slide2vec_version")
     if verified_version == installed:
         return None
@@ -193,27 +170,16 @@ def stale_features_reason(
     )
 
 
-def _write_record(
-    metadata_path: Path, existing: dict[str, Any], record: dict[str, Any] | None
-) -> None:
+def _write_record(metadata_path: Path, existing: dict[str, Any], record: dict[str, Any]) -> None:
     """Set the identity record in ``existing`` and on disk, keeping what else is on disk.
 
-    ``record=None`` removes it. The file is read again because the comparison that
-    precedes a write loads an encoder, long enough for another job to commit samples to
-    the same cache.
+    The file is read again because the comparison that precedes a write loads an
+    encoder, long enough for another job to commit samples to the same cache.
     """
     on_disk = _load_metadata(metadata_path)
     for metadata in (existing, on_disk):
-        if record is None:
-            metadata.pop(FEATURE_IDENTITY_METADATA_KEY, None)
-        else:
-            metadata[FEATURE_IDENTITY_METADATA_KEY] = record
+        metadata[FEATURE_IDENTITY_METADATA_KEY] = record
     _write_metadata(metadata_path, on_disk)
-
-
-def _is_verifiable(identity: dict[str, Any] | None) -> bool:
-    """True for an identity that holds the transform, the field the cache key lacks."""
-    return identity is not None and "transform" in identity
 
 
 def _sidecar_identity(sidecar_path: Path) -> dict[str, Any] | None:

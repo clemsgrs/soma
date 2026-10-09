@@ -56,6 +56,18 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Buildx setup pulls moby/buildkit and Dockerfile.ci pulls ubuntu:22.04,
+      # both from Docker Hub. Anonymous pulls from shared runner IPs hit Docker
+      # Hub's rate limit (429), and BuildKit still checks the base image
+      # manifest on a full cache hit, so log in before Buildx setup. Fork PRs
+      # get no secrets, so they skip this step and fall back to anonymous pulls.
+      - name: Log in to Docker Hub
+        if: ${{ steps.scope.outputs.run == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Set up Docker Buildx
         if: steps.scope.outputs.run == 'true'
         uses: docker/setup-buildx-action@v3

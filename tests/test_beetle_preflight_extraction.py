@@ -100,6 +100,18 @@ class _FakeExtractor:
         return SimpleNamespace(source=SimpleNamespace(feature_dir=payload))
 
 
+_MASK_CROP_CALLS: list[dict] = []
+
+
+def _record_mask_crops(records, *, spacing_um_by_sample_id, **_kwargs):
+    _MASK_CROP_CALLS.append(
+        {
+            "crop_paths": [record.label_mask_crop_path for record in records],
+            "spacings": dict(spacing_um_by_sample_id),
+        }
+    )
+
+
 def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_ordinary(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -134,6 +146,8 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
     monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
     monkeypatch.setattr(module, "SegmentationHead", FakeHead)
+    monkeypatch.setattr(module, "write_roi_mask_crops", _record_mask_crops)
+    _MASK_CROP_CALLS.clear()
     _FakeExtractor.calls = []
     _FakeExtractor.negate_fp16 = False
 
@@ -188,6 +202,10 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
     )
     assert all(call["preprocessing"].mask_backend == "openslide" for call in _FakeExtractor.calls)
     assert _FakeExtractor.calls[0]["cache"].root_dir != _FakeExtractor.calls[1]["cache"].root_dir
+    # Every representative ROI gets its mask crop, cut at its grid's recorded spacing.
+    (crops,) = _MASK_CROP_CALLS
+    assert len(crops["crop_paths"]) == 4 and all(crops["crop_paths"])
+    assert set(crops["spacings"].values()) == {0.485, 0.657476}
 
 
 def test_representative_extraction_rejects_fp16_cache_below_cosine_contract(
@@ -210,6 +228,8 @@ def test_representative_extraction_rejects_fp16_cache_below_cosine_contract(
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
     monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
     monkeypatch.setattr(module, "SegmentationHead", FakeHead)
+    monkeypatch.setattr(module, "write_roi_mask_crops", _record_mask_crops)
+    _MASK_CROP_CALLS.clear()
     _FakeExtractor.calls = []
     _FakeExtractor.negate_fp16 = True
 

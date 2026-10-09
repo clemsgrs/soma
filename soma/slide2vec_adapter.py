@@ -246,6 +246,7 @@ def build_execution_options(
     num_gpus: int | None,
     save_tile_embeddings: bool,
     output_dtype: str | None = None,
+    on_image_mismatch: str = "raise",
 ) -> ExecutionOptions:
     execution = execution or ExecutionConfig()
     num_gpus_value = num_gpus if num_gpus is not None else execution.num_gpus
@@ -279,6 +280,9 @@ def build_execution_options(
         # exact dtype folded into the cache key (key and storage can never drift). None
         # would let slide2vec follow precision; soma always passes a resolved value.
         output_dtype=output_dtype,
+        # Model.embed_images only: what slide2vec does with an image embedding recorded
+        # for another source path under the same sample_id.
+        on_image_mismatch=on_image_mismatch,
     )
 
 

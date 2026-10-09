@@ -49,6 +49,8 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "region_y",
     # The parent slide an ROI was sampled from; typed onto SampleRecord.slide_id.
     "slide_id",
+    # A slide-manifest ROI's stored mask crop; typed onto SampleRecord.label_mask_crop_path.
+    "label_mask_crop_path",
     "spacing_at_level_0",
     # User-supplied tile coordinates: one hs2p tiling artifact per slide, which replaces
     # soma's own tiling of that slide. Slide-level datasets only.
@@ -193,6 +195,10 @@ class SampleRecord:
     # image_path/label_mask_path then point at the parent *slide* (+ annotation slide), and
     # the run's spacing/tile size complete the region read. None for pre-cropped tiles.
     region: tuple[int, int] | None = None
+    # Slide-manifest segmentation: the ROI's stored mask crop — a raw-value PNG of its
+    # in-slide part, written at ROI sampling time so targets never reopen the annotation
+    # raster. None for pre-cropped tiles.
+    label_mask_crop_path: Path | None = None
     # Slide-manifest segmentation: the parent slide this ROI was sampled from. Recorded
     # explicitly because it is part of the ROI's on-disk address — slide2vec namespaces
     # dense grids as ``<slide_id>/<x>_<y>.pt`` — and reconstructing it by splitting the
@@ -465,6 +471,7 @@ class SegmentationManifest:
                 group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),
                 region=region,
+                label_mask_crop_path=_optional_path_column(row, "label_mask_crop_path"),
                 slide_id=slide_id,
                 metadata=metadata,
             )

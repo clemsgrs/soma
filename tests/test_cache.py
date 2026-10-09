@@ -55,6 +55,20 @@ def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -
     return Dataset(csv_path)
 
 
+def _write_sidecar(resolution: FeatureCacheResolution, sample_id: str) -> None:
+    """The sidecar slide2vec publishes beside a payload, with the feature identity."""
+    payload_path = resolution.feature_path_for_id(sample_id)
+    payload_path.with_name(f"{payload_path.stem}.meta.json").write_text(
+        json.dumps({"compatibility": {"encoder_name": "virchow", "feature_dtype": "fp16"}})
+    )
+
+
+def _save_payload(resolution: FeatureCacheResolution, sample_id: str, tensor: torch.Tensor) -> None:
+    """Write one sample's features the way slide2vec does: payload, then sidecar."""
+    torch.save(tensor, resolution.feature_path_for_id(sample_id))
+    _write_sidecar(resolution, sample_id)
+
+
 class _FakeRichProgress:
     def __init__(self) -> None:
         self.started = False
@@ -195,8 +209,9 @@ def test_cache_validation_surfaces_payload_errors(tmp_path: Path, caplog):
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
     # Write a valid payload for s1 and a CORRUPT payload for s2.
-    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    _save_payload(resolution, "s1", torch.randn(4, 16))
     resolution.feature_path_for_id("s2").write_bytes(b"not-a-real-tensor")
+    _write_sidecar(resolution, "s2")
     record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     # With validate_payloads=True, the corrupt file should surface as a WARNING
@@ -527,9 +542,10 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
-    metadata["empty_sample_ids"] = ["s2"]
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    # Empty markers are recorded with the sample's signature, like features.
+    record_empty_sample_ids(resolution, ["s2"])
+    _save_payload(resolution, "s1", torch.randn(4, 16))
     record_sample_identity_signatures(resolution, ["s1"])
 
     reused = resolve_tile_cache(
@@ -663,7 +679,7 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     for sample_id in dataset.sample_ids:
-        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
+        _save_payload(resolution, sample_id, torch.randn(4, 16))
     record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     reused = resolve_tile_cache(
@@ -688,7 +704,7 @@ def test_feature_cache_metadata_mutations_return_refreshed_resolution(tmp_path: 
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     for sample_id in dataset.sample_ids:
-        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
+        _save_payload(resolution, sample_id, torch.randn(4, 16))
 
     with_dim = record_feature_dim(resolution, 16)
     assert with_dim.metadata["feature_dim"] == 16
@@ -720,7 +736,7 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    _save_payload(resolution, "s1", torch.randn(4, 16))
     record_sample_identity_signatures(resolution, ["s1"])
 
     resumed = resolve_tile_cache(
@@ -747,8 +763,10 @@ def test_non_dense_missing_sample_ids_ignores_sidecar(tmp_path: Path):
         execution=EncoderConfig(name="virchow", precision="fp16"),
     )
     for sample_id in dataset.sample_ids:
-        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))  # bare .pt, no sidecar
+        _save_payload(resolution, sample_id, torch.randn(4, 16))
     record_sample_identity_signatures(resolution, list(dataset.sample_ids))
+    for sidecar_path in resolution.features_dir.glob("*.meta.json"):
+        sidecar_path.unlink()  # bare .pt, no sidecar
     reused = resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
@@ -772,7 +790,7 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    _save_payload(resolution, "s1", torch.randn(4, 16))
     record_sample_identity_signatures(resolution, ["s1"])
 
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
@@ -806,6 +824,7 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    _write_sidecar(resolution, "s1")
     record_sample_identity_signatures(resolution, ["s1", "s2"])
 
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
@@ -839,18 +858,11 @@ def _resolve_tile_cache_messages(cache_root: Path, dataset: Dataset) -> list[str
     return [str(call.args[0]) for call in emit_progress_log.call_args_list]
 
 
-def _start_tile_cache_without_manifest(cache_root: Path, dataset: Dataset) -> FeatureCacheResolution:
-    """A fresh tile cache whose manifest is gone, so identities are never backfilled."""
-    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
-    resolution.manifest_path.unlink()
-    return resolution
-
-
 def test_resolve_tile_cache_partial_message_counts_samples_without_identity(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"
-    resolution = _start_tile_cache_without_manifest(cache_root, dataset)
-    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
+    _save_payload(resolution, "s1", torch.randn(4, 16))
     record_sample_identity_signatures(resolution, ["s1"])
 
     messages = _resolve_tile_cache_messages(cache_root, dataset)
@@ -865,10 +877,10 @@ def test_resolve_tile_cache_partial_message_counts_samples_without_identity(tmp_
 def test_resolve_tile_cache_partial_message_counts_samples_with_mismatched_identity(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"
-    resolution = _start_tile_cache_without_manifest(cache_root, dataset)
+    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
     # s2's feature file exists, but under a stale identity: it is not trusted.
     for sample_id in ("s1", "s2"):
-        torch.save(torch.randn(4, 16), resolution.feature_path_for_id(sample_id))
+        _save_payload(resolution, sample_id, torch.randn(4, 16))
     record_sample_identity_signatures(resolution, ["s1", "s2"])
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["sample_identity_signature_by_id"]["s2"] = "stale-identity"
@@ -886,7 +898,7 @@ def test_resolve_tile_cache_partial_message_counts_samples_with_mismatched_ident
 def test_resolve_tile_cache_miss_message_counts_samples_without_identity(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"
-    _start_tile_cache_without_manifest(cache_root, dataset)
+    _resolve_virchow_tile_cache(cache_root, dataset)
 
     messages = _resolve_tile_cache_messages(cache_root, dataset)
 
@@ -904,8 +916,8 @@ def test_resolve_tile_cache_partial_message_excludes_empty_samples(tmp_path: Pat
     ]
     dataset = _make_dataset(tmp_path, rows=rows)
     cache_root = tmp_path / "feature_cache"
-    resolution = _start_tile_cache_without_manifest(cache_root, dataset)
-    torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
+    _save_payload(resolution, "s1", torch.randn(4, 16))
     # s1: on disk. s2: empty, identity recorded. s3: empty, no identity.
     # s4: empty, mismatched identity. s5: never reached.
     record_sample_identity_signatures(resolution, ["s1", "s2", "s4"])
@@ -973,38 +985,39 @@ def test_feature_cache_validation_empty_sample_with_feature_returns_counts_so_fa
     assert expected == 1  # s1, seen before the early return; s3 never reached
 
 
-def test_resolve_tile_cache_backfills_legacy_identity_metadata_from_manifest(tmp_path: Path):
+@pytest.mark.parametrize("payload", ["payload_only", "payload_and_sidecar"])
+def test_matching_manifest_does_not_sign_unsigned_features(tmp_path: Path, payload):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "feature_cache"
-    resolution = resolve_tile_cache(
-        cache_root=cache_root,
-        dataset=dataset,
-        tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
-    )
-    metadata = json.loads(resolution.metadata_path.read_text())
-    metadata.pop("sample_identity_signature_by_id", None)
-    metadata["feature_dim"] = 16
-    resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
+    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
+    # Features left by an extraction that never committed them; the manifest still
+    # describes this very dataset.
     torch.save(torch.randn(4, 16), resolution.feature_path_for_id("s1"))
+    if payload == "payload_and_sidecar":
+        _write_sidecar(resolution, "s1")
 
-    reused = resolve_tile_cache(
-        cache_root=cache_root,
-        dataset=dataset,
-        tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
-    )
+    reused = _resolve_virchow_tile_cache(cache_root, dataset)
 
-    refreshed_metadata = json.loads(reused.metadata_path.read_text())
-    assert refreshed_metadata["sample_identity_signature_by_id"] == {
-        "s1": reused.cache_stem_by_id["s1"],
-        "s2": reused.cache_stem_by_id["s2"],
-    }
+    assert json.loads(reused.metadata_path.read_text())["sample_identity_signature_by_id"] == {}
     assert reused.complete is False
-    assert reused.reused is False
-    assert reused.missing_sample_ids() == ["s2"]
+    assert reused.missing_sample_ids() == ["s1", "s2"]
+
+
+def test_matching_manifest_does_not_restore_invalidated_signatures(tmp_path: Path):
+    from soma.cache import invalidate_sample_identities
+
+    dataset = _make_dataset(tmp_path)
+    cache_root = tmp_path / "feature_cache"
+    resolution = _resolve_virchow_tile_cache(cache_root, dataset)
+    for sample_id in ("s1", "s2"):
+        _save_payload(resolution, sample_id, torch.randn(4, 16))
+    committed = record_sample_identity_signatures(resolution, ["s1", "s2"])
+    invalidate_sample_identities(committed, ["s1"])
+
+    reused = _resolve_virchow_tile_cache(cache_root, dataset)
+
+    assert sorted(json.loads(reused.metadata_path.read_text())["sample_identity_signature_by_id"]) == ["s2"]
+    assert reused.missing_sample_ids() == ["s1"]
 
 
 def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
@@ -1488,7 +1501,7 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
     metadata["feature_dim"] = 16
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     for sample_id in dataset.sample_ids:
-        torch.save(torch.randn(4, 9, 16), resolution.feature_path_for_id(sample_id))
+        _save_payload(resolution, sample_id, torch.randn(4, 9, 16))
     record_sample_identity_signatures(resolution, list(dataset.sample_ids))
 
     reused = resolve_hierarchical_cache(
@@ -1532,7 +1545,7 @@ def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path)
     metadata_a = json.loads(resolution_a.metadata_path.read_text())
     metadata_a["feature_dim"] = 8
     resolution_a.metadata_path.write_text(json.dumps(metadata_a, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 8), resolution_a.feature_path_for_id("s1"))
+    _save_payload(resolution_a, "s1", torch.randn(4, 8))
     record_sample_identity_signatures(resolution_a, ["s1"])
 
     resolution_b = resolve_tile_cache(
@@ -1568,7 +1581,7 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
     metadata_a = json.loads(resolution_a.metadata_path.read_text())
     metadata_a["feature_dim"] = 8
     resolution_a.metadata_path.write_text(json.dumps(metadata_a, indent=2, sort_keys=True))
-    torch.save(torch.randn(4, 8), resolution_a.feature_path_for_id("s1"))
+    _save_payload(resolution_a, "s1", torch.randn(4, 8))
     record_sample_identity_signatures(resolution_a, ["s1"])
 
     resolution_b = resolve_tile_cache(
@@ -1580,3 +1593,23 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
     )
     assert resolution_b.complete is False
     assert resolution_b.missing_sample_ids() == ["s1"]
+
+
+def test_metadata_write_that_fails_before_replacement_keeps_the_previous_json(
+    tmp_path: Path, monkeypatch
+):
+    from soma.cache.io import _write_metadata
+
+    metadata_path = tmp_path / "new" / "dir" / CACHE_METADATA_NAME
+    _write_metadata(metadata_path, {"b": 1, "a": [1, 2]})
+    # Parent directories are created and the JSON keeps its sorted, indented format.
+    assert metadata_path.read_text() == json.dumps({"a": [1, 2], "b": 1}, indent=2, sort_keys=True)
+
+    def interrupted_replace(*args, **kwargs):
+        raise OSError("interrupted before replacement")
+
+    monkeypatch.setattr("os.replace", interrupted_replace)
+    with pytest.raises(OSError, match="interrupted before replacement"):
+        _write_metadata(metadata_path, {"a": "partial"})
+
+    assert json.loads(metadata_path.read_text()) == {"a": [1, 2], "b": 1}

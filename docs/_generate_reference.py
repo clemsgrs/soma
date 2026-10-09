@@ -97,6 +97,10 @@ def build_cli_rst() -> str:
         paths and values are parsed as YAML, preserving numbers and booleans.
         Use ``soma --help`` or ``soma COMMAND --help`` for command options.
 
+        ``soma`` prints soma's INFO log messages to stderr, and warnings and errors
+        from other libraries. See :ref:`log-output` for the same behaviour in a Python
+        script.
+
         Available commands
         ------------------
 
