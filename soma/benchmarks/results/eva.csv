@@ -23,3 +23,5 @@ camelyon16_small,uni2,test/balanced_accuracy,0.854068877551,0.0126315783052,20,2
 camelyon16_small,virchow2,test/balanced_accuracy,0.858150510204,0.0109575083053,20,2026-10-08,441c694,6.3.4,soma reproduce --record
 panda_small,uni2,test/balanced_accuracy,0.648950236855,0.0173246676352,20,2026-10-08,441c694,6.3.4,soma reproduce --record
 panda_small,virchow2,test/balanced_accuracy,0.651814341704,0.0170866340823,20,2026-10-08,441c694,6.3.4,soma reproduce --record
+crc,uni2,test/balanced_accuracy,0.965789336729,0.000993175917958,5,2026-10-09,2934740,6.3.4,soma reproduce --record
+crc,virchow2,test/balanced_accuracy,0.966043692788,0.00141984665828,5,2026-10-09,2934740-dirty,6.3.4,soma reproduce --record
