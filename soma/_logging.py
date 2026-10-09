@@ -33,18 +33,25 @@ class _StderrHandler(logging.StreamHandler):
         pass
 
 
-class _UntilRootConfigured(logging.Filter):
-    """Drop records once they reach root handlers of the caller's own.
+class _DefaultHandler(_StderrHandler):
+    """The stderr handler soma attaches when the process has no logging setup."""
 
-    A caller who configures logging after soma's first use receives soma's records
-    through their root handlers; soma's handler then stays quiet so no line prints
-    twice. When the ``soma`` logger does not propagate, the root handlers never see
-    soma's records, so soma's handler keeps printing them.
+
+class _UntilCallerConfigured(logging.Filter):
+    """Drop records once the caller has a logging setup of their own.
+
+    The rule mirrors the one soma uses before attaching its handler: a handler on the
+    ``soma`` logger other than soma's own, or a handler on the root logger that soma's
+    records reach. A caller who sets logging up after soma's first use then sees each
+    line once, through their handlers. When the ``soma`` logger does not propagate, root
+    handlers never see soma's records, so they do not count.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        reaches_root = logging.getLogger("soma").propagate
-        return not (reaches_root and logging.getLogger().handlers)
+        soma_logger = logging.getLogger("soma")
+        if any(not isinstance(h, _DefaultHandler) for h in soma_logger.handlers):
+            return False
+        return not (soma_logger.propagate and logging.getLogger().handlers)
 
 
 def ensure_default_logging() -> None:
@@ -54,9 +61,9 @@ def ensure_default_logging() -> None:
         return
     # The handler has no level of its own: the ``soma`` logger's level alone decides
     # what is shown, so a caller who sets it to DEBUG sees DEBUG records.
-    handler = _StderrHandler()
+    handler = _DefaultHandler()
     handler.setFormatter(logging.Formatter(_FORMAT, datefmt=_DATEFMT))
-    handler.addFilter(_UntilRootConfigured())
+    handler.addFilter(_UntilCallerConfigured())
     soma_logger.addHandler(handler)
     # Raise soma to INFO only when no level was chosen: a level set on the ``soma``
     # logger, or a root level other than Python's default WARNING (for example a

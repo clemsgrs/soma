@@ -213,3 +213,20 @@ def test_records_still_print_when_soma_does_not_propagate_to_a_later_root_setup(
     err = capsys.readouterr().err
     assert err.count("an error") == 1
     assert "caller: an error" not in err
+
+
+def test_a_caller_handler_added_to_soma_after_soma_does_not_duplicate_records(
+    tmp_path: Path, capsys
+):
+    config, feature_dir = _slide_config(tmp_path)
+    caller_stream = io.StringIO()
+
+    with no_logging_setup():
+        Pipeline(config, feature_dir=feature_dir)
+        caller_handler = logging.StreamHandler(caller_stream)
+        caller_handler.setFormatter(logging.Formatter("caller: %(message)s"))
+        logging.getLogger("soma").addHandler(caller_handler)
+        logging.getLogger("soma.pipeline").info("fold summary")
+
+    assert caller_stream.getvalue().count("caller: fold summary") == 1
+    assert "fold summary" not in capsys.readouterr().err

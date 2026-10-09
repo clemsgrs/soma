@@ -227,10 +227,11 @@ In a Python script, soma checks the logging setup when you create a
 - If you have configured logging, for example with ``logging.basicConfig``,
   soma changes nothing and your configuration decides what is shown.
 - If you configure logging after you create a ``Pipeline``, soma's handler
-  stops writing as soon as the root logger has a handler, so each message
-  prints once, through your handlers. The ``soma`` logger stays at INFO. If
-  you set ``propagate = False`` on the ``soma`` logger, its messages never reach
-  your handlers, so soma's handler keeps printing them.
+  stops writing as soon as the root logger or the ``soma`` logger has a handler
+  of yours, so each message prints once, through your handlers. The ``soma``
+  logger stays at INFO. If you set ``propagate = False`` on the ``soma`` logger,
+  its messages never reach your root handlers, so soma's handler keeps printing
+  them unless you add a handler to the ``soma`` logger.
 
 To change the output:
 
