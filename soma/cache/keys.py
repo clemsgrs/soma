@@ -591,6 +591,8 @@ def roi_sampling_identity_signature(
     sample_id: str,
     image_path: Path | str,
     label_mask_path: Path | str | None,
+    label_mask_size_bytes: int | None,
+    label_mask_mtime_ns: int | None,
     spacing_at_level_0: float | None = None,
 ) -> str:
     """Per-slide identity stem for the ``roi_sampling`` cache kind.
@@ -598,28 +600,48 @@ def roi_sampling_identity_signature(
     Styled after :func:`sample_identity_signature` but with this kind's own field set:
     the mask in the identity is the **annotation raster** (``label_mask_path``) — the
     file sampling actually reads — not the tissue mask. Path+spacing based, never
-    content-hashed, consistent with every other soma cache.
+    content-hashed, consistent with every other soma cache — with one deliberate
+    exception: the annotation raster's size and mtime (``None`` when it cannot be
+    stat'ed) join the identity, because this entry stores the raster's content (the ROI
+    mask crops, and the coords through per-class coverage). An annotation edited in place
+    thus misses its coords and crops together; a full hash of a multi-GB raster per run
+    would be too slow.
     """
     payload = {
         "sample_id": str(sample_id),
         "image_path": str(image_path),
         "label_mask_path": str(label_mask_path) if label_mask_path is not None else None,
+        "label_mask_size_bytes": label_mask_size_bytes,
+        "label_mask_mtime_ns": label_mask_mtime_ns,
         "spacing_at_level_0": spacing_at_level_0,
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
+def _file_size_and_mtime(path: Path | str | None) -> tuple[int | None, int | None]:
+    if path is None:
+        return None, None
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None, None
+    return int(stat.st_size), int(stat.st_mtime_ns)
+
+
 def _sample_stems_for_roi_sampling(dataset: Any) -> dict[str, str]:
     """Duck-typed over ``samples``/``sample_ids`` so :class:`SegmentationManifest` fits."""
-    return {
-        sample_id: roi_sampling_identity_signature(
+    stems: dict[str, str] = {}
+    for sample_id, sample in sorted(dataset.samples.items()):
+        size_bytes, mtime_ns = _file_size_and_mtime(sample.label_mask_path)
+        stems[sample_id] = roi_sampling_identity_signature(
             sample_id=sample.sample_id,
             image_path=sample.image_path,
             label_mask_path=sample.label_mask_path,
+            label_mask_size_bytes=size_bytes,
+            label_mask_mtime_ns=mtime_ns,
             spacing_at_level_0=sample.spacing_at_level_0,
         )
-        for sample_id, sample in sorted(dataset.samples.items())
-    }
+    return stems
 
 
 def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:

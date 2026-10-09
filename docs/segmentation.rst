@@ -73,6 +73,16 @@ its feature grid recorded, and so covers the same area. A ROI kept at the slide'
 right or bottom edge can extend past the slide; the pixels beyond it get
 ``ignore_index`` and count in neither the loss nor the metrics.
 
+soma reads each ROI's mask once, when it samples the ROIs, and stores it as a
+lossless PNG of the raw mask values (16-bit when a value exceeds 255). For an
+edge ROI the PNG holds only the part on the slide. Training and evaluation read
+these crops and never open the annotation mask. The ROI dataset gives each
+crop's path in its ``label_mask_crop_path`` column. With the cache enabled, the
+crops live in the ROI sampling cache, at
+``roi_sampling/<key>/masks/<slide>/<x>_<y>.png``. A slide reuses its cached ROIs
+only when all of its crops are present. Editing an annotation mask in place
+changes its size or modification time, so soma samples that slide again.
+
 Classes
 -------
 

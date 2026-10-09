@@ -27,6 +27,7 @@ from soma.dense.reader import build_label_remap
 from soma.dense_slide_extraction import (
     build_roi_dataset,
     sample_slide_rois,
+    write_roi_mask_crops,
 )
 from soma.tasks.segmentation import SegmentationHead
 
@@ -390,8 +391,12 @@ def run_representative_extraction_parity(
         sampling=sampling,
         preprocessing=preprocessing,
     )
+    roi_dir = output_dir / "representative_rois"
     roi_manifest = build_roi_dataset(
-        dataset, coords_by_slide, out_dir=output_dir / "representative_rois"
+        dataset,
+        coords_by_slide,
+        out_dir=roi_dir,
+        mask_crop_dirs={slide_id: roi_dir / "masks" / slide_id for slide_id in coords_by_slide},
     )
     roi_dataset = SegmentationManifest(roi_manifest)
 
@@ -431,6 +436,18 @@ def run_representative_extraction_parity(
             "unchanged": True,
         }
     stores = resumed_stores
+    # The head reads each ROI's stored mask crop, cut at the spacing its grid recorded.
+    write_roi_mask_crops(
+        list(roi_dataset.samples.values()),
+        spacing_um_by_sample_id={
+            record.sample_id: json.loads(
+                _payload_paths(stores["fp16"], record)[1].read_text(encoding="utf-8")
+            )["effective_spacing_um"]
+            for record in roi_dataset.samples.values()
+        },
+        masks=masks,
+        preprocessing=preprocessing,
+    )
     label_remap = build_label_remap(_CLASSES, ignore=_IGNORE)
     head = SegmentationHead(
         num_classes=4,
