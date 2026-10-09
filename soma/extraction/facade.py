@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Callable
 
+from soma._logging import ensure_default_logging
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
 from soma.dataset import (
     Dataset,
@@ -42,6 +43,7 @@ class FeatureExtractor:
         cache: CacheConfig = CacheConfig(),
         output_root: str | Path,
     ) -> None:
+        ensure_default_logging()
         self._dataset = dataset
         self._encoder = encoder
         self._preprocessing = preprocessing

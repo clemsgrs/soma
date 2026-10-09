@@ -9,6 +9,7 @@ from typing import Any
 
 import yaml
 
+from soma._logging import configure_cli_logging
 from soma.aggregators import list_aggregators
 from soma.config import load_config
 from soma.decoders import list_decoders
@@ -856,6 +857,7 @@ def _print_list_help() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    configure_cli_logging()
     args = sys.argv[1:] if argv is None else list(argv)
     if not args:
         _print_top_level_help()
