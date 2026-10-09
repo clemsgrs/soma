@@ -140,7 +140,9 @@ def feature_cache_dir(out_root: str | Path, dataset: str) -> Path:
     return Path(out_root) / dataset / "feature_cache"
 
 
-def training_done(out_root: str | Path, dataset: str, encoder: str, replicate: int) -> bool:
+def training_done(
+    out_root: str | Path, dataset: str, encoder: str, replicate: int, axis: str = "seeds"
+) -> bool:
     """Skip guard for phase 2: this cell already trained *to completion*.
 
     Two traps here, both of which the old ``best_model.pt``-at-``cell_dir`` probe fell into:
@@ -154,9 +156,15 @@ def training_done(out_root: str | Path, dataset: str, encoder: str, replicate: i
       scored as if it were final. ``summary.json`` is written once, at the end of a run, so it
       is the honest "this finished" marker.
 
+    A folds-axis cell trains only its own fold (``run.folds``), under ``<run>/fold_<k>/``.
+    Such a launch never writes the run-level ``summary.json`` (the other folds stay pending),
+    so the fold's own ``metrics.json``, written once when the fold finishes, is the marker.
+
     ``score_cell`` locates the weights with ``_locate_checkpoint``, which globs the same layout.
     """
     directory = cell_dir(out_root, dataset, encoder, replicate)
+    if axis == "folds":
+        return any(directory.glob(f"experiments/*/runs/*/fold_{replicate}/metrics.json"))
     if (directory / "summary.json").is_file():
         return True
     return any(directory.glob("experiments/*/runs/*/summary.json"))
@@ -394,8 +402,8 @@ def train_cell(
 ) -> None:
     """Train (+extract) one cell via ``python -m soma`` — the config supplies the recipe.
 
-    The replicate maps onto ``run.seed`` for the seeds axis and onto a fold selection for the
-    folds axis (multi-fold within-run resume is #244's job; here each fold is one cell). The
+    The replicate maps onto ``run.seed`` for the seeds axis and onto ``run.folds=[k]`` for the
+    folds axis, so a fold cell trains that one fold under ``<run>/fold_<k>/``. The
     committed config's encoder is swapped for the roster encoder — unless ``config_path``
     names a composite (rung 4) recipe, whose ``composite:`` block *is* the encoder and
     whose ``encoder`` is then the composite label (the cell-dir name).
@@ -415,6 +423,11 @@ def train_cell(
     cmd += ["--set", f"cache.root_dir={feature_cache_dir(out_root, dataset)}"]
     if axis == "seeds":
         cmd += ["--set", f"run.seed={replicate}"]
+    else:
+        # The cell trains only its own fold. soma requires run.resume (or run.run_id) with
+        # run.folds; each cell has its own output_root, so resume just reuses a crashed
+        # attempt's run dir instead of minting a new one.
+        cmd += ["--set", f"run.folds=[{replicate}]", "--set", "run.resume=true"]
     _run(cmd, cwd=REPO_ROOT)
 
 
@@ -481,7 +494,7 @@ def run_rank(
         if dry_run:
             print(f"[{ds}/{enc}/r{rid}] would train+score ({axis})")
             continue
-        if not training_done(out_root, ds, enc, rid):
+        if not training_done(out_root, ds, enc, rid, axis):
             train_cell(
                 enc, ds, rid, axis, data_root, out_root,
                 decoder=decoder, extra_sets=extra_sets, config_path=config_path,
@@ -508,7 +521,7 @@ def score_cell(
     from soma.benchmarks.detection_benchmark import score_dataset_points, write_cell_predictions
 
     directory = cell_dir(out_root, dataset, encoder, replicate)
-    fold_index = replicate if axis == "folds" else 0
+    fold_index = replicate if axis == "folds" else None
     tune_preds, test_preds, score_thresholds = _decode_cell_points(
         dataset, replicate, directory, fold_index=fold_index
     )
@@ -657,9 +670,12 @@ def _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest) -> lis
 
 
 def _decode_cell_points(
-    dataset: str, replicate: int, run_dir: Path, *, fold_index: int = 0
+    dataset: str, replicate: int, run_dir: Path, *, fold_index: int | None = None
 ) -> tuple[CellPredictions, CellPredictions, list[float]]:
     """Reload a trained cell and decode its tune + test per-sample points (live GPU path).
+
+    ``fold_index`` names a folds-axis cell's fold: its split and its ``fold_<k>/`` weights.
+    ``None`` is a single-fold (seeds-axis) run, whose weights sit at the run dir.
 
     Rebuilds the model + dense grids + loaders from the run's saved config (the reload is
     dataset-agnostic — it reads everything from the config), sweeps the per-class detection
@@ -697,7 +713,7 @@ def _decode_cell_points(
     cfg = load_config(str(_locate_run_config(run_dir)))
     manifest = DetectionManifest(cfg.dataset_csv)
     splits = Splits(cfg.splits_csv, manifest)
-    fold_split = splits.folds[fold_index]
+    fold_split = splits.folds[0 if fold_index is None else fold_index]
     train_records = [manifest.samples[s] for s in fold_split.train]
     tune_records = [manifest.samples[s] for s in fold_split.tune]
     test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
@@ -759,7 +775,7 @@ def _decode_cell_points(
     # trained under a projection loads back into the model that wrote it.
     model = build_detection_model_from_checkpoint(
         store=store,
-        checkpoint_path=_locate_checkpoint(run_dir),
+        checkpoint_path=_locate_checkpoint(run_dir, fold=fold_index),
         decoder=cfg.decoder,
         task_head=head,
         geometry=geometry,
@@ -836,9 +852,13 @@ def base_recipe(dataset: str, config_path: Path | None = None) -> dict[str, int 
     return {"epochs": int(training.get("epochs", 1)), "patience": training.get("patience")}
 
 
-def realized_epochs(cell_directory: Path) -> int | None:
-    """Epochs actually trained (from ``training_history.json``), for the report's honesty column."""
-    hits = sorted(cell_directory.glob("experiments/*/runs/*/training_history.json"))
+def realized_epochs(cell_directory: Path, fold: int | None = None) -> int | None:
+    """Epochs actually trained (from ``training_history.json``), for the report's honesty column.
+
+    ``fold`` reads a folds-axis cell's history, which sits under ``<run>/fold_<k>/``.
+    """
+    name = "training_history.json" if fold is None else f"fold_{fold}/training_history.json"
+    hits = sorted(cell_directory.glob(f"experiments/*/runs/*/{name}"))
     if not hits:
         return None
     data = json.loads(hits[-1].read_text(encoding="utf-8"))

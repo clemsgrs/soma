@@ -26,6 +26,11 @@ preprocessing:
   dense_window_size: 448            # encoder sliding window within each 1024 tile
   dense_window_overlap: 0.25
 
+cache:
+  # fp16 dense grids halve the on-disk cache for the larger encoders (as for MIDOG); frozen
+  # features are numerically ~identical. The driver sets cache.root_dir.
+  dtype: fp16
+
 data:
   dataset_csv: /data/pathology/projects/clement/code/soma/data/monkey/curated/dataset.csv
   splits_csv: /data/pathology/projects/clement/code/soma/data/monkey/curated/splits.csv
