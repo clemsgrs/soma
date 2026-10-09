@@ -46,6 +46,17 @@ MIDOG deliberately uses one **nominal** 0.25 µm/px frame for all native-resolut
 its benchmark curator before this generic tiler runs; the important registration invariant
 here is that the nominal point-frame value and run value remain equal.
 
+**Ignore masks.** An ROI row may carry ``ignore_mask_path``: a flat uint8 raster the size of
+the ROI image, 255 where nothing is annotated and 0 where it is (see
+:func:`soma.detection.io.read_ignore_mask`). The tiler pads it with 255 alongside the image
+(padding is never annotated), crops it per tile to ``ignore_masks/<tile_id>.png`` (the tile
+row's ``ignore_mask_path``) and skips a tile with no valid pixel. Points on ignored pixels
+are not written to any tile; ``summary.json`` counts them as ``points_in_ignored_region``,
+and the coverage guard runs over the remaining points. Every tile row records
+``roi_valid_area_px``, the ROI's valid pixel count (padding excluded), so the stitched ROI's
+per-mm² area covers only what was annotated. A manifest without the column tiles exactly
+as before.
+
 **Stitching hooks.** Each tile row carries ``source_wsi`` (the parent ROI ``sample_id``),
 ``tile_x`` and ``tile_y`` (the window origin in ROI pixels) — the columns
 :class:`~soma.dataset.DetectionManifest` already reserves for WSI stitching — so the
@@ -62,8 +73,12 @@ import json
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from PIL import Image
+
+from soma.detection.encode import IGNORE_VALUE, points_on_valid
+from soma.detection.io import read_ignore_mask
 
 _REQUIRED = ("sample_id", "image_path", "points_path")
 
@@ -153,6 +168,23 @@ def _resolve_uniform_spacing(roi_df: pd.DataFrame, target_spacing: float | None)
     return spacing
 
 
+def _read_roi_ignore_mask(roi: pd.Series, roi_id: str, width: int, height: int) -> np.ndarray | None:
+    """The ROI's validated ``(height, width)`` ignore mask, or ``None`` when it has none."""
+    path = roi.get("ignore_mask_path")
+    if path is None or pd.isna(path):
+        return None
+    try:
+        mask = read_ignore_mask(path)
+    except ValueError as error:
+        raise ValueError(f"ROI {roi_id}: {error}") from error
+    if mask.shape != (height, width):
+        raise ValueError(
+            f"ROI {roi_id}: ignore mask '{path}' is {mask.shape} (rows, cols) but the image "
+            f"is {(height, width)}; the mask must be in the image's own pixel frame."
+        )
+    return mask
+
+
 def tile_detection_manifest(
     curated_dir: str | Path,
     output_dir: str | Path,
@@ -165,7 +197,8 @@ def tile_detection_manifest(
 
     Reads ``curated_dir/{dataset.csv, splits.csv}`` (the ROI-level manifest emitted by a
     detection curator), writes ``output_dir/{dataset.csv, splits.csv, summary.json}`` plus
-    ``output_dir/tiles/<tile_id>.png`` and ``output_dir/points/<tile_id>.csv``.
+    ``output_dir/tiles/<tile_id>.png`` and ``output_dir/points/<tile_id>.csv`` (plus
+    ``output_dir/ignore_masks/<tile_id>.png`` when the manifest has ``ignore_mask_path``).
 
     ``target_spacing`` (optional) asserts the manifest's uniform ``spacing_at_level_0``
     equals an expected value (e.g. ``0.25`` for MIDOG); the spacing is required to be uniform
@@ -217,9 +250,14 @@ def tile_detection_manifest(
     points_dir = output_dir / "points"
     tiles_dir.mkdir(parents=True, exist_ok=True)
     points_dir.mkdir(parents=True, exist_ok=True)
+    has_ignore_masks = "ignore_mask_path" in roi_df.columns
+    ignore_dir = output_dir / "ignore_masks"
+    if has_ignore_masks:
+        ignore_dir.mkdir(parents=True, exist_ok=True)
 
     # Columns carried unchanged onto every tile of an ROI (everything but the per-tile paths).
-    carry_cols = [c for c in roi_df.columns if c not in ("sample_id", "image_path", "points_path")]
+    per_tile = ("sample_id", "image_path", "points_path", "ignore_mask_path")
+    carry_cols = [c for c in roi_df.columns if c not in per_tile]
 
     tile_rows: list[dict] = []
     split_rows: list[dict] = []
@@ -227,6 +265,7 @@ def tile_detection_manifest(
     total_points = 0
     empty_tiles = 0
     dropped_out_of_bounds = 0
+    points_in_ignored_region = 0
 
     # Trusted local dataset ROIs are large (tens of MP) and trip PIL's decompression-bomb
     # guard; lift it for the read loop only, then restore (importing this module must not
@@ -246,6 +285,20 @@ def tile_detection_manifest(
             points = [(x, y, c) for (x, y, c) in raw_points if 0 <= x < width and 0 <= y < height]
             dropped_out_of_bounds += len(raw_points) - len(points)
 
+            # Points on ignored pixels are not supervised: they reach no tile and are counted.
+            ignore_mask = (
+                _read_roi_ignore_mask(roi, roi_id, width, height) if has_ignore_masks else None
+            )
+            roi_valid_area_px = width * height
+            if ignore_mask is not None:
+                on_valid = points_on_valid(
+                    np.array([(x, y) for x, y, _ in points], dtype=np.float64).reshape(-1, 2),
+                    ignore_mask != IGNORE_VALUE,
+                )
+                points_in_ignored_region += int((~on_valid).sum())
+                points = [p for p, keep in zip(points, on_valid) if keep]
+                roi_valid_area_px = int((ignore_mask != IGNORE_VALUE).sum())
+
             # #5: an ROI smaller than a tile is padded up to one full tile (white glass fill)
             # so every emitted tile is exactly tile_size²; points and original dims are kept.
             canvas_w, canvas_h = max(width, tile_size), max(height, tile_size)
@@ -253,11 +306,21 @@ def tile_detection_manifest(
                 canvas = Image.new("RGB", (canvas_w, canvas_h), _PAD_FILL)
                 canvas.paste(im, (0, 0))
                 im = canvas
+            if ignore_mask is not None:
+                # The padding is not annotated either.
+                padded = np.full((canvas_h, canvas_w), IGNORE_VALUE, dtype=np.uint8)
+                padded[:height, :width] = ignore_mask
+                ignore_mask = padded
 
             windows = _tile_windows(canvas_w, canvas_h, tile_size, stride)
             covered: set[int] = set()
             for i, (x0, y0) in enumerate(windows):
                 tile_id = f"{roi_id}_t{i:04d}"
+                tile_mask = None
+                if ignore_mask is not None:
+                    tile_mask = ignore_mask[y0 : y0 + tile_size, x0 : x0 + tile_size]
+                    if not (tile_mask != IGNORE_VALUE).any():
+                        continue  # nothing annotated in this window
                 # Crop is [x0, x0+tile) x [y0, y0+tile); every window is exactly tile_size².
                 tile_img = im.crop((x0, y0, x0 + tile_size, y0 + tile_size))
                 tile_png = tiles_dir / f"{tile_id}.png"
@@ -290,6 +353,14 @@ def tile_detection_manifest(
                     "roi_width": width,     # original ROI dims -> stitched-ROI area (FROC per-mm²)
                     "roi_height": height,
                 }
+                if has_ignore_masks:
+                    tile_mask_path = None
+                    if tile_mask is not None:
+                        tile_mask_path = ignore_dir / f"{tile_id}.png"
+                        Image.fromarray(tile_mask).save(tile_mask_path, compress_level=1)
+                        tile_mask_path = str(tile_mask_path.resolve())
+                    row["ignore_mask_path"] = tile_mask_path
+                    row["roi_valid_area_px"] = roi_valid_area_px
                 for c in carry_cols:
                     row[c] = roi[c]
                 tile_rows.append(row)
@@ -298,8 +369,9 @@ def tile_detection_manifest(
                     split_rows.append({"sample_id": tile_id, "split": split, "fold": fold})
                     per_split_tiles[split] += 1
 
-            # F3b: every (in-bounds) source point must land in ≥1 tile. cover_origins covers
-            # [0, extent) with no gap, so a point that reaches no tile is a coverage bug.
+            # F3b: every (in-bounds, supervised) source point must land in ≥1 tile.
+            # cover_origins covers [0, extent) with no gap, and a skipped tile holds no valid
+            # pixel, so a point that reaches no tile is a coverage bug.
             uncovered = set(range(len(points))) - covered
             if uncovered:
                 pi = sorted(uncovered)[0]
@@ -333,6 +405,8 @@ def tile_detection_manifest(
         "dropped_out_of_bounds": dropped_out_of_bounds,
         "tiles_per_split": dict(per_split_tiles),
     }
+    if has_ignore_masks:
+        summary["points_in_ignored_region"] = points_in_ignored_region
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
 

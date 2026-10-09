@@ -543,8 +543,9 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
     thresholds, match once per image (the same ``match_assignment`` the headline counts read),
     and record each predicted point's matched/unmatched flag. Points are transformed to the
     level-0 frame, and every sample carries its evaluated ``area_mm2`` for the FROC per-mm²
-    axis (MONKEY uses it; the other scorers ignore it). Returned in the frame the native
-    point scorers consume.
+    axis (MONKEY uses it; the other scorers ignore it). Under an ignore mask, peaks on
+    ignored pixels are dropped and the area covers the valid pixels only. Returned in the
+    frame the native point scorers consume.
     """
     import numpy as np
     import torch
@@ -561,9 +562,14 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
         for batch in loader:
             out = model(batch.features.to(device))
             gt_points = batch.targets["gt_points"]
+            valid = batch.targets.get("valid")
             for b, sid in enumerate(batch.sample_ids):
                 heatmap = out.logits[b]
-                pred_xy, pred_cls, pred_score = head._predict_points(heatmap)
+                # Peaks on ignore-mask pixels are not scored; the area counts valid pixels only.
+                pred_xy, pred_cls, pred_score = head._predict_points(
+                    heatmap, None if valid is None else valid[b]
+                )
+                valid_fraction = 1.0 if valid is None else float(valid[b].float().mean())
                 gt_xy, gt_cls = head._strip_padding(gt_points[b])
                 assignment = match_assignment(
                     pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
@@ -607,7 +613,7 @@ def _decode_split_points(model, loader, head, device, manifest) -> list:
                         matched=matched.tolist(),
                         area_mm2=patch_area_mm2(
                             int(crop_w), int(crop_h), spacing.source_spacing_um
-                        ),
+                        ) * valid_fraction,
                     )
                 )
     # Tiled datasets (MIDOG/MONKEY) carry source_wsi/tile_x/tile_y -> fold the per-tile

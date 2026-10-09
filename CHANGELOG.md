@@ -1,5 +1,18 @@
 # Changelog
 
+- 2026-10-09: Detection manifests accept an optional `ignore_mask_path` column: a
+  flat uint8 PNG in the image's pixel frame, 255 where nothing is annotated and 0
+  where it is (any other value fails and names the file and the sample). Ignored
+  pixels carry no loss, points on them leave the ground truth, and predicted peaks
+  on them are dropped before matching, in the threshold sweep, in evaluation and in
+  the detection benchmark. `DetectionHead.extract_targets` returns a new `valid`
+  map (all True without a mask) and the loss averages over valid pixels only; runs
+  without masks are numerically unchanged. The detection tiler pads and crops the
+  mask per tile (`ignore_masks/<tile_id>.png`), skips tiles with no valid pixel,
+  counts `points_in_ignored_region` in `summary.json` and writes the ROI's valid
+  pixel count as `roi_valid_area_px`, which the stitched ROI area for FROC per mm²
+  now uses. A manifest without the column tiles byte-identically to before.
+
 - 2026-10-09: The Monkey FROC scorer now removes cross-class duplicates before it
   pools lymphocytes and monocytes into the merged inflammatory-cells (Task 1) score.
   A 2-class model can fire on one cell in both channels. Before this change, the

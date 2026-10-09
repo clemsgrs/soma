@@ -515,3 +515,67 @@ def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
     assert not (tmp_path / "fold" / "predictions_test.csv").exists()
     metrics = json.loads((tmp_path / "fold" / "metrics.json").read_text())
     assert list(metrics.keys()) == ["tune"]
+
+
+class _FixedHeatmapModel(torch.nn.Module):
+    """Stands in for decoder + head: returns one fixed ``(1, C, H, W)`` heatmap per sample."""
+
+    def __init__(self, heatmap: torch.Tensor) -> None:
+        super().__init__()
+        self.heatmap = heatmap
+
+    def forward(self, features):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(logits=self.heatmap.expand(features.shape[0], -1, -1, -1))
+
+
+def _ignore_right_half_batch():
+    """One 32x32 sample: GT at (5,5) and (5,25), right half (columns 16..) not annotated.
+
+    Predicted spikes: 0.3 at (5,5), 0.8 at (5,25), and three 0.5 spikes on ignored pixels.
+    """
+    from soma.dense import DenseSampleSpacing
+    from soma.dense.geometry import compute_dense_geometry
+    from soma.tasks.detection import DetectionHead
+    from soma.training.segmentation_dataset import SegmentationBatch
+
+    head = DetectionHead(
+        num_classes=1, geometry=compute_dense_geometry(target_size=32, patch_size=4),
+        delta_px=3.0, sigma_px=1.5, sample_spacings={"s": DenseSampleSpacing(1.0, 1.0)},
+        metrics=["mean_f1"],
+    )
+    heatmap = torch.zeros(1, 1, 32, 32)
+    for (x, y), score in [((5, 5), 0.3), ((5, 25), 0.8), ((20, 5), 0.5), ((20, 15), 0.5), ((20, 25), 0.5)]:
+        heatmap[0, 0, y, x] = score
+    valid = torch.ones(1, 32, 32, dtype=torch.bool)
+    valid[:, :, 16:] = False
+    batch = SegmentationBatch(
+        features=torch.zeros(1, 4, 8, 8),
+        targets={"gt_points": torch.tensor([[[5.0, 5.0, 0.0], [5.0, 25.0, 0.0]]]), "valid": valid},
+        sample_ids=("s",),
+    )
+    return _FixedHeatmapModel(heatmap), head, [batch]
+
+
+def test_threshold_sweep_ignores_predictions_on_ignored_pixels():
+    from soma.pipeline import _sweep_detection_thresholds
+
+    model, head, loader = _ignore_right_half_batch()
+
+    # Scored, the three ignored 0.5 spikes would push the threshold above 0.5 (F1 2/3);
+    # ignored, the best cut keeps both supervised peaks (F1 1), so it sits at or below 0.3.
+    (threshold,) = _sweep_detection_thresholds(model, loader, torch.device("cpu"), head)
+
+    assert threshold < 0.5
+
+
+def test_evaluate_detection_ignores_predictions_on_ignored_pixels(tmp_path: Path):
+    from soma.pipeline import _evaluate_detection
+
+    model, head, loader = _ignore_right_half_batch()
+    head.score_threshold = 0.2
+
+    report = _evaluate_detection(model, loader, "test", torch.device("cpu"), head=head, dataset=None)
+
+    assert report.metrics["mean_f1"] == pytest.approx(1.0)

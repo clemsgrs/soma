@@ -236,3 +236,17 @@ def test_stitch_rejects_inconsistent_roi_dimensions():
 
     with pytest.raises(ValueError, match="inconsistent ROI dimensions"):
         stitch_tiles_to_rois(samples, _manifest(meta), _head())
+
+
+def test_stitch_area_uses_roi_valid_area_when_present():
+    base = {"source_wsi": "roi", "tile_x": 0, "tile_y": 0, "roi_width": 400, "roi_height": 400}
+    sample = SamplePrediction("roi_t0", [], [], [], [], [], [])
+
+    (full,) = stitch_tiles_to_rois([sample], _manifest({"roi_t0": base}), _head())
+    (masked,) = stitch_tiles_to_rois(
+        [sample], _manifest({"roi_t0": {**base, "roi_valid_area_px": 40_000}}), _head()
+    )
+
+    # 400 x 400 px at 0.25 µm/px = 0.01 mm²; 40,000 valid px at 0.25 µm/px = 0.0025 mm².
+    assert full.area_mm2 == pytest.approx(0.01)
+    assert masked.area_mm2 == pytest.approx(0.0025)

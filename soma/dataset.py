@@ -30,7 +30,8 @@ REQUIRED_DATASET_COLUMNS = {"sample_id", "image_path", "label"}
 # every dataset_type); ``label_mask_path`` is segmentation's per-pixel supervision raster.
 # ``points_path`` (detection's per-sample point file) and ``spacing_at_level_0`` (the
 # optional caller declaration for the source image's level-0 spacing) are recognized
-# typed columns too. Other detection columns — ``source_wsi`` / ``tile_x``
+# typed columns too, as is ``ignore_mask_path`` (detection's optional don't-care raster:
+# 255 = ignored, 0 = supervised). Other detection columns — ``source_wsi`` / ``tile_x``
 # / ``tile_y`` (tile origin, retained for deferred WSI stitching) — carry no typed
 # ``SampleRecord`` field and surface via ``metadata`` rather than being dropped.
 KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
@@ -39,6 +40,7 @@ KNOWN_DATASET_COLUMNS = REQUIRED_DATASET_COLUMNS | {
     "patient_id",
     "group_id",
     "points_path",
+    "ignore_mask_path",
     # spatial_expression: integer row-key into the sidecar target matrix; resolved to a
     # vector on SampleRecord.target, so it is a typed column (not free metadata).
     "target_index",
@@ -174,6 +176,9 @@ class SampleRecord:
     # Segmentation: the per-pixel supervision raster. Not a tissue mask.
     label_mask_path: Path | None = None
     points_path: Path | None = None  # detection: per-sample point annotations
+    # Detection: optional flat uint8 raster in the image's pixel frame, 255 = not annotated
+    # (no loss, no ground truth, no predictions scored), 0 = supervised. None = all supervised.
+    ignore_mask_path: Path | None = None
     patient_id: str | None = None
     # Literal non-independence group from the manifest. Optional for every task;
     # representation evaluation validates it only for the selected cohort.
@@ -487,7 +492,8 @@ class DetectionManifest:
     The detection counterpart of :class:`SegmentationManifest` (design §3): the
     supervision is a per-sample point file (``points_path``, level-0 ``x,y,class``),
     not a scalar ``label`` (optional) or a mask. Optional columns include ``mask_path``
-    (precomputed tissue mask), ``spacing_at_level_0`` (the source image's optional µm/px
+    (precomputed tissue mask), ``ignore_mask_path`` (the region that is not annotated, see
+    :class:`SampleRecord`), ``spacing_at_level_0`` (the source image's optional µm/px
     declaration), ``source_wsi`` /
     ``tile_x`` / ``tile_y`` (retained now for deferred WSI stitching), ``label``,
     ``patient_id``. ``points_path`` must be present and non-null for every row. Exposes
@@ -550,6 +556,7 @@ class DetectionManifest:
                 label=label,  # optional for detection; supervision is the points
                 mask_path=_optional_path_column(row, "mask_path"),
                 points_path=Path(str(row["points_path"])),
+                ignore_mask_path=_optional_path_column(row, "ignore_mask_path"),
                 patient_id=patient_id,
                 group_id=group_id,
                 spacing_at_level_0=_spacing_at_level_0(row),

@@ -2231,8 +2231,11 @@ def _sweep_detection_thresholds(
         for batch in tune_loader:
             out = model(batch.features.to(device))
             gt_points = batch.targets["gt_points"]
+            valid = batch.targets.get("valid")
             for b in range(out.logits.shape[0]):
-                xy, cls, score = head._predict_points(out.logits[b])
+                xy, cls, score = head._predict_points(
+                    out.logits[b], None if valid is None else valid[b]
+                )
                 gxy, gcls = head._strip_padding(gt_points[b])
                 pred_xy.append(xy); pred_cls.append(cls); pred_score.append(score)
                 gt_xy.append(gxy); gt_cls.append(gcls)
@@ -2292,9 +2295,13 @@ def _evaluate_detection(
     for batch in loader:
         out = model(batch.features.to(device))
         gt_points = batch.targets["gt_points"]
+        valid = batch.targets.get("valid")
         for b, sid in enumerate(batch.sample_ids):
             heatmap = out.logits[b]
-            pred_xy, pred_cls, pred_score = head._predict_points(heatmap)
+            # Peaks on ignore-mask pixels are dropped here, so no consumer sees them.
+            pred_xy, pred_cls, pred_score = head._predict_points(
+                heatmap, None if valid is None else valid[b]
+            )
             gt_xy, gt_cls = head._strip_padding(gt_points[b])
             # The one match the headline counts, the per-point CSV, and the overlays
             # all derive from (mirrors match_points' reduction, so counts are identical).

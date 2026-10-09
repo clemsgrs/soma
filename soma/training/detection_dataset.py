@@ -2,11 +2,13 @@
 
 The detection counterpart of :class:`~soma.training.segmentation_dataset.SegmentationDataset`.
 Each item is ``(grid (d, h, w), targets, sample_id)`` where ``targets`` is
-``{"heatmap": (C, H, W), "gt_points": (K, 3)}`` from the head's ``extract_targets``: the
-heatmap is the regression target, the GT points are kept (variable length) for F1@δ
-matching at eval. :func:`detection_collate_fn` stacks the grids and heatmaps and **pads**
-the GT points to the batch-max count with NaN rows (stripped before matching), so the
-batch stays a plain dict-of-tensors the trainer moves to device unchanged.
+``{"heatmap": (C, H, W), "gt_points": (K, 3), "valid": (H, W)}`` from the head's
+``extract_targets``: the heatmap is the regression target, the GT points are kept
+(variable length) for F1@δ matching at eval, and ``valid`` marks the supervised pixels
+(an ignore mask clears it). :func:`detection_collate_fn` stacks the grids, heatmaps and
+``valid`` maps and **pads** the GT points to the batch-max count with NaN rows (stripped
+before matching), so the batch stays a plain dict-of-tensors the trainer moves to device
+unchanged.
 """
 
 from __future__ import annotations
@@ -98,8 +100,11 @@ def detection_collate_fn(
         if g.shape[0]:
             padded[i, : g.shape[0]] = g.to(torch.float32)
 
-    return SegmentationBatch(
-        features=features,
-        targets={"heatmap": heatmaps, "gt_points": padded},
-        sample_ids=tuple(sample_ids),
-    )
+    targets = {"heatmap": heatmaps, "gt_points": padded}
+    if all("valid" in t for t in target_dicts):
+        # The supervised-pixel map (False under an ignore mask); same (H, W) as the heatmap.
+        targets["valid"] = torch.stack([t["valid"] for t in target_dicts]).to(
+            target_dtypes.get("valid", torch.bool)
+        )
+
+    return SegmentationBatch(features=features, targets=targets, sample_ids=tuple(sample_ids))

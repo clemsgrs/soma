@@ -9,11 +9,14 @@ target. Beyond geometry it owns the detection-specific contract:
 
 * **targets** (``extract_targets``) — read the level-0 points, map them to the target
   frame, render per-class peak Gaussians (the loss target) and keep the in-frame GT
-  points (for matching).
-* **loss** (``compute_loss``) — foreground-weighted MSE against the peak heatmap.
-* **eval** (``dense_stats`` / ``finalize_eval_metrics``) — extract predicted peaks,
-  class-aware F1@δ match to GT, stream per-image ``(C, 3)`` TP/FP/FN, reduce to the
-  global mF1 headline + per-image-macro secondary.
+  points (for matching). ``valid`` marks the supervised pixels: all of them, unless the
+  sample has an ``ignore_mask_path``, whose ignored pixels then carry no loss, no ground
+  truth and no scored predictions.
+* **loss** (``compute_loss``) — foreground-weighted MSE against the peak heatmap, averaged
+  over the valid pixels.
+* **eval** (``dense_stats`` / ``finalize_eval_metrics``) — extract predicted peaks (those
+  on ignored pixels are dropped), class-aware F1@δ match to GT, stream per-image
+  ``(C, 3)`` TP/FP/FN, reduce to the global mF1 headline + per-image-macro secondary.
 * **postprocess** — predicted ``(x, y, class, score)`` points per image.
 
 The matching distance, Gaussian σ, and NMS radius are passed in already resolved to
@@ -30,8 +33,13 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from soma.detection.encode import render_peak_heatmap, transform_points_to_target
-from soma.detection.io import read_points
+from soma.detection.encode import (
+    ignore_mask_to_valid,
+    points_on_valid,
+    render_peak_heatmap,
+    transform_points_to_target,
+)
+from soma.detection.io import read_ignore_mask, read_points
 from soma.detection.matching import VALID_MATCHING, match_points, reduce_f1
 from soma.detection.peaks import extract_peaks
 from soma.evaluation.metrics import resolve_metrics
@@ -72,11 +80,11 @@ class DetectionHead(TaskHead):
         drop: Annotated point ids removed from the supervised set (``task.params.drop``).
             A dropped point is absent from the target heatmap *and* from the matching
             ground truth, so its location is negative supervision and a prediction there
-            is a false positive — points have no don't-care.
+            is a false positive. A don't-care region is an ignore mask instead.
         class_names: One name per class index, recorded beside the per-class metrics.
     """
 
-    target_dtypes = {"heatmap": torch.float32, "gt_points": torch.float32}
+    target_dtypes = {"heatmap": torch.float32, "gt_points": torch.float32, "valid": torch.bool}
     task_family = "detection"
     accumulates_eval_metrics = True
 
@@ -158,8 +166,33 @@ class DetectionHead(TaskHead):
                 f"Detection sample '{sample_id}' has no resolved dense spacing provenance."
             ) from None
 
-    def _sample_target_points(self, record: "SampleRecord") -> tuple[np.ndarray, np.ndarray]:
-        """Read + transform a sample's points into in-frame ``(xy, classes)``."""
+    def _sample_valid(self, record: "SampleRecord") -> np.ndarray | None:
+        """The ``(H, W)`` supervised-pixel map, or ``None`` when the sample has no ignore mask."""
+        path = getattr(record, "ignore_mask_path", None)
+        if path is None:
+            return None
+        spacing = self.spacing_for_sample(record.sample_id)
+        top, left, height, width = self._crop_box
+        try:
+            mask = read_ignore_mask(path)
+        except ValueError as error:
+            raise ValueError(f"detection sample '{record.sample_id}': {error}") from error
+        return ignore_mask_to_valid(
+            mask,
+            source_spacing_um=spacing.source_spacing_um,
+            effective_spacing_um=spacing.effective_spacing_um,
+            target_size=(height, width),
+            crop_top=top, crop_left=left,
+        )
+
+    def _sample_target_points(
+        self, record: "SampleRecord", valid: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Read + transform a sample's points into in-frame ``(xy, classes)``.
+
+        Points on pixels that ``valid`` marks as ignored are not supervised: they leave the
+        heatmap and the matching ground truth.
+        """
         if getattr(record, "points_path", None) is None:
             raise ValueError(f"detection sample '{record.sample_id}' has no points_path")
         xy_l0, classes = read_points(record.points_path)
@@ -175,6 +208,9 @@ class DetectionHead(TaskHead):
         if xy.shape[0]:
             inside = (xy[:, 0] >= 0) & (xy[:, 0] < width) & (xy[:, 1] >= 0) & (xy[:, 1] < height)
             xy, classes = xy[inside], classes[inside]
+        if valid is not None and xy.shape[0]:
+            on_valid = points_on_valid(xy, valid)
+            xy, classes = xy[on_valid], classes[on_valid]
         if self._class_remap is None:
             invalid = sorted({int(c) for c in classes if not 0 <= int(c) < self.num_classes})
             if invalid:
@@ -195,8 +231,11 @@ class DetectionHead(TaskHead):
         return xy[kept], remapped
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
-        xy, classes = self._sample_target_points(record)
+        valid = self._sample_valid(record)
+        xy, classes = self._sample_target_points(record, valid)
         _, _, height, width = self._crop_box
+        if valid is None:
+            valid = np.ones((height, width), dtype=bool)
         heatmap = render_peak_heatmap(
             xy, classes, target_size=(height, width),
             num_classes=self.num_classes, sigma=self.sigma_px, truncate=self.truncate,
@@ -205,14 +244,24 @@ class DetectionHead(TaskHead):
             gt = np.concatenate([xy, classes.reshape(-1, 1).astype(np.float64)], axis=1)
         else:
             gt = np.zeros((0, 3), dtype=np.float64)
-        return {"heatmap": heatmap, "gt_points": torch.from_numpy(gt).to(torch.float32)}
+        return {
+            "heatmap": heatmap,
+            "gt_points": torch.from_numpy(gt).to(torch.float32),
+            "valid": torch.from_numpy(valid),
+        }
 
     # --- loss -------------------------------------------------------------- #
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
         target = targets["heatmap"]
         weight = 1.0 + self.foreground_weight * target
-        return (weight * (predictions - target) ** 2).mean()
+        per_pixel = weight * (predictions - target) ** 2
+        valid = targets.get("valid")
+        if valid is None or bool(valid.all()):
+            return per_pixel.mean()
+        # Average over the supervised pixels of every channel; ignored pixels carry no loss.
+        mask = valid.unsqueeze(1).expand_as(per_pixel)
+        return per_pixel[mask].sum() / mask.sum().clamp(min=1)
 
     # --- eval -------------------------------------------------------------- #
 
@@ -226,17 +275,27 @@ class DetectionHead(TaskHead):
         arr = arr[valid]
         return arr[:, :2].astype(np.float64), arr[:, 2].astype(np.int64)
 
-    def _predict_points(self, heatmap: Tensor) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        return extract_peaks(
+    def _predict_points(
+        self, heatmap: Tensor, valid: Tensor | None = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Decoded peaks ``(xy, class, score)``; with ``valid``, peaks on ignored pixels are dropped."""
+        xy, cls, score = extract_peaks(
             heatmap, min_distance=self.nms_distance_px, score_threshold=self.score_threshold
         )
+        if valid is not None and xy.shape[0]:
+            keep = points_on_valid(xy, valid.detach().cpu().numpy())
+            xy, cls, score = xy[keep], cls[keep], score[keep]
+        return xy, cls, score
 
     def dense_stats(self, raw_output: Tensor, targets: dict[str, Tensor]) -> Tensor:
         """Per-image, per-class ``(B, C, 3)`` TP/FP/FN at the current ``score_threshold``."""
         gt_points = targets["gt_points"]
+        valid = targets.get("valid")
         rows = []
         for b in range(raw_output.shape[0]):
-            pred_xy, pred_cls, pred_score = self._predict_points(raw_output[b])
+            pred_xy, pred_cls, pred_score = self._predict_points(
+                raw_output[b], None if valid is None else valid[b]
+            )
             gt_xy, gt_cls = self._strip_padding(gt_points[b])
             counts = match_points(
                 pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
