@@ -235,6 +235,7 @@ To change the output:
 
    soma_logger = logging.getLogger("soma")
    soma_logger.setLevel(logging.WARNING)   # hide soma's INFO messages
+   soma_logger.setLevel(logging.DEBUG)     # or show soma's DEBUG messages too
    soma_logger.handlers.clear()            # remove soma's default handler
    soma_logger.propagate = False           # keep soma out of your root handlers
 

@@ -50,8 +50,9 @@ def ensure_default_logging() -> None:
     soma_logger = logging.getLogger("soma")
     if logging.getLogger().handlers or soma_logger.handlers:
         return
+    # The handler has no level of its own: the ``soma`` logger's level alone decides
+    # what is shown, so a caller who sets it to DEBUG sees DEBUG records.
     handler = _StderrHandler()
-    handler.setLevel(logging.INFO)
     handler.setFormatter(logging.Formatter(_FORMAT, datefmt=_DATEFMT))
     handler.addFilter(_UntilRootConfigured())
     soma_logger.addHandler(handler)

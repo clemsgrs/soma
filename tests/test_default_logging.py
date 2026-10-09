@@ -161,3 +161,23 @@ def test_the_soma_cli_prints_info_logs(tmp_path: Path, capsys):
         main([str(config_path)])
 
     assert capsys.readouterr().err.count("fold summary") == 1
+
+
+def test_an_explicit_debug_level_on_the_soma_logger_reaches_the_default_handler(
+    tmp_path: Path, capsys
+):
+    config, feature_dir = _slide_config(tmp_path)
+
+    with no_logging_setup():
+        logging.getLogger("soma").setLevel(logging.DEBUG)
+        Pipeline(config, feature_dir=feature_dir)
+        logging.getLogger("soma.cache").debug("set before construction")
+        logging.getLogger("soma").setLevel(logging.INFO)
+        logging.getLogger("soma.cache").debug("hidden at info")
+        logging.getLogger("soma").setLevel(logging.DEBUG)
+        logging.getLogger("soma.cache").debug("set after construction")
+
+    err = capsys.readouterr().err
+    assert err.count("set before construction") == 1
+    assert "hidden at info" not in err
+    assert err.count("set after construction") == 1
