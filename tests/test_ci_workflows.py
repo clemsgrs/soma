@@ -29,13 +29,15 @@ def _is_dockerhub_login(step: dict) -> bool:
     )
 
 
-def test_pr_test_logs_in_to_docker_hub_between_buildx_setup_and_ci_image_build():
+def test_pr_test_logs_in_to_docker_hub_before_buildx_setup_and_ci_image_build():
+    # setup-buildx-action pulls the moby/buildkit builder image from Docker
+    # Hub, so the login must come before it, not just before the build.
     steps = _docker_test_steps()
     login = _step_index(steps, "Log in to Docker Hub")
 
     assert steps[login]["uses"] == "docker/login-action@v3"
     assert _is_dockerhub_login(steps[login])
-    assert _step_index(steps, "Set up Docker Buildx") < login
+    assert login < _step_index(steps, "Set up Docker Buildx")
     assert login < _step_index(steps, "Build CI image")
 
 
@@ -70,20 +72,29 @@ def _builds_dockerhub_dockerfile(step: dict) -> bool:
     return "docker build" in step.get("run", "")
 
 
-def test_every_docker_image_build_is_preceded_by_a_docker_hub_login():
-    # Dockerfile and Dockerfile.ci both start FROM a Docker Hub image.
-    builds = []
+def _pulls_from_docker_hub(step: dict) -> bool:
+    # setup-buildx-action pulls moby/buildkit from Docker Hub; Dockerfile and
+    # Dockerfile.ci both start FROM a Docker Hub image.
+    return step.get("uses", "").startswith(
+        "docker/setup-buildx-action@"
+    ) or _builds_dockerhub_dockerfile(step)
+
+
+def test_every_docker_hub_pull_is_preceded_by_a_docker_hub_login():
+    pulls = []
     for path in sorted(Path(".github/workflows").glob("*.y*ml")):
         for job_name, job in _load_workflow(str(path))["jobs"].items():
             steps = job.get("steps", [])
             for i, step in enumerate(steps):
-                if not _builds_dockerhub_dockerfile(step):
+                if not _pulls_from_docker_hub(step):
                     continue
-                builds.append((path.name, job_name, step.get("name")))
+                pulls.append((path.name, job_name, step.get("name")))
                 assert any(_is_dockerhub_login(prior) for prior in steps[:i]), (
-                    f"{path.name}:{job_name} builds an image in step "
+                    f"{path.name}:{job_name} pulls from Docker Hub in step "
                     f"{step.get('name')!r} without logging in to Docker Hub first"
                 )
 
-    assert ("pr-test.yaml", "docker-test", "Build CI image") in builds
-    assert ("docker.yaml", "docker", "Build and push Docker image") in builds
+    assert ("pr-test.yaml", "docker-test", "Set up Docker Buildx") in pulls
+    assert ("pr-test.yaml", "docker-test", "Build CI image") in pulls
+    assert ("docker.yaml", "docker", "Set up Docker Buildx") in pulls
+    assert ("docker.yaml", "docker", "Build and push Docker image") in pulls
