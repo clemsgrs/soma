@@ -56,10 +56,10 @@ Issues = "https://github.com/clemsgrs/soma/issues"
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    "pyarrow>=17",
+    "pyarrow>=17,<26",  # 26 needs NumPy 2; the torch stack still resolves NumPy 1.26
 ]
 croma = [
-    "pyarrow>=17",
+    "pyarrow>=17,<26",  # 26 needs NumPy 2; the torch stack still resolves NumPy 1.26
 ]
 # The decoder-free ``pixel_classifier: xgboost`` path; the other pixel classifiers
 # (logistic regression, random forest, MLP) run on the core scikit-learn / torch deps.

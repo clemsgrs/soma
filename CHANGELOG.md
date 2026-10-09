@@ -1,5 +1,9 @@
 # Changelog
 
+- 2026-10-09: The `dev` and `croma` extras now cap pyarrow below 26. pyarrow 26.0.0
+  requires NumPy 2, but the rest of the dependency set still resolves NumPy 1.26, so
+  `import pyarrow` failed and every test module that imports it failed to collect.
+
 - 2026-10-08: New benchmarks `eva/camelyon16_small` and `eva/panda_small` reproduce
   EVA's offline slide-level classification configs. Their curators port EVA's tile
   sampler: a shuffled non-overlapping level-0 grid, EVA's saturation foreground mask
