@@ -18,11 +18,14 @@ branch (design §13.B-3/§13.B-8). It deliberately stays outside the cache-backe
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
 from soma.config import AugmentationConfig, PipelineConfig
 from soma.dense.geometry import DenseGridGeometry
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,7 +129,7 @@ def build_live_segmentation_source(config: PipelineConfig) -> LiveSegmentationSo
     )
     window_size = preprocessing.dense_window_size
     overlap = float(preprocessing.dense_window_overlap)
-    print(f"Live segmentation dense mode: {describe_dense_mode(window_size, overlap)}")
+    logger.info("Live segmentation dense mode: %s", describe_dense_mode(window_size, overlap))
     feature_kind = preprocessing.feature_kind or "patch_features"
     dense = DenseImageOptions(
         target_size=int(target_size),

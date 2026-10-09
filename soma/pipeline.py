@@ -32,6 +32,7 @@ from rich.panel import Panel
 from rich.table import Table
 from torch.utils.data import DataLoader
 
+from soma._logging import ensure_default_logging
 from soma.aggregators.registry import aggregator_registry
 from soma.artifact_mirror import ArtifactMirror, restore_run_from_mirror
 from soma.atomic_io import atomic_write_json
@@ -136,23 +137,22 @@ logger = logging.getLogger(__name__)
 
 
 def _log_cuda_memory(tag: str) -> None:
-    """Print the torch CUDA allocator state for memory diagnostics.
+    """Log the torch CUDA allocator state for memory diagnostics.
 
     nvidia-smi's per-process "used" = CUDA context + cuDNN/cuBLAS kernel images +
-    this ``reserved`` figure. Printing it right after the encoder is released
+    this ``reserved`` figure. Logging it right after the encoder is released
     exposes how much of the working set is fixed framework/context overhead (the
-    gap between nvidia-smi "used" and ``reserved``) versus live tensors. ``print``,
-    not ``logger`` — so it always shows without opting into a log level, matching
-    the dense-mode announce in dense_extraction.
+    gap between nvidia-smi "used" and ``reserved``) versus live tensors.
     """
     if not torch.cuda.is_available():
         return
     gib = 1024**3
-    print(
-        f"CUDA memory [{tag}]: "
-        f"allocated={torch.cuda.memory_allocated() / gib:.2f} GiB  "
-        f"reserved={torch.cuda.memory_reserved() / gib:.2f} GiB  "
-        f"max_reserved={torch.cuda.max_memory_reserved() / gib:.2f} GiB"
+    logger.info(
+        "CUDA memory [%s]: allocated=%.2f GiB  reserved=%.2f GiB  max_reserved=%.2f GiB",
+        tag,
+        torch.cuda.memory_allocated() / gib,
+        torch.cuda.memory_reserved() / gib,
+        torch.cuda.max_memory_reserved() / gib,
     )
     # Reset the peak so a later read reflects the decoder-training phase only.
     torch.cuda.reset_peak_memory_stats()
@@ -3460,6 +3460,7 @@ class Pipeline:
         *,
         feature_dir: str | Path | None = None,
     ) -> None:
+        ensure_default_logging()
         self._config = config
         # The load-time validator keyed on dataset_type selects the right manifest loader
         # (segmentation -> label_mask_path, detection -> points_path, else -> label); each loader

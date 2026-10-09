@@ -85,7 +85,6 @@ def _dense_extract_lock():
                 "Waiting for the dense-extraction lock at %s (another extraction is running)",
                 path,
             )
-            print(f"… waiting for dense-extraction lock: {path}")
             fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
@@ -252,10 +251,11 @@ class _DenseImageExtractor:
         patch_size = resolve_patch_size(self._encoder.name)
         geometry = compute_dense_geometry(target_size=self._target_size, patch_size=patch_size)
 
-        # Announce the resolved dense-input mode before the cache check, so it always shows
-        # (cache hit too — extraction only runs on a miss) regardless of logging config.
-        # print, not logger, so the user never has to opt into seeing it.
-        print(f"Dense extraction mode: {describe_dense_mode(self._window_size, self._overlap)}")
+        # Announce the resolved dense-input mode before the cache check, so it shows on a
+        # cache hit too (extraction only runs on a miss).
+        logger.info(
+            "Dense extraction mode: %s", describe_dense_mode(self._window_size, self._overlap)
+        )
 
         # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
         # None ⇒ follow the compute precision; 'fp16'/'fp32' force it. Folded into the cache
