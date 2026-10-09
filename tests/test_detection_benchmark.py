@@ -128,6 +128,13 @@ def test_midog_config_carries_relaxed_tolerance():
     assert cfg.preprocessing.tolerance == pytest.approx(0.10)
 
 
+@pytest.mark.parametrize("dataset", ["midog", "monkey"])
+def test_tiled_datasets_store_the_dense_cache_in_fp16(dataset):
+    # The tiled datasets' dense grids are large: fp16 halves the cache for the big encoders.
+    cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset=dataset)
+    assert cfg.cache.dtype == "fp16"
+
+
 def test_unknown_dataset_raises():
     with pytest.raises(KeyError):
         DETECTION_BENCHMARK.build_config(encoder="uni2", dataset="pannuke")
@@ -612,6 +619,61 @@ def test_driver_skip_guards(tmp_path: Path):
     assert m.training_done(out, "ocelot", "uni2", 0)
 
 
+def _fold_run_dir(cell: Path) -> Path:
+    """A fold cell's soma run dir: run.folds writes ``<run>/fold_<k>/`` and no summary.json."""
+    run = cell / "experiments" / "dataset-uni2-slide-detection_abc123" / "runs" / "2026-01-01__local"
+    run.mkdir(parents=True)
+    return run
+
+
+def test_driver_fold_cell_is_done_once_its_fold_finished(tmp_path: Path):
+    m = _load_driver()
+    out = tmp_path / "out"
+    run = _fold_run_dir(m.cell_dir(out, "monkey", "uni2", 2))
+    fold = run / "fold_2"
+    fold.mkdir()
+    # Mid-training: the checkpoint exists, the fold's metrics.json does not.
+    fold.joinpath("best_model.pt").write_text("x")
+    assert not m.training_done(out, "monkey", "uni2", 2, "folds")
+    # Another fold finishing says nothing about this cell's fold.
+    (run / "fold_0").mkdir()
+    (run / "fold_0" / "metrics.json").write_text("{}")
+    assert not m.training_done(out, "monkey", "uni2", 2, "folds")
+    # A fold's metrics.json is written once, when the fold finishes. A run.folds launch
+    # never writes the run-level summary.json (the other folds stay pending).
+    fold.joinpath("metrics.json").write_text("{}")
+    assert m.training_done(out, "monkey", "uni2", 2, "folds")
+
+
+def test_checkpoint_lookup_finds_a_fold_cells_weights(tmp_path: Path):
+    from soma.benchmarks.ocelot import _locate_checkpoint
+
+    seeds_cell, fold_cell = tmp_path / "seeds", tmp_path / "folds"
+    seeds_run = _fold_run_dir(seeds_cell)
+    seeds_run.joinpath("best_model.pt").write_text("x")
+    fold_dir = _fold_run_dir(fold_cell) / "fold_1"
+    fold_dir.mkdir()
+    fold_dir.joinpath("best_model.pt").write_text("x")
+
+    # Single-fold (seeds) runs keep their weights at the run dir, found as before.
+    assert _locate_checkpoint(seeds_cell) == seeds_run / "best_model.pt"
+    # A fold cell's weights live under fold_<k>/.
+    assert _locate_checkpoint(fold_cell, fold=1) == fold_dir / "best_model.pt"
+    with pytest.raises(FileNotFoundError):
+        _locate_checkpoint(fold_cell, fold=0)
+
+
+def test_realized_epochs_reads_a_fold_cells_history(tmp_path: Path):
+    m = _load_driver()
+    fold_dir = _fold_run_dir(tmp_path) / "fold_1"
+    fold_dir.mkdir()
+    fold_dir.joinpath("training_history.json").write_text(
+        json.dumps({"epochs": [{"epoch": e} for e in (0, 1, 2, 3)]})
+    )
+    assert m.realized_epochs(tmp_path, fold=1) == 4
+    assert m.realized_epochs(tmp_path, fold=0) is None
+
+
 def test_roi_threshold_sweep_uses_stitched_predictions_and_restores_head(monkeypatch):
     m = _load_driver()
     from soma.dense import DenseSampleSpacing
@@ -789,6 +851,57 @@ def test_train_cell_decoder_override_reaches_soma_argv(monkeypatch):
     m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"), decoder="heavy_conv",
                  extra_sets=["decoder.params.num_upsample_blocks=2"])
     assert "decoder.params.num_upsample_blocks=2" in cmds[2]
+
+
+def _soma_config_from_argv(argv: list[str]):
+    """Parse a ``python -m soma <config> --set ...`` argv the way soma's CLI does."""
+    from soma.cli import _parse_set_overrides
+    from soma.config import load_config
+
+    pairs = [argv[i + 1] for i, token in enumerate(argv) if token == "--set"]
+    return load_config(argv[3], overrides=_parse_set_overrides(pairs))
+
+
+def test_train_cell_folds_axis_trains_only_its_own_fold(tmp_path: Path, monkeypatch):
+    """A folds-axis cell is one fold: its soma run must train that fold and no other.
+
+    Without a fold selection soma trains every fold of the splits in every cell, so a
+    5-fold dataset costs 5x the training and the cells are not independent replicates.
+    """
+    from soma.output_layout import resolve_managed_output_paths
+
+    m = _load_driver()
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
+
+    m.train_cell("uni2", "monkey", 3, "folds", Path("d"), tmp_path)
+
+    cfg = _soma_config_from_argv(cmds[0])
+    assert cfg.folds == (3,)
+    # The replicate is a fold, not a seed: the committed seed stays as it is.
+    assert not [a for a in cmds[0] if a.startswith("run.seed=")]
+    # A fresh cell (nothing trained yet) must still resolve a run dir inside the cell.
+    cell = m.cell_dir(tmp_path, "monkey", "uni2", 3)
+    assert resolve_managed_output_paths(cfg).run_dir.is_relative_to(cell.resolve())
+
+
+def test_train_cell_seeds_axis_command_is_unchanged(monkeypatch):
+    """Seeds-axis cells (OCELOT, MIDOG) keep the exact soma command they had before."""
+    m = _load_driver()
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
+
+    m.train_cell("uni2", "ocelot", 1, "seeds", Path("d"), Path("o"))
+
+    assert cmds[0] == [
+        sys.executable, "-m", "soma", str(m._config_path("ocelot")),
+        "--set", "data.dataset_csv=d/ocelot/curated/dataset.csv",
+        "--set", "data.splits_csv=d/ocelot/curated/splits.csv",
+        "--set", "encoder.name=uni2",
+        "--set", "run.output_root=o/ocelot/uni2/replicate_1",
+        "--set", "cache.root_dir=o/ocelot/feature_cache",
+        "--set", "run.seed=1",
+    ]
 
 
 def _fabricate_scored_cell(m, out, dataset, encoder, replicate, axis, test_val):

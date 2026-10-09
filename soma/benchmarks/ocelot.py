@@ -202,16 +202,21 @@ def build_detection_model_from_checkpoint(
     return model.eval()
 
 
-def _locate_checkpoint(run_dir: Path) -> Path:
-    """The newest ``best_model.pt`` under ``run_dir`` (deterministic across re-runs)."""
-    direct = run_dir / "best_model.pt"
+def _locate_checkpoint(run_dir: Path, *, fold: int | None = None) -> Path:
+    """The newest ``best_model.pt`` under ``run_dir`` (deterministic across re-runs).
+
+    A single-fold run keeps its weights at the run dir. A multi-fold run keeps each fold's
+    under ``fold_<k>/``, so ``fold`` selects that fold's weights.
+    """
+    name = "best_model.pt" if fold is None else f"fold_{fold}/best_model.pt"
+    direct = run_dir / name
     if direct.is_file():
         return direct
     candidates = sorted(
-        run_dir.glob("experiments/*/runs/*/best_model.pt"), key=lambda p: p.stat().st_mtime
+        run_dir.glob(f"experiments/*/runs/*/{name}"), key=lambda p: p.stat().st_mtime
     )
     if not candidates:
-        raise FileNotFoundError(f"no best_model.pt under {run_dir}")
+        raise FileNotFoundError(f"no {name} under {run_dir}")
     return candidates[-1]
 
 
