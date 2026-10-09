@@ -424,10 +424,9 @@ def train_cell(
     if axis == "seeds":
         cmd += ["--set", f"run.seed={replicate}"]
     else:
-        # The cell trains only its own fold. soma requires run.resume (or run.run_id) with
-        # run.folds; each cell has its own output_root, so resume just reuses a crashed
-        # attempt's run dir instead of minting a new one.
-        cmd += ["--set", f"run.folds=[{replicate}]", "--set", "run.resume=true"]
+        # The cell trains only its own fold. soma requires run.run_id with run.folds; pinning
+        # it also makes a relaunch after a crash reuse the cell's run dir.
+        cmd += ["--set", f"run.folds=[{replicate}]", "--set", f"run.run_id=fold_{replicate}"]
     _run(cmd, cwd=REPO_ROOT)
 
 

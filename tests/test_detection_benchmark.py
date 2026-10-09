@@ -862,23 +862,27 @@ def _soma_config_from_argv(argv: list[str]):
     return load_config(argv[3], overrides=_parse_set_overrides(pairs))
 
 
-def test_train_cell_folds_axis_trains_only_its_own_fold(monkeypatch):
+def test_train_cell_folds_axis_trains_only_its_own_fold(tmp_path: Path, monkeypatch):
     """A folds-axis cell is one fold: its soma run must train that fold and no other.
 
     Without a fold selection soma trains every fold of the splits in every cell, so a
     5-fold dataset costs 5x the training and the cells are not independent replicates.
     """
+    from soma.output_layout import resolve_managed_output_paths
+
     m = _load_driver()
     cmds: list[list[str]] = []
     monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
 
-    m.train_cell("uni2", "monkey", 3, "folds", Path("d"), Path("o"))
+    m.train_cell("uni2", "monkey", 3, "folds", Path("d"), tmp_path)
 
     cfg = _soma_config_from_argv(cmds[0])
     assert cfg.folds == (3,)
-    assert str(cfg.output_root) == str(Path("o") / "monkey" / "uni2" / "replicate_3")
     # The replicate is a fold, not a seed: the committed seed stays as it is.
     assert not [a for a in cmds[0] if a.startswith("run.seed=")]
+    # A fresh cell (nothing trained yet) must still resolve a run dir inside the cell.
+    cell = m.cell_dir(tmp_path, "monkey", "uni2", 3)
+    assert resolve_managed_output_paths(cfg).run_dir.is_relative_to(cell.resolve())
 
 
 def test_train_cell_seeds_axis_command_is_unchanged(monkeypatch):
