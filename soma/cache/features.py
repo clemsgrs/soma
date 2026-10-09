@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 import logging
 import math
 import shutil
@@ -18,10 +17,12 @@ logger = logging.getLogger(__name__)
 from soma.cache._types import (
     CACHE_METADATA_NAME,
     MANIFEST_NAME,
+    PACKED_FILENAME,
     SCHEMA_VERSION,
     _FEATURE_TYPE_TO_RANK,
     _features_subdir_for_kind,
     _list_feature_filenames,
+    _required_sidecar_suffix,
     CacheValidationResult,
     FeatureCacheResolution,
 )
@@ -42,7 +43,6 @@ from soma.cache.io import (
     _emit_cache_state_log,
     _format_cache_metadata_mismatch,
     _load_metadata,
-    _normalized_manifest_rows,
     _write_manifest,
     _write_metadata,
 )
@@ -355,54 +355,6 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return comparable
 
 
-def _manifest_matches_dataset(manifest_path: Path, dataset: Dataset) -> bool:
-    if not manifest_path.is_file():
-        return False
-    try:
-        with manifest_path.open(newline="", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            rows = list(reader)
-    except Exception:
-        logger.debug("Could not read cache manifest at %s", manifest_path, exc_info=True)
-        return False
-    return _normalized_manifest_rows(rows) == _normalized_manifest_rows(dataset_manifest_rows(dataset))
-
-
-def _backfill_feature_cache_identity_metadata(
-    *,
-    metadata_path: Path,
-    metadata: dict[str, Any],
-    dataset: Dataset,
-    cache_ids: Sequence[str],
-    cache_stem_by_id: dict[str, str],
-) -> dict[str, Any]:
-    if not _manifest_matches_dataset(metadata_path.parent / MANIFEST_NAME, dataset):
-        return metadata
-    if any(sample.coordinates_path is not None for sample in dataset.samples.values()):
-        # The manifest records no tile set, so nothing proves an unsigned cache's
-        # features came from the supplied coordinates.
-        return metadata
-
-    signature_map = {
-        str(cache_id): str(signature)
-        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
-    }
-    changed = False
-    for cache_id in cache_ids:
-        cache_id = str(cache_id)
-        expected_signature = str(cache_stem_by_id[cache_id])
-        if signature_map.get(cache_id) is None:
-            signature_map[cache_id] = expected_signature
-            changed = True
-
-    if changed:
-        updated = dict(metadata)
-        updated["sample_identity_signature_by_id"] = signature_map
-        _write_metadata(metadata_path, updated)
-        return updated
-    return metadata
-
-
 # slide2vec's dense geometry sidecars: ROI grids over a slide, and grids over a
 # pre-cropped image. soma reads these natively rather than rewriting them into a schema
 # of its own (ADR 0007), so the validator recognises upstream's ``artifact_type`` values.
@@ -500,6 +452,7 @@ def _validate_feature_cache_contents(
     validate_payloads: bool = False,
     payload_stem_by_id: dict[str, str] | None = None,
     identity_key_by_id: dict[str, str] | None = None,
+    cache_kind: str | None = None,
 ) -> tuple[CacheValidationResult, int, int]:
     feature_type = str(metadata.get("feature_type", ""))
     if feature_type not in _FEATURE_TYPE_TO_RANK:
@@ -517,13 +470,10 @@ def _validate_feature_cache_contents(
     expected_rank = _FEATURE_TYPE_TO_RANK[feature_type]
     expected_feature_dim = metadata.get("feature_dim")
     # Dense grids carry their shape in a per-sample sidecar, which DenseFeatureStore
-    # requires to read them. The .pt-existence check alone would call an entry
-    # "complete" that the store cannot actually load, so require the sidecar too.
-    dense_sidecar_suffix: str | None = None
-    if feature_type == "dense_grid":
-        from soma.dense.store import DENSE_SIDECAR_SUFFIX
-
-        dense_sidecar_suffix = DENSE_SIDECAR_SUFFIX
+    # requires to read them; a pre-cropped image's provenance sidecar is what slide2vec
+    # publishes last. The .pt-existence check alone would call such an entry complete,
+    # so require the sidecar too.
+    sidecar_suffix = _required_sidecar_suffix(cache_kind, feature_type)
     # One directory listing answers the <id>.pt and <id>.meta.json existence
     # questions for every id; the hot loop below performs no per-id stat.
     existing_filenames = _list_feature_filenames(features_dir)
@@ -570,15 +520,16 @@ def _validate_feature_cache_contents(
                     reason = f"missing feature for {cache_id}"
                 continue
             sidecar_path: Path | None = None
-            if dense_sidecar_suffix is not None:
+            if sidecar_suffix is not None:
                 # Existence is decided cheaply from the listing and always enforced:
                 # a half-written sample (a ``.pt`` whose sidecar never landed) must
                 # be treated as missing, never silently skipped into a load failure.
-                if f"{payload_stem}{dense_sidecar_suffix}" not in existing_filenames:
+                if f"{payload_stem}{sidecar_suffix}" not in existing_filenames:
                     if reason is None:
-                        reason = f"missing dense sidecar for {cache_id}"
+                        reason = f"missing sidecar for {cache_id}"
                     continue
-                sidecar_path = features_dir / f"{payload_stem}{dense_sidecar_suffix}"
+                if feature_type == "dense_grid":
+                    sidecar_path = features_dir / f"{payload_stem}{sidecar_suffix}"
             if validate_payloads:
                 # Sidecar *content* validation (the JSON read + shape cross-check)
                 # is the one cost a listing cannot remove, so it joins the gated
@@ -673,6 +624,7 @@ def _refresh_feature_cache_resolution(
         validate_payloads=validate_payloads,
         payload_stem_by_id=resolution.payload_stem_by_id,
         identity_key_by_id=resolution.identity_key_by_id,
+        cache_kind=resolution.cache_kind,
     )
     return replace(
         resolution,
@@ -724,14 +676,9 @@ def _resolve_cache(
     )
 
     if metadata_path.is_file():
+        # Only signatures committed by an extraction vouch for a sample: an unsigned
+        # payload stays unresolved until its extraction path validates or rewrites it.
         existing = _load_metadata(metadata_path)
-        existing = _backfill_feature_cache_identity_metadata(
-            metadata_path=metadata_path,
-            metadata=existing,
-            dataset=dataset,
-            cache_ids=cache_ids,
-            cache_stem_by_id=cache_stem_by_id,
-        )
         validate_recorded_geometry(
             cache_dir=cache_dir,
             existing=existing,
@@ -772,6 +719,7 @@ def _resolve_cache(
             validate_payloads=validate_payloads,
             payload_stem_by_id=payload_stem_by_id,
             identity_key_by_id=identity_key_by_id,
+            cache_kind=cache_kind,
         )
         partial = not validation.complete and present > 0 and expected > 0
         reason = validation.reason
@@ -1217,17 +1165,73 @@ def record_sample_identity_signatures(
     *,
     validate_payloads: bool = False,
 ) -> FeatureCacheResolution:
-    metadata_path = getattr(resolution, "metadata_path", None)
-    if metadata_path is None:
+    """Sign samples whose features slide2vec just wrote into the cache."""
+    if getattr(resolution, "metadata_path", None) is None:
         return resolution
+    return _commit_samples(resolution, cache_ids, validate_payloads=validate_payloads)
+
+
+def commit_extracted_samples(
+    resolution: FeatureCacheResolution,
+    cache_ids: Sequence[str],
+    *,
+    feature_dim: int,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
+    """Publish one finished extraction in a single ``cache_metadata.json`` update.
+
+    The feature dimension, the signatures of ``cache_ids`` and, for a pending record,
+    the feature identity of the first committed sample are written together, then the
+    resolution is refreshed once. A failure before the write leaves the previous record
+    in place, so samples invalidated before the extraction stay unsigned.
+    """
+    return _commit_samples(
+        resolution, cache_ids, feature_dim=feature_dim, validate_payloads=validate_payloads
+    )
+
+
+def invalidate_sample_identities(
+    resolution: FeatureCacheResolution,
+    cache_ids: Sequence[str],
+) -> FeatureCacheResolution:
+    """Remove the recorded signatures of samples about to be handed to slide2vec.
+
+    Their features may be replaced before the extraction commits, so until then nothing
+    may vouch for what is on disk under their names: a sample stays unsigned after a
+    failure, whatever a later run asks for. Signatures of other samples are kept. Nothing
+    is written when none of ``cache_ids`` is signed.
+    """
     metadata = (
-        _load_metadata(metadata_path)
-        if metadata_path.is_file()
+        _load_metadata(resolution.metadata_path)
+        if resolution.metadata_path.is_file()
         else dict(resolution.metadata)
     )
-    # The first features of a cache complete its pending identity record. A cache
-    # without a record is never stamped: nothing proves its existing features were
-    # extracted with the identity of the samples added now.
+    signature_map = dict(metadata.get("sample_identity_signature_by_id", {}))
+    stale_keys = {resolution.identity_key(str(cache_id)) for cache_id in cache_ids}
+    if not stale_keys & set(signature_map):
+        return resolution
+    metadata["sample_identity_signature_by_id"] = {
+        key: signature for key, signature in signature_map.items() if key not in stale_keys
+    }
+    _write_metadata(resolution.metadata_path, metadata)
+    return replace(resolution, metadata=metadata)
+
+
+def _commit_samples(
+    resolution: FeatureCacheResolution,
+    cache_ids: Sequence[str],
+    *,
+    feature_dim: int | None = None,
+    validate_payloads: bool = False,
+) -> FeatureCacheResolution:
+    metadata = (
+        _load_metadata(resolution.metadata_path)
+        if resolution.metadata_path.is_file()
+        else dict(resolution.metadata)
+    )
+    if feature_dim is not None:
+        metadata["feature_dim"] = int(feature_dim)
+    # The first features of a cache complete its pending identity record.
     record_committed_identity(metadata, resolution, cache_ids)
     signature_map = {
         str(cache_id): str(signature)
@@ -1245,7 +1249,9 @@ def record_sample_identity_signatures(
     if "empty_sample_ids" in metadata:
         metadata["empty_sample_ids"] = sorted(empty_ids)
     metadata["sample_identity_signature_by_id"] = signature_map
-    _write_metadata(metadata_path, metadata)
+    # A pack of the cache's features may hold what these samples had before.
+    (resolution.features_dir / PACKED_FILENAME).unlink(missing_ok=True)
+    _write_metadata(resolution.metadata_path, metadata)
     return _refresh_feature_cache_resolution(
         resolution,
         metadata,

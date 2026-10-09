@@ -14,8 +14,9 @@ from soma.cache import resolve_feature_payload_dir
 
 # Single-file packed cache of all 1-D (single-vector) features, written next to
 # the per-sample files. Lets repeat training runs (e.g. multi-seed sweeps) read
-# the whole feature matrix in one shot instead of one tiny file per sample.
-PACKED_FILENAME = "packed_features.pt"
+# the whole feature matrix in one shot instead of one tiny file per sample. The
+# name lives in the cache layer, whose commits delete a pack they make stale.
+from soma.cache._types import PACKED_FILENAME  # noqa: E402
 
 
 class FeatureStore:

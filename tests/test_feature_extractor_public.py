@@ -675,7 +675,7 @@ def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
     )
 
 
-def test_partial_tile_extraction_resumes_only_missing_and_publishes_on_completion(
+def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_on_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
@@ -709,6 +709,7 @@ def test_partial_tile_extraction_resumes_only_missing_and_publishes_on_completio
                     metadata={
                         "artifact_type": "image_embeddings",
                         "sample_id": sample_id,
+                        "compatibility": {"encoder_name": "phikon"},
                     },
                 )
                 for index, sample_id in enumerate(written)
@@ -722,83 +723,17 @@ def test_partial_tile_extraction_resumes_only_missing_and_publishes_on_completio
         output_root=tmp_path / "output",
     )
 
-    with pytest.raises(ValueError, match="Missing features.*s1"):
+    # slide2vec returned no output for s1: nothing is signed, nothing is published.
+    with pytest.raises(RuntimeError, match="nothing is committed"):
         FeatureExtractor(**kwargs).extract()
     assert not (tmp_path / "output/extraction_provenance.json").exists()
 
     result = FeatureExtractor(**kwargs).extract()
 
-    assert PartialBoundaryModel.calls == [["s0", "s1"], ["s1"]]
+    # Unsigned outputs go back to slide2vec, which owns per-image resume.
+    assert PartialBoundaryModel.calls == [["s0", "s1"], ["s0", "s1"]]
     assert result.source.available_samples == ["s0", "s1"]
     assert (tmp_path / "output/extraction_provenance.json").is_file()
-
-
-def test_encoder_failure_preserves_valid_tile_payload_for_missing_only_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from slide2vec.artifacts import write_image_embedding
-
-    from soma import CacheConfig, EncoderConfig, TileDataset
-
-    dataset_csv = tmp_path / "dataset.csv"
-    dataset_csv.write_text(
-        "sample_id,image_path,label\ns0,s0.png,0\ns1,s1.png,1\n",
-        encoding="utf-8",
-    )
-    dataset = TileDataset(dataset_csv)
-
-    class FailingBoundaryModel:
-        calls: list[list[str]] = []
-
-        @classmethod
-        def from_preset(cls, _name: str, **_kwargs):
-            return cls()
-
-        def embed_images(self, images, *, execution):
-            ids = [item.sample_id for item in images]
-            type(self).calls.append(ids)
-            if len(type(self).calls) == 1:
-                write_image_embedding(
-                    torch.tensor([1.0, 2.0]),
-                    output_dir=execution.output_dir,
-                    sample_id="s0",
-                    output_format=execution.output_format,
-                    metadata={
-                        "artifact_type": "image_embeddings",
-                        "sample_id": "s0",
-                    },
-                )
-                raise RuntimeError("encoder interrupted")
-            return [
-                write_image_embedding(
-                    torch.tensor([3.0, 4.0]),
-                    output_dir=execution.output_dir,
-                    sample_id="s1",
-                    output_format=execution.output_format,
-                    metadata={
-                        "artifact_type": "image_embeddings",
-                        "sample_id": "s1",
-                    },
-                )
-            ]
-
-    monkeypatch.setattr("soma.tile_extraction.Model", FailingBoundaryModel)
-    kwargs = dict(
-        dataset=dataset,
-        encoder=EncoderConfig(name="phikon", precision="fp32"),
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
-        output_root=tmp_path / "output",
-    )
-
-    with pytest.raises(RuntimeError, match="encoder interrupted"):
-        FeatureExtractor(**kwargs).extract()
-    assert not (tmp_path / "output/extraction_provenance.json").exists()
-
-    result = FeatureExtractor(**kwargs).extract()
-
-    assert FailingBoundaryModel.calls == [["s0", "s1"], ["s1"]]
-    assert torch.equal(result.source.load("s0"), torch.tensor([1.0, 2.0]))
-    assert torch.equal(result.source.load("s1"), torch.tensor([3.0, 4.0]))
 
 
 def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
@@ -827,7 +762,11 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
                     output_dir=execution.output_dir,
                     sample_id="s0",
                     output_format=execution.output_format,
-                    metadata={"artifact_type": "image_embeddings", "sample_id": "s0"},
+                    metadata={
+                        "artifact_type": "image_embeddings",
+                        "sample_id": "s0",
+                        "compatibility": {"encoder_name": "phikon"},
+                    },
                 )
             ]
 

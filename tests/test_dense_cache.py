@@ -408,7 +408,6 @@ def test_dense_cache_partial_message_counts_samples_without_identity(
     dataset = _make_dataset(tmp_path)
     kw = _dense_kw(tmp_path, dataset)
     res = resolve_dense_cache(**kw)
-    res.manifest_path.unlink()  # no manifest, so identities are never backfilled
     geom = compute_dense_geometry(target_size=(512, 512), patch_size=16)
     meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
     write_dense_grid(res.features_dir, "s1", torch.randn(8, 32, 32), meta)
@@ -721,3 +720,29 @@ def test_dense_key_prenorm_never_aliases_the_post_norm_or_attention_grid():
     assert pre != _key()
     assert pre != _key(feature_kind="cls_attention", attention_blocks=(-1,))
     assert pre == _key(feature_kind="patch_features_prenorm")
+
+
+def test_dense_cache_matching_manifest_does_not_sign_unsigned_grids(tmp_path: Path):
+    # Grids an interrupted extraction wrote but never committed stay unresolved, even
+    # though the cache manifest still describes this very dataset.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    geom = compute_dense_geometry(target_size=(512, 512), patch_size=16)
+    for sid in dataset.sample_ids:
+        meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
+        meta["source_spacing_um"] = 0.5
+        meta["effective_spacing_um"] = 0.5
+        write_dense_grid(res.features_dir, sid, torch.randn(8, 32, 32), meta)
+    assert res.manifest_path.is_file()
+
+    resumed = resolve_dense_cache(**kw)
+
+    assert json.loads(resumed.metadata_path.read_text())["sample_identity_signature_by_id"] == {}
+    assert resumed.complete is False
+    assert sorted(resumed.missing_sample_ids()) == sorted(dataset.sample_ids)
+
+    # The extraction path commits them, and a valid current cache is then a full hit.
+    record_feature_dim(resumed, 8)
+    record_sample_identity_signatures(resumed, list(dataset.sample_ids))
+    assert resolve_dense_cache(**kw).complete is True

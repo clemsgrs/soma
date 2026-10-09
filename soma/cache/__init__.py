@@ -4,6 +4,7 @@ from soma.cache.feature_identity import (
     FEATURE_IDENTITY_METADATA_KEY,
     CacheFeatureIdentityMismatch,
     FeatureIdentityCheck,
+    MissingFeatureIdentity,
     recorded_identity,
 )
 from soma.cache.geometry import (
@@ -57,7 +58,6 @@ from soma.cache.io import (
     _format_cache_metadata_mismatch,
     _load_metadata,
     _materialize_pt_artifact,
-    _normalized_manifest_rows,
     _write_manifest,
     _write_metadata,
     build_tile_artifacts_from_cache_payload,
@@ -88,7 +88,6 @@ from soma.cache.tiling import (
 )
 from soma.cache.compute_key import compute_cache_key
 from soma.cache.features import (
-    _backfill_feature_cache_identity_metadata,
     _build_dense_cache_metadata,
     _build_hierarchical_cache_metadata,
     _build_patient_cache_metadata,
@@ -96,9 +95,10 @@ from soma.cache.features import (
     _build_tile_cache_metadata,
     _cache_dir,
     _comparable_metadata,
-    _manifest_matches_dataset,
     _resolve_cache,
     _validate_feature_cache_contents,
+    commit_extracted_samples,
+    invalidate_sample_identities,
     record_empty_sample_ids,
     record_feature_dim,
     record_sample_identity_signatures,
@@ -116,6 +116,7 @@ __all__ = [
     "FEATURE_IDENTITY_METADATA_KEY",
     "FeatureIdentityCheck",
     "GEOMETRY_METADATA_KEY",
+    "MissingFeatureIdentity",
     "dense_extraction_geometry",
     "pooled_extraction_geometry",
     "validate_recorded_geometry",
@@ -136,9 +137,11 @@ __all__ = [
     "build_tile_cache_key",
     "build_tiling_cache_key",
     "build_tile_artifacts_from_cache_payload",
+    "commit_extracted_samples",
     "compute_cache_key",
     "dataset_manifest_rows",
     "execution_signature",
+    "invalidate_sample_identities",
     "manifest_digest",
     "preprocessing_backend_provenance",
     "preprocessing_signature",

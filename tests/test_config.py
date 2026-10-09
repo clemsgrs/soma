@@ -1874,3 +1874,29 @@ def test_training_config_defaults_to_no_lr_warmup():
 def test_training_config_rejects_malformed_lr_warmup(kwargs):
     with pytest.raises(ValueError, match="lr_warmup"):
         TrainingConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "retired", [{"commit_every": 1024}, {"on_unrecorded_identity": "warn"}]
+)
+def test_load_config_rejects_retired_cache_keys_as_unknown(tmp_path: Path, retired):
+    yaml_path = tmp_path / "config.yaml"
+    yaml_path.write_text(
+        yaml.safe_dump(
+            {
+                "run": {"output_root": str(tmp_path)},
+                "data": {
+                    "dataset_csv": "d.csv",
+                    "splits_csv": "s.csv",
+                    "dataset_type": "slide",
+                },
+                "task": {"name": "binary_classification"},
+                "cache": {"enabled": True, **retired},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    (key,) = retired
+    with pytest.raises(TypeError, match=f"unexpected keyword argument '{key}'"):
+        load_config(yaml_path)

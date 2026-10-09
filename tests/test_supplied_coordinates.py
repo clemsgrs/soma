@@ -73,7 +73,12 @@ def _commit(resolution, sample_id: str, tensor):
 
     from soma.cache import record_feature_dim, record_sample_identity_signatures
 
-    torch.save(tensor, resolution.feature_path_for_id(sample_id))
+    payload_path = resolution.feature_path_for_id(sample_id)
+    torch.save(tensor, payload_path)
+    # The sidecar slide2vec publishes with the payload carries the feature identity.
+    payload_path.with_name(f"{payload_path.stem}.meta.json").write_text(
+        '{"compatibility": {"encoder_name": "virchow"}}'
+    )
     record_feature_dim(resolution, int(tensor.shape[-1]))
     return record_sample_identity_signatures(resolution, [sample_id])
 

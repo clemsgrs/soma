@@ -9,12 +9,13 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 import torch
 import slide2vec.progress as slide2vec_progress
 from slide2vec.artifacts import TileEmbeddingArtifact
 
+from soma.atomic_io import atomic_write_json
 from soma.cache._types import CACHE_METADATA_NAME, MANIFEST_NAME
 from soma.config import CacheConfig
 
@@ -152,8 +153,8 @@ def tile_artifact_metadata(
 
     ``feature_identity`` is the identity the tile cache records for its features. It is
     handed to slide2vec as the artifact's ``compatibility`` block, so slide2vec records
-    the tile geometry and transform in the slide embeddings it aggregates. None for a
-    tile cache that records no identity: the aggregated embeddings then record none.
+    the tile geometry and transform in the slide embeddings it aggregates. A populated
+    tile cache always records one: a cache without it is extracted again when resolved.
     """
     metadata: dict[str, Any] = {
         "sample_id": sample_id,
@@ -239,37 +240,13 @@ def _write_manifest(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _write_metadata(path: Path, metadata: dict[str, Any]) -> None:
+    """Replace ``cache_metadata.json`` atomically: a reader sees the old or the new record."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    atomic_write_json(path, metadata, indent=2, sort_keys=True)
 
 
 def _load_metadata(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _normalized_manifest_rows(rows: Iterable[dict[str, object]]) -> list[dict[str, str]]:
-    normalized: list[dict[str, str]] = []
-    for row in rows:
-        mask_path = row.get("mask_path")
-        mask_text = ""
-        if mask_path is not None:
-            mask_text = str(mask_path)
-            if mask_text.lower() == "nan":
-                mask_text = ""
-        normalized.append(
-            {
-                "sample_id": str(row["sample_id"]),
-                "image_path": str(row["image_path"]),
-                "mask_path": mask_text,
-                "spacing_at_level_0": (
-                    ""
-                    if row.get("spacing_at_level_0") in (None, "")
-                    or str(row.get("spacing_at_level_0")).lower() == "nan"
-                    else str(row["spacing_at_level_0"])
-                ),
-            }
-        )
-    return sorted(normalized, key=lambda row: row["sample_id"])
 
 
 def _format_cache_metadata_mismatch(

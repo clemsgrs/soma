@@ -214,6 +214,15 @@ def _empty_tiling(sample_id: str = "s0") -> object:
     )
 
 
+def _save_committable(tensor: torch.Tensor, payload_path: Path) -> None:
+    """Write a payload and the sidecar slide2vec publishes with it, feature identity included."""
+    torch.save(tensor, payload_path)
+    payload_path.with_name(f"{payload_path.stem}.meta.json").write_text(
+        json.dumps({"compatibility": {"encoder_name": "fake", "feature_dtype": "fp32"}}),
+        encoding="utf-8",
+    )
+
+
 def _artifact(
     *,
     sample_id: str,
@@ -228,7 +237,14 @@ def _artifact(
     torch.save(tensor, path)
     feature_dim_for_meta = int(tensor.shape[-1] if tensor.ndim >= 2 else tensor.shape[0])
     meta_path.write_text(
-        json.dumps({"artifact_type": kind, "feature_dim": feature_dim_for_meta}),
+        json.dumps(
+            {
+                "artifact_type": kind,
+                "feature_dim": feature_dim_for_meta,
+                # A current writer records the feature identity a pooled cache commits.
+                "compatibility": {"encoder_name": "fake", "feature_dtype": "fp32"},
+            }
+        ),
         encoding="utf-8",
     )
     if kind == "tile_embeddings":
@@ -1347,7 +1363,13 @@ class _RecordingModel:
                     output_dir=execution.output_dir,
                     sample_id=spec.sample_id,
                     output_format=execution.output_format,
-                    metadata={"artifact_type": "image_embeddings", "sample_id": spec.sample_id},
+                    metadata={
+                        "artifact_type": "image_embeddings",
+                        "sample_id": spec.sample_id,
+                        "image_path": str(spec.image_path),
+                        # A current writer records the feature identity soma commits.
+                        "compatibility": {"encoder_name": self.name},
+                    },
                 )
             )
         return artifacts
@@ -1432,10 +1454,10 @@ def test_internal_tile_engine_reuses_complete_cache_without_loading_the_encoder(
     assert torch.equal(second.load("s1"), torch.full((4,), 2.0))
 
 
-def test_internal_tile_engine_only_encodes_samples_soma_reports_missing(
+def test_internal_tile_engine_only_hands_slide2vec_samples_soma_reports_missing(
     tmp_path: Path, recording_model
 ):
-    """Resume is driven by soma's cache resolution, not by slide2vec's sidecar check."""
+    """Signed, complete samples are soma's to reuse; slide2vec sees only the others."""
     dataset = _make_tile_dataset(tmp_path, ("s0", "s1"))
     cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
 
@@ -1455,11 +1477,10 @@ def test_internal_tile_engine_only_encodes_samples_soma_reports_missing(
 def test_internal_tile_engine_reencodes_a_sample_whose_identity_changed(
     tmp_path: Path, recording_model
 ):
-    """A re-pointed image_path under a stable sample_id must not be skipped.
+    """A re-pointed image_path under a stable sample_id is handed back to slide2vec.
 
-    slide2vec resumes on sidecar existence and cannot see soma's identity signatures, so
-    soma clears the stale payload before asking — otherwise the old features would survive
-    and get stamped with the new signature.
+    Its signature no longer matches, so soma invalidates it and asks slide2vec, which
+    replaces the artifact recorded for the old source (``on_image_mismatch="reencode"``).
     """
     from PIL import Image
 
@@ -2588,7 +2609,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         },
     )
     tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(torch.ones(2, 8), tile_cache.feature_path_for_id("s0"))
+    _save_committable(torch.ones(2, 8), tile_cache.feature_path_for_id("s0"))
     record_sample_identity_signatures(tile_cache, ["s0"])
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
@@ -2626,7 +2647,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         artifact_dir = Path(patient_execution.output_dir) / "patient_embeddings"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         path = artifact_dir / "p0.pt"
-        torch.save(torch.ones(8), path)
+        _save_committable(torch.ones(8), path)
         return [SimpleNamespace(patient_id="p0", path=path)]
 
     with patch("soma.extraction.extractor._aggregate_patients", side_effect=_fake_aggregate_patients):
@@ -2705,7 +2726,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
         },
     )
     tile_cache.features_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(torch.ones(2, 8), tile_cache.feature_path_for_id("s0"))
+    _save_committable(torch.ones(2, 8), tile_cache.feature_path_for_id("s0"))
     record_sample_identity_signatures(tile_cache, ["s0"])
     record_empty_sample_ids(tile_cache, ["s1"])
     tile_cache = cache_mod.resolve_tile_cache(
@@ -2740,7 +2761,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
         artifact_dir = Path(patient_execution.output_dir) / "patient_embeddings"
         artifact_dir.mkdir(parents=True, exist_ok=True)
         path = artifact_dir / "p0.pt"
-        torch.save(torch.ones(8), path)
+        _save_committable(torch.ones(8), path)
         return [SimpleNamespace(patient_id="p0", path=path)]
 
     with patch("soma.extraction.extractor._aggregate_patients", side_effect=_fake_aggregate_patients):
@@ -3379,7 +3400,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
                 sample_id = str(payload["sample_id"])
                 torch.save(torch.ones(8), slide_dir / f"{sample_id}.pt")
                 (slide_dir / f"{sample_id}.meta.json").write_text(
-                    json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8}),
+                    json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8, "compatibility": {"encoder_name": "fake"}}),
                     encoding="utf-8",
                 )
                 written_ids.add(sample_id)
@@ -3525,7 +3546,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
                 sample_id = str(payload["sample_id"])
                 torch.save(torch.ones(8), slide_dir / f"{sample_id}.pt")
                 (slide_dir / f"{sample_id}.meta.json").write_text(
-                    json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8}),
+                    json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8, "compatibility": {"encoder_name": "fake"}}),
                     encoding="utf-8",
                 )
                 written_ids.add(sample_id)
@@ -3918,7 +3939,7 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
         num_gpus,
     ):
         cache_resolution.features_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(torch.ones(1, 4, 8), cache_resolution.feature_path_for_id("s0"))
+        _save_committable(torch.ones(1, 4, 8), cache_resolution.feature_path_for_id("s0"))
         record_sample_identity_signatures(cache_resolution, ["s0"])
         record_feature_dim(cache_resolution, 8)
         feature_dir.mkdir(parents=True, exist_ok=True)
@@ -4013,7 +4034,7 @@ def test_feature_summary_from_sidecar_ignores_packed_cache(tmp_path: Path):
     feature_dir.mkdir()
     torch.save(torch.randn(8), feature_dir / "s1.pt")
     (feature_dir / "s1.meta.json").write_text(
-        json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8}),
+        json.dumps({"artifact_type": "slide_embeddings", "feature_dim": 8, "compatibility": {"encoder_name": "fake"}}),
         encoding="utf-8",
     )
     torch.save({"sample_ids": ["s1"], "features": torch.randn(1, 8)}, feature_dir / PACKED_FILENAME)
@@ -4145,58 +4166,3 @@ def test_fallback_feature_manifest_publishes_only_in_run_directory(tmp_path: Pat
     assert torch.equal(store.load("s0"), torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
     manifest = pd.read_csv(local / "process_list.csv")
     assert manifest.loc[0, "feature_path"] == str(payload_dir / "s0.pt")
-
-
-def test_drop_stale_payloads_lists_directory_once_and_removes_only_stale_files(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    # Resuming a partial tile cache must not glob the features directory once per
-    # missing sample (cost = missing × present, minutes of idle GPU on ~100k tiles),
-    # and a sample id must never be interpreted as a glob pattern by code that deletes
-    # what it matches.
-    import soma.tile_extraction as tile_mod
-
-    features_dir = tmp_path / "image_embeddings"
-    features_dir.mkdir()
-    stale = ["s1", "a.b", "we[i]rd*?"]
-    keep = ["s10", "s1x", "a", "a.bc", "weird"]
-    for sample_id in stale + keep:
-        (features_dir / f"{sample_id}.pt").write_bytes(b"x")
-        (features_dir / f"{sample_id}.meta.json").write_text("{}")
-    (features_dir / "we[i]rd*?.extra.bin").write_bytes(b"x")
-    (features_dir / "a.b.c.pt").write_bytes(b"x")  # `<id>.<anything>` with id `a.b`
-    (features_dir / "wird.pt").write_bytes(b"x")  # what glob `we[i]rd*?.*` would match
-
-    list_calls = {"n": 0}
-    real_list = tile_mod._list_feature_filenames
-
-    def counting_list(directory: Path) -> set[str]:
-        list_calls["n"] += 1
-        return real_list(directory)
-
-    monkeypatch.setattr(tile_mod, "_list_feature_filenames", counting_list)
-
-    glob_patterns: list[str] = []
-    real_glob = Path.glob
-
-    def recording_glob(self, pattern, *args, **kwargs):
-        glob_patterns.append(str(pattern))
-        return real_glob(self, pattern, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "glob", recording_glob)
-
-    tile_mod._drop_stale_payloads(features_dir, stale)
-
-    assert list_calls["n"] == 1
-    assert not [pat for pat in glob_patterns if any(sid in pat for sid in stale)]
-    remaining = {p.name for p in features_dir.iterdir()}
-    for sample_id in stale:
-        assert f"{sample_id}.pt" not in remaining
-        assert f"{sample_id}.meta.json" not in remaining
-    assert "we[i]rd*?.extra.bin" not in remaining
-    assert "a.b.c.pt" not in remaining
-    assert remaining == {f"{sid}.{suffix}" for sid in keep for suffix in ("pt", "meta.json")} | {"wird.pt"}
-
-    list_calls["n"] = 0
-    tile_mod._drop_stale_payloads(features_dir, [])
-    assert list_calls["n"] <= 1

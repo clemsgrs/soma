@@ -30,6 +30,35 @@ For pooled slide encoders, soma passes the artifacts from ``Model.embed_tiles``
 to ``Model.aggregate_tiles``. soma owns cache identity and completeness checks;
 slide2vec owns extraction progress and writes to the selected directory.
 
+A sample counts as cached only when an extraction committed its signature to
+``cache_metadata.json``. Features found on disk without a committed signature,
+for example after an interrupted run, are never signed from the cache manifest.
+soma hands them back to slide2vec, which checks them or extracts them again.
+
+Pre-cropped images
+------------------
+
+For ``dataset_type="tile"``, soma passes every image that needs work to one
+``Model.embed_images`` call, whatever the dataset size:
+
+1. soma resolves the cache. An image counts as cached when its signature is
+   committed and both ``<sample_id>.pt`` and ``<sample_id>.meta.json`` exist.
+   One directory listing decides this; soma reads no sidecar on a cache hit.
+2. soma removes the committed signatures of the other images from
+   ``cache_metadata.json``. After a failure, these images stay unsigned until
+   an extraction succeeds, even if a later run requests another source path for
+   them or only a subset of the dataset.
+3. slide2vec reuses an image whose payload and sidecar record its source path
+   and the current feature identity. It encodes every other image. soma passes
+   ``on_image_mismatch="reencode"``, so an image recorded for another source
+   path is replaced.
+4. soma writes the feature dimension, the signatures and, for a new cache, the
+   feature identity in one final update of ``cache_metadata.json``.
+
+If the run stops, the next run resumes inside slide2vec: completed images are
+not encoded again. ``cache_metadata.json`` is always replaced atomically, so a
+failed write leaves the previous record readable.
+
 Validation
 ----------
 
@@ -104,7 +133,8 @@ with the slide2vec version. For example:
    }
 
 A slide or patient cache records the identity of the tile cache it is aggregated
-from, so its record includes the transform of the tile encoder.
+from, so its record includes the transform of the tile encoder. soma aggregates
+only tiles whose cache records an identity.
 
 When a pooled cache already holds features, soma checks the record before it
 reuses the cache or adds samples to it:
@@ -122,15 +152,20 @@ reuses the cache or adds samples to it:
     ``cache.on_identity_mismatch: reextract`` to delete the cache and extract it
     again instead.
 
-A cache written by soma 1.17.0 or earlier records no feature identity, so soma
-cannot verify it. By default soma reuses it and logs one warning. Check the
-`slide2vec release notes <https://github.com/clemsgrs/slide2vec/releases>`_ for
-preprocessing changes to your encoder between the two versions, and delete the
-cache directory if there is one. Set ``cache.on_unrecorded_identity: reextract``
-to delete every such cache and extract it again. soma never adds a record to a
-cache it could not verify, so the warning repeats until the cache is extracted
-again. A slide or patient cache aggregated from such a tile cache records no
-identity either.
+A pooled cache that holds features but records no feature identity, such as a
+cache written by soma 1.17.0 or earlier, cannot be verified. soma logs a warning,
+deletes the cache directory and extracts it again. soma never takes an identity
+from existing sidecars to approve such a cache. A cache without features starts
+a new record.
+
+A run that stops before its first commit leaves a pending record (``identity``
+is ``null``). The next run with the same slide2vec version keeps the cache and
+hands its unsigned features to slide2vec. If the slide2vec version changed, soma
+extracts the cache again. If slide2vec writes features without a feature
+identity, soma raises ``MissingFeatureIdentity`` and does not commit them.
+
+The settings ``cache.commit_every`` and ``cache.on_unrecorded_identity`` were
+removed. soma rejects them as unknown keys, so delete them from your configs.
 
 ``reextract`` deletes the whole cache directory, including the features of
 samples that the current dataset does not use. Do not use it while another job
