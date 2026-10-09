@@ -628,3 +628,181 @@ def test_detection_manifest_requires_points_path(tmp_path):
     csv.write_text("sample_id,image_path\ns0,img0.jpg\n")
     with pytest.raises(ValueError, match="points_path"):
         __import__("soma.dataset", fromlist=["DetectionManifest"]).DetectionManifest(csv)
+
+
+def test_detection_manifest_reads_ignore_mask_path_as_typed_column(tmp_path):
+    from soma.dataset import DetectionManifest
+
+    (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
+    csv = tmp_path / "manifest.csv"
+    csv.write_text(
+        "sample_id,image_path,points_path,ignore_mask_path\n"
+        f"s0,img0.jpg,{tmp_path / 'a.csv'},{tmp_path / 'm0.png'}\n"
+        f"s1,img1.jpg,{tmp_path / 'a.csv'},\n"
+    )
+    samples = DetectionManifest(csv).samples
+    assert samples["s0"].ignore_mask_path == tmp_path / "m0.png"
+    assert samples["s1"].ignore_mask_path is None
+    assert "ignore_mask_path" not in samples["s0"].metadata
+
+
+# --------------------------------------------------------------------------- #
+# Ignore masks (255 = not annotated, 0 = supervised)
+# --------------------------------------------------------------------------- #
+
+
+def _ignore_mask(tmp_path, ignored_cols: slice, *, size=(32, 32), value=255, name="m.png"):
+    from PIL import Image
+
+    mask = np.zeros(size, dtype=np.uint8)
+    mask[:, ignored_cols] = value
+    path = tmp_path / name
+    Image.fromarray(mask).save(path)
+    return path
+
+
+def _masked_record(tmp_path, rows: str, mask_path):
+    from dataclasses import replace
+
+    return replace(_points_record(tmp_path, rows), ignore_mask_path=mask_path)
+
+
+def test_head_ignore_mask_marks_valid_and_drops_ignored_points(tmp_path):
+    # Columns 16.. are not annotated: the point at x=20 is not ground truth there.
+    record = _masked_record(tmp_path, "10,12,0\n20,8,1\n", _ignore_mask(tmp_path, slice(16, None)))
+    head = _make_head()
+
+    targets = head.extract_targets(record)
+
+    valid = targets["valid"]
+    assert valid.dtype == torch.bool and valid.shape == (32, 32)
+    assert bool(valid[:, :16].all()) and not bool(valid[:, 16:].any())
+    assert targets["gt_points"].tolist() == [[10.0, 12.0, 0.0]]
+    assert float(targets["heatmap"][1].max()) == 0.0
+    assert targets["heatmap"][0, 12, 10] == pytest.approx(1.0)
+
+
+def test_head_ignore_mask_follows_the_target_frame(tmp_path):
+    # Level-0 is twice the target resolution: level-0 columns 32.. map to target 16..
+    from soma.dense import DenseSampleSpacing
+
+    mask = _ignore_mask(tmp_path, slice(32, None), size=(64, 64))
+    record = _masked_record(tmp_path, "20,20,0\n40,20,0\n", mask)
+    head = _make_head(sample_spacings={"s": DenseSampleSpacing(0.5, 1.0)})
+
+    targets = head.extract_targets(record)
+
+    assert bool(targets["valid"][:, :16].all()) and not bool(targets["valid"][:, 16:].any())
+    assert targets["gt_points"].tolist() == [[10.0, 10.0, 0.0]]
+
+
+def test_head_drops_points_on_ignored_level0_pixels_before_resampling(tmp_path):
+    # Level-0 column 33 is ignored, but its point maps to target x=16.5, which rounds to
+    # target column 16, and that column samples the supervised level-0 column 32. The
+    # level-0 mask decides, as in the tiler: the point is not ground truth.
+    from soma.dense import DenseSampleSpacing
+
+    mask = _ignore_mask(tmp_path, slice(33, None), size=(64, 64))
+    record = _masked_record(tmp_path, "20,20,0\n33,20,0\n", mask)
+    head = _make_head(sample_spacings={"s": DenseSampleSpacing(0.5, 1.0)})
+
+    targets = head.extract_targets(record)
+
+    assert bool(targets["valid"][:, 16].all())
+    assert targets["gt_points"].tolist() == [[10.0, 10.0, 0.0]]
+    assert float(targets["heatmap"][0, 10, 16]) < 0.5
+
+
+def test_head_without_ignore_mask_is_all_valid_and_unchanged(tmp_path):
+    # A point just inside the right edge rounds onto the canvas edge: it stays ground truth.
+    record = _points_record(tmp_path, "10,12,0\n31.7,8,1\n")
+    head = _make_head()
+
+    targets = head.extract_targets(record)
+
+    assert bool(targets["valid"].all()) and targets["valid"].shape == (32, 32)
+    np.testing.assert_allclose(
+        targets["gt_points"].numpy(), [[10.0, 12.0, 0.0], [31.7, 8.0, 1.0]], rtol=1e-6
+    )
+
+
+def test_head_rejects_ignore_mask_value_naming_file_and_sample(tmp_path):
+    mask = _ignore_mask(tmp_path, slice(16, None), value=1, name="bad_mask.png")
+    record = _masked_record(tmp_path, "10,12,0\n", mask)
+
+    with pytest.raises(ValueError, match=r"(?s)sample 's'.*bad_mask\.png"):
+        _make_head().extract_targets(record)
+
+
+def test_head_loss_ignores_predictions_on_ignored_pixels():
+    head = _make_head()
+    target = torch.rand(2, 2, 32, 32)
+    valid = torch.ones(2, 32, 32, dtype=torch.bool)
+    valid[:, :, 16:] = False
+    pred = torch.rand(2, 2, 32, 32)
+    changed = pred.clone()
+    changed[..., 16:] = torch.rand(2, 2, 32, 16)
+
+    loss = head.compute_loss(pred, {"heatmap": target, "valid": valid})
+
+    assert float(loss) > 0.0
+    assert float(head.compute_loss(changed, {"heatmap": target, "valid": valid})) == float(loss)
+
+
+def test_head_loss_averages_over_valid_pixels_of_every_channel():
+    head = _make_head(foreground_weight=0.0)
+    target = torch.zeros(1, 2, 2, 2)
+    valid = torch.tensor([[[True, False], [False, False]]])
+    pred = torch.zeros(1, 2, 2, 2)
+    pred[0, 0, 0, 0] = 1.0  # squared error 1 on one of the two supervised entries
+
+    assert float(head.compute_loss(pred, {"heatmap": target, "valid": valid})) == 0.5
+
+
+def test_head_loss_with_all_valid_equals_unmasked_mean():
+    head = _make_head()
+    target = torch.rand(2, 2, 32, 32)
+    pred = torch.rand(2, 2, 32, 32)
+    valid = torch.ones(2, 32, 32, dtype=torch.bool)
+
+    masked = head.compute_loss(pred, {"heatmap": target, "valid": valid})
+    expected = ((1.0 + head.foreground_weight * target) * (pred - target) ** 2).mean()
+
+    assert torch.equal(masked, expected)
+
+
+def test_head_dense_stats_drops_predictions_on_ignored_pixels(tmp_path):
+    from soma.detection.encode import render_peak_heatmap
+
+    record = _masked_record(tmp_path, "10,12,0\n20,8,0\n", _ignore_mask(tmp_path, slice(16, None)))
+    head = _make_head(num_classes=1)
+    targets = head.extract_targets(record)
+    # One prediction on the supervised point, one on the ignored point, one on an ignored
+    # pixel with no point at all: only the first is scored (1 TP, 0 FP, 0 FN).
+    predicted = render_peak_heatmap(
+        np.array([[10.0, 12.0], [20.0, 8.0], [28.0, 28.0]]), np.array([0, 0, 0]),
+        target_size=(32, 32), num_classes=1, sigma=1.5,
+    )
+    batch_targets = {"gt_points": targets["gt_points"][None], "valid": targets["valid"][None]}
+
+    assert head.dense_stats(predicted.unsqueeze(0), batch_targets).tolist() == [[[1, 0, 0]]]
+
+
+def test_detection_collate_stacks_valid():
+    from soma.training.detection_dataset import detection_collate_fn
+
+    def item(sid, valid_cols):
+        valid = torch.zeros(4, 4, dtype=torch.bool)
+        valid[:, valid_cols] = True
+        targets = {"heatmap": torch.zeros(1, 4, 4), "gt_points": torch.zeros(0, 3), "valid": valid}
+        return torch.zeros(3, 2, 2), targets, sid
+
+    batch = detection_collate_fn(
+        [item("a", slice(0, 2)), item("b", slice(2, None))],
+        target_dtypes={"heatmap": torch.float32, "gt_points": torch.float32, "valid": torch.bool},
+    )
+
+    valid = batch.targets["valid"]
+    assert valid.dtype == torch.bool and valid.shape == (2, 4, 4)
+    assert valid[0, :, :2].all() and not valid[0, :, 2:].any()
+    assert valid[1, :, 2:].all() and not valid[1, :, :2].any()

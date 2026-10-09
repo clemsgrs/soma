@@ -14,7 +14,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-__all__ = ["read_points"]
+from soma.dense.reader import _load_flat_mask
+from soma.detection.encode import IGNORE_VALUE
+
+__all__ = ["read_points", "read_ignore_mask"]
 
 _CLASS_ALIASES = ("class", "label", "category", "cls")
 
@@ -76,3 +79,21 @@ def read_points(path: str | Path) -> tuple[np.ndarray, np.ndarray]:
     if xy.shape[0] != classes.shape[0]:
         raise ValueError(f"point file '{path}' has mismatched coordinate/class counts.")
     return xy.reshape(-1, 2), classes
+
+
+def read_ignore_mask(path: str | Path) -> np.ndarray:
+    """Read a detection ignore mask: a flat single-channel raster of 0 and 255.
+
+    255 marks pixels that are not annotated (no loss, no ground truth, no scored
+    predictions); 0 marks supervised pixels. The raster is in the image's own pixel frame.
+    Any other value fails, naming the file, so a class-index or RGB mask is not
+    mistaken for one.
+    """
+    mask = _load_flat_mask(path)
+    stray = sorted(int(v) for v in np.unique(mask) if int(v) not in (0, IGNORE_VALUE))
+    if stray:
+        raise ValueError(
+            f"ignore mask '{path}' has value(s) {stray[:10]}; only 0 (supervised) and "
+            f"{IGNORE_VALUE} (ignored) are allowed."
+        )
+    return mask.astype(np.uint8, copy=False)

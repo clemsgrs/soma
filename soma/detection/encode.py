@@ -30,7 +30,12 @@ __all__ = [
     "transform_points_to_target",
     "transform_points_to_level0",
     "render_peak_heatmap",
+    "ignore_mask_to_valid",
+    "points_on_valid",
 ]
+
+# The ignore-mask value for "not annotated" (segmentation's ``ignore_index``); 0 = supervised.
+IGNORE_VALUE = 255
 
 
 def _validate_spacings(source_spacing_um: float, effective_spacing_um: float) -> None:
@@ -166,3 +171,56 @@ def render_peak_heatmap(
         region = heatmap[c, y0 : y1 + 1, x0 : x1 + 1]
         torch.maximum(region, patch, out=region)
     return heatmap
+
+
+def ignore_mask_to_valid(
+    ignore_mask: np.ndarray,
+    *,
+    source_spacing_um: float,
+    effective_spacing_um: float,
+    target_size: tuple[int, int],
+    crop_top: int = 0,
+    crop_left: int = 0,
+) -> np.ndarray:
+    """Map a level-0 ignore mask to a boolean ``(H, W)`` valid map in the target frame.
+
+    ``ignore_mask`` holds :data:`IGNORE_VALUE` where nothing is annotated and 0 elsewhere.
+    Target pixel ``(u, v)`` takes the nearest level-0 pixel under the inverse of
+    :func:`transform_points_to_target`, so a point and the pixel it renders on agree.
+    Target pixels that fall outside the mask are not valid.
+    """
+    _validate_spacings(source_spacing_um, effective_spacing_um)
+    mask = np.asarray(ignore_mask)
+    if mask.ndim != 2:
+        raise ValueError(f"ignore_mask must be 2-D, got shape {mask.shape}.")
+    height, width = int(target_size[0]), int(target_size[1])
+    scale = float(source_spacing_um) / float(effective_spacing_um)
+
+    def _sample_axis(n: int, offset: int, extent: int) -> tuple[np.ndarray, np.ndarray]:
+        position = (np.arange(n) + float(offset)) / scale
+        inside = (position >= 0) & (position < extent)
+        return inside, np.clip(np.rint(position[inside]).astype(np.int64), 0, extent - 1)
+
+    row_in, rows = _sample_axis(height, crop_top, mask.shape[0])
+    col_in, cols = _sample_axis(width, crop_left, mask.shape[1])
+    valid = np.zeros((height, width), dtype=bool)
+    valid[np.ix_(row_in, col_in)] = mask[np.ix_(rows, cols)] != IGNORE_VALUE
+    return valid
+
+
+def points_on_valid(points_xy: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Boolean keep-mask: does each target-frame point land on a valid pixel?
+
+    A point lands on its nearest pixel (as in :func:`render_peak_heatmap`), clamped to the
+    canvas so an in-frame point just short of the far edge reads the edge pixel. A point
+    outside ``[0, W) x [0, H)`` is not on a valid pixel.
+    """
+    pts = np.asarray(points_xy, dtype=np.float64).reshape(-1, 2)
+    valid = np.asarray(valid, dtype=bool)
+    height, width = valid.shape
+    inside = (pts[:, 0] >= 0) & (pts[:, 0] < width) & (pts[:, 1] >= 0) & (pts[:, 1] < height)
+    cols = np.clip(np.rint(pts[inside, 0]).astype(np.int64), 0, width - 1)
+    rows = np.clip(np.rint(pts[inside, 1]).astype(np.int64), 0, height - 1)
+    keep = np.zeros(pts.shape[0], dtype=bool)
+    keep[inside] = valid[rows, cols]
+    return keep

@@ -52,6 +52,9 @@ supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
      - no
      - Finite positive µm/px declaration for the source image's level-0 pixels. Required
        for flat PNG/JPEG extraction; WSI readers may resolve it from the slide.
+   * - ``ignore_mask_path``
+     - no
+     - Region with no annotation. See :ref:`detection-ignore-masks`.
    * - ``source_wsi`` / ``tile_x`` / ``tile_y``
      - no
      - Parent slide id and tile origin, retained as metadata.
@@ -86,7 +89,8 @@ declaration order and the names are written to the ``class_name`` column of
 ``drop`` lists the annotated ids to discard. A dropped point leaves the
 supervised set: it is absent from the target heatmap and from the ground truth
 used for matching. Its location is therefore negative supervision, and a
-prediction there counts as a false positive. Points have no "ignore" region.
+prediction there counts as a false positive. To mark a region as not annotated
+instead, use an :ref:`ignore mask <detection-ignore-masks>`.
 
 An id belongs to one class or to ``drop``; listing it twice is a config error. A
 point file holding an id declared in neither fails the run and names the sample.
@@ -94,6 +98,54 @@ point file holding an id declared in neither fails the run and names the sample.
 The class scheme is not part of the feature cache key: regrouping classes reuses
 the cached features. ``num_classes`` is derived from ``classes``. Point files
 that already hold 0-based class indices may set ``num_classes`` alone.
+
+.. _detection-ignore-masks:
+
+Ignore masks
+------------
+
+Point-annotated datasets often label only part of each image, for example the
+cells inside annotated ROI polygons. The optional ``ignore_mask_path`` column
+marks the pixels that are not annotated, so that the model is neither trained
+nor scored there.
+
+**Format.** A flat, single-channel uint8 PNG in the image's own (level-0) pixel
+frame. 255 means "not annotated" and 0 means "supervised", as with
+segmentation's ``ignore_index``. Any other value fails the run with an error
+that names the file and the sample. A sample without a mask is supervised
+everywhere.
+
+**Semantics.** Ignored pixels are "don't care":
+
+- **Loss.** The loss is averaged over the supervised pixels only, so the
+  prediction on an ignored pixel does not change it. Without a mask the loss is
+  unchanged.
+- **Ground truth.** Points on ignored pixels are removed from the target heatmap
+  and from the ground truth used for matching. A point is removed when its
+  level-0 pixel is ignored, or when its pixel in the ``target_size`` frame is
+  ignored.
+- **Predictions.** Peaks on ignored pixels are dropped before matching, in the
+  threshold sweep, in evaluation (metrics and the prediction CSV) and in the
+  detection benchmark.
+- **Area.** The FROC per-mm² area of a sample covers its supervised pixels only.
+
+The mask is mapped to the run's ``target_size`` frame like the points: each
+target pixel takes the value of its nearest level-0 pixel.
+
+**Tiling.** When an ROI row of the manifest given to
+``python -m soma.curation.tile_detection`` has ``ignore_mask_path``, the mask
+must have the size of the ROI image. The tiler then:
+
+- pads the mask with 255 where it pads the ROI up to a full tile;
+- crops the mask for each tile to ``ignore_masks/<tile_id>.png`` and sets the
+  tile row's ``ignore_mask_path``;
+- skips tiles with no supervised pixel;
+- writes no point on ignored pixels to a tile, and counts these points in
+  ``summary.json`` as ``points_in_ignored_region``;
+- writes ``roi_valid_area_px``, the ROI's supervised pixel count (padding
+  excluded), on every tile row. The stitched ROI area for FROC uses it.
+
+Without the column, the tiler output does not change.
 
 Coordinate convention — level-0 store, target compute
 -----------------------------------------------------

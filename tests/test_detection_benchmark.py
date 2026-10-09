@@ -1150,3 +1150,24 @@ def test_main_composite_config_guards(monkeypatch, tmp_path: Path):
     with pytest.raises(SystemExit, match="no composite"):
         m.main(["extract", "--config", single, "--datasets", "midog",
                 "--out-root", str(tmp_path)])
+
+
+def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
+    from types import SimpleNamespace
+
+    import torch
+
+    from tests.test_pipeline_detection import _ignore_right_half_batch
+
+    m = _load_driver()
+    model, head, loader = _ignore_right_half_batch()
+    head.score_threshold = 0.2
+    manifest = SimpleNamespace(samples={"s": SimpleNamespace(metadata={})})
+
+    (sample,) = m._decode_split_points(model, loader, head, torch.device("cpu"), manifest)
+
+    # Only the two supervised peaks survive; both match.
+    assert sorted(map(tuple, sample.pred_xy)) == [(5.0, 5.0), (5.0, 25.0)]
+    assert sample.matched == [True, True]
+    # Half of the 32x32 frame at 1 µm/px is valid: 16 * 32 µm² = 0.000512 mm².
+    assert sample.area_mm2 == pytest.approx(0.000512)

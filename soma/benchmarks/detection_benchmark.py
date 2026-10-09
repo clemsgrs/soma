@@ -505,13 +505,16 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
                 matched[m.pairs[:, 0]] = True
 
         # ROI area for the FROC per-mm² axis: ROI dims are source pixels, so the source
-        # spacing converts them (MIDOG's F1 ignores area, MONKEY's FROC uses it).
+        # spacing converts them (MIDOG's F1 ignores area, MONKEY's FROC uses it). An ROI
+        # tiled with an ignore mask counts only its valid pixels (``roi_valid_area_px``).
         roi_w, roi_h = g["meta"].get("roi_width"), g["meta"].get("roi_height")
-        area = (
-            patch_area_mm2(int(roi_w), int(roi_h), spacing.source_spacing_um)
-            if roi_w is not None and roi_h is not None
-            else None
-        )
+        valid_px = g["meta"].get("roi_valid_area_px")
+        if valid_px is not None:
+            area = patch_area_mm2(int(valid_px), 1, spacing.source_spacing_um)
+        elif roi_w is not None and roi_h is not None:
+            area = patch_area_mm2(int(roi_w), int(roi_h), spacing.source_spacing_um)
+        else:
+            area = None
         out.append(
             SamplePrediction(
                 sample_id=roi,

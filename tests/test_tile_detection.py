@@ -262,3 +262,114 @@ def test_blank_spacing_is_named_instead_of_listed_as_nan(tmp_path):
     )
     with pytest.raises(ValueError, match=r"1 ROI row\(s\) have a blank spacing_at_level_0.*r1"):
         tile_detection_manifest(curated, tmp_path / "out", tile_size=128, overlap=32)
+
+
+# --- ignore masks --------------------------------------------------------------------
+
+
+def test_tiler_output_without_ignore_masks_is_unchanged(tmp_path):
+    # A literal snapshot of the tiler's pre-ignore-mask output: adding ignore-mask support
+    # must not change a single byte of a manifest that has no ignore_mask_path column.
+    curated = _write_curated(tmp_path, points=[(10.0, 10.0, 0), (100.0, 60.0, 1)], size=(200, 128))
+    out = tmp_path / "tiled"
+    tile_detection_manifest(curated, out, tile_size=128, overlap=32)
+
+    def content(name: str) -> bytes:
+        return (out / name).read_bytes().replace(str(tmp_path).encode(), b"<root>")
+
+    assert sorted(str(p.relative_to(out)) for p in out.rglob("*")) == [
+        "dataset.csv", "points", "points/roi_A_t0000.csv", "points/roi_A_t0001.csv",
+        "splits.csv", "summary.json", "tiles", "tiles/roi_A_t0000.png", "tiles/roi_A_t0001.png",
+    ]
+    assert content("dataset.csv") == (
+        b"sample_id,image_path,points_path,source_wsi,tile_x,tile_y,roi_width,roi_height,domain,"
+        b"spacing_at_level_0\n"
+        b"roi_A_t0000,<root>/tiled/tiles/roi_A_t0000.png,<root>/tiled/points/roi_A_t0000.csv,"
+        b"roi_A,0,0,200,128,d1,0.25\n"
+        b"roi_A_t0001,<root>/tiled/tiles/roi_A_t0001.png,<root>/tiled/points/roi_A_t0001.csv,"
+        b"roi_A,72,0,200,128,d1,0.25\n"
+    )
+    assert content("splits.csv") == b"sample_id,split,fold\nroi_A_t0000,tune,0\nroi_A_t0001,tune,0\n"
+    assert content("summary.json") == (
+        b'{\n  "source_manifest": "<root>/curated",\n  "dataset_type": "detection",\n'
+        b'  "tile_size": 128,\n  "overlap": 32,\n  "spacing_at_level_0": 0.25,\n'
+        b'  "num_rois": 1,\n  "num_tiles": 2,\n  "total_points_in_tiles": 3,\n'
+        b'  "empty_tiles": 0,\n  "dropped_out_of_bounds": 0,\n'
+        b'  "tiles_per_split": {\n    "tune": 2\n  }\n}'
+    )
+    assert content("points/roi_A_t0000.csv") == b"x,y,class\r\n10.0,10.0,0\r\n100.0,60.0,1\r\n"
+    assert content("points/roi_A_t0001.csv") == b"x,y,class\r\n28.0,60.0,1\r\n"
+
+
+def _with_ignore_mask(curated: Path, mask, name: str = "roi_A_ignore.png") -> Path:
+    """Add an ``ignore_mask_path`` column (one mask for the single ROI) to a curated manifest."""
+    import numpy as np
+
+    path = curated / name
+    Image.fromarray(np.asarray(mask, dtype=np.uint8)).save(path)
+    ds = pd.read_csv(curated / "dataset.csv")
+    ds["ignore_mask_path"] = str(path)
+    ds.to_csv(curated / "dataset.csv", index=False)
+    return path
+
+
+def test_tiler_crops_pads_and_writes_tile_ignore_masks(tmp_path):
+    import numpy as np
+
+    # 300x100 ROI, tile 128 / overlap 32: windows x = 0, 96, 172 on a canvas padded to 128 rows.
+    # Columns 150.. are not annotated, so the x=172 window is fully ignored and skipped.
+    curated = _write_curated(
+        tmp_path, points=[(10.0, 10.0, 0), (120.0, 50.0, 0), (250.0, 50.0, 1)], size=(300, 100)
+    )
+    mask = np.zeros((100, 300), dtype=np.uint8)
+    mask[:, 150:] = 255
+    _with_ignore_mask(curated, mask)
+    out = tmp_path / "tiled"
+
+    summary = tile_detection_manifest(curated, out, tile_size=128, overlap=32)
+
+    ds = pd.read_csv(out / "dataset.csv")
+    assert ds["sample_id"].tolist() == ["roi_A_t0000", "roi_A_t0001"]
+    assert ds["tile_x"].tolist() == [0, 96]
+    assert ds["roi_valid_area_px"].tolist() == [150 * 100, 150 * 100]
+    assert ds["ignore_mask_path"].tolist() == [
+        str((out / "ignore_masks" / f"{tid}.png").resolve()) for tid in ds["sample_id"]
+    ]
+    expected_t0 = np.zeros((128, 128), dtype=np.uint8)
+    expected_t0[100:, :] = 255  # padded rows are not annotated
+    expected_t1 = expected_t0.copy()
+    expected_t1[:, 150 - 96 :] = 255
+    np.testing.assert_array_equal(np.array(Image.open(ds["ignore_mask_path"][0])), expected_t0)
+    np.testing.assert_array_equal(np.array(Image.open(ds["ignore_mask_path"][1])), expected_t1)
+    # The point on ignored pixels is counted, not written to a tile.
+    assert summary["points_in_ignored_region"] == 1
+    assert summary["num_tiles"] == 2 and summary["total_points_in_tiles"] == 3
+    assert _read_local(ds["points_path"][0]) == [(10.0, 10.0, 0), (120.0, 50.0, 0)]
+    assert _read_local(ds["points_path"][1]) == [(24.0, 50.0, 0)]
+    assert len(pd.read_csv(out / "splits.csv")) == 2
+    # The tiled manifest loads as a detection manifest that carries the tile masks.
+    from soma.dataset import DetectionManifest
+
+    record = DetectionManifest(out / "dataset.csv").samples["roi_A_t0001"]
+    assert record.ignore_mask_path == Path(ds["ignore_mask_path"][1])
+    assert record.metadata["roi_valid_area_px"] == 150 * 100
+
+
+def test_tiler_rejects_ignore_mask_of_wrong_size(tmp_path):
+    import numpy as np
+
+    curated = _write_curated(tmp_path, points=[(10.0, 10.0, 0)], size=(200, 128))
+    path = _with_ignore_mask(curated, np.zeros((128, 199), dtype=np.uint8))
+
+    with pytest.raises(ValueError, match=rf"(?s)roi_A.*{path.name}.*\(128, 199\).*\(128, 200\)"):
+        tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+
+
+def test_tiler_rejects_ignore_mask_value_naming_file(tmp_path):
+    import numpy as np
+
+    curated = _write_curated(tmp_path, points=[(10.0, 10.0, 0)], size=(200, 128))
+    path = _with_ignore_mask(curated, np.full((128, 200), 7, dtype=np.uint8))
+
+    with pytest.raises(ValueError, match=rf"(?s)roi_A.*{path.name}.*\[7\]"):
+        tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)

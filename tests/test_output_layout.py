@@ -928,7 +928,7 @@ def test_segmentation_manifest_identity_ignores_label_mask_storage_root(
     assert relocated_spec.experiment_id == local_spec.experiment_id
 
 
-def test_detection_manifest_identity_ignores_points_storage_root(tmp_path: Path):
+def test_detection_manifest_identity_ignores_points_and_ignore_mask_storage_roots(tmp_path: Path):
     common = {
         "splits_csv_text": "fold,sample_id,split\n0,s0,train\n",
         "dataset_type": "detection",
@@ -939,16 +939,16 @@ def test_detection_manifest_identity_ignores_points_storage_root(tmp_path: Path)
     local = _make_config_with_manifests(
         tmp_path / "local",
         dataset_csv_text=(
-            "sample_id,image_path,points_path,spacing_at_level_0\n"
-            "s0,/local/images/s0.png,/local/points/s0.csv,0.5\n"
+            "sample_id,image_path,points_path,ignore_mask_path,spacing_at_level_0\n"
+            "s0,/local/images/s0.png,/local/points/s0.csv,/local/ignore/s0.png,0.5\n"
         ),
         **common,
     )
     relocated = _make_config_with_manifests(
         tmp_path / "relocated",
         dataset_csv_text=(
-            "sample_id,image_path,points_path,spacing_at_level_0\n"
-            "s0,/archive/images/s0.png,/archive/points/s0.csv,0.5\n"
+            "sample_id,image_path,points_path,ignore_mask_path,spacing_at_level_0\n"
+            "s0,/archive/images/s0.png,/archive/points/s0.csv,/archive/ignore/s0.png,0.5\n"
         ),
         **common,
     )
