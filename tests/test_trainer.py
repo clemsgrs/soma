@@ -5,11 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import functools
+import io
+import re
 
 import pytest
 import torch
 from rich.console import Console
 
+import soma.training.trainer as trainer_module
 from soma.aggregators.pooling import MeanPool
 from soma.config import TrainingConfig
 from soma.tasks.classification import BinaryClassificationHead
@@ -1111,3 +1114,172 @@ class TestLrWarmup:
             [0.00021338834764831845, 0.000125, 0.00014644660940672626, 0.0],
             rel=1e-6,
         )
+
+
+class _SnapshotEachEpoch:
+    """Train loader that records what the console holds each time an epoch starts."""
+
+    def __init__(self, loader, sink: io.StringIO) -> None:
+        self._loader = loader
+        self._sink = sink
+        self.dataset = loader.dataset
+        self.snapshots: list[str] = []
+
+    def __len__(self) -> int:
+        return len(self._loader)
+
+    def __iter__(self):
+        self.snapshots.append(self._sink.getvalue())
+        return iter(self._loader)
+
+
+class TestNonTerminalProgress:
+    """A console that is not a terminal (SLURM log, redirected stdout) gets plain lines."""
+
+    def _fit(
+        self, tmp_path: Path, *, scripted_auroc=None, **config_overrides
+    ) -> tuple[str, _SnapshotEachEpoch]:
+        sink = io.StringIO()
+        console = Console(file=sink, width=80)
+        assert not console.is_terminal
+        train_loader = _SnapshotEachEpoch(_make_synthetic_loader(6, seed=0), sink)
+        seed_everything(42)
+        config = {"epochs": 3, "learning_rate": 1e-3, "patience": None, **config_overrides}
+        trainer = Trainer(
+            model=_make_model(),
+            train_loader=train_loader,
+            tune_loader=_make_synthetic_loader(4, seed=1),
+            config=TrainingConfig(**config),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+            console=console,
+            fold=1,
+            num_folds=5,
+        )
+        if scripted_auroc is not None:
+            scripted = iter(scripted_auroc)
+            trainer._tune = lambda **_: (0.5, {"auroc": next(scripted)})
+        trainer.fit()
+        return sink.getvalue(), train_loader
+
+    def test_each_epoch_end_is_written_before_the_next_epoch_starts(self, tmp_path: Path):
+        _, train_loader = self._fit(tmp_path)
+
+        first, second, third = train_loader.snapshots
+        assert "epoch 01/03" not in first
+        assert "epoch 01/03" in second and "epoch 02/03" not in second
+        assert "epoch 02/03" in third
+
+    def test_fit_start_line_names_fold_epoch_budget_and_trainable_params(
+        self, tmp_path: Path
+    ):
+        _, train_loader = self._fit(tmp_path)
+
+        # Linear(16 -> 2) head over a parameter-free mean pool: 16 * 2 + 2 = 34.
+        assert train_loader.snapshots[0].splitlines() == [
+            "training started | fold 2/5 | 3 epochs | 34 trainable params"
+        ]
+
+    def test_fit_start_line_names_a_step_budget(self, tmp_path: Path):
+        _, train_loader = self._fit(tmp_path, epochs=None, max_steps=7)
+
+        # 6 bags in batches of 2 is 3 updates per epoch, so 7 steps span 3 epochs.
+        assert train_loader.snapshots[0].splitlines() == [
+            "training started | fold 2/5 | 7 steps (3 epochs) | 34 trainable params"
+        ]
+
+    def test_in_epoch_heartbeat_reports_items_once_the_interval_has_passed(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr(trainer_module, "PROGRESS_HEARTBEAT_SECONDS", 0.0)
+
+        _, train_loader = self._fit(tmp_path)
+
+        lines = train_loader.snapshots[1].splitlines()
+        heartbeats = [line.rsplit(" | elapsed", 1)[0] for line in lines[1:-1]]
+        assert heartbeats == [
+            "fold 2/5 | epoch 01/03 | train items 2/6",
+            "fold 2/5 | epoch 01/03 | train items 4/6",
+            "fold 2/5 | epoch 01/03 | train items 6/6",
+            "fold 2/5 | epoch 01/03 | tune items 2/4",
+            "fold 2/5 | epoch 01/03 | tune items 4/4",
+        ]
+
+    def test_a_fast_epoch_writes_no_heartbeat(self, tmp_path: Path):
+        output, _ = self._fit(tmp_path)
+
+        assert "items" not in output
+
+    def test_epoch_end_line_reports_losses_monitor_patience_and_timing(
+        self, tmp_path: Path
+    ):
+        output, _ = self._fit(
+            tmp_path,
+            scripted_auroc=[0.6, 0.8, 0.7],
+            monitor="auroc",
+            monitor_mode="max",
+            patience=5,
+        )
+
+        third_epoch = output.splitlines()[3]
+        assert third_epoch.startswith("fold 2/5 | epoch 03/03 | train ")
+        assert (
+            "| tune 0.5000 | auroc=0.7000 (selected 0.8000 @ 02) | patience 1/5 | lr "
+            in third_epoch
+        )
+        assert re.search(r"\| elapsed \d\d:\d\d:\d\d \[ETA \d\d:\d\d:\d\d\] \| ", third_epoch)
+        assert third_epoch.endswith("| no improvement (1/5)")
+
+    def test_final_summary_line_names_the_selected_checkpoint(self, tmp_path: Path):
+        output, _ = self._fit(
+            tmp_path, scripted_auroc=[0.6, 0.8, 0.7], monitor="auroc", monitor_mode="max"
+        )
+
+        summary = output.splitlines()[-1]
+        assert re.fullmatch(
+            r"training complete \| fold 2/5 \| ran 3/3 epochs \| selected auroc=0\.8000 @ 02"
+            r" \| tune_loss=0\.5000 \| auroc=0\.8000 \| elapsed \d\d:\d\d:\d\d",
+            summary,
+        )
+
+    def test_final_summary_line_reports_early_stopping(self, tmp_path: Path):
+        output, _ = self._fit(
+            tmp_path,
+            epochs=10,
+            scripted_auroc=[0.6, 0.8, 0.7, 0.75],
+            monitor="auroc",
+            monitor_mode="max",
+            patience=2,
+        )
+
+        summary = output.splitlines()[-1]
+        assert summary.startswith(
+            "training complete | fold 2/5 | early stopped after 4/10 epochs | selected auroc=0.8000 @ 02"
+        )
+
+    def test_epoch_without_tune_evaluation_still_writes_its_line(self, tmp_path: Path):
+        output, _ = self._fit(tmp_path, tune_every_n_epochs=2)
+
+        first_epoch = output.splitlines()[1]
+        assert first_epoch.startswith("fold 2/5 | epoch 01/03 | train ")
+        assert not re.search(r"\| tune \d", first_epoch)
+        assert first_epoch.endswith("| tune evaluated every 2 epochs")
+
+    def test_terminal_console_keeps_the_live_panel(self, tmp_path: Path):
+        sink = io.StringIO()
+        console = Console(file=sink, width=120, force_terminal=True)
+        seed_everything(42)
+        Trainer(
+            model=_make_model(),
+            train_loader=_make_synthetic_loader(6, seed=0),
+            tune_loader=_make_synthetic_loader(4, seed=1),
+            config=TrainingConfig(epochs=2, learning_rate=1e-3, patience=None),
+            fold_dir=tmp_path,
+            device=torch.device("cpu"),
+            console=console,
+        ).fit()
+
+        output = sink.getvalue()
+        assert "Training progress" in output
+        assert "training started" not in output
+        assert "training complete" in output  # the panel's final status row
