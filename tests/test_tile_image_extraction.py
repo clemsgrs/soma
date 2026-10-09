@@ -27,6 +27,7 @@ from soma.cache import MissingFeatureIdentity, resolve_cache_dtype
 from soma.cache.keys import build_tile_cache_key
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import TileDataset
+from soma.extraction import FeatureExtractor
 from soma.tile_extraction import _TileFeatureExtractor
 from tests.test_extraction import (
     _TEST_TILE,
@@ -37,6 +38,7 @@ from tests.test_extraction import (
 from tests.test_feature_identity import (  # noqa: F401  (``encoder`` is a fixture)
     _ORIGINAL_MEAN,
     _STD,
+    STUB_ENCODER,
     _cache_dir,
     _cache_metadata,
     _extract_images,
@@ -226,6 +228,33 @@ def test_repointed_sample_is_not_served_from_a_pack_of_the_old_features(tmp_path
         _write_dataset(tmp_path, {"s0": _B, "s1": _colour(50)}, name="b"), tmp_path
     )
 
+    _assert_vectors(repointed, {"s0": _expected(_B), "s1": _expected(_colour(50))})
+
+
+def _extract_images_uncached(dataset: TileDataset, root: Path):
+    return FeatureExtractor(
+        dataset,
+        EncoderConfig(name=STUB_ENCODER, precision="fp32", batch_size=2),
+        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
+        cache=CacheConfig(enabled=False),
+        output_root=root / "run",
+    ).extract()
+
+
+def test_uncached_repointed_sample_is_not_served_from_a_pack_of_the_old_features(
+    tmp_path, encoder
+):
+    first = _extract_images_uncached(
+        _write_dataset(tmp_path, {"s0": _A, "s1": _colour(50)}, name="a"), tmp_path
+    )
+    # Loading packs every 1-D feature of the output directory into one file next to them.
+    _assert_vectors(first, {"s0": _expected(_A)})
+
+    repointed = _extract_images_uncached(
+        _write_dataset(tmp_path, {"s0": _B, "s1": _colour(50)}, name="b"), tmp_path
+    )
+
+    assert encoder.encoded_images == 2 + 1
     _assert_vectors(repointed, {"s0": _expected(_B), "s1": _expected(_colour(50))})
 
 

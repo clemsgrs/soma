@@ -32,7 +32,7 @@ from soma.cache import (
 from soma.cache.compute_key import resolved_output_variant
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
-from soma.features import FeatureStore
+from soma.features import PACKED_FILENAME, FeatureStore
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,9 @@ class _TileFeatureExtractor:
         if not self._cache.enabled:
             feature_dir.mkdir(parents=True, exist_ok=True)
             if records:
+                # slide2vec may replace a reused output directory's vectors (a re-pointed
+                # sample), so a pack of what the directory held before no longer holds.
+                (feature_dir / "image_embeddings" / PACKED_FILENAME).unlink(missing_ok=True)
                 self._embed(records, out_root=feature_dir, dtype=dtype)
             return FeatureStore(feature_dir)
 
