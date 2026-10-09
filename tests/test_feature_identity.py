@@ -296,6 +296,28 @@ def test_image_cache_is_refused_after_an_upgrade_changed_the_transform(
     assert encoder.encoded_images == encoded
 
 
+def test_image_cache_whose_record_lacks_a_required_field_is_refused_after_an_upgrade(
+    tmp_path, encoder, monkeypatch
+):
+    dataset = _image_dataset(tmp_path / "data")
+    _extract_images(dataset, tmp_path)
+    encoded = encoder.encoded_images
+    metadata_path = _cache_dir(tmp_path, "image") / "cache_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    del metadata["feature_identity"]["identity"]["feature_dtype"]
+    metadata_path.write_text(json.dumps(metadata))
+
+    _upgrade_slide2vec(monkeypatch, encoder, mean=_ORIGINAL_MEAN)
+
+    # slide2vec 7 reports a required field the record lacks as a difference rather than
+    # as something it cannot verify, so the cache is refused like any other mismatch.
+    with pytest.raises(
+        CacheFeatureIdentityMismatch, match=r"feature_dtype \(recorded MISSING_FIELD"
+    ):
+        _extract_images(dataset, tmp_path)
+    assert encoder.encoded_images == encoded
+
+
 def test_cache_hit_on_the_same_slide2vec_version_does_not_load_the_encoder(tmp_path, encoder):
     dataset = _image_dataset(tmp_path / "data")
     _extract_images(dataset, tmp_path)

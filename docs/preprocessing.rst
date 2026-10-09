@@ -118,7 +118,12 @@ depend only on the configuration, so tiling and feature caches written with
 hs2p 4 are reused. The same holds for tilings cached with hs2p 5.0.2, which
 hs2p 5.1.0 would tile differently next to tissue holes and, with ``overlap > 0``
 read above level 0, on a slightly different stride. Delete the tiling cache to
-re-tile.
+re-tile. hs2p 6 records ``null`` segmentation thresholds (``seg_sthresh`` and
+the like) for a tiling made from a precomputed tissue mask or by annotation
+sampling, where no segmentation ran; tilings cached under hs2p 5 still load.
+With hs2p 6, ``backend: auto`` and ``mask_backend: auto`` skip a reader that
+opens a file but cannot decode it, so a deflate-compressed label TIFF no longer
+needs an explicit ``mask_backend``.
 
 Segmentation slide-manifest sampling
 ------------------------------------
