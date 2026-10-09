@@ -178,3 +178,58 @@ Split policy
 OCELOT's own train/val/test split is emitted verbatim as a single fold, with
 train → ``train``, val → ``tune`` (threshold sweep / monitor), and test →
 ``test``. soma never partitions the data itself.
+
+MONKEY inflammatory-cell detection
+----------------------------------
+
+The MONKEY curator targets soma's ``dataset_type: detection`` path. It converts
+the public training set of the
+`MONKEY challenge <https://monkey.grand-challenge.org/>`_ (81 PAS-stained
+kidney-biopsy slides from centres A–D, one slide per patient) into soma's
+detection manifests. Download the slides and the annotations first. The bucket
+is public, so no account is needed::
+
+    aws s3 sync s3://monkey-training <raw_root> --no-sign-request \
+      --exclude "*" --include "images/pas-cpg/*" --include "annotations/json_mm/*"
+
+The curator expects this layout under ``<raw_root>``::
+
+    images/pas-cpg/<case>_PAS_CPG.tif
+    annotations/json_mm/<case>_lymphocytes.json
+    annotations/json_mm/<case>_monocytes.json
+    annotations/json_mm/<case>_inflammatory-cells.json
+
+It fails with the download command when a folder or a file is missing.
+
+Curate from Python::
+
+    from soma.curation.monkey import curate_monkey_detection
+
+    curate_monkey_detection("<raw_root>", "<out>/roi")
+
+or from the command line::
+
+    python -m soma.curation.monkey --raw-root <raw_root> --output-dir <out>/roi
+
+Cells are annotated only inside ROI polygons, so the curator writes one sample
+per ROI. It reads the polygon's level-0 bounding box from the slide, writes it as
+a PNG, and writes the points in crop coordinates (lymphocytes → class 0,
+monocytes → class 1). Each sample has an ignore mask (``ignore_mask_path``): the
+valid region is the polygon dilated by 5 µm. Points further than 5 µm from their
+polygon are dropped, and ``summary.json`` records the kept and dropped counts,
+the valid area and the annotated ``area_rois``. ``dataset.csv`` also records the
+source slide (``source_slide``) and the crop offset (``crop_x``, ``crop_y``).
+
+The ROIs are larger than a training tile. The ``detection/monkey`` benchmark tiles
+them with :func:`soma.curation.tile_detection.tile_detection_manifest` into
+1024 px tiles with 128 px overlap, as for MIDOG, and the tiles carry the ignore
+masks.
+
+Split policy
+~~~~~~~~~~~~
+
+The official MONKEY test set is hidden, so the curator writes a 5-fold
+cross-validation by patient, with each centre spread evenly over the folds. In
+fold ``k``, fold ``k`` is ``test``, fold ``(k + 1) % 5`` is ``tune`` and the other
+three folds are ``train``, so every slide is ``test`` exactly once. These results
+are not comparable to the published leaderboard.

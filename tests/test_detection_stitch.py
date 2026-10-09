@@ -73,6 +73,25 @@ def test_stitch_dedups_gt_and_nms_predictions_per_roi():
     assert roi.area_mm2 is not None and roi.area_mm2 > 0
 
 
+def test_stitch_merges_gt_copies_that_differ_by_float32_rounding():
+    # The head stores tile-local GT as float32, so the two overlap copies of an
+    # arbitrary-float annotation lift to ROI coordinates that differ in the 4th decimal.
+    meta = {
+        "roi_A_t0": {"source_wsi": "roi_A", "tile_x": 0, "tile_y": 0, "roi_width": 912, "roi_height": 512},
+        "roi_A_t1": {"source_wsi": "roi_A", "tile_x": 400, "tile_y": 0, "roi_width": 912, "roi_height": 512},
+    }
+    x = 450.0074979999997
+    copy0, copy1 = float(np.float32(x)), float(np.float32(x - 400.0))
+    assert round(copy0, 3) != round(copy1 + 400.0, 3)
+    tiles = [
+        SamplePrediction(sample_id=sid, pred_xy=[], pred_score=[], pred_class=[],
+                         gt_xy=[[cx, 100.0]], gt_class=[0], matched=[])
+        for sid, cx in (("roi_A_t0", copy0), ("roi_A_t1", copy1))
+    ]
+    out = stitch_tiles_to_rois(tiles, _manifest(meta), _head())
+    assert out[0].gt_xy == [[round(copy0, 3), 100.0]]
+
+
 def test_stitch_passthrough_when_no_tile_origins():
     # No source_wsi in metadata (e.g. OCELOT) -> samples returned unchanged.
     meta = {"img_1": {"domain": "x"}, "img_2": {"domain": "y"}}

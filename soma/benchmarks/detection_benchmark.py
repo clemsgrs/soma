@@ -214,10 +214,11 @@ DATASETS: dict[str, DatasetSpec] = {
         tolerance=None,
         test_source="local_holdout",
         config_file="monkey.yaml",
-        # MONKEY's curator still references whole WSIs in place; its WSI -> fixed-tile
-        # curation step is pending (#375), after which it stitches like MIDOG. Until that
-        # lands no MONKEY cell can extract, so the flag documents the intended protocol.
         stitch_to_roi=True,
+        # The same fixed geometry as MIDOG: the curator crops one sample per ROI polygon
+        # and these tile it.
+        tile_px=1024,
+        tile_overlap_px=128,
     ),
 }
 
@@ -420,14 +421,22 @@ def _greedy_point_nms(
     return np.sort(np.asarray(kept, dtype=np.int64))
 
 
+# Overlap copies of one GT point differ by the float32 rounding of their tile-local
+# coordinates (~1e-4 px at ROI scale), so an exact-coordinate dedup keeps both copies of
+# an arbitrary-float point (MONKEY's mm-converted annotations). Distinct same-class
+# annotations are never this close.
+_GT_COPY_TOLERANCE_PX = 0.01
+
+
 def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) -> list[SamplePrediction]:
     """Fold per-tile detections back to their parent ROI for the native per-ROI metric.
 
     A tiled dataset (MIDOG/MONKEY) carries ``source_wsi`` / ``tile_x`` / ``tile_y`` per
     sample (:class:`~soma.dataset.DetectionManifest` reserves these). Each tile's points are
     already in the tile's level-0 (pixel) frame, so adding the tile origin lifts them into
-    ROI coordinates; we then **dedup GT overlap copies** (exact coordinate — the same
-    annotation in two overlapping tiles lands at the same ROI coordinate) and **NMS the
+    ROI coordinates; we then **dedup GT overlap copies** (the same annotation in two
+    overlapping tiles lands at the same ROI coordinate, up to the float32 rounding of its
+    tile-local copy, so copies within :data:`_GT_COPY_TOLERANCE_PX` merge) and **NMS the
     prediction overlap duplicates** (the head's radius, per class), re-match at the ROI level
     to set honest ``matched`` flags, and emit one :class:`SamplePrediction` per ROI. Datasets
     with no tile origins (e.g. OCELOT ships fixed patches) pass through unchanged, so the
@@ -458,7 +467,7 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
             raise ValueError(f"ROI {roi!r} has invalid dimensions {dims}.")
         g = groups.setdefault(
             roi,
-            {"pxy": [], "psc": [], "pcl": [], "gt": {}, "meta": md, "dims": dims,
+            {"pxy": [], "psc": [], "pcl": [], "gt": [], "meta": md, "dims": dims,
              "tile_sid": str(s.sample_id)},
         )
         if g["dims"] != dims:
@@ -474,7 +483,7 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
             g["psc"].append(float(sc))
             g["pcl"].append(int(cl))
         for (x, y), cl in zip(s.gt_xy, s.gt_class):
-            g["gt"][(round(x + x0, 3), round(y + y0, 3), int(cl))] = None
+            g["gt"].append((round(x + x0, 3), round(y + y0, 3), int(cl)))
 
     out: list[SamplePrediction] = []
     for roi, g in groups.items():
@@ -491,9 +500,12 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
         keep = _greedy_point_nms(pxy, psc, pcl, head.nms_distance_px * frame_scale)
         pxy, psc, pcl = pxy[keep], psc[keep], pcl[keep]
 
-        gt = list(g["gt"].keys())
+        gt = g["gt"]
         gxy = np.asarray([(x, y) for x, y, _ in gt], dtype=np.float64).reshape(-1, 2)
         gcl = np.asarray([c for _, _, c in gt], dtype=np.int64).reshape(-1)
+        # Equal scores keep the first copy of each annotation, in tile order.
+        keep = _greedy_point_nms(gxy, np.zeros(len(gt)), gcl, _GT_COPY_TOLERANCE_PX)
+        gxy, gcl = gxy[keep], gcl[keep]
 
         matched = np.zeros(pxy.shape[0], dtype=bool)
         for m in match_assignment(
@@ -1156,35 +1168,41 @@ class DetectionBenchmark:
             from soma.curation.ocelot import curate_ocelot_detection
 
             return curate_ocelot_detection(raw_root, out_dir)
+        if dataset not in ("midog", "monkey"):
+            raise KeyError(f"unknown detection dataset {dataset!r}; known: {sorted(DATASETS)}.")
+        from soma.curation.tile_detection import tile_detection_manifest
+
+        # MIDOG and MONKEY curate one sample per large ROI under ``roi/`` and tile it into
+        # fixed tiles at ``out_dir``, the manifest the runs consume.
+        out = Path(out_dir)
+        spec = dataset_spec(dataset)
         if dataset == "midog":
             from soma.curation.midog import curate_midog_detection
-            from soma.curation.tile_detection import tile_detection_manifest
 
-            out = Path(out_dir)
-            spec = dataset_spec("midog")
             roi_manifest = curate_midog_detection(
                 raw_root,
                 out / "roi",
                 annotations_json=Path(raw_root) / "MIDOG2022_training_enriched.json",
                 force_spacing_at_level_0=spec.spacing_um,
             )
-            tile_detection_manifest(
-                roi_manifest.dataset_csv.parent,
-                out,
-                tile_size=spec.tile_px,
-                overlap=spec.tile_overlap_px,
-                target_spacing=spec.spacing_um,
-            )
-            return CuratedManifest(
-                dataset_csv=out / "dataset.csv",
-                splits_csv=out / "splits.csv",
-                summary_json=out / "summary.json",
-            )
-        if dataset == "monkey":
+        else:
             from soma.curation.monkey import curate_monkey_detection
 
-            return curate_monkey_detection(raw_root, out_dir)
-        raise KeyError(f"unknown detection dataset {dataset!r}; known: {sorted(DATASETS)}.")
+            roi_manifest = curate_monkey_detection(
+                raw_root, out / "roi", spacing_at_level_0=spec.spacing_um
+            )
+        tile_detection_manifest(
+            roi_manifest.dataset_csv.parent,
+            out,
+            tile_size=spec.tile_px,
+            overlap=spec.tile_overlap_px,
+            target_spacing=spec.spacing_um,
+        )
+        return CuratedManifest(
+            dataset_csv=out / "dataset.csv",
+            splits_csv=out / "splits.csv",
+            summary_json=out / "summary.json",
+        )
 
     def build_config(
         self,
