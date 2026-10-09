@@ -12,6 +12,10 @@ CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
 PROCESS_LIST_NAME = "process_list.csv"
 SCHEMA_VERSION = "v1"
+# Single-file pack of every 1-D feature of a features directory, written next to the
+# per-sample files by ``soma.features.FeatureStore``. A commit that changes the features
+# of a cache deletes it, so a re-encoded sample is never served from it.
+PACKED_FILENAME = "packed_features.pt"
 
 _FEATURE_TYPE_TO_RANK = {
     "tile": 1,
@@ -46,6 +50,23 @@ def _features_subdir_for_kind(cache_kind: str) -> str:
         return _CACHE_KIND_TO_FEATURES_SUBDIR[cache_kind]
     except KeyError as exc:
         raise ValueError(f"Unsupported cache_kind '{cache_kind}' for features_dir resolution") from exc
+
+
+def _required_sidecar_suffix(cache_kind: str | None, feature_type: str) -> str | None:
+    """The sidecar a sample needs beside its ``.pt`` to count as present, if any.
+
+    Dense grids need their shape sidecar to be loadable. Pre-cropped images need the
+    provenance sidecar slide2vec publishes after the payload: a payload without it is
+    an interrupted write, which slide2vec repairs, not a feature to reuse. The other
+    pooled kinds stay sidecar-agnostic (their ``.pt`` is self-describing).
+    """
+    if feature_type == "dense_grid":
+        from soma.dense.store import DENSE_SIDECAR_SUFFIX
+
+        return DENSE_SIDECAR_SUFFIX
+    if cache_kind == "image":
+        return ".meta.json"
+    return None
 
 
 def _list_feature_filenames(features_dir: Path) -> set[str]:
@@ -131,21 +152,14 @@ class FeatureCacheResolution(BaseCacheResolution):
     def missing_sample_ids(self) -> list[str]:
         expected = self.cache_ids
         empty = self.empty_sample_ids
-        # One directory listing decides ``.pt`` (and, for dense, ``.meta.json``)
-        # existence for every id, mirroring the validator — no per-id stat.
+        # One directory listing decides ``.pt`` (and sidecar) existence for every id,
+        # mirroring the validator — no per-id stat. The ``.pt`` and its sidecar are
+        # written non-atomically (``.pt`` first), so a crash between them leaves a
+        # ``.pt`` with no sidecar; where the kind needs one, that sample is missing.
         existing = _list_feature_filenames(self.features_dir)
-        # Dense (``dense_grid``) caches additionally require the shape sidecar to
-        # exist before a sample counts as present, matching the validator (which
-        # gates the sidecar requirement on ``dense_grid``). The ``.pt`` and sidecar
-        # are written non-atomically (``.pt`` first), so a crash between them leaves
-        # a ``.pt`` with no sidecar; that grid is not loadable and must be
-        # re-encoded, never silently skipped. Non-dense caches stay sidecar-agnostic
-        # (their ``.pt`` is self-describing); the asymmetry is intentional.
-        dense_sidecar_suffix: str | None = None
-        if str(self.metadata.get("feature_type", "")) == "dense_grid":
-            from soma.dense.store import DENSE_SIDECAR_SUFFIX
-
-            dense_sidecar_suffix = DENSE_SIDECAR_SUFFIX
+        sidecar_suffix = _required_sidecar_suffix(
+            self.cache_kind, str(self.metadata.get("feature_type", ""))
+        )
         cached_signature_by_id = {
             str(cache_id): str(signature)
             for cache_id, signature in self.metadata.get("sample_identity_signature_by_id", {}).items()
@@ -164,7 +178,7 @@ class FeatureCacheResolution(BaseCacheResolution):
             if f"{payload_stem}.pt" not in existing:
                 missing.append(cache_id)
                 continue
-            if dense_sidecar_suffix is not None and f"{payload_stem}{dense_sidecar_suffix}" not in existing:
+            if sidecar_suffix is not None and f"{payload_stem}{sidecar_suffix}" not in existing:
                 missing.append(cache_id)
         return missing
 

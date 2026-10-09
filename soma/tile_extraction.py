@@ -6,11 +6,12 @@ Gleason, BreakHis, MHIST, PCam), an exported ROI set — so the encoder's shippe
 is the contract and no geometry is declared.
 
 soma does not encode anything here. It resolves the cache (key, completeness, identity
-signatures), hands slide2vec the images that need encoding, and points
-``execution.output_dir`` at the resolved cache directory so slide2vec writes its payloads
-straight into ``<cache_dir>/image_embeddings/`` — which *is* soma's ``features_dir``, not a
-schema soma translates into (ADR 0007). Persistence, batching, multi-GPU sharding, resume
-and progress all live upstream in :meth:`slide2vec.Model.embed_images`.
+signatures), hands slide2vec every image that needs work in one
+:meth:`slide2vec.Model.embed_images` call, and points ``execution.output_dir`` at the
+resolved cache directory so slide2vec writes its payloads straight into
+``<cache_dir>/image_embeddings/`` — which *is* soma's ``features_dir``, not a schema soma
+translates into (ADR 0007). Persistence, batching, multi-GPU sharding, per-image resume
+and progress all live upstream.
 """
 
 from __future__ import annotations
@@ -18,68 +19,28 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from slide2vec import ImageSpec, Model
+from slide2vec import ExecutionOptions, ImageSpec, Model
 
 from soma.cache import (
-    FeatureCacheResolution,
     FeatureIdentityCheck,
-    record_feature_dim,
-    record_sample_identity_signatures,
+    commit_extracted_samples,
+    invalidate_sample_identities,
+    resolve_cache_dtype,
     resolve_cache_root,
     resolve_image_cache,
-    resolve_cache_dtype,
 )
-from soma.cache._types import _list_feature_filenames
+from soma.cache.compute_key import resolved_output_variant
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
 from soma.dataset import Dataset, SampleRecord
-from soma.cache.compute_key import resolved_output_variant
-from soma.cache.keys import build_tile_cache_key
-from soma.extraction.commit import (
-    DEFAULT_IMAGE_COMMIT_EVERY,
-    commit_chunks,
-    resolve_commit_every,
-)
 from soma.features import FeatureStore
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
 
-
-def _drop_stale_payloads(features_dir: Path, sample_ids: list[str]) -> None:
-    """Remove on-disk artifacts for samples soma has decided must be re-encoded.
-
-    slide2vec resumes on **sidecar existence**, which is the right rule for an interrupted
-    run but not for a sample whose *identity* changed underneath a stable ``sample_id``
-    (a re-pointed ``image_path``, say). soma's cache resolution is the authority on which
-    samples are stale; clearing their payloads first is how that decision reaches a
-    resume check that cannot see identity signatures. Without it slide2vec would skip the
-    sample and soma would then stamp the new signature onto the old features.
-    """
-    stale = set(sample_ids)
-    if not stale:
-        return
-    for name in _list_feature_filenames(features_dir):
-        if _owning_sample_id(name, stale) is not None:
-            (features_dir / name).unlink(missing_ok=True)
-
-
-def _owning_sample_id(filename: str, sample_ids: set[str]) -> str | None:
-    """Return the id in ``sample_ids`` that ``filename`` belongs to, if any.
-
-    A payload belongs to a sample when its name is ``<sample_id>.<anything>`` — the
-    same rule as slide2vec's ``<sample_id>.pt`` / ``<sample_id>.meta.json`` layout.
-    Sample ids may contain dots, so every dot in the name is a candidate boundary;
-    checking each candidate against the set keeps the cost per file independent of how
-    many stale samples there are, and matching by string equality (never by glob) means
-    an id containing ``[``, ``]``, ``*`` or ``?`` only ever claims its own files.
-    """
-    start = 0
-    while (dot := filename.find(".", start)) != -1:
-        candidate = filename[:dot]
-        if candidate in sample_ids:
-            return candidate
-        start = dot + 1
-    return None
+# slide2vec checks each image's recorded source path on resume. soma's sample identity
+# covers that path, so an artifact recorded for another source is stale by soma's own
+# rule: slide2vec replaces it instead of refusing to resume.
+_ON_IMAGE_MISMATCH = "reencode"
 
 
 class _TileFeatureExtractor:
@@ -140,89 +101,95 @@ class _TileFeatureExtractor:
             dtype,
         )
 
-        cache_resolution: FeatureCacheResolution | None = None
-        if self._cache.enabled:
-            cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
-            if self._encoder.output_variant is None:
-                _log_legacy_image_cache_key(
-                    encoder=self._encoder, output_variant=output_variant, dtype=dtype
-                )
-            cache_resolution = resolve_image_cache(
-                cache_root=cache_root,
-                dataset=self._dataset,
-                tile_encoder_name=self._encoder.name,
-                execution=self._encoder,
-                output_variant=output_variant,
-                dtype=dtype,
-                validate_payloads=self._cache.validate_payloads,
-                feature_identity=self._feature_identity_check(feature_dir, dtype=dtype),
-            )
-            if cache_resolution.complete:
-                logger.info(
-                    "Reusing cached tile features from %s",
-                    cache_resolution.features_dir,
-                )
-                return FeatureStore(cache_resolution.features_dir)
-
-        # slide2vec appends ``image_embeddings/`` to output_dir, and that subdirectory is
-        # exactly the cache's features_dir — so the payload root is the cache dir itself.
-        out_root = cache_resolution.cache_dir if cache_resolution is not None else feature_dir
-        out_root.mkdir(parents=True, exist_ok=True)
-
         records = list(self._dataset.samples.values())
-        pending: list[SampleRecord] = records
-        if cache_resolution is not None:
-            missing = cache_resolution.missing_sample_ids()
-            _drop_stale_payloads(cache_resolution.features_dir, missing)
-            wanted = set(missing)
-            pending = [record for record in records if record.sample_id in wanted]
+        if not self._cache.enabled:
+            feature_dir.mkdir(parents=True, exist_ok=True)
+            if records:
+                self._embed(records, out_root=feature_dir, dtype=dtype)
+            return FeatureStore(feature_dir)
 
-        if pending:
+        cache_resolution = resolve_image_cache(
+            cache_root=resolve_cache_root(self._cache, feature_dir=feature_dir),
+            dataset=self._dataset,
+            tile_encoder_name=self._encoder.name,
+            execution=self._encoder,
+            output_variant=output_variant,
+            dtype=dtype,
+            validate_payloads=self._cache.validate_payloads,
+            feature_identity=self._feature_identity_check(feature_dir, dtype=dtype),
+        )
+        if cache_resolution.complete:
             logger.info(
-                "Encoding %d tile images with '%s' (batch_size=%d)...",
-                len(pending),
-                self._encoder.name,
-                self._encoder.batch_size,
+                "Reusing cached tile features from %s",
+                cache_resolution.features_dir,
             )
-            execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
-                encoder_name=self._encoder.name,
-                output_dir=out_root,
-                num_gpus=self._execution.num_gpus,
-                save_tile_embeddings=True,
-                output_dtype=dtype,
-            )
-            model = Model.from_preset(
-                self._encoder.name,
-                output_variant=self._encoder.output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            )
-            # Commit identity signatures per chunk: slide2vec persists each image as it
-            # goes, but an unsigned payload is dropped on the next run, so one commit at
-            # the very end would make an interrupted extraction restart from zero.
-            commit_every = resolve_commit_every(
-                self._cache.commit_every, default=DEFAULT_IMAGE_COMMIT_EVERY
-            )
-            feature_dim: int | None = None
-            for chunk in commit_chunks(pending, commit_every):
-                artifacts = model.embed_images(
-                    [
-                        ImageSpec(sample_id=record.sample_id, image_path=record.image_path)
-                        for record in chunk
-                    ],
-                    execution=execution,
-                )
-                if feature_dim is None and artifacts:
-                    feature_dim = int(artifacts[0].feature_dim)
-                if cache_resolution is not None and feature_dim is not None:
-                    record_feature_dim(cache_resolution, feature_dim)
-                    record_sample_identity_signatures(
-                        cache_resolution, [record.sample_id for record in chunk]
-                    )
-            logger.info("Saved tile features to %s (dim=%s)", out_root, feature_dim)
+            return FeatureStore(cache_resolution.features_dir)
 
-        return FeatureStore(out_root)
+        missing = set(cache_resolution.missing_sample_ids())
+        pending_ids = [record.sample_id for record in records if record.sample_id in missing]
+        if pending_ids:
+            # Nothing may vouch for these samples while slide2vec may replace their
+            # features: a failure from here on leaves them unsigned, for slide2vec to
+            # validate or re-encode on the next run.
+            cache_resolution = invalidate_sample_identities(cache_resolution, pending_ids)
+            feature_dim = self._embed(
+                [self._dataset.samples[sample_id] for sample_id in pending_ids],
+                out_root=cache_resolution.cache_dir,
+                dtype=dtype,
+            )
+            commit_extracted_samples(
+                cache_resolution,
+                pending_ids,
+                feature_dim=feature_dim,
+                validate_payloads=self._cache.validate_payloads,
+            )
+        return FeatureStore(cache_resolution.cache_dir)
+
+    def _embed(self, records: list[SampleRecord], *, out_root: Path, dtype: str) -> int:
+        """Hand ``records`` to slide2vec in one call and return the feature dimension.
+
+        slide2vec writes under ``out_root/image_embeddings/``. It reuses an image whose
+        payload and sidecar record its source path and the current feature identity, and
+        encodes every other one.
+        """
+        logger.info(
+            "Embedding %d tile images with '%s' (batch_size=%d)...",
+            len(records),
+            self._encoder.name,
+            self._encoder.batch_size,
+        )
+        model = Model.from_preset(
+            self._encoder.name,
+            output_variant=self._encoder.output_variant,
+            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+        )
+        artifacts = model.embed_images(
+            [ImageSpec(sample_id=record.sample_id, image_path=record.image_path) for record in records],
+            execution=self._execution_options(out_root, dtype=dtype),
+        )
+        requested = sorted(record.sample_id for record in records)
+        returned = sorted(str(artifact.sample_id) for artifact in artifacts)
+        if returned != requested:
+            raise RuntimeError(
+                f"slide2vec returned image embeddings for {len(returned)} samples where "
+                f"{len(requested)} were requested, or for other samples; nothing is "
+                "committed to the cache."
+            )
+        feature_dim = int(artifacts[0].feature_dim)
+        logger.info("Saved tile features to %s (dim=%s)", out_root, feature_dim)
+        return feature_dim
+
+    def _execution_options(self, output_dir: Path, *, dtype: str) -> ExecutionOptions:
+        return build_execution_options(
+            self._encoder,
+            execution=self._execution,
+            encoder_name=self._encoder.name,
+            output_dir=output_dir,
+            num_gpus=self._execution.num_gpus,
+            save_tile_embeddings=True,
+            output_dtype=dtype,
+            on_image_mismatch=_ON_IMAGE_MISMATCH,
+        )
 
     def _feature_identity_check(self, feature_dir: Path, *, dtype: str) -> FeatureIdentityCheck:
         """Verify a cache against the identity slide2vec would give these images now."""
@@ -237,51 +204,10 @@ class _TileFeatureExtractor:
                 recorded,
                 # Given geometry: pre-cropped images declare no tiling.
                 preprocessing=None,
-                execution=build_execution_options(
-                    self._encoder,
-                    execution=self._execution,
-                    encoder_name=self._encoder.name,
-                    output_dir=feature_dir,
-                    num_gpus=self._execution.num_gpus,
-                    save_tile_embeddings=True,
-                    output_dtype=dtype,
-                ),
+                execution=self._execution_options(feature_dir, dtype=dtype),
             )
 
         return FeatureIdentityCheck(
             differing=differing,
             on_mismatch=self._cache.on_identity_mismatch,
-            on_unrecorded=self._cache.on_unrecorded_identity,
-        )
-
-
-def _log_legacy_image_cache_key(
-    *, encoder: EncoderConfig, output_variant: str, dtype: str
-) -> None:
-    """Name the pre-1.13 cache key so an existing directory can be renamed by hand."""
-    legacy_key = build_tile_cache_key(
-        tile_encoder_name=encoder.name,
-        preprocessing=None,
-        execution=encoder,
-        output_variant=None,
-        feature_type="tile",
-        dtype=dtype,
-    )
-    current_key = build_tile_cache_key(
-        tile_encoder_name=encoder.name,
-        preprocessing=None,
-        execution=encoder,
-        output_variant=output_variant,
-        feature_type="tile",
-        dtype=dtype,
-    )
-    if legacy_key != current_key:
-        logger.info(
-            "Tile-image cache key for encoder '%s' now resolves output_variant=%r: "
-            "image/%s (pre-1.13 key with output_variant=null: image/%s). Rename the old "
-            "cache directory to reuse its features.",
-            encoder.name,
-            output_variant,
-            current_key,
-            legacy_key,
         )

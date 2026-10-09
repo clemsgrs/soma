@@ -980,7 +980,6 @@ class _PooledFeatureExtractor:
         return FeatureIdentityCheck(
             differing=differing,
             on_mismatch=self._cache.on_identity_mismatch,
-            on_unrecorded=self._cache.on_unrecorded_identity,
         )
 
     def _extract_tile_cached(

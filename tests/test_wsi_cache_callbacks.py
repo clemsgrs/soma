@@ -80,7 +80,7 @@ def population(tmp_path, request):
         dataset,
         EncoderConfig(name=_TEST_TILE),
         preprocessing,
-        cache=CacheConfig(root_dir=tmp_path / "cache", commit_every=1),
+        cache=CacheConfig(root_dir=tmp_path / "cache"),
         output_root=tmp_path / "out",
     )
 
@@ -177,6 +177,38 @@ def test_interrupted_population_reuses_only_committed_slides(population, monkeyp
         population.run()
     assert population.resolve().missing_sample_ids() == sorted(population.ids[3:])
     assert json.loads(population.cache.metadata_path.read_text())["feature_dim"] == 8
+    calls = []
+
+    def resumed(*, slides, execution, on_slide_persisted, **kwargs):
+        calls.append([slide.sample_id for slide in slides])
+        artifacts = [population.artifact(slide, execution) for slide in slides]
+        for artifact in artifacts:
+            on_slide_persisted(artifact)
+        return artifacts
+
+    monkeypatch.setattr(population.target, resumed)
+    population.run()
+    assert calls == [population.ids[3:]]
+    assert population.resolve().missing_sample_ids() == []
+
+
+def test_payloads_persisted_without_their_callback_are_extracted_again(
+    population, monkeypatch
+):
+    # slide2vec wrote every payload, but the process died before soma signed the last
+    # ones. The cache manifest still matches the dataset; it vouches for nothing.
+    def interrupted(*, slides, execution, on_slide_persisted, **kwargs):
+        for index, slide in enumerate(slides):
+            artifact = population.artifact(slide, execution)
+            if index < 3:
+                on_slide_persisted(artifact)
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(population.target, interrupted)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        population.run()
+    assert population.cache.manifest_path.is_file()
+    assert population.resolve().missing_sample_ids() == sorted(population.ids[3:])
     calls = []
 
     def resumed(*, slides, execution, on_slide_persisted, **kwargs):
