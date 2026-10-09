@@ -5,7 +5,8 @@
   where it is (any other value fails and names the file and the sample). Ignored
   pixels carry no loss, points on them leave the ground truth, and predicted peaks
   on them are dropped before matching, in the threshold sweep, in evaluation and in
-  the detection benchmark. `DetectionHead.extract_targets` returns a new `valid`
+  the detection benchmark. The ignore mask path is a storage path, so it does not
+  change the dataset checksum or the experiment id. `DetectionHead.extract_targets` returns a new `valid`
   map (all True without a mask) and the loss averages over valid pixels only; runs
   without masks are numerically unchanged. The detection tiler pads and crops the
   mask per tile (`ignore_masks/<tile_id>.png`), skips tiles with no valid pixel,

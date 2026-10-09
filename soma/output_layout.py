@@ -23,7 +23,14 @@ from soma.config import PipelineConfig
 
 
 _SEMANTIC_IDENTITY_EXCLUDED_PATH_COLUMN_ALLOWLIST = frozenset(
-    {"image_path", "mask_path", "label_mask_path", "points_path", "coordinates_path"}
+    {
+        "image_path",
+        "mask_path",
+        "label_mask_path",
+        "points_path",
+        "ignore_mask_path",
+        "coordinates_path",
+    }
 )
 
 

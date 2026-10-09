@@ -34,6 +34,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from soma.detection.encode import (
+    IGNORE_VALUE,
     ignore_mask_to_valid,
     points_on_valid,
     render_peak_heatmap,
@@ -166,17 +167,21 @@ class DetectionHead(TaskHead):
                 f"Detection sample '{sample_id}' has no resolved dense spacing provenance."
             ) from None
 
-    def _sample_valid(self, record: "SampleRecord") -> np.ndarray | None:
-        """The ``(H, W)`` supervised-pixel map, or ``None`` when the sample has no ignore mask."""
+    @staticmethod
+    def _sample_ignore_mask(record: "SampleRecord") -> np.ndarray | None:
+        """The level-0 ignore mask, or ``None`` when the sample has none."""
         path = getattr(record, "ignore_mask_path", None)
         if path is None:
             return None
-        spacing = self.spacing_for_sample(record.sample_id)
-        top, left, height, width = self._crop_box
         try:
-            mask = read_ignore_mask(path)
+            return read_ignore_mask(path)
         except ValueError as error:
             raise ValueError(f"detection sample '{record.sample_id}': {error}") from error
+
+    def _sample_valid(self, record: "SampleRecord", mask: np.ndarray) -> np.ndarray:
+        """Map a sample's level-0 ignore mask to the ``(H, W)`` supervised-pixel map."""
+        spacing = self.spacing_for_sample(record.sample_id)
+        top, left, height, width = self._crop_box
         return ignore_mask_to_valid(
             mask,
             source_spacing_um=spacing.source_spacing_um,
@@ -186,16 +191,24 @@ class DetectionHead(TaskHead):
         )
 
     def _sample_target_points(
-        self, record: "SampleRecord", valid: np.ndarray | None = None
+        self,
+        record: "SampleRecord",
+        ignore_mask: np.ndarray | None = None,
+        valid: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Read + transform a sample's points into in-frame ``(xy, classes)``.
 
-        Points on pixels that ``valid`` marks as ignored are not supervised: they leave the
-        heatmap and the matching ground truth.
+        A point is not supervised (it leaves the heatmap and the matching ground truth)
+        when it lies on an ignored pixel of the level-0 ``ignore_mask`` (the tiler's rule)
+        or when it lands on a pixel that the target-frame ``valid`` map marks as ignored.
+        Both checks matter once the target frame is resampled.
         """
         if getattr(record, "points_path", None) is None:
             raise ValueError(f"detection sample '{record.sample_id}' has no points_path")
         xy_l0, classes = read_points(record.points_path)
+        if ignore_mask is not None and xy_l0.shape[0]:
+            on_ignored = points_on_valid(xy_l0, ignore_mask == IGNORE_VALUE)
+            xy_l0, classes = xy_l0[~on_ignored], classes[~on_ignored]
         spacing = self.spacing_for_sample(record.sample_id)
         top, left, height, width = self._crop_box
         xy = transform_points_to_target(
@@ -231,8 +244,9 @@ class DetectionHead(TaskHead):
         return xy[kept], remapped
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
-        valid = self._sample_valid(record)
-        xy, classes = self._sample_target_points(record, valid)
+        ignore_mask = self._sample_ignore_mask(record)
+        valid = None if ignore_mask is None else self._sample_valid(record, ignore_mask)
+        xy, classes = self._sample_target_points(record, ignore_mask, valid)
         _, _, height, width = self._crop_box
         if valid is None:
             valid = np.ones((height, width), dtype=bool)

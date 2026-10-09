@@ -696,6 +696,23 @@ def test_head_ignore_mask_follows_the_target_frame(tmp_path):
     assert targets["gt_points"].tolist() == [[10.0, 10.0, 0.0]]
 
 
+def test_head_drops_points_on_ignored_level0_pixels_before_resampling(tmp_path):
+    # Level-0 column 33 is ignored, but its point maps to target x=16.5, which rounds to
+    # target column 16, and that column samples the supervised level-0 column 32. The
+    # level-0 mask decides, as in the tiler: the point is not ground truth.
+    from soma.dense import DenseSampleSpacing
+
+    mask = _ignore_mask(tmp_path, slice(33, None), size=(64, 64))
+    record = _masked_record(tmp_path, "20,20,0\n33,20,0\n", mask)
+    head = _make_head(sample_spacings={"s": DenseSampleSpacing(0.5, 1.0)})
+
+    targets = head.extract_targets(record)
+
+    assert bool(targets["valid"][:, 16].all())
+    assert targets["gt_points"].tolist() == [[10.0, 10.0, 0.0]]
+    assert float(targets["heatmap"][0, 10, 16]) < 0.5
+
+
 def test_head_without_ignore_mask_is_all_valid_and_unchanged(tmp_path):
     # A point just inside the right edge rounds onto the canvas edge: it stays ground truth.
     record = _points_record(tmp_path, "10,12,0\n31.7,8,1\n")

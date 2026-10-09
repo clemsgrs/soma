@@ -121,7 +121,9 @@ everywhere.
   prediction on an ignored pixel does not change it. Without a mask the loss is
   unchanged.
 - **Ground truth.** Points on ignored pixels are removed from the target heatmap
-  and from the ground truth used for matching.
+  and from the ground truth used for matching. A point is removed when its
+  level-0 pixel is ignored, or when its pixel in the ``target_size`` frame is
+  ignored.
 - **Predictions.** Peaks on ignored pixels are dropped before matching, in the
   threshold sweep, in evaluation (metrics and the prediction CSV) and in the
   detection benchmark.
