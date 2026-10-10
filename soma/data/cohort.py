@@ -538,6 +538,16 @@ class Cohort:
 
     def _validate_folds(self, *, allow_missing_test: bool) -> None:
         for index, fold in enumerate(self._folds):
+            invalid = sorted(
+                str(name) for name in fold.tests if not str(name).startswith(SPLIT_TEST_PREFIX)
+            )
+            if invalid:
+                # Same vocabulary as from_frames; a held-out split filed under 'train' or
+                # 'tune' would merge with that split in the leakage check.
+                raise ValueError(
+                    f"Fold {index}: Invalid split name(s) in tests: {invalid}. "
+                    f"Test split names must start with '{SPLIT_TEST_PREFIX}'."
+                )
             if fold.test_from_tune and (
                 set(fold.tests) != {"test"} or tuple(fold.tests["test"]) != tuple(fold.tune)
             ):

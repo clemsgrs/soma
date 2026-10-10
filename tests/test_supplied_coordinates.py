@@ -158,6 +158,29 @@ def test_column_is_rejected_outside_slide_datasets(tmp_path: Path, dataset_type:
         )
 
 
+def test_column_is_rejected_on_the_annotation_sampling_path(tmp_path: Path):
+    """A dense grid over whole slides samples its own ROIs; supplied tiles would be
+    silently ignored, so the facade refuses them up front."""
+    path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
+    manifest = _manifest(tmp_path, {"a": path})
+    frame = pd.read_csv(manifest)
+    frame["label_mask_path"] = "/m.png"
+    frame.to_csv(manifest, index=False)
+    from soma.config import EncoderConfig
+    from soma.extraction import FeatureExtractor
+
+    masks = MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5})
+    with pytest.raises(ValueError, match="coordinates_path.*shape='set', unit='slide'"):
+        FeatureExtractor(
+            legacy_samples_from_csv(manifest),
+            EncoderConfig(name="phikon"),
+            _preprocessing(masks=masks),
+            shape="grid",
+            unit="slide",
+            output_root=tmp_path / "out",
+        )
+
+
 @pytest.mark.parametrize(
     ("artifact_kwargs", "message"),
     [

@@ -51,10 +51,13 @@ class FeatureExtractor:
             raise ValueError(f"shape must be 'set' or 'grid', got {shape!r}")
         if unit not in ("slide", "tile"):
             raise ValueError(f"unit must be 'slide' or 'tile', got {unit!r}")
-        if unit == "tile" and getattr(dataset, "supplies_coordinates", False):
+        if (shape, unit) != ("set", "slide") and getattr(dataset, "supplies_coordinates", False):
+            # Only the pooled path embeds supplied tiles: pre-cropped images are read whole
+            # and a dense grid over whole slides samples its own ROIs from the masks.
             raise ValueError(
                 "Manifest column 'coordinates_path' (user-supplied tile coordinates) only "
-                "applies to whole slides (unit='slide'); drop the column for pre-cropped images."
+                "applies to set-shaped extraction over whole slides (shape='set', "
+                f"unit='slide'); got shape={shape!r}, unit={unit!r}. Drop the column."
             )
         self._dataset = dataset
         self._shape = shape
@@ -74,6 +77,20 @@ class FeatureExtractor:
                     "slides (unit='slide')."
                 )
             return self._extract_given_images if self._unit == "tile" else self._extract_pooled
+        region_flags = [
+            record.region is not None and record.slide_id is not None
+            for record in self._dataset.samples.values()
+        ]
+        if any(region_flags):
+            # A persisted ROI manifest addresses regions of a parent slide; read as
+            # pre-cropped images, each row would be the whole slide with its address lost.
+            if not all(region_flags) or self._preprocessing.masks is None or self._unit == "tile":
+                raise TypeError(
+                    "Unsupported dataset/config combination: explicit slide regions "
+                    "require region_x/region_y and slide_id on every sample, "
+                    "preprocessing.masks, and unit='slide'."
+                )
+            return self._extract_dense_regions
         if self._unit == "tile":
             if self._preprocessing.masks is not None:
                 raise TypeError(
@@ -81,18 +98,6 @@ class FeatureExtractor:
                     "slides (unit='slide')."
                 )
             return self._extract_dense_images
-        region_flags = [
-            record.region is not None and record.slide_id is not None
-            for record in self._dataset.samples.values()
-        ]
-        if any(region_flags):
-            if not all(region_flags) or self._preprocessing.masks is None:
-                raise TypeError(
-                    "Unsupported dataset/config combination: explicit slide regions "
-                    "require region_x/region_y, slide_id, and preprocessing.masks on "
-                    "every sample."
-                )
-            return self._extract_dense_regions
         if self._preprocessing.masks is None:
             raise TypeError(
                 "Unsupported dataset/config combination: a grid over whole slides needs "

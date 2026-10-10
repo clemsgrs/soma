@@ -361,6 +361,28 @@ def test_given_image_segmentation_extracts_dense_source(
     )
 
 
+def test_roi_addressed_rows_are_refused_without_annotation_sampling(tmp_path: Path) -> None:
+    """A persisted ROI manifest used as pre-cropped images would read each parent slide
+    whole and ignore the ROI address; the facade refuses it at construction."""
+    from soma import EncoderConfig, PreprocessingConfig
+
+    dataset_csv = tmp_path / "rois.csv"
+    dataset_csv.write_text(
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
+        "s0__x0_y0,s0,s0.svs,s0-mask.tif,0,0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TypeError, match="explicit slide regions.*unit='slide'"):
+        FeatureExtractor(
+            legacy_samples_from_csv(dataset_csv),
+            EncoderConfig(name="phikon"),
+            PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            shape="grid",
+            unit="tile",
+            output_root=tmp_path / "out",
+        )
+
+
 def test_given_image_detection_selects_dense_extraction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
