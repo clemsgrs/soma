@@ -1,6 +1,6 @@
 """LiveSegmentationSource — the carrier for the live re-encode segmentation path.
 
-Where the cached path returns a :class:`~soma.dense.DenseFeatureSource` (grids on
+Where the cached path returns a :class:`~soma.dense.GridSource` (grids on
 disk plus provenance), the live path returns a :class:`LiveSegmentationSource`: a
 passive struct that holds the **single public dense encode kit** plus everything the
 fold needs to build a :class:`~soma.training.model.LiveSegmentationModel` and a
@@ -12,7 +12,7 @@ time and every fold's model shares the same frozen encoder (safe: it has no trai
 state — each fold gets a fresh decoder+head and its own optimizer). It is not a
 behavioral protocol; the segmentation fold reads its fields directly in an inline
 branch (design §13.B-3/§13.B-8). It deliberately stays outside the cache-backed
-``DenseFeatureSource`` interface — the live and cached paths share the
+``GridSource`` interface — the live and cached paths share the
 ``validate_coverage(ids)`` name, not an inheritance relationship.
 """
 
@@ -70,15 +70,6 @@ class LiveSegmentationSource:
             crop_box=(top, left, bottom - top, right - left),
         )
         self.preprocessor = self.kit.preprocessor()
-
-    def validate_coverage(self, sample_ids) -> None:
-        """No-op coverage hook (name-compatible with ``DenseFeatureStore``).
-
-        There is nothing cached to cover — the live path re-encodes from each record's
-        ``image_path``/``label_mask_path``, which the fold validates against the records
-        directly (it needs the records, not just the ids).
-        """
-        return None
 
 
 def build_live_segmentation_source(config: PipelineConfig) -> LiveSegmentationSource:

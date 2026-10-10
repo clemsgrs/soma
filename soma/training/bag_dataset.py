@@ -7,8 +7,8 @@ from collections.abc import Callable
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from soma.dataset import SampleRecord
-from soma.features import FeatureStore
+from soma.data import SampleRecord
+from soma.data import CachedSetSource
 
 
 class BagDataset(Dataset):
@@ -19,7 +19,7 @@ class BagDataset(Dataset):
 
     Args:
         records: List of SampleRecords with sample_id and label.
-        feature_store: FeatureStore for loading precomputed embeddings.
+        feature_store: CachedSetSource for loading precomputed embeddings.
         target_fn: Callable mapping a SampleRecord to its targets dict
             (the head's ``extract_targets``).
     """
@@ -27,7 +27,7 @@ class BagDataset(Dataset):
     def __init__(
         self,
         records: list[SampleRecord],
-        feature_store: FeatureStore,
+        feature_store: CachedSetSource,
         target_fn: Callable[[SampleRecord], dict[str, int | float]],
     ) -> None:
         self._records = records
@@ -56,7 +56,7 @@ class HierarchicalBagDataset(Dataset):
 
     Args:
         records: List of SampleRecords with sample_id and label.
-        feature_store: FeatureStore for loading precomputed embeddings.
+        feature_store: CachedSetSource for loading precomputed embeddings.
         target_fn: Callable mapping a SampleRecord to its targets dict
             (the head's ``extract_targets``).
     """
@@ -64,7 +64,7 @@ class HierarchicalBagDataset(Dataset):
     def __init__(
         self,
         records: list[SampleRecord],
-        feature_store: FeatureStore,
+        feature_store: CachedSetSource,
         target_fn: Callable[[SampleRecord], dict[str, int | float]],
     ) -> None:
         self._records = records

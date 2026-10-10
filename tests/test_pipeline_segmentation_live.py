@@ -24,9 +24,14 @@ from PIL import Image  # noqa: E402
 
 from slide2vec.encoders.base import TimmTileEncoder  # noqa: E402
 
+from soma.data import require_coverage
 from soma.config import AugmentationConfig, DecoderConfig, EvalConfig, TaskConfig, TrainingConfig  # noqa: E402
-from soma.dataset import SegmentationManifest, Splits  # noqa: E402
-from soma.dense import DenseFeatureStore, compute_dense_geometry  # noqa: E402
+from soma.data._legacy import (  # noqa: E402
+    bind_segmentation_targets,
+    legacy_folds_from_csv,
+    legacy_samples_from_csv,
+)
+from soma.dense import CachedGridSource, compute_dense_geometry  # noqa: E402
 from soma.dense.live import LiveSegmentationSource  # noqa: E402
 from soma.pipeline import train_one_segmentation_fold  # noqa: E402
 from soma.training.model import LiveSegmentationModel  # noqa: E402
@@ -71,7 +76,7 @@ def _build_run(root: Path, sample_ids: list[str]) -> tuple[SegmentationManifest,
         + "\n".join(f"{sid},{split},0" for sid, split in split_assign.items())
         + "\n"
     )
-    return SegmentationManifest(manifest_csv), Splits(splits_csv, SegmentationManifest(manifest_csv))
+    return legacy_samples_from_csv(manifest_csv), legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(manifest_csv))
 
 
 def _live_source(
@@ -172,7 +177,7 @@ def test_live_no_aug_grids_match_cached_bit_for_bit(tmp_path: Path):
     _extract_cached_grids(
         encoder, records, tmp_path / "dense", geometry=geom, batch_size=len(records)
     )
-    cached_store = DenseFeatureStore(tmp_path / "dense")
+    cached_store = CachedGridSource(tmp_path / "dense")
 
     from soma.training.segmentation_dataset import LiveSegmentationDataset
 
@@ -304,7 +309,7 @@ def test_live_dataset_defaults_to_class_indices_and_names_the_failing_sample(
 def _flat_live_dataset(root: Path, raw_mask: np.ndarray, classes, ignore=(), augment=None):
     """A flat (PNG) live dataset over one tile whose mask holds ``raw_mask``, with the
     class scheme's remap, plus the same record for the cached head to compare against."""
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
     from soma.dense.reader import resolve_class_scheme
     from soma.tasks.segmentation import SegmentationHead
     from soma.training.segmentation_dataset import LiveSegmentationDataset
@@ -312,10 +317,9 @@ def _flat_live_dataset(root: Path, raw_mask: np.ndarray, classes, ignore=(), aug
     size = raw_mask.shape[0]
     Image.fromarray(np.zeros((size, size, 3), np.uint8)).save(root / "tile.png")
     Image.fromarray(raw_mask.astype(np.uint8), mode="L").save(root / "tile_mask.png")
-    record = SampleRecord(
+    record = LegacyRecord(
         sample_id="t0",
         image_path=root / "tile.png",
-        label=None,
         label_mask_path=root / "tile_mask.png",
     )
     params = {"classes": classes, "ignore": list(ignore)}
@@ -348,6 +352,7 @@ def test_live_dataset_remaps_raw_values_like_the_cached_head(tmp_path: Path):
     _, targets, _ = dataset[0]
 
     assert targets["mask"][0].tolist() == [1, 1, 0, 0]
+    bind_segmentation_targets(head, [record])
     assert torch.equal(targets["mask"], head.extract_targets(record)["mask"])
 
 
@@ -413,7 +418,7 @@ def test_live_fold_with_a_class_scheme_matches_the_cached_fold(tmp_path: Path):
     )
 
     cached = train_one_segmentation_fold(
-        feature_store=DenseFeatureStore(tmp_path / "dense"),
+        feature_store=CachedGridSource(tmp_path / "dense"),
         fold_dir=tmp_path / "cached_fold",
         **common,
     )
@@ -441,7 +446,7 @@ def test_live_no_aug_metrics_match_cached(tmp_path: Path):
         geometry=geom,
         batch_size=2,
     )
-    cached_store = DenseFeatureStore(tmp_path / "dense")
+    cached_store = CachedGridSource(tmp_path / "dense")
 
     common = dict(
         dataset=manifest,
@@ -550,10 +555,6 @@ def test_live_checkpoint_excludes_encoder_and_reloads(tmp_path: Path):
     )
     model.load_state_dict(state)  # strict=False under the hood: encoder already built
 
-
-def test_live_source_validate_coverage_is_noop():
-    source = _live_source(_encoder())
-    assert source.validate_coverage(["s0", "s1"]) is None
 
 
 def test_live_model_delegates_cpu_batch_to_public_dense_kit():

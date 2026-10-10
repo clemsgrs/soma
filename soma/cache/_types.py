@@ -13,7 +13,7 @@ MANIFEST_NAME = "manifest.csv"
 PROCESS_LIST_NAME = "process_list.csv"
 SCHEMA_VERSION = "v1"
 # Single-file pack of every 1-D feature of a features directory, written next to the
-# per-sample files by ``soma.features.FeatureStore``. A commit that changes the features
+# per-sample files by ``soma.data.CachedSetSource``. A commit that changes the features
 # of a cache deletes it, so a re-encoded sample is never served from it.
 PACKED_FILENAME = "packed_features.pt"
 
@@ -25,7 +25,7 @@ _FEATURE_TYPE_TO_RANK = {
     "hierarchical": 3,
     # dense_grid is (channels, grid_h, grid_w); same rank as hierarchical but the
     # feature dim is the channel axis (0), not the last axis. The dense validator
-    # and DenseFeatureStore read the channel axis from metadata, never from rank.
+    # and CachedGridSource read the channel axis from metadata, never from rank.
     "dense_grid": 3,
 }
 

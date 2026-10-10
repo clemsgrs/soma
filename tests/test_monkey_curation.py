@@ -26,7 +26,7 @@ from soma.curation.monkey import (
     curate_monkey_detection,
 )
 from soma.curation.tile_detection import tile_detection_manifest
-from soma.dataset import DetectionManifest, Splits
+from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from tests.eva_slide_raw import write_pyramid
 
 SPACING = 0.25
@@ -157,7 +157,7 @@ def test_curator_writes_one_sample_per_roi(tmp_path: Path):
     assert mask[70, 139] == 0  # 19 px right of the polygon edge
     assert mask[0, 0] == 255  # crop corner, 20·√2 px from the polygon corner
 
-    detection = DetectionManifest(manifest.dataset_csv)
+    detection = legacy_samples_from_csv(manifest.dataset_csv)
     assert detection.samples["A_P000001_roi0"].ignore_mask_path == Path(roi0["ignore_mask_path"])
 
     summary = json.loads(manifest.summary_json.read_text())
@@ -219,7 +219,7 @@ def test_splits_are_a_five_fold_patient_cross_validation(tmp_path: Path):
     dataset = pd.read_csv(manifest.dataset_csv)
     patient_of = dict(zip(dataset["sample_id"], dataset["patient_id"]))
     centre_of = dict(zip(dataset["patient_id"], dataset["centre"]))
-    splits = Splits(manifest.splits_csv, DetectionManifest(manifest.dataset_csv))
+    splits = legacy_folds_from_csv(manifest.splits_csv, legacy_samples_from_csv(manifest.dataset_csv))
     assert len(splits.folds) == 5
 
     test_fold_of: dict[str, int] = {}

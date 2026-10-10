@@ -65,15 +65,17 @@ store.
 .. code-block:: python
 
    from soma import (
-       Dataset,
+       Cohort,
        EncoderConfig,
        FeatureExtractor,
+       ImageManifest,
        PreprocessingConfig,
-       Splits,
    )
+   from soma.data._legacy import LegacyFolds, records_for_pipeline
 
-   dataset = Dataset("dataset.csv")
-   splits = Splits("splits.csv", dataset)
+   cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
+   dataset = records_for_pipeline(cohort, ImageManifest.from_csv("dataset.csv"))
+   splits = LegacyFolds.from_cohort(cohort)
 
    preprocessing = PreprocessingConfig(
        tissue_method="hsv",

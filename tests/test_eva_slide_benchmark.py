@@ -172,7 +172,7 @@ def test_eva_abmil_has_no_dropout():
 
 
 def _record(label, sample_id="s"):
-    return SimpleNamespace(label=label, sample_id=sample_id)
+    return SimpleNamespace(targets={"label": label}, sample_id=sample_id)
 
 
 def test_binary_head_is_one_logit_with_bce():
@@ -212,8 +212,8 @@ def test_multiclass_head_is_cross_entropy_over_class_indices():
 
 
 def test_multiclass_auto_params_reads_the_class_indices():
-    dataset = SimpleNamespace(samples={i: _record(label) for i, label in enumerate([0, 3, 2])})
-    assert slide.EvaMILMulticlassHead.auto_params(dataset) == {"num_classes": 4}
+    records = [_record(label) for label in (0, 3, 2)]
+    assert slide.EvaMILMulticlassHead.auto_params(records) == {"num_classes": 4}
 
 
 def test_binary_head_refuses_a_non_binary_label():

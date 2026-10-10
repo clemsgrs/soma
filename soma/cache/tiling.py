@@ -36,7 +36,7 @@ from soma.cache.keys import (
     preprocessing_signature,
 )
 from soma.config import PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import LegacySamples
 
 
 def _optional_path(value: Any) -> Path | None:
@@ -120,7 +120,7 @@ def _write_tiling_stub_marker(*, tiling_dir: Path, cache_dir: Path) -> None:
 
 def _validate_tiling_cache_contents(
     *,
-    dataset: Dataset,
+    dataset: LegacySamples,
     process_list_path: Path,
     artifacts_dir: Path,
     previews_dir: Path,
@@ -218,7 +218,7 @@ def _validate_tiling_cache_contents(
 def resolve_tiling_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     preprocessing: PreprocessingConfig,
     backend_provenance: dict[str, Any],
     encoder_name: str | None = None,

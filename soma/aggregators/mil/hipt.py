@@ -275,7 +275,7 @@ class HIPT(Aggregator):
     ``P = (region_size / patch_size)²``. HIPT reshapes internally.
 
     Args:
-        input_dim: Feature dimension of input tiles (auto-resolved from FeatureStore).
+        input_dim: Feature dimension of input tiles (auto-resolved from CachedSetSource).
         region_size: Region pixel size (e.g. 4096). **Required.**
         patch_size: Subtile pixel size within region (e.g. 256). **Required.**
         embed_dim_region: Region ViT output dimension.

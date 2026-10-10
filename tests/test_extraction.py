@@ -17,14 +17,15 @@ from slide2vec import PreprocessingConfig as Slide2VecPreprocessingConfig
 
 import soma.cache as cache_mod
 import soma.extraction.orchestration as orchestration_mod
+from soma.data import require_coverage
 from soma.cache import record_empty_sample_ids, record_feature_dim, record_sample_identity_signatures
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig as _PreprocessingConfig
-from soma.dataset import Dataset
-from soma.features import FeatureStore
+from soma.data._legacy import legacy_samples_from_csv
+from soma.data import CachedSetSource
 from slide2vec.encoders.registry import encoder_registry
 from soma.extraction import _embed_tiles, _load_model, _run_with_coordinates, _validate_runtime
 from soma.extraction.extractor import _PooledFeatureExtractor, _feature_summary_from_sidecar
-from soma.features import PACKED_FILENAME
+from soma.cache._types import PACKED_FILENAME
 from soma.slide2vec_adapter import LoadedTiling, build_preprocessing_config, load_tilings
 from soma.tile_extraction import _TileFeatureExtractor
 
@@ -144,7 +145,7 @@ def _make_dataset(tmp_path: Path, *, with_mask: bool = False) -> Dataset:
         rows["mask_path"] = [str(tmp_path / "s0-mask.tif")]
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _make_patient_dataset(tmp_path: Path) -> Dataset:
@@ -159,7 +160,7 @@ def _make_patient_dataset(tmp_path: Path) -> Dataset:
             }
         ]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _make_two_slide_patient_dataset(tmp_path: Path) -> Dataset:
@@ -180,7 +181,7 @@ def _make_two_slide_patient_dataset(tmp_path: Path) -> Dataset:
             },
         ]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _tiling(sample_id: str = "s0") -> object:
@@ -717,7 +718,7 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
         _PooledFeatureExtractor,
         "_extract_tile_cached",
         autospec=True,
-        return_value=FeatureStore(fake_store_dir),
+        return_value=CachedSetSource(fake_store_dir),
     ) as extract_tile_cached:
         store = extractor.extract(feature_dir="features/custom", tiling_dir=tmp_path / "run" / "tiling")
 
@@ -761,7 +762,7 @@ def test_extract_derives_feature_dir_from_output_root_and_encoder_name(tmp_path:
         _PooledFeatureExtractor,
         "_extract_tile_cached",
         autospec=True,
-        return_value=FeatureStore(expected_feature_dir),
+        return_value=CachedSetSource(expected_feature_dir),
     ) as extract_tile_cached:
         store = extractor.extract(tiling_dir=tmp_path / "tiling")
 
@@ -1212,7 +1213,7 @@ def test_load_tilings_consumes_merged_mode_sampling_dir(tmp_path: Path, monkeypa
             {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "mask_path": str(tmp_path / "s1-mask.tif"), "label": "x"},
         ]
     ).to_csv(csv_path, index=False)
-    dataset = Dataset(csv_path)
+    dataset = legacy_samples_from_csv(csv_path)
 
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
@@ -1306,8 +1307,8 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
     ) as embed_tiles:
         store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
     assert embed_tiles.called
-    assert store.available_samples == ["s0"]
-    assert store.is_slide_level is False
+    assert store.sample_ids == ["s0"]
+    assert store.rank != 1
     assert store.load("s0").shape == (2, 8)
 
 
@@ -1321,7 +1322,7 @@ def _make_tile_dataset(tmp_path: Path, sample_ids=("s0",)) -> Dataset:
         rows.append({"sample_id": sample_id, "image_path": str(image_path), "label": "tumor"})
     dataset_csv = tmp_path / "dataset.csv"
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
-    return Dataset(dataset_csv)
+    return legacy_samples_from_csv(dataset_csv)
 
 
 class _RecordingModel:
@@ -1393,7 +1394,7 @@ def test_internal_tile_engine_embeds_given_images_via_slide2vec(tmp_path: Path, 
         cache=CacheConfig(enabled=False),
     ).run(feature_dir=tmp_path / "features")
 
-    assert store.available_samples == ["s0", "s1"]
+    assert store.sample_ids == ["s0", "s1"]
     assert torch.equal(store.load("s0"), torch.ones(4))
     assert torch.equal(store.load("s1"), torch.full((4,), 2.0))
     # The store resolves slide2vec's image_embeddings/ subdirectory, not a soma schema.
@@ -1498,7 +1499,7 @@ def test_internal_tile_engine_reencodes_a_sample_whose_identity_changed(
     ).to_csv(moved_csv, index=False)
 
     _TileFeatureExtractor(
-        Dataset(moved_csv), EncoderConfig(name=_TEST_TILE), cache=cache
+        legacy_samples_from_csv(moved_csv), EncoderConfig(name=_TEST_TILE), cache=cache
     ).run(feature_dir=tmp_path / "features")
 
     assert [call["sample_ids"] for call in recording_model.calls] == [["s0"], ["s0"]]
@@ -1669,8 +1670,7 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
 
     assert store.has_feature_manifest is True
     assert store.empty_feature_samples == ["s1"]
-    assert store.expected_feature_samples == ["s0"]
-    assert store.available_samples == ["s0"]
+    assert store.sample_ids == ["s0"]
     recorded = pd.read_csv(tmp_path / "features" / "process_list.csv").set_index("sample_id")
     assert recorded.loc["s0", "encoder_name"] == _TEST_TILE
     assert recorded.loc["s0", "output_variant"] == "default"
@@ -1872,7 +1872,7 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
             }
         ]
     ).to_csv(feature_dir / "process_list.csv", index=False)
-    store = FeatureStore(feature_dir)
+    store = CachedSetSource(feature_dir)
     loaded = [
         LoadedTiling(
             slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
@@ -1880,7 +1880,7 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
         )
     ]
 
-    with patch("soma.features.load_array", side_effect=AssertionError("should not reload tensor")):
+    with patch("soma.data.cached.load_array", side_effect=AssertionError("should not reload tensor")):
         extractor._write_feature_manifest(
             feature_dir=feature_dir,
             store=store,
@@ -1927,7 +1927,7 @@ def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
         ]
     ).to_csv(feature_dir / "process_list.csv", index=False)
 
-    store = FeatureStore(feature_dir)
+    store = CachedSetSource(feature_dir)
     loaded = [
         LoadedTiling(
             slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
@@ -1996,7 +1996,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
     assert embed_tile_artifacts.call_args.kwargs["execution"].num_gpus == 2
     assert embed_tile_artifacts.call_args.kwargs["execution"].output_dir.is_absolute()
     assert Path(embed_tile_artifacts.call_args.kwargs["tiling_dir"]).is_absolute()
-    assert store.is_slide_level is False
+    assert store.rank != 1
     assert store.load("s0").shape == (2, 8)
 
 
@@ -2223,8 +2223,8 @@ def test_extract_slide_features_preserves_requested_tile_artifact_regime(
         side_effect=_fake_aggregate_tiles,
     ):
         store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
-    assert store.available_samples == ["s0"]
-    assert store.is_slide_level is True
+    assert store.sample_ids == ["s0"]
+    assert store.rank == 1
     assert store.load("s0").shape == (8,)
     assert len(embedded_tile_paths) == 1
     assert embedded_tile_paths[0].exists() is save_tile_features
@@ -2367,7 +2367,7 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
     assert any((cache_root / "tile").glob("*/tile_embeddings/s0.pt"))
     assert any((cache_root / "slide").glob("*/slide_embeddings/s0.pt"))
     assert not any((cache_root / "slide").glob("*/tile_embeddings/s0.pt"))
-    assert store.is_slide_level is True
+    assert store.rank == 1
     assert store.load("s0").shape == (8,)
 
 
@@ -2873,7 +2873,7 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
             {"sample_id": "s1", "patient_id": None, "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    dataset = Dataset(csv_path)
+    dataset = legacy_samples_from_csv(csv_path)
     extractor = _PooledFeatureExtractor(
         dataset,
         EncoderConfig(name=_TEST_PATIENT),
@@ -2977,7 +2977,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
             {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    dataset = Dataset(csv_path)
+    dataset = legacy_samples_from_csv(csv_path)
     cache_root = tmp_path / "shared-cache"
     preprocessing = PreprocessingConfig(
         requested_tile_size_px=224,
@@ -3271,7 +3271,7 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
         store = extractor.extract(feature_dir="features-rerun", tiling_dir=tmp_path / "tiling")
 
     assert aggregate_tiles.called
-    assert store.is_slide_level is True
+    assert store.rank == 1
     assert store.load("s0").shape == (8,)
 
 
@@ -3303,7 +3303,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         ]
     ).to_csv(csv_path, index=False)
     extractor = _PooledFeatureExtractor(
-        Dataset(csv_path),
+        legacy_samples_from_csv(csv_path),
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
@@ -3433,7 +3433,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
     assert len(submitted) == 1
     assert submitted[0]["execution_precision"] == "fp16"
     assert len(submitted[0]["shard_payloads_by_rank"]) == 2
-    assert store.is_slide_level is True
+    assert store.rank == 1
     assert store.load("s0").shape == (8,)
     assert store.load("s1").shape == (8,)
 
@@ -3486,7 +3486,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
             num_gpus=2,
         )
     assert embed_tile_artifacts.called
-    assert store.is_slide_level is False
+    assert store.rank != 1
     assert store.load("s0").shape == (2, 8)
 
 
@@ -3500,7 +3500,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         ]
     ).to_csv(csv_path, index=False)
     extractor = _PooledFeatureExtractor(
-        Dataset(csv_path),
+        legacy_samples_from_csv(csv_path),
         EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
         PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
         cache=CacheConfig(root_dir=cache_root),
@@ -3571,7 +3571,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         )
     assert captured_output_variants == [None]
 
-    assert store.is_slide_level is True
+    assert store.rank == 1
     assert store.load("s0").shape == (8,)
     assert store.load("s1").shape == (8,)
 
@@ -3638,7 +3638,7 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
         )
 
     assert captured_output_variants == [None]
-    assert store.is_slide_level is True
+    assert store.rank == 1
     assert store.load("s0").shape == (8,)
     assert all(call.kwargs["output_variant"] == "default" for call in resolve_slide_cache.call_args_list)
 
@@ -3812,7 +3812,7 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
         store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
     assert extract_uncached.called
     assert seen_hierarchical == [True]
-    assert store.is_hierarchical is True
+    assert store.rank == 3
     assert store.load("s0").shape == (1, 4, 8)
 
 
@@ -3884,7 +3884,7 @@ def test_hierarchical_multi_gpu_uses_coordinate_helper(tmp_path: Path):
             num_gpus=2,
         )
     assert embed_hierarchical_artifacts.called
-    assert store.is_hierarchical is True
+    assert store.rank == 3
     assert store.load("s0").shape == (1, 4, 8)
 
 
@@ -3967,7 +3967,7 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
         store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert populate_hierarchical_cache.called
-    assert store.is_hierarchical is True
+    assert store.rank == 3
     assert store.load("s0").shape == (1, 4, 8)
 
 
@@ -4005,13 +4005,13 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
         _PooledFeatureExtractor,
         "_extract_hierarchical_cached",
         autospec=True,
-        return_value=FeatureStore(feature_dir),
+        return_value=CachedSetSource(feature_dir),
     ) as extract_hierarchical_cached:
         store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert extract_hierarchical_cached.called
     assert store.feature_dir == feature_dir
-    assert store.feature_rank == 3
+    assert store.rank == 3
     assert store.feature_dim == 8
 
 
@@ -4027,7 +4027,7 @@ def test_multispacing_encoder_requires_explicit_spacing(tmp_path: Path):
 
 
 def test_feature_summary_from_sidecar_ignores_packed_cache(tmp_path: Path):
-    # The 1-D packed feature cache (soma.features) writes packed_features.pt next
+    # The 1-D packed feature cache (soma.data.cached) writes packed_features.pt next
     # to the per-sample files; it must not be mistaken for a sample when reading
     # rank/dim from an artifact sidecar (its stem sorts before typical ids).
     feature_dir = tmp_path / "features"
@@ -4078,7 +4078,7 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
         preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5,
                                             **({"region_tile_multiple": 2} if kind == "hierarchical" else {}))
         extractors[run] = _PooledFeatureExtractor(
-            Dataset(root / "dataset.csv"), EncoderConfig(name=encoder), preprocessing,
+            legacy_samples_from_csv(root / "dataset.csv"), EncoderConfig(name=encoder), preprocessing,
             cache=CacheConfig(root_dir=tmp_path / "shared-cache"), output_root=root,
         )
 
@@ -4124,12 +4124,12 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
     for run, result in [("a", first), ("b", neighbors[0])]:
         local = tmp_path / run / "features"
         assert result.feature_dir == local
-        for store in [result, FeatureStore(result.feature_dir)]:
+        for store in [result, CachedSetSource(result.feature_dir)]:
             assert store.feature_manifest_path == local / "process_list.csv"
-            assert store.available_samples == ["eval", f"support-{run}"]
+            assert store.sample_ids == ["eval", f"support-{run}"]
             assert store.empty_feature_samples == [f"empty-{run}"]
-            store.validate_coverage(["eval", f"support-{run}"])
-            assert (store.feature_rank, store.feature_dim) == (rank, 2)
+            require_coverage(store, ["eval", f"support-{run}"])
+            assert (store.rank, store.feature_dim) == (rank, 2)
             for sid in ["eval", f"support-{run}"]:
                 assert torch.equal(store.load(sid), expected[sid])
         manifest = pd.read_csv(local / "process_list.csv").set_index("sample_id")
@@ -4155,14 +4155,14 @@ def test_fallback_feature_manifest_publishes_only_in_run_directory(tmp_path: Pat
     local = tmp_path / "features"
     local.mkdir()
     extractor._write_feature_manifest(
-        feature_dir=local, store=FeatureStore(payload_dir),
+        feature_dir=local, store=CachedSetSource(payload_dir),
         loaded_tilings=[LoadedTiling(slide=SlideSpec(sample_id="s0", image_path=tmp_path / "s0.svs"),
                                     tiling_result=_tiling())],
         encoder_name=_TEST_TILE, output_variant="default",
     )
     assert not (payload_dir.parent / "process_list.csv").exists()
-    store = FeatureStore(local)
-    assert store.available_samples == ["s0"]
+    store = CachedSetSource(local)
+    assert store.sample_ids == ["s0"]
     assert torch.equal(store.load("s0"), torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
     manifest = pd.read_csv(local / "process_list.csv")
     assert manifest.loc[0, "feature_path"] == str(payload_dir / "s0.pt")

@@ -27,6 +27,15 @@ from soma.dense import compute_dense_geometry
 from soma.training.model import SegmentationModel, SegmentationModelOutput
 
 
+def _targets(head, record):
+    """Bind ``record``'s label map to ``head`` (as the pipeline does) and extract targets."""
+    from soma.data._legacy import bind_segmentation_targets
+
+    bind_segmentation_targets(head, [record])
+    return head.extract_targets(record)
+
+
+
 def _logits_from_pred(pred: torch.Tensor, num_classes: int) -> torch.Tensor:
     """Sharp logits whose argmax equals ``pred`` (B, H, W) -> (B, C, H, W)."""
     return F.one_hot(pred, num_classes).permute(0, 3, 1, 2).float() * 10.0
@@ -332,15 +341,15 @@ def test_compute_metrics_honors_configured_selection():
 
 
 def test_extract_targets_rejects_out_of_range_label(tmp_path: Path):
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     path = tmp_path / "m.png"
     Image.fromarray(np.array([[0, 1], [2, 0]], dtype=np.uint8)).save(path)  # label 2 with C=2
     geom = compute_dense_geometry(target_size=2, patch_size=1)
     head = SegmentationHead(num_classes=2, geometry=geom, ignore_index=255)
-    record = SampleRecord(sample_id="s0", image_path=path, label=None, label_mask_path=path)
+    record = LegacyRecord(sample_id="s0", image_path=path, label_mask_path=path)
     with pytest.raises(ValueError, match=r"label value\(s\) \[2\] outside"):
-        head.extract_targets(record)
+        _targets(head, record)
 
 
 def _never_open_an_annotation_raster(monkeypatch):
@@ -355,14 +364,13 @@ def _never_open_an_annotation_raster(monkeypatch):
 
 def _roi_record(tmp_path: Path, crop: np.ndarray, *, sample_id: str = "roi0", region=(0, 0)):
     """A slide-manifest ROI whose stored mask crop is ``crop`` (a raw-value PNG)."""
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     crop_path = tmp_path / "masks" / "slide" / f"{region[0]}_{region[1]}.png"
     crop_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(crop).save(crop_path)
-    return SampleRecord(
-        sample_id=sample_id, image_path=Path("/fake.tif"), label=None,
-        label_mask_path=Path("/fake_mask.tif"), region=region, slide_id="slide",
+    return LegacyRecord(
+        sample_id=sample_id, image_path=Path("/fake.tif"), label_mask_path=Path("/fake_mask.tif"), region=region, slide_id="slide",
         label_mask_crop_path=crop_path,
     )
 
@@ -393,7 +401,7 @@ def test_extract_targets_applies_label_remap_for_roi(monkeypatch, tmp_path: Path
         ignore=[0],
     )
     np.testing.assert_array_equal(
-        head.extract_targets(record)["mask"].numpy(),
+        _targets(head, record)["mask"].numpy(),
         np.array([[255, 0], [0, 1]], dtype=np.int64),
     )
 
@@ -411,12 +419,12 @@ def test_extract_targets_rejects_undeclared_raw_value(monkeypatch, tmp_path: Pat
     with pytest.raises(
         ValueError, match=r"'roi0' has raw value\(s\) \[7, 9\] declared in neither"
     ):
-        head.extract_targets(record)
+        _targets(head, record)
 
 
 def _capture_mask_reads(monkeypatch, raw):
     """Stub the hs2p-backed tile mask reader; record each call's keyword arguments."""
-    import soma.tasks.segmentation as segmod
+    import soma.dense.reader as segmod
 
     calls = []
 
@@ -449,13 +457,13 @@ def test_extract_targets_ignores_the_part_of_a_roi_beyond_the_slide(
         tmp_path, np.array([[1, 2], [2, 1]], dtype=np.uint8), sample_id="edge", region=(250, 0)
     )
 
-    mask = head.extract_targets(record)["mask"]
+    mask = _targets(head, record)["mask"]
 
     assert mask.tolist() == [[1, 0, 255, 255], [0, 1, 255, 255]]
 
 
 def test_extract_targets_needs_a_stored_crop_for_a_roi(monkeypatch):
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     _never_open_an_annotation_raster(monkeypatch)
     head = SegmentationHead(
@@ -463,13 +471,12 @@ def test_extract_targets_needs_a_stored_crop_for_a_roi(monkeypatch):
         geometry=compute_dense_geometry(target_size=2, patch_size=1),
         spacing_um=0.5,
     )
-    record = SampleRecord(
-        sample_id="roi0", image_path=Path("/slide.tif"), label=None,
-        label_mask_path=Path("/slide_mask.tif"), region=(8, 4),
+    record = LegacyRecord(
+        sample_id="roi0", image_path=Path("/slide.tif"), label_mask_path=Path("/slide_mask.tif"), region=(8, 4),
     )
 
     with pytest.raises(ValueError, match=r"'roi0'.*label_mask_crop_path"):
-        head.extract_targets(record)
+        _targets(head, record)
 
 
 def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask(
@@ -477,7 +484,7 @@ def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask
 ):
     """Pre-cropped tiles have no sampling vocabulary: the mask declares exactly the raw
     values the head accepts (task.params.classes and ignore)."""
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
     from soma.dense.reader import build_label_remap
 
     calls = _capture_mask_reads(monkeypatch, np.array([[3, 7], [7, 5]], dtype=np.uint8))
@@ -487,12 +494,11 @@ def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask
         spacing_um=0.5,
         label_remap=build_label_remap({"tumor": [7, 3], "stroma": [5]}, ignore=[0]),
     )
-    record = SampleRecord(
-        sample_id="tile0", image_path=Path("/tile.tif"), label=None,
-        label_mask_path=Path("/tile_mask.tif"),
+    record = LegacyRecord(
+        sample_id="tile0", image_path=Path("/tile.tif"), label_mask_path=Path("/tile_mask.tif"),
     )
 
-    head.extract_targets(record)
+    _targets(head, record)
 
     (call,) = calls
     assert call["size"] == (2, 2)
@@ -503,7 +509,7 @@ def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask
 def test_extract_targets_declares_class_indices_and_ignore_index_without_a_class_scheme(
     monkeypatch,
 ):
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     calls = _capture_mask_reads(monkeypatch, np.array([[0, 1], [2, 255]], dtype=np.uint8))
     head = SegmentationHead(
@@ -512,12 +518,11 @@ def test_extract_targets_declares_class_indices_and_ignore_index_without_a_class
         spacing_um=0.5,
         ignore_index=255,
     )
-    record = SampleRecord(
-        sample_id="tile0", image_path=Path("/tile.tif"), label=None,
-        label_mask_path=Path("/tile_mask.tif"),
+    record = LegacyRecord(
+        sample_id="tile0", image_path=Path("/tile.tif"), label_mask_path=Path("/tile_mask.tif"),
     )
 
-    head.extract_targets(record)
+    _targets(head, record)
 
     assert calls[0]["pixel_mapping"] == {
         "value_0": 0, "value_1": 1, "value_2": 2, "value_255": 255
@@ -525,8 +530,8 @@ def test_extract_targets_declares_class_indices_and_ignore_index_without_a_class
 
 
 def test_extract_targets_names_the_sample_when_the_mask_read_fails(monkeypatch):
-    import soma.tasks.segmentation as segmod
-    from soma.dataset import SampleRecord
+    import soma.dense.reader as segmod
+    from soma.data._legacy import LegacyRecord
 
     def fail(path, **kwargs):
         raise ValueError("Mask read produced invalid labels for path=/tile_mask.tif")
@@ -537,15 +542,14 @@ def test_extract_targets_names_the_sample_when_the_mask_read_fails(monkeypatch):
         geometry=compute_dense_geometry(target_size=2, patch_size=1),
         spacing_um=0.5,
     )
-    record = SampleRecord(
-        sample_id="tile0", image_path=Path("/tile.tif"), label=None,
-        label_mask_path=Path("/tile_mask.tif"),
+    record = LegacyRecord(
+        sample_id="tile0", image_path=Path("/tile.tif"), label_mask_path=Path("/tile_mask.tif"),
     )
 
     with pytest.raises(
         ValueError, match=r"segmentation sample 'tile0': Mask read produced invalid labels"
     ):
-        head.extract_targets(record)
+        _targets(head, record)
 
 
 def test_loss_is_zero_not_nan_for_all_ignore_batch():

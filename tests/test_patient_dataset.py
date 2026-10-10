@@ -7,8 +7,8 @@ from pathlib import Path
 import torch
 import pytest
 
-from soma.dataset import SampleRecord
-from soma.features import FeatureStore
+from soma.data import SampleRecord
+from soma.data import CachedSetSource
 from soma.training.patient_dataset import PatientBatch, PatientDataset, patient_collate_fn
 
 
@@ -17,23 +17,23 @@ from soma.training.patient_dataset import PatientBatch, PatientDataset, patient_
 # ---------------------------------------------------------------------------
 
 
-def _create_patient_store(tmp_path: Path, patient_ids: list[str], feature_dim: int) -> FeatureStore:
+def _create_patient_store(tmp_path: Path, patient_ids: list[str], feature_dim: int) -> CachedSetSource:
     for pid in patient_ids:
         torch.save(torch.randn(feature_dim), tmp_path / f"{pid}.pt")
-    return FeatureStore(tmp_path)
+    return CachedSetSource(tmp_path)
 
 
 LABEL_MAP = {"normal": 0, "tumor": 1}
 TARGET_DTYPES = {"label": torch.long}
 PATIENT_RAW_LABEL = {"p1": "tumor", "p2": "normal", "p3": "tumor"}
 PATIENT_RECORD_MAP = {
-    pid: SampleRecord(sample_id=pid, image_path=Path(f"/{pid}.svs"), label=raw, patient_id=pid)
+    pid: SampleRecord(sample_id=pid, targets={"label": raw}, patient_id=pid)
     for pid, raw in PATIENT_RAW_LABEL.items()
 }
 
 
 def _target_fn(record: SampleRecord) -> dict[str, int]:
-    return {"label": LABEL_MAP[record.label]}
+    return {"label": LABEL_MAP[record.targets["label"]]}
 
 
 # ---------------------------------------------------------------------------

@@ -252,15 +252,15 @@ def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None
 
 def test_resume_skips_completed_fold_and_summary_covers_all_folds(tmp_path: Path):
     pytest.importorskip("torch")
-    from soma.dataset import Dataset, Splits
-    from soma.features import FeatureStore
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+    from soma.data import CachedSetSource
     from soma.pipeline import train
     from tests.test_pipeline import _setup_multifold_data
 
     dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-    dataset = Dataset(dataset_csv)
-    splits = Splits(splits_csv, dataset)
-    store = FeatureStore(feature_dir)
+    dataset = legacy_samples_from_csv(dataset_csv)
+    splits = legacy_folds_from_csv(splits_csv, dataset)
+    store = CachedSetSource(feature_dir)
     run_dir = tmp_path / "output"
     # test_digest + run_id mirror the production Pipeline.run() call so the resume also
     # exercises the #247 test-clobber guard (a resume must keep scoring its own test set).
@@ -375,16 +375,16 @@ def test_folds_directive_needs_a_shared_run_dir(tmp_path: Path):
 
 
 def _multifold_train_kwargs(tmp_path: Path) -> dict:
-    from soma.dataset import Dataset, Splits
-    from soma.features import FeatureStore
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+    from soma.data import CachedSetSource
     from tests.test_pipeline import _setup_multifold_data
 
     dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-    dataset = Dataset(dataset_csv)
+    dataset = legacy_samples_from_csv(dataset_csv)
     return dict(
-        feature_store=FeatureStore(feature_dir),
+        feature_store=CachedSetSource(feature_dir),
         dataset=dataset,
-        splits=Splits(splits_csv, dataset),
+        splits=legacy_folds_from_csv(splits_csv, dataset),
         aggregator=AggregatorConfig(name="mean_pool"),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(epochs=2, patience=10, batch_size=2),

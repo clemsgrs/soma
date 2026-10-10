@@ -17,7 +17,8 @@ import pytest
 import torch
 
 from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
-from soma.dataset import Dataset, SampleRecord
+from soma.data import SampleRecord
+from soma.data._legacy import legacy_samples_from_csv
 from soma.evaluation.metrics import compute_survival_metrics
 from soma.pipeline import Pipeline, PipelineResult
 from soma.tasks.survival import (
@@ -162,9 +163,7 @@ class TestCoxSurvivalHead:
         head = CoxSurvivalHead(input_dim=8)
         record = SampleRecord(
             sample_id="s1",
-            image_path=Path("/s1.svs"),
-            label=2.5,
-            metadata={"event": 1},
+            targets={"time": 2.5, "event": 1},
         )
         assert head.extract_targets(record) == {"event": 1.0, "time": 2.5}
 
@@ -379,29 +378,29 @@ class TestCoxConfigGuards:
 def _dataset(tmp_path: Path, rows: list[dict]) -> Dataset:
     path = tmp_path / "dataset.csv"
     pd.DataFrame(rows).to_csv(path, index=False)
-    return Dataset(path)
+    return legacy_samples_from_csv(path)
 
 
 class TestValidateCoxDataset:
     def test_cox_passes_without_bin(self, tmp_path: Path):
         rows = [
-            {"sample_id": f"s{i}", "image_path": f"/s{i}.svs", "label": float(i + 1), "event": i % 2}
+            {"sample_id": f"s{i}", "image_path": f"/s{i}.svs", "time": float(i + 1), "event": i % 2}
             for i in range(4)
         ]
-        validate_survival_dataset(_dataset(tmp_path, rows), "slide", loss="cox")  # no raise
+        validate_survival_dataset(_dataset(tmp_path, rows).records, "slide", loss="cox")  # no raise
 
     def test_cox_still_requires_event(self, tmp_path: Path):
-        rows = [{"sample_id": "s0", "image_path": "/s0.svs", "label": 1.0}]
+        rows = [{"sample_id": "s0", "image_path": "/s0.svs", "time": 1.0}]
         with pytest.raises(ValueError, match="'event'"):
-            validate_survival_dataset(_dataset(tmp_path, rows), "slide", loss="cox")
+            validate_survival_dataset(_dataset(tmp_path, rows).records, "slide", loss="cox")
 
     def test_cox_patient_inconsistent_targets_raise(self, tmp_path: Path):
         rows = [
-            {"sample_id": "s0", "image_path": "/s0.svs", "label": 1.0, "event": 1, "patient_id": "p0"},
-            {"sample_id": "s1", "image_path": "/s1.svs", "label": 2.0, "event": 1, "patient_id": "p0"},
+            {"sample_id": "s0", "image_path": "/s0.svs", "time": 1.0, "event": 1, "patient_id": "p0"},
+            {"sample_id": "s1", "image_path": "/s1.svs", "time": 2.0, "event": 1, "patient_id": "p0"},
         ]
         with pytest.raises(ValueError, match="inconsistent survival targets"):
-            validate_survival_dataset(_dataset(tmp_path, rows), "patient", loss="cox")
+            validate_survival_dataset(_dataset(tmp_path, rows).records, "patient", loss="cox")
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +420,7 @@ class TestCoxEndToEnd:
             {
                 "sample_id": [f"s{i}" for i in range(n)],
                 "image_path": [f"/slides/s{i}.svs" for i in range(n)],
-                "label": times,
+                "time": times,
                 "event": events,
             }
         ).to_csv(dataset_csv, index=False)
@@ -471,7 +470,7 @@ class TestCoxEndToEnd:
             {
                 "sample_id": sample_ids,
                 "image_path": [f"/{s}.svs" for s in sample_ids],
-                "label": [per_patient[p][0] for p in patient_ids],
+                "time": [per_patient[p][0] for p in patient_ids],
                 "event": [per_patient[p][1] for p in patient_ids],
                 "patient_id": patient_ids,
             }

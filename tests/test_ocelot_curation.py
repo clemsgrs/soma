@@ -14,7 +14,7 @@ from soma.curation.ocelot import (
     OCELOT_SPLIT_ROLE,
     curate_ocelot_detection,
 )
-from soma.dataset import DetectionManifest, Splits
+from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 
 
 def _write_raw_sample(
@@ -60,7 +60,7 @@ def test_curate_ocelot_emits_detection_manifest_and_remaps_labels(tmp_path: Path
         "points_path",
         "spacing_at_level_0",
     ]
-    detection = DetectionManifest(manifest.dataset_csv)
+    detection = legacy_samples_from_csv(manifest.dataset_csv)
     assert set(detection.sample_ids) == {"train_001", "train_002", "val_010", "test_020"}
     assert detection.samples["train_001"].spacing_at_level_0 == OCELOT_NATIVE_SPACING_UM
 
@@ -79,8 +79,8 @@ def test_curate_ocelot_maps_splits_to_soma_roles(tmp_path: Path):
     out = tmp_path / "curated"
     manifest = curate_ocelot_detection(raw_root, out)
 
-    detection = DetectionManifest(manifest.dataset_csv)
-    fold = Splits(manifest.splits_csv, detection).folds[0]
+    detection = legacy_samples_from_csv(manifest.dataset_csv)
+    fold = legacy_folds_from_csv(manifest.splits_csv, detection).folds[0]
 
     # OCELOT train->train, val->tune, test->test (Soma emits the split verbatim).
     assert OCELOT_SPLIT_ROLE == {"train": "train", "val": "tune", "test": "test"}

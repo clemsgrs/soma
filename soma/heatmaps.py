@@ -26,8 +26,8 @@ from hs2p.wsi.geometry import select_level_for_downsample
 from hs2p.wsi.reader import open_slide
 
 from soma.config import HeatmapConfig
-from soma.dataset import Dataset
-from soma.features import FeatureStore
+from soma.data._legacy import LegacySamples
+from soma.data import CachedSetSource
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +45,8 @@ _NO_ATTENTION_AGGREGATORS = {"transmil", "mean_pool", "max_pool"}
 
 def save_attention(
     run_dir: Path | str,
-    dataset: Dataset,
-    feature_store: FeatureStore,
+    dataset: LegacySamples,
+    feature_store: CachedSetSource,
 ) -> None:
     """Run inference on test samples and persist per-tile attention scores.
 
@@ -62,7 +62,7 @@ def save_attention(
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: Dataset used to reconstruct the task head (label map).
+        dataset: LegacySamples used to reconstruct the task head (label map).
         feature_store: Feature store used to load tile embeddings.
     """
     from soma.config import load_config
@@ -78,7 +78,7 @@ def save_attention(
     run_dir = Path(run_dir)
     config = load_config(run_dir / "config.yaml")
 
-    if feature_store.is_slide_level or feature_store.is_hierarchical:
+    if feature_store.rank == 1 or feature_store.rank == 3:
         logger.info("save_attention: skipping — slide-level or hierarchical features have no tile attention")
         return
 
@@ -95,7 +95,7 @@ def save_attention(
     task_cfg = config.task
     evaluation_cfg = config.evaluation
     task_cls = task_registry.get(task_cfg.name)
-    task_params = {**task_cls.auto_params(dataset), **task_cfg.params, "metrics": evaluation_cfg.metrics}
+    task_params = {**task_cls.auto_params(dataset.records), **task_cfg.params, "metrics": evaluation_cfg.metrics}
     # ``loss`` selects the training objective (pipeline-level), not a head kwarg; the
     # pipeline strips it before constructing the head and so must this reconstruction.
     task_params.pop("loss", None)
@@ -155,7 +155,7 @@ def save_attention(
                 attention_dir.mkdir(parents=True, exist_ok=True)
 
                 for sample_id in test_sample_ids:
-                    if sample_id not in feature_store.available_samples:
+                    if sample_id not in feature_store.sample_ids:
                         logger.warning("save_attention: features not found for %s, skipping", sample_id)
                         continue
 
@@ -199,7 +199,7 @@ def _prediction_files_for_fold(fold_dir: Path) -> list[tuple[str | None, Path]]:
 
 def render_heatmaps(
     run_dir: Path | str,
-    dataset: Dataset,
+    dataset: LegacySamples,
     tiling_dir: Path | str,
     heatmap_config: HeatmapConfig,
     seg_downsample: int,
@@ -214,7 +214,7 @@ def render_heatmaps(
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: Dataset for resolving WSI paths per sample.
+        dataset: LegacySamples for resolving WSI paths per sample.
         tiling_dir: Run-local tiling directory containing process_list.csv.
         heatmap_config: Rendering parameters (colormap, alpha, blur).
         seg_downsample: Downsample factor for the WSI thumbnail — matches
@@ -294,8 +294,8 @@ def render_heatmaps(
 
 def generate_heatmaps(
     run_dir: Path | str,
-    dataset: Dataset,
-    feature_store: FeatureStore,
+    dataset: LegacySamples,
+    feature_store: CachedSetSource,
     tiling_dir: Path | str,
     heatmap_config: HeatmapConfig,
     seg_downsample: int,
@@ -308,7 +308,7 @@ def generate_heatmaps(
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: Dataset for resolving WSI paths and label map.
+        dataset: LegacySamples for resolving WSI paths and label map.
         feature_store: Feature store for loading features and coordinates.
         tiling_dir: Run-local tiling directory containing process_list.csv.
         heatmap_config: Rendering parameters.

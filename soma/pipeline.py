@@ -32,6 +32,7 @@ from rich.panel import Panel
 from rich.table import Table
 from torch.utils.data import DataLoader
 
+from soma.data import require_coverage
 from soma._logging import ensure_default_logging
 from soma.aggregators.registry import aggregator_registry
 from soma.artifact_mirror import ArtifactMirror, restore_run_from_mirror
@@ -59,15 +60,16 @@ from soma.config import (
     save_config,
     validate_feature_adaptor_compatibility,
 )
-from soma.dataset import (
-    Dataset,
-    DetectionManifest,
-    FoldSplit,
-    SampleRecord,
-    SegmentationManifest,
-    Splits,
-    load_manifest,
+from soma.data import AnnotationManifest, Cohort, FoldSplit, ImageManifest
+from soma.data._legacy import (
+    LegacyFolds,
+    LegacyRecord,
+    LegacySamples,
+    bind_detection_targets,
+    bind_segmentation_targets,
+    records_for_pipeline,
 )
+from soma.dense import DenseSampleSpacing
 from soma.dense.live import LiveSegmentationSource
 from soma.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
 from soma.evaluation.metrics import resolve_metrics
@@ -76,7 +78,7 @@ from soma.evaluation.dense_artifacts import DenseArtifactWriter
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.evaluation.summary import summarize_values
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
-from soma.features import FeatureStore
+from soma.data import CachedSetSource
 from soma.output_layout import (
     build_experiment_spec,
     create_run_metadata,
@@ -200,7 +202,7 @@ class _FeatureSourceContext:
 
     feature_store: object
     dataset: object
-    splits: Splits
+    splits: LegacyFolds
 
 
 @dataclass(frozen=True)
@@ -216,7 +218,7 @@ class _DeterministicBaseline:
 
 
 def _representation_split_ids(
-    splits: Splits, representation: RepresentationConfig
+    splits: LegacyFolds, representation: RepresentationConfig
 ) -> list[str]:
     matches: list[tuple[int, tuple[str, ...]]] = []
     for fold_index, fold in enumerate(splits.folds):
@@ -251,9 +253,9 @@ def _required_representation_text(value: object, *, field_name: str, sample_id: 
 
 
 def evaluate_representation(
-    feature_store: FeatureStore,
-    dataset: Dataset,
-    splits: Splits,
+    feature_store: CachedSetSource,
+    dataset: LegacySamples,
+    splits: LegacyFolds,
     representation: RepresentationConfig,
     run_dir: str | Path,
 ) -> PipelineResult:
@@ -274,17 +276,17 @@ def evaluate_representation(
             "Representation split membership does not match the dataset manifest IDs."
         )
 
-    feature_store.validate_coverage(selected_ids)
+    require_coverage(feature_store, selected_ids)
     manifest_rows: list[dict[str, str]] = []
     feature_rows: list[np.ndarray] = []
     feature_dim: int | None = None
     for sample_id in selected_ids:
         record = dataset.samples[sample_id]
         label = _required_representation_text(
-            record.label, field_name="label", sample_id=sample_id
+            record.targets.get("label"), field_name="label", sample_id=sample_id
         )
         group_id = _required_representation_text(
-            record.group_id, field_name="group_id", sample_id=sample_id
+            record.metadata.get("group_id"), field_name="group_id", sample_id=sample_id
         )
         confounder = _required_representation_text(
             record.metadata.get(representation.confounder_column),
@@ -408,7 +410,7 @@ def _resolve_tune_is_test_split(fold_split: FoldSplit, fold_label: str) -> str:
     return test_split_names[0]
 
 
-def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
+def _patient_ids_for_records(records: list[LegacyRecord]) -> list[str]:
     seen: set[str] = set()
     patient_ids: list[str] = []
     for record in records:
@@ -423,8 +425,8 @@ def _patient_ids_for_records(records: list[SampleRecord]) -> list[str]:
     return patient_ids
 
 
-def _patient_placeholder_records(records: list[SampleRecord]) -> dict[str, SampleRecord]:
-    placeholder_records: dict[str, SampleRecord] = {}
+def _patient_placeholder_records(records: list[LegacyRecord]) -> dict[str, LegacyRecord]:
+    placeholder_records: dict[str, LegacyRecord] = {}
     for record in records:
         if record.patient_id is None or record.patient_id in placeholder_records:
             continue
@@ -467,7 +469,7 @@ def _make_loaders(
     tune_items,
     test_items_by_split: dict,
     training: TrainingConfig,
-    feature_store: FeatureStore,
+    feature_store: CachedSetSource,
     target_fn,
     *,
     train_batch_sampler=None,
@@ -510,7 +512,7 @@ def _make_loaders(
 
 
 def _segmentation_roi_batch_sampler(
-    records: list[SampleRecord],
+    records: list[LegacyRecord],
     population,
     *,
     num_classes: int,
@@ -540,9 +542,9 @@ def _segmentation_roi_batch_sampler(
 def _make_live_loaders(
     source: "LiveSegmentationSource",
     collate_fn,
-    train_records: list[SampleRecord],
-    tune_records: list[SampleRecord],
-    test_records_by_split: dict[str, list[SampleRecord]],
+    train_records: list[LegacyRecord],
+    tune_records: list[LegacyRecord],
+    test_records_by_split: dict[str, list[LegacyRecord]],
     training: TrainingConfig,
     *,
     num_classes: int,
@@ -566,7 +568,7 @@ def _make_live_loaders(
         target_size=source.geometry.target_size,
     )
 
-    def _make(records: list[SampleRecord], augment) -> LiveSegmentationDataset:
+    def _make(records: list[LegacyRecord], augment) -> LiveSegmentationDataset:
         return LiveSegmentationDataset(
             records,
             geometry=source.geometry,
@@ -650,7 +652,7 @@ class _SupportFeatures:
     still never holding more than one sample's tiles at once.
     """
 
-    def __init__(self, feature_store: FeatureStore, records) -> None:
+    def __init__(self, feature_store: CachedSetSource, records) -> None:
         self._feature_store = feature_store
         self._sample_ids = [record.sample_id for record in records]
 
@@ -751,8 +753,8 @@ def _fit_feature_adaptor(
 
 
 def train_one_fold(
-    feature_store: FeatureStore,
-    dataset: Dataset,
+    feature_store: CachedSetSource,
+    dataset: LegacySamples,
     fold_split: FoldSplit,
     task: TaskConfig,
     training: TrainingConfig,
@@ -773,7 +775,7 @@ def train_one_fold(
 
     Args:
         feature_store: Precomputed embeddings.
-        dataset: Dataset with sample records and label_map.
+        dataset: LegacySamples with sample records and label_map.
         fold_split: Train/tune/test sample IDs for this fold.
         dataset_type: ``"slide"`` for WSI pipelines; ``"tile"`` for tile-image
             pipelines where each sample is a single encoded patch.
@@ -814,7 +816,7 @@ def train_one_fold(
         # Patient-level: features are indexed by patient_id; splits are slide-based.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
         tune_records = [dataset.samples[sid] for sid in fold_split.tune]
-        test_records_by_split: dict[str, list[SampleRecord]] = {
+        test_records_by_split: dict[str, list[LegacyRecord]] = {
             split_name: [dataset.samples[sid] for sid in ids]
             for split_name, ids in fold_split.tests.items()
         }
@@ -854,7 +856,7 @@ def train_one_fold(
             empty_patient_ids = {
                 patient_id for patient_id, status in manifest_statuses.items() if status == "empty"
             }
-            unexpected_missing_ids = sorted(expected_feature_ids - set(feature_store.available_samples))
+            unexpected_missing_ids = sorted(expected_feature_ids - set(feature_store.sample_ids))
             if unexpected_missing_ids:
                 msg = (
                     f"Feature store is missing expected patient embedding(s) for fold {fold}: "
@@ -882,7 +884,7 @@ def train_one_fold(
                 | set(tune_patient_ids)
                 | {patient_id for ids in test_patient_ids_by_split.values() for patient_id in ids}
             )
-            missing_patient_ids = sorted(split_patient_ids - set(feature_store.available_samples))
+            missing_patient_ids = sorted(split_patient_ids - set(feature_store.sample_ids))
             if missing_patient_ids:
                 msg = (
                     f"Patient feature store is missing patient embedding(s) required by fold {fold}: "
@@ -908,7 +910,7 @@ def train_one_fold(
         empty_sample_ids = {
             sample_id for sample_id, status in manifest_statuses.items() if status == "empty"
         }
-        unexpected_missing_ids = sorted(expected_feature_ids - set(feature_store.available_samples))
+        unexpected_missing_ids = sorted(expected_feature_ids - set(feature_store.sample_ids))
         if unexpected_missing_ids:
             msg = (
                 f"Feature store is missing expected sample(s) for fold {fold}: "
@@ -1063,9 +1065,9 @@ def train_one_fold(
 
         task_cls, survival_loss = resolve_survival_task(task.name, task.params)
         validate_survival_dataset(
-            dataset, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
+            dataset.records, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
         )
-    task_params = {**task_cls.auto_params(dataset), **task.params, "metrics": evaluation.metrics}
+    task_params = {**task_cls.auto_params(dataset.records), **task.params, "metrics": evaluation.metrics}
     task_params.pop("loss", None)
 
     task_family = task_cls.task_family
@@ -1080,7 +1082,7 @@ def train_one_fold(
         normalization,
         projection,
         dataset_type=dataset_type,
-        is_hierarchical=feature_store.is_hierarchical,
+        is_hierarchical=feature_store.rank == 3,
     )
 
     # The task head owns its target contract. Build the head first, then derive
@@ -1124,18 +1126,18 @@ def train_one_fold(
                 PatientDataset(train_patient_ids, patient_record_map, feature_store, target_fn),
                 _patient_collate,
                 events=[
-                    int(patient_record_map[pid].metadata["event"]) for pid in train_patient_ids
+                    int(patient_record_map[pid].targets["event"]) for pid in train_patient_ids
                 ],
                 training=training,
                 min_events_per_window=head.min_events_per_window,
             )
         model: torch.nn.Module = EmbeddingModel(task_head=head)
-    elif dataset_type == "tile" or feature_store.is_slide_level:
+    elif dataset_type == "tile" or feature_store.rank == 1:
         # Single-embedding path: one pre-computed vector per sample, no aggregation.
         # Fit the adaptor BEFORE the head is constructed, from the Support split's
         # embeddings and nothing else — "K means K", and here K rows is literally all
         # there is, which is why the PCA preflight is load-bearing on this path.
-        if feature_store.is_slide_level and aggregator is not None:
+        if feature_store.rank == 1 and aggregator is not None:
             raise ValueError("aggregator must be None for slide-level features")
         feature_adaptor = _fit_feature_adaptor(
             normalization,
@@ -1165,14 +1167,14 @@ def train_one_fold(
             train_loader = _event_balanced_train_loader(
                 SampleDataset(train_records, feature_store, target_fn),
                 _sample_collate,
-                events=[int(r.metadata["event"]) for r in train_records],
+                events=[int(r.targets["event"]) for r in train_records],
                 training=training,
                 min_events_per_window=head.min_events_per_window,
             )
         model: torch.nn.Module = EmbeddingModel(
             task_head=head, feature_adaptor=feature_adaptor
         )
-    elif feature_store.is_hierarchical:
+    elif feature_store.rank == 3:
         if aggregator is None:
             raise ValueError("aggregator must be provided for hierarchical features")
         if aggregator.name != "hipt":
@@ -1191,7 +1193,7 @@ def train_one_fold(
             training, feature_store, target_fn,
         )
         if getattr(head, "needs_event_balanced_batches", False):
-            train_events = [int(r.metadata["event"]) for r in train_records]
+            train_events = [int(r.targets["event"]) for r in train_records]
             if getattr(head, "accumulates_predictions", False):
                 _cox_collate = functools.partial(
                     cox_window_collate,
@@ -1249,7 +1251,7 @@ def train_one_fold(
         # Cox MIL: replace the train loader with an event-balanced one. Tune/test
         # keep the ordinary bag loaders — eval is full-cohort and order-agnostic.
         if getattr(head, "needs_event_balanced_batches", False):
-            train_events = [int(r.metadata["event"]) for r in train_records]
+            train_events = [int(r.targets["event"]) for r in train_records]
             if getattr(head, "accumulates_predictions", False):
                 # Accumulation mode: windows of cox_window un-padded bags.
                 _cox_collate = functools.partial(cox_window_collate, target_dtypes=head.target_dtypes)
@@ -1307,8 +1309,8 @@ def train_one_fold(
         heatmaps is not None
         and heatmaps.enabled
         and aggregator is not None
-        and not feature_store.is_slide_level
-        and not feature_store.is_hierarchical
+        and not feature_store.rank == 1
+        and not feature_store.rank == 3
     )
 
     empty_eval_sample_ids = empty_sample_ids_by_split or {}
@@ -1478,8 +1480,9 @@ def _build_segmentation_head(
     preprocessing: PreprocessingConfig | None,
     masks: "MasksConfig | None",
     geometry,
+    records: "Sequence[LegacyRecord]",
 ) -> SegmentationHead:
-    """Build the fold-independent segmentation target contract.
+    """Build the fold-independent segmentation target contract, bound to its label maps.
 
     The head class is the one registered under ``task.name`` (a user subclass of
     :class:`SegmentationHead` with a custom loss or metric reduction, or the built-in).
@@ -1496,7 +1499,7 @@ def _build_segmentation_head(
     mask_spacing_um = (
         preprocessing.requested_spacing_um if preprocessing is not None else None
     )
-    return head_cls(
+    head = head_cls(
         num_classes=num_classes,
         geometry=geometry,
         metrics=evaluation.metrics,
@@ -1511,11 +1514,13 @@ def _build_segmentation_head(
         pixel_mapping=masks.pixel_mapping if masks is not None else None,
         **seg_params,
     )
+    bind_segmentation_targets(head, records)
+    return head
 
 
 def _segmentation_run_records(
-    dataset: SegmentationManifest, splits: Splits
-) -> list[SampleRecord]:
+    dataset: LegacySamples, splits: LegacyFolds
+) -> list[LegacyRecord]:
     """Return every ROI named by the run's folds, once, in manifest order."""
     sample_ids = {
         sample_id
@@ -1532,7 +1537,7 @@ def _segmentation_run_records(
 def _resolve_segmentation_roi_population(
     *,
     cache_root: str | Path,
-    records: list[SampleRecord],
+    records: list[LegacyRecord],
     head: SegmentationHead,
     source_fingerprint_cache: dict[str, dict[str, object]] | None,
     resolved_backend_cache: dict[tuple[str, str, bool], str] | None,
@@ -1555,8 +1560,8 @@ def _resolve_segmentation_roi_population(
 
 
 def train_one_segmentation_fold(
-    feature_store: "DenseFeatureSource | LiveSegmentationSource",
-    dataset: SegmentationManifest,
+    feature_store: "GridSource | LiveSegmentationSource",
+    dataset: LegacySamples,
     fold_split: FoldSplit,
     task: TaskConfig,
     training: TrainingConfig,
@@ -1587,7 +1592,7 @@ def train_one_segmentation_fold(
     semantics are reused.
 
     Two data planes share this body (design §13.B-3), distinguished by
-    ``feature_store``: a :class:`~soma.dense.DenseFeatureSource` drives the **cached**
+    ``feature_store``: a :class:`~soma.dense.GridSource` drives the **cached**
     path (read pre-extracted grids + head-loaded masks with explicit provenance), a
     :class:`~soma.dense.live.LiveSegmentationSource` drives the **live** path
     (re-encode augmented image+mask tiles through the frozen encoder each step). Only
@@ -1646,7 +1651,7 @@ def train_one_segmentation_fold(
         geometry = feature_store.geometry
         ref_feature_dim = feature_store.feature_dim
     else:
-        feature_store.validate_coverage([r.sample_id for r in all_records])
+        require_coverage(feature_store, [r.sample_id for r in all_records])
         # The head crop + decoder are built from one reference sample, which is only
         # correct if the run is uniform (fixed tile/grid size — the v1 assumption);
         # assert it loudly rather than silently misregister logits.
@@ -1655,7 +1660,7 @@ def train_one_segmentation_fold(
         ref_feature_dim = feature_store.feature_dim
         for record in all_records:
             sid = record.sample_id
-            if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+            if feature_store.geometry(sid).layout != geometry.layout or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
                 raise ValueError(
                     f"dense grid '{sid}' has geometry/feature_dim differing from reference "
                     f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
@@ -1669,6 +1674,7 @@ def train_one_segmentation_fold(
         preprocessing=preprocessing,
         masks=masks,
         geometry=geometry,
+        records=all_records,
     )
     num_classes = head.num_classes
     class_vocabulary = resolve_class_scheme(
@@ -1915,11 +1921,21 @@ def _resolve_detection_px(value_um: float, spacing_um: float | None, name: str) 
 
 
 def _resolve_detection_sample_spacings(feature_store, records):
-    """Read per-sample extraction provenance and require one effective grid scale."""
-    spacing_by_id = {
-        str(record.sample_id): feature_store.spacing(str(record.sample_id))
-        for record in records
-    }
+    """Resolve each sample's physical scales from the :class:`GridSource` protocol.
+
+    ``spacing`` is the grid's effective µm/px and ``geometry().level0_px_per_token_px``
+    the level-0 pixels per grid pixel (``effective / source``), so any conforming
+    source yields the head's :class:`DenseSampleSpacing`. One effective spacing is
+    required across the run.
+    """
+    spacing_by_id: dict[str, DenseSampleSpacing] = {}
+    for record in records:
+        sample_id = str(record.sample_id)
+        effective = float(feature_store.spacing(sample_id))
+        scale = float(feature_store.geometry(sample_id).level0_px_per_token_px)
+        spacing_by_id[sample_id] = DenseSampleSpacing(
+            source_spacing_um=effective / scale, effective_spacing_um=effective
+        )
     effective_groups: dict[float, list[str]] = {}
     for sample_id, spacing in spacing_by_id.items():
         effective_groups.setdefault(float(spacing.effective_spacing_um), []).append(
@@ -1938,8 +1954,8 @@ def _resolve_detection_sample_spacings(feature_store, records):
 
 
 def train_one_detection_fold(
-    feature_store: "DenseFeatureSource",
-    dataset: DetectionManifest,
+    feature_store: "GridSource",
+    dataset: LegacySamples,
     fold_split: FoldSplit,
     task: TaskConfig,
     training: TrainingConfig,
@@ -2007,13 +2023,13 @@ def train_one_detection_fold(
         k: v for k, v in task.params.items() if k not in ("num_classes", "classes", "drop")
     }
 
-    feature_store.validate_coverage([r.sample_id for r in all_records])
+    require_coverage(feature_store, [r.sample_id for r in all_records])
     ref_id = train_records[0].sample_id
     geometry = feature_store.geometry(ref_id)
     ref_feature_dim = feature_store.feature_dim
     for record in all_records:
         sid = record.sample_id
-        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+        if feature_store.geometry(sid).layout != geometry.layout or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
             raise ValueError(
                 f"dense grid '{sid}' has geometry/feature_dim differing from reference "
                 f"'{ref_id}'; dataset_type='detection' v1 requires a uniform tile/grid size."
@@ -2064,6 +2080,7 @@ def train_one_detection_fold(
         class_names=class_names,
         **det_params,
     )
+    bind_detection_targets(head, all_records)
     target_fn = head.extract_targets
 
     # Feature adaptor (issue #286). Training fits it on the Support ROIs' grid positions;
@@ -2235,7 +2252,7 @@ def _evaluate_detection(
     device: torch.device,
     *,
     head: DetectionHead,
-    dataset: DetectionManifest,
+    dataset: LegacySamples,
     output_dir: Path | None = None,
     save_detection_overlays: bool = True,
     save_detection_heatmaps: bool = False,
@@ -2322,8 +2339,8 @@ def _evaluate_detection(
 
 
 def train_one_pixel_classifier_fold(
-    feature_store: "DenseFeatureSource",
-    dataset: SegmentationManifest,
+    feature_store: "GridSource",
+    dataset: LegacySamples,
     fold_split: FoldSplit,
     task: TaskConfig,
     training: TrainingConfig,
@@ -2377,7 +2394,7 @@ def train_one_pixel_classifier_fold(
     tune_records = fold_plan.tune_records
     test_records_by_split = fold_plan.test_records_by_split
     all_records = fold_plan.all_records
-    feature_store.validate_coverage([r.sample_id for r in all_records])
+    require_coverage(feature_store, [r.sample_id for r in all_records])
 
     # Geometry + feature_dim from one reference sample; assert cohort uniformity.
     ref_id = train_records[0].sample_id
@@ -2385,7 +2402,7 @@ def train_one_pixel_classifier_fold(
     ref_feature_dim = feature_store.feature_dim
     for record in all_records:
         sid = record.sample_id
-        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+        if feature_store.geometry(sid).layout != geometry.layout or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
             raise ValueError(
                 f"dense grid '{sid}' has geometry/feature_dim differing from reference "
                 f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
@@ -2398,6 +2415,7 @@ def train_one_pixel_classifier_fold(
         preprocessing=preprocessing,
         masks=masks,
         geometry=geometry,
+        records=all_records,
     )
     num_classes = head.num_classes
 
@@ -2479,8 +2497,8 @@ def _write_probe_predictions(
 
 
 def train_one_probe_fold(
-    feature_store: FeatureStore,
-    dataset: "SpatialExpressionManifest",
+    feature_store: CachedSetSource,
+    dataset: "LegacySamples",
     fold_split: FoldSplit,
     task: TaskConfig,
     training: TrainingConfig,
@@ -2518,7 +2536,7 @@ def train_one_probe_fold(
         name: [str(sid) for sid in ids] for name, ids in fold_split.tests.items()
     }
     all_ids = train_ids + [sid for ids in test_ids_by_split.values() for sid in ids]
-    feature_store.validate_coverage(all_ids)
+    require_coverage(feature_store, all_ids)
 
     genes = list(dataset.genes)
     n_genes = len(genes)
@@ -2531,7 +2549,10 @@ def train_one_probe_fold(
 
     def _stack_targets(ids: list[str]) -> np.ndarray:
         return np.stack(
-            [np.asarray(dataset.samples[sid].target, dtype=np.float64) for sid in ids]
+            [
+                np.asarray(dataset.samples[sid].targets["expression"], dtype=np.float64)
+                for sid in ids
+            ]
         )
 
     x_train = _stack_features(train_ids)
@@ -2592,9 +2613,9 @@ def train_one_probe_fold(
 
 
 def train(
-    feature_store: FeatureStore,
-    dataset: Dataset,
-    splits: Splits,
+    feature_store: CachedSetSource,
+    dataset: LegacySamples,
+    splits: LegacyFolds,
     task: TaskConfig,
     training: TrainingConfig,
     run_dir: str | Path,
@@ -2624,7 +2645,7 @@ def train(
 
     Args:
         feature_store: Precomputed embeddings.
-        dataset: Dataset with sample records and label_map.
+        dataset: LegacySamples with sample records and label_map.
         splits: Cross-validation splits (1 or more folds).
         dataset_type: ``"slide"`` for WSI pipelines; ``"tile"`` for tile-image
             pipelines.
@@ -2747,9 +2768,6 @@ def train(
             )
             evaluation = replace(evaluation, holdout_test=True)
 
-    if dataset_type == "patient" or dataset.has_patient_ids:
-        splits.validate_no_patient_leakage(dataset)
-
     fold_results = []
     for fold_idx, fold_split in enumerate(splits.folds):
         fold_dir = _fold_dir(fold_idx)
@@ -2849,6 +2867,7 @@ def train(
                     preprocessing=preprocessing,
                     masks=masks,
                     geometry=run_geometry,
+                    records=run_records,
                 )
                 run_roi_population = _resolve_segmentation_roi_population(
                     cache_root=roi_population_cache_root,
@@ -2993,7 +3012,7 @@ def _build_run_summary_panel(
     preprocessing: PreprocessingConfig,
     aggregator: AggregatorConfig | None,
     task: TaskConfig,
-    feature_store: FeatureStore,
+    feature_store: CachedSetSource,
     dataset_type: str = "slide",
     decoder: DecoderConfig | None = None,
     pixel_classifier: PixelClassifierConfig | None = None,
@@ -3037,12 +3056,12 @@ def _build_run_summary_panel(
     elif dataset_type == "tile":
         level = "tile (encoded)"
     elif dataset_type in ("segmentation", "detection"):
-        # DenseFeatureStore is not a FeatureStore (no is_slide_level/is_hierarchical);
+        # CachedGridSource is not a CachedSetSource (no is_slide_level/is_hierarchical);
         # branch before those attrs are touched.
         level = "dense (segmentation)" if dataset_type == "segmentation" else "dense (detection)"
-    elif feature_store.is_slide_level:
+    elif feature_store.rank == 1:
         level = "slide"
-    elif feature_store.is_hierarchical:
+    elif feature_store.rank == 3:
         level = "hierarchical"
     else:
         level = "tile"
@@ -3369,7 +3388,7 @@ def composite_member_extraction_spec(
 
 
 def build_composite_dense_store(
-    config: PipelineConfig, dataset: Dataset, *, output_root: Path
+    config: PipelineConfig, dataset: LegacySamples, *, output_root: Path
 ):
     """Extract every composite member into its own cache; return the concat view (§7).
 
@@ -3446,6 +3465,83 @@ def build_composite_dense_store(
     )
 
 
+def extraction_shape(dataset_type: str) -> str:
+    """The feature shape a ``dataset_type`` trains on: ``grid`` for dense tasks, else ``set``."""
+    return "grid" if dataset_type in {"segmentation", "detection"} else "set"
+
+
+def extraction_unit(config: PipelineConfig) -> str:
+    """What one manifest row is to extraction: a whole slide or a pre-cropped image."""
+    if config.dataset_type in {"slide", "patient"}:
+        return "slide"
+    if config.dataset_type in {"segmentation", "detection"} and config.preprocessing.masks is not None:
+        return "slide"
+    return "tile"
+
+
+def resolve_task_class(config: PipelineConfig):
+    """The registered head class a config trains (survival resolves its loss variant)."""
+    if config.task is None:
+        return None
+    task_cls = task_registry.get(config.task.name)
+    if task_cls.task_family == "survival":
+        from soma.tasks.survival import resolve_survival_task
+
+        task_cls, _ = resolve_survival_task(config.task.name, config.task.params)
+    return task_cls
+
+
+def load_pipeline_data(
+    config: PipelineConfig,
+) -> tuple[Cohort, ImageManifest, AnnotationManifest | None]:
+    """Read the cohort and manifests a config names, validated against its task head.
+
+    The head's ``target_schema`` says which target keys the cohort must carry (``label``,
+    ``time``/``event``, ``value``, ``expression`` ...); ``task.targets`` maps a key to a
+    differently named CSV column. ``training.tune_is_test`` reuses each fold's tune split
+    for test reporting via :meth:`Cohort.with_test_from_tune`.
+    """
+    task_cls = resolve_task_class(config)
+    schema = dict(getattr(task_cls, "target_schema", {}) or {}) if task_cls is not None else {}
+    if config.representation is not None and config.task is None:
+        schema = {"label": object}
+    if config.dataset_type == "spatial_expression":
+        # The closed-form probe regresses the per-spot expression vector (served from the
+        # target_index column + sidecars), not the regression head's scalar ``value``.
+        schema = {"expression": np.ndarray}
+    renames = dict(config.task.targets) if config.task is not None and config.task.targets else {}
+    unknown = sorted(set(renames) - set(schema))
+    if unknown:
+        raise ValueError(
+            f"task.targets names key(s) {unknown} the task head does not declare; "
+            f"its target keys are {sorted(schema)}."
+        )
+    targets = {key: renames.get(key, key) for key in schema}
+    cohort = Cohort.from_csv(
+        config.dataset_csv,
+        config.splits_csv,
+        targets=targets,
+        dtypes=schema,
+        unit="patient_id" if config.dataset_type == "patient" else None,
+        allow_missing_test=config.training.tune_is_test,
+    )
+    if config.training.tune_is_test:
+        cohort = cohort.with_test_from_tune()
+    image_manifest = ImageManifest.from_csv(config.dataset_csv)
+    annotation_manifest = None
+    if config.dataset_type in {"segmentation", "detection"}:
+        masks = config.preprocessing.masks
+        annotation_manifest = AnnotationManifest.from_csv(
+            config.dataset_csv,
+            pixel_mapping=masks.pixel_mapping if masks is not None else None,
+        )
+        if config.dataset_type == "segmentation" and not annotation_manifest.has_label_masks:
+            raise ValueError("dataset_type='segmentation' needs a label_mask_path column.")
+        if config.dataset_type == "detection" and not annotation_manifest.has_points:
+            raise ValueError("dataset_type='detection' needs a points_path column.")
+    return cohort, image_manifest, annotation_manifest
+
+
 class Pipeline:
     """Orchestrates the full pipeline: extract → train all folds → summarize.
 
@@ -3462,16 +3558,15 @@ class Pipeline:
     ) -> None:
         ensure_default_logging()
         self._config = config
-        # The load-time validator keyed on dataset_type selects the right manifest loader
-        # (segmentation -> label_mask_path, detection -> points_path, else -> label); each loader
-        # fail-fast validates its supervision column and exposes the samples/sample_ids
-        # surface Splits needs.
-        self._dataset = load_manifest(config.dataset_csv, config.dataset_type)
-        self._splits = Splits(
-            config.splits_csv,
-            self._dataset,
-            tune_is_test=config.training.tune_is_test,
+        self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
+        # Legacy bridge (delete in slice 7, #581): pipeline.py still consumes fat records.
+        self._dataset = records_for_pipeline(
+            self._cohort,
+            self._image_manifest,
+            self._annotation_manifest,
+            path=config.dataset_csv,
         )
+        self._splits = LegacyFolds.from_cohort(self._cohort)
         self._feature_dir = Path(feature_dir) if feature_dir else None
 
     @property
@@ -3479,11 +3574,24 @@ class Pipeline:
         return self._config
 
     @property
-    def dataset(self) -> Dataset:
+    def cohort(self) -> Cohort:
+        return self._cohort
+
+    @property
+    def image_manifest(self) -> ImageManifest:
+        return self._image_manifest
+
+    @property
+    def annotation_manifest(self) -> AnnotationManifest | None:
+        return self._annotation_manifest
+
+    @property
+    def dataset(self) -> LegacySamples:
+        """Legacy fat records (delete in slice 7, #581)."""
         return self._dataset
 
     @property
-    def splits(self) -> Splits:
+    def splits(self) -> LegacyFolds:
         return self._splits
 
     def run(self) -> PipelineResult:
@@ -3641,16 +3749,16 @@ class Pipeline:
                 "not implemented."
             )
         if self._feature_dir is not None:
-            from soma.dense import DenseFeatureStore
+            from soma.dense import CachedGridSource
 
             source = (
                 self._cache_backed_dense_source(
-                    DenseFeatureStore(self._feature_dir),
+                    CachedGridSource(self._feature_dir),
                     kind="dense_cache",
                     dataset_csv=self._config.dataset_csv,
                 )
                 if is_dense
-                else FeatureStore(self._feature_dir)
+                else CachedSetSource(self._feature_dir)
             )
             return _FeatureSourceContext(
                 feature_store=source,
@@ -3679,6 +3787,8 @@ class Pipeline:
             self._dataset,
             self._config.encoder,
             resolve_pipeline_preprocessing(self._config),
+            shape=extraction_shape(self._config.dataset_type),
+            unit=extraction_unit(self._config),
             output_root=run_dir,
             execution=self._config.execution,
             cache=cache_config,
@@ -3697,17 +3807,15 @@ class Pipeline:
         dataset_csv: str | Path,
         parent_dataset_csv: str | Path | None = None,
     ):
-        from soma.dense import CacheBackedDenseSource, DenseSourceProvenance
+        from soma.dense import DenseSourceProvenance
 
-        return CacheBackedDenseSource(
-            store,
-            provenance=DenseSourceProvenance(
-                kind=kind,
-                feature_dir=getattr(store, "feature_dir", None),
-                dataset_csv=dataset_csv,
-                parent_dataset_csv=parent_dataset_csv,
-            ),
+        store.provenance = DenseSourceProvenance(
+            kind=kind,
+            feature_dir=getattr(store, "feature_dir", None),
+            dataset_csv=dataset_csv,
+            parent_dataset_csv=parent_dataset_csv,
         )
+        return store
 
     def _get_dense_source(self, *, run_dir: Path):
         # Live re-encode path: no cached grids — hold the frozen encoder + geometry and
@@ -3851,7 +3959,7 @@ def _evaluate_segmentation(
     split_name: str,
     device: torch.device,
     *,
-    dataset: SegmentationManifest | None = None,
+    dataset: LegacySamples | None = None,
     output_dir: Path | None = None,
     save_segmentation_overlays: bool = True,
     save_segmentation_probabilities: bool = False,
@@ -3945,10 +4053,10 @@ def _evaluate_segmentation(
 
 
 def _records_for_sample_ids(
-    dataset: Dataset,
+    dataset: LegacySamples,
     sample_ids: tuple[str, ...],
     allowed_sample_ids: set[str],
-) -> list[SampleRecord]:
+) -> list[LegacyRecord]:
     return [
         dataset.samples[sample_id]
         for sample_id in sample_ids
@@ -3957,7 +4065,7 @@ def _records_for_sample_ids(
 
 
 def _build_deterministic_baseline(
-    train_records: list[SampleRecord],
+    train_records: list[LegacyRecord],
     *,
     target_fn,
     task_family: str,
@@ -4002,7 +4110,7 @@ def _build_deterministic_baseline(
 
 
 def _make_placeholder_prediction(
-    record: SampleRecord,
+    record: LegacyRecord,
     *,
     target_fn,
     baseline: _DeterministicBaseline,
@@ -4090,14 +4198,14 @@ def _evaluate_split_with_placeholders(
     *,
     output_sample_ids: tuple[str, ...],
     empty_sample_ids: list[str],
-    dataset: Dataset,
+    dataset: LegacySamples,
     target_fn,
     baseline: _DeterministicBaseline,
     metric_names: list[str],
     task_family: str,
     attention_dir: Path | None = None,
     aggregator_name: str | None = None,
-    placeholder_records_by_id: dict[str, SampleRecord] | None = None,
+    placeholder_records_by_id: dict[str, LegacyRecord] | None = None,
 ) -> EvaluationReport:
     real_report = (
         _evaluate(
@@ -4159,7 +4267,7 @@ def _save_training_history(history: list, path: Path) -> None:
 
 
 def _build_subgroup_data(
-    dataset: Dataset,
+    dataset: LegacySamples,
     report: EvaluationReport,
     subgroup_columns: list[str],
 ) -> dict[str, dict[str, object]]:

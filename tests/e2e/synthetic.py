@@ -69,14 +69,14 @@ class SlideCohort:
         elif task in {"multiclass_classification", "ordinal_classification"}:
             frame["label"] = np.digitize(z, [1 / 3, 2 / 3])
         elif task == "regression":
-            frame["label"] = np.round(10.0 * z, 4)
+            frame["value"] = np.round(10.0 * z, 4)
         elif task == "survival":
             # Higher severity -> earlier event; every fourth sample is censored early.
             time = np.round(1.0 + 20.0 * (1.0 - z), 4)
             event = np.ones(len(z), dtype=int)
             event[::4] = 0
             time[::4] = np.round(time[::4] * 0.8, 4)
-            frame["label"] = time
+            frame["time"] = time
             frame["event"] = event
             frame["bin"] = pd.qcut(time, 4, labels=False)
         else:

@@ -10,14 +10,14 @@ from pathlib import Path
 import torch
 
 import soma.training.segmentation_roi_population as population_module
-from soma.dataset import SampleRecord
+from soma.data._legacy import LegacyRecord
 from soma.training.segmentation_roi_population import (
     resolve_segmentation_roi_population,
 )
 
 
-def _record(sample_id: str) -> SampleRecord:
-    return SampleRecord(sample_id=sample_id, image_path=Path(f"{sample_id}.tif"), label=None)
+def _record(sample_id: str) -> LegacyRecord:
+    return LegacyRecord(sample_id=sample_id, image_path=Path(f"{sample_id}.tif"), )
 
 
 def test_population_is_computed_once_and_reused_exactly(tmp_path: Path) -> None:
@@ -28,7 +28,7 @@ def test_population_is_computed_once_and_reused_exactly(tmp_path: Path) -> None:
         "b": torch.tensor([[1, 1], [1, 0]]),
     }
 
-    def target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
+    def target_fn(record: LegacyRecord) -> dict[str, torch.Tensor]:
         calls.append(record.sample_id)
         return {"mask": masks[record.sample_id]}
 
@@ -42,7 +42,7 @@ def test_population_is_computed_once_and_reused_exactly(tmp_path: Path) -> None:
         workers=2,
     )
 
-    def fail_if_read(_record: SampleRecord) -> dict[str, torch.Tensor]:
+    def fail_if_read(_record: LegacyRecord) -> dict[str, torch.Tensor]:
         raise AssertionError("a warm population must not reread masks")
 
     warm = resolve_segmentation_roi_population(
@@ -105,7 +105,7 @@ def test_concurrent_cold_resolvers_compute_each_roi_once(tmp_path: Path) -> None
     calls: list[str] = []
     calls_lock = threading.Lock()
 
-    def target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
+    def target_fn(record: LegacyRecord) -> dict[str, torch.Tensor]:
         with calls_lock:
             calls.append(record.sample_id)
         time.sleep(0.01)
@@ -135,7 +135,7 @@ def test_changed_target_identity_does_not_reuse_stale_counts(tmp_path: Path) -> 
     calls: list[str] = []
 
     def resolve(identity: str, mask: torch.Tensor):
-        def target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
+        def target_fn(record: LegacyRecord) -> dict[str, torch.Tensor]:
             calls.append(f"{identity}:{record.sample_id}")
             return {"mask": mask}
 
@@ -192,7 +192,7 @@ def test_changed_mask_source_does_not_reuse_stale_counts(tmp_path: Path) -> None
     calls: list[str] = []
 
     def resolve(mask: torch.Tensor):
-        def target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
+        def target_fn(record: LegacyRecord) -> dict[str, torch.Tensor]:
             calls.append(record.sample_id)
             return {"mask": mask}
 
@@ -302,7 +302,7 @@ def test_mask_reader_schema_tracks_grid_registered_roi_mask_reads() -> None:
     assert population_module._MASK_READER_SCHEMA_VERSION == 4
 
 
-def _roi_record(tmp_path: Path) -> SampleRecord:
+def _roi_record(tmp_path: Path) -> LegacyRecord:
     raster = tmp_path / "annotation.tif"
     raster.write_bytes(b"raster")
     crop = tmp_path / "masks" / "s0" / "0_0.png"
@@ -319,7 +319,7 @@ def _roi_record(tmp_path: Path) -> SampleRecord:
 
 
 def _counting_resolve(tmp_path: Path, records, calls: list[str]):
-    def target_fn(record: SampleRecord) -> dict[str, torch.Tensor]:
+    def target_fn(record: LegacyRecord) -> dict[str, torch.Tensor]:
         calls.append(record.sample_id)
         return {"mask": torch.tensor([[0, 1]])}
 

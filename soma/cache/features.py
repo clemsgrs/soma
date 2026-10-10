@@ -60,7 +60,7 @@ from soma.cache.keys import (
     preprocessing_signature,
 )
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import LegacySamples
 
 # Joins every slide-manifest ROI grid's cache identity. ROI masks are read at the spacing
 # slide2vec recorded for the grid (``effective_spacing_um``), which it records since 5.7;
@@ -469,7 +469,7 @@ def _validate_feature_cache_contents(
     }
     expected_rank = _FEATURE_TYPE_TO_RANK[feature_type]
     expected_feature_dim = metadata.get("feature_dim")
-    # Dense grids carry their shape in a per-sample sidecar, which DenseFeatureStore
+    # Dense grids carry their shape in a per-sample sidecar, which CachedGridSource
     # requires to read them; a pre-cropped image's provenance sidecar is what slide2vec
     # publishes last. The .pt-existence check alone would call such an entry complete,
     # so require the sidecar too.
@@ -640,7 +640,7 @@ def _resolve_cache(
     cache_root: Path,
     cache_kind: str,
     key: str,
-    dataset: Dataset,
+    dataset: LegacySamples,
     metadata: dict[str, Any],
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
@@ -798,7 +798,7 @@ def _resolve_cache(
 def resolve_tile_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig | None,
     execution: EncoderConfig,
@@ -846,7 +846,7 @@ def resolve_tile_cache(
 def resolve_image_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     tile_encoder_name: str,
     execution: EncoderConfig,
     output_variant: str | None = None,
@@ -883,7 +883,7 @@ def resolve_image_cache(
 def resolve_slide_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     slide_encoder_name: str,
     tile_encoder_name: str,
     tile_preprocessing: PreprocessingConfig,
@@ -940,7 +940,7 @@ def resolve_slide_cache(
 def resolve_patient_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     patient_encoder_name: str,
     tile_encoder_name: str,
     tile_preprocessing: PreprocessingConfig,
@@ -997,7 +997,7 @@ def resolve_patient_cache(
 def resolve_hierarchical_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: EncoderConfig,
@@ -1042,7 +1042,7 @@ def resolve_hierarchical_cache(
 def resolve_dense_cache(
     *,
     cache_root: Path,
-    dataset: Dataset,
+    dataset: LegacySamples,
     tile_encoder_name: str,
     target_size: tuple[int, int],
     patch_size: tuple[int, int],

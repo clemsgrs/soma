@@ -30,7 +30,7 @@ anndata = pytest.importorskip("anndata", minversion="0.11")
 h5py = pytest.importorskip("h5py")
 
 from soma.curation.hest import curate_hest  # noqa: E402
-from soma.dataset import SpatialExpressionManifest, Splits  # noqa: E402
+from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv  # noqa: E402
 
 # Silence anndata's pandas>=3 Arrow-string write guard when building fixtures.
 anndata.settings.allow_write_nullable_strings = True
@@ -143,11 +143,13 @@ def test_curate_hest_emits_spatial_expression_manifest(tmp_path: Path):
     assert (out / "summary.json").exists()
 
     # Loads through soma's spatial_expression loader (schema + sidecars validated there).
-    loaded = SpatialExpressionManifest(manifest.dataset_csv)
+    loaded = legacy_samples_from_csv(manifest.dataset_csv)
     n_spots = sum(len(v) for v in SLIDES.values())
     assert len(loaded.sample_ids) == n_spots
     assert loaded.genes == FIXTURE_GENES
-    assert loaded.target_matrix.shape == (n_spots, len(FIXTURE_GENES))
+    # The sidecar matrix is served per record as targets["expression"] (one gene vector).
+    for record in loaded.records:
+        assert record.targets["expression"].shape == (len(FIXTURE_GENES),)
 
     df = pd.read_csv(manifest.dataset_csv)
     assert {"sample_id", "image_path", "target_index"} <= set(df.columns)
@@ -200,8 +202,8 @@ def test_per_fold_spot_row_expansion(tmp_path: Path):
             assert got == expected_spots, f"fold {fold} {split} mismatch"
 
     # The Manifest + splits load and build folds through soma unchanged (no tune needed).
-    loaded = SpatialExpressionManifest(out / "dataset.csv")
-    folds = Splits(out / "splits.csv", loaded).folds
+    loaded = legacy_samples_from_csv(out / "dataset.csv")
+    folds = legacy_folds_from_csv(out / "splits.csv", loaded).folds
     assert len(folds) == len(FOLDS)
     for i, members in FOLDS.items():
         expected_test: set[str] = set()

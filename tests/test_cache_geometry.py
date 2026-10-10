@@ -23,7 +23,7 @@ from soma.cache import (
     resolve_tile_cache,
 )
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 
 # phikon is 224 px native and cannot take a variable encoder input; uni is 224 px native
 # and can, so a larger request reaches the encoder at that larger size.
@@ -39,7 +39,7 @@ def _dataset(tmp_path: Path) -> Dataset:
             {"sample_id": "s2", "image_path": "/slides/s2.svs", "label": "normal"},
         ]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def test_pooled_geometry_records_the_declared_preset_size():

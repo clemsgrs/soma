@@ -18,8 +18,8 @@ import torch
 
 from soma.config import EvalConfig, TaskConfig, TrainingConfig
 from soma.curation.manifest import write_manifest
-from soma.dataset import Splits, load_manifest
-from soma.features import FeatureStore
+from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
+from soma.data import CachedSetSource
 from soma.pipeline import train
 
 FEATURE_DIM = 8
@@ -81,9 +81,9 @@ def _build_manifest_and_features(tmp_path: Path):
 
 def _run_probe(tmp_path: Path):
     manifest, feature_dir = _build_manifest_and_features(tmp_path)
-    dataset = load_manifest(manifest.dataset_csv, "spatial_expression")
-    splits = Splits(manifest.splits_csv, dataset)
-    store = FeatureStore(feature_dir)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
+    store = CachedSetSource(feature_dir)
     run_dir = tmp_path / "run"
     result = train(
         feature_store=store,
@@ -137,14 +137,14 @@ def test_probe_writes_per_spot_predictions(tmp_path):
 
 
 def test_probe_reuses_one_feature_store_across_folds(tmp_path):
-    # Embeddings are extracted once and reused across folds: a single FeatureStore instance
+    # Embeddings are extracted once and reused across folds: a single CachedSetSource instance
     # serves every fold (the shared cache), never re-extracting per fold.
     manifest, feature_dir = _build_manifest_and_features(tmp_path)
-    dataset = load_manifest(manifest.dataset_csv, "spatial_expression")
-    splits = Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
     assert splits.num_folds == 2
 
-    store = FeatureStore(feature_dir)
+    store = CachedSetSource(feature_dir)
     loaded_ids: list[str] = []
     original_load = store.load
 
@@ -165,3 +165,30 @@ def test_probe_reuses_one_feature_store_across_folds(tmp_path):
     )
     # Every spot is loaded (once per fold membership); the same store served both folds.
     assert set(loaded_ids) == set(dataset.sample_ids)
+
+
+def test_pipeline_loads_expression_targets_for_spatial_expression(tmp_path: Path):
+    """``Pipeline(...)`` on a HEST-shaped manifest reads ``target_index`` + sidecars into
+    ``targets["expression"]`` (the probe's vector target), not the regression head's scalar
+    ``value`` column, which a spatial_expression manifest does not carry."""
+    from soma.config import PipelineConfig
+    from soma.pipeline import Pipeline
+
+    manifest, feature_dir = _build_manifest_and_features(tmp_path)
+    config = PipelineConfig(
+        dataset_csv=manifest.dataset_csv,
+        splits_csv=manifest.splits_csv,
+        output_root=tmp_path / "out",
+        dataset_type="spatial_expression",
+        task=TaskConfig(name="regression", params={"pca_components": PCA_COMPONENTS}),
+        training=TrainingConfig(method="ridge_pca_probe", seed=0),
+        evaluation=EvalConfig(metrics=["pearson"]),
+    )
+    pipeline = Pipeline(config, feature_dir=feature_dir)
+
+    assert pipeline.dataset.genes == GENES
+    expected = np.load(manifest.dataset_csv.parent / "targets.npy")
+    record = pipeline.dataset.samples["spot03"]
+    np.testing.assert_array_equal(record.targets["expression"], expected[3])
+    assert "value" not in record.targets
+    assert pipeline.cohort.target_names["expression"] == GENES

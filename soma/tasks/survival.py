@@ -21,15 +21,17 @@ from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset, SampleRecord
+    from collections.abc import Sequence
+
+    from soma.data import SampleRecord
 
 # Matches the HIPT reference clamp; guards log() against saturated hazards.
 _EPS = 1e-7
 
 
-def _infer_num_bins(dataset: Dataset) -> int:
-    """Number of discrete time bins = max bin index + 1 over the dataset."""
-    bins = [int(record.metadata["bin"]) for record in dataset.samples.values()]
+def _infer_num_bins(records: "Sequence[SampleRecord]") -> int:
+    """Number of discrete time bins = max bin index + 1 over the records."""
+    bins = [int(record.targets["bin"]) for record in records]
     return max(bins) + 1
 
 
@@ -159,6 +161,7 @@ class SurvivalHead(TaskHead):
     """
 
     target_dtypes = {"bin": torch.long, "event": torch.float, "time": torch.float}
+    target_schema = {"time": float, "event": int, "bin": int}
     task_family = "survival"
 
     def __init__(
@@ -179,14 +182,14 @@ class SurvivalHead(TaskHead):
         self.metrics = resolve_metrics("survival", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return {"num_bins": _infer_num_bins(dataset)}
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
+        return {"num_bins": _infer_num_bins(records)}
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return {
-            "bin": int(record.metadata["bin"]),
-            "event": float(record.metadata["event"]),
-            "time": float(record.label),
+            "bin": int(record.targets["bin"]),
+            "event": float(record.targets["event"]),
+            "time": float(record.targets["time"]),
         }
 
     def forward(self, X: Tensor) -> Tensor:
@@ -254,6 +257,7 @@ class CoxSurvivalHead(TaskHead):
     """
 
     target_dtypes = {"event": torch.float, "time": torch.float}
+    target_schema = {"time": float, "event": int}
     task_family = "survival"
     full_cohort_eval_loss = True
     needs_event_balanced_batches = True
@@ -291,8 +295,8 @@ class CoxSurvivalHead(TaskHead):
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return {
-            "event": float(record.metadata["event"]),
-            "time": float(record.label),
+            "event": float(record.targets["event"]),
+            "time": float(record.targets["time"]),
         }
 
     def forward(self, X: Tensor) -> Tensor:
@@ -348,7 +352,7 @@ def resolve_survival_task(
 
 
 def validate_survival_dataset(
-    dataset: Dataset, dataset_type: str, loss: str = "nll", *, num_bins: int | None = None
+    records: "Sequence[SampleRecord]", dataset_type: str, loss: str = "nll", *, num_bins: int | None = None
 ) -> None:
     """Fail fast on malformed survival columns before training begins.
 
@@ -366,29 +370,27 @@ def validate_survival_dataset(
     if needs_bin and num_bins is not None:
         if isinstance(num_bins, bool) or not isinstance(num_bins, Integral) or num_bins < 1:
             raise ValueError(f"Survival num_bins must be a positive integer, got {num_bins!r}.")
-    records = list(dataset.samples.values())
+    records = list(records)
     if not records:
         raise ValueError("Survival dataset has no samples.")
 
-    sample_meta = records[0].metadata
-    required_cols = ("event", "bin") if needs_bin else ("event",)
-    for col in required_cols:
-        if col not in sample_meta:
-            raise ValueError(
-                f"Survival task requires a '{col}' column in the dataset CSV "
-                "(alongside 'label', which holds the time-to-event)."
-            )
-
+    required = ("time", "event", "bin") if needs_bin else ("time", "event")
     for record in records:
         sid = record.sample_id
-        event = record.metadata["event"]
-        time = record.label
+        for key in required:
+            if key not in record.targets:
+                raise ValueError(
+                    f"Survival task requires a '{key}' target (a '{key}' column in the "
+                    f"dataset CSV, or task.targets mapping it); sample '{sid}' has none."
+                )
+        event = record.targets["event"]
+        time = record.targets["time"]
         if int(event) not in (0, 1):
             raise ValueError(
                 f"Survival 'event' must be 0 or 1; sample '{sid}' has {event!r}."
             )
         if needs_bin:
-            bin_value = record.metadata["bin"]
+            bin_value = record.targets["bin"]
             if int(bin_value) != bin_value or int(bin_value) < 0:
                 raise ValueError(
                     f"Survival 'bin' must be a non-negative integer; sample '{sid}' "
@@ -396,11 +398,11 @@ def validate_survival_dataset(
                 )
         if float(time) < 0:
             raise ValueError(
-                f"Survival 'label' (time) must be >= 0; sample '{sid}' has {time!r}."
+                f"Survival 'time' must be >= 0; sample '{sid}' has {time!r}."
             )
 
     if needs_bin:
-        bins = sorted({int(record.metadata["bin"]) for record in records})
+        bins = sorted({int(record.targets["bin"]) for record in records})
         if num_bins is not None and bins[-1] >= num_bins:
             raise ValueError(
                 f"Survival 'bin' values must lie in [0, {num_bins}); got {bins}."
@@ -412,14 +414,16 @@ def validate_survival_dataset(
             )
 
     if dataset_type == "patient":
-        for patient_id, group in dataset.patient_groups.items():
-            if needs_bin:
-                targets = {
-                    (r.label, int(r.metadata["event"]), int(r.metadata["bin"]))
-                    for r in group
-                }
-            else:
-                targets = {(r.label, int(r.metadata["event"])) for r in group}
+        groups: dict[str, list] = {}
+        for record in records:
+            if record.patient_id is None:
+                raise ValueError(
+                    f"Sample '{record.sample_id}' is missing a patient_id. "
+                    "All rows must have a patient_id for patient-level pipelines."
+                )
+            groups.setdefault(record.patient_id, []).append(record)
+        for patient_id, group in groups.items():
+            targets = {tuple(float(r.targets[key]) for key in required) for r in group}
             if len(targets) > 1:
                 raise ValueError(
                     f"Patient '{patient_id}' has inconsistent survival targets "

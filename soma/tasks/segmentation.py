@@ -18,15 +18,9 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
+from soma.dense.reader import accepted_mask_values
 from soma.dense.reader import load_mask as load_mask
-from soma.dense.reader import (
-    accepted_mask_values,
-    apply_label_remap,
-    read_mask_at_spacing,
-    read_mask_crop,
-)
 from soma.evaluation.metrics import resolve_metrics
-from soma.spacing import resolve_effective_spacing_um
 from soma.tasks.base import TaskHead
 from soma.tasks.dense_metrics import (
     dense_confusion_counts,
@@ -37,7 +31,7 @@ from soma.tasks.dense_metrics import (
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import SampleRecord
+    from soma.data import SampleRecord, TargetSource
     from soma.dense.geometry import DenseGridGeometry
 
 
@@ -73,6 +67,7 @@ class SegmentationHead(TaskHead):
     """
 
     target_dtypes = {"mask": torch.long}
+    target_schema: dict[str, type] = {}
     task_family = "segmentation"
     # Eval streams compact per-image confusion counts instead of full logits — dense
     # logits (N, C, H, W) would OOM if concatenated across a cohort. The trainer /
@@ -169,6 +164,9 @@ class SegmentationHead(TaskHead):
         self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
         self._crop_box = tuple(int(v) for v in geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
+        # Dense supervision comes from a TargetSource bound by the caller (bind_targets);
+        # the head never reads a file path off a record.
+        self._target_source: "TargetSource | None" = None
 
     @property
     def label_remap(self) -> "np.ndarray | None":
@@ -213,65 +211,44 @@ class SegmentationHead(TaskHead):
         top, left, height, width = self._crop_box
         return upsampled[:, :, top : top + height, left : left + width]
 
-    def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
-        if record.label_mask_path is None:
-            raise ValueError(f"segmentation sample '{record.sample_id}' has no label_mask_path")
+    @property
+    def target_source(self) -> "TargetSource | None":
+        """The bound label-map source, or ``None`` before :meth:`bind_targets`."""
+        return self._target_source
+
+    def bind_targets(self, source: "TargetSource") -> "SegmentationHead":
+        """Bind the :class:`~soma.data.TargetSource` ``extract_targets`` reads label maps from."""
+        self._target_source = source
+        return self
+
+    @property
+    def label_map_read_params(self) -> dict[str, Any]:
+        """Constructor kwargs for a :class:`~soma.data.LabelMapSource` matching this head."""
         _, _, target_h, target_w = self._crop_box
-        inside = None
-        try:
-            if record.region is not None:
-                # Slide-manifest ROI: ROI sampling stored the window of the whole-slide
-                # annotation raster, read at the spacing its grid was read at. A ROI kept at
-                # the slide's right or bottom edge may overhang it: only the in-slide part
-                # was stored.
-                if record.label_mask_crop_path is None:
-                    raise ValueError(
-                        "a slide-manifest ROI needs its stored mask crop "
-                        "(label_mask_crop_path), which ROI sampling writes."
-                    )
-                array, inside = read_mask_crop(
-                    record.label_mask_crop_path, size=(target_w, target_h)
-                )
-            else:
-                # The reader routes by format: flat (PNG/JPEG, or no spacing) → PIL with
-                # spacing ignored; pyramidal/spacing-bearing → hs2p at the requested µm/px,
-                # aligned to its image and read on the grid's target_size, so it registers
-                # whatever the mask's own resolution.
-                array = read_mask_at_spacing(
-                    record.label_mask_path,
-                    spacing_um=(
-                        resolve_effective_spacing_um(
-                            requested_spacing_um=self._spacing_um,
-                            spacing_at_level_0=record.spacing_at_level_0,
-                            tolerance=self._tolerance,
-                            policy=self._spacing_policy,
-                        )
-                        if self._spacing_um is not None
-                        else None
-                    ),
-                    size=(target_w, target_h),
-                    reference_path=record.image_path,
-                    reference_backend=self._image_backend,
-                    spacing_at_level_0=record.spacing_at_level_0,
-                    pixel_mapping=self._mask_vocabulary,
-                    backend=self._backend,
-                )
-        except ValueError as error:
-            raise ValueError(f"segmentation sample '{record.sample_id}': {error}") from error
-        array = np.ascontiguousarray(array).astype(np.int64)
-        in_slide = array if inside is None else array[inside]
-        if self._label_remap is not None:
-            # Raw annotation rasters carry the dataset's own pixel vocabulary; remap onto
-            # contiguous class indices (+ ignore) before validation.
-            in_slide = apply_label_remap(in_slide, self._label_remap, sample_id=record.sample_id)
-        if inside is None:
-            array = in_slide
-        else:
-            # Beyond the slide there is no annotation to learn from or score against; the
-            # filler read there is never remapped.
-            array = np.full(array.shape, self.ignore_index, dtype=np.int64)
-            array[inside] = in_slide
-        mask = torch.from_numpy(np.ascontiguousarray(array).astype(np.int64))
+        return {
+            "size": (target_h, target_w),
+            "mask_vocabulary": dict(self._mask_vocabulary),
+            "label_remap": self._label_remap,
+            "spacing_um": self._spacing_um,
+            "spacing_policy": self._spacing_policy,
+            "tolerance": self._tolerance,
+            "backend": self._backend,
+            "image_backend": self._image_backend,
+        }
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
+        if self._target_source is None:
+            raise RuntimeError(
+                "SegmentationHead has no target source; call head.bind_targets(source) with "
+                "a LabelMapSource / CachedLabelMapSource before extracting targets."
+            )
+        mask = self._target_source.load(record.sample_id)
+        if not torch.is_tensor(mask) or mask.ndim != 2:
+            raise ValueError(
+                f"target source returned {type(mask).__name__} for '{record.sample_id}'; "
+                "SegmentationHead needs a (H, W) label map."
+            )
+        mask = mask.to(torch.long)
         # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
         # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy
         # index assert (a device-side async assert on CUDA) far from the cause.

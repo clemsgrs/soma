@@ -527,7 +527,7 @@ class TestTrainerWithEmbeddingModel:
     def test_fit_with_half_precision_features(self, tmp_path: Path):
         """Trainer should accept cached features stored in fp16."""
         from torch.utils.data import DataLoader
-        from soma.features import FeatureStore
+        from soma.data import CachedSetSource
         from soma.training.sample_dataset import sample_collate_fn
         from soma.training.model import EmbeddingModel
 
@@ -540,7 +540,7 @@ class TestTrainerWithEmbeddingModel:
         feature_dir.mkdir()
         for i in range(8):
             torch.save(torch.randn(D, dtype=torch.float16), feature_dir / f"s{i}.pt")
-        store = FeatureStore(feature_dir)
+        store = CachedSetSource(feature_dir)
         train_loader = DataLoader(
             [(store.load(f"s{i}"), {"label": i % 2}, f"s{i}") for i in range(6)],
             batch_size=2,
@@ -615,7 +615,7 @@ class _TwoKeyHead(BinaryClassificationHead):
     target_dtypes = {"label": torch.long, "weight": torch.float}
 
     def extract_targets(self, record):  # pragma: no cover - not used in this test
-        return {"label": int(record.label), "weight": 1.0}
+        return {"label": int(record.targets["label"]), "weight": 1.0}
 
     def compute_loss(self, predictions, targets):
         # Touch both keys so a missing/mis-typed key would raise.

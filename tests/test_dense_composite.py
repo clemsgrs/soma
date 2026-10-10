@@ -14,7 +14,7 @@ import pytest
 import torch
 from PIL import Image
 
-from soma.dense import DenseFeatureStore, DenseSampleSpacing
+from soma.dense import CachedGridSource
 from soma.dense.composite import CompositeDenseFeatureStore, resample_grid_to_target
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -47,7 +47,7 @@ def _write_member(
         )
     for sid in sample_ids:
         write_dense_grid(out, sid, torch.rand(k, *geom.grid_shape), meta)
-    return DenseFeatureStore(out)
+    return CachedGridSource(out)
 
 
 def test_resample_grid_to_target_reaches_target_resolution():
@@ -64,7 +64,7 @@ def test_composite_concats_members_at_target_resolution(tmp_path: Path):
     comp = CompositeDenseFeatureStore([a, b])
 
     assert comp.feature_dim == 8  # 3 + 5
-    assert sorted(comp.available_samples) == ids
+    assert sorted(comp.sample_ids) == ids
     assert comp.grid_shape == (TARGET, TARGET)
     grid = comp.load("s0")
     assert grid.shape == (8, TARGET, TARGET)  # concat at shared target pixel grid
@@ -90,7 +90,7 @@ def test_composite_rejects_target_size_mismatch(tmp_path: Path):
     geom = compute_dense_geometry(target_size=16, patch_size=4)
     meta = dense_grid_metadata(geom, feature_dim=3, pad_mode="reflect")
     write_dense_grid(out, "s0", torch.rand(3, *geom.grid_shape), meta)
-    comp = CompositeDenseFeatureStore([a, DenseFeatureStore(out)])
+    comp = CompositeDenseFeatureStore([a, CachedGridSource(out)])
     with pytest.raises(ValueError, match="disagree on target_size"):
         comp.geometry("s0")
 
@@ -99,10 +99,9 @@ def test_composite_exposes_one_agreed_resolved_spacing(tmp_path: Path):
     a = _write_member(tmp_path, "a", ["s0"], patch=4, k=3, spacing=0.5)
     b = _write_member(tmp_path, "b", ["s0"], patch=2, k=5, spacing=0.5)
 
-    assert CompositeDenseFeatureStore([a, b]).spacing("s0") == DenseSampleSpacing(
-        source_spacing_um=0.5,
-        effective_spacing_um=0.5,
-    )
+    comp = CompositeDenseFeatureStore([a, b])
+    assert comp.spacing("s0") == 0.5
+    assert comp.geometry("s0").level0_px_per_token_px == 1.0
 
 
 def test_composite_rejects_member_source_spacing_disagreement(tmp_path: Path):
@@ -125,8 +124,12 @@ def test_composite_rejects_member_source_spacing_disagreement(tmp_path: Path):
         source_spacing=0.3,
     )
 
-    with pytest.raises(ValueError, match=r"source_spacing_um.*s0.*0.25.*0.3"):
-        CompositeDenseFeatureStore([a, b]).spacing("s0")
+    # Both members read at 0.5 µm/px, so ``spacing`` agrees; the differing source
+    # spacing surfaces as a level-0 anchor disagreement on ``geometry``.
+    comp = CompositeDenseFeatureStore([a, b])
+    assert comp.spacing("s0") == 0.5
+    with pytest.raises(ValueError, match=r"level-0 anchor.*s0"):
+        comp.geometry("s0")
 
 
 def test_composite_grid_mode_concats_at_largest_member_grid(tmp_path: Path):
@@ -155,6 +158,18 @@ def test_composite_grid_mode_explicit_grid_size(tmp_path: Path):
     comp = CompositeDenseFeatureStore([a, b], concat_resolution="grid", concat_grid_size=(3, 3))
     assert comp.load("s0").shape == (8, 3, 3)
     assert comp.geometry("s0").grid_shape == (3, 3)
+
+
+def test_composite_grid_mode_maps_tokens_with_exact_strides(tmp_path: Path):
+    # 8 px over a 3-token grid is a stride of 8/3, not round(8/3) = 3: token centres must
+    # come from the exact per-axis stride or point conversion drifts off the field of view.
+    a = _write_member(tmp_path, "a", ["s0"], patch=4, k=3, spacing=0.5)
+    b = _write_member(tmp_path, "b", ["s0"], patch=2, k=5, spacing=0.5)
+    comp = CompositeDenseFeatureStore([a, b], concat_resolution="grid", concat_grid_size=(3, 3))
+    geom = comp.geometry("s0")
+    assert geom.token_to_level0((1, 1)) == (4.0, 4.0)
+    assert geom.token_to_level0((0, 0)) == pytest.approx((8 / 6, 8 / 6))
+    assert geom.token_to_level0((2, 2)) == pytest.approx((8 - 8 / 6, 8 - 8 / 6))
 
 
 def test_composite_member_norm_l2_makes_per_member_slices_unit_norm(tmp_path: Path):
@@ -190,7 +205,7 @@ def test_composite_target_mode_is_byte_identical_without_norm(tmp_path: Path):
 
 def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
     from soma.config import DecoderConfig, EvalConfig, TaskConfig, TrainingConfig
-    from soma.dataset import SegmentationManifest, Splits
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
     from soma.pipeline import train_one_segmentation_fold
 
     ids = ["s0", "s1", "s2", "s3"]
@@ -215,8 +230,8 @@ def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
     splits_csv.write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    manifest = SegmentationManifest(manifest_csv)
-    splits = Splits(splits_csv, manifest)
+    manifest = legacy_samples_from_csv(manifest_csv)
+    splits = legacy_folds_from_csv(splits_csv, manifest)
 
     result = train_one_segmentation_fold(
         feature_store=comp,
@@ -276,7 +291,7 @@ def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
 def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
     pytest.importorskip("xgboost")
     from soma.config import EvalConfig, PixelClassifierConfig, TaskConfig, TrainingConfig
-    from soma.dataset import SegmentationManifest, Splits
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
     from soma.pipeline import train_one_pixel_classifier_fold
 
     ids = ["s0", "s1", "s2", "s3"]
@@ -301,8 +316,8 @@ def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
     splits_csv.write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    manifest = SegmentationManifest(manifest_csv)
-    splits = Splits(splits_csv, manifest)
+    manifest = legacy_samples_from_csv(manifest_csv)
+    splits = legacy_folds_from_csv(splits_csv, manifest)
 
     result = train_one_pixel_classifier_fold(
         feature_store=comp,

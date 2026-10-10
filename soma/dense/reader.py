@@ -32,108 +32,16 @@ import torch
 from PIL import Image
 from torch import Tensor
 
-from soma.class_scheme import assign_raw_values, resolve_classes
+from soma.data.targets import (  # noqa: F401 - re-exported for the dense readers' callers
+    CLASS_SCHEME_KEYS,
+    UNDECLARED_LABEL,
+    apply_label_remap,
+    build_label_remap,
+    resolve_class_scheme,
+)
 
 # Flat raster formats carry no pyramid/spacing — always read with PIL, spacing N/A.
 _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
-
-
-#: LUT entry for a raw pixel value that is in neither ``classes`` nor ``ignore``. Outside
-#: every valid class index and every ``ignore_index``, so the segmentation head can fail
-#: loud on it instead of silently dropping (or aliasing) a class's supervision.
-UNDECLARED_LABEL = int(np.iinfo(np.int64).min)
-
-
-def _label_lut(class_of: Mapping[int, int], ignore: Sequence[int], ignore_index: int) -> np.ndarray:
-    lut = np.full(256, UNDECLARED_LABEL, dtype=np.int64)
-    for value, class_index in class_of.items():
-        lut[value] = class_index
-    lut[list(ignore)] = int(ignore_index)
-    return lut
-
-
-def build_label_remap(
-    classes: Mapping[str, Any],
-    *,
-    ignore: Sequence[int] = (),
-    ignore_index: int = 255,
-) -> np.ndarray:
-    """Build the raw-pixel → class-index lookup table from ``task.params.classes``/``ignore``.
-
-    Annotation rasters carry the *dataset's own* pixel vocabulary (e.g. BEETLE's
-    ``{0 unannotated, 1 other, 2 non-invasive, 3 invasive, 4 necrosis}``); the segmentation
-    head needs contiguous class indices ``[0, num_classes)``. ``classes`` maps each class
-    name to the raw value(s) that form it — several values merge into one class — and the
-    class index is the declaration order. ``ignore`` lists the raw values excluded from
-    loss and metrics (they map to ``ignore_index``). The rules are those of
-    :mod:`soma.class_scheme`, with raw values capped at a single byte.
-
-    Every value declared nowhere maps to :data:`UNDECLARED_LABEL`.
-
-    Returns the 256-entry LUT (indexable by a raw uint8/int mask).
-    """
-    class_of, ignored = assign_raw_values(
-        classes, excluded=ignore, excluded_name="ignore", max_value=255
-    )
-    return _label_lut(class_of, ignored, ignore_index)
-
-
-#: ``task.params`` keys that define the class scheme rather than configure the head.
-CLASS_SCHEME_KEYS = ("num_classes", "classes", "ignore")
-
-
-def resolve_class_scheme(
-    task_params: Mapping[str, Any], *, annotation_rasters: bool
-) -> tuple[int, tuple[str, ...], np.ndarray | None]:
-    """Resolve ``(num_classes, class names, raw-pixel → class-index LUT)`` for a run.
-
-    ``task.params.classes`` and ``task.params.ignore`` define the training targets (see
-    :func:`build_label_remap`). They are independent of
-    ``preprocessing.masks.pixel_mapping``, which only governs ROI sampling. Without
-    ``classes`` the masks must already hold contiguous class indices (LUT ``None``) — only
-    possible for pre-cropped tiles, since ``annotation_rasters`` carry the dataset's own
-    values.
-    """
-    if annotation_rasters and task_params.get("classes") is None:
-        raise ValueError(
-            "segmentation from annotation rasters (preprocessing.masks) requires "
-            "task.params.classes: name each class and the raw mask value(s) that form "
-            "it, e.g. classes: {tumor: [1, 2], stroma: [3]} with ignore: [0] for the "
-            "values to exclude from loss and metrics."
-        )
-    num_classes, names, class_of, ignored = resolve_classes(
-        task_params, excluded_key="ignore", subject="segmentation", max_value=255
-    )
-    if class_of is None:
-        return num_classes, names, None
-    return num_classes, names, _label_lut(
-        class_of, ignored, int(task_params.get("ignore_index", 255))
-    )
-
-
-def apply_label_remap(array: np.ndarray, label_remap: np.ndarray, *, sample_id: str) -> np.ndarray:
-    """Map a raw annotation raster onto class indices (+ ``ignore_index``) through the LUT.
-
-    ``label_remap`` comes from :func:`resolve_class_scheme`. Fails, naming the sample, on
-    a value outside the single byte the LUT covers and on a raw value declared in neither
-    ``task.params.classes`` nor ``ignore``. Every path that turns a mask into targets
-    (the head, the live dataset) goes through here, so they cannot diverge.
-    """
-    array = np.asarray(array, dtype=np.int64)
-    if int(array.max(initial=0)) > 255 or int(array.min(initial=0)) < 0:
-        raise ValueError(
-            f"mask for '{sample_id}' has raw pixel value(s) outside [0, 255]; "
-            "the label remap LUT only covers single-byte annotation rasters."
-        )
-    remapped = label_remap[array]
-    undeclared = remapped == UNDECLARED_LABEL
-    if undeclared.any():
-        raise ValueError(
-            f"mask for '{sample_id}' has raw value(s) "
-            f"{sorted(int(v) for v in np.unique(array[undeclared]))} declared in "
-            "neither task.params.classes nor task.params.ignore."
-        )
-    return remapped
 
 
 def accepted_mask_values(

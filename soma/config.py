@@ -1086,6 +1086,21 @@ class TaskConfig:
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+    # Target key -> dataset CSV column, for columns not named after the head's keys
+    # (``{"value": "label"}`` trains regression on a ``label`` column).
+    targets: dict[str, str] = field(default_factory=dict)
+
+
+def task_config_dict(task: TaskConfig) -> dict[str, Any]:
+    """``asdict(task)`` without an empty ``targets`` mapping.
+
+    ``targets`` was added after runs had been recorded; leaving it out when empty keeps
+    every existing experiment identity and saved config byte-identical.
+    """
+    data = asdict(task)
+    if not data.get("targets"):
+        data.pop("targets", None)
+    return data
 
 
 @dataclass(frozen=True)
@@ -2103,7 +2118,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
         "execution": _normalize_yaml_value(asdict(config.execution)),
         "cache": _normalize_yaml_value(asdict(config.cache)),
         "task": (
-            _normalize_yaml_value(asdict(config.task))
+            _normalize_yaml_value(task_config_dict(config.task))
             if config.task is not None
             else None
         ),
@@ -2203,7 +2218,11 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig | None:
         raise ValueError(
             "Config is missing required 'task.name' (e.g. task: {name: binary_classification})"
         )
-    return TaskConfig(name=task_data["name"], params=task_data.get("params", {}))
+    return TaskConfig(
+        name=task_data["name"],
+        params=task_data.get("params", {}),
+        targets=dict(task_data.get("targets") or {}),
+    )
 
 
 def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:

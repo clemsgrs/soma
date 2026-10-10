@@ -10,7 +10,7 @@ import pytest
 
 from soma.cache.keys import _sample_identity_payload, sample_identity_signature
 from soma.config import MasksConfig, PreprocessingConfig
-from soma.dataset import Dataset, load_manifest
+from soma.data._legacy import legacy_samples_from_csv
 from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from tests.e2e.synthetic import write_coordinates_artifact
 
@@ -86,7 +86,7 @@ def _commit(resolution, sample_id: str, tensor):
 def test_changing_one_coordinate_changes_the_cache_key(tmp_path: Path):
     artifacts = tmp_path / "coordinates"
     paths = {s: _artifact(artifacts, s, tmp_path / f"{s}.tif") for s in ("a", "b")}
-    dataset = Dataset(_manifest(tmp_path, paths))
+    dataset = legacy_samples_from_csv(_manifest(tmp_path, paths))
     before = _sample_identity_payload(dataset)
 
     _artifact(artifacts, "a", tmp_path / "a.tif")  # same tiles, rewritten
@@ -117,7 +117,7 @@ def test_staging_lists_a_snapshot_of_the_supplied_artifacts(tmp_path: Path):
 
     paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
     tiling_dir = tmp_path / "tiling"
-    stage_supplied_coordinates(Dataset(_manifest(tmp_path, paths)), tiling_dir, _preprocessing())
+    stage_supplied_coordinates(legacy_samples_from_csv(_manifest(tmp_path, paths)), tiling_dir, _preprocessing())
     rows = pd.read_csv(tiling_dir / "process_list.csv").set_index("sample_id")
     assert rows["num_tiles"].tolist() == [3, 3]
     assert set(rows["tiling_status"]) == {"success"}
@@ -133,7 +133,7 @@ def test_staging_lists_a_snapshot_of_the_supplied_artifacts(tmp_path: Path):
 def test_partially_filled_column_is_rejected(tmp_path: Path):
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
     with pytest.raises(ValueError, match="every row or for none.*'b'"):
-        Dataset(_manifest(tmp_path, {"a": path, "b": None}))
+        legacy_samples_from_csv(_manifest(tmp_path, {"a": path, "b": None}))
 
 
 @pytest.mark.parametrize("dataset_type", ["tile", "segmentation", "detection"])
@@ -144,8 +144,41 @@ def test_column_is_rejected_outside_slide_datasets(tmp_path: Path, dataset_type:
     frame["label_mask_path"] = "/m.png"
     frame["points_path"] = "/p.csv"
     frame.to_csv(manifest, index=False)
-    with pytest.raises(ValueError, match="only supported for slide-level datasets"):
-        load_manifest(manifest, dataset_type)
+    from soma.config import EncoderConfig
+    from soma.extraction import FeatureExtractor
+
+    shape = "set" if dataset_type == "tile" else "grid"
+    with pytest.raises(ValueError, match="whole slides"):
+        FeatureExtractor(
+            legacy_samples_from_csv(manifest),
+            EncoderConfig(name="phikon"),
+            shape=shape,
+            unit="tile",
+            output_root=tmp_path / "out",
+        )
+
+
+def test_column_is_rejected_on_the_annotation_sampling_path(tmp_path: Path):
+    """A dense grid over whole slides samples its own ROIs; supplied tiles would be
+    silently ignored, so the facade refuses them up front."""
+    path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
+    manifest = _manifest(tmp_path, {"a": path})
+    frame = pd.read_csv(manifest)
+    frame["label_mask_path"] = "/m.png"
+    frame.to_csv(manifest, index=False)
+    from soma.config import EncoderConfig
+    from soma.extraction import FeatureExtractor
+
+    masks = MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5})
+    with pytest.raises(ValueError, match="coordinates_path.*shape='set', unit='slide'"):
+        FeatureExtractor(
+            legacy_samples_from_csv(manifest),
+            EncoderConfig(name="phikon"),
+            _preprocessing(masks=masks),
+            shape="grid",
+            unit="slide",
+            output_root=tmp_path / "out",
+        )
 
 
 @pytest.mark.parametrize(
@@ -161,7 +194,7 @@ def test_mismatched_artifact_fails_staging(tmp_path: Path, artifact_kwargs: dict
     sample_id = artifact_kwargs.pop("sample_id", "a")
     image_path = tmp_path / artifact_kwargs.pop("image_path", "a.tif")
     written = _artifact(tmp_path / "coordinates", sample_id, image_path, **artifact_kwargs)
-    dataset = Dataset(_manifest(tmp_path, {"a": written}))
+    dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": written}))
     with pytest.raises(ValueError, match=message):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing())
 
@@ -175,18 +208,18 @@ def test_artifact_made_for_another_source_spacing_fails_staging(tmp_path: Path):
     frame["spacing_at_level_0"] = 1.0
     frame.to_csv(manifest, index=False)
     with pytest.raises(ValueError, match=r"spacing_at_level_0 None .*manifest: 1.0"):
-        stage_supplied_coordinates(Dataset(manifest), tmp_path / "tiling", _preprocessing())
+        stage_supplied_coordinates(legacy_samples_from_csv(manifest), tmp_path / "tiling", _preprocessing())
 
 
 def test_missing_artifact_fails_staging(tmp_path: Path):
-    dataset = Dataset(_manifest(tmp_path, {"a": tmp_path / "a.coordinates.npz"}))
+    dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": tmp_path / "a.coordinates.npz"}))
     with pytest.raises(FileNotFoundError, match="'a'.*does not exist"):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing())
 
 
 def test_annotation_masks_cannot_reselect_supplied_tiles(tmp_path: Path):
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
-    dataset = Dataset(_manifest(tmp_path, {"a": path}))
+    dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": path}))
     masks = MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5})
     with pytest.raises(ValueError, match="cannot be combined with preprocessing.masks"):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing(masks=masks))
@@ -206,14 +239,14 @@ def test_unsigned_legacy_cache_is_not_adopted_for_supplied_coordinates(tmp_path:
     def resolve(dataset):
         return _resolve_tile_cache(tmp_path / "cache", dataset)
 
-    legacy = resolve(Dataset(tmp_path / "soma_tiled.csv"))
+    legacy = resolve(legacy_samples_from_csv(tmp_path / "soma_tiled.csv"))
     metadata = json.loads(legacy.metadata_path.read_text())
     metadata.pop("sample_identity_signature_by_id", None)
     metadata["feature_dim"] = 16
     legacy.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     torch.save(torch.zeros(4, 16), legacy.feature_path_for_id("a"))
 
-    supplied = resolve(Dataset(manifest))
+    supplied = resolve(legacy_samples_from_csv(manifest))
     assert supplied.missing_sample_ids() == ["a", "b"]
 
 
@@ -226,14 +259,14 @@ def test_tissue_mask_value_guard_does_not_apply_to_supplied_coordinates(tmp_path
     frame = pd.read_csv(manifest)
     frame["mask_path"] = str(tmp_path / "a_mask.tif")
     frame.to_csv(manifest, index=False)
-    ensure_supported_mask_value(Dataset(manifest), _preprocessing(tissue_mask_tissue_value=255))
+    ensure_supported_mask_value(legacy_samples_from_csv(manifest), _preprocessing(tissue_mask_tissue_value=255))
 
 
 def test_staged_dataset_is_keyed_on_the_tiles_the_run_embeds(tmp_path: Path):
     """Once staged, the cache identity follows the run's copies, not the user's files."""
     paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
     staged = stage_supplied_coordinates(
-        Dataset(_manifest(tmp_path, paths)), tmp_path / "tiling", _preprocessing()
+        legacy_samples_from_csv(_manifest(tmp_path, paths)), tmp_path / "tiling", _preprocessing()
     )
     before = _sample_identity_payload(staged)
 
@@ -253,7 +286,7 @@ def test_each_supplied_tile_set_keeps_its_own_cached_features(tmp_path: Path):
     datasets = {}
     for name, x in tile_sets.items():
         written = _artifact(tmp_path / name, "a", tmp_path / "a.tif", x=x)
-        datasets[name] = Dataset(_manifest(tmp_path / name, {"a": written}))
+        datasets[name] = legacy_samples_from_csv(_manifest(tmp_path / name, {"a": written}))
     features = {name: torch.full((len(x), 4), float(len(x))) for name, x in tile_sets.items()}
 
     for name, dataset in datasets.items():
@@ -274,7 +307,7 @@ def test_soma_tiled_payloads_keep_their_flat_layout(tmp_path: Path):
     paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
     frame = pd.read_csv(_manifest(tmp_path, paths)).drop(columns="coordinates_path")
     frame.to_csv(tmp_path / "soma_tiled.csv", index=False)
-    resolution = _resolve_tile_cache(tmp_path / "cache", Dataset(tmp_path / "soma_tiled.csv"))
+    resolution = _resolve_tile_cache(tmp_path / "cache", legacy_samples_from_csv(tmp_path / "soma_tiled.csv"))
     assert resolution.feature_path_for_id("a").name == "a.pt"
 
 
@@ -289,16 +322,16 @@ def test_a_stale_empty_marker_does_not_hide_a_sample(tmp_path: Path, change: str
         _manifest(tmp_path, {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")})
     ).drop(columns="coordinates_path")
     frame.to_csv(tmp_path / "soma_tiled.csv", index=False)
-    empty = _resolve_tile_cache(tmp_path / "cache", Dataset(tmp_path / "soma_tiled.csv"))
+    empty = _resolve_tile_cache(tmp_path / "cache", legacy_samples_from_csv(tmp_path / "soma_tiled.csv"))
     record_empty_sample_ids(empty, ["a"])
 
     if change == "image_path":
         frame["image_path"] = str(tmp_path / "a_rescanned.tif")
         frame.to_csv(tmp_path / "changed.csv", index=False)
-        changed = Dataset(tmp_path / "changed.csv")
+        changed = legacy_samples_from_csv(tmp_path / "changed.csv")
     else:
         written = _artifact(tmp_path / "supplied", "a", tmp_path / "a.tif")
-        changed = Dataset(_manifest(tmp_path / "supplied", {"a": written}))
+        changed = legacy_samples_from_csv(_manifest(tmp_path / "supplied", {"a": written}))
     resolution = _resolve_tile_cache(tmp_path / "cache", changed)
     assert resolution.empty_sample_ids == set()
     assert resolution.missing_sample_ids() == ["a"]
@@ -315,10 +348,10 @@ def test_resume_keeps_the_run_snapshot_when_the_artifact_is_gone(tmp_path: Path)
     paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
     manifest = _manifest(tmp_path, paths)
     tiling_dir = tmp_path / "tiling"
-    stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+    stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
 
     paths["a"].unlink()
-    resumed = stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+    resumed = stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
     snapshot = resumed.samples["a"].coordinates_path
     meta = snapshot.with_name("a.coordinates.meta.json")
     assert load_tiling_result(snapshot, meta).x.tolist() == [0, 32, 64]
@@ -331,12 +364,12 @@ def test_resume_rejects_an_artifact_changed_since_the_run_started(tmp_path: Path
     paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
     manifest = _manifest(tmp_path, paths)
     tiling_dir = tmp_path / "tiling"
-    staged = stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+    staged = stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
 
-    stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())  # unchanged
+    stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())  # unchanged
     _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif", x=(0, 96))
     with pytest.raises(ValueError, match="'a'.*changed after this run copied them"):
-        stage_supplied_coordinates(Dataset(manifest), tiling_dir, _preprocessing())
+        stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
     snapshot = staged.samples["a"].coordinates_path
     meta = snapshot.with_name("a.coordinates.meta.json")
     assert load_tiling_result(snapshot, meta).x.tolist() == [0, 32, 64]
@@ -350,7 +383,7 @@ def test_supplied_coordinates_need_a_tile_encoder(tmp_path: Path, encoder: str):
 
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
     extractor = FeatureExtractor(
-        Dataset(_manifest(tmp_path, {"a": path})),
+        legacy_samples_from_csv(_manifest(tmp_path, {"a": path})),
         EncoderConfig(name=encoder),
         preprocessing=_preprocessing(),
         cache=CacheConfig(enabled=False),

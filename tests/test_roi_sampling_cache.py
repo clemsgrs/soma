@@ -21,7 +21,7 @@ from soma.cache import (
     write_roi_sampling_coords,
 )
 from soma.config import MasksConfig, PreprocessingConfig, SamplingConfig
-from soma.dataset import SegmentationManifest
+from soma.data._legacy import legacy_samples_from_csv
 from soma.dense.reader import write_mask_crop
 
 
@@ -46,7 +46,7 @@ def _make_manifest(
             for sample_id, label_mask in label_mask_by_id.items()
         ]
     ).to_csv(csv_path, index=False)
-    return SegmentationManifest(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _preprocessing(

@@ -74,6 +74,11 @@ aggregation: null
 task:
   name: binary_classification
   params: {}
+  # Target key -> dataset.csv column, for keys whose column is not named after them.
+  # Each head declares its keys (classification `label`; regression `value`; survival
+  # `time`, `event`, `bin`); the cohort checks presence and dtype at construction.
+  # Left unset here: an empty mapping is omitted from saved configs and identities.
+  # targets: {time: label}
 
 # No default metrics — stay neutral (the slide-classification metrics would otherwise leak
 # into segmentation/regression/survival configs and fail metric validation). Set

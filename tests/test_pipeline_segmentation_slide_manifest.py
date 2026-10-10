@@ -133,7 +133,12 @@ class _FakeDenseModel:
                         x=int(x),
                         y=int(y),
                         metadata=_dense_sidecar(
-                            dense, geometry, grid, source_spacing_um=region.spacing_at_level_0
+                            dense,
+                            geometry,
+                            grid,
+                            source_spacing_um=region.spacing_at_level_0,
+                            x=int(x),
+                            y=int(y),
                         ),
                     )
                 )
@@ -144,7 +149,7 @@ class _FakeDenseModel:
 _FAKE_READ_TOLERANCE = 0.05
 
 
-def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None) -> dict:
+def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None, x=0, y=0) -> dict:
     """The geometry sidecar slide2vec writes next to every dense ROI grid.
 
     Like slide2vec's read plan, a source within tolerance of the request is read natively,
@@ -157,6 +162,9 @@ def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None) -> dict:
         "source_spacing_um": source,
         "effective_spacing_um": source if within else requested,
         "artifact_type": "dense_embeddings",
+        # The ROI's level-0 origin, spelled as slide2vec's ``_region_metadata`` spells it.
+        "x": int(x),
+        "y": int(y),
         "feature_dim": int(grid.shape[0]),
         "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
         "target_size": [int(geometry.target_size[0]), int(geometry.target_size[1])],
@@ -391,13 +399,13 @@ def test_slide_manifest_propagates_slide_splits_to_rois(tmp_path: Path, monkeypa
     """Every ROI inherits its parent slide's split/fold — no split creation."""
     _patch_extraction(monkeypatch)
     from soma.dense_slide_extraction import build_roi_dataset
-    from soma.dataset import SegmentationManifest, Splits
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 
     manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
-    dataset = SegmentationManifest(manifest)
+    dataset = legacy_samples_from_csv(manifest)
     coords = {sid: _coords_for(sid) for sid in dataset.sample_ids}
     roi_manifest = build_roi_dataset(dataset, coords, out_dir=tmp_path / "rois")
-    projected = Splits(splits, dataset).project(SegmentationManifest(roi_manifest))
+    projected = legacy_folds_from_csv(splits, dataset).project(legacy_samples_from_csv(roi_manifest))
 
     # s0/s1 → train, s2 → tune, s3 → test; each slide has 2 ROIs.
     assert projected.folds[0].train == (
@@ -416,10 +424,10 @@ def test_roi_dataset_rewrite_never_exposes_a_partial_file(tmp_path: Path, monkey
     import os
 
     from soma.dense_slide_extraction import build_roi_dataset
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
 
     manifest, _ = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
-    dataset = SegmentationManifest(manifest)
+    dataset = legacy_samples_from_csv(manifest)
     coords = {sid: _coords_for(sid) for sid in dataset.sample_ids}
     out_dir = tmp_path / "rois"
     complete = build_roi_dataset(dataset, coords, out_dir=out_dir).read_bytes()
@@ -443,7 +451,7 @@ def test_roi_dataset_rewrite_never_exposes_a_partial_file(tmp_path: Path, monkey
 def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
     tmp_path: Path, monkeypatch
 ):
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense_slide_extraction import build_roi_dataset
     from soma.extraction import FeatureExtractor
 
@@ -452,9 +460,9 @@ def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
         "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
         "s0,/fake/s0.tif,/fake/s0_mask.tif,0.25\n"
     )
-    source = SegmentationManifest(slides)
+    source = legacy_samples_from_csv(slides)
     roi_manifest = build_roi_dataset(source, {"s0": [(0, 0)]}, out_dir=tmp_path / "rois")
-    roi_dataset = SegmentationManifest(roi_manifest)
+    roi_dataset = legacy_samples_from_csv(roi_manifest)
     assert roi_dataset.samples["s0__x0_y0"].spacing_at_level_0 == 0.25
 
     model = _patch_dense_model(monkeypatch)
@@ -468,13 +476,14 @@ def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
             sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         ),
         output_root=tmp_path / "extraction",
+        shape="grid",
     ).extract()
 
     assert model.calls[0]["source_spacings"] == {"s0": 0.25}
 
 
 def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monkeypatch):
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.extraction import FeatureExtractor
 
     manifest = tmp_path / "rois.csv"
@@ -484,7 +493,7 @@ def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monke
     )
     model = _patch_dense_model(monkeypatch)
     FeatureExtractor(
-        SegmentationManifest(manifest),
+        legacy_samples_from_csv(manifest),
         EncoderConfig(name=ENCODER),
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=TARGET,
@@ -494,6 +503,7 @@ def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monke
         ),
         execution=ExecutionConfig(num_gpus=2),
         output_root=tmp_path / "extraction",
+        shape="grid",
     ).extract()
 
     assert model.calls[0]["execution"].num_gpus == 2
@@ -502,7 +512,7 @@ def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monke
 def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
     tmp_path: Path, monkeypatch
 ):
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.extraction import FeatureExtractor
 
     manifest = tmp_path / "rois.csv"
@@ -513,7 +523,7 @@ def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
     )
     model = _patch_dense_model(monkeypatch)
     FeatureExtractor(
-        SegmentationManifest(manifest),
+        legacy_samples_from_csv(manifest),
         EncoderConfig(name=ENCODER),
         preprocessing=PreprocessingConfig(
             requested_tile_size_px=TARGET,
@@ -524,6 +534,7 @@ def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
             sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         ),
         output_root=tmp_path / "extraction",
+        shape="grid",
     ).extract()
 
     assert [(call["regions"], call["dense"].spacing_um) for call in model.calls] == [
@@ -534,7 +545,7 @@ def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
 
 def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypatch):
     from hs2p import SlideSpec
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense_slide_extraction import sample_slide_rois
 
     manifest = tmp_path / "slides.csv"
@@ -557,7 +568,7 @@ def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypa
 
     monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
     coords = sample_slide_rois(
-        SegmentationManifest(manifest),
+        legacy_samples_from_csv(manifest),
         masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         preprocessing=PreprocessingConfig(
@@ -571,7 +582,7 @@ def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypa
 
 
 def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: Path, monkeypatch):
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense_slide_extraction import sample_slide_rois
 
     manifest = tmp_path / "slides.csv"
@@ -595,7 +606,7 @@ def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: P
 
     monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
     sample_slide_rois(
-        SegmentationManifest(manifest),
+        legacy_samples_from_csv(manifest),
         masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         preprocessing=PreprocessingConfig(
@@ -721,7 +732,7 @@ def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path,
     blended back — is slide2vec's, and is tested there. soma's remaining responsibility is
     to state the window it wants and to cache what comes back at the target grid size.
     """
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.extraction import FeatureExtractor
 
     # A manifest of ROI rows (region origins) for one slide.
@@ -731,7 +742,7 @@ def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path,
         "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
         "s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0\n"
     )
-    dataset = SegmentationManifest(roi_manifest)
+    dataset = legacy_samples_from_csv(roi_manifest)
     model = _patch_dense_model(monkeypatch)
 
     WINDOW = 16  # < TARGET (32) -> genuine sliding
@@ -747,6 +758,7 @@ def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path,
             sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         ),
         output_root=tmp_path / "extraction",
+        shape="grid",
     )
     store = extractor.extract().source
 
@@ -767,7 +779,7 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
     region_x/region_y are the address (ADR 0007). A slide id that itself contains the
     ``__x``/``_y`` separators therefore resolves correctly.
     """
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.extraction import FeatureExtractor
 
     roi_manifest = tmp_path / "roi_manifest.csv"
@@ -775,7 +787,7 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
         "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
         "s0__x1_y2__x0_y0,s0__x1_y2,/fake/s0.tif,/fake/s0_mask.tif,0,0\n"
     )
-    dataset = SegmentationManifest(roi_manifest)
+    dataset = legacy_samples_from_csv(roi_manifest)
     _patch_dense_model(monkeypatch)
 
     store = (
@@ -789,6 +801,7 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
                 sampling=SamplingConfig(strategy="joint", output_mode="merged"),
             ),
             output_root=tmp_path / "extraction",
+            shape="grid",
         )
         .extract()
         .source
@@ -1005,7 +1018,7 @@ def test_slide_manifest_cache_disabled_writes_crops_into_the_run(tmp_path: Path,
 
 def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, monkeypatch):
     """The sampler's slide-id filter tiles only the requested slides, in manifest order."""
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense_slide_extraction import sample_slide_rois
 
     manifest = tmp_path / "slides.csv"
@@ -1034,7 +1047,7 @@ def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, 
         sampling=SamplingConfig(strategy="joint", output_mode="merged"),
         preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
     )
-    dataset = SegmentationManifest(manifest)
+    dataset = legacy_samples_from_csv(manifest)
 
     coords = sample_slide_rois(dataset, sample_ids=["s2", "s0"], **common)
     assert tiled == ["s0", "s2"]  # manifest order, s1 untouched
@@ -1053,7 +1066,7 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     """A resumed dense run re-encodes only the absent ROIs; a fully-cached slide is
     never opened, and already-materialized grids are left untouched."""
     from soma.dense.store import DENSE_SIDECAR_SUFFIX
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.extraction import FeatureExtractor
 
     # Two slides, two ROIs each.
@@ -1065,7 +1078,7 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
         "s1__x0_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,0,0\n"
         "s1__x32_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,32,0\n"
     )
-    dataset = SegmentationManifest(roi_manifest)
+    dataset = legacy_samples_from_csv(roi_manifest)
     model = _patch_dense_model(monkeypatch)
 
     def _make_extractor():
@@ -1080,11 +1093,12 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
             ),
             cache=CacheConfig(enabled=True),
             output_root=tmp_path / "extraction",
+            shape="grid",
         )
 
     # Run 1: populate the whole cache.
     store = _make_extractor().extract().source
-    assert sorted(store.available_samples) == [
+    assert sorted(store.sample_ids) == [
         "s0__x0_y0",
         "s0__x32_y0",
         "s1__x0_y0",
@@ -1109,10 +1123,41 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     for x, mtime in s0_mtimes.items():
         assert (features_dir / "s0" / f"{x}_0.pt").stat().st_mtime_ns == mtime
     # And the resume produced a complete, readable store.
-    assert sorted(resumed.available_samples) == [
+    assert sorted(resumed.sample_ids) == [
         "s0__x0_y0",
         "s0__x32_y0",
         "s1__x0_y0",
         "s1__x32_y0",
     ]
 
+
+
+def test_pipeline_preserves_roi_fields_of_a_persisted_roi_manifest(tmp_path: Path, monkeypatch):
+    """A persisted ROI manifest (the ``dataset.csv`` an earlier extraction wrote) handed to
+    ``Pipeline`` keeps each row's ROI address and stored mask crop: without them the
+    extractor would treat the rows as whole slides and sample them again."""
+    from soma.pipeline import Pipeline
+
+    _patch_extraction(monkeypatch)
+    crop = tmp_path / "crops" / "s0" / "32_0.png"
+    manifest = tmp_path / "rois.csv"
+    manifest.write_text(
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y,label_mask_crop_path\n"
+        "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0,\n"
+        f"s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0,{crop}\n"
+        "s1__x0_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,0,0,\n"
+    )
+    splits = tmp_path / "roi_splits.csv"
+    splits.write_text(
+        "sample_id,split,fold\ns0__x0_y0,train,0\ns0__x32_y0,tune,0\ns1__x0_y0,test,0\n"
+    )
+    pipeline = Pipeline(_config(tmp_path, manifest, splits, masks=None))
+
+    first, second = (pipeline.dataset.samples[sid] for sid in ("s0__x0_y0", "s0__x32_y0"))
+    assert (first.region, first.slide_id, first.label_mask_crop_path) == ((0, 0), "s0", None)
+    assert (second.region, second.slide_id, second.label_mask_crop_path) == ((32, 0), "s0", crop)
+    assert pipeline.dataset.samples["s1__x0_y0"].region == (0, 0)
+    # The slim cohort record carries neither the address nor any path.
+    assert not {"region_x", "region_y", "slide_id", "label_mask_crop_path"} & set(
+        pipeline.cohort.record("s0__x32_y0").metadata
+    )

@@ -21,7 +21,7 @@ from soma.config import (
     SamplingConfig,
 )
 from soma import FeatureExtractor
-from soma.dataset import SegmentationManifest
+from soma.data._legacy import LegacySamples, legacy_samples_from_csv
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.reader import build_label_remap
 from soma.dense_slide_extraction import (
@@ -130,7 +130,7 @@ def _one_coordinate(coords: list[tuple[int, int]], *, sample_id: str) -> tuple[i
 
 
 def _representative_coordinates(
-    dataset: SegmentationManifest,
+    dataset: LegacySamples,
     *,
     masks: MasksConfig,
     sampling: SamplingConfig,
@@ -192,7 +192,7 @@ def _representative_coordinates(
 def _run_precision(
     *,
     precision: str,
-    roi_dataset: SegmentationManifest,
+    roi_dataset: LegacySamples,
     output_dir: Path,
     preprocessing: PreprocessingConfig,
     masks: MasksConfig,
@@ -208,6 +208,9 @@ def _run_precision(
             output_variant="cls",
         ),
         preprocessing=preprocessing,
+        # Annotation-sampled ROI grids over whole slides (the pipeline's segmentation path).
+        shape="grid",
+        unit="slide",
         execution=ExecutionConfig(
             num_gpus=1,
             num_workers_per_gpu=0,
@@ -249,7 +252,7 @@ def _file_evidence(path: Path) -> FileEvidence:
 
 
 def _snapshot_payloads(
-    stores: dict, roi_dataset: SegmentationManifest
+    stores: dict, roi_dataset: LegacySamples
 ) -> dict[str, dict[str, tuple[int, str]]]:
     snapshots: dict[str, dict[str, tuple[int, str]]] = {}
     for precision, store in stores.items():
@@ -383,7 +386,7 @@ def run_representative_extraction_parity(
     splits_csv = Path(splits_csv).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    dataset = SegmentationManifest(dataset_csv)
+    dataset = legacy_samples_from_csv(dataset_csv)
     preprocessing, masks, sampling = _recipe()
     coords_by_slide, coarse_ids = _representative_coordinates(
         dataset,
@@ -398,7 +401,7 @@ def run_representative_extraction_parity(
         out_dir=roi_dir,
         mask_crop_dirs={slide_id: roi_dir / "masks" / slide_id for slide_id in coords_by_slide},
     )
-    roi_dataset = SegmentationManifest(roi_manifest)
+    roi_dataset = legacy_samples_from_csv(roi_manifest)
 
     stores = {
         precision: _run_precision(

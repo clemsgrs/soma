@@ -39,12 +39,18 @@ import torch
 
 from soma import FeatureExtractor
 from soma.config import load_config
-from soma.dataset import DetectionManifest, Splits
+from soma.data._legacy import (
+    bind_detection_targets,
+    legacy_folds_from_csv,
+    legacy_samples_from_csv,
+)
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.pipeline import (
     _make_loaders,
     _resolve_detection_px,
     _resolve_detection_sample_spacings,
+    extraction_shape,
+    extraction_unit,
 )
 
 # The greedy matcher is now first-class package code (soma/benchmarks/ocelot.py): it IS the
@@ -78,8 +84,8 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config(str(args.config))
-    manifest = DetectionManifest(cfg.dataset_csv)
-    splits = Splits(cfg.splits_csv, manifest)
+    manifest = legacy_samples_from_csv(cfg.dataset_csv)
+    splits = legacy_folds_from_csv(cfg.splits_csv, manifest)
     fold_split = splits.folds[0]
     train_records = [manifest.samples[s] for s in fold_split.train]
     probe_id = train_records[0].sample_id
@@ -103,6 +109,8 @@ def main() -> None:
         manifest,
         cfg.encoder,
         pre,
+        shape=extraction_shape(cfg.dataset_type),
+        unit=extraction_unit(cfg),
         execution=cfg.execution,
         cache=cache_cfg,
         output_root=args.run_dir / "rescore_extraction",
@@ -112,10 +120,10 @@ def main() -> None:
     # Fail loud if the recomputed key points where the grids aren't — a config that no
     # longer matches what this run trained on, or an incomplete extraction — instead of
     # silently re-scoring against the wrong (or an empty) store.
-    if probe_id not in store.available_samples:
+    if probe_id not in store.sample_ids:
         raise FileNotFoundError(
             f"recomputed dense cache dir {store_dir} does not contain sample '{probe_id}' "
-            f"({len(store.available_samples)} samples present). The config likely no longer "
+            f"({len(store.sample_ids)} samples present). The config likely no longer "
             f"matches the one this run was trained with, or extraction is incomplete."
         )
     if args.run_subdir is not None:
@@ -169,6 +177,8 @@ def main() -> None:
         sample_spacings=sample_spacings,
         metrics=cfg.evaluation.metrics,
     )
+    # The head reads its points through a bound PointSource, never off a record.
+    bind_detection_targets(head, manifest.records)
 
     # Rebuild the model exactly as the fold did (decoder + any feature adaptor the run
     # carried), then load trained weights.

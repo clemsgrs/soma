@@ -26,6 +26,15 @@ from soma.detection.matching import (
 from soma.detection.peaks import extract_peaks
 
 
+def _targets(head, record):
+    """Bind ``record``'s points to ``head`` (as the pipeline does) and extract targets."""
+    from soma.data._legacy import bind_detection_targets
+
+    bind_detection_targets(head, [record])
+    return head.extract_targets(record)
+
+
+
 # --------------------------------------------------------------------------- #
 # Coordinate transform (level-0 -> target frame)
 # --------------------------------------------------------------------------- #
@@ -475,13 +484,13 @@ def test_head_forward_applies_sigmoid_and_crops():
 
 
 def test_head_extract_targets_renders_points(tmp_path):
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     pts = tmp_path / "p.csv"
     pts.write_text("x,y,class\n10,12,0\n20,8,1\n")
-    record = SampleRecord(sample_id="s", image_path=tmp_path / "i.jpg", label=None, points_path=pts)
+    record = LegacyRecord(sample_id="s", image_path=tmp_path / "i.jpg", points_path=pts)
     head = _make_head()
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
     assert targets["heatmap"].shape == (2, 32, 32)
     assert targets["heatmap"][0, 12, 10] == pytest.approx(1.0)
     assert targets["heatmap"][1, 8, 20] == pytest.approx(1.0)
@@ -490,11 +499,11 @@ def test_head_extract_targets_renders_points(tmp_path):
 
 
 def _points_record(tmp_path, rows: str):
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     pts = tmp_path / "p.csv"
     pts.write_text("x,y,class\n" + rows)
-    return SampleRecord(sample_id="s", image_path=tmp_path / "i.jpg", label=None, points_path=pts)
+    return LegacyRecord(sample_id="s", image_path=tmp_path / "i.jpg", points_path=pts)
 
 
 def test_head_class_remap_merges_ids_into_one_class(tmp_path):
@@ -502,7 +511,7 @@ def test_head_class_remap_merges_ids_into_one_class(tmp_path):
     record = _points_record(tmp_path, "10,12,1\n20,8,2\n5,25,7\n")
     head = _make_head(num_classes=2, class_remap={1: 0, 2: 0, 7: 1})
 
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
 
     assert targets["gt_points"].tolist() == [[10.0, 12.0, 0.0], [20.0, 8.0, 0.0], [5.0, 25.0, 1.0]]
     assert targets["heatmap"][0, 12, 10] == pytest.approx(1.0)
@@ -514,7 +523,7 @@ def test_head_dropped_point_becomes_negative_supervision(tmp_path):
     record = _points_record(tmp_path, "10,12,0\n20,8,2\n")
     head = _make_head(num_classes=1, class_remap={0: 0}, drop=[2])
 
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
 
     assert targets["gt_points"].tolist() == [[10.0, 12.0, 0.0]]
     assert float(targets["heatmap"][0, 8, 20]) == 0.0
@@ -534,20 +543,20 @@ def test_head_rejects_point_id_declared_nowhere(tmp_path):
     head = _make_head(num_classes=1, class_remap={0: 0}, drop=[2])
 
     with pytest.raises(ValueError, match=r"points for 's' have class id\(s\) \[3\] declared in neither"):
-        head.extract_targets(record)
+        _targets(head, record)
 
 
 def test_head_uses_persisted_per_sample_spacing(tmp_path):
     from soma.dense import DenseSampleSpacing
-    from soma.dataset import SampleRecord
+    from soma.data._legacy import LegacyRecord
 
     pts = tmp_path / "p.csv"
     pts.write_text("x,y,class\n20,10,0\n")
-    record = SampleRecord(sample_id="s", image_path=tmp_path / "i.jpg", label=None, points_path=pts)
+    record = LegacyRecord(sample_id="s", image_path=tmp_path / "i.jpg", points_path=pts)
     spacing = DenseSampleSpacing(source_spacing_um=0.5, effective_spacing_um=1.0)
     head = _make_head(sample_spacings={"s": spacing})
     assert head.spacing_for_sample("s") == spacing
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
     assert targets["gt_points"].tolist() == [[10.0, 5.0, 0.0]]
     assert targets["heatmap"][0, 5, 10] == pytest.approx(1.0)
 
@@ -592,7 +601,7 @@ def test_head_loss_upweights_foreground():
 
 
 def test_detection_manifest_loads_points_path(tmp_path):
-    from soma.dataset import DetectionManifest
+    from soma.data._legacy import legacy_samples_from_csv
 
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
@@ -600,7 +609,7 @@ def test_detection_manifest_loads_points_path(tmp_path):
         "sample_id,image_path,points_path,spacing_at_level_0\n"
         f"s0,img0.jpg,{tmp_path / 'a.csv'},0.25\n"
     )
-    manifest = DetectionManifest(csv)
+    manifest = legacy_samples_from_csv(csv)
     rec = manifest.samples["s0"]
     assert rec.points_path == tmp_path / "a.csv"
     assert rec.spacing_at_level_0 == pytest.approx(0.25)
@@ -609,7 +618,7 @@ def test_detection_manifest_loads_points_path(tmp_path):
 def test_detection_manifest_retains_tile_origin(tmp_path):
     # source_wsi/tile_x/tile_y are recognized columns; they must survive into metadata
     # for deferred WSI stitching rather than being silently dropped.
-    from soma.dataset import DetectionManifest
+    from soma.data._legacy import legacy_samples_from_csv
 
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
@@ -617,21 +626,15 @@ def test_detection_manifest_retains_tile_origin(tmp_path):
         "sample_id,image_path,points_path,source_wsi,tile_x,tile_y\n"
         f"s0,img0.jpg,{tmp_path / 'a.csv'},wsi0.tif,512,1024\n"
     )
-    rec = DetectionManifest(csv).samples["s0"]
+    rec = legacy_samples_from_csv(csv).samples["s0"]
     assert rec.metadata["source_wsi"] == "wsi0.tif"
     assert rec.metadata["tile_x"] == 512
     assert rec.metadata["tile_y"] == 1024
 
 
-def test_detection_manifest_requires_points_path(tmp_path):
-    csv = tmp_path / "manifest.csv"
-    csv.write_text("sample_id,image_path\ns0,img0.jpg\n")
-    with pytest.raises(ValueError, match="points_path"):
-        __import__("soma.dataset", fromlist=["DetectionManifest"]).DetectionManifest(csv)
-
 
 def test_detection_manifest_reads_ignore_mask_path_as_typed_column(tmp_path):
-    from soma.dataset import DetectionManifest
+    from soma.data._legacy import legacy_samples_from_csv
 
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
@@ -640,7 +643,7 @@ def test_detection_manifest_reads_ignore_mask_path_as_typed_column(tmp_path):
         f"s0,img0.jpg,{tmp_path / 'a.csv'},{tmp_path / 'm0.png'}\n"
         f"s1,img1.jpg,{tmp_path / 'a.csv'},\n"
     )
-    samples = DetectionManifest(csv).samples
+    samples = legacy_samples_from_csv(csv).samples
     assert samples["s0"].ignore_mask_path == tmp_path / "m0.png"
     assert samples["s1"].ignore_mask_path is None
     assert "ignore_mask_path" not in samples["s0"].metadata
@@ -672,7 +675,7 @@ def test_head_ignore_mask_marks_valid_and_drops_ignored_points(tmp_path):
     record = _masked_record(tmp_path, "10,12,0\n20,8,1\n", _ignore_mask(tmp_path, slice(16, None)))
     head = _make_head()
 
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
 
     valid = targets["valid"]
     assert valid.dtype == torch.bool and valid.shape == (32, 32)
@@ -690,7 +693,7 @@ def test_head_ignore_mask_follows_the_target_frame(tmp_path):
     record = _masked_record(tmp_path, "20,20,0\n40,20,0\n", mask)
     head = _make_head(sample_spacings={"s": DenseSampleSpacing(0.5, 1.0)})
 
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
 
     assert bool(targets["valid"][:, :16].all()) and not bool(targets["valid"][:, 16:].any())
     assert targets["gt_points"].tolist() == [[10.0, 10.0, 0.0]]
@@ -706,7 +709,7 @@ def test_head_drops_points_on_ignored_level0_pixels_before_resampling(tmp_path):
     record = _masked_record(tmp_path, "20,20,0\n33,20,0\n", mask)
     head = _make_head(sample_spacings={"s": DenseSampleSpacing(0.5, 1.0)})
 
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
 
     assert bool(targets["valid"][:, 16].all())
     assert targets["gt_points"].tolist() == [[10.0, 10.0, 0.0]]
@@ -718,7 +721,7 @@ def test_head_without_ignore_mask_is_all_valid_and_unchanged(tmp_path):
     record = _points_record(tmp_path, "10,12,0\n31.7,8,1\n")
     head = _make_head()
 
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
 
     assert bool(targets["valid"].all()) and targets["valid"].shape == (32, 32)
     np.testing.assert_allclose(
@@ -731,7 +734,7 @@ def test_head_rejects_ignore_mask_value_naming_file_and_sample(tmp_path):
     record = _masked_record(tmp_path, "10,12,0\n", mask)
 
     with pytest.raises(ValueError, match=r"(?s)sample 's'.*bad_mask\.png"):
-        _make_head().extract_targets(record)
+        _targets(_make_head(), record)
 
 
 def test_head_loss_ignores_predictions_on_ignored_pixels():
@@ -776,7 +779,7 @@ def test_head_dense_stats_drops_predictions_on_ignored_pixels(tmp_path):
 
     record = _masked_record(tmp_path, "10,12,0\n20,8,0\n", _ignore_mask(tmp_path, slice(16, None)))
     head = _make_head(num_classes=1)
-    targets = head.extract_targets(record)
+    targets = _targets(head, record)
     # One prediction on the supervised point, one on the ignored point, one on an ignored
     # pixel with no point at all: only the first is scored (1 TP, 0 FP, 0 FN).
     predicted = render_peak_heatmap(

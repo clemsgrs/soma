@@ -11,7 +11,8 @@ import pytest
 import torch
 
 from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
-from soma.dataset import Dataset, SampleRecord
+from soma.data import SampleRecord
+from soma.data._legacy import legacy_samples_from_csv
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
 from soma.pipeline import Pipeline, PipelineResult
 from soma.tasks.registry import task_registry
@@ -29,10 +30,8 @@ FIXED_RUN_ID = "20990101_000000"
 def _record(sample_id: str, time: float, event: int, bin_: int, patient_id: str | None = None) -> SampleRecord:
     return SampleRecord(
         sample_id=sample_id,
-        image_path=Path(f"/slides/{sample_id}.svs"),
-        label=time,
+        targets={"time": time, "event": event, "bin": bin_},
         patient_id=patient_id,
-        metadata={"event": event, "bin": bin_},
     )
 
 
@@ -123,12 +122,12 @@ class TestSurvivalHead:
         assert head.extract_targets(record) == {"bin": 2, "event": 1.0, "time": 2.5}
 
     def test_auto_params_infers_num_bins(self):
-        ds = _FakeDataset([
+        records = [
             _record("s0", 0.5, 1, 0),
             _record("s1", 1.5, 0, 1),
             _record("s2", 3.5, 1, 3),
-        ])
-        assert SurvivalHead.auto_params(ds) == {"num_bins": 4}
+        ]
+        assert SurvivalHead.auto_params(records) == {"num_bins": 4}
 
     def test_postprocess_returns_risk_scores(self):
         head = SurvivalHead(input_dim=8, num_bins=4)
@@ -157,10 +156,6 @@ class TestSurvivalHead:
         head.compute_loss(head(X), targets).backward()
         assert X.grad is not None and X.grad.abs().sum() > 0
 
-
-class _FakeDataset:
-    def __init__(self, records):
-        self.samples = {r.sample_id: r for r in records}
 
 
 # ---------------------------------------------------------------------------
@@ -198,56 +193,56 @@ def _survival_dataset(tmp_path: Path, rows: list[dict]) -> Dataset:
     df = pd.DataFrame(rows)
     path = tmp_path / "dataset.csv"
     df.to_csv(path, index=False)
-    return Dataset(path)
+    return legacy_samples_from_csv(path)
 
 
 class TestValidateSurvivalDataset:
     def _rows(self):
         return [
-            {"sample_id": f"s{i}", "image_path": f"/s{i}.svs", "label": float(i), "event": i % 2, "bin": i}
+            {"sample_id": f"s{i}", "image_path": f"/s{i}.svs", "time": float(i), "event": i % 2, "bin": i}
             for i in range(4)
         ]
 
     def test_valid_passes(self, tmp_path: Path):
         ds = _survival_dataset(tmp_path, self._rows())
-        validate_survival_dataset(ds, "slide")  # no raise
+        validate_survival_dataset(ds.records, "slide")  # no raise
 
     def test_missing_event_column_raises(self, tmp_path: Path):
-        rows = [{"sample_id": "s0", "image_path": "/s0.svs", "label": 1.0, "bin": 0}]
+        rows = [{"sample_id": "s0", "image_path": "/s0.svs", "time": 1.0, "bin": 0}]
         ds = _survival_dataset(tmp_path, rows)
         with pytest.raises(ValueError, match="'event'"):
-            validate_survival_dataset(ds, "slide")
+            validate_survival_dataset(ds.records, "slide")
 
     def test_bad_event_value_raises(self, tmp_path: Path):
         rows = self._rows()
         rows[0]["event"] = 2
         ds = _survival_dataset(tmp_path, rows)
         with pytest.raises(ValueError, match="event"):
-            validate_survival_dataset(ds, "slide")
+            validate_survival_dataset(ds.records, "slide")
 
     def test_non_contiguous_bins_raise(self, tmp_path: Path):
         rows = self._rows()
         rows[2]["bin"] = 9  # bins become {0,1,9,3} → not contiguous
         ds = _survival_dataset(tmp_path, rows)
         with pytest.raises(ValueError, match="contiguous"):
-            validate_survival_dataset(ds, "slide")
+            validate_survival_dataset(ds.records, "slide")
 
     def test_negative_time_raises(self, tmp_path: Path):
         rows = self._rows()
-        rows[1]["label"] = -1.0
+        rows[1]["time"] = -1.0
         ds = _survival_dataset(tmp_path, rows)
         with pytest.raises(ValueError, match="time"):
-            validate_survival_dataset(ds, "slide")
+            validate_survival_dataset(ds.records, "slide")
 
     @pytest.mark.parametrize("num_bins", [None, 4])
     def test_patient_inconsistent_targets_raise(self, tmp_path: Path, num_bins):
         rows = [
-            {"sample_id": "s0", "image_path": "/s0.svs", "label": 1.0, "event": 1, "bin": 0, "patient_id": "p0"},
-            {"sample_id": "s1", "image_path": "/s1.svs", "label": 2.0, "event": 1, "bin": 1, "patient_id": "p0"},
+            {"sample_id": "s0", "image_path": "/s0.svs", "time": 1.0, "event": 1, "bin": 0, "patient_id": "p0"},
+            {"sample_id": "s1", "image_path": "/s1.svs", "time": 2.0, "event": 1, "bin": 1, "patient_id": "p0"},
         ]
         ds = _survival_dataset(tmp_path, rows)
         with pytest.raises(ValueError, match="inconsistent survival targets"):
-            validate_survival_dataset(ds, "patient", num_bins=num_bins)
+            validate_survival_dataset(ds.records, "patient", num_bins=num_bins)
 
 
 # ---------------------------------------------------------------------------
@@ -292,7 +287,7 @@ def _setup_survival_slide_data(tmp_path: Path):
         {
             "sample_id": [f"s{i}" for i in range(n)],
             "image_path": [f"/slides/s{i}.svs" for i in range(n)],
-            "label": times,
+            "time": times,
             "event": events,
             "bin": bins,
         }
@@ -349,7 +344,7 @@ class TestSurvivalEndToEnd:
             {
                 "sample_id": sample_ids,
                 "image_path": [f"/{s}.svs" for s in sample_ids],
-                "label": [per_patient[p][0] for p in patient_ids],
+                "time": [per_patient[p][0] for p in patient_ids],
                 "event": [per_patient[p][1] for p in patient_ids],
                 "bin": [per_patient[p][2] for p in patient_ids],
                 "patient_id": patient_ids,
@@ -393,7 +388,7 @@ def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, 
     """Cached embeddings/bags use bins 0 and 3 without dummy Cases or runtime patches."""
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
-        "sample_id,image_path,label,event,bin\n"
+        "sample_id,image_path,time,event,bin\n"
         "a,/a.svs,1,1,0\nb,/b.svs,7,0,3\n"
         "c,/c.svs,2,1,0\nd,/d.svs,8,0,3\n"
     )
@@ -427,36 +422,36 @@ def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, 
 
 def test_explicit_bin_width_accepts_sparse_indices_unchanged(tmp_path):
     dataset = _survival_dataset(tmp_path, [
-        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": 0},
-        {"sample_id": "b", "image_path": "/b.svs", "label": 7., "event": 0, "bin": 3},
+        {"sample_id": "a", "image_path": "/a.svs", "time": 1., "event": 1, "bin": 0},
+        {"sample_id": "b", "image_path": "/b.svs", "time": 7., "event": 0, "bin": 3},
     ])
-    validate_survival_dataset(dataset, "slide", num_bins=4)
-    assert [r.metadata["bin"] for r in dataset.samples.values()] == [0, 3]
+    validate_survival_dataset(dataset.records, "slide", num_bins=4)
+    assert [r.targets["bin"] for r in dataset.samples.values()] == [0, 3]
 
 
 def test_explicit_bin_width_rejects_an_index_at_the_width(tmp_path):
     dataset = _survival_dataset(tmp_path, [
-        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": 0},
-        {"sample_id": "b", "image_path": "/b.svs", "label": 7., "event": 0, "bin": 4},
+        {"sample_id": "a", "image_path": "/a.svs", "time": 1., "event": 1, "bin": 0},
+        {"sample_id": "b", "image_path": "/b.svs", "time": 7., "event": 0, "bin": 4},
     ])
     with pytest.raises(ValueError, match=r"\[0, 4\)"):
-        validate_survival_dataset(dataset, "slide", num_bins=4)
+        validate_survival_dataset(dataset.records, "slide", num_bins=4)
 
 
 @pytest.mark.parametrize("width", [0, -1, True, False, 4.0, 2.5, "4"])
 def test_explicit_bin_width_must_be_a_positive_integer(tmp_path, width):
     dataset = _survival_dataset(tmp_path, [
-        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": 0},
+        {"sample_id": "a", "image_path": "/a.svs", "time": 1., "event": 1, "bin": 0},
     ])
     with pytest.raises(ValueError, match="num_bins.*positive integer"):
-        validate_survival_dataset(dataset, "slide", num_bins=width)
+        validate_survival_dataset(dataset.records, "slide", num_bins=width)
 
 
 @pytest.mark.parametrize("bins", [[0, 3], [1, 2]])
 def test_absent_bin_width_preserves_contiguous_from_zero_requirement(tmp_path, bins):
     dataset = _survival_dataset(tmp_path, [
-        {"sample_id": "a", "image_path": "/a.svs", "label": 1., "event": 1, "bin": bins[0]},
-        {"sample_id": "b", "image_path": "/b.svs", "label": 7., "event": 0, "bin": bins[1]},
+        {"sample_id": "a", "image_path": "/a.svs", "time": 1., "event": 1, "bin": bins[0]},
+        {"sample_id": "b", "image_path": "/b.svs", "time": 7., "event": 0, "bin": bins[1]},
     ])
     with pytest.raises(ValueError, match="contiguous integers starting at 0"):
-        validate_survival_dataset(dataset, "slide")
+        validate_survival_dataset(dataset.records, "slide")

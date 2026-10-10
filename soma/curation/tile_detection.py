@@ -59,7 +59,7 @@ as before.
 
 **Stitching hooks.** Each tile row carries ``source_wsi`` (the parent ROI ``sample_id``),
 ``tile_x`` and ``tile_y`` (the window origin in ROI pixels) — the columns
-:class:`~soma.dataset.DetectionManifest` already reserves for WSI stitching — so the
+the detection curators already reserve for WSI stitching — so the
 score-time stitch lifts per-tile predicted points back to ROI coordinates. Tiles inherit
 their parent ROI's ``split``/``fold``; per-ROI metadata columns (``domain`` / ``tumor_type``
 / ``scanner`` / ``spacing_at_level_0`` / ``patient_id``) are carried through unchanged.

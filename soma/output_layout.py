@@ -19,7 +19,7 @@ import yaml
 
 from soma.atomic_io import atomic_write_text
 from soma.provenance import soma_git_state
-from soma.config import PipelineConfig
+from soma.config import task_config_dict, PipelineConfig
 
 
 _SEMANTIC_IDENTITY_EXCLUDED_PATH_COLUMN_ALLOWLIST = frozenset(
@@ -236,7 +236,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "pixel_classifier": (
             asdict(config.pixel_classifier) if config.pixel_classifier is not None else None
         ),
-        "task": asdict(config.task),
+        "task": task_config_dict(config.task),
         "evaluation": _evaluation_identity(config),
         "heatmaps": _heatmap_identity(config),
         "augmentation": asdict(config.augmentation),

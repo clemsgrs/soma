@@ -23,7 +23,7 @@ from soma.training.segmentation_dataset import (
     attach_image_targets,
     segmentation_collate_fn,
 )
-from soma.dataset import SampleRecord
+from soma.data._legacy import LegacyRecord
 from soma.dense.geometry import compute_dense_geometry
 from soma.training.segmentation_dataset import LiveSegmentationDataset
 
@@ -100,7 +100,7 @@ def test_attach_image_targets_loads_the_sample_pixels_at_the_mask_size(tmp_path:
     pixels[..., 0] = 255
     image_path = tmp_path / "a.png"
     Image.fromarray(pixels).save(image_path)
-    record = SampleRecord(sample_id="a", image_path=image_path, label=None, label_mask_path=image_path)
+    record = LegacyRecord(sample_id="a", image_path=image_path, label_mask_path=image_path)
 
     target_fn = attach_image_targets(lambda rec: {"mask": torch.zeros(16, 16, dtype=torch.long)})
     targets = target_fn(record)
@@ -115,7 +115,7 @@ def test_attach_image_targets_loads_the_sample_pixels_at_the_mask_size(tmp_path:
 def test_attach_image_targets_rejects_a_pixel_size_that_differs_from_the_mask(tmp_path: Path):
     image_path = tmp_path / "a.png"
     Image.fromarray(np.zeros((8, 16, 3), dtype=np.uint8)).save(image_path)
-    record = SampleRecord(sample_id="a", image_path=image_path, label=None, label_mask_path=image_path)
+    record = LegacyRecord(sample_id="a", image_path=image_path, label_mask_path=image_path)
 
     target_fn = attach_image_targets(lambda rec: {"mask": torch.zeros(16, 16, dtype=torch.long)})
     with pytest.raises(ValueError, match="image.*8.*16.*mask.*16.*16"):
@@ -127,8 +127,8 @@ def test_live_dataset_emits_the_augmented_pixels_at_the_mask_size_when_asked(tmp
     pixels[..., 2] = 255
     Image.fromarray(pixels).save(tmp_path / "tile.png")
     Image.fromarray(np.zeros((16, 16), dtype=np.uint8), mode="L").save(tmp_path / "tile_mask.png")
-    record = SampleRecord(
-        sample_id="t0", image_path=tmp_path / "tile.png", label=None, label_mask_path=tmp_path / "tile_mask.png"
+    record = LegacyRecord(
+        sample_id="t0", image_path=tmp_path / "tile.png", label_mask_path=tmp_path / "tile_mask.png"
     )
     geometry = compute_dense_geometry(target_size=16, patch_size=8)
     common = dict(

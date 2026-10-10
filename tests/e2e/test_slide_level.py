@@ -12,7 +12,7 @@ import pytest
 from soma.cli import main as soma_main
 
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma, sha256
-from soma.features import FeatureStore
+from soma.data import CachedSetSource
 from soma.preprocessing.supplied_coordinates import coordinates_meta_path
 from tests.e2e.synthetic import (
     SPACING_UM,
@@ -333,7 +333,7 @@ def test_user_supplied_coordinates_replace_tiling(
     artifact.record_run("cold", cold)
     artifact.check_training_reduced_loss("cold", cold)
     artifact.check_at_least("cold/test/auroc", cold.summary["test/auroc"], 0.95)
-    store = FeatureStore(cold.run_dir / "features")
+    store = CachedSetSource(cold.run_dir / "features")
     bag_sizes = {sid: int(store.load(sid).shape[0]) for sid in counts}
     artifact.check_equal("cold/bag_sizes", bag_sizes, counts)
     artifact.check_equal("cold/tiles_encoded", sum(encoded_images), sum(counts.values()))
@@ -369,7 +369,7 @@ def test_user_supplied_coordinates_replace_tiling(
     artifact.check_equal("edited/tiles_encoded", sum(encoded_images), len(cells))
     artifact.check_equal(
         "edited/bag_size",
-        int(FeatureStore(edited_run.run_dir / "features").load(edited["sample_id"]).shape[0]),
+        int(CachedSetSource(edited_run.run_dir / "features").load(edited["sample_id"]).shape[0]),
         len(cells),
     )
     # The cold run's features are untouched by the edited tile set, and returning to the
@@ -386,7 +386,7 @@ def test_user_supplied_coordinates_replace_tiling(
     artifact.check_equal("restored/tiles_encoded", sum(encoded_images), 0)
     artifact.check_equal(
         "restored/bag_size",
-        int(FeatureStore(restored.run_dir / "features").load(edited["sample_id"]).shape[0]),
+        int(CachedSetSource(restored.run_dir / "features").load(edited["sample_id"]).shape[0]),
         counts[edited["sample_id"]],
     )
     artifact.assert_passed()

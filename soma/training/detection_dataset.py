@@ -19,8 +19,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from soma.dataset import SampleRecord
-from soma.dense import DenseFeatureSource
+from soma.data._legacy import LegacyRecord
+from soma.data import GridSource
 from soma.training.segmentation_dataset import SegmentationBatch
 
 _PAD = float("nan")
@@ -31,17 +31,17 @@ class DetectionDataset(Dataset):
 
     Args:
         records: SampleRecords (with ``points_path``) for this split.
-        feature_store: DenseFeatureSource for loading cached dense grids.
-        target_fn: Callable mapping a SampleRecord to its targets dict, which must
+        feature_store: GridSource for loading cached dense grids.
+        target_fn: Callable mapping a LegacyRecord to its targets dict, which must
             contain ``"heatmap"`` ``(C, H, W)`` and ``"gt_points"`` ``(K, 3)`` (the
             head's ``extract_targets``).
     """
 
     def __init__(
         self,
-        records: list[SampleRecord],
-        feature_store: DenseFeatureSource,
-        target_fn: Callable[[SampleRecord], dict[str, Tensor]],
+        records: list[LegacyRecord],
+        feature_store: GridSource,
+        target_fn: Callable[[LegacyRecord], dict[str, Tensor]],
     ) -> None:
         self._records = records
         self._store = feature_store

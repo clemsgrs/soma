@@ -447,7 +447,8 @@ def _curated_manifest_from_dir(curated_dir: Path):
     just populate the paths that exist and let the loader fail-fast on a malformed dir.
     """
     from soma.curation.manifest import CuratedManifest
-    from soma.dataset import GENES_FILENAME, TARGET_MATRIX_FILENAME
+    from soma.data.cohort import EXPRESSION_MATRIX_FILENAME as TARGET_MATRIX_FILENAME
+    from soma.data.cohort import EXPRESSION_NAMES_FILENAME as GENES_FILENAME
 
     curated_dir = Path(curated_dir)
     dataset_csv = curated_dir / "dataset.csv"

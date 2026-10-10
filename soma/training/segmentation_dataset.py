@@ -1,7 +1,7 @@
 """SegmentationDataset — dense feature grids paired with per-pixel mask targets.
 
 Each item is ``(grid (d, h, w), targets {"mask": (H, W)}, sample_id)``: the grid is
-loaded from a :class:`~soma.dense.DenseFeatureSource`, and ``targets`` come from the
+loaded from a :class:`~soma.dense.GridSource`, and ``targets`` come from the
 injected ``target_fn`` (the ``SegmentationHead.extract_targets``, a later slice,
 which loads ``label_mask_path``) — mirroring how :class:`SampleDataset` defers target
 semantics to the head.
@@ -23,13 +23,13 @@ from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from soma.dataset import SampleRecord
-from soma.dense import DenseFeatureSource
+from soma.data._legacy import LegacyRecord
+from soma.data import GridSource
 from soma.dense.geometry import DenseGridGeometry
 from soma.dense.reader import accepted_mask_values, apply_label_remap
 
 
-def load_image_target(record: SampleRecord, *, mask_shape: tuple[int, int]) -> Tensor:
+def load_image_target(record: LegacyRecord, *, mask_shape: tuple[int, int]) -> Tensor:
     """The sample's pixels as a float ``(3, H, W)`` tensor in ``[0, 1]`` at the mask size.
 
     Flat image files only (the cached path reads the curated tile next to its grid); a
@@ -52,11 +52,11 @@ def load_image_target(record: SampleRecord, *, mask_shape: tuple[int, int]) -> T
 
 
 def attach_image_targets(
-    target_fn: Callable[[SampleRecord], dict[str, Tensor]],
-) -> Callable[[SampleRecord], dict[str, Tensor]]:
+    target_fn: Callable[[LegacyRecord], dict[str, Tensor]],
+) -> Callable[[LegacyRecord], dict[str, Tensor]]:
     """Wrap a head's ``extract_targets`` so each targets dict also carries ``"image"``."""
 
-    def with_image(record: SampleRecord) -> dict[str, Tensor]:
+    def with_image(record: LegacyRecord) -> dict[str, Tensor]:
         targets = dict(target_fn(record))
         mask = targets["mask"]
         targets["image"] = load_image_target(
@@ -72,17 +72,17 @@ class SegmentationDataset(Dataset):
 
     Args:
         records: SampleRecords (with ``label_mask_path``) for this split.
-        feature_store: DenseFeatureSource for loading cached dense grids.
-        target_fn: Callable mapping a SampleRecord to its targets dict, which must
+        feature_store: GridSource for loading cached dense grids.
+        target_fn: Callable mapping a LegacyRecord to its targets dict, which must
             contain a ``"mask"`` tensor of shape ``(H, W)`` (the head's
             ``extract_targets``).
     """
 
     def __init__(
         self,
-        records: list[SampleRecord],
-        feature_store: DenseFeatureSource,
-        target_fn: Callable[[SampleRecord], dict[str, Tensor]],
+        records: list[LegacyRecord],
+        feature_store: GridSource,
+        target_fn: Callable[[LegacyRecord], dict[str, Tensor]],
     ) -> None:
         self._records = records
         self._store = feature_store
@@ -154,7 +154,7 @@ class LiveSegmentationDataset(Dataset):
 
     def __init__(
         self,
-        records: list[SampleRecord],
+        records: list[LegacyRecord],
         *,
         geometry: DenseGridGeometry,
         preprocessor: Callable,

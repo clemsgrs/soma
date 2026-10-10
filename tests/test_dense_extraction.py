@@ -5,7 +5,7 @@ on byte-identity against the pre-migration grids), so it is stubbed here at soma
 seam — the same shape ``test_pipeline_segmentation_slide_manifest`` uses for the ROI path.
 What runs for real is everything soma still owns: the ``DenseImageOptions`` /
 ``ExecutionOptions`` contract it states, the cache key and resume decision, the payload
-layout, and the ``DenseFeatureStore`` read-back.
+layout, and the ``CachedGridSource`` read-back.
 
 The stub persists through slide2vec's own :func:`write_dense_image`, so the on-disk layout
 and sidecar these tests read back are upstream's rather than the stub's idea of them —
@@ -25,8 +25,8 @@ import pandas as pd  # noqa: E402
 from PIL import Image  # noqa: E402
 
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig  # noqa: E402
-from soma.dataset import Dataset, SampleRecord  # noqa: E402
-from soma.dense import DenseFeatureStore, compute_dense_geometry  # noqa: E402
+from soma.data._legacy import legacy_samples_from_csv, LegacyRecord  # noqa: E402
+from soma.dense import CachedGridSource, compute_dense_geometry  # noqa: E402
 from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
 from soma.dense_extraction import _DenseImageExtractor  # noqa: E402
 
@@ -34,21 +34,21 @@ FEATURE_DIM = 8
 PATCH = 16
 
 
-def _make_tiles(tmp_path: Path, n: int, size: int) -> list[SampleRecord]:
+def _make_tiles(tmp_path: Path, n: int, size: int) -> list[LegacyRecord]:
     records = []
     for i in range(n):
         path = tmp_path / f"tile{i}.png"
         Image.fromarray(np.full((size, size, 3), i, dtype=np.uint8)).save(path)
-        records.append(SampleRecord(sample_id=f"s{i}", image_path=path, label="x"))
+        records.append(LegacyRecord(sample_id=f"s{i}", image_path=path, targets={"label": "x"}))
     return records
 
 
-def _dataset(tmp_path: Path, records: list[SampleRecord]) -> Dataset:
+def _dataset(tmp_path: Path, records: list[LegacyRecord]) -> Dataset:
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(
         [{"sample_id": r.sample_id, "image_path": str(r.image_path), "label": "x"} for r in records]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _dense_sidecar(dense, geometry, grid) -> dict:
@@ -199,7 +199,7 @@ def test_real_flat_raster_extraction_respects_manifest_source_spacing(
     ).to_csv(manifest, index=False)
 
     store = _DenseImageExtractor(
-        Dataset(manifest),
+        legacy_samples_from_csv(manifest),
         EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
         target_size=target_size,
         spacing_um=0.5,
@@ -227,7 +227,7 @@ def test_run_writes_grids_into_slide2vecs_image_payload_dir(tmp_path: Path, fake
     assert cache_dir.parent.name == "dense_image"
     assert store.feature_dir == cache_dir / "dense_image_embeddings"
     assert store.feature_dir.name == "dense_image_embeddings"
-    assert sorted(store.available_samples) == ["s0", "s1", "s2"]
+    assert sorted(store.sample_ids) == ["s0", "s1", "s2"]
     assert store.feature_dim == FEATURE_DIM
     assert store.grid_shape == (2, 2)
     assert tuple(store.load("s0").shape) == (FEATURE_DIM, 2, 2)
@@ -362,7 +362,7 @@ def test_resume_encodes_only_the_missing_images(tmp_path: Path, fake_model):
     assert fake_model.calls[0]["sample_ids"] == ["s1"]
     for sid, mtime in survivor_mtimes.items():
         assert (features_dir / f"{sid}.pt").stat().st_mtime_ns == mtime
-    assert sorted(resumed.available_samples) == ["s0", "s1", "s2"]
+    assert sorted(resumed.sample_ids) == ["s0", "s1", "s2"]
 
 
 def test_cache_hit_constructs_no_model(tmp_path: Path, fake_model):
@@ -376,7 +376,7 @@ def test_cache_hit_constructs_no_model(tmp_path: Path, fake_model):
 
     store = _extractor(dataset, tmp_path).run(feature_dir)
     assert len(fake_model.calls) == 1  # unchanged — nothing constructed on the hit path
-    assert sorted(store.available_samples) == ["s0", "s1", "s2"]
+    assert sorted(store.sample_ids) == ["s0", "s1", "s2"]
 
 
 def test_cache_resolves_complete_and_validates_the_upstream_sidecar(tmp_path: Path, fake_model):
@@ -391,7 +391,7 @@ def test_cache_resolves_complete_and_validates_the_upstream_sidecar(tmp_path: Pa
     extractor.run(tmp_path / "features")
 
     cache_dir = extractor.cache_dir(tmp_path / "features")
-    store = DenseFeatureStore(cache_dir)  # cache dir, descends into the payload subdir
+    store = CachedGridSource(cache_dir)  # cache dir, descends into the payload subdir
     assert tuple(store.load("s0").shape) == (FEATURE_DIM, 2, 2)
     assert extractor.cache_dir(tmp_path / "features") == cache_dir  # side-effect-free
 

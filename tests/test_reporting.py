@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, SubgroupConfig, TaskConfig, TrainingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.evaluation.metrics import DEFAULT_METRICS, resolve_metrics
 from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
@@ -515,7 +515,7 @@ def test_run_data_from_result_computes_subgroup_metrics_with_dataset(tmp_path: P
             {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": 1, "cohort": "B"},
         ]
     ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
+    dataset = legacy_samples_from_csv(dataset_csv)
     config = replace(
         config,
         evaluation=replace(
@@ -540,7 +540,7 @@ def test_subgroup_data_for_predictions_resolves_patient_ids(tmp_path: Path) -> N
             {"sample_id": "s1", "patient_id": "p0", "image_path": str(tmp_path / "s1.svs"), "label": 0, "site": "left"},
         ]
     ).to_csv(dataset_csv, index=False)
-    dataset = Dataset(dataset_csv)
+    dataset = legacy_samples_from_csv(dataset_csv)
     report = EvaluationReport(
         split="test",
         metrics={},

@@ -12,7 +12,7 @@ from slide2vec.encoders.registry import encoder_registry
 
 from soma.cache._types import SCHEMA_VERSION, _FEATURE_TYPE_TO_RANK
 from soma.config import EncoderConfig, PreprocessingConfig, canonical_pixel_mapping
-from soma.dataset import Dataset
+from soma.data._legacy import LegacySamples
 from soma.encoders.validation import resolve_encoder_precision
 from soma.preprocessing.supplied_coordinates import coordinates_digest
 
@@ -29,7 +29,7 @@ def _canonical_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def dataset_manifest_rows(dataset: Dataset) -> list[dict[str, object]]:
+def dataset_manifest_rows(dataset: LegacySamples) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for sample_id in sorted(dataset.sample_ids):
         sample = dataset.samples[sample_id]
@@ -173,7 +173,7 @@ def preprocessing_backend_provenance(
 
 def probe_resolved_backends(
     *,
-    dataset: Dataset,
+    dataset: LegacySamples,
     requested_backend: str,
 ) -> dict[str, str]:
     requested_backend = str(requested_backend)
@@ -629,7 +629,7 @@ def _file_size_and_mtime(path: Path | str | None) -> tuple[int | None, int | Non
 
 
 def _sample_stems_for_roi_sampling(dataset: Any) -> dict[str, str]:
-    """Duck-typed over ``samples``/``sample_ids`` so :class:`SegmentationManifest` fits."""
+    """Duck-typed over ``samples``/``sample_ids`` so :class:`LegacySamples` fits."""
     stems: dict[str, str] = {}
     for sample_id, sample in sorted(dataset.samples.items()):
         size_bytes, mtime_ns = _file_size_and_mtime(sample.label_mask_path)
@@ -644,7 +644,7 @@ def _sample_stems_for_roi_sampling(dataset: Any) -> dict[str, str]:
     return stems
 
 
-def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
+def _sample_identity_payload(dataset: LegacySamples) -> dict[str, str]:
     return {
         sample_id: sample_identity_signature(
             sample_id=sample.sample_id,
@@ -663,7 +663,7 @@ def _sample_identity_payload(dataset: Dataset) -> dict[str, str]:
 
 def _sample_stems_for_kind(
     *,
-    dataset: Dataset,
+    dataset: LegacySamples,
     cache_kind: str,
     static_identity_payload: dict[str, Any],
 ) -> dict[str, str]:
@@ -696,7 +696,7 @@ def _sample_stem_for_kind(
 
 def _patient_stems_for_kind(
     *,
-    dataset: Dataset,
+    dataset: LegacySamples,
     cache_kind: str,
     static_identity_payload: dict[str, Any],
 ) -> dict[str, str]:
@@ -726,7 +726,7 @@ def _patient_stems_for_kind(
 
 def _sample_stems_for_tiling(
     *,
-    dataset: Dataset,
+    dataset: LegacySamples,
     cache_key: str,
 ) -> dict[str, str]:
     signature_by_sample_id = _sample_identity_payload(dataset)

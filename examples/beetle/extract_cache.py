@@ -9,9 +9,11 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+from soma.data import require_coverage
 from soma import FeatureExtractor
 from soma.config import load_config
-from soma.dataset import load_manifest
+from soma.data._legacy import legacy_samples_from_csv
+from soma.pipeline import extraction_shape, extraction_unit
 from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
 
@@ -34,7 +36,7 @@ def extract_verified_cache(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     config = load_config(config_path)
-    dataset = load_manifest(config.dataset_csv, config.dataset_type)
+    dataset = legacy_samples_from_csv(config.dataset_csv)
     if config.encoder is None:
         raise ValueError("BEETLE extraction requires a single encoder configuration.")
     cache = config.cache
@@ -44,13 +46,15 @@ def extract_verified_cache(
         dataset,
         config.encoder,
         resolve_pipeline_preprocessing(config),
+        shape=extraction_shape(config.dataset_type),
+        unit=extraction_unit(config),
         execution=config.execution,
         cache=cache,
         output_root=work_dir,
     ).extract()
     store = extraction.source
     roi_ids = list(extraction.dataset.sample_ids)
-    store.validate_coverage(roi_ids)
+    require_coverage(store, roi_ids)
     slides_with_rois = sorted(
         {str(record.slide_id) for record in extraction.dataset.samples.values()}
     )

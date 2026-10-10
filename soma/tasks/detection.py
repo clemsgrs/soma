@@ -40,7 +40,6 @@ from soma.detection.encode import (
     render_peak_heatmap,
     transform_points_to_target,
 )
-from soma.detection.io import read_ignore_mask, read_points
 from soma.detection.matching import VALID_MATCHING, match_points, reduce_f1
 from soma.detection.peaks import extract_peaks
 from soma.evaluation.metrics import resolve_metrics
@@ -48,7 +47,7 @@ from soma.tasks.base import TaskHead
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import SampleRecord
+    from soma.data import Points, SampleRecord, TargetSource
     from soma.dense import DenseSampleSpacing
     from soma.dense.geometry import DenseGridGeometry
 
@@ -86,6 +85,7 @@ class DetectionHead(TaskHead):
     """
 
     target_dtypes = {"heatmap": torch.float32, "gt_points": torch.float32, "valid": torch.bool}
+    target_schema: dict[str, type] = {}
     task_family = "detection"
     accumulates_eval_metrics = True
 
@@ -145,6 +145,18 @@ class DetectionHead(TaskHead):
                 f"class_names has {len(class_names)} entries for num_classes={self.num_classes}."
             )
         self.class_names = tuple(str(name) for name in class_names)
+        # Point supervision comes from a TargetSource bound by the caller (bind_targets);
+        # the head never reads a file path off a record.
+        self._target_source: "TargetSource | None" = None
+
+    @property
+    def target_source(self) -> "TargetSource | None":
+        return self._target_source
+
+    def bind_targets(self, source: "TargetSource") -> "DetectionHead":
+        """Bind the :class:`~soma.data.PointSource` ``extract_targets`` reads points from."""
+        self._target_source = source
+        return self
 
     # --- geometry ---------------------------------------------------------- #
 
@@ -167,20 +179,23 @@ class DetectionHead(TaskHead):
                 f"Detection sample '{sample_id}' has no resolved dense spacing provenance."
             ) from None
 
-    @staticmethod
-    def _sample_ignore_mask(record: "SampleRecord") -> np.ndarray | None:
-        """The level-0 ignore mask, or ``None`` when the sample has none."""
-        path = getattr(record, "ignore_mask_path", None)
-        if path is None:
-            return None
-        try:
-            return read_ignore_mask(path)
-        except ValueError as error:
-            raise ValueError(f"detection sample '{record.sample_id}': {error}") from error
+    def _load_points(self, sample_id: str) -> "Points":
+        if self._target_source is None:
+            raise RuntimeError(
+                "DetectionHead has no target source; call head.bind_targets(source) with a "
+                "PointSource before extracting targets."
+            )
+        points = self._target_source.load(sample_id)
+        if not hasattr(points, "xy") or not hasattr(points, "classes"):
+            raise ValueError(
+                f"target source returned {type(points).__name__} for '{sample_id}'; "
+                "DetectionHead needs Points."
+            )
+        return points
 
-    def _sample_valid(self, record: "SampleRecord", mask: np.ndarray) -> np.ndarray:
+    def _sample_valid(self, sample_id: str, mask: np.ndarray) -> np.ndarray:
         """Map a sample's level-0 ignore mask to the ``(H, W)`` supervised-pixel map."""
-        spacing = self.spacing_for_sample(record.sample_id)
+        spacing = self.spacing_for_sample(sample_id)
         top, left, height, width = self._crop_box
         return ignore_mask_to_valid(
             mask,
@@ -192,24 +207,23 @@ class DetectionHead(TaskHead):
 
     def _sample_target_points(
         self,
-        record: "SampleRecord",
+        sample_id: str,
+        xy_l0: np.ndarray,
+        classes: np.ndarray,
         ignore_mask: np.ndarray | None = None,
         valid: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Read + transform a sample's points into in-frame ``(xy, classes)``.
+        """Transform a sample's level-0 points into in-frame ``(xy, classes)``.
 
         A point is not supervised (it leaves the heatmap and the matching ground truth)
         when it lies on an ignored pixel of the level-0 ``ignore_mask`` (the tiler's rule)
         or when it lands on a pixel that the target-frame ``valid`` map marks as ignored.
         Both checks matter once the target frame is resampled.
         """
-        if getattr(record, "points_path", None) is None:
-            raise ValueError(f"detection sample '{record.sample_id}' has no points_path")
-        xy_l0, classes = read_points(record.points_path)
         if ignore_mask is not None and xy_l0.shape[0]:
             on_ignored = points_on_valid(xy_l0, ignore_mask == IGNORE_VALUE)
             xy_l0, classes = xy_l0[~on_ignored], classes[~on_ignored]
-        spacing = self.spacing_for_sample(record.sample_id)
+        spacing = self.spacing_for_sample(sample_id)
         top, left, height, width = self._crop_box
         xy = transform_points_to_target(
             xy_l0,
@@ -228,7 +242,7 @@ class DetectionHead(TaskHead):
             invalid = sorted({int(c) for c in classes if not 0 <= int(c) < self.num_classes})
             if invalid:
                 raise ValueError(
-                    f"points for '{record.sample_id}' have class id(s) {invalid} outside "
+                    f"points for '{sample_id}' have class id(s) {invalid} outside "
                     f"[0, num_classes={self.num_classes}). Name the annotated ids in "
                     "task.params.classes, or map them to 0-based ids."
                 )
@@ -236,7 +250,7 @@ class DetectionHead(TaskHead):
         undeclared = sorted({int(c) for c in classes} - self._class_remap.keys() - self._drop)
         if undeclared:
             raise ValueError(
-                f"points for '{record.sample_id}' have class id(s) {undeclared} declared in "
+                f"points for '{sample_id}' have class id(s) {undeclared} declared in "
                 "neither task.params.classes nor task.params.drop."
             )
         kept = np.array([int(c) not in self._drop for c in classes], dtype=bool)
@@ -244,9 +258,13 @@ class DetectionHead(TaskHead):
         return xy[kept], remapped
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
-        ignore_mask = self._sample_ignore_mask(record)
-        valid = None if ignore_mask is None else self._sample_valid(record, ignore_mask)
-        xy, classes = self._sample_target_points(record, ignore_mask, valid)
+        sample_id = record.sample_id
+        points = self._load_points(sample_id)
+        xy_l0 = np.asarray(points.xy.detach().cpu().numpy(), dtype=np.float64).reshape(-1, 2)
+        classes = np.asarray(points.classes.detach().cpu().numpy(), dtype=np.int64).reshape(-1)
+        ignore_mask = points.ignore_mask
+        valid = None if ignore_mask is None else self._sample_valid(sample_id, ignore_mask)
+        xy, classes = self._sample_target_points(sample_id, xy_l0, classes, ignore_mask, valid)
         _, _, height, width = self._crop_box
         if valid is None:
             valid = np.ones((height, width), dtype=bool)

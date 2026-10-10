@@ -26,9 +26,10 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
-from soma.dataset import Dataset, FoldSplit, Splits
+from soma.data import FoldSplit
+from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_folds_from_csv
 from soma.evaluation.report import EvaluationReport, SamplePrediction
-from soma.features import FeatureStore
+from soma.data import CachedSetSource
 from soma.output_layout import (
     build_experiment_spec,
     read_test_results,
@@ -108,7 +109,7 @@ def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     return dataset_csv, splits_csv, feature_dir
 
 
-def _setup_patient_leakage_data(tmp_path: Path) -> tuple[Dataset, Splits, FeatureStore]:
+def _setup_patient_leakage_data(tmp_path: Path) -> tuple[LegacySamples, Path, CachedSetSource]:
     dataset_csv = tmp_path / "dataset.csv"
     pd.DataFrame(
         {
@@ -130,8 +131,8 @@ def _setup_patient_leakage_data(tmp_path: Path) -> tuple[Dataset, Splits, Featur
     feature_dir.mkdir()
     for sample_id in ["s1", "s2", "s3", "s4"]:
         torch.save(torch.randn(2, D), feature_dir / f"{sample_id}.pt")
-    dataset = Dataset(dataset_csv)
-    return dataset, Splits(splits_csv, dataset), FeatureStore(feature_dir)
+    dataset = legacy_samples_from_csv(dataset_csv)
+    return dataset, splits_csv, CachedSetSource(feature_dir)
 
 
 def _setup_train_test_only_data(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -259,12 +260,12 @@ class TestMakeLoaders:
         from soma.training.collate import bag_collate_fn
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        store = CachedSetSource(feature_dir)
         train_records = [dataset.samples[sid] for sid in ["s0", "s1"]]
         tune_records = [dataset.samples[sid] for sid in ["s2"]]
         test_records = {"test": [dataset.samples[sid] for sid in ["s3"]]}
-        label_map = categorical_label_map(dataset)
+        label_map = categorical_label_map(dataset.records)
         target_fn = lambda rec: {"label": label_map[rec.label]}  # noqa: E731
         collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
         return _make_loaders, BagDataset, collate, train_records, tune_records, test_records, store, target_fn
@@ -325,9 +326,9 @@ class TestMakeLoaders:
 class TestTrainOneFold:
     def test_returns_fold_result(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -363,9 +364,9 @@ class TestTrainOneFold:
                 "s7": "success",
             },
         )
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_missing_feature"
 
         caplog.set_level(logging.INFO, logger="soma.pipeline")
@@ -387,7 +388,7 @@ class TestTrainOneFold:
             for message in messages
         )
         # Dropping an empty-feature sample is routine, not a warning. (The one-sample
-        # tune split does draw soma.dataset's class-coverage warning, which is expected.)
+        # tune split does draw the cohort's class-coverage warning, which is expected.)
         assert not any(
             record.levelno >= logging.WARNING and record.name == "soma.pipeline"
             for record in caplog.records
@@ -409,9 +410,9 @@ class TestTrainOneFold:
                 "s7": "success",
             },
         )
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         with pytest.raises(ValueError, match="s5"):
             train_one_fold(
@@ -426,9 +427,9 @@ class TestTrainOneFold:
 
     def test_requires_tune_split_by_default_when_missing(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         with pytest.raises(ValueError, match="no tuning samples"):
             train_one_fold(
@@ -445,9 +446,9 @@ class TestTrainOneFold:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         caplog.set_level(logging.WARNING, logger="soma.pipeline")
 
         result = train_one_fold(
@@ -481,9 +482,9 @@ class TestTrainOneFold:
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         caplog.set_level(logging.WARNING, logger="soma.pipeline")
 
         result = train_one_fold(
@@ -522,10 +523,10 @@ class TestTrainOneFold:
         splits_df["split"] = ["train"] * 6 + ["tune", "tune"]
         splits_df.to_csv(splits_csv, index=False)
 
-        dataset = Dataset(dataset_csv)
-        caplog.set_level(logging.WARNING, logger="soma.dataset")
-        splits = Splits(splits_csv, dataset, tune_is_test=True)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        caplog.set_level(logging.WARNING, logger="soma.data.cohort")
+        splits = legacy_folds_from_csv(splits_csv, dataset, tune_is_test=True)
+        store = CachedSetSource(feature_dir)
 
         fold_split = splits.folds[0]
         assert fold_split.test_from_tune is True
@@ -562,9 +563,9 @@ class TestTrainOneFold:
         splits_df.loc[splits_df["sample_id"] == "s7", "split"] = "test_external"
         splits_df.to_csv(splits_csv, index=False)
 
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         with pytest.raises(ValueError, match="requires exactly one test split"):
             train_one_fold(
@@ -584,9 +585,9 @@ class TestTrainOneFold:
 
     def test_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_0"
 
         train_one_fold(
@@ -603,9 +604,9 @@ class TestTrainOneFold:
 
     def test_saves_metrics_json(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_0"
 
         train_one_fold(
@@ -626,9 +627,9 @@ class TestTrainOneFold:
 
     def test_saves_predictions_csv(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_0"
 
         train_one_fold(
@@ -667,9 +668,9 @@ class TestTrainOneFold:
                 "s7": "empty",
             },
         )
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_empty_eval"
 
         result = train_one_fold(
@@ -718,9 +719,9 @@ class TestTrainOneFold:
         from soma.config import HeatmapConfig
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_0"
 
         train_one_fold(
@@ -799,9 +800,9 @@ class TestTrainOneFold:
         from soma.config import HeatmapConfig
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_0"
 
         train_one_fold(
@@ -820,9 +821,9 @@ class TestTrainOneFold:
     def test_num_classes_auto_inferred(self, tmp_path: Path):
         """num_classes should be auto-inferred from dataset labels."""
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -841,15 +842,15 @@ class TestTrainOneFold:
     def test_slide_level_features_no_aggregator(self, tmp_path: Path):
         """train_one_fold with 1-D features and aggregator=None uses EmbeddingModel."""
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
 
         # Slide-level: one (D,) tensor per sample
         slide_dir = tmp_path / "slide_feats"
         slide_dir.mkdir()
         for i in range(NUM_SAMPLES):
             torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
-        store = FeatureStore(slide_dir)
+        store = CachedSetSource(slide_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -867,14 +868,14 @@ class TestTrainOneFold:
 
     def test_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
 
         slide_dir = tmp_path / "slide_feats"
         slide_dir.mkdir()
         for i in range(NUM_SAMPLES):
             torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
-        store = FeatureStore(slide_dir)
+        store = CachedSetSource(slide_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -890,13 +891,13 @@ class TestTrainOneFold:
 
     def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
         slide_dir = tmp_path / "slide_feats"
         slide_dir.mkdir()
         for i in range(NUM_SAMPLES):
             torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
-        store = FeatureStore(slide_dir)
+        store = CachedSetSource(slide_dir)
 
         with pytest.raises(ValueError, match="aggregator must be None"):
             train_one_fold(
@@ -911,9 +912,9 @@ class TestTrainOneFold:
 
     def test_hierarchical_features_use_hipt(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -940,14 +941,14 @@ class TestTrainOneFold:
         )
 
         assert isinstance(result, FoldResult)
-        assert store.is_hierarchical is True
+        assert store.rank == 3
         assert (tmp_path / "fold_hier" / "best_model.pt").exists()
 
     def test_hierarchical_features_reject_non_hipt_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         with pytest.raises(ValueError, match="hierarchical features require the hipt aggregator"):
             train_one_fold(
@@ -974,24 +975,17 @@ class TestTrainOneFold:
 
 class TestTrain:
     def test_slide_level_train_rejects_patient_leakage_when_patient_ids_present(self, tmp_path: Path):
-        dataset, splits, store = _setup_patient_leakage_data(tmp_path)
+        dataset, splits_csv, _store = _setup_patient_leakage_data(tmp_path)
 
-        with pytest.raises(ValueError, match="Patient leakage"):
-            train(
-                feature_store=store,
-                dataset=dataset,
-                splits=splits,
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=1, patience=1, batch_size=2),
-                run_dir=tmp_path / "output",
-            )
+        # Leakage is a data-contract violation: the folds cannot even be built.
+        with pytest.raises(ValueError, match="Leakage in fold"):
+            legacy_folds_from_csv(splits_csv, dataset)
 
     def test_single_fold_returns_pipeline_result(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         result = train(
             feature_store=store,
@@ -1009,9 +1003,9 @@ class TestTrain:
 
     def test_multi_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         run_dir = tmp_path / "output"
 
         result = train(
@@ -1032,9 +1026,9 @@ class TestTrain:
 
     def test_saves_summary_json(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         run_dir = tmp_path / "output"
 
         train(
@@ -1057,9 +1051,9 @@ class TestTrain:
         test entries; the fold's metrics.json is tune-only and no test predictions land.
         """
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         run_dir = tmp_path / "output"
 
         result = train(
@@ -1104,9 +1098,9 @@ class TestTrain:
                 "s7": "empty",
             },
         )
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         run_dir = tmp_path / "output"
 
         train(
@@ -1247,9 +1241,9 @@ class TestTrain:
 
     def test_fold_subdirectories(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         run_dir = tmp_path / "output"
 
         train(
@@ -1689,7 +1683,7 @@ class TestPipeline:
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(D), out / f"s{i}.pt")
             return SimpleNamespace(
-                source=FeatureStore(out),
+                source=CachedSetSource(out),
                 dataset=self._dataset,
             )
 
@@ -1983,7 +1977,7 @@ class TestPipeline:
 
         from soma.tasks.classification import categorical_label_map
 
-        assert len(categorical_label_map(pipeline.dataset)) == 2
+        assert len(categorical_label_map(pipeline.dataset.records)) == 2
         assert pipeline.splits.num_folds == 1
 
     def test_pipeline_writes_experiment_metadata_and_indexes(self, tmp_path: Path):
@@ -2105,9 +2099,9 @@ def _write_patient_feature_manifest(feature_dir: Path, statuses: dict[str, str])
 class TestPatientPipeline:
     def test_train_one_fold_returns_fold_result_and_saves_checkpoint(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
         fold_dir = tmp_path / "fold_0"
 
         result = train_one_fold(
@@ -2133,14 +2127,13 @@ class TestPatientPipeline:
         splits_df.loc[splits_df["split"] == "test", "split"] = "tune"
         splits_df.to_csv(splits_csv, index=False)
 
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset, tune_is_test=True)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset, tune_is_test=True)
+        store = CachedSetSource(feature_dir)
 
         fold_split = splits.folds[0]
         assert fold_split.test_from_tune is True
-        # No leakage flagged even though test patients == tune patients.
-        splits.validate_no_patient_leakage(dataset)
+        # No leakage flagged even though test patients == tune patients (checked at construction).
 
         result = train_one_fold(
             feature_store=store,
@@ -2164,9 +2157,9 @@ class TestPatientPipeline:
 
     def test_train_one_fold_predictions_keyed_by_patient_id(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -2184,9 +2177,9 @@ class TestPatientPipeline:
     def test_train_one_fold_patient_features_fail_fast_when_missing(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
         (feature_dir / "p2.pt").unlink()
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         with pytest.raises(ValueError, match="patient"):
             train_one_fold(
@@ -2211,9 +2204,9 @@ class TestPatientPipeline:
                 "p3": "success",
             },
         )
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        store = CachedSetSource(feature_dir)
 
         result = train_one_fold(
             feature_store=store,
@@ -2237,7 +2230,7 @@ class TestPatientPipeline:
             for patient_id in dataset_df["patient_id"]
         ]
         dataset_df.to_csv(dataset_csv, index=False)
-        dataset = Dataset(dataset_csv)
+        dataset = legacy_samples_from_csv(dataset_csv)
         report = EvaluationReport(
             split="test",
             metrics={},
@@ -2256,7 +2249,7 @@ class TestPatientPipeline:
 
     def test_train_detects_patient_leakage(self, tmp_path: Path):
         dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
-        dataset = Dataset(dataset_csv)
+        dataset = legacy_samples_from_csv(dataset_csv)
 
         # s0 belongs to p0 but is put in test; the other p0 slide (s1) stays in train
         bad_splits = []
@@ -2275,16 +2268,6 @@ class TestPatientPipeline:
         splits_csv = tmp_path / "bad_splits.csv"
         pd.DataFrame(bad_splits).to_csv(splits_csv, index=False)
 
-        splits = Splits(splits_csv, dataset)
-        store = FeatureStore(feature_dir)
-
+        # Leakage is a data-contract violation: the folds cannot even be built.
         with pytest.raises(ValueError, match="p0"):
-            train(
-                feature_store=store,
-                dataset=dataset,
-                splits=splits,
-                dataset_type="patient",
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=1, patience=5),
-                run_dir=tmp_path / "run",
-            )
+            legacy_folds_from_csv(splits_csv, dataset, unit="patient_id")

@@ -31,8 +31,9 @@ from soma.cache import (
 )
 from soma.cache.compute_key import resolved_output_variant
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
-from soma.dataset import Dataset, SampleRecord
-from soma.features import PACKED_FILENAME, FeatureStore
+from soma.data._legacy import LegacySamples, LegacyRecord
+from soma.cache._types import PACKED_FILENAME
+from soma.data import CachedSetSource
 from soma.slide2vec_adapter import build_execution_options
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class _TileFeatureExtractor:
     feature vector per sample.
 
     Args:
-        dataset: Dataset whose ``image_path`` fields point to tile images.
+        dataset: LegacySamples whose ``image_path`` fields point to tile images.
         encoder: Encoder configuration (name, precision, batch_size, etc.).
         cache: Optional cache configuration. When enabled, features are stored
             in a content-addressed cache directory and reused across runs.
@@ -59,7 +60,7 @@ class _TileFeatureExtractor:
 
     def __init__(
         self,
-        dataset: Dataset,
+        dataset: LegacySamples,
         encoder: EncoderConfig,
         *,
         execution: ExecutionConfig = ExecutionConfig(),
@@ -70,8 +71,8 @@ class _TileFeatureExtractor:
         self._execution = execution
         self._cache = cache or CacheConfig(enabled=False)
 
-    def run(self, feature_dir: str | Path) -> FeatureStore:
-        """Encode all tile images and return a FeatureStore over the results.
+    def run(self, feature_dir: str | Path) -> CachedSetSource:
+        """Encode all tile images and return a CachedSetSource over the results.
 
         Args:
             feature_dir: Directory to write embeddings into (under an
@@ -79,7 +80,7 @@ class _TileFeatureExtractor:
                 is found.
 
         Returns:
-            FeatureStore over the 1-D feature vectors.
+            CachedSetSource over the 1-D feature vectors.
         """
         feature_dir = Path(feature_dir).resolve()
 
@@ -109,7 +110,7 @@ class _TileFeatureExtractor:
                 # sample), so a pack of what the directory held before no longer holds.
                 (feature_dir / "image_embeddings" / PACKED_FILENAME).unlink(missing_ok=True)
                 self._embed(records, out_root=feature_dir, dtype=dtype)
-            return FeatureStore(feature_dir)
+            return CachedSetSource(feature_dir)
 
         cache_resolution = resolve_image_cache(
             cache_root=resolve_cache_root(self._cache, feature_dir=feature_dir),
@@ -126,7 +127,7 @@ class _TileFeatureExtractor:
                 "Reusing cached tile features from %s",
                 cache_resolution.features_dir,
             )
-            return FeatureStore(cache_resolution.features_dir)
+            return CachedSetSource(cache_resolution.features_dir)
 
         missing = set(cache_resolution.missing_sample_ids())
         pending_ids = [record.sample_id for record in records if record.sample_id in missing]
@@ -146,9 +147,9 @@ class _TileFeatureExtractor:
                 feature_dim=feature_dim,
                 validate_payloads=self._cache.validate_payloads,
             )
-        return FeatureStore(cache_resolution.cache_dir)
+        return CachedSetSource(cache_resolution.cache_dir)
 
-    def _embed(self, records: list[SampleRecord], *, out_root: Path, dtype: str) -> int:
+    def _embed(self, records: list[LegacyRecord], *, out_root: Path, dtype: str) -> int:
         """Hand ``records`` to slide2vec in one call and return the feature dimension.
 
         slide2vec writes under ``out_root/image_embeddings/``. It reuses an image whose

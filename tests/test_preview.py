@@ -7,9 +7,13 @@ from hs2p.wsi import (
 )
 
 from soma import (
+
     overlay_mask_on_slide,
+
     save_overlay_preview,
+
     write_coordinate_preview,
+
 )
 from soma import (
     overlay_mask_on_slide as soma_overlay_mask_on_slide,

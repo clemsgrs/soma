@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 
 from soma.config import TrainingConfig
-from soma.dataset import FoldSplit, SampleRecord
+from soma.data import FoldSplit, SampleRecord
 
 
 @dataclass(frozen=True)

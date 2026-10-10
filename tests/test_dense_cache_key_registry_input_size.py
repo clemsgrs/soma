@@ -27,7 +27,7 @@ from soma.cache import (
     resolve_dense_cache,
 )
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
 
 
@@ -166,7 +166,7 @@ def _dataset(tmp_path: Path) -> Dataset:
             {"sample_id": "s2", "image_path": "/tiles/s2.png", "mask_path": "/masks/s2.png", "label": "b"},
         ]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _resolve(tmp_path: Path, dataset: Dataset):

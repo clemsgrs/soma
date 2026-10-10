@@ -89,7 +89,9 @@ from soma.tasks.base import TaskHead
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset, SampleRecord
+    from collections.abc import Sequence
+
+    from soma.data import SampleRecord
 
 # --- Protocol constants (eva offline slide-level classification configs) --------------
 EPOCHS = 100
@@ -166,10 +168,10 @@ def _eva_mlp(input_dim: int, output_dim: int) -> nn.Sequential:
 
 def _class_index(record: "SampleRecord", num_classes: int) -> dict[str, int]:
     """The curated ``label`` is EVA's class index; refuse anything outside the head."""
-    label = int(record.label)
+    label = int(record.targets["label"])
     if not 0 <= label < num_classes:
         raise ValueError(
-            f"Sample {record.sample_id!r} has label {record.label!r}; the EVA head expects "
+            f"Sample {record.sample_id!r} has label {record.targets['label']!r}; the EVA head expects "
             f"a class index in [0, {num_classes})."
         )
     return {"label": label}
@@ -248,9 +250,9 @@ class EvaMILMulticlassHead(TaskHead):
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: "Dataset") -> dict[str, Any]:
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
         # The labels are class indices; the benchmark config pins num_classes anyway.
-        return {"num_classes": max(int(r.label) for r in dataset.samples.values()) + 1}
+        return {"num_classes": max(int(r.targets["label"]) for r in records) + 1}
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int]:
         return _class_index(record, self.num_classes)

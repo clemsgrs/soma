@@ -26,7 +26,7 @@ import soma.tile_extraction as tile_extraction
 from soma.cache import MissingFeatureIdentity, resolve_cache_dtype
 from soma.cache.keys import build_tile_cache_key
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
-from soma.dataset import TileDataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 from soma.tile_extraction import _TileFeatureExtractor
 from tests.test_extraction import (
@@ -89,7 +89,7 @@ def _write_dataset(root: Path, colours: dict[str, tuple[int, int, int]], *, name
         rows.append({"sample_id": sample_id, "image_path": str(image_path), "label": 0})
     dataset_csv = root / f"{name}.csv"
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
-    return TileDataset(dataset_csv)
+    return legacy_samples_from_csv(dataset_csv)
 
 
 def _assert_vectors(result, expected: dict[str, torch.Tensor]) -> None:
@@ -231,13 +231,14 @@ def test_repointed_sample_is_not_served_from_a_pack_of_the_old_features(tmp_path
     _assert_vectors(repointed, {"s0": _expected(_B), "s1": _expected(_colour(50))})
 
 
-def _extract_images_uncached(dataset: TileDataset, root: Path):
+def _extract_images_uncached(dataset, root: Path):
     return FeatureExtractor(
         dataset,
         EncoderConfig(name=STUB_ENCODER, precision="fp32", batch_size=2),
         execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
         cache=CacheConfig(enabled=False),
         output_root=root / "run",
+        unit="tile",
     ).extract()
 
 

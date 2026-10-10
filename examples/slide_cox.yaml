@@ -4,8 +4,9 @@ run:
   tags: []
 
 data:
-  # dataset.csv reuses `label` for time-to-event and adds `event` (0/1). Unlike
-  # the discrete-time NLL path, Cox needs no `bin` column.
+  # dataset.csv carries `time` (time-to-event) and `event` (0/1). Unlike the
+  # discrete-time NLL path, Cox needs no `bin` column. A CSV that stores the time
+  # under another column name maps it with `task.targets` below.
   dataset_csv: data/dataset.csv
   splits_csv: data/splits.csv
   dataset_type: slide
@@ -29,6 +30,7 @@ aggregation: null
 
 task:
   name: survival
+  # targets: {time: label}    # target key -> CSV column, when the names differ
   params:
     loss: cox                 # selects the CoxPH path; default is nll (discrete-time)
     ties: breslow             # only Breslow ties are implemented

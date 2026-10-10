@@ -18,9 +18,9 @@ from soma.config import (
     config_yaml_dict,
     load_config,
 )
-from soma.dataset import Dataset
-from soma.dataset import Splits
-from soma.features import FeatureStore
+from soma.data._legacy import legacy_samples_from_csv
+from soma.data._legacy import legacy_folds_from_csv
+from soma.data import CachedSetSource
 from soma.output_layout import (
     build_experiment_spec,
     canonical_experiment_payload,
@@ -227,13 +227,12 @@ def test_dataset_populates_literal_optional_group_id(tmp_path: Path):
         "sample_id,image_path,label\ns0,/slides/s0.png,A\n", encoding="utf-8"
     )
 
-    grouped = Dataset(with_group).samples["s0"]
-    ordinary = Dataset(without_group).samples["s0"]
+    grouped = legacy_samples_from_csv(with_group).samples["s0"]
+    ordinary = legacy_samples_from_csv(without_group).samples["s0"]
 
-    assert grouped.group_id == "patient-7"
-    assert "group_id" not in grouped.metadata
-    assert grouped.metadata == {"site": "north"}
-    assert ordinary.group_id is None
+    # group_id is plain metadata now: the representation protocol reads it from there.
+    assert grouped.metadata == {"group_id": "patient-7", "site": "north"}
+    assert "group_id" not in ordinary.metadata
 
 
 def _representation_config_with_manifests(
@@ -442,8 +441,8 @@ def _representation_inputs(
             sample_id, torch.tensor([float(index), float(index + 10)])
         )
         torch.save(tensor, feature_dir / f"{sample_id}.pt")
-    dataset = Dataset(dataset_csv)
-    return dataset, Splits(splits_csv, dataset), FeatureStore(feature_dir)
+    dataset = legacy_samples_from_csv(dataset_csv)
+    return dataset, legacy_folds_from_csv(splits_csv, dataset), CachedSetSource(feature_dir)
 
 
 def _croma_cohort(
@@ -721,7 +720,7 @@ def test_representation_rejects_duplicate_split_membership(tmp_path: Path):
     )
 
     with pytest.raises(ValueError, match="Duplicate sample_id.*s0"):
-        Splits(splits_csv, Dataset(dataset_csv))
+        legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(dataset_csv))
 
 
 def test_representation_rejects_missing_selected_feature(tmp_path: Path):
