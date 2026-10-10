@@ -8,6 +8,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral, Real
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -73,11 +74,12 @@ class FoldSplit:
     ``tests`` maps each test split name (``"test"``, ``"test_external"`` ...) to its
     sample ids. ``test_from_tune`` marks a ``"test"`` entry synthesized from ``tune`` by
     :meth:`Cohort.with_test_from_tune`; leakage checks skip it because it mirrors tune.
+    A :class:`Cohort` stores a frozen copy of each fold it validated (see :func:`_frozen`).
     """
 
     train: tuple[str, ...]
     tune: tuple[str, ...]
-    tests: dict[str, tuple[str, ...]]
+    tests: Mapping[str, tuple[str, ...]]
     test_from_tune: bool = False
 
     @property
@@ -87,6 +89,16 @@ class FoldSplit:
     @property
     def all_sample_ids(self) -> tuple[str, ...]:
         return (*self.train, *self.tune, *(sid for ids in self.tests.values() for sid in ids))
+
+
+def _frozen(fold: FoldSplit) -> FoldSplit:
+    """A copy of ``fold`` sharing nothing mutable with the caller's objects."""
+    return replace(
+        fold,
+        train=tuple(fold.train),
+        tune=tuple(fold.tune),
+        tests=MappingProxyType({str(name): tuple(ids) for name, ids in fold.tests.items()}),
+    )
 
 
 def _is_blank(value: Any) -> bool:
@@ -246,7 +258,7 @@ class Cohort:
             if record.patient_id is not None and not is_filename_safe_id(record.patient_id):
                 raise ValueError(f"Unsafe patient_id {record.patient_id!r}.")
             self._by_id[record.sample_id] = record
-        self._folds: tuple[FoldSplit, ...] = tuple(folds)
+        self._folds: tuple[FoldSplit, ...] = tuple(_frozen(fold) for fold in folds)
         self._unit = self._resolve_unit(unit)
         self._target_names = {
             str(key): [str(name) for name in names] for key, names in (target_names or {}).items()

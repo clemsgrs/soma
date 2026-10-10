@@ -267,3 +267,13 @@ def test_integer_ids_and_targets_keep_their_types_next_to_float_columns() -> Non
     assert isinstance(record.targets["label"], int)
     assert record.metadata == {"n_tiles": 20}
     assert isinstance(record.metadata["n_tiles"], int)
+
+
+def test_folds_cannot_be_mutated_after_validation() -> None:
+    records = [SampleRecord(s, {"label": i % 2}, patient_id=f"p{i}") for i, s in enumerate("abc")]
+    tests = {"test": ("c",)}
+    cohort = Cohort(records, [FoldSplit(train=("a",), tune=("b",), tests=tests)])
+    tests["test"] = ("a",)  # the caller's own mapping is not the cohort's
+    assert cohort.folds[0].tests["test"] == ("c",)
+    with pytest.raises(TypeError):
+        cohort.folds[0].tests["test"] = ("a",)  # type: ignore[index]

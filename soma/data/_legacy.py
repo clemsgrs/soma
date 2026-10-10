@@ -199,9 +199,7 @@ def _legacy_record(
     return LegacyRecord(
         sample_id=record.sample_id,
         targets=dict(record.targets),
-        patient_id=record.patient_id
-        if record.patient_id is not None
-        else (image.patient_id if image is not None else None),
+        patient_id=record.patient_id,
         metadata=dict(record.metadata),
         image_path=None if image is None else image.image_path,
         mask_path=None if image is None else image.mask_path,
