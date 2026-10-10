@@ -208,6 +208,28 @@ def _legacy_record(
     )
 
 
+_ROI_COLUMNS = ("region_x", "region_y", "slide_id", "label_mask_crop_path")
+
+
+def _roi_fields(row: pd.Series) -> dict[str, Any]:
+    """The ROI address and stored crop a legacy effective-dataset row carries."""
+    region = None
+    if "region_x" in row.index and pd.notna(row.get("region_x")):
+        region = (int(row["region_x"]), int(row["region_y"]))
+    crop = optional_text(row, "label_mask_crop_path")
+    return {
+        "region": region,
+        "label_mask_crop_path": None if crop is None else Path(crop),
+        "slide_id": optional_text(row, "slide_id"),
+    }
+
+
+def _roi_fields_by_sample(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
+    if not any(column in frame.columns for column in _ROI_COLUMNS):
+        return {}
+    return {str(row["sample_id"]): _roi_fields(row) for _, row in frame.iterrows()}
+
+
 def records_for_pipeline(
     cohort: Cohort,
     image_manifest: ImageManifest,
@@ -215,15 +237,29 @@ def records_for_pipeline(
     *,
     path: str | Path | None = None,
 ) -> LegacySamples:
-    """Join a cohort with its manifests into the fat records ``pipeline.py`` consumes."""
+    """Join a cohort with its manifests into the fat records ``pipeline.py`` consumes.
+
+    ``path`` is the dataset CSV the cohort and manifests were read from. When it is a
+    persisted ROI manifest (an earlier extraction's effective dataset), its ROI columns
+    (``region_x`` / ``region_y`` / ``slide_id`` / ``label_mask_crop_path``) are kept on
+    the fat records, as neither slim record nor manifest carries them: without the
+    address the extractor would take each ROI for a whole slide and sample it again.
+    """
     missing = [sid for sid in cohort.sample_ids if sid not in image_manifest]
     if missing:
         raise ValueError(
             f"{len(missing)} cohort sample(s) have no image manifest row: "
             f"{missing[:20]}{' ...' if len(missing) > 20 else ''}."
         )
+    roi_fields = _roi_fields_by_sample(pd.read_csv(path)) if path is not None else {}
     return LegacySamples(
-        (_legacy_record(record, image_manifest, annotation_manifest) for record in cohort.records),
+        (
+            replace(
+                _legacy_record(record, image_manifest, annotation_manifest),
+                **roi_fields.get(record.sample_id, {}),
+            )
+            for record in cohort.records
+        ),
         target_names=cohort.target_names,
         path=path,
     )
@@ -280,19 +316,7 @@ def legacy_samples_from_csv(
             patient_id=optional_text(row, "patient_id"),
             metadata={c: row[c] for c in metadata_columns},
         )
-        record = _legacy_record(slim, images, annotations)
-        region = None
-        if "region_x" in row.index and pd.notna(row.get("region_x")):
-            region = (int(row["region_x"]), int(row["region_y"]))
-        crop = optional_text(row, "label_mask_crop_path")
-        records.append(
-            replace(
-                record,
-                region=region,
-                label_mask_crop_path=None if crop is None else Path(crop),
-                slide_id=optional_text(row, "slide_id"),
-            )
-        )
+        records.append(replace(_legacy_record(slim, images, annotations), **_roi_fields(row)))
     return LegacySamples(records, target_names=target_names, path=dataset_csv)
 
 

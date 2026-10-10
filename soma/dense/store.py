@@ -388,7 +388,9 @@ class CachedGridSource:
         ``target_size`` + ``patch_size`` — the exact function the extractor used, so
         the head's crop geometry is byte-identical to what the grid was built with
         (single source of truth, no field-copy drift). The level-0 anchor comes from
-        the resolved spacings and the ROI origin when the sidecar records them.
+        the resolved spacings and the ROI origin when the sidecar records them: slide2vec's
+        region writer stores the level-0 origin as ``x`` / ``y`` (whole-image grids have
+        none and anchor at ``(0, 0)``).
         """
         meta = self.metadata(sample_id)
         dense = compute_dense_geometry(
@@ -398,7 +400,7 @@ class CachedGridSource:
         scale = 1.0
         if meta.get("source_spacing_um") and meta.get("effective_spacing_um"):
             scale = float(meta["effective_spacing_um"]) / float(meta["source_spacing_um"])
-        origin = (float(meta.get("region_x", 0) or 0), float(meta.get("region_y", 0) or 0))
+        origin = (float(meta.get("x") or 0), float(meta.get("y") or 0))
         return GridGeometry.from_dense(dense, origin_level0=origin, level0_px_per_token_px=scale)
 
     def spacing_um(self, sample_id: str) -> float | None:

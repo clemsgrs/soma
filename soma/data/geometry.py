@@ -54,6 +54,23 @@ class DenseGridGeometry:
     def is_padded(self) -> bool:
         return self.pad != (0, 0)
 
+    @property
+    def layout(self) -> "DenseGridGeometry":
+        """The frame layout alone: sizes, token grid, padding and crop box.
+
+        This is what a decoder built from one reference sample needs every other grid
+        to share. The level-0 anchor a :class:`GridGeometry` adds (origin, scale) is
+        per sample, so cohort uniformity checks compare ``layout``, not the geometry.
+        """
+        return DenseGridGeometry(
+            target_size=self.target_size,
+            patch_size=self.patch_size,
+            encoded_size=self.encoded_size,
+            grid_shape=self.grid_shape,
+            pad=self.pad,
+            crop_box=self.crop_box,
+        )
+
 
 @dataclass(frozen=True)
 class GridGeometry(DenseGridGeometry):

@@ -133,7 +133,12 @@ class _FakeDenseModel:
                         x=int(x),
                         y=int(y),
                         metadata=_dense_sidecar(
-                            dense, geometry, grid, source_spacing_um=region.spacing_at_level_0
+                            dense,
+                            geometry,
+                            grid,
+                            source_spacing_um=region.spacing_at_level_0,
+                            x=int(x),
+                            y=int(y),
                         ),
                     )
                 )
@@ -144,7 +149,7 @@ class _FakeDenseModel:
 _FAKE_READ_TOLERANCE = 0.05
 
 
-def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None) -> dict:
+def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None, x=0, y=0) -> dict:
     """The geometry sidecar slide2vec writes next to every dense ROI grid.
 
     Like slide2vec's read plan, a source within tolerance of the request is read natively,
@@ -157,6 +162,9 @@ def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None) -> dict:
         "source_spacing_um": source,
         "effective_spacing_um": source if within else requested,
         "artifact_type": "dense_embeddings",
+        # The ROI's level-0 origin, spelled as slide2vec's ``_region_metadata`` spells it.
+        "x": int(x),
+        "y": int(y),
         "feature_dim": int(grid.shape[0]),
         "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
         "target_size": [int(geometry.target_size[0]), int(geometry.target_size[1])],
@@ -1122,3 +1130,34 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
         "s1__x32_y0",
     ]
 
+
+
+def test_pipeline_preserves_roi_fields_of_a_persisted_roi_manifest(tmp_path: Path, monkeypatch):
+    """A persisted ROI manifest (the ``dataset.csv`` an earlier extraction wrote) handed to
+    ``Pipeline`` keeps each row's ROI address and stored mask crop: without them the
+    extractor would treat the rows as whole slides and sample them again."""
+    from soma.pipeline import Pipeline
+
+    _patch_extraction(monkeypatch)
+    crop = tmp_path / "crops" / "s0" / "32_0.png"
+    manifest = tmp_path / "rois.csv"
+    manifest.write_text(
+        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y,label_mask_crop_path\n"
+        "s0__x0_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,0,0,\n"
+        f"s0__x32_y0,s0,/fake/s0.tif,/fake/s0_mask.tif,32,0,{crop}\n"
+        "s1__x0_y0,s1,/fake/s1.tif,/fake/s1_mask.tif,0,0,\n"
+    )
+    splits = tmp_path / "roi_splits.csv"
+    splits.write_text(
+        "sample_id,split,fold\ns0__x0_y0,train,0\ns0__x32_y0,tune,0\ns1__x0_y0,test,0\n"
+    )
+    pipeline = Pipeline(_config(tmp_path, manifest, splits, masks=None))
+
+    first, second = (pipeline.dataset.samples[sid] for sid in ("s0__x0_y0", "s0__x32_y0"))
+    assert (first.region, first.slide_id, first.label_mask_crop_path) == ((0, 0), "s0", None)
+    assert (second.region, second.slide_id, second.label_mask_crop_path) == ((32, 0), "s0", crop)
+    assert pipeline.dataset.samples["s1__x0_y0"].region == (0, 0)
+    # The slim cohort record carries neither the address nor any path.
+    assert not {"region_x", "region_y", "slide_id", "label_mask_crop_path"} & set(
+        pipeline.cohort.record("s0__x32_y0").metadata
+    )

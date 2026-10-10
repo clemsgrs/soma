@@ -163,3 +163,40 @@ def test_point_source_reads_points_and_ignore_masks(tmp_path: Path) -> None:
     check_target_source(source)
     with pytest.raises(KeyError):
         source.load("ghost")
+
+
+def test_cached_set_source_reads_hs2p_coordinate_archives(tmp_path: Path) -> None:
+    torch.save(torch.randn(2, 8), tmp_path / "s0.pt")
+    np.savez_compressed(
+        tmp_path / "s0.coordinates.npz",
+        tile_index=np.array([0, 1], dtype=np.int32),
+        x=np.array([32, 64], dtype=np.int64),
+        y=np.array([0, 96], dtype=np.int64),
+        tissue_fractions=np.array([1.0, 0.5], dtype=np.float32),
+    )
+    source = CachedSetSource(tmp_path)
+    assert torch.equal(source.coords("s0"), torch.tensor([[32, 0], [64, 96]]))
+    check_set_source(source)
+
+
+def test_cached_grid_source_anchors_rois_at_the_sidecar_origin(tmp_path: Path) -> None:
+    """slide2vec's region writer records the ROI's level-0 origin as ``x`` / ``y``; the
+    geometry carries it, and two ROIs read at different source spacings share a layout."""
+    geometry = compute_dense_geometry(target_size=32, patch_size=16)
+    for sample_id, (x, y), source_spacing in (("r0", (1000, 2000), 0.25), ("r1", (0, 64), 0.4)):
+        metadata = dense_grid_metadata(
+            geometry, feature_dim=4, pad_mode="constant", spacing_um=0.5
+        )
+        metadata.update(
+            {"x": x, "y": y, "source_spacing_um": source_spacing, "effective_spacing_um": 0.5}
+        )
+        write_dense_grid(tmp_path, sample_id, torch.randn(4, *geometry.grid_shape), metadata)
+    source = CachedGridSource(tmp_path)
+
+    r0, r1 = source.geometry("r0"), source.geometry("r1")
+    assert r0.origin_level0 == (1000.0, 2000.0) and r0.level0_px_per_token_px == 2.0
+    assert r0.token_to_level0((0, 0)) == (1016.0, 2016.0)
+    assert r1.origin_level0 == (0.0, 64.0) and r1.level0_px_per_token_px == 1.25
+    assert r0 != r1
+    assert r0.layout == r1.layout
+    check_grid_source(source)

@@ -136,6 +136,26 @@ def _read_array(path: Path, *, key: str = "features"):
     raise ValueError(f"Unsupported feature file {path}; expected one of {_FEATURE_SUFFIXES}.")
 
 
+def _read_coords(path: Path) -> Tensor:
+    """Read a sibling coords file as an ``(N, 2)`` level-0 ``(x, y)`` tensor.
+
+    A ``.npz`` holding ``x`` and ``y`` arrays is hs2p's ``<id>.coordinates.npz`` tiling
+    artifact (``tile_index``, ``x``, ``y``, ``tissue_fractions``); its rows are returned
+    in ``tile_index`` order, the order the features were extracted in. Any other file is
+    a single ``(N, 2)`` array (or one named ``coords``).
+    """
+    if path.suffix.lower() == ".npz":
+        with np.load(path) as archive:
+            if "x" in archive.files and "y" in archive.files:
+                x, y = archive["x"], archive["y"]
+                if "tile_index" in archive.files:
+                    order = np.argsort(archive["tile_index"], kind="stable")
+                    x, y = x[order], y[order]
+                return torch.as_tensor(np.stack([x, y], axis=1))
+    array = _read_array(path, key="coords")
+    return array if torch.is_tensor(array) else torch.as_tensor(np.asarray(array))
+
+
 class DirectorySetSource:
     """:class:`SetSource` over ``<stem>.pt|.npy|.npz|.h5`` files with optional sibling coords.
 
@@ -215,8 +235,7 @@ class DirectorySetSource:
         for suffix in _COORDS_SUFFIXES:
             candidate = self._dir / f"{stem}{suffix}"
             if candidate.is_file():
-                array = _read_array(candidate, key="coords")
-                return array if torch.is_tensor(array) else torch.as_tensor(np.asarray(array))
+                return _read_coords(candidate)
         return None
 
     def __len__(self) -> int:

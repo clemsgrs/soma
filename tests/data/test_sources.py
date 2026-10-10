@@ -178,3 +178,33 @@ def test_grid_geometry_maps_tokens_to_level0_pixels() -> None:
     assert geometry.token_to_level0((1, 2)) == (1070.0, 2042.0)
     xy = geometry.token_to_level0(np.array([[0, 0], [7, 4]]))
     np.testing.assert_allclose(xy, [[1014.0, 2014.0], [1126.0, 2210.0]])
+
+
+def test_grid_geometry_layout_ignores_the_level0_anchor() -> None:
+    """Two grids read at different source spacings / origins share one decoder layout."""
+    fine = GridGeometry.from_sizes(
+        target_size=64, patch_size=16, origin_level0=(0, 0), level0_px_per_token_px=2.0
+    )
+    coarse = GridGeometry.from_sizes(
+        target_size=64, patch_size=16, origin_level0=(1000, 2000), level0_px_per_token_px=1.25
+    )
+    assert fine != coarse
+    assert fine.layout == coarse.layout
+    assert fine.layout == coarse.layout.layout
+    assert fine.layout != GridGeometry.from_sizes(target_size=64, patch_size=14).layout
+
+
+def test_from_directory_reads_hs2p_coordinate_archives(tmp_path: Path) -> None:
+    """A sibling ``<id>.coordinates.npz`` is hs2p's tiling artifact: separate ``tile_index``,
+    ``x``, ``y`` and ``tissue_fractions`` arrays, served as row-aligned ``(N, 2)`` coords."""
+    torch.save(torch.randn(3, 8), tmp_path / "a.pt")
+    np.savez_compressed(
+        tmp_path / "a.coordinates.npz",
+        tile_index=np.array([0, 1, 2], dtype=np.int32),
+        x=np.array([0, 256, 512], dtype=np.int64),
+        y=np.array([128, 128, 384], dtype=np.int64),
+        tissue_fractions=np.array([0.9, 0.5, 0.7], dtype=np.float32),
+    )
+    source = from_directory(tmp_path)
+    assert torch.equal(source.coords("a"), torch.tensor([[0, 128], [256, 128], [512, 384]]))
+    check_set_source(source)

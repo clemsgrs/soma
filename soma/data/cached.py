@@ -130,13 +130,12 @@ class CachedSetSource:
             raise KeyError(
                 f"Sample '{sample_id}' not found in feature store. Available: {sorted(self._index)}"
             )
-        from soma.data.adapters import _read_array
+        from soma.data.adapters import _read_coords
 
         for suffix in _COORDS_SUFFIXES:
             candidate = path.with_name(f"{path.stem}{suffix}")
             if candidate.is_file():
-                array = _read_array(candidate, key="coords")
-                return array if torch.is_tensor(array) else torch.as_tensor(np.asarray(array))
+                return _read_coords(candidate)
         return None
 
     # --- feature manifest ----------------------------------------------------------- #

@@ -1659,7 +1659,7 @@ def train_one_segmentation_fold(
         ref_feature_dim = feature_store.feature_dim
         for record in all_records:
             sid = record.sample_id
-            if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+            if feature_store.geometry(sid).layout != geometry.layout or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
                 raise ValueError(
                     f"dense grid '{sid}' has geometry/feature_dim differing from reference "
                     f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
@@ -2018,7 +2018,7 @@ def train_one_detection_fold(
     ref_feature_dim = feature_store.feature_dim
     for record in all_records:
         sid = record.sample_id
-        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+        if feature_store.geometry(sid).layout != geometry.layout or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
             raise ValueError(
                 f"dense grid '{sid}' has geometry/feature_dim differing from reference "
                 f"'{ref_id}'; dataset_type='detection' v1 requires a uniform tile/grid size."
@@ -2391,7 +2391,7 @@ def train_one_pixel_classifier_fold(
     ref_feature_dim = feature_store.feature_dim
     for record in all_records:
         sid = record.sample_id
-        if feature_store.geometry(sid) != geometry or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
+        if feature_store.geometry(sid).layout != geometry.layout or int(feature_store.metadata(sid)["feature_dim"]) != ref_feature_dim:
             raise ValueError(
                 f"dense grid '{sid}' has geometry/feature_dim differing from reference "
                 f"'{ref_id}'; dataset_type='segmentation' v1 requires a uniform tile/grid "
@@ -3494,6 +3494,10 @@ def load_pipeline_data(
     schema = dict(getattr(task_cls, "target_schema", {}) or {}) if task_cls is not None else {}
     if config.representation is not None and config.task is None:
         schema = {"label": object}
+    if config.dataset_type == "spatial_expression":
+        # The closed-form probe regresses the per-spot expression vector (served from the
+        # target_index column + sidecars), not the regression head's scalar ``value``.
+        schema = {"expression": np.ndarray}
     renames = dict(config.task.targets) if config.task is not None and config.task.targets else {}
     unknown = sorted(set(renames) - set(schema))
     if unknown:
