@@ -153,6 +153,14 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - virchow2
      - 0.861 ± 0.001
      - 0.861
+   * - patch_camelyon
+     - uni2
+     - 0.949 ± 0.001
+     - 0.950
+   * - patch_camelyon
+     - virchow2
+     - 0.935 ± 0.003
+     - 0.938
 
 Segmentation
 ~~~~~~~~~~~~
