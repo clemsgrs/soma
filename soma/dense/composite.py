@@ -176,7 +176,8 @@ class CompositeDenseFeatureStore:
         # encoded_size = target + crop = full frame (pad ignored); grid_shape =
         # (h, w) so the head upsamples the decoder output to target and the auto
         # num_upsample_blocks = ceil(log2(target/(h,w))) is correct. patch_size is the
-        # nominal per-axis stride (cosmetic; the head uses encoded_size/crop_box).
+        # nominal integer stride for metadata only: the head uses encoded_size/crop_box and
+        # token_to_level0 uses the exact token_stride = encoded_size / grid_shape.
         h, w = self._common_grid_size()
         target_h, target_w = target
         patch = (max(1, round(target_h / h)), max(1, round(target_w / w)))

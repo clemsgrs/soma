@@ -55,6 +55,19 @@ class DenseGridGeometry:
         return self.pad != (0, 0)
 
     @property
+    def token_stride(self) -> tuple[float, float]:
+        """Exact encoder-frame pixels per token on each axis: ``encoded_size / grid_shape``.
+
+        Equals ``patch_size`` for an encoder's native grid; a grid resampled to a shape
+        that does not divide ``encoded_size`` (a composite's common grid) has a
+        fractional stride that ``patch_size`` cannot carry.
+        """
+        return (
+            self.encoded_size[0] / self.grid_shape[0],
+            self.encoded_size[1] / self.grid_shape[1],
+        )
+
+    @property
     def layout(self) -> "DenseGridGeometry":
         """The frame layout alone: sizes, token grid, padding and crop box.
 
@@ -129,14 +142,17 @@ class GridGeometry(DenseGridGeometry):
 
         Accepts one ``(i, j)`` pair (returns an ``(x, y)`` tuple) or an ``(N, 2)`` array
         (returns an ``(N, 2)`` float array).
+
+        The per-axis token stride is :attr:`token_stride` (``encoded_size / grid_shape``),
+        exact even when a grid was resampled to a shape that does not divide the frame.
         """
-        patch_h, patch_w = self.patch_size
+        stride_h, stride_w = self.token_stride
         origin_x, origin_y = self.origin_level0
         scale = self.level0_px_per_token_px
         array = np.asarray(ij, dtype=np.float64)
         rows, cols = array[..., 0], array[..., 1]
-        x = origin_x + (cols + 0.5) * patch_w * scale
-        y = origin_y + (rows + 0.5) * patch_h * scale
+        x = origin_x + (cols + 0.5) * stride_w * scale
+        y = origin_y + (rows + 0.5) * stride_h * scale
         if array.ndim == 1:
             return float(x), float(y)
         return np.stack([x, y], axis=-1)

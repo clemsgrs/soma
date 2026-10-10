@@ -160,6 +160,18 @@ def test_composite_grid_mode_explicit_grid_size(tmp_path: Path):
     assert comp.geometry("s0").grid_shape == (3, 3)
 
 
+def test_composite_grid_mode_maps_tokens_with_exact_strides(tmp_path: Path):
+    # 8 px over a 3-token grid is a stride of 8/3, not round(8/3) = 3: token centres must
+    # come from the exact per-axis stride or point conversion drifts off the field of view.
+    a = _write_member(tmp_path, "a", ["s0"], patch=4, k=3, spacing=0.5)
+    b = _write_member(tmp_path, "b", ["s0"], patch=2, k=5, spacing=0.5)
+    comp = CompositeDenseFeatureStore([a, b], concat_resolution="grid", concat_grid_size=(3, 3))
+    geom = comp.geometry("s0")
+    assert geom.token_to_level0((1, 1)) == (4.0, 4.0)
+    assert geom.token_to_level0((0, 0)) == pytest.approx((8 / 6, 8 / 6))
+    assert geom.token_to_level0((2, 2)) == pytest.approx((8 - 8 / 6, 8 - 8 / 6))
+
+
 def test_composite_member_norm_l2_makes_per_member_slices_unit_norm(tmp_path: Path):
     ids = ["s0"]
     a = _write_member(tmp_path, "a", ids, patch=4, k=3)
