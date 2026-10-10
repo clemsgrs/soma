@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from soma.data.validation import (
+    iter_rows,
     optional_path,
     optional_text,
     parse_spacing_at_level_0,
@@ -112,7 +113,7 @@ class ImageManifest(_Manifest):
                     f"{' ...' if len(missing) > 20 else ''}."
                 )
         entries: list[ImageEntry] = []
-        for _, row in df.iterrows():
+        for _, row in iter_rows(df):
             entries.append(
                 ImageEntry(
                     sample_id=str(row["sample_id"]),
@@ -196,7 +197,7 @@ class AnnotationManifest(_Manifest):
                 points_path=optional_path(row, "points_path"),
                 ignore_mask_path=optional_path(row, "ignore_mask_path"),
             )
-            for _, row in df.iterrows()
+            for _, row in iter_rows(df)
         ]
         return cls(entries, pixel_mapping=pixel_mapping)
 

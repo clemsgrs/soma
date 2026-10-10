@@ -20,6 +20,7 @@ from soma.data.validation import (
     SPLIT_TUNE,
     is_filename_safe_id,
     is_valid_split_name,
+    iter_rows,
     optional_text,
     require_columns,
     validate_patient_ids,
@@ -306,7 +307,7 @@ class Cohort:
         excluded = _IDENTITY_COLUMNS | SPLIT_COLUMNS | MANIFEST_COLUMNS | set(target_columns.values())
         metadata_columns = [column for column in frame.columns if column not in excluded]
         records: list[SampleRecord] = []
-        for _, row in frame.iterrows():
+        for _, row in iter_rows(frame):
             sample_id = str(row["sample_id"])
             record_targets: dict[str, Any] = {}
             for key, column in target_columns.items():

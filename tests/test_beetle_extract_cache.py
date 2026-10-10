@@ -27,6 +27,9 @@ def test_extract_cache_prepares_features_without_starting_training(
     class FakeFeatureExtractor:
         def __init__(self, dataset, encoder, preprocessing, **kwargs):
             assert dataset.sample_ids == ["slide-a", "slide-b", "slide-c"]
+            # Annotation-sampled ROI grids over whole slides, as the pipeline selects them.
+            assert kwargs["shape"] == "grid"
+            assert kwargs["unit"] == "slide"
 
         def extract(self):
             return SimpleNamespace(
@@ -48,7 +51,7 @@ def test_extract_cache_prepares_features_without_starting_training(
         dataset_csv=tmp_path / "dataset.csv",
         dataset_type="segmentation",
         encoder=object(),
-        preprocessing=object(),
+        preprocessing=SimpleNamespace(masks=object()),
         execution=object(),
         cache=SimpleNamespace(root_dir=tmp_path / "cache"),
         output_root=tmp_path / "output",

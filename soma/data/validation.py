@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 import os
 from pathlib import Path
+from typing import Hashable, Iterator
 
 import numpy as np
 import pandas as pd
@@ -20,6 +21,7 @@ __all__ = [
     "is_filename_safe_id",
     "ensure_filename_safe_id",
     "is_valid_split_name",
+    "iter_rows",
     "optional_text",
     "optional_path",
     "parse_spacing_at_level_0",
@@ -66,6 +68,16 @@ def is_valid_split_name(name: object) -> bool:
     return isinstance(name, str) and (
         name in (SPLIT_TRAIN, SPLIT_TUNE) or name.startswith(SPLIT_TEST_PREFIX)
     )
+
+
+def iter_rows(df: pd.DataFrame) -> Iterator[tuple[Hashable, pd.Series]]:
+    """``df.iterrows()`` with every value boxed to its column's Python type.
+
+    A plain ``iterrows`` builds one Series per row in the common dtype of the frame, so a
+    table with any float column reports integer ids and labels as floats (``1`` becomes
+    ``"1.0"`` once stringified). Boxing to object first keeps ints as ints.
+    """
+    return df.astype(object).iterrows()
 
 
 def require_columns(df: pd.DataFrame, columns: set[str] | frozenset[str], *, what: str) -> None:
@@ -141,7 +153,7 @@ def validate_spacing_declaration_columns(df: pd.DataFrame) -> None:
     if "spacing_at_level_0" not in df.columns:
         return
     invalid: list[str] = []
-    for index, row in df.iterrows():
+    for index, row in iter_rows(df):
         try:
             parse_spacing_at_level_0(row["spacing_at_level_0"])
         except ValueError:

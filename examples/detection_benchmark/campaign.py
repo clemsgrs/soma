@@ -697,13 +697,19 @@ def _decode_cell_points(
     from soma import FeatureExtractor
     from soma.cache import resolve_cache_root
     from soma.config import load_config
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+    from soma.data._legacy import (
+        bind_detection_targets,
+        legacy_folds_from_csv,
+        legacy_samples_from_csv,
+    )
     from soma.encoders.validation import resolve_preprocessing_config
     from soma.pipeline import (
         _make_loaders,
         _resolve_detection_px,
         _resolve_detection_sample_spacings,
         _sweep_detection_thresholds,
+        extraction_shape,
+        extraction_unit,
     )
     from soma.tasks.detection import DetectionHead
     from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
@@ -741,6 +747,8 @@ def _decode_cell_points(
             manifest,
             cfg.encoder,
             pre,
+            shape=extraction_shape(cfg.dataset_type),
+            unit=extraction_unit(cfg),
             execution=cfg.execution,
             cache=cache_cfg,
             output_root=rescore_root,
@@ -769,6 +777,8 @@ def _decode_cell_points(
         sample_spacings=sample_spacings,
         metrics=cfg.evaluation.metrics,
     )
+    # The head reads its points through a bound PointSource, never off a record.
+    bind_detection_targets(head, manifest.records)
     # One reconstruction path for every re-scorer: it rebuilds the run's feature adaptor
     # (issue #286) and sizes the decoder from the adaptor's output width, so a checkpoint
     # trained under a projection loads back into the model that wrote it.

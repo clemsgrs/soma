@@ -131,3 +131,22 @@ def test_blank_annotation_path_is_rejected() -> None:
         AnnotationManifest.from_frame(
             pd.DataFrame({"sample_id": ["a", "b"], "label_mask_path": ["a.png", None]})
         )
+
+
+def test_manifests_keep_integer_sample_ids_next_to_float_columns() -> None:
+    frame = pd.DataFrame(
+        {
+            "sample_id": [1, 2],
+            "patient_id": [7, 8],
+            "image_path": ["/img/1.tif", "/img/2.tif"],
+            "spacing_at_level_0": [0.25, 0.5],
+            "points_path": ["/ann/1.json", "/ann/2.json"],
+        }
+    )
+
+    images = ImageManifest.from_frame(frame)
+    annotations = AnnotationManifest.from_frame(frame)
+
+    assert images.sample_ids == ["1", "2"]
+    assert images["2"].patient_id == "8"
+    assert annotations.sample_ids == ["1", "2"]

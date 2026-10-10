@@ -4,9 +4,11 @@ run:
   tags: []
 
 data:
-  # dataset.csv reuses `label` for time-to-event and adds `event` (0/1) and
-  # `bin` (the discrete bin containing `label`, for every sample including
-  # censored ones — compute these yourself, e.g. via qcut on uncensored times).
+  # dataset.csv carries the survival head's targets as same-named columns: `time`
+  # (time-to-event), `event` (0/1) and `bin` (the discrete bin containing `time`, for
+  # every sample including censored ones — compute these yourself, e.g. via qcut on
+  # uncensored times). A CSV that stores the time under another column name (e.g. a
+  # legacy `label`) maps it with `task.targets` below instead of being rewritten.
   dataset_csv: data/dataset.csv
   splits_csv: data/splits.csv
   dataset_type: slide
@@ -27,6 +29,7 @@ aggregation:
 
 task:
   name: survival
+  # targets: {time: label}  # target key -> CSV column, when the names differ
   params:
     alpha: 0.15  # up-weighting of the uncensored NLL term (HIPT default)
 

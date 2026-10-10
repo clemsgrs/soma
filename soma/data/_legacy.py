@@ -31,7 +31,12 @@ from soma.data.cohort import (
 )
 from soma.data.manifests import AnnotationManifest, ImageManifest
 from soma.data.records import SampleRecord, targets_equal
-from soma.data.validation import optional_text, validate_patient_ids, validate_sample_ids
+from soma.data.validation import (
+    iter_rows,
+    optional_text,
+    validate_patient_ids,
+    validate_sample_ids,
+)
 
 __all__ = [
     "legacy_folds_from_csv",
@@ -227,7 +232,7 @@ def _roi_fields(row: pd.Series) -> dict[str, Any]:
 def _roi_fields_by_sample(frame: pd.DataFrame) -> dict[str, dict[str, Any]]:
     if not any(column in frame.columns for column in _ROI_COLUMNS):
         return {}
-    return {str(row["sample_id"]): _roi_fields(row) for _, row in frame.iterrows()}
+    return {str(row["sample_id"]): _roi_fields(row) for _, row in iter_rows(frame)}
 
 
 def records_for_pipeline(
@@ -301,7 +306,7 @@ def legacy_samples_from_csv(
     excluded = {"sample_id", "patient_id", "expression", *target_columns} | SPLIT_COLUMNS | MANIFEST_COLUMNS
     metadata_columns = [c for c in frame.columns if c not in excluded]
     records: list[LegacyRecord] = []
-    for _, row in frame.iterrows():
+    for _, row in iter_rows(frame):
         targets: dict[str, Any] = {}
         for key, column in target_columns.items():
             value = row[column]

@@ -13,6 +13,7 @@ from soma.data import require_coverage
 from soma import FeatureExtractor
 from soma.config import load_config
 from soma.data._legacy import legacy_samples_from_csv
+from soma.pipeline import extraction_shape, extraction_unit
 from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
 
@@ -45,6 +46,8 @@ def extract_verified_cache(
         dataset,
         config.encoder,
         resolve_pipeline_preprocessing(config),
+        shape=extraction_shape(config.dataset_type),
+        unit=extraction_unit(config),
         execution=config.execution,
         cache=cache,
         output_root=work_dir,

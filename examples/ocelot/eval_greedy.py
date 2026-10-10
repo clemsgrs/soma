@@ -39,12 +39,18 @@ import torch
 
 from soma import FeatureExtractor
 from soma.config import load_config
-from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.data._legacy import (
+    bind_detection_targets,
+    legacy_folds_from_csv,
+    legacy_samples_from_csv,
+)
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.pipeline import (
     _make_loaders,
     _resolve_detection_px,
     _resolve_detection_sample_spacings,
+    extraction_shape,
+    extraction_unit,
 )
 
 # The greedy matcher is now first-class package code (soma/benchmarks/ocelot.py): it IS the
@@ -103,6 +109,8 @@ def main() -> None:
         manifest,
         cfg.encoder,
         pre,
+        shape=extraction_shape(cfg.dataset_type),
+        unit=extraction_unit(cfg),
         execution=cfg.execution,
         cache=cache_cfg,
         output_root=args.run_dir / "rescore_extraction",
@@ -169,6 +177,8 @@ def main() -> None:
         sample_spacings=sample_spacings,
         metrics=cfg.evaluation.metrics,
     )
+    # The head reads its points through a bound PointSource, never off a record.
+    bind_detection_targets(head, manifest.records)
 
     # Rebuild the model exactly as the fold did (decoder + any feature adaptor the run
     # carried), then load trained weights.

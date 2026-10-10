@@ -30,7 +30,7 @@ anndata = pytest.importorskip("anndata", minversion="0.11")
 h5py = pytest.importorskip("h5py")
 
 from soma.curation.hest import curate_hest  # noqa: E402
-from soma.data._legacy import legacy_samples_from_csv, Splits  # noqa: E402
+from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv  # noqa: E402
 
 # Silence anndata's pandas>=3 Arrow-string write guard when building fixtures.
 anndata.settings.allow_write_nullable_strings = True
@@ -147,7 +147,9 @@ def test_curate_hest_emits_spatial_expression_manifest(tmp_path: Path):
     n_spots = sum(len(v) for v in SLIDES.values())
     assert len(loaded.sample_ids) == n_spots
     assert loaded.genes == FIXTURE_GENES
-    assert loaded.target_matrix.shape == (n_spots, len(FIXTURE_GENES))
+    # The sidecar matrix is served per record as targets["expression"] (one gene vector).
+    for record in loaded.records:
+        assert record.targets["expression"].shape == (len(FIXTURE_GENES),)
 
     df = pd.read_csv(manifest.dataset_csv)
     assert {"sample_id", "image_path", "target_index"} <= set(df.columns)

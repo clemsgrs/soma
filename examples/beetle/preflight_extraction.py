@@ -208,6 +208,9 @@ def _run_precision(
             output_variant="cls",
         ),
         preprocessing=preprocessing,
+        # Annotation-sampled ROI grids over whole slides (the pipeline's segmentation path).
+        shape="grid",
+        unit="slide",
         execution=ExecutionConfig(
             num_gpus=1,
             num_workers_per_gpu=0,

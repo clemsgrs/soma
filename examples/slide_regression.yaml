@@ -4,6 +4,8 @@ run:
   tags: []
 
 data:
+  # dataset.csv carries the regression target in a `value` column; map another column
+  # name with `task.targets` below.
   dataset_csv: data/dataset.csv
   splits_csv: data/splits.csv
   dataset_type: slide
@@ -23,6 +25,7 @@ aggregation:
 
 task:
   name: regression
+  # targets: {value: label}  # target key -> CSV column, when the names differ
 
 evaluation:
   metrics:

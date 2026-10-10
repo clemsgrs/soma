@@ -221,3 +221,21 @@ def test_list_constructor_validates_like_from_frames() -> None:
     assert cohort.sample_ids == ["a", "b", "c"]
     with pytest.raises(ValueError, match="ghost"):
         Cohort(records, [FoldSplit(train=("ghost",), tune=(), tests={"test": ("a",)})])
+
+
+def test_integer_ids_and_targets_keep_their_types_next_to_float_columns() -> None:
+    # A row-wise walk over a mixed table would upcast every int to float, turning
+    # sample_id 1 into "1.0" (unknown to the splits) and label 1 into 1.0.
+    records_df = pd.DataFrame(
+        {"sample_id": [1, 2], "label": [0, 1], "value": [1.25, 2.5], "n_tiles": [10, 20]}
+    )
+    splits_df = pd.DataFrame({"sample_id": [1, 2], "split": ["train", "test"]})
+
+    cohort = Cohort.from_frames(records_df, splits_df, targets=["label", "value"])
+
+    assert cohort.sample_ids == ["1", "2"]
+    record = cohort.record("2")
+    assert record.targets == {"label": 1, "value": 2.5}
+    assert isinstance(record.targets["label"], int)
+    assert record.metadata == {"n_tiles": 20}
+    assert isinstance(record.metadata["n_tiles"], int)
