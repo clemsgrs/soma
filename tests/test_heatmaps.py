@@ -466,8 +466,7 @@ def test_save_attention_skips_no_attention_aggregator(tmp_path, caplog):
     save_config(config, tmp_path / "config.yaml")
 
     feature_store = MagicMock()
-    feature_store.is_slide_level = False
-    feature_store.is_hierarchical = False
+    feature_store.rank = 2
 
     dataset = MagicMock()
 
@@ -497,7 +496,7 @@ def test_save_attention_skips_slide_level_features(tmp_path):
     save_config(config, tmp_path / "config.yaml")
 
     feature_store = MagicMock()
-    feature_store.is_slide_level = True  # <-- slide-level
+    feature_store.rank = 1
 
     dataset = MagicMock()
     save_attention(tmp_path, dataset, feature_store)

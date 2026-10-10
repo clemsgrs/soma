@@ -2,7 +2,7 @@
 
 Fully offline — no encoder weights. The headline guard is that a dense ``(d, h, w)``
 grid reports ``feature_dim = d`` (channel axis), not ``w`` (grid width), which is
-exactly the rank-collision the dedicated DenseFeatureStore + dense_grid metadata
+exactly the rank-collision the dedicated CachedGridSource + dense_grid metadata
 exist to prevent.
 """
 
@@ -24,9 +24,9 @@ from soma.cache import (
     resolve_output_dtype,
 )
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.dense import (
-    DenseFeatureStore,
+    CachedGridSource,
     compute_dense_geometry,
     dense_grid_metadata,
     write_dense_grid,
@@ -48,7 +48,7 @@ def _make_dataset(
         for row in rows:
             row["spacing_at_level_0"] = spacing_by_id[row["sample_id"]]
     pd.DataFrame(rows).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _enc() -> EncoderConfig:
@@ -245,7 +245,7 @@ def test_resolve_output_dtype_rejects_garbage():
 
 
 # --------------------------------------------------------------------------- #
-# DenseFeatureStore — reads shape from the sidecar, never from rank.
+# CachedGridSource — reads shape from the sidecar, never from rank.
 # --------------------------------------------------------------------------- #
 
 
@@ -283,7 +283,7 @@ def test_store_reports_spacing_from_sidecar(tmp_path: Path):
         torch.randn(8, 32, 32),
         dense_grid_metadata(g, feature_dim=8, pad_mode="reflect", spacing_um=0.5),
     )
-    store = DenseFeatureStore(tmp_path)
+    store = CachedGridSource(tmp_path)
     assert store.spacing_um("flat") is None
     assert store.spacing_um("spaced") == 0.5
 
@@ -291,18 +291,18 @@ def test_store_reports_spacing_from_sidecar(tmp_path: Path):
 def test_store_reports_feature_dim_d_not_grid_width(tmp_path: Path):
     # d=1536 channels, 32x32 grid. A rank-based store would wrongly read 32 (w).
     _write_grid(tmp_path, "s1", d=1536, gh=32, gw=32)
-    store = DenseFeatureStore(tmp_path)
+    store = CachedGridSource(tmp_path)
     assert store.feature_dim == 1536
     assert store.grid_shape == (32, 32)
     assert tuple(store.load("s1").shape) == (1536, 32, 32)
 
 
 def test_store_descends_into_payload_subdir(tmp_path: Path):
-    # Mirrors FeatureStore: given a cache dir, descend into dense_embeddings/.
+    # Mirrors CachedSetSource: given a cache dir, descend into dense_embeddings/.
     payload_dir = tmp_path / "dense_embeddings"
     _write_grid(payload_dir, "s1", d=1536, gh=32, gw=32)
-    store = DenseFeatureStore(tmp_path)  # cache dir, NOT the payload subdir
-    assert store.available_samples == ["s1"]
+    store = CachedGridSource(tmp_path)  # cache dir, NOT the payload subdir
+    assert store.sample_ids == ["s1"]
     assert store.feature_dim == 1536
 
 
@@ -313,7 +313,7 @@ def test_store_prefers_dense_subdir_over_pooled_sibling(tmp_path: Path):
     (tmp_path / "tile_embeddings").mkdir()
     torch.save(torch.randn(196, 768), tmp_path / "tile_embeddings" / "s1.pt")  # pooled bag
     _write_grid(tmp_path / "dense_embeddings", "s1", d=1536, gh=32, gw=32)
-    store = DenseFeatureStore(tmp_path)
+    store = CachedGridSource(tmp_path)
     assert store.feature_dir.name == "dense_embeddings"
     assert store.feature_dim == 1536
     assert tuple(store.load("s1").shape) == (1536, 32, 32)
@@ -339,13 +339,13 @@ def test_store_load_normalizes_to_float32(tmp_path: Path):
         g, feature_dim=8, pad_mode="reflect", image_pad_value=0.0, mask_pad_value=255
     )
     write_dense_grid(tmp_path, "s1", torch.randn(8, 32, 32, dtype=torch.float16), meta)
-    loaded = DenseFeatureStore(tmp_path).load("s1")
+    loaded = CachedGridSource(tmp_path).load("s1")
     assert loaded.dtype == torch.float32
 
 
 def test_store_missing_sidecar_fails_loud(tmp_path: Path):
     torch.save(torch.randn(8, 32, 32), tmp_path / "s1.pt")  # no .meta.json
-    store = DenseFeatureStore(tmp_path)
+    store = CachedGridSource(tmp_path)
     with pytest.raises(FileNotFoundError, match="missing its required sidecar"):
         store.metadata("s1")
 
@@ -362,7 +362,7 @@ def test_write_dense_grid_rejects_shape_metadata_mismatch(tmp_path: Path):
 def test_store_load_detects_on_disk_shape_mismatch(tmp_path: Path):
     _write_grid(tmp_path, "s1", d=8, gh=32, gw=32)
     torch.save(torch.randn(8, 31, 32), tmp_path / "s1.pt")  # corrupt: overwrite with wrong grid
-    store = DenseFeatureStore(tmp_path)
+    store = CachedGridSource(tmp_path)
     with pytest.raises(ValueError, match="sidecar declares"):
         store.load("s1")
 
@@ -655,14 +655,14 @@ def test_dense_cache_identity_ignores_label_mask_path(tmp_path: Path):
     # mask shapes tiling, the segmentation supervision raster does not. Re-pointing
     # label_mask_path must not re-key the dense cache; re-pointing mask_path must.
     from soma.cache import _sample_identity_payload
-    from soma.dataset import SegmentationManifest
+    from soma.data._legacy import legacy_samples_from_csv
 
     def manifest(name: str, *, mask: str, label_mask: str) -> SegmentationManifest:
         csv_path = tmp_path / f"{name}.csv"
         pd.DataFrame(
             [{"sample_id": "s1", "image_path": "/tiles/s1.png", "mask_path": mask, "label_mask_path": label_mask}]
         ).to_csv(csv_path, index=False)
-        return SegmentationManifest(csv_path)
+        return legacy_samples_from_csv(csv_path)
 
     base = _sample_identity_payload(manifest("a", mask="/t/s1.png", label_mask="/m/s1.png"))
     other_label = _sample_identity_payload(manifest("b", mask="/t/s1.png", label_mask="/m2/s1.png"))

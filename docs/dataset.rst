@@ -13,9 +13,14 @@ Dataset format
 --------------
 
 ``dataset.csv``
-  | Required columns: ``sample_id``, ``image_path``, ``label``.
-  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``), ``coordinates_path`` (user-supplied tile coordinates for whole slides; see :ref:`preprocessing-supplied-coordinates`).
+  | Required columns: ``sample_id``, ``image_path``, and the target columns the task head declares (``label`` for classification, ``value`` for regression, ``time`` and ``event`` (plus ``bin`` for discrete-time survival) for survival). ``task.targets`` maps a key to a differently named column, e.g. ``targets: {value: label}``.
+  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``; the sampling unit leakage checks protect), ``coordinates_path`` (user-supplied tile coordinates for whole slides; see :ref:`preprocessing-supplied-coordinates`), ``split`` / ``fold`` (a single CSV may carry its own splits).
   | Additional, unrecognized columns are carried along as per-sample metadata.
+
+One CSV feeds three readers, each validating only its own columns:
+:class:`soma.data.Cohort` (identity, targets, folds), :class:`soma.data.ImageManifest`
+(what extraction reads) and :class:`soma.data.AnnotationManifest` (dense supervision
+files). Records carry no file paths.
 
 Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)
 replace the scalar ``label`` with a per-sample supervision file:
@@ -24,7 +29,7 @@ replace the scalar ``label`` with a per-sample supervision file:
   from ``mask_path`` (the optional tissue mask): a segmentation row may carry both.
   A row is a pre-cropped tile or a whole slide; see :doc:`segmentation`.
 - **Detection** uses ``points_path`` — a per-sample point file
-  (:class:`soma.dataset.DetectionManifest`), a CSV of object centroids with
+  (read through :class:`soma.data.AnnotationManifest`), a CSV of object centroids with
   ``x, y, class`` columns (headerless ``x,y,class`` — OCELOT's format — or a
   2-column ``x,y`` for a single class). Points are stored in **level-0** pixels;
   an optional finite positive per-sample ``spacing_at_level_0`` column declares the
@@ -34,8 +39,8 @@ replace the scalar ``label`` with a per-sample supervision file:
 For ``dataset_type="spatial_expression"``, use ``target_index`` instead of
 ``label``. Each index selects a row in ``targets.npy`` (shape
 ``[n_rows, n_genes]``); ``genes.json`` lists the genes in column order. Both
-sidecars must sit beside ``dataset.csv`` and are validated by
-:class:`soma.dataset.SpatialExpressionManifest`.
+sidecars must sit beside ``dataset.csv``; ``Cohort.from_csv(..., targets=["expression"])``
+reads them into each record's ``expression`` target.
 
 Splits format
 -------------

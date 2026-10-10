@@ -346,7 +346,7 @@ def _setup_mil_survival_data(tmp_path: Path):
         {
             "sample_id": [f"s{i}" for i in range(n)],
             "image_path": [f"/slides/s{i}.svs" for i in range(n)],
-            "label": times,
+            "time": times,
             "event": events,
         }
     ).to_csv(dataset_csv, index=False)

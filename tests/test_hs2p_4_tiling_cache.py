@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.slide2vec_adapter import load_tilings
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hs2p_4_4_3_tiling"
@@ -48,7 +48,7 @@ def test_hs2p_4_tiling_cache_loads_under_hs2p_5(tmp_path: Path):
     ).to_csv(dataset_csv, index=False)
 
     (loaded,) = load_tilings(
-        dataset=Dataset(dataset_csv),
+        dataset=legacy_samples_from_csv(dataset_csv),
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
         tissue_mask_tissue_value=1,

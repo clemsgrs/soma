@@ -18,8 +18,8 @@ import torch
 
 from soma.config import EvalConfig, TaskConfig, TrainingConfig
 from soma.curation.manifest import write_manifest
-from soma.dataset import Splits, load_manifest
-from soma.features import FeatureStore
+from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
+from soma.data import CachedSetSource
 from soma.pipeline import train
 
 FEATURE_DIM = 8
@@ -81,9 +81,9 @@ def _build_manifest_and_features(tmp_path: Path):
 
 def _run_probe(tmp_path: Path):
     manifest, feature_dir = _build_manifest_and_features(tmp_path)
-    dataset = load_manifest(manifest.dataset_csv, "spatial_expression")
-    splits = Splits(manifest.splits_csv, dataset)
-    store = FeatureStore(feature_dir)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
+    store = CachedSetSource(feature_dir)
     run_dir = tmp_path / "run"
     result = train(
         feature_store=store,
@@ -137,14 +137,14 @@ def test_probe_writes_per_spot_predictions(tmp_path):
 
 
 def test_probe_reuses_one_feature_store_across_folds(tmp_path):
-    # Embeddings are extracted once and reused across folds: a single FeatureStore instance
+    # Embeddings are extracted once and reused across folds: a single CachedSetSource instance
     # serves every fold (the shared cache), never re-extracting per fold.
     manifest, feature_dir = _build_manifest_and_features(tmp_path)
-    dataset = load_manifest(manifest.dataset_csv, "spatial_expression")
-    splits = Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
     assert splits.num_folds == 2
 
-    store = FeatureStore(feature_dir)
+    store = CachedSetSource(feature_dir)
     loaded_ids: list[str] = []
     original_load = store.load
 

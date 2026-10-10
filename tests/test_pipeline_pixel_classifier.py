@@ -25,8 +25,8 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
-from soma.dataset import SegmentationManifest, Splits
-from soma.dense import DenseFeatureStore
+from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
 from soma.pipeline import train_one_pixel_classifier_fold
@@ -68,9 +68,9 @@ def _build_dense_run(root: Path, sample_ids: list[str]):
     splits_csv.write_text(
         "sample_id,split,fold\n" + "\n".join(f"{sid},{s},0" for sid, s in assign.items()) + "\n"
     )
-    manifest = SegmentationManifest(manifest_csv)
-    splits = Splits(splits_csv, manifest)
-    store = DenseFeatureStore(dense_dir)
+    manifest = legacy_samples_from_csv(manifest_csv)
+    splits = legacy_folds_from_csv(splits_csv, manifest)
+    store = CachedGridSource(dense_dir)
     return manifest, splits, store
 
 

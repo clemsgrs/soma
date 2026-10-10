@@ -30,7 +30,8 @@ ground truth with **class-aware F1@δ**.
 Data contract
 -------------
 
-``dataset_type: detection`` uses :class:`soma.dataset.DetectionManifest`. The
+``dataset_type: detection`` reads its supervision through
+:class:`soma.data.AnnotationManifest` and :class:`soma.data.PointSource`. The
 supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
 
 .. list-table::

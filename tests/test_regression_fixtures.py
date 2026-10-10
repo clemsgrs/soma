@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 
 
@@ -38,7 +38,7 @@ def _build_dataset(tmp_path: Path) -> Dataset:
         + "\n",
         encoding="utf-8",
     )
-    return Dataset(dataset_csv)
+    return legacy_samples_from_csv(dataset_csv)
 
 
 def _regression_preprocessing() -> PreprocessingConfig:

@@ -40,7 +40,7 @@ from soma.cache import (
 from soma.cache.features import FeatureCacheResolution, _validate_feature_cache_contents
 from soma.cache.tiling import _validate_tiling_cache_contents
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 
 
 def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -> Dataset:
@@ -52,7 +52,7 @@ def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -
             {"sample_id": "s1", "image_path": "/slides/s1.svs", "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _write_sidecar(resolution: FeatureCacheResolution, sample_id: str) -> None:

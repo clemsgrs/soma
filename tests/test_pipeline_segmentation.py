@@ -26,8 +26,8 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
-from soma.dataset import SegmentationManifest, Splits
-from soma.dense import DenseFeatureStore
+from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_folds_from_csv
+from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
 from soma.pipeline import train, train_one_segmentation_fold
@@ -46,7 +46,7 @@ def _build_dense_run(
     num_classes: int = NUM_CLASSES,
     train_count: int = 2,
     patient_ids: list[str] | None = None,
-) -> tuple[SegmentationManifest, Splits, DenseFeatureStore]:
+) -> tuple[SegmentationManifest, Splits, CachedGridSource]:
     dense_dir = root / "dense"
     masks_dir = root / "masks"
     dense_dir.mkdir()
@@ -106,9 +106,9 @@ def _build_dense_run(
         + "\n"
     )
 
-    manifest = SegmentationManifest(manifest_csv)
-    splits = Splits(splits_csv, manifest)
-    store = DenseFeatureStore(dense_dir)
+    manifest = legacy_samples_from_csv(manifest_csv)
+    splits = legacy_folds_from_csv(splits_csv, manifest)
+    store = CachedGridSource(dense_dir)
     return manifest, splits, store
 
 
@@ -380,7 +380,7 @@ def _run_confusion_evidence_cv(
         + "\n".join(f"{sample},{split},{fold}" for fold, sample, split in split_rows)
         + "\n"
     )
-    splits = Splits(splits_path, manifest)
+    splits = legacy_folds_from_csv(splits_path, manifest)
     run_dir = tmp_path / "run"
     evaluation = EvalConfig(
         metrics=["mean_dice"],
@@ -478,7 +478,7 @@ def test_tune_is_test_multifold_reuses_one_unique_roi_population(tmp_path: Path)
     train(
         feature_store=store,
         dataset=manifest,
-        splits=Splits(splits_path, manifest, tune_is_test=True),
+        splits=legacy_folds_from_csv(splits_path, manifest, tune_is_test=True),
         dataset_type="segmentation",
         task=TaskConfig(name="segmentation", params={"num_classes": 3}),
         training=TrainingConfig(
@@ -568,7 +568,7 @@ def test_tune_is_test_validates_evidence_against_effective_held_out_split(
         "held_a,test,0\n"
         "held_b,test,0\n"
     )
-    splits = Splits(splits_path, manifest, tune_is_test=True)
+    splits = legacy_folds_from_csv(splits_path, manifest, tune_is_test=True)
     run_dir = tmp_path / "run"
 
     train(
@@ -669,7 +669,7 @@ def test_pipeline_uses_segmentation_manifest(tmp_path: Path):
 
     _build_dense_run(tmp_path, ["s0", "s1", "s2", "s3"])
     pipeline = Pipeline(_seg_pipeline_config(tmp_path), feature_dir=tmp_path / "dense")
-    assert isinstance(pipeline.dataset, SegmentationManifest)
+    assert isinstance(pipeline.dataset, LegacySamples)
     assert (
         pipeline._get_feature_source_context(
             run_dir=tmp_path / "out"

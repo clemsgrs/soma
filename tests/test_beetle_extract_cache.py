@@ -20,12 +20,9 @@ def test_extract_cache_prepares_features_without_starting_training(
 
     class FakeStore:
         feature_dir = payload_dir
-        available_samples = ["roi-a", "roi-b"]
+        sample_ids = ["roi-a", "roi-b"]
         feature_dim = 1280
         grid_shape = (37, 37)
-
-        def validate_coverage(self, sample_ids):
-            assert sample_ids == ["roi-a", "roi-b"]
 
     class FakeFeatureExtractor:
         def __init__(self, dataset, encoder, preprocessing, **kwargs):
@@ -58,7 +55,7 @@ def test_extract_cache_prepares_features_without_starting_training(
     )
     parent_dataset = SimpleNamespace(sample_ids=["slide-a", "slide-b", "slide-c"])
     monkeypatch.setattr(extract_cache, "load_config", lambda _path: config)
-    monkeypatch.setattr(extract_cache, "load_manifest", lambda _path, _type: parent_dataset)
+    monkeypatch.setattr(extract_cache, "legacy_samples_from_csv", lambda _path: parent_dataset)
     monkeypatch.setattr(extract_cache, "resolve_pipeline_preprocessing", lambda _config: object())
     monkeypatch.setattr(extract_cache, "FeatureExtractor", FakeFeatureExtractor)
 

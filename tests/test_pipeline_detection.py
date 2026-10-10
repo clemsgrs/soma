@@ -25,8 +25,8 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
-from soma.dataset import DetectionManifest, Splits
-from soma.dense import DenseFeatureStore, DenseSampleSpacing
+from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.dense import CachedGridSource, DenseSampleSpacing
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
 from soma.pipeline import train_one_detection_fold
@@ -120,9 +120,9 @@ def _build_detection_run(root: Path, sample_ids: list[str], make_images: bool = 
         "sample_id,split,fold\n" + "\n".join(f"{sid},{s},0" for sid, s in assign.items()) + "\n"
     )
 
-    manifest = DetectionManifest(manifest_csv)
-    splits = Splits(splits_csv, manifest)
-    store = DenseFeatureStore(dense_dir)
+    manifest = legacy_samples_from_csv(manifest_csv)
+    splits = legacy_folds_from_csv(splits_csv, manifest)
+    store = CachedGridSource(dense_dir)
     return manifest, splits, store
 
 
@@ -176,7 +176,7 @@ def test_detection_fold_without_tune_keeps_the_configured_threshold(tmp_path: Pa
     train_one_detection_fold(
         feature_store=store,
         dataset=manifest,
-        fold_split=Splits(splits_csv, manifest).folds[0],
+        fold_split=legacy_folds_from_csv(splits_csv, manifest).folds[0],
         task=TaskConfig(name="detection", params=params),
         training=TrainingConfig(epochs=2, batch_size=2, allow_missing_tune=True),
         fold_dir=tmp_path / "fold",
@@ -302,9 +302,9 @@ def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
     (tmp_path / "splits.csv").write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    manifest = DetectionManifest(tmp_path / "manifest.csv")
-    splits = Splits(tmp_path / "splits.csv", manifest)
-    store = DenseFeatureStore(dense_dir)
+    manifest = legacy_samples_from_csv(tmp_path / "manifest.csv")
+    splits = legacy_folds_from_csv(tmp_path / "splits.csv", manifest)
+    store = CachedGridSource(dense_dir)
     assert store.metadata("s0")["feature_kind"] == "cls_attention"
     assert store.feature_dim == K
 

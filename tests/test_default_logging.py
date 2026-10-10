@@ -9,15 +9,23 @@ from pathlib import Path
 from unittest.mock import patch
 
 from soma import (
+
     AggregatorConfig,
+
     EncoderConfig,
+
     FeatureExtractor,
+
     Pipeline,
+
     PipelineConfig,
+
     TaskConfig,
-    TileDataset,
+
     TrainingConfig,
+
 )
+from soma.data._legacy import legacy_samples_from_csv
 from soma.cli import main
 from soma.config import save_config
 from tests.test_pipeline import FIXED_RUN_ID, _setup_synthetic_data
@@ -93,7 +101,7 @@ def test_feature_extractor_turns_on_soma_info_output_without_logging_setup(
 
     with no_logging_setup():
         FeatureExtractor(
-            TileDataset(dataset_csv),
+            legacy_samples_from_csv(dataset_csv),
             EncoderConfig(name="phikon"),
             output_root=tmp_path / "output",
         )

@@ -25,7 +25,7 @@ from torchvision.transforms import v2
 
 from soma.cache import CacheFeatureIdentityMismatch
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
-from soma.dataset import Dataset, TileDataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 from tests.e2e.synthetic import write_tiff
 
@@ -168,16 +168,17 @@ def _image_dataset(root: Path, n: int = 4) -> TileDataset:
         rows.append({"sample_id": f"s{index}", "image_path": str(image_path), "label": index % 2})
     dataset_csv = root / f"dataset_{n}.csv"
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
-    return TileDataset(dataset_csv)
+    return legacy_samples_from_csv(dataset_csv)
 
 
-def _extract_images(dataset: TileDataset, root: Path, **cache_settings):
+def _extract_images(dataset, root: Path, **cache_settings):
     return FeatureExtractor(
         dataset,
         EncoderConfig(name=STUB_ENCODER, precision="fp32", batch_size=2),
         execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
         cache=CacheConfig(enabled=True, root_dir=root / "cache", **cache_settings),
         output_root=root / "run",
+        unit="tile",
     ).extract()
 
 
@@ -206,7 +207,7 @@ def _forget_identity(root: Path, kind: str) -> None:
 def _features(result) -> dict[str, torch.Tensor]:
     return {
         sample_id: result.source.load(sample_id)
-        for sample_id in sorted(result.source.available_samples)
+        for sample_id in sorted(result.source.sample_ids)
     }
 
 
@@ -534,7 +535,7 @@ def slide_manifests(tmp_path_factory) -> dict[int, Path]:
 def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
     """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``."""
     return FeatureExtractor(
-        Dataset(dataset_csv),
+        legacy_samples_from_csv(dataset_csv),
         EncoderConfig(name=_SLIDE_KINDS[kind], precision="fp32", batch_size=64),
         PreprocessingConfig(
             backend="openslide",

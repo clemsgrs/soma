@@ -23,7 +23,7 @@ from soma.cache import (
 from soma.cache.keys import _sample_stems_for_kind
 from soma.cache.migration import MIGRATION_NOTE_NAME, migrate_legacy_dense_caches
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
 
 # build_dense_cache_key on main for the configuration below, registry input_size=224.
@@ -54,7 +54,7 @@ def _dataset(tmp_path: Path) -> Dataset:
             {"sample_id": "s2", "image_path": "/tiles/s2.png", "mask_path": None, "label": "b"},
         ]
     ).to_csv(csv_path, index=False)
-    return Dataset(csv_path)
+    return legacy_samples_from_csv(csv_path)
 
 
 def _resolve(cache_root: Path, dataset: Dataset):

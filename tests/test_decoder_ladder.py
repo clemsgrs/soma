@@ -23,13 +23,13 @@ torch = pytest.importorskip("torch")
 from soma.decoders import HeavyConvDecoder, LightweightConvDecoder  # noqa: E402
 from soma.dense.composite import CompositeDenseFeatureStore  # noqa: E402
 from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.store import DenseFeatureStore, dense_grid_metadata, write_dense_grid  # noqa: E402
+from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid  # noqa: E402
 
 TARGET = 16
 SPACING = 0.2  # µm/px; source == effective spacing makes the point transform identity
 
 
-def _write_member(dir_: Path, sample_ids: list[str], *, feature_dim: int, patch: int) -> DenseFeatureStore:
+def _write_member(dir_: Path, sample_ids: list[str], *, feature_dim: int, patch: int) -> CachedGridSource:
     """Write a one-encoder dense store (fixed target_size / spacing, own patch+dim)."""
     dir_.mkdir(parents=True, exist_ok=True)
     geom = compute_dense_geometry(target_size=TARGET, patch_size=patch)
@@ -38,7 +38,7 @@ def _write_member(dir_: Path, sample_ids: list[str], *, feature_dim: int, patch:
     rng = np.random.default_rng(feature_dim)
     for sid in sample_ids:
         write_dense_grid(dir_, sid, torch.from_numpy(rng.standard_normal((feature_dim, *geom.grid_shape)).astype("float32")), meta)
-    return DenseFeatureStore(dir_)
+    return CachedGridSource(dir_)
 
 
 # --------------------------------------------------------------------------- #
@@ -88,7 +88,7 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     """A full detection fold trains the heavy decoder on the composite (Σdᵢ) grids —
     the ensemble rung end-to-end through the real pipeline path."""
     from soma.config import DecoderConfig, EvalConfig, PreprocessingConfig, TaskConfig, TrainingConfig
-    from soma.dataset import DetectionManifest, Splits
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
     from soma.pipeline import train_one_detection_fold
 
     ids = ["s0", "s1", "s2", "s3"]
@@ -112,8 +112,8 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     (tmp_path / "splits.csv").write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    manifest = DetectionManifest(tmp_path / "manifest.csv")
-    splits = Splits(tmp_path / "splits.csv", manifest)
+    manifest = legacy_samples_from_csv(tmp_path / "manifest.csv")
+    splits = legacy_folds_from_csv(tmp_path / "splits.csv", manifest)
 
     result = train_one_detection_fold(
         feature_store=composite,

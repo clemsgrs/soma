@@ -247,23 +247,22 @@ def test_compute_subgroup_stats_seed_reproducible() -> None:
 
 def test_subgroup_column_validation_raises_for_missing_column(tmp_path: Path) -> None:
     """Configuring a subgroup column that is not in the dataset raises a clear error."""
-    from soma.dataset import Dataset, Splits
-    from soma.features import FeatureStore
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+    from soma.data import CachedSetSource
     from soma.pipeline import train_one_fold
-    from soma.dataset import FoldSplit
+    from soma.data import FoldSplit
 
     # Build a minimal dataset with no extra metadata columns
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text("sample_id,image_path,label\ns0,/img/s0.tif,0\ns1,/img/s1.tif,1\n")
-    dataset = Dataset(dataset_csv)
+    dataset = legacy_samples_from_csv(dataset_csv)
 
     fold_split = FoldSplit(train=("s0",), tune=("s1",), tests={"test": ("s0",)})
     feature_store = MagicMock()
     feature_store.has_feature_manifest = False
-    feature_store.is_slide_level = True
-    feature_store.is_hierarchical = False
+    feature_store.rank = 1
     feature_store.feature_dim = 8
-    feature_store.available_samples = {"s0", "s1"}
+    feature_store.sample_ids = {"s0", "s1"}
 
     with pytest.raises(ValueError, match="nonexistent"):
         train_one_fold(
@@ -287,7 +286,7 @@ def test_predictions_csv_enriched_with_subgroup_columns(tmp_path: Path) -> None:
     """_save_predictions writes subgroup columns when subgroup_data is provided."""
     from soma.evaluation.report import EvaluationReport, SamplePrediction
     from soma.pipeline import _build_subgroup_data, _save_predictions
-    from soma.dataset import Dataset
+    from soma.data._legacy import legacy_samples_from_csv
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -295,7 +294,7 @@ def test_predictions_csv_enriched_with_subgroup_columns(tmp_path: Path) -> None:
         "s0,/img/s0.tif,0,M\n"
         "s1,/img/s1.tif,1,F\n"
     )
-    dataset = Dataset(dataset_csv)
+    dataset = legacy_samples_from_csv(dataset_csv)
 
     predictions = [
         SamplePrediction(sample_id="s0", true_label=0, predicted_label=0, probabilities=[0.8, 0.2]),

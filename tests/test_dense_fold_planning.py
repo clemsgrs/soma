@@ -6,19 +6,20 @@ from types import SimpleNamespace
 import pytest
 
 from soma.config import TrainingConfig
-from soma.dataset import FoldSplit, SampleRecord
+from soma.data import FoldSplit
+from soma.data._legacy import LegacyRecord
 from soma.training.fold_planning import plan_dense_fold
 
 
-def _record(sample_id: str) -> SampleRecord:
-    return SampleRecord(sample_id=sample_id, image_path=f"{sample_id}.png", label=None)
+def _record(sample_id: str) -> LegacyRecord:
+    return LegacyRecord(sample_id=sample_id, image_path=f"{sample_id}.png", )
 
 
 def _dataset(*sample_ids: str):
     return SimpleNamespace(samples={sample_id: _record(sample_id) for sample_id in sample_ids})
 
 
-def _ids(records: list[SampleRecord]) -> list[str]:
+def _ids(records: list[LegacyRecord]) -> list[str]:
     return [record.sample_id for record in records]
 
 

@@ -20,13 +20,9 @@ from soma.tasks.regression import RegressionHead
 from soma.tasks.registry import task_registry
 
 
-class _FakeDataset:
-    """Minimal dataset stub exposing ``samples`` with ``.label`` records."""
-
-    def __init__(self, num_classes):
-        self.samples = {
-            str(i): SimpleNamespace(label=i) for i in range(num_classes)
-        }
+def _FakeDataset(num_classes):
+    """Minimal record stubs carrying a ``label`` target."""
+    return [SimpleNamespace(targets={"label": i}) for i in range(num_classes)]
 
 
 def _labels(values) -> dict[str, torch.Tensor]:
@@ -111,7 +107,7 @@ class TestBinaryClassificationHead:
 
     def test_extract_targets_uses_label_map(self):
         head = BinaryClassificationHead(input_dim=8, num_classes=2, label_map={"neg": 0, "pos": 1})
-        record = SimpleNamespace(label="pos")
+        record = SimpleNamespace(targets={"label": "pos"})
         assert head.extract_targets(record) == {"label": 1}
 
 
@@ -271,7 +267,7 @@ class TestRegressionHead:
 
     def test_extract_targets_casts_label_to_float(self):
         head = RegressionHead(input_dim=8)
-        assert head.extract_targets(SimpleNamespace(label="2.5")) == {"value": 2.5}
+        assert head.extract_targets(SimpleNamespace(targets={"value": "2.5"})) == {"value": 2.5}
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@ from soma.curation.eva import (
     _gleason_arvaniti_raw_present,
     curate_eva_patch_dataset,
 )
-from soma.dataset import Dataset, Splits
+from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 
 
 CRC_CLASS_NAMES = ("ADI", "BACK", "DEB", "LYM", "MUC", "MUS", "NORM", "STR", "TUM")
@@ -163,8 +163,8 @@ def test_curate_mhist_preserves_eva_binary_targets_and_reserves_test(tmp_path: P
         {"sample_id": "mhist_images_ssa_train_1", "split": "train", "fold": 0},
     ]
 
-    dataset = Dataset(manifest.dataset_csv)
-    splits = Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
     assert splits.num_folds == 1
 
 
@@ -201,8 +201,8 @@ def test_curate_mhist_allows_full_train_for_eva_reproduction(tmp_path: Path):
     assert len(splits_df[splits_df["split"] == "tune"]) == 0
     assert len(splits_df[splits_df["split"] == "test"]) == 2
 
-    dataset = Dataset(manifest.dataset_csv)
-    splits = Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
     assert splits.folds[0].tune == ()
 
 
@@ -269,8 +269,8 @@ def test_curate_breakhis_uses_eva_40x_patient_split(tmp_path: Path):
     assert len(splits_df[splits_df["split"] == "tune"]) == 0
     assert dataset_df["image_path"].str.contains("/40X/").all()
 
-    dataset = Dataset(manifest.dataset_csv)
-    splits = Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
     assert splits.folds[0].tune == ()
 
 
@@ -298,8 +298,8 @@ def test_curate_crc_splits_eva_train_and_reserves_eva_val_as_test(tmp_path: Path
     assert len(splits_df[splits_df["split"] == "tune"]) == 0
     assert len(splits_df[splits_df["split"] == "test"]) == 9
 
-    dataset = Dataset(manifest.dataset_csv)
-    Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    legacy_folds_from_csv(manifest.splits_csv, dataset)
 
 
 def test_curate_crc_accepts_original_subdirectories(tmp_path: Path):
@@ -390,9 +390,9 @@ def test_curate_gleason_arvaniti_reports_on_validation_and_ignores_test_patches(
     test_ids = splits_df.loc[splits_df["split"] == "test", "sample_id"].tolist()
     assert len(test_ids) == 1 and "ZT76" in test_ids[0]
 
-    dataset = Dataset(manifest.dataset_csv)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
     # Previously raised "provides both a tune and a test split"; must now construct cleanly.
-    splits = Splits(manifest.splits_csv, dataset, tune_is_test=True)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset, tune_is_test=True)
     assert len(splits.folds[0].train) == 2
 
 
@@ -419,8 +419,8 @@ def test_gleason_materializes_from_extracted_section_dirs(tmp_path: Path):
         {"label": 0, "class_name": "benign", "eva_split": "train"},
         {"label": 2, "class_name": "gleason_4", "eva_split": "val"},
     ]
-    dataset = Dataset(manifest.dataset_csv)
-    Splits(manifest.splits_csv, dataset, tune_is_test=True)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    legacy_folds_from_csv(manifest.splits_csv, dataset, tune_is_test=True)
 
 
 def test_gleason_materializes_from_tarball_archives(tmp_path: Path):
@@ -571,8 +571,8 @@ def test_curate_patch_camelyon_accepts_split_class_folders(tmp_path: Path):
         "test": 2,
     }
 
-    dataset = Dataset(manifest.dataset_csv)
-    splits = Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    splits = legacy_folds_from_csv(manifest.splits_csv, dataset)
     assert len(splits.folds[0].tune) == 2
 
 
@@ -718,8 +718,8 @@ def test_curate_bach_uses_eva_index_ranges_with_train_split_recut(tmp_path: Path
     assert len(splits_df[splits_df["split"] == "train"]) == 268
     assert set(dataset_df["label"]) == {0, 1, 2, 3}
 
-    dataset = Dataset(manifest.dataset_csv)
-    Splits(manifest.splits_csv, dataset)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    legacy_folds_from_csv(manifest.splits_csv, dataset)
 
 
 def test_curate_bach_accepts_pre_split_train_test_layout(tmp_path: Path):

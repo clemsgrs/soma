@@ -7,8 +7,8 @@ from pathlib import Path
 import torch
 import pytest
 
-from soma.dataset import SampleRecord
-from soma.features import FeatureStore
+from soma.data import SampleRecord
+from soma.data import CachedSetSource
 from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
 
 
@@ -17,17 +17,16 @@ from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_coll
 # ---------------------------------------------------------------------------
 
 
-def _create_store(tmp_path: Path, sample_ids: list[str], feature_dim: int) -> FeatureStore:
+def _create_store(tmp_path: Path, sample_ids: list[str], feature_dim: int) -> CachedSetSource:
     for sid in sample_ids:
         torch.save(torch.randn(feature_dim), tmp_path / f"{sid}.pt")
-    return FeatureStore(tmp_path)
+    return CachedSetSource(tmp_path)
 
 
 def _make_record(sample_id: str, label: str) -> SampleRecord:
     return SampleRecord(
         sample_id=sample_id,
-        image_path=Path(f"/slides/{sample_id}.svs"),
-        label=label,
+        targets={"label": label},
     )
 
 
@@ -36,7 +35,7 @@ TARGET_DTYPES = {"label": torch.long}
 
 
 def _target_fn(record: SampleRecord) -> dict[str, int]:
-    return {"label": LABEL_MAP[record.label]}
+    return {"label": LABEL_MAP[record.targets["label"]]}
 
 
 # ---------------------------------------------------------------------------

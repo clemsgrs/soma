@@ -1,6 +1,6 @@
 """Resilient dense-grid loading (issue #207).
 
-``DenseFeatureStore.load`` retries transient ``OSError`` / ``FileNotFoundError``
+``CachedGridSource.load`` retries transient ``OSError`` / ``FileNotFoundError``
 from the underlying ``load_array`` with bounded linear backoff, so a single
 spurious read error on a flaky networked mount (zfs/NFS/CIFS) does not abort a
 multi-fold dense run. The happy path adds no latency and no sleep.
@@ -17,21 +17,21 @@ torch = pytest.importorskip("torch")
 
 import soma.dense.store as store_mod  # noqa: E402
 from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.store import DenseFeatureStore, dense_grid_metadata, write_dense_grid  # noqa: E402
+from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid  # noqa: E402
 
 TARGET = 8
 PATCH = 4
 DIM = 3
 
 
-def _make_store(tmp_path: Path) -> DenseFeatureStore:
+def _make_store(tmp_path: Path) -> CachedGridSource:
     """Write one real ``s0`` grid + sidecar and open a store over it."""
     geom = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
     meta = dense_grid_metadata(geom, feature_dim=DIM, pad_mode="reflect", spacing_um=0.2)
     rng = np.random.default_rng(0)
     grid = torch.from_numpy(rng.standard_normal((DIM, *geom.grid_shape)).astype("float32"))
     write_dense_grid(tmp_path, "s0", grid, meta)
-    return DenseFeatureStore(tmp_path)
+    return CachedGridSource(tmp_path)
 
 
 def test_happy_path_reads_once_without_sleeping(tmp_path, monkeypatch):

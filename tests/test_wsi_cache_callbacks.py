@@ -10,7 +10,7 @@ import torch
 
 from soma import cache as cache_mod
 from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import orchestration
 from soma.extraction.extractor import _PooledFeatureExtractor
 from soma.slide2vec_adapter import LoadedTiling, build_preprocessing_config
@@ -68,7 +68,7 @@ def population(tmp_path, request):
             for sid in ids
         ]
     ).to_csv(csv, index=False)
-    dataset = Dataset(csv)
+    dataset = legacy_samples_from_csv(csv)
     preprocessing = PreprocessingConfig(
         tissue_method="hsv",
         requested_tile_size_px=224,

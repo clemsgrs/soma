@@ -20,8 +20,8 @@ import torch
 
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
-from soma.dataset import DetectionManifest, Splits
-from soma.dense import DenseFeatureStore
+from soma.data._legacy import bind_detection_targets, legacy_samples_from_csv, legacy_folds_from_csv
+from soma.dense import CachedGridSource
 from soma.decoders.registry import decoder_registry
 from soma.pipeline import _make_loaders, _resolve_detection_px
 from soma.tasks.detection import DetectionHead
@@ -75,9 +75,9 @@ def _build_detection_run(root: Path, sample_ids: list[str]):
         "sample_id,split,fold\n" + "\n".join(f"{sid},{s},0" for sid, s in assign.items()) + "\n"
     )
 
-    manifest = DetectionManifest(root / "manifest.csv")
-    splits = Splits(root / "splits.csv", manifest)
-    store = DenseFeatureStore(dense_dir)
+    manifest = legacy_samples_from_csv(root / "manifest.csv")
+    splits = legacy_folds_from_csv(root / "splits.csv", manifest)
+    store = CachedGridSource(dense_dir)
     return manifest, splits, store
 
 
@@ -96,9 +96,10 @@ def _build_model_and_loaders(manifest, splits, store):
         num_classes=NUM_CLASSES, geometry=geometry, delta_px=delta_px, sigma_px=sigma_px,
         nms_distance_px=delta_px,
         matching="greedy",
-        sample_spacings={sid: store.spacing(sid) for sid in store.available_samples},
+        sample_spacings={sid: store.spacing(sid) for sid in store.sample_ids},
         metrics=["mean_f1", "f1_per_class"],
     )
+    bind_detection_targets(head, manifest.records)
 
     decoder_cls = decoder_registry.get("lightweight_conv")
     rh = geometry.encoded_size[0] / geometry.grid_shape[0]

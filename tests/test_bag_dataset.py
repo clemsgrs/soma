@@ -7,8 +7,8 @@ from pathlib import Path
 import torch
 import pytest
 
-from soma.dataset import SampleRecord
-from soma.features import FeatureStore
+from soma.data import SampleRecord
+from soma.data import CachedSetSource
 from soma.training.bag_dataset import BagDataset
 from soma.training.collate import BagBatch, bag_collate_fn
 
@@ -18,7 +18,7 @@ from soma.training.collate import BagBatch, bag_collate_fn
 # ---------------------------------------------------------------------------
 
 
-def _create_feature_store(tmp_path: Path, samples: dict[str, tuple[int, int]]) -> FeatureStore:
+def _create_feature_store(tmp_path: Path, samples: dict[str, tuple[int, int]]) -> CachedSetSource:
     """Create a feature store with synthetic features.
 
     Args:
@@ -26,14 +26,13 @@ def _create_feature_store(tmp_path: Path, samples: dict[str, tuple[int, int]]) -
     """
     for sample_id, (n, d) in samples.items():
         torch.save(torch.randn(n, d), tmp_path / f"{sample_id}.pt")
-    return FeatureStore(tmp_path)
+    return CachedSetSource(tmp_path)
 
 
 def _make_record(sample_id: str, label: str) -> SampleRecord:
     return SampleRecord(
         sample_id=sample_id,
-        image_path=Path(f"/slides/{sample_id}.svs"),
-        label=label,
+        targets={"label": label},
     )
 
 
@@ -42,7 +41,7 @@ TARGET_DTYPES = {"label": torch.long}
 
 
 def _target_fn(record: SampleRecord) -> dict[str, int]:
-    return {"label": LABEL_MAP[record.label]}
+    return {"label": LABEL_MAP[record.targets["label"]]}
 
 
 # ---------------------------------------------------------------------------

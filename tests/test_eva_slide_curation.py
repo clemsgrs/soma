@@ -302,10 +302,10 @@ def test_camelyon16_small_rows_on_the_real_reference_table():
 
 def _stage(manifest, target_mpp: float, tmp_path: Path):
     from soma.config import PreprocessingConfig
-    from soma.dataset import Dataset
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 
-    dataset = Dataset(manifest.dataset_csv)
+    dataset = legacy_samples_from_csv(manifest.dataset_csv)
     preprocessing = PreprocessingConfig(requested_spacing_um=target_mpp, requested_tile_size_px=224)
     return stage_supplied_coordinates(dataset, tmp_path / "tiling", preprocessing)
 

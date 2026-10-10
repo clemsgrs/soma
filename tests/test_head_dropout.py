@@ -206,9 +206,9 @@ class TestReachesTheHeadThroughTheConfig:
         return seen
 
     def _train(self, tmp_path, *, slide_level):
-        from soma import Dataset, Splits
+        from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
         from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
-        from soma.features import FeatureStore
+        from soma.data import CachedSetSource
         from soma.pipeline import train_one_fold
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -219,10 +219,10 @@ class TestReachesTheHeadThroughTheConfig:
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(PIPELINE_D), feature_dir / f"s{i}.pt")
 
-        dataset = Dataset(dataset_csv)
-        splits = Splits(splits_csv, dataset)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
         return train_one_fold(
-            feature_store=FeatureStore(feature_dir),
+            feature_store=CachedSetSource(feature_dir),
             dataset=dataset,
             fold_split=splits.folds[0],
             aggregator=None if slide_level else AggregatorConfig(name="mean_pool"),

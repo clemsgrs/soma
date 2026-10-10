@@ -42,17 +42,23 @@ requirements.
    from soma import (
        AggregatorConfig,
        CacheConfig,
+       Cohort,
        EncoderConfig,
        FeatureExtractor,
+       ImageManifest,
        TaskConfig,
        TrainingConfig,
-       Dataset,
-       Splits,
        train,
    )
+   from soma.data._legacy import LegacyFolds, records_for_pipeline
 
-   dataset = Dataset("dataset.csv")
-   splits = Splits("splits.csv", dataset)
+   # The cohort holds identity, targets and folds; the image manifest holds the paths.
+   cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
+   images = ImageManifest.from_csv("dataset.csv")
+   # Until the pipeline rewrite lands, extraction and ``train`` read one joined record
+   # per sample (see ``soma.data._legacy``).
+   dataset = records_for_pipeline(cohort, images)
+   splits = LegacyFolds.from_cohort(cohort)
    encoder = EncoderConfig(name="uni2")
    cache = CacheConfig(enabled=True, root_dir="shared/feature_cache")
 
@@ -125,8 +131,9 @@ attention scores and overlays:
 Dense features over given images
 --------------------------------
 
-Use the task-specific manifest type to select dense extraction. Geometry remains
-part of ``PreprocessingConfig``:
+Dense extraction is an extraction setting, not a manifest kind: ``shape="grid"``
+asks for token grids and ``unit="tile"`` says each row is a pre-cropped image.
+Geometry remains part of ``PreprocessingConfig``:
 
 .. code-block:: python
 
@@ -135,13 +142,15 @@ part of ``PreprocessingConfig``:
        EncoderConfig,
        FeatureExtractor,
        PreprocessingConfig,
-       SegmentationManifest,
    )
+   from soma.data._legacy import legacy_samples_from_csv
 
-   dataset = SegmentationManifest("segmentation.csv")
+   dataset = legacy_samples_from_csv("segmentation.csv")
    features = FeatureExtractor(
        dataset,
        EncoderConfig(name="phikon", batch_size=64),
+       shape="grid",
+       unit="tile",
        preprocessing=PreprocessingConfig(
            requested_tile_size_px=224,
            requested_spacing_um=0.5,
@@ -156,28 +165,30 @@ part of ``PreprocessingConfig``:
 Annotation-sampled whole slides
 -------------------------------
 
-A segmentation manifest containing whole-slide image and annotation paths becomes
-an annotation-sampled extraction when masks and sampling are configured. The result's
-dataset is the persisted ROI manifest; parent-slide splits are projected explicitly:
+A table of whole-slide image and annotation paths becomes an annotation-sampled
+grid extraction when masks and sampling are configured (``shape="grid"`` over
+whole slides). The result's dataset is the persisted ROI table; parent-slide folds
+are projected explicitly:
 
 .. code-block:: python
 
    from soma import (
        CacheConfig,
+       Cohort,
        EncoderConfig,
        FeatureExtractor,
        MasksConfig,
        PreprocessingConfig,
        SamplingConfig,
-       SegmentationManifest,
-       Splits,
    )
+   from soma.data._legacy import LegacyFolds, legacy_samples_from_csv
 
-   slides = SegmentationManifest("slides.csv")
-   slide_splits = Splits("splits.csv", slides)
+   slides = legacy_samples_from_csv("slides.csv")
+   slide_splits = LegacyFolds.from_cohort(Cohort.from_csv("slides.csv", "splits.csv"))
    features = FeatureExtractor(
        slides,
        EncoderConfig(name="phikon"),
+       shape="grid",
        preprocessing=PreprocessingConfig(
            requested_tile_size_px=512,
            requested_spacing_um=0.5,
@@ -248,8 +259,8 @@ run it with ``soma config.yaml``:
      m: 5
      alpha: 0.10
 
-Selected dataset rows require non-empty ``label``, literal ``group_id``, and
-``medical_center`` columns. The selected split must occur in exactly one fold;
+Selected dataset rows require non-empty ``label``, ``group_id`` (a metadata column
+naming the non-independence group), and ``medical_center`` columns. The selected split must occur in exactly one fold;
 cross-validation is unsupported. The cohort must provide enough same- and
 other-confounder neighbours for ``m=5``; CRoMa raises if any selected sample
 lacks them.
