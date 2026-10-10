@@ -13,7 +13,9 @@ from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset, SampleRecord
+    from collections.abc import Sequence
+
+    from soma.data import SampleRecord
 
 
 class RegressionHead(TaskHead):
@@ -29,6 +31,7 @@ class RegressionHead(TaskHead):
     """
 
     target_dtypes = {"value": torch.float}
+    target_schema = {"value": float}
     task_family = "regression"
 
     def __init__(
@@ -45,11 +48,11 @@ class RegressionHead(TaskHead):
         self.metrics = resolve_metrics("regression", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
         return {}
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
-        return {"value": float(record.label)}
+        return {"value": float(record.targets["value"])}
 
     def forward(self, X: Tensor) -> Tensor:
         if self.dropout is not None:

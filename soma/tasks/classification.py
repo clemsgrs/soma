@@ -13,28 +13,30 @@ from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset, SampleRecord
+    from collections.abc import Sequence
+
+    from soma.data import SampleRecord
 
 
-def categorical_label_map(dataset: Dataset) -> dict[str | int, int]:
+def categorical_label_map(records: "Sequence[SampleRecord]") -> dict[str | int, int]:
     """Build the sorted raw-label -> integer-index map for categorical tasks.
 
-    Mirrors the historical ``Dataset._build_label_map`` ordering exactly so
+    Sorted raw labels, the ordering soma has always used, so
     class indices (and thus the positive class for binary metrics) are stable.
     """
-    classes = sorted({r.label for r in dataset.samples.values()})
+    classes = sorted({r.targets["label"] for r in records})
     return {label: idx for idx, label in enumerate(classes)}
 
 
-def _categorical_auto_params(dataset: Dataset) -> dict[str, Any]:
-    label_map = categorical_label_map(dataset)
+def _categorical_auto_params(records: "Sequence[SampleRecord]") -> dict[str, Any]:
+    label_map = categorical_label_map(records)
     return {"num_classes": len(label_map), "label_map": label_map}
 
 
 def _extract_categorical_target(
     label_map: dict[str | int, int] | None, record: "SampleRecord"
 ) -> dict[str, int | float]:
-    raw = record.label
+    raw = record.targets["label"]
     encoded = int(label_map[raw]) if label_map is not None else int(raw)
     return {"label": encoded}
 
@@ -75,8 +77,8 @@ class BinaryClassificationHead(TaskHead):
         self.metrics = resolve_metrics("binary_classification", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return _categorical_auto_params(dataset)
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
+        return _categorical_auto_params(records)
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)
@@ -142,8 +144,8 @@ class MulticlassClassificationHead(TaskHead):
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return _categorical_auto_params(dataset)
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
+        return _categorical_auto_params(records)
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)
@@ -211,8 +213,8 @@ class BranchAwareClassificationHead(TaskHead):
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return _categorical_auto_params(dataset)
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
+        return _categorical_auto_params(records)
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)

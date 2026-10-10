@@ -9,7 +9,7 @@ map or points); the learner maps it onto the grid with the feature source's geom
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 

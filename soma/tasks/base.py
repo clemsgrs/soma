@@ -9,7 +9,9 @@ import torch
 from torch import Tensor, nn
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset, SampleRecord
+    from collections.abc import Sequence
+
+    from soma.data import SampleRecord
 
 
 def build_input_dropout(dropout: float) -> nn.Dropout | None:
@@ -47,6 +49,10 @@ class TaskHead(ABC, nn.Module):
     """
 
     target_dtypes: dict[str, torch.dtype] = {"label": torch.long}
+    # The record targets this head reads and their Python kind (``object`` = any raw
+    # value, e.g. a categorical label); ``Cohort`` validates presence and kind up front.
+    # Dense heads read their supervision from a TargetSource and declare none.
+    target_schema: dict[str, type] = {"label": object}
     supports_branch_representation: bool = False
     task_family: str = "generic"
     # When True, the trainer computes the tune loss once over the whole tune
@@ -128,16 +134,20 @@ class TaskHead(ABC, nn.Module):
         """
         ...
 
+    @property
+    def target_keys(self) -> tuple[str, ...]:
+        return tuple(self.target_schema)
+
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        """Return parameters to auto-inject from the dataset during instantiation.
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
+        """Return parameters to auto-inject from the cohort's records during instantiation.
 
         The pipeline merges these with user-provided task.params before calling
-        the constructor. Override to inject dataset-derived values such as
+        the constructor. Override to inject cohort-derived values such as
         num_classes for classification.
 
         Args:
-            dataset: The Dataset instance for the current run.
+            records: The records of the current run (``cohort.records``).
 
         Returns:
             Dict of keyword arguments to pass to __init__.

@@ -15,7 +15,9 @@ from soma.tasks.classification import _categorical_auto_params, _extract_categor
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.dataset import Dataset, SampleRecord
+    from collections.abc import Sequence
+
+    from soma.data import SampleRecord
 
 
 class OrdinalClassificationHead(TaskHead):
@@ -54,8 +56,8 @@ class OrdinalClassificationHead(TaskHead):
         self.metrics = resolve_metrics("ordinal_classification", metrics or [])
 
     @classmethod
-    def auto_params(cls, dataset: Dataset) -> dict[str, Any]:
-        return _categorical_auto_params(dataset)
+    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
+        return _categorical_auto_params(records)
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)

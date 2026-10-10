@@ -411,15 +411,24 @@ class Cohort:
         """A cohort whose folds report on their tune split (``tune_is_test``)."""
         folds: list[FoldSplit] = []
         for index, fold in enumerate(self._folds):
-            if fold.tests:
+            if fold.tests and fold.tune:
                 raise ValueError(
                     f"Fold {index} provides both a tune and a test split; with_test_from_tune "
-                    "reuses tune for test reporting, so drop one of them."
+                    "ties them to a single held-out split, so drop one of them."
                 )
+            if fold.tests:
+                # A fold declaring only a test split keeps it: the trainer selects on it.
+                folds.append(fold)
+                continue
             if not fold.tune:
-                raise ValueError(f"Fold {index} has no tune split to reuse as test.")
+                raise ValueError(
+                    f"Fold {index} has no test split and no tune split; one held-out split is "
+                    "needed to serve both roles."
+                )
             logger.warning(
-                "Fold %d has no test split; reporting 'test' metrics on the tune samples.", index
+                "Fold %d has no test split; reusing the tune split for test reporting. "
+                "Reported 'test' metrics are measured on the tune samples.",
+                index,
             )
             folds.append(replace(fold, tests={"test": fold.tune}, test_from_tune=True))
         return Cohort(self._records, folds, unit=self._unit, target_names=self._target_names)
@@ -537,7 +546,9 @@ class Cohort:
             membership: dict[str, set[str]] = {}
             for split_name, ids in (("train", fold.train), ("tune", fold.tune), *tests.items()):
                 for sample_id in ids:
-                    membership.setdefault(unit_of[sample_id], set()).add(split_name)
+                    unit = unit_of[sample_id]
+                    if unit is not None:
+                        membership.setdefault(unit, set()).add(split_name)
             leaked = {unit: splits for unit, splits in membership.items() if len(splits) > 1}
             if leaked:
                 details = "; ".join(
