@@ -69,6 +69,22 @@ def test_target_dtype_is_validated_at_construction() -> None:
         Cohort.from_frames(frame, _splits_df(), targets=["label", "time"], dtypes={"time": float})
 
 
+def test_target_key_insertion_order_does_not_split_the_cohort() -> None:
+    """Heads read targets by name, so two records declaring the same keys in a
+    different dict order carry the same targets."""
+    records = [
+        SampleRecord("a", {"time": 2.0, "event": 1}),
+        SampleRecord("b", {"event": 0, "time": 3.0}),
+        SampleRecord("c", {"time": 1.0, "event": 1}),
+    ]
+    folds = [FoldSplit(train=("a",), tune=("b",), tests={"test": ("c",)})]
+    cohort = Cohort(records, folds)
+    assert set(cohort.target_keys) == {"time", "event"}
+    assert cohort.record("b").targets == {"event": 0, "time": 3.0}
+    with pytest.raises(ValueError, match="declares targets"):
+        Cohort([*records, SampleRecord("d", {"time": 1.0})], folds)
+
+
 def test_single_csv_with_split_column_is_accepted() -> None:
     frame = _records_df()
     frame["split"] = _splits_df()["split"]

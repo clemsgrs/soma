@@ -41,6 +41,25 @@ FEATURE_DIM = 4
 SPACING = 0.2  # µm/px; 0.6 µm -> 3 px (δ), 0.3 µm -> 1.5 px (σ)
 
 
+def _grid_source_over(by_id):
+    """A protocol-shaped GridSource: ``spacing`` is the effective float, ``geometry``
+    carries the level-0 anchor (``effective / source``)."""
+    from types import SimpleNamespace
+
+    from soma.data import GridGeometry
+
+    return SimpleNamespace(
+        spacing=lambda sample_id: by_id[sample_id].effective_spacing_um,
+        geometry=lambda sample_id: GridGeometry.from_sizes(
+            target_size=16,
+            patch_size=4,
+            level0_px_per_token_px=(
+                by_id[sample_id].effective_spacing_um / by_id[sample_id].source_spacing_um
+            ),
+        ),
+    )
+
+
 def test_detection_spacing_allows_heterogeneous_sources_with_one_effective_grid():
     from types import SimpleNamespace
 
@@ -50,7 +69,7 @@ def test_detection_spacing_allows_heterogeneous_sources_with_one_effective_grid(
         "a": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.5),
         "b": DenseSampleSpacing(source_spacing_um=0.4, effective_spacing_um=0.5),
     }
-    source = SimpleNamespace(spacing=lambda sample_id: by_id[sample_id])
+    source = _grid_source_over(by_id)
 
     resolved, effective = _resolve_detection_sample_spacings(
         source, [SimpleNamespace(sample_id="a"), SimpleNamespace(sample_id="b")]
@@ -71,7 +90,7 @@ def test_detection_spacing_rejects_multiple_effective_grids_with_sample_ids():
         "a": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.5),
         "b": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=1.0),
     }
-    source = SimpleNamespace(spacing=lambda sample_id: by_id[sample_id])
+    source = _grid_source_over(by_id)
 
     with pytest.raises(ValueError, match=r"effective_spacing_um.*0.5.*a.*1.0.*b"):
         _resolve_detection_sample_spacings(

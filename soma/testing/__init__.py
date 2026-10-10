@@ -11,7 +11,7 @@ from collections.abc import Sequence
 
 import torch
 
-from soma.data.geometry import DenseGridGeometry
+from soma.data.geometry import GridGeometry
 from soma.data.sources import Points
 
 __all__ = [
@@ -139,7 +139,7 @@ def check_grid_source(
                 "load", f"channel axis is {grid.shape[0]}, feature_dim is {dim}", sample_id=sample_id
             )
         geometry = _call(source, "geometry", sample_id)
-        if not isinstance(geometry, DenseGridGeometry):
+        if not isinstance(geometry, GridGeometry):
             raise ConformanceError(
                 "geometry", f"must return a GridGeometry, got {type(geometry)!r}", sample_id=sample_id
             )
@@ -150,10 +150,9 @@ def check_grid_source(
                 sample_id=sample_id,
             )
         spacing = _call(source, "spacing", sample_id)
-        value = getattr(spacing, "effective_spacing_um", spacing)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+        if isinstance(spacing, bool) or not isinstance(spacing, (int, float)) or not spacing > 0:
             raise ConformanceError(
-                "spacing", f"must be a positive µm/px, got {spacing!r}", sample_id=sample_id
+                "spacing", f"must be a positive µm/px float, got {spacing!r}", sample_id=sample_id
             )
     _check_unknown_id_raises_key_error(source, "load")
 

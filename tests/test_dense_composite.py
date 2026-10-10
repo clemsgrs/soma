@@ -14,7 +14,7 @@ import pytest
 import torch
 from PIL import Image
 
-from soma.dense import CachedGridSource, DenseSampleSpacing
+from soma.dense import CachedGridSource
 from soma.dense.composite import CompositeDenseFeatureStore, resample_grid_to_target
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -99,10 +99,9 @@ def test_composite_exposes_one_agreed_resolved_spacing(tmp_path: Path):
     a = _write_member(tmp_path, "a", ["s0"], patch=4, k=3, spacing=0.5)
     b = _write_member(tmp_path, "b", ["s0"], patch=2, k=5, spacing=0.5)
 
-    assert CompositeDenseFeatureStore([a, b]).spacing("s0") == DenseSampleSpacing(
-        source_spacing_um=0.5,
-        effective_spacing_um=0.5,
-    )
+    comp = CompositeDenseFeatureStore([a, b])
+    assert comp.spacing("s0") == 0.5
+    assert comp.geometry("s0").level0_px_per_token_px == 1.0
 
 
 def test_composite_rejects_member_source_spacing_disagreement(tmp_path: Path):
@@ -125,8 +124,12 @@ def test_composite_rejects_member_source_spacing_disagreement(tmp_path: Path):
         source_spacing=0.3,
     )
 
-    with pytest.raises(ValueError, match=r"source_spacing_um.*s0.*0.25.*0.3"):
-        CompositeDenseFeatureStore([a, b]).spacing("s0")
+    # Both members read at 0.5 µm/px, so ``spacing`` agrees; the differing source
+    # spacing surfaces as a level-0 anchor disagreement on ``geometry``.
+    comp = CompositeDenseFeatureStore([a, b])
+    assert comp.spacing("s0") == 0.5
+    with pytest.raises(ValueError, match=r"level-0 anchor.*s0"):
+        comp.geometry("s0")
 
 
 def test_composite_grid_mode_concats_at_largest_member_grid(tmp_path: Path):

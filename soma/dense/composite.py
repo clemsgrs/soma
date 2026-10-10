@@ -14,8 +14,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry, normalize_hw
-from soma.dense.store import DenseSampleSpacing
+from soma.dense.geometry import DenseGridGeometry, GridGeometry, compute_dense_geometry, normalize_hw
 from soma.dense.store import CachedGridSource
 
 __all__ = ["resample_grid_to_target", "apply_member_norm", "CompositeDenseFeatureStore"]
@@ -151,13 +150,28 @@ class CompositeDenseFeatureStore:
         grids = [m.grid_shape for m in self._members]
         return (max(g[0] for g in grids), max(g[1] for g in grids))
 
-    def geometry(self, sample_id: str) -> DenseGridGeometry:
+    def _member_anchor(self, sample_id: str) -> tuple[tuple[float, float], float]:
+        """The level-0 anchor every member's grid shares: ``(origin_level0, scale)``."""
+        geometries = [m.geometry(sample_id) for m in self._members]
+        anchors = [(g.origin_level0, g.level0_px_per_token_px) for g in geometries]
+        if len(set(anchors)) != 1:
+            raise ValueError(
+                f"composite members disagree on the level-0 anchor for '{sample_id}': {anchors}."
+            )
+        return anchors[0]
+
+    def geometry(self, sample_id: str) -> GridGeometry:
         target = self._resolve_target_size(sample_id)
+        origin, scale = self._member_anchor(sample_id)
         if self._concat_resolution == "target":
             # Composite grids are already at target pixel resolution → patch_size (1, 1)
             # makes encoded_size == grid_shape == target_size and crop_box the full frame,
             # so the head's interpolate+crop is an identity on the concatenated grid.
-            return compute_dense_geometry(target_size=target, patch_size=(1, 1))
+            return GridGeometry.from_dense(
+                compute_dense_geometry(target_size=target, patch_size=(1, 1)),
+                origin_level0=origin,
+                level0_px_per_token_px=scale,
+            )
         # grid mode: report the real (h, w) decoder-input grid spanning the target FOV.
         # encoded_size = target + crop = full frame (pad ignored); grid_shape =
         # (h, w) so the head upsamples the decoder output to target and the auto
@@ -166,13 +180,15 @@ class CompositeDenseFeatureStore:
         h, w = self._common_grid_size()
         target_h, target_w = target
         patch = (max(1, round(target_h / h)), max(1, round(target_w / w)))
-        return DenseGridGeometry(
+        return GridGeometry(
             target_size=(target_h, target_w),
             patch_size=patch,
             encoded_size=(target_h, target_w),
             grid_shape=(h, w),
             pad=(0, 0),
             crop_box=(0, 0, target_h, target_w),
+            origin_level0=origin,
+            level0_px_per_token_px=scale,
         )
 
     @property
@@ -219,15 +235,14 @@ class CompositeDenseFeatureStore:
         value = self.metadata(sample_id).get("spacing_um")
         return None if value is None else float(value)
 
-    def spacing(self, sample_id: str) -> DenseSampleSpacing:
-        member_spacings = [member.spacing(sample_id) for member in self._members]
-        for field in ("source_spacing_um", "effective_spacing_um"):
-            values = [getattr(spacing, field) for spacing in member_spacings]
-            if len(set(values)) != 1:
-                raise ValueError(
-                    f"composite members disagree on {field} for '{sample_id}': {values}."
-                )
-        return member_spacings[0]
+    def spacing(self, sample_id: str) -> float:
+        """Effective µm/px every member agrees on (the anchor is checked by ``geometry``)."""
+        values = [float(member.spacing(sample_id)) for member in self._members]
+        if len(set(values)) != 1:
+            raise ValueError(
+                f"composite members disagree on effective_spacing_um for '{sample_id}': {values}."
+            )
+        return values[0]
 
     def load(self, sample_id: str) -> torch.Tensor:
         """Concatenate every member's resampled+normalized grid along the channel axis.

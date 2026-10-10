@@ -20,7 +20,7 @@ from soma.data import (
     group_by,
     require_coverage,
 )
-from soma.testing import ConformanceError, check_set_source
+from soma.testing import ConformanceError, check_grid_source, check_set_source
 
 
 def test_from_arrays_declares_rank_from_the_tensors() -> None:
@@ -192,6 +192,36 @@ def test_grid_geometry_layout_ignores_the_level0_anchor() -> None:
     assert fine.layout == coarse.layout
     assert fine.layout == coarse.layout.layout
     assert fine.layout != GridGeometry.from_sizes(target_size=64, patch_size=14).layout
+
+
+class _Grid:
+    """A minimal custom GridSource: float spacing, anchored GridGeometry."""
+
+    def __init__(self, spacing):
+        self._spacing = spacing
+        self._geometry = GridGeometry.from_sizes(target_size=32, patch_size=16, level0_px_per_token_px=2.0)
+
+    sample_ids = ["g0"]
+    feature_dim = 3
+
+    def load(self, sample_id):
+        if sample_id != "g0":
+            raise KeyError(sample_id)
+        return torch.zeros(3, 2, 2)
+
+    def geometry(self, sample_id):
+        return self._geometry
+
+    def spacing(self, sample_id):
+        return self._spacing
+
+
+def test_custom_grid_source_conforms_with_a_float_spacing() -> None:
+    check_grid_source(_Grid(0.5))
+    with pytest.raises(ConformanceError, match="spacing"):
+        check_grid_source(_Grid(0.0))
+    with pytest.raises(ConformanceError, match="spacing"):
+        check_grid_source(_Grid(object()))
 
 
 def test_from_directory_reads_hs2p_coordinate_archives(tmp_path: Path) -> None:

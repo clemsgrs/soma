@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -21,7 +22,7 @@ from soma.aggregators.pooling import MeanPool
 from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from soma.data import CachedSetSource
-from soma.pipeline import train, train_one_fold
+from soma.pipeline import _resolve_detection_sample_spacings, train, train_one_fold
 from soma.config import NormalizationConfig, ProjectionConfig
 from soma.tasks.classification import BinaryClassificationHead
 from soma.training.feature_adaptor import build_feature_adaptor
@@ -1784,7 +1785,9 @@ def test_ocelot_greedy_rescoring_reconstructs_the_projected_model(tmp_path: Path
             delta_px=3.0,
             sigma_px=1.0,
             nms_distance_px=3.0,
-            sample_spacings={sid: store.spacing(sid) for sid in store.sample_ids},
+            sample_spacings=_resolve_detection_sample_spacings(
+                store, [SimpleNamespace(sample_id=sid) for sid in store.sample_ids]
+            )[0],
         ),
         normalization=normalization,
         projection=projection,

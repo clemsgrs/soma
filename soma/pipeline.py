@@ -69,6 +69,7 @@ from soma.data._legacy import (
     bind_segmentation_targets,
     records_for_pipeline,
 )
+from soma.dense import DenseSampleSpacing
 from soma.dense.live import LiveSegmentationSource
 from soma.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
 from soma.evaluation.metrics import resolve_metrics
@@ -1920,11 +1921,21 @@ def _resolve_detection_px(value_um: float, spacing_um: float | None, name: str) 
 
 
 def _resolve_detection_sample_spacings(feature_store, records):
-    """Read per-sample extraction provenance and require one effective grid scale."""
-    spacing_by_id = {
-        str(record.sample_id): feature_store.spacing(str(record.sample_id))
-        for record in records
-    }
+    """Resolve each sample's physical scales from the :class:`GridSource` protocol.
+
+    ``spacing`` is the grid's effective µm/px and ``geometry().level0_px_per_token_px``
+    the level-0 pixels per grid pixel (``effective / source``), so any conforming
+    source yields the head's :class:`DenseSampleSpacing`. One effective spacing is
+    required across the run.
+    """
+    spacing_by_id: dict[str, DenseSampleSpacing] = {}
+    for record in records:
+        sample_id = str(record.sample_id)
+        effective = float(feature_store.spacing(sample_id))
+        scale = float(feature_store.geometry(sample_id).level0_px_per_token_px)
+        spacing_by_id[sample_id] = DenseSampleSpacing(
+            source_spacing_um=effective / scale, effective_spacing_um=effective
+        )
     effective_groups: dict[float, list[str]] = {}
     for sample_id, spacing in spacing_by_id.items():
         effective_groups.setdefault(float(spacing.effective_spacing_um), []).append(

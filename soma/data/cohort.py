@@ -509,12 +509,14 @@ class Cohort:
         return unit
 
     def _validate_targets(self, dtypes: Mapping[str, type]) -> None:
-        keys = self.target_keys
+        # Heads read targets by name, so the key *set* is what every record must share;
+        # dict insertion order is not part of the contract.
+        keys = set(self.target_keys)
         for record in self._records:
-            if tuple(record.targets) != keys:
+            if set(record.targets) != keys:
                 raise ValueError(
-                    f"Sample {record.sample_id!r} declares targets {tuple(record.targets)}, "
-                    f"but the cohort's targets are {keys}."
+                    f"Sample {record.sample_id!r} declares targets {sorted(record.targets)}, "
+                    f"but the cohort's targets are {sorted(keys)}."
                 )
             for key, value in record.targets.items():
                 if _is_blank(value):

@@ -353,7 +353,8 @@ def test_given_image_segmentation_extracts_dense_source(
     assert result.provenance.kind == "dense_image"
     assert result.source.sample_ids == ["s0"]
     assert tuple(result.source.load("s0").shape) == (3, 2, 2)
-    assert result.source.spacing("s0").source_spacing_um == 0.5
+    assert result.source.spacing("s0") == 0.5
+    assert result.source.geometry("s0").level0_px_per_token_px == 1.0
     assert (
         result.artifacts.feature_dir
         == tmp_path / "output/features/dense_image_embeddings"

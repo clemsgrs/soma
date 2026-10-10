@@ -29,7 +29,7 @@ def build() -> nbformat.NotebookNode:
             "runs its own tile encoder internally and returns **one vector per slide**:\n"
             "\n"
             "```\n"
-            "Dataset -> FeatureExtractor (slide encoder) -> train (head, no aggregator) -> evaluate\n"
+            "Cohort + ImageManifest -> FeatureExtractor (slide encoder) -> train (head, no aggregator) -> evaluate\n"
             "```\n"
             "\n"
             "There is no bag to pool, so **no MIL aggregator** (`aggregator=None`). The\n"
@@ -99,17 +99,22 @@ def build() -> nbformat.NotebookNode:
             "print(pd.read_csv(dataset_csv).head().to_string(index=False))"
         ),
         md(
-            "## 1. Load the dataset and splits\n"
+            "## 1. Load the cohort and the image manifest\n"
             "\n"
-            "Identical to every other path — `Dataset` reads the manifest and infers the\n"
-            "label space; `Splits` pairs the provided splits with it, unchanged."
+            "Identical to every other path — `Cohort` reads identities, the `label`\n"
+            "target and the splits; `ImageManifest` reads the image paths. The\n"
+            "`records_for_pipeline` / `LegacyFolds` bridge feeds the current\n"
+            "`FeatureExtractor` / `train` signatures, as in the\n"
+            "[MIL walkthrough](walkthrough-slide-mil.ipynb)."
         ),
         code(
-            "from soma import Dataset, Splits\n"
+            "from soma import Cohort, ImageManifest\n"
+            "from soma.data._legacy import LegacyFolds, records_for_pipeline\n"
             "\n"
-            "dataset = Dataset(dataset_csv)\n"
-            "splits = Splits(splits_csv, dataset)\n"
-            "print('slides:', len(dataset.sample_ids), '| folds:', splits.num_folds)"
+            "cohort = Cohort.from_csv(dataset_csv, splits_csv, targets=['label'])\n"
+            "dataset = records_for_pipeline(cohort, ImageManifest.from_csv(dataset_csv))\n"
+            "splits = LegacyFolds.from_cohort(cohort)\n"
+            "print('slides:', len(cohort.sample_ids), '| folds:', cohort.num_folds)"
         ),
         md(
             "## 2. Extract one vector per slide\n"
@@ -134,8 +139,8 @@ def build() -> nbformat.NotebookNode:
             "    output_root=str(WORK / 'output'),\n"
             ")\n"
             "store = extractor.extract().source\n"
-            "vec = store.load(store.available_samples[0])\n"
-            "print('slide-level features:', store.is_slide_level, '| one vector of dim', tuple(vec.shape))"
+            "vec = store.load(store.sample_ids[0])\n"
+            "print('slide-level features: rank', store.rank, '| one vector of dim', tuple(vec.shape))"
         ),
         md(
             "## 3. Train the head — no aggregator\n"

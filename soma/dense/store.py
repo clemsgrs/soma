@@ -421,8 +421,12 @@ class CachedGridSource:
         value = metadata.get("spacing_um", metadata.get("declared_spacing_um"))
         return None if value is None else float(value)
 
-    def spacing(self, sample_id: str) -> DenseSampleSpacing:
-        """Resolved source and effective grid spacing persisted by slide2vec."""
+    def spacing(self, sample_id: str) -> float:
+        """Effective µm/px of the grid's pixel frame, as slide2vec persisted it.
+
+        The level-0 anchor (``effective / source``) is on :meth:`geometry` as
+        ``level0_px_per_token_px``; together they carry the full provenance.
+        """
         metadata = self.metadata(sample_id)
         if metadata.get("source_spacing_um") is None or metadata.get("effective_spacing_um") is None:
             # soma's feature cache re-encodes such grids (ROI_GRID_CONTRACT); this is
@@ -434,7 +438,7 @@ class CachedGridSource:
                 f"{self._feature_dir}; extraction through soma's feature cache re-encodes "
                 "such grids automatically."
             )
-        return dense_sample_spacing_from_metadata(metadata, sample_id=sample_id)
+        return dense_sample_spacing_from_metadata(metadata, sample_id=sample_id).effective_spacing_um
 
     @property
     def feature_dir(self) -> Path:

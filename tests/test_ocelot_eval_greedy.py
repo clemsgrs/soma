@@ -23,7 +23,7 @@ from soma.dense.store import dense_grid_metadata, write_dense_grid
 from soma.data._legacy import bind_detection_targets, legacy_samples_from_csv, legacy_folds_from_csv
 from soma.dense import CachedGridSource
 from soma.decoders.registry import decoder_registry
-from soma.pipeline import _make_loaders, _resolve_detection_px
+from soma.pipeline import _make_loaders, _resolve_detection_px, _resolve_detection_sample_spacings
 from soma.tasks.detection import DetectionHead
 from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
 from soma.training.model import SegmentationModel
@@ -87,7 +87,7 @@ def _build_model_and_loaders(manifest, splits, store):
     tune_records = [manifest.samples[s] for s in fold_split.tune]
     test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
 
-    grid_spacing = store.spacing(train_records[0].sample_id).effective_spacing_um
+    sample_spacings, grid_spacing = _resolve_detection_sample_spacings(store, manifest.records)
     delta_px = _resolve_detection_px(0.6, grid_spacing, "match_distance")
     sigma_px = _resolve_detection_px(0.3, grid_spacing, "sigma")
     geometry = store.geometry(train_records[0].sample_id)
@@ -96,7 +96,7 @@ def _build_model_and_loaders(manifest, splits, store):
         num_classes=NUM_CLASSES, geometry=geometry, delta_px=delta_px, sigma_px=sigma_px,
         nms_distance_px=delta_px,
         matching="greedy",
-        sample_spacings={sid: store.spacing(sid) for sid in store.sample_ids},
+        sample_spacings=sample_spacings,
         metrics=["mean_f1", "f1_per_class"],
     )
     bind_detection_targets(head, manifest.records)

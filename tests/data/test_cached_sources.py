@@ -89,7 +89,7 @@ def test_cached_grid_source_conforms_and_carries_provenance(tmp_path: Path) -> N
     assert isinstance(geometry, GridGeometry)
     assert geometry.grid_shape == (3, 2)
     assert geometry.level0_px_per_token_px == 2.0
-    assert source.spacing("g0").effective_spacing_um == 0.5
+    assert source.spacing("g0") == 0.5
     assert not hasattr(source, "validate_coverage")
     check_grid_source(source)
 

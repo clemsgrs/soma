@@ -360,7 +360,7 @@ class FeatureExtractor:
         write_roi_mask_crops(
             crop_records,
             spacing_um_by_sample_id={
-                record.sample_id: store.spacing(record.sample_id).effective_spacing_um
+                record.sample_id: store.spacing(record.sample_id)
                 for record in crop_records
             },
             masks=masks,
