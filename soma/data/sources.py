@@ -143,6 +143,10 @@ class GroupedSetSource:
     ``how="concat"`` concatenates members along the bag axis (vectors become an
     ``(M, D)`` bag, bags grow); ``how="stack"`` adds a leading member axis (vectors
     become ``(M, D)``, equal-size bags become ``(M, K, D)``).
+
+    ``sample_ids`` lists only the units whose members ``source`` all serves, so
+    :func:`covers` / :func:`require_coverage` stay truthful; loading a unit with a
+    missing member raises ``KeyError`` naming it.
     """
 
     def __init__(
@@ -170,7 +174,8 @@ class GroupedSetSource:
 
     @property
     def sample_ids(self) -> list[str]:
-        return list(self._members)
+        served = set(self._source.sample_ids)
+        return [unit for unit, ids in self._members.items() if served.issuperset(ids)]
 
     @property
     def feature_dim(self) -> int:
@@ -185,11 +190,18 @@ class GroupedSetSource:
 
     def _member_ids(self, unit_id: str) -> tuple[str, ...]:
         try:
-            return self._members[unit_id]
+            ids = self._members[unit_id]
         except KeyError:
             raise KeyError(
                 f"Unit '{unit_id}' not found in grouped source. Available: {sorted(self._members)}"
             ) from None
+        missing = sorted(set(ids) - set(self._source.sample_ids))
+        if missing:
+            raise KeyError(
+                f"Unit '{unit_id}' is incomplete: the source lacks {len(missing)} of its "
+                f"{len(ids)} members: {missing}"
+            )
+        return ids
 
     def load(self, unit_id: str) -> Tensor:
         tensors = [self._source.load(sid) for sid in self._member_ids(unit_id)]
@@ -212,7 +224,7 @@ class GroupedSetSource:
         return torch.cat(coords, dim=0)
 
     def __len__(self) -> int:
-        return len(self._members)
+        return len(self.sample_ids)
 
 
 def group_by(

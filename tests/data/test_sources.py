@@ -160,6 +160,24 @@ def test_group_by_stack_of_bags_is_rank_three_and_needs_equal_bag_sizes() -> Non
         group_by(ragged, _patient_cohort(), unit="patient_id", how="stack").load("p0")
 
 
+def test_group_by_advertises_only_units_the_source_covers_in_full() -> None:
+    # s1 (patient p0) has no features: p0 must not be advertised, p1 must be.
+    partial = from_arrays({sid: torch.zeros(2, 3) for sid in ("s0", "s2", "s3")})
+    cohort = _patient_cohort()
+    patients = group_by(partial, cohort, unit="patient_id", how="concat")
+
+    assert patients.sample_ids == ["p1"]
+    assert len(patients) == 1
+    assert not covers(patients, cohort.collapse("patient_id").sample_ids)
+    with pytest.raises(ValueError, match="p0"):
+        require_coverage(patients, cohort.collapse("patient_id").sample_ids)
+    with pytest.raises(KeyError, match="s1"):
+        patients.load("p0")
+    with pytest.raises(KeyError, match="s1"):
+        patients.coords("p0")
+    check_set_source(patients)
+
+
 def test_group_by_sample_id_is_the_identity() -> None:
     slides = from_arrays({f"s{i}": torch.zeros(5) for i in range(4)})
     assert group_by(slides, _patient_cohort(), unit="sample_id") is slides
