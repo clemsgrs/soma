@@ -16,7 +16,7 @@ from pathlib import Path
 import torch
 from hs2p.wsi.reader import resolve_backend
 
-from soma.dataset import SampleRecord
+from soma.data._legacy import LegacyRecord
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +170,8 @@ def _load_population(
 
 def resolve_segmentation_roi_population(
     cache_root: str | Path,
-    records: Sequence[SampleRecord],
-    target_fn: Callable[[SampleRecord], dict[str, torch.Tensor]],
+    records: Sequence[LegacyRecord],
+    target_fn: Callable[[LegacyRecord], dict[str, torch.Tensor]],
     *,
     num_classes: int,
     target_identity: Mapping[str, object],
@@ -281,7 +281,7 @@ def resolve_segmentation_roi_population(
         if workers < 1:
             raise ValueError(f"workers must be >= 1, got {workers}")
 
-        def count_record(record: SampleRecord) -> tuple[int, ...]:
+        def count_record(record: LegacyRecord) -> tuple[int, ...]:
             mask = target_fn(record)["mask"].reshape(-1)
             annotated = mask[(mask >= 0) & (mask < num_classes)].to(torch.int64)
             return tuple(

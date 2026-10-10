@@ -32,23 +32,30 @@ from soma.config import (
 )
 from soma.encoders import list_models
 from soma.aggregators import list_aggregators
-from soma.dataset import (
-    Dataset,
-    DetectionManifest,
+from soma.data import (
+    AnnotationManifest,
+    CachedLabelMapSource,
+    CachedSetSource,
+    Cohort,
     FoldSplit,
+    GridGeometry,
+    GridSource,
+    ImageManifest,
+    ImageSource,
+    LabelMapSource,
+    PointSource,
+    Points,
     SampleRecord,
-    SegmentationManifest,
-    SpatialExpressionManifest,
-    Splits,
-    TileDataset,
+    SetSource,
+    TargetSource,
+    covers,
+    from_arrays,
+    from_directory,
+    group_by,
+    require_coverage,
 )
 from soma.decoders import list_decoders
-from soma.dense import (
-    CacheBackedDenseSource,
-    DenseFeatureSource,
-    DenseFeatureStore,
-    DenseSourceProvenance,
-)
+from soma.dense import CachedGridSource, DenseSourceProvenance
 from soma.extraction import (
     ExtractionArtifacts,
     FeatureExtractionResult,
@@ -57,7 +64,6 @@ from soma.extraction import (
     FeatureSource,
     PooledFeatureSource,
 )
-from soma.features import FeatureStore
 from soma.pixel_classifiers import list_pixel_classifiers
 from soma.pipeline import (
     FoldResult,
@@ -119,24 +125,33 @@ __all__ = [
     "list_pixel_classifiers",
     "list_task_heads",
     # Data
-    "Dataset",
+    "AnnotationManifest",
+    "Cohort",
     "FoldSplit",
+    "GridGeometry",
+    "ImageManifest",
+    "ImageSource",
+    "LabelMapSource",
+    "CachedLabelMapSource",
+    "PointSource",
+    "Points",
     "SampleRecord",
-    "SegmentationManifest",
-    "SpatialExpressionManifest",
-    "DetectionManifest",
-    "Splits",
-    "TileDataset",
+    "SetSource",
+    "TargetSource",
+    "covers",
+    "from_arrays",
+    "from_directory",
+    "group_by",
+    "require_coverage",
     "FeatureExtractor",
     "ExtractionArtifacts",
     "FeatureExtractionResult",
     "FeatureProvenance",
     "FeatureSource",
     "PooledFeatureSource",
-    "FeatureStore",
-    "CacheBackedDenseSource",
-    "DenseFeatureSource",
-    "DenseFeatureStore",
+    "CachedSetSource",
+    "GridSource",
+    "CachedGridSource",
     "DenseSourceProvenance",
     "FoldResult",
     "Pipeline",

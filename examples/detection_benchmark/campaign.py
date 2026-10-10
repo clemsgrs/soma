@@ -697,7 +697,7 @@ def _decode_cell_points(
     from soma import FeatureExtractor
     from soma.cache import resolve_cache_root
     from soma.config import load_config
-    from soma.dataset import DetectionManifest, Splits
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
     from soma.encoders.validation import resolve_preprocessing_config
     from soma.pipeline import (
         _make_loaders,
@@ -710,8 +710,8 @@ def _decode_cell_points(
 
     spec = dataset_spec(dataset)
     cfg = load_config(str(_locate_run_config(run_dir)))
-    manifest = DetectionManifest(cfg.dataset_csv)
-    splits = Splits(cfg.splits_csv, manifest)
+    manifest = legacy_samples_from_csv(cfg.dataset_csv)
+    splits = legacy_folds_from_csv(cfg.splits_csv, manifest)
     fold_split = splits.folds[0 if fold_index is None else fold_index]
     train_records = [manifest.samples[s] for s in fold_split.train]
     tune_records = [manifest.samples[s] for s in fold_split.tune]

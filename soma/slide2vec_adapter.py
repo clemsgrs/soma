@@ -21,7 +21,7 @@ import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, PreviewConfig
-from soma.dataset import Dataset, SampleRecord
+from soma.data._legacy import LegacySamples, LegacyRecord
 from soma.encoders.validation import resolve_encoder_precision
 
 # slide2vec deep-merges a partial ``masks`` block over these shipped default labels. A
@@ -45,7 +45,7 @@ class LoadedTiling:
     backend: str | None = None
 
 
-def to_slide_spec(record: SampleRecord) -> SlideSpec:
+def to_slide_spec(record: LegacyRecord) -> SlideSpec:
     return SlideSpec(
         sample_id=record.sample_id,
         image_path=record.image_path,
@@ -54,7 +54,7 @@ def to_slide_spec(record: SampleRecord) -> SlideSpec:
     )
 
 
-def build_slide_specs(dataset: Dataset) -> list[SlideSpec]:
+def build_slide_specs(dataset: LegacySamples) -> list[SlideSpec]:
     return [to_slide_spec(record) for record in dataset.samples.values()]
 
 
@@ -95,7 +95,7 @@ def validate_tiling_result_segmentation(
 
 
 def ensure_supported_mask_value(
-    dataset: Dataset,
+    dataset: LegacySamples,
     preprocessing: PreprocessingConfig,
 ) -> None:
     # A customized masks block governs tile selection by per-class coverage over its own
@@ -288,7 +288,7 @@ def build_execution_options(
 
 def load_tilings(
     *,
-    dataset: Dataset,
+    dataset: LegacySamples,
     tiling_dir: Path,
     requested_seg_downsample: int,
     tissue_mask_tissue_value: int,

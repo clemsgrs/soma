@@ -23,7 +23,7 @@ Unified schema:
 * ``targets.npy`` + ``genes.json`` — spatial_expression **only**: the multi-target
   regression sidecars. ``target_index`` is an integer row-key into ``targets.npy`` (shape
   ``[n_rows, n_genes]``); ``genes.json`` is the ordered gene list. The loaded sample
-  record carries its resolved vector (see :class:`soma.dataset.SpatialExpressionManifest`).
+  record carries its resolved vector (see ``Cohort.from_csv(..., targets=["expression"])``).
 
 Re-curating the same raw data yields **byte-identical** files: rows are written in the
 order the curator supplies them, columns follow a fixed canonical order, the summary is
@@ -40,11 +40,11 @@ from typing import Any, Mapping, Protocol, Sequence, runtime_checkable
 import numpy as np
 import pandas as pd
 
-from soma.dataset import (
-    GENES_FILENAME,
-    TARGET_MATRIX_FILENAME,
-    validate_spacing_declaration_columns,
+from soma.data.cohort import (
+    EXPRESSION_MATRIX_FILENAME as TARGET_MATRIX_FILENAME,
+    EXPRESSION_NAMES_FILENAME as GENES_FILENAME,
 )
+from soma.data.validation import validate_spacing_declaration_columns
 
 # dataset_type -> the single supervision column its Manifest carries. The task families
 # are mutually exclusive: classification is a scalar ``label``, segmentation a per-pixel

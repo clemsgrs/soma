@@ -52,7 +52,7 @@ from soma.cache import (
     write_tiling_cache_stub,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
-from soma.dataset import Dataset, ensure_filename_safe_id
+from soma.data import ensure_filename_safe_id
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.extraction.orchestration import (
     _aggregate_patients,
@@ -70,7 +70,8 @@ from soma.extraction.reporters import (
     _suppress_logger_noise_ctx,
 )
 from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
-from soma.features import PACKED_FILENAME, FeatureStore
+from soma.cache._types import PACKED_FILENAME
+from soma.data import CachedSetSource
 from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from soma.slide2vec_adapter import (
     LoadedTiling,
@@ -468,7 +469,7 @@ class _PooledFeatureExtractor:
         *,
         tiling_dir: str | Path | None = None,
         num_gpus: int | None = None,
-    ) -> FeatureStore:
+    ) -> CachedSetSource:
         """Extract features using slide2vec and adapt outputs for soma.
 
         When ``feature_dir`` is omitted, it defaults to
@@ -547,7 +548,7 @@ class _PooledFeatureExtractor:
                         num_gpus=effective_num_gpus,
                         hierarchical=is_hierarchical,
                     )
-                    store = FeatureStore(feature_dir)
+                    store = CachedSetSource(feature_dir)
                 else:
                     cache_root = resolve_cache_root(
                         self._cache,
@@ -621,7 +622,7 @@ class _PooledFeatureExtractor:
                         encoder_name=self._encoder.name,
                         output_variant=resolved_output_variant,
                     )
-                store = FeatureStore(store.feature_dir)
+                store = CachedSetSource(store.feature_dir)
 
         return store
 
@@ -629,7 +630,7 @@ class _PooledFeatureExtractor:
         self,
         *,
         feature_dir: Path,
-        store: FeatureStore,
+        store: CachedSetSource,
         loaded_tilings: Sequence[LoadedTiling],
         encoder_name: str,
         output_variant: str,
@@ -995,7 +996,7 @@ class _PooledFeatureExtractor:
         backend_provenance: dict[str, object],
         resolved_output_variant: str,
         num_gpus: int | None,
-    ) -> FeatureStore:
+    ) -> CachedSetSource:
         feature_identity = self._feature_identity_check(
             encoder_name=self._encoder.name,
             output_variant=resolved_output_variant,
@@ -1025,7 +1026,7 @@ class _PooledFeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(feature_dir)
+            return CachedSetSource(feature_dir)
 
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
@@ -1060,7 +1061,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return CachedSetSource(feature_dir)
 
     def _extract_hierarchical_cached(
         self,
@@ -1075,7 +1076,7 @@ class _PooledFeatureExtractor:
         backend_provenance: dict[str, object],
         resolved_output_variant: str,
         num_gpus: int | None,
-    ) -> FeatureStore:
+    ) -> CachedSetSource:
         feature_identity = self._feature_identity_check(
             encoder_name=self._encoder.name,
             output_variant=resolved_output_variant,
@@ -1105,7 +1106,7 @@ class _PooledFeatureExtractor:
         if cache_resolution.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
-            return FeatureStore(feature_dir)
+            return CachedSetSource(feature_dir)
 
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
@@ -1140,7 +1141,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return CachedSetSource(feature_dir)
 
     def _extract_slide_cached(
         self,
@@ -1158,7 +1159,7 @@ class _PooledFeatureExtractor:
         resolved_output_variant: str,
         runtime_output_variant: str | None,
         num_gpus: int | None,
-    ) -> FeatureStore:
+    ) -> CachedSetSource:
         tile_encoder_name = str(encoder_info["tile_encoder"])
         tile_dependency_output = resolve_tile_dependency_output(
             self._encoder.name,
@@ -1218,7 +1219,7 @@ class _PooledFeatureExtractor:
         if tile_cache.complete and slide_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
-            return FeatureStore(feature_dir)
+            return CachedSetSource(feature_dir)
 
         # Always-aggregate: ensure the tile-dependency cache is complete first,
         # then aggregate from it. This reuses the incremental, crash-safe tile
@@ -1290,7 +1291,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return CachedSetSource(feature_dir)
 
     def _extract_patient_cached(
         self,
@@ -1308,7 +1309,7 @@ class _PooledFeatureExtractor:
         resolved_output_variant: str,
         runtime_output_variant: str | None,
         num_gpus: int | None,
-    ) -> FeatureStore:
+    ) -> CachedSetSource:
         tile_encoder_name = str(encoder_info["tile_encoder"])
         tile_dependency_output = resolve_tile_dependency_output(
             self._encoder.name,
@@ -1368,7 +1369,7 @@ class _PooledFeatureExtractor:
         if tile_cache.complete and patient_cache.complete:
             self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
-            return FeatureStore(feature_dir)
+            return CachedSetSource(feature_dir)
 
         patient_id_map = self._patient_id_map_for_patient_encoder()
 
@@ -1434,7 +1435,7 @@ class _PooledFeatureExtractor:
         )
         self._write_cached_process_list(feature_dir, cache_resolution=refreshed)
         self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=refreshed)
-        return FeatureStore(feature_dir)
+        return CachedSetSource(feature_dir)
 
     def _populate_patient_cache(
         self,
@@ -1842,7 +1843,7 @@ class _PooledFeatureExtractor:
         *,
         skip_existing: bool = True,
         num_gpus: int | None = None,
-    ) -> FeatureStore:
+    ) -> CachedSetSource:
         feature_subpath = self._feature_subpath(feature_dir)
         resolved_feature_dir = _resolve_output_subpath(
             self._output_root,

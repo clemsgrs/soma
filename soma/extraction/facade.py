@@ -5,17 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
+from soma.data import require_coverage
 from soma._logging import ensure_default_logging
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
-from soma.dataset import (
-    Dataset,
-    DetectionManifest,
-    SegmentationManifest,
-    SpatialExpressionManifest,
-    TileDataset,
-)
+from soma.data._legacy import LegacySamples, legacy_samples_from_csv
 from soma.extraction_contracts import (
     ExtractionArtifacts,
     FeatureDataset,
@@ -24,13 +19,19 @@ from soma.extraction_contracts import (
 )
 from soma.encoders.validation import resolve_preprocessing_config
 
+Shape = Literal["set", "grid"]
+Unit = Literal["slide", "tile"]
+
 
 class FeatureExtractor:
     """Fully configured persistent extraction operation.
 
-    Dataset type and preprocessing configuration select the representation. Runtime
-    arguments are intentionally absent from :meth:`extract`: construction fixes both
-    behavior and artifact layout.
+    ``shape`` (``"set"``: one tensor per sample; ``"grid"``: a dense token grid) and
+    ``unit`` (``"slide"``: whole slides tiled by soma or by supplied coordinates;
+    ``"tile"``: caller-supplied images read whole) select the representation together
+    with the preprocessing configuration; annotation sampling (``preprocessing.masks``)
+    turns a slide-unit grid run into ROI extraction. Runtime arguments are intentionally
+    absent from :meth:`extract`: construction fixes both behavior and artifact layout.
     """
 
     def __init__(
@@ -39,12 +40,25 @@ class FeatureExtractor:
         encoder: EncoderConfig,
         preprocessing: PreprocessingConfig = PreprocessingConfig(),
         *,
+        shape: Shape = "set",
+        unit: Unit = "slide",
         execution: ExecutionConfig = ExecutionConfig(),
         cache: CacheConfig = CacheConfig(),
         output_root: str | Path,
     ) -> None:
         ensure_default_logging()
+        if shape not in ("set", "grid"):
+            raise ValueError(f"shape must be 'set' or 'grid', got {shape!r}")
+        if unit not in ("slide", "tile"):
+            raise ValueError(f"unit must be 'slide' or 'tile', got {unit!r}")
+        if unit == "tile" and getattr(dataset, "supplies_coordinates", False):
+            raise ValueError(
+                "Manifest column 'coordinates_path' (user-supplied tile coordinates) only "
+                "applies to whole slides (unit='slide'); drop the column for pre-cropped images."
+            )
         self._dataset = dataset
+        self._shape = shape
+        self._unit = unit
         self._encoder = encoder
         self._preprocessing = preprocessing
         self._execution = execution
@@ -53,41 +67,44 @@ class FeatureExtractor:
         self._extract_impl = self._resolve_extractor()
 
     def _resolve_extractor(self) -> Callable[[], FeatureExtractionResult]:
-        if type(self._dataset) is TileDataset or isinstance(
-            self._dataset, SpatialExpressionManifest
-        ):
-            return self._extract_given_images
-        if type(self._dataset) is Dataset:
-            return self._extract_pooled
-        if isinstance(self._dataset, SegmentationManifest):
-            region_flags = [
-                record.region is not None and record.slide_id is not None
-                for record in self._dataset.samples.values()
-            ]
-            if any(region_flags):
-                if not all(region_flags) or self._preprocessing.masks is None:
-                    raise TypeError(
-                        "Unsupported dataset/config combination: explicit slide regions "
-                        "require region_x/region_y, slide_id, and preprocessing.masks on "
-                        "every sample."
-                    )
-                return self._extract_dense_regions
-            return (
-                self._extract_annotation_rois
-                if self._preprocessing.masks is not None
-                else self._extract_dense_images
-            )
-        if isinstance(self._dataset, DetectionManifest):
+        if self._shape == "set":
+            if self._preprocessing.masks is not None and self._unit == "tile":
+                raise TypeError(
+                    "Unsupported dataset/config combination: annotation sampling needs whole "
+                    "slides (unit='slide')."
+                )
+            return self._extract_given_images if self._unit == "tile" else self._extract_pooled
+        if self._unit == "tile":
             if self._preprocessing.masks is not None:
                 raise TypeError(
-                    "Unsupported dataset/config combination: annotation sampling is only "
-                    "defined for SegmentationManifest inputs."
+                    "Unsupported dataset/config combination: annotation sampling needs whole "
+                    "slides (unit='slide')."
                 )
             return self._extract_dense_images
-        raise TypeError(
-            "Unsupported dataset/config combination for persistent extraction: "
-            f"dataset={type(self._dataset).__name__}."
-        )
+        region_flags = [
+            record.region is not None and record.slide_id is not None
+            for record in self._dataset.samples.values()
+        ]
+        if any(region_flags):
+            if not all(region_flags) or self._preprocessing.masks is None:
+                raise TypeError(
+                    "Unsupported dataset/config combination: explicit slide regions "
+                    "require region_x/region_y, slide_id, and preprocessing.masks on "
+                    "every sample."
+                )
+            return self._extract_dense_regions
+        if self._preprocessing.masks is None:
+            raise TypeError(
+                "Unsupported dataset/config combination: a grid over whole slides needs "
+                "preprocessing.masks (annotation sampling); pass unit='tile' for "
+                "pre-cropped images."
+            )
+        if any(record.label_mask_path is None for record in self._dataset.samples.values()):
+            raise TypeError(
+                "Unsupported dataset/config combination: annotation sampling is only "
+                "defined for label-mask (segmentation) inputs."
+            )
+        return self._extract_annotation_rois
 
     def extract(self) -> FeatureExtractionResult:
         self._output_root.mkdir(parents=True, exist_ok=True)
@@ -121,7 +138,7 @@ class FeatureExtractor:
         )
         try:
             store = extractor.run(self._output_root / "features")
-            store.validate_coverage(list(self._dataset.sample_ids))
+            require_coverage(store, list(self._dataset.sample_ids))
         finally:
             _release_parent_cuda_state()
         return self._completed_result(
@@ -167,13 +184,13 @@ class FeatureExtractor:
                     if sample_id not in set(empty_sample_ids)
                 ]
             )
-            store.validate_coverage(expected)
+            require_coverage(store, expected)
         finally:
             _release_parent_cuda_state()
         kind = (
             "hierarchical"
-            if store.is_hierarchical
-            else "pooled_slide" if store.is_slide_level else "pooled_bag"
+            if store.rank == 3
+            else "pooled_slide" if store.rank == 1 else "pooled_bag"
         )
         return self._completed_result(
             source=store,
@@ -190,10 +207,7 @@ class FeatureExtractor:
         )
 
     def _extract_dense_images(self) -> FeatureExtractionResult:
-        from soma.dense import (
-            CacheBackedDenseSource,
-            DenseSourceProvenance,
-        )
+        from soma.dense import DenseSourceProvenance
         from soma.dense_extraction import _DenseImageExtractor
         from soma.extraction.orchestration import _release_parent_cuda_state
 
@@ -221,17 +235,15 @@ class FeatureExtractor:
         )
         try:
             store = extractor.run(self._output_root / "features")
-            store.validate_coverage(list(self._dataset.sample_ids))
+            require_coverage(store, list(self._dataset.sample_ids))
         finally:
             _release_parent_cuda_state()
-        source = CacheBackedDenseSource(
-            store,
-            provenance=DenseSourceProvenance(
-                kind="dense_cache",
-                feature_dir=store.feature_dir,
-                dataset_csv=getattr(self._dataset, "_path", None),
-            ),
+        store.provenance = DenseSourceProvenance(
+            kind="dense_cache",
+            feature_dir=store.feature_dir,
+            dataset_csv=getattr(self._dataset, "path", None),
         )
+        source = store
         return self._completed_result(
             source=source,
             dataset=self._dataset,
@@ -249,8 +261,7 @@ class FeatureExtractor:
             write_roi_sampling_coords,
         )
         from soma.config import SamplingConfig
-        from soma.dataset import SegmentationManifest
-        from soma.dense import CacheBackedDenseSource, DenseSourceProvenance
+        from soma.dense import DenseSourceProvenance
         from soma.dense_slide_extraction import (
             _SlideRegionExtractor,
             build_roi_dataset,
@@ -321,7 +332,9 @@ class FeatureExtractor:
             out_dir=self._output_root / "segmentation_rois",
             mask_crop_dirs=mask_crop_dirs,
         )
-        effective_dataset = SegmentationManifest(effective_csv)
+        effective_dataset = legacy_samples_from_csv(
+            effective_csv, pixel_mapping=masks.pixel_mapping
+        )
         extractor = _SlideRegionExtractor(
             effective_dataset,
             self._encoder,
@@ -333,7 +346,7 @@ class FeatureExtractor:
         )
         try:
             store = extractor.run(features_root)
-            store.validate_coverage(list(effective_dataset.sample_ids))
+            require_coverage(store, list(effective_dataset.sample_ids))
         finally:
             _release_parent_cuda_state()
         # Crops are read at each grid's recorded spacing (a slide within tolerance is read
@@ -353,15 +366,13 @@ class FeatureExtractor:
             masks=masks,
             preprocessing=preprocessing,
         )
-        source = CacheBackedDenseSource(
-            store,
-            provenance=DenseSourceProvenance(
-                kind="slide_manifest_dense_cache",
-                feature_dir=store.feature_dir,
-                dataset_csv=effective_csv,
-                parent_dataset_csv=getattr(self._dataset, "_path", None),
-            ),
+        store.provenance = DenseSourceProvenance(
+            kind="slide_manifest_dense_cache",
+            feature_dir=store.feature_dir,
+            dataset_csv=effective_csv,
+            parent_dataset_csv=getattr(self._dataset, "path", None),
         )
+        source = store
         return self._completed_result(
             source=source,
             dataset=effective_dataset,
@@ -378,7 +389,7 @@ class FeatureExtractor:
 
     def _extract_dense_regions(self) -> FeatureExtractionResult:
         from soma.config import SamplingConfig
-        from soma.dense import CacheBackedDenseSource, DenseSourceProvenance
+        from soma.dense import DenseSourceProvenance
         from soma.dense_slide_extraction import _SlideRegionExtractor
         from soma.extraction.orchestration import _release_parent_cuda_state
 
@@ -396,17 +407,15 @@ class FeatureExtractor:
         )
         try:
             store = extractor.run(self._output_root / "features")
-            store.validate_coverage(list(self._dataset.sample_ids))
+            require_coverage(store, list(self._dataset.sample_ids))
         finally:
             _release_parent_cuda_state()
-        source = CacheBackedDenseSource(
-            store,
-            provenance=DenseSourceProvenance(
-                kind="slide_region_dense_cache",
-                feature_dir=store.feature_dir,
-                dataset_csv=getattr(self._dataset, "_path", None),
-            ),
+        store.provenance = DenseSourceProvenance(
+            kind="slide_region_dense_cache",
+            feature_dir=store.feature_dir,
+            dataset_csv=getattr(self._dataset, "path", None),
         )
+        source = store
         return self._completed_result(
             source=source,
             dataset=self._dataset,

@@ -17,8 +17,8 @@ from soma.evaluation.report import EvaluationReport
 from soma.training.segmentation_dataset import SegmentationBatch
 
 if TYPE_CHECKING:
-    from soma.dataset import SampleRecord, SegmentationManifest
-    from soma.dense import DenseFeatureSource
+    from soma.data._legacy import LegacyRecord, LegacySamples
+    from soma.data import GridSource
     from soma.pixel_classifiers.base import PixelClassifier
     from soma.tasks.segmentation import SegmentationHead
 
@@ -39,8 +39,8 @@ def grid_to_target_features(grid: torch.Tensor, head: "SegmentationHead") -> tor
 
 
 def build_training_matrix(
-    records: list["SampleRecord"],
-    feature_store: "DenseFeatureSource",
+    records: list["LegacyRecord"],
+    feature_store: "GridSource",
     head: "SegmentationHead",
     *,
     max_pixels: int,
@@ -136,12 +136,12 @@ def predict_tile_pseudologits(
 
 def evaluate_pixel_classifier(
     clf: "PixelClassifier",
-    records: list["SampleRecord"],
-    feature_store: "DenseFeatureSource",
+    records: list["LegacyRecord"],
+    feature_store: "GridSource",
     head: "SegmentationHead",
     split_name: str,
     *,
-    dataset: "SegmentationManifest | None" = None,
+    dataset: "LegacySamples | None" = None,
     output_dir: Path | None = None,
     save_segmentation_overlays: bool = True,
     save_segmentation_probabilities: bool = False,

@@ -95,7 +95,7 @@ class DenseArtifactWriter:
         head: the ``SegmentationHead`` (for ``num_classes``).
         split: split name (``"tune"``, ``"test"``, ...) — names the subdirs + CSV.
         output_dir: the fold directory; artifacts live under it.
-        dataset: the ``SegmentationManifest`` (``samples[sample_id].image_path``) for
+        dataset: the legacy records (``samples[sample_id].image_path``) for
             overlays. ``None`` disables overlays entirely (rasters still written).
         overlay_alpha: blend weight of the predicted color over the source image.
         save_segmentation_overlays: write the pred/GT color overlay PNGs. On by default

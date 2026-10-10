@@ -1,6 +1,6 @@
 """User-supplied tile coordinates: a manifest's ``coordinates_path`` in place of soma's tiling.
 
-A slide-level ``Dataset`` may name, per slide, an hs2p tiling artifact — the
+A slide-level ``LegacySamples`` may name, per slide, an hs2p tiling artifact — the
 ``<name>.coordinates.npz`` + ``<name>.coordinates.meta.json`` pair that
 ``hs2p.artifacts.save_tiling_result`` writes. soma then skips hs2p tiling for the dataset:
 it copies each artifact into the run's tiling directory, checks it against its manifest
@@ -24,7 +24,7 @@ from hs2p.artifacts import load_tiling_result
 from hs2p.tiling.io import normalize_artifact_path
 
 from soma.config import PreprocessingConfig
-from soma.dataset import Dataset, SampleRecord
+from soma.data._legacy import LegacySamples, LegacyRecord
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ def _check_supported(preprocessing: PreprocessingConfig) -> None:
         )
 
 
-def _snapshot(record: SampleRecord, snapshot_dir: Path) -> tuple[Path, Path]:
+def _snapshot(record: LegacyRecord, snapshot_dir: Path) -> tuple[Path, Path]:
     """Copy ``record``'s artifact into the run, so the run keeps the tiles it checked.
 
     A run that already holds a snapshot (a resume, which reloads the original manifest)
@@ -130,7 +130,7 @@ def _snapshot(record: SampleRecord, snapshot_dir: Path) -> tuple[Path, Path]:
 
 
 def _load_checked(
-    record: SampleRecord,
+    record: LegacyRecord,
     preprocessing: PreprocessingConfig,
     *,
     npz_path: Path,
@@ -189,10 +189,10 @@ def _load_checked(
 
 
 def stage_supplied_coordinates(
-    dataset: Dataset,
+    dataset: LegacySamples,
     tiling_dir: Path,
     preprocessing: PreprocessingConfig,
-) -> Dataset:
+) -> LegacySamples:
     """Copy each slide's supplied artifact into ``tiling_dir`` and list it there.
 
     It is the tiling directory hs2p would have written, so slide2vec embeds from it

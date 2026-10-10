@@ -432,7 +432,7 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
     """Fold per-tile detections back to their parent ROI for the native per-ROI metric.
 
     A tiled dataset (MIDOG/MONKEY) carries ``source_wsi`` / ``tile_x`` / ``tile_y`` per
-    sample (:class:`~soma.dataset.DetectionManifest` reserves these). Each tile's points are
+    sample (reserved metadata columns of the detection curators). Each tile's points are
     already in the tile's level-0 (pixel) frame, so adding the tile origin lifts them into
     ROI coordinates; we then **dedup GT overlap copies** (the same annotation in two
     overlapping tiles lands at the same ROI coordinate, up to the float32 rounding of its

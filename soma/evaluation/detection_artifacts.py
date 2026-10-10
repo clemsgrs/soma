@@ -133,8 +133,8 @@ class DetectionArtifactWriter:
             (palette) and ``_crop_box`` (the target-frame size the points live in).
         split: split name (``"tune"``, ``"test"``, ...) — names the subdirs + CSVs.
         output_dir: the fold directory; artifacts live under it.
-        dataset: the :class:`~soma.dataset.DetectionManifest`
-            (``samples[sample_id].image_path``, flat tiles) for overlays. ``None`` disables
+        dataset: the legacy records (``samples[sample_id].image_path``, flat tiles)
+            for overlays. ``None`` disables
             overlays (manifest + metrics still written).
         save_detection_overlays: write the pred/GT point overlay PNGs. On by default (a
             viewable prediction is cheap), but suppressible for a metrics-only run — the
@@ -288,7 +288,7 @@ class DetectionArtifactWriter:
     def _read_source(self, sample_id: str) -> np.ndarray | None:
         """Read the flat source tile and resize to the target frame, or ``None``.
 
-        Detection is flat-tile only (no ``region`` on ``DetectionManifest``), so a plain
+        Detection is flat-tile only (a detection record has no ``region``), so a plain
         ``Image.open`` + resize suffices — no slide-ROI/spacing handling (kept out of the
         shared seg reader deliberately). ``None`` when no overlay (point or heatmap) needs
         the tile, the record is unknown, or the tile is unreadable (fail-soft: cached-feature

@@ -56,11 +56,11 @@ from soma.config import (
     SamplingConfig,
     canonical_pixel_mapping,
 )
-from soma.dense import DenseFeatureStore, normalize_hw
+from soma.dense import CachedGridSource, normalize_hw
 from soma.slide2vec_adapter import build_execution_options
 
 if TYPE_CHECKING:
-    from soma.dataset import SampleRecord, SegmentationManifest
+    from soma.data._legacy import LegacyRecord, LegacySamples
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def sampling_signature(
 
 
 def sample_slide_rois(
-    dataset: "SegmentationManifest",
+    dataset: "LegacySamples",
     *,
     masks: MasksConfig,
     sampling: SamplingConfig,
@@ -187,7 +187,7 @@ def sample_slide_rois(
 
 
 def build_roi_dataset(
-    dataset: "SegmentationManifest",
+    dataset: "LegacySamples",
     coords_by_slide: dict[str, list[tuple[int, int]]],
     *,
     out_dir: Path,
@@ -245,7 +245,7 @@ def build_roi_dataset(
 
 
 def write_roi_mask_crops(
-    records: Sequence["SampleRecord"],
+    records: Sequence["LegacyRecord"],
     *,
     spacing_um_by_sample_id: Mapping[str, float],
     masks: MasksConfig,
@@ -319,7 +319,7 @@ class _SlideRegionExtractor:
 
     def __init__(
         self,
-        roi_dataset: "SegmentationManifest",
+        roi_dataset: "LegacySamples",
         encoder: EncoderConfig,
         *,
         masks: MasksConfig,
@@ -378,7 +378,7 @@ class _SlideRegionExtractor:
             stems[record.sample_id] = f"{record.slide_id}/{int(x)}_{int(y)}"
         return stems
 
-    def run(self, feature_dir: str | Path) -> DenseFeatureStore:
+    def run(self, feature_dir: str | Path) -> CachedGridSource:
         from slide2vec.encoders.registry import resolve_patch_size
 
         dense_input_mode = "whole" if self._window_size is None else "sliding_window"
@@ -441,7 +441,7 @@ class _SlideRegionExtractor:
                     "Reusing cached ROI dense grids from %s",
                     cache_resolution.features_dir,
                 )
-                return DenseFeatureStore(cache_resolution.cache_dir, payload_stems=payload_stems)
+                return CachedGridSource(cache_resolution.cache_dir, payload_stems=payload_stems)
             out_root = cache_resolution.cache_dir
 
         # Resume: encode only the ROIs absent from the cache (the missing set comes
@@ -452,7 +452,7 @@ class _SlideRegionExtractor:
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
-                return DenseFeatureStore(out_root, payload_stems=payload_stems)
+                return CachedGridSource(out_root, payload_stems=payload_stems)
 
         # Group ROI coordinates by parent slide: one SlideRegions per slide, so slide2vec
         # opens and reads each slide once.
@@ -476,7 +476,7 @@ class _SlideRegionExtractor:
             spacing_by_slide[slide_id] = record.spacing_at_level_0
 
         if not coords_by_slide:
-            return DenseFeatureStore(out_root, payload_stems=payload_stems)
+            return CachedGridSource(out_root, payload_stems=payload_stems)
 
         # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
         model = Model.from_preset(
@@ -543,4 +543,4 @@ class _SlideRegionExtractor:
                 [record.sample_id for record in self._dataset.samples.values()],
                 validate_payloads=self._cache.validate_payloads,
             )
-        return DenseFeatureStore(out_root, payload_stems=payload_stems)
+        return CachedGridSource(out_root, payload_stems=payload_stems)

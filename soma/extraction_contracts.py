@@ -8,16 +8,10 @@ from typing import Protocol, runtime_checkable
 
 import torch
 
-from soma.dataset import (
-    Dataset,
-    DetectionManifest,
-    SegmentationManifest,
-    SpatialExpressionManifest,
-)
+from soma.data._legacy import LegacySamples
 
-FeatureDataset = (
-    Dataset | SegmentationManifest | DetectionManifest | SpatialExpressionManifest
-)
+#: Delete in slice 7 (#581): extraction still consumes the legacy fat records.
+FeatureDataset = LegacySamples
 
 
 @runtime_checkable
@@ -25,14 +19,12 @@ class FeatureSource(Protocol):
     """Minimal loading surface shared by every persistent feature representation."""
 
     @property
-    def available_samples(self) -> list[str]: ...
+    def sample_ids(self) -> list[str]: ...
 
     @property
     def feature_dim(self) -> int: ...
 
     def load(self, sample_id: str) -> torch.Tensor: ...
-
-    def validate_coverage(self, sample_ids: list[str]) -> None: ...
 
 
 @runtime_checkable
@@ -40,13 +32,7 @@ class PooledFeatureSource(FeatureSource, Protocol):
     """Source contract for vectors, tile bags, and hierarchical tensors."""
 
     @property
-    def feature_rank(self) -> int: ...
-
-    @property
-    def is_slide_level(self) -> bool: ...
-
-    @property
-    def is_hierarchical(self) -> bool: ...
+    def rank(self) -> int: ...
 
 
 @dataclass(frozen=True)

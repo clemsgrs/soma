@@ -370,7 +370,7 @@ def test_headline_metrics(report: dict) -> dict:
 def dense_embeddings_dir(cell: Cell, data_root: Path) -> Path | None:
     """Resolve the exact current dense-grid directory for a campaign cell."""
     from soma.benchmarks.ocelot import OCELOT, resolve_dense_cache_dir
-    from soma.dataset import DetectionManifest
+    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense import DENSE_IMAGE_PAYLOAD_SUBDIR
 
     curated = data_root / "curated"
@@ -381,16 +381,16 @@ def dense_embeddings_dir(cell: Cell, data_root: Path) -> Path | None:
         splits_csv=curated / "splits.csv",
         output_root=output_root_for(cell),
     )
-    cache_dir = resolve_dense_cache_dir(cfg, DetectionManifest(cfg.dataset_csv))
+    cache_dir = resolve_dense_cache_dir(cfg, legacy_samples_from_csv(cfg.dataset_csv))
     return None if cache_dir is None else cache_dir / DENSE_IMAGE_PAYLOAD_SUBDIR
 
 
 def test_sample_ids(cell: Cell, data_root: Path) -> list[str]:
-    from soma.dataset import DetectionManifest, Splits
+    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 
     curated = data_root / "curated"
-    manifest = DetectionManifest(curated / "dataset.csv")
-    splits = Splits(curated / "splits.csv", manifest)
+    manifest = legacy_samples_from_csv(curated / "dataset.csv")
+    splits = legacy_folds_from_csv(curated / "splits.csv", manifest)
     return [sid for ids in splits.folds[0].tests.values() for sid in ids]
 
 

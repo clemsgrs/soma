@@ -1,6 +1,6 @@
-"""DenseFeatureStore — load cached dense ``(d, h, w)`` feature grids.
+"""CachedGridSource — the :class:`~soma.data.GridSource` over cached ``(d, h, w)`` grids.
 
-Unlike :class:`soma.features.FeatureStore`, which infers a feature's shape from
+Unlike :class:`soma.data.CachedSetSource`, which infers a feature's shape from
 its tensor *rank* (1-D slide / 2-D bag / 3-D hierarchical), a dense grid is also
 3-D ``(channels, grid_h, grid_w)`` and would be mis-read as hierarchical with
 ``feature_dim`` taken from the last axis (``w``) instead of the channel axis
@@ -17,15 +17,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 from slide2vec.artifacts import load_array
 
-from soma.dataset import ensure_filename_safe_id
-from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry
-from soma.dense.source import DenseSampleSpacing, dense_sample_spacing_from_metadata
+from soma.data.geometry import DenseGridGeometry, GridGeometry, compute_dense_geometry
+from soma.data.validation import ensure_filename_safe_id
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,10 @@ __all__ = [
     "resolve_dense_payload_dir",
     "dense_grid_metadata",
     "write_dense_grid",
-    "DenseFeatureStore",
+    "CachedGridSource",
+    "DenseSampleSpacing",
+    "DenseSourceProvenance",
+    "dense_sample_spacing_from_metadata",
 ]
 
 DENSE_SIDECAR_SUFFIX = ".meta.json"
@@ -84,6 +88,63 @@ def _load_array_resilient(path: Path):
                 delay,
             )
             time.sleep(delay)
+
+
+@dataclass(frozen=True)
+class DenseSampleSpacing:
+    """Resolved physical scales persisted with one dense sample."""
+
+    source_spacing_um: float
+    effective_spacing_um: float
+
+
+def dense_sample_spacing_from_metadata(
+    metadata: dict, *, sample_id: str
+) -> DenseSampleSpacing:
+    values: dict[str, float] = {}
+    for field in ("source_spacing_um", "effective_spacing_um"):
+        if field not in metadata or metadata[field] is None:
+            raise ValueError(
+                f"Dense feature '{sample_id}' is missing required {field} provenance."
+            )
+        value = metadata[field]
+        if isinstance(value, bool):
+            raise ValueError(
+                f"Dense feature '{sample_id}' has invalid {field}={value!r}; "
+                "expected a positive, finite number."
+            )
+        try:
+            spacing = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"Dense feature '{sample_id}' has invalid {field}={value!r}; "
+                "expected a positive, finite number."
+            ) from None
+        if not math.isfinite(spacing) or spacing <= 0.0:
+            raise ValueError(
+                f"Dense feature '{sample_id}' has invalid {field}={value!r}; "
+                "expected a positive, finite number."
+            )
+        values[field] = spacing
+    return DenseSampleSpacing(**values)
+
+
+@dataclass(frozen=True)
+class DenseSourceProvenance:
+    """Where a cache-backed grid source came from."""
+
+    kind: str
+    feature_dir: Path | str | None = None
+    dataset_csv: Path | str | None = None
+    parent_dataset_csv: Path | str | None = None
+
+    def to_dict(self) -> dict[str, str]:
+        data: dict[str, str] = {"kind": str(self.kind)}
+        for key in ("feature_dir", "dataset_csv", "parent_dataset_csv"):
+            value = getattr(self, key)
+            if value is not None:
+                data[key] = str(value)
+        return data
 
 
 def resolve_dense_payload_dir(path: Path | str) -> Path:
@@ -219,7 +280,7 @@ def write_dense_grid(
     return feature_path
 
 
-class DenseFeatureStore:
+class CachedGridSource:
     """Index and load dense ``(d, h, w)`` grids written by slide2vec.
 
     Every ``.pt`` must have a matching ``.meta.json`` sidecar; shape is read from the
@@ -231,6 +292,9 @@ class DenseFeatureStore:
     the ROI's identity is the manifest's, and recovering ``sample_id`` from the path would
     mean parsing ``<slide>__x<X>_y<Y>`` back apart. So the caller passes ``payload_stems``,
     the ``sample_id → relative stem`` mapping it already holds (ADR 0007).
+
+    ``provenance`` records where the grids came from (cache kind, dataset CSVs) for
+    run artifacts; it is optional and never read to locate a grid.
     """
 
     def __init__(
@@ -238,7 +302,9 @@ class DenseFeatureStore:
         feature_dir: Path | str,
         *,
         payload_stems: dict[str, str] | None = None,
+        provenance: DenseSourceProvenance | None = None,
     ) -> None:
+        self.provenance = provenance
         # Accept a cache dir and descend into dense_embeddings/, or a plain dir of
         # .pt files as-is. Dense-specific resolver: never falls through to a pooled
         # sibling dir (e.g. tile_embeddings) if both happen to exist.
@@ -297,12 +363,14 @@ class DenseFeatureStore:
         self._grid_shape = (gh, gw)
 
     @property
-    def available_samples(self) -> list[str]:
+    def sample_ids(self) -> list[str]:
         return list(self._index.keys())
 
     @property
     def feature_dim(self) -> int:
         """Channel dimensionality ``d`` — from the sidecar, not the last axis."""
+        if not self._index:
+            return 0
         self._ensure_shape()
         assert self._feature_dim is not None
         return self._feature_dim
@@ -313,19 +381,25 @@ class DenseFeatureStore:
         assert self._grid_shape is not None
         return self._grid_shape
 
-    def geometry(self, sample_id: str) -> DenseGridGeometry:
-        """Reconstruct the sample's :class:`DenseGridGeometry` from its sidecar.
+    def geometry(self, sample_id: str) -> GridGeometry:
+        """Reconstruct the sample's :class:`GridGeometry` from its sidecar.
 
         Recomputed via :func:`compute_dense_geometry` from the persisted
         ``target_size`` + ``patch_size`` — the exact function the extractor used, so
         the head's crop geometry is byte-identical to what the grid was built with
-        (single source of truth, no field-copy drift).
+        (single source of truth, no field-copy drift). The level-0 anchor comes from
+        the resolved spacings and the ROI origin when the sidecar records them.
         """
         meta = self.metadata(sample_id)
-        return compute_dense_geometry(
+        dense = compute_dense_geometry(
             target_size=tuple(int(v) for v in meta["target_size"]),
             patch_size=tuple(int(v) for v in meta["patch_size"]),
         )
+        scale = 1.0
+        if meta.get("source_spacing_um") and meta.get("effective_spacing_um"):
+            scale = float(meta["effective_spacing_um"]) / float(meta["source_spacing_um"])
+        origin = (float(meta.get("region_x", 0) or 0), float(meta.get("region_y", 0) or 0))
+        return GridGeometry.from_dense(dense, origin_level0=origin, level0_px_per_token_px=scale)
 
     def spacing_um(self, sample_id: str) -> float | None:
         """Read-spacing in µm/px recorded for ``sample_id`` (``None`` for flat reads).
@@ -385,11 +459,6 @@ class DenseFeatureStore:
         if tensor.is_floating_point() and tensor.dtype != torch.float32:
             return tensor.float()
         return tensor
-
-    def validate_coverage(self, sample_ids: list[str]) -> None:
-        missing = sorted(set(sample_ids) - set(self._index))
-        if missing:
-            raise ValueError(f"Missing dense features for {len(missing)} samples: {missing}")
 
     def __len__(self) -> int:
         return len(self._index)

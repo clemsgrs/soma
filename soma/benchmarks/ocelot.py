@@ -37,7 +37,7 @@ from soma.curation.manifest import CuratedManifest
 from soma.curation.ocelot import curate_ocelot_detection
 
 if TYPE_CHECKING:
-    from soma.dataset import DetectionManifest
+    from soma.data._legacy import LegacySamples
 
 _CONFIG_DIR = Path(__file__).resolve().parent / "configs" / "ocelot"
 
@@ -221,7 +221,7 @@ def _locate_checkpoint(run_dir: Path, *, fold: int | None = None) -> Path:
 
 
 def resolve_dense_cache_dir(
-    cfg: PipelineConfig, manifest: DetectionManifest
+    cfg: PipelineConfig, manifest: LegacySamples
 ) -> Path | None:
     """Prepare and return the exact dense-image cache directory described by ``cfg``."""
     from soma import FeatureExtractor
@@ -235,6 +235,8 @@ def resolve_dense_cache_dir(
         manifest,
         cfg.encoder,
         preprocessing,
+        shape="grid",
+        unit="tile",
         execution=cfg.execution,
         cache=cache,
         output_root=Path(cfg.output_root) / "rescore_extraction",
@@ -252,8 +254,9 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     """
     import torch
 
-    from soma.dataset import DetectionManifest, Splits
-    from soma.dense import DenseFeatureStore
+    from soma.data import Cohort
+    from soma.data._legacy import bind_detection_targets, legacy_samples_from_csv
+    from soma.dense import CachedGridSource
     from soma.pipeline import (
         _make_loaders,
         _resolve_detection_px,
@@ -265,9 +268,8 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     run_dir = Path(run_dir)
     config_path = _locate_run_config(run_dir)
     cfg = load_config(str(config_path))
-    manifest = DetectionManifest(cfg.dataset_csv)
-    splits = Splits(cfg.splits_csv, manifest)
-    fold_split = splits.folds[0]
+    manifest = legacy_samples_from_csv(cfg.dataset_csv)
+    fold_split = Cohort.from_csv(cfg.dataset_csv, cfg.splits_csv).folds[0]
     train_records = [manifest.samples[s] for s in fold_split.train]
     probe_id = train_records[0].sample_id
 
@@ -277,11 +279,11 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
             "caching is disabled in this config; greedy re-scoring needs the cached dense "
             "grids the run trained on."
         )
-    store = DenseFeatureStore(store_dir)
-    if probe_id not in store.available_samples:
+    store = CachedGridSource(store_dir)
+    if probe_id not in store.sample_ids:
         raise FileNotFoundError(
             f"recomputed dense cache dir {store_dir} does not contain sample '{probe_id}' "
-            f"({len(store.available_samples)} samples present); the config likely no longer "
+            f"({len(store.sample_ids)} samples present); the config likely no longer "
             f"matches the run, or extraction is incomplete."
         )
     ckpt = _locate_checkpoint(run_dir)
@@ -325,6 +327,7 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
         sample_spacings=sample_spacings,
         metrics=cfg.evaluation.metrics,
     )
+    bind_detection_targets(head, manifest.records)
 
     # Rebuild the trained model — including any feature adaptor the run carried, whose
     # buffers and rewired decoder width the strict load below depends on (issue #286).

@@ -68,7 +68,7 @@ def _resolve(
     if preprocessing.tissue_method is None:
         raise ValueError(
             "preprocessing.tissue_method must be set explicitly when computing a "
-            "cache_key — the auto-promotion soma performs against a Dataset is "
+            "cache_key — the auto-promotion soma performs against an image manifest is "
             "not replicated here."
         )
     resolved_prep = resolve_preprocessing_config(

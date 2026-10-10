@@ -37,10 +37,10 @@ from soma.cache import (
     resolve_cache_dtype,
 )
 from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
-from soma.dataset import Dataset
+from soma.data._legacy import LegacySamples
 from soma.dense import (
     DENSE_IMAGE_PAYLOAD_SUBDIR,
-    DenseFeatureStore,
+    CachedGridSource,
     compute_dense_geometry,
     normalize_hw,
 )
@@ -96,7 +96,7 @@ class _DenseImageExtractor:
     """Encode tile images into dense ``(d, h, w)`` grids (``dataset_type="segmentation"``).
 
     Args:
-        dataset: Dataset whose ``image_path`` fields point to tile images. One
+        dataset: LegacySamples whose ``image_path`` fields point to tile images. One
             extraction run must contain either raster images or spacing-readable
             pyramidal images, not a mixture; split mixed manifests into separate runs.
         encoder: Encoder configuration. For encoders that recommend
@@ -112,7 +112,7 @@ class _DenseImageExtractor:
 
     def __init__(
         self,
-        dataset: Dataset,
+        dataset: LegacySamples,
         encoder: EncoderConfig,
         *,
         target_size: int | tuple[int, int],
@@ -239,7 +239,7 @@ class _DenseImageExtractor:
         )
         return cache_root / "dense_image" / key
 
-    def run(self, feature_dir: str | Path) -> DenseFeatureStore:
+    def run(self, feature_dir: str | Path) -> CachedGridSource:
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
 
@@ -298,7 +298,7 @@ class _DenseImageExtractor:
             payload_dir = cache_resolution.features_dir
             if cache_resolution.complete:
                 logger.info("Reusing cached dense grids from %s", cache_resolution.features_dir)
-                return DenseFeatureStore(payload_dir)
+                return CachedGridSource(payload_dir)
             # slide2vec appends its own payload subdir, so it is handed the cache dir.
             out_root = cache_resolution.cache_dir
 
@@ -315,7 +315,7 @@ class _DenseImageExtractor:
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
-                return DenseFeatureStore(payload_dir)
+                return CachedGridSource(payload_dir)
             records = [record for record in records if record.sample_id in wanted]
 
         with _dense_extract_lock():
@@ -367,4 +367,4 @@ class _DenseImageExtractor:
                 [record.sample_id for record in records],
                 validate_payloads=self._cache.validate_payloads,
             )
-        return DenseFeatureStore(payload_dir)
+        return CachedGridSource(payload_dir)

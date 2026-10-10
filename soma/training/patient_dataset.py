@@ -9,8 +9,8 @@ import torch
 from torch import Tensor
 from torch.utils.data import Dataset
 
-from soma.dataset import SampleRecord
-from soma.features import FeatureStore
+from soma.data import SampleRecord
+from soma.data import CachedSetSource
 from soma.training.collate import stack_targets
 
 
@@ -28,7 +28,7 @@ class PatientDataset(Dataset):
         patient_ids: Ordered list of patient IDs for this split.
         patient_record_map: Mapping from patient_id to a representative
             SampleRecord (carrying the patient's label and metadata).
-        feature_store: FeatureStore for loading precomputed patient embeddings,
+        feature_store: CachedSetSource for loading precomputed patient embeddings,
             indexed by patient_id.
         target_fn: Callable mapping a SampleRecord to its targets dict
             (the head's ``extract_targets``).
@@ -38,7 +38,7 @@ class PatientDataset(Dataset):
         self,
         patient_ids: list[str],
         patient_record_map: dict[str, SampleRecord],
-        feature_store: FeatureStore,
+        feature_store: CachedSetSource,
         target_fn: Callable[[SampleRecord], dict[str, int | float]],
     ) -> None:
         self._patient_ids = patient_ids

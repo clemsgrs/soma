@@ -15,8 +15,8 @@ import torch
 import torch.nn.functional as F
 
 from soma.dense.geometry import DenseGridGeometry, compute_dense_geometry, normalize_hw
-from soma.dense.source import DenseSampleSpacing
-from soma.dense.store import DenseFeatureStore
+from soma.dense.store import DenseSampleSpacing
+from soma.dense.store import CachedGridSource
 
 __all__ = ["resample_grid_to_target", "apply_member_norm", "CompositeDenseFeatureStore"]
 
@@ -71,7 +71,7 @@ class CompositeDenseFeatureStore:
 
     def __init__(
         self,
-        members: list[DenseFeatureStore],
+        members: list[CachedGridSource],
         *,
         concat_resolution: str = "target",
         concat_grid_size: tuple[int, int] | None = None,
@@ -103,9 +103,9 @@ class CompositeDenseFeatureStore:
             if concat_grid_size is not None
             else None
         )
-        common = set(members[0].available_samples)
+        common = set(members[0].sample_ids)
         for member in members[1:]:
-            common &= set(member.available_samples)
+            common &= set(member.sample_ids)
         self._available = sorted(common)
         if not self._available:
             raise ValueError(
@@ -116,7 +116,7 @@ class CompositeDenseFeatureStore:
         self._target_size: tuple[int, int] | None = None
 
     @property
-    def available_samples(self) -> list[str]:
+    def sample_ids(self) -> list[str]:
         return list(self._available)
 
     @property
@@ -248,14 +248,6 @@ class CompositeDenseFeatureStore:
         parts = [apply_member_norm(part, norm) for part, norm in zip(parts, self._member_norms)]
         return torch.cat(parts, dim=0)
 
-    def validate_coverage(self, sample_ids: list[str]) -> None:
-        available = set(self._available)
-        missing = sorted(set(sample_ids) - available)
-        if missing:
-            raise ValueError(
-                f"Missing composite dense features for {len(missing)} samples: {missing} "
-                "(a sample must be extracted by every member encoder)."
-            )
 
     def __len__(self) -> int:
         return len(self._available)

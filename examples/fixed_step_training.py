@@ -33,17 +33,16 @@ import torch
 
 from soma import (
     AggregatorConfig,
-    Dataset,
+    CachedSetSource,
     EvalConfig,
-    FeatureStore,
-    Splits,
     TaskConfig,
     TrainingConfig,
     train,
 )
+from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
 
 # --- Scaffolding (not soma API): random precomputed feature bags ------------------
-# A FeatureStore reads a directory of .pt files, one bag of tile vectors per
+# A CachedSetSource reads a directory of .pt files, one bag of tile vectors per
 # sample — exactly what a real feature extraction would have written.
 
 WORK = Path(tempfile.mkdtemp(prefix="soma-fixed-steps-"))
@@ -69,9 +68,9 @@ pd.DataFrame(
 ).to_csv(dataset_csv, index=False)
 pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index=False)
 
-dataset = Dataset(dataset_csv)
-splits = Splits(splits_csv, dataset)
-store = FeatureStore(FEATURES)
+dataset = legacy_samples_from_csv(dataset_csv)
+splits = legacy_folds_from_csv(splits_csv, dataset)
+store = CachedSetSource(FEATURES)
 
 # --- The step budget --------------------------------------------------------------
 # 8 training bags at batch_size=4 give 2 optimizer updates per epoch. A budget
