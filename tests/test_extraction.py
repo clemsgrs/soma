@@ -1670,7 +1670,6 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
 
     assert store.has_feature_manifest is True
     assert store.empty_feature_samples == ["s1"]
-    assert store.expected_feature_samples == ["s0"]
     assert store.sample_ids == ["s0"]
     recorded = pd.read_csv(tmp_path / "features" / "process_list.csv").set_index("sample_id")
     assert recorded.loc["s0", "encoder_name"] == _TEST_TILE

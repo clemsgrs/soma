@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from soma.data import AnnotationManifest, Cohort, ImageManifest
+from soma.data import AnnotationEntry, AnnotationManifest, Cohort, ImageEntry, ImageManifest
 
 
 def _single_csv(tmp_path: Path) -> Path:
@@ -73,6 +73,24 @@ def test_image_manifest_rejects_retired_and_unsafe_inputs() -> None:
         ImageManifest.from_frame(pd.DataFrame({"sample_id": ["../a"], "image_path": ["x"]}))
     with pytest.raises(ValueError, match="image_path"):
         ImageManifest.from_frame(pd.DataFrame({"sample_id": ["a"], "image_path": [None]}))
+
+
+def test_entry_constructors_reject_duplicate_unsafe_and_mismatched_ids() -> None:
+    image = ImageEntry("a", Path("/img/a.tif"))
+    annotation = AnnotationEntry("a", label_mask_path=Path("/ann/a.png"))
+    assert ImageManifest([image]).sample_ids == ["a"] == ImageManifest({"a": image}).sample_ids
+    assert AnnotationManifest([annotation])["a"] is annotation
+
+    with pytest.raises(ValueError, match="Duplicate sample_id 'a'"):
+        ImageManifest([image, ImageEntry("a", Path("/img/b.tif"))])
+    with pytest.raises(ValueError, match="Duplicate sample_id 'a'"):
+        AnnotationManifest([annotation, AnnotationEntry("a", points_path=Path("/ann/a.csv"))])
+    with pytest.raises(ValueError, match="Unsafe"):
+        ImageManifest([ImageEntry("../a", Path("/img/a.tif"))])
+    with pytest.raises(ValueError, match="Unsafe"):
+        AnnotationManifest([AnnotationEntry("a/b", label_mask_path=Path("/ann/a.png"))])
+    with pytest.raises(ValueError, match="does not match"):
+        ImageManifest({"b": image})
 
 
 def test_coordinates_column_is_all_or_nothing() -> None:

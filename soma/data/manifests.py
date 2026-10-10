@@ -15,6 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from soma.data.validation import (
+    ensure_filename_safe_id,
     iter_rows,
     optional_path,
     optional_text,
@@ -57,6 +58,25 @@ class AnnotationEntry:
 class _Manifest:
     _entries: dict
 
+    @staticmethod
+    def _index(entries: Mapping | list, *, what: str) -> dict:
+        """Key ``entries`` by ``sample_id``; ids must be unique and filename-safe."""
+        indexed: dict = {}
+        items = entries.items() if isinstance(entries, Mapping) else (
+            (entry.sample_id, entry) for entry in entries
+        )
+        for key, entry in items:
+            sample_id = ensure_filename_safe_id(key)
+            if sample_id != entry.sample_id:
+                raise ValueError(
+                    f"{what} key {sample_id!r} does not match its entry's sample_id "
+                    f"{entry.sample_id!r}."
+                )
+            if sample_id in indexed:
+                raise ValueError(f"Duplicate sample_id {sample_id!r} in {what}.")
+            indexed[sample_id] = entry
+        return indexed
+
     @property
     def sample_ids(self) -> list[str]:
         return list(self._entries)
@@ -87,9 +107,7 @@ class ImageManifest(_Manifest):
     manifest kind."""
 
     def __init__(self, entries: Mapping[str, ImageEntry] | list[ImageEntry]) -> None:
-        if not isinstance(entries, Mapping):
-            entries = {entry.sample_id: entry for entry in entries}
-        self._entries: dict[str, ImageEntry] = dict(entries)
+        self._entries: dict[str, ImageEntry] = self._index(entries, what="image manifest")
 
     @classmethod
     def from_frame(cls, df: pd.DataFrame) -> "ImageManifest":
@@ -161,9 +179,9 @@ class AnnotationManifest(_Manifest):
         *,
         pixel_mapping: Mapping[str, int] | None = None,
     ) -> None:
-        if not isinstance(entries, Mapping):
-            entries = {entry.sample_id: entry for entry in entries}
-        self._entries: dict[str, AnnotationEntry] = dict(entries)
+        self._entries: dict[str, AnnotationEntry] = self._index(
+            entries, what="annotation manifest"
+        )
         self._pixel_mapping = None if pixel_mapping is None else dict(pixel_mapping)
 
     @classmethod

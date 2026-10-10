@@ -22,6 +22,8 @@ from soma.data import (
     SetSource,
     TargetSource,
     build_label_remap,
+    covers,
+    require_coverage,
 )
 from soma.dense import CachedGridSource, DenseSourceProvenance, dense_grid_metadata, write_dense_grid
 from soma.dense.geometry import GridGeometry, compute_dense_geometry
@@ -55,6 +57,34 @@ def test_cached_set_source_conforms_for_vectors_and_hierarchies(tmp_path: Path) 
     torch.save(torch.randn(2, 5, 16), hipt / "a.pt")
     assert CachedSetSource(hipt).rank == 3
     check_set_source(CachedSetSource(hipt))
+
+
+def test_cached_set_source_disowns_payloads_the_manifest_marks_unsuccessful(
+    tmp_path: Path,
+) -> None:
+    # A stale payload beside an ``empty`` / ``error`` manifest row (a re-extraction in
+    # the same dir) must not pass coverage or load; a payload the manifest does not
+    # list (an incremental cache) is still served.
+    for sample_id in ("s0", "s1", "s2", "s3"):
+        torch.save(torch.randn(4, 16), tmp_path / f"{sample_id}.pt")
+    pd.DataFrame(
+        {
+            "sample_id": ["s0", "s1", "s2"],
+            "feature_status": ["success", "empty", "error"],
+            "feature_path": ["", "", ""],
+        }
+    ).to_csv(tmp_path / "process_list.csv", index=False)
+
+    source = CachedSetSource(tmp_path)
+    assert source.sample_ids == ["s0", "s3"] and len(source) == 2
+    assert source.empty_feature_samples == ["s1"]
+    assert covers(source, ["s0", "s3"]) and not covers(source, ["s1"])
+    with pytest.raises(ValueError, match=r"\['s1', 's2'\]"):
+        require_coverage(source, ["s0", "s1", "s2"])
+    for disowned in ("s1", "s2"):
+        with pytest.raises(KeyError):
+            source.load(disowned)
+    check_set_source(source)
 
 
 def test_cached_set_source_serves_sibling_coords(tmp_path: Path) -> None:

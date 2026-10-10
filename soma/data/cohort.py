@@ -526,6 +526,16 @@ class Cohort:
 
     def _validate_folds(self, *, allow_missing_test: bool) -> None:
         for index, fold in enumerate(self._folds):
+            if fold.test_from_tune and (
+                set(fold.tests) != {"test"} or tuple(fold.tests["test"]) != tuple(fold.tune)
+            ):
+                # The exemption below is justified only by the mirror; anything else
+                # would let train ids pose as a held-out split.
+                raise ValueError(
+                    f"Fold {index}: test_from_tune=True requires tests == {{'test': tune}} "
+                    f"(the split with_test_from_tune() synthesises); got test splits "
+                    f"{sorted(fold.tests)}."
+                )
             seen: set[str] = set()
             tests = {} if fold.test_from_tune else fold.tests
             for sample_id in (*fold.train, *fold.tune, *(sid for ids in tests.values() for sid in ids)):

@@ -27,8 +27,10 @@ class CachedSetSource:
     per-sample files), so repeat runs read the whole matrix in one shot.
 
     The feature manifest (``process_list.csv``) statuses stay internal: ``sample_ids``
-    lists what is on disk, ``expected_feature_samples`` what extraction succeeded on,
-    ``empty_feature_samples`` the slides without tissue.
+    lists the payloads on disk, minus any the manifest marks as not ``success``
+    (``empty``, ``error``, ``tbp`` ...), so a stale payload left beside a failed or
+    tissue-less re-extraction is neither covered nor loadable. ``empty_feature_samples``
+    names the slides without tissue.
     """
 
     def __init__(self, feature_dir: Path | str) -> None:
@@ -76,6 +78,10 @@ class CachedSetSource:
                             f"Missing feature_status for sample_id={sample_id} in {path}"
                         )
                     self._sample_statuses[sample_id] = status
+                    if status != "success":
+                        # A payload the manifest disowns is not served, whatever is on disk.
+                        self._index.pop(sample_id, None)
+                        continue
                     if sample_id in self._index:
                         continue
                     feature_path_text = str(row.get("feature_path", "")).strip()
@@ -151,12 +157,6 @@ class CachedSetSource:
     @property
     def feature_statuses(self) -> dict[str, str]:
         return dict(self._sample_statuses)
-
-    @property
-    def expected_feature_samples(self) -> list[str]:
-        if not self._sample_statuses:
-            return self.sample_ids
-        return [sid for sid, status in self._sample_statuses.items() if status == "success"]
 
     @property
     def empty_feature_samples(self) -> list[str]:

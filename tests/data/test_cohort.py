@@ -185,6 +185,18 @@ def test_with_test_from_tune_refuses_a_fold_that_already_has_a_test_split() -> N
         cohort.with_test_from_tune()
 
 
+def test_test_from_tune_flag_requires_a_true_mirror_of_tune() -> None:
+    records = [SampleRecord(s, {"label": i % 2}) for i, s in enumerate("abc")]
+    mirrored = FoldSplit(train=("a",), tune=("b",), tests={"test": ("b",)}, test_from_tune=True)
+    assert Cohort(records, [mirrored]).folds[0].tests == {"test": ("b",)}
+    for tests in ({"test": ("a",)}, {"test": ("b",), "test_ext": ("c",)}, {"test": ()}):
+        with pytest.raises(ValueError, match="test_from_tune=True requires"):
+            Cohort(
+                records,
+                [FoldSplit(train=("a",), tune=("b",), tests=tests, test_from_tune=True)],
+            )
+
+
 def test_collapse_to_patient_unit_keeps_representative_targets() -> None:
     frame = _records_df()
     frame["label"] = [0, 0, 1, 1, 0, 0]
