@@ -787,7 +787,7 @@ def _evaluation_targets(args: argparse.Namespace, task_family: str):
 
     keys = list(family_target_keys(task_family))
     if args.splits is not None:
-        cohort = Cohort.from_csv(args.cohort, args.splits, targets=keys)
+        cohort = Cohort.from_csv(args.cohort, args.splits, targets=keys, allow_missing_test=True)
         return cohort.targets(args.split or "test", fold=args.fold or 0)
     if args.split is not None or args.fold is not None:
         raise ValueError("--split and --fold select from --splits; pass a splits CSV")

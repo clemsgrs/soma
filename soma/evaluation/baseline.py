@@ -64,6 +64,8 @@ class Baseline:
         if task_family in _CLASSIFICATION or task_family == "ordinal_classification":
             labels = encode_labels(train_targets["label"], classes).to_numpy()
             num_classes = len(classes) if classes is not None else int(labels.max()) + 1
+            if task_family == "binary_classification":
+                num_classes = max(num_classes, 2)
             if task_family in _CLASSIFICATION:
                 counts = np.bincount(labels, minlength=num_classes).astype(float)
                 prior = counts / counts.sum()

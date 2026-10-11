@@ -234,10 +234,15 @@ def targets_frame(
     records: Sequence[SampleRecord], target_keys: Sequence[str] = ()
 ) -> pd.DataFrame:
     """One row per record, indexed by ``sample_id``: every target key, ``patient_id``,
-    then every metadata column (the frame :func:`soma.evaluate` joins predictions with)."""
+    then every metadata column (the frame :func:`soma.evaluate` joins predictions with).
+    A metadata column named like a target key or ``patient_id`` is dropped."""
     records = list(records)
     keys = list(dict.fromkeys([*target_keys, *(k for r in records for k in r.targets)]))
-    metadata = list(dict.fromkeys(k for r in records for k in r.metadata))
+    metadata = list(
+        dict.fromkeys(
+            k for r in records for k in r.metadata if k not in keys and k != "patient_id"
+        )
+    )
     rows = [
         {
             **{key: record.targets.get(key) for key in keys},

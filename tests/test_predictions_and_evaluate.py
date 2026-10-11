@@ -203,6 +203,15 @@ def test_baseline_predicts_the_training_class_prior():
     assert frame["is_placeholder"].all()
 
 
+def test_a_binary_baseline_keeps_both_probability_columns_when_training_shows_one_class():
+    baseline = Baseline.fit(_labels(labels=(0, 0, 0, 0)), task_family="binary_classification")
+
+    frame = baseline.predict(["x"]).frame
+
+    assert baseline.prediction_columns == ("prob_0", "prob_1", "predicted_label")
+    assert frame[["prob_0", "prob_1"]].iloc[0].tolist() == [1.0, 0.0]
+
+
 @pytest.mark.parametrize(
     ("family", "targets", "expected"),
     [
@@ -233,6 +242,15 @@ def test_compare_gives_the_best_set_one_and_others_a_p_value():
     assert compare([good], _labels(labels=labels, ids=ids), "auroc") == [None]
 
 
+def test_compare_refuses_sets_with_different_class_orders():
+    labels = ["a", "b", "a", "b"]
+    forward = _binary(classes=("a", "b"))
+    reversed_order = _binary(classes=("b", "a"))
+
+    with pytest.raises(ValueError, match="classes"):
+        compare([forward, reversed_order], _labels(labels=labels), "auroc", n_permutations=5)
+
+
 # --- Cohort.targets ---------------------------------------------------------------- #
 
 
@@ -260,6 +278,19 @@ def test_collapsed_cohort_targets_are_patient_keyed():
 
     assert targets.index.tolist() == ["p1", "p3"]
     assert targets["label"].tolist() == ["tumor", "benign"]
+
+
+def test_a_target_wins_over_a_metadata_column_of_the_same_name():
+    records = pd.DataFrame(
+        {"sample_id": ["s1", "s2"], "diagnosis": ["tumor", "benign"], "label": ["x", "y"]}
+    )
+    splits = pd.DataFrame({"sample_id": ["s1", "s2"], "split": ["train", "test"]})
+    cohort = Cohort.from_frames(records, splits, targets={"label": "diagnosis"})
+
+    targets = cohort.targets("test")
+
+    assert targets.columns.tolist() == ["label", "patient_id"]
+    assert targets["label"].tolist() == ["benign"]
 
 
 def test_cohort_targets_refuses_an_unknown_split():
@@ -311,3 +342,38 @@ def test_predict_wraps_a_bare_model_and_drives_the_callbacks(tmp_path):
         attention = np.load(tmp_path / "attn" / f"{sid}.npz")["attention"]
         assert attention.shape == (3 + i,)
         assert attention.sum() == pytest.approx(1.0, abs=1e-5)
+
+
+# --- soma evaluate ----------------------------------------------------------------- #
+
+
+def test_soma_evaluate_scores_the_tune_split_of_a_cohort_without_a_test_split(tmp_path):
+    from soma.cli import main as soma_main
+
+    pd.DataFrame({"sample_id": IDS, "label": [0, 1, 0, 1]}).to_csv(tmp_path / "dataset.csv", index=False)
+    pd.DataFrame({"sample_id": IDS, "split": ["train", "train", "tune", "tune"]}).to_csv(
+        tmp_path / "splits.csv", index=False
+    )
+    _binary(ids=["c", "d"], probs=(0.4, 0.7)).to_parquet(tmp_path / "predictions.parquet")
+    out = tmp_path / "evaluation.json"
+
+    soma_main(
+        [
+            "evaluate",
+            str(tmp_path / "predictions.parquet"),
+            "--cohort",
+            str(tmp_path / "dataset.csv"),
+            "--splits",
+            str(tmp_path / "splits.csv"),
+            "--split",
+            "tune",
+            "--metrics",
+            "accuracy",
+            "--out",
+            str(out),
+        ]
+    )
+
+    payload = json.loads(out.read_text())
+    assert payload["num_samples"] == 2
+    assert payload["metrics"]["accuracy"] == 1.0
