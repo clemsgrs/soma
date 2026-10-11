@@ -44,15 +44,19 @@ Protocol points that matter for matching the leaderboard (online segmentation co
   that split.
 * MoNuSAC's test-only ``Ambiguous`` class (index 5) is the ``ignore_index``: dropped
   from the loss, and treated as EVA's metric wrapper treats it (see
-  :func:`eva_confusion_counts`).
+  :func:`eva_confusion_counts`) both in checkpoint selection and in the reported test
+  Dice, which :meth:`EvaSegmentationBenchmark.score` re-scores from the run's saved
+  label maps (the run's ``summary.json`` holds soma's standard counts).
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -268,6 +272,30 @@ def eva_confusion_counts(
     return counts
 
 
+def eva_label_map_counts(
+    prediction: np.ndarray, target: Any, *, num_classes: int, ignore_index: int
+) -> np.ndarray:
+    """:func:`eva_confusion_counts` over one saved ``(H, W)`` label map: ``(C, 3)`` counts.
+
+    soma's standard :func:`~soma.evaluation.grid.label_map_counts`, plus the predicted
+    area on ``ignore_index`` target pixels, which EVA's metric wrapper still counts.
+    """
+    from soma.evaluation.grid import label_map_counts
+
+    target = target.detach().cpu().numpy() if torch.is_tensor(target) else np.asarray(target)
+    prediction = np.asarray(prediction).astype(np.int64)
+    counts = label_map_counts(prediction, target, num_classes=num_classes, ignore_index=ignore_index)
+    on_ignored = prediction[target == int(ignore_index)]
+    outside = (on_ignored < 0) | (on_ignored >= num_classes)
+    if outside.any():
+        raise ValueError(
+            f"predicted label value(s) {sorted(np.unique(on_ignored[outside]).tolist())} on "
+            f"ignored pixels lie outside [0, num_classes={num_classes})"
+        )
+    counts[:, 1] += np.bincount(on_ignored, minlength=num_classes)
+    return counts
+
+
 class EvaSegmentationHead(SegmentationHead):
     """``SegmentationHead`` with EVA's pure-Dice loss and EVA's confusion counting.
 
@@ -440,8 +468,8 @@ def _build_eva_segmentation_config(
 class EvaSegmentationBenchmark:
     """One EVA patch-segmentation dataset registered as ``eva/<dataset>`` (protocol-as-code).
 
-    Fixes the dataset and EVA's decoder recipe, varies the ``encoder`` axis, and reads
-    ``test/foreground_mean_dice`` from the run's ``summary.json``.
+    Fixes the dataset and EVA's decoder recipe, varies the ``encoder`` axis, and scores
+    ``test/foreground_mean_dice`` with EVA's counting (see :meth:`score`).
     """
 
     canonical_seeds = CANONICAL_SEEDS
@@ -501,8 +529,85 @@ class EvaSegmentationBenchmark:
         return expected_rows(REFERENCE_NAME, **merged)
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
-        """DEFAULT scorer: read the run's ``summary.json`` (Dice per split)."""
-        return score_from_summary(run_dir)
+        """The run's test-split metrics, counted the EVA way.
+
+        With an ignored class (MoNuSAC's ``Ambiguous``) soma's ``summary.json`` holds the
+        standard counts, which drop ignored pixels from the predicted area; EVA keeps
+        them there. This re-scores the run's saved ``predictions_<split>/`` label maps
+        with :func:`eva_label_map_counts` and the registry reducers. Without one (CoNSeP)
+        the two countings agree, so the summary is read as is.
+        """
+        if DATASETS[self.dataset].ignore_index is None:
+            return score_from_summary(run_dir)
+        return _eva_rescore(run_dir)
+
+
+def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
+    """``{<split>/<metric>: value}`` of a finished single-fold run's saved test label maps."""
+    from soma.benchmarks.ocelot import _locate_run_config
+    from soma.config import load_config
+    from soma.data import AnnotationManifest, ImageManifest, LabelMapSource
+    from soma.data.targets import resolve_class_scheme
+    from soma.evaluation import LabelMapPredictions
+    from soma.evaluation.metrics import metric_registry, resolve_metrics
+
+    config_path = _locate_run_config(Path(run_dir))
+    folder = config_path.parent
+    cfg = load_config(str(config_path))
+    split_dirs = sorted(
+        path
+        for path in folder.glob("predictions_*")
+        if path.is_dir() and path.name != "predictions_tune"
+    )
+    if not split_dirs:
+        raise FileNotFoundError(
+            f"no predictions_<split>/ label maps in {folder}; EVA scoring re-counts the run's "
+            "saved test predictions"
+        )
+    _, _, label_remap = resolve_class_scheme(cfg.task.params, annotation_rasters=False)
+    preprocessing = cfg.preprocessing
+    annotations = AnnotationManifest.from_csv(cfg.dataset_csv)
+    images = ImageManifest.from_csv(cfg.dataset_csv)
+    metrics = resolve_metrics("segmentation", cfg.evaluation.metrics)
+    scores: dict[str, float] = {}
+    for split_dir in split_dirs:
+        predictions = LabelMapPredictions.load(split_dir)
+        if not predictions.sample_ids:
+            continue
+        num_classes = predictions.num_classes
+        targets = LabelMapSource.from_manifests(
+            annotations,
+            images,
+            size=predictions[predictions.sample_ids[0]].shape,
+            label_remap=label_remap,
+            spacing_um=preprocessing.requested_spacing_um,
+            spacing_policy=preprocessing.spacing_policy,
+            tolerance=float(preprocessing.tolerance),
+            backend=preprocessing.mask_backend,
+            image_backend=preprocessing.backend,
+        )
+        rows = []
+        for sample_id in predictions.sample_ids:
+            prediction, target = predictions[sample_id], targets.load(sample_id)
+            if tuple(prediction.shape) != tuple(target.shape):
+                raise ValueError(
+                    f"label map for '{sample_id}' is {tuple(prediction.shape)} but its target "
+                    f"is {tuple(target.shape)}"
+                )
+            rows.append(
+                eva_label_map_counts(
+                    prediction, target, num_classes=num_classes, ignore_index=predictions.ignore_index
+                )
+            )
+        counts = torch.from_numpy(np.stack(rows)).to(torch.long)
+        split = split_dir.name.removeprefix("predictions_")
+        for name in metrics:
+            value = metric_registry.get(name).fn(counts, num_classes=num_classes)
+            if isinstance(value, Mapping):
+                scores.update({f"{split}/{key}": float(v) for key, v in value.items()})
+            else:
+                scores[f"{split}/{name}"] = float(value)
+    return scores
 
 
 EVA_SEGMENTATION_BENCHMARKS: dict[str, EvaSegmentationBenchmark] = {}
@@ -519,4 +624,5 @@ __all__ = [
     "EVA_SEGMENTATION_BENCHMARKS",
     "eva_confusion_counts",
     "eva_dice_loss",
+    "eva_label_map_counts",
 ]

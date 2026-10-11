@@ -133,7 +133,8 @@ class SegmentationAugment:
                     hue=self.hue,
                 )
             )
-        return v2.Compose(transforms)
+        # ``v2.Compose([])`` raises (torchvision 0.22); no enabled op is the identity.
+        return v2.Compose(transforms) if transforms else v2.Identity()
 
     def __call__(self, pixels: Tensor, target: Any) -> tuple[Tensor, Any]:
         from torchvision import tv_tensors

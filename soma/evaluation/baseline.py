@@ -89,13 +89,20 @@ class Baseline:
                 }
                 columns = family_prediction_columns(task_family)
         elif task_family == "regression":
-            outputs = _output_columns(train_targets.columns)
-            if outputs:
-                values = {c: float(np.mean(train_targets[c].to_numpy(dtype=float))) for c in outputs}
-                columns = tuple(outputs)
-            else:
+            # A targets frame carries metadata columns too, so a present ``value`` decides
+            # the scalar case before any ``value_<k>``-named column is read as an output.
+            if "value" in train_targets.columns:
                 values = {"predicted_value": float(np.mean(train_targets["value"].to_numpy(dtype=float)))}
                 columns = family_prediction_columns(task_family)
+            else:
+                outputs = _output_columns(train_targets.columns)
+                if not outputs:
+                    raise ValueError(
+                        "a regression baseline needs a 'value' column or 'value_<k>' columns; "
+                        f"got {list(train_targets.columns)}"
+                    )
+                values = {c: float(np.mean(train_targets[c].to_numpy(dtype=float))) for c in outputs}
+                columns = tuple(outputs)
         elif task_family == "survival":
             values = {"risk_score": 0.0}
             columns = family_prediction_columns(task_family)

@@ -264,6 +264,22 @@ def test_pipeline_rejects_monitor_outside_effective_task_metrics():
         )
 
 
+def test_pipeline_validates_the_monitor_against_the_heads_own_metrics():
+    """A multi-output regression reports ``mean_pearson``, not the family's ``mae``/``r2``."""
+    task = TaskConfig(name="regression", params={"num_outputs": 2})
+    cfg = _make_pipeline_config(
+        task=task, training=TrainingConfig(monitor="mean_pearson", monitor_mode="max")
+    )
+    assert cfg.training.monitor == "mean_pearson"
+    with pytest.raises(ValueError, match="monitor 'mae'.*Available metrics: mean_pearson"):
+        _make_pipeline_config(task=task, training=TrainingConfig(monitor="mae", monitor_mode="min"))
+    # A one-output regression keeps the family defaults.
+    single = TaskConfig(name="regression", params={})
+    assert _make_pipeline_config(
+        task=single, training=TrainingConfig(monitor="mae", monitor_mode="min")
+    ).training.monitor == "mae"
+
+
 def test_pipeline_defers_monitor_validation_to_a_custom_learner():
     """A configured learner owns its ``validation_summary`` keys; the Checkpoint callback
     validates the monitor against the real summary at the first evaluation."""

@@ -165,6 +165,23 @@ class TaskHead(ABC, nn.Module):
         """
         return dict(cls.target_schema)
 
+    @classmethod
+    def resolve_metrics(
+        cls,
+        params: "Mapping[str, Any] | None" = None,
+        metrics: "Sequence[str] | None" = None,
+    ) -> list[str]:
+        """The metrics a head built from ``params`` reports for the requested ``metrics``.
+
+        What config validation checks the training monitor against before any head
+        exists. The family's effective metrics by default (an empty request means the
+        family defaults); a head whose metrics depend on its params (a multi-output
+        regression) overrides it.
+        """
+        from soma.evaluation.metrics import resolve_metrics as family_metrics
+
+        return family_metrics(cls.task_family, list(metrics or []))
+
     @property
     def target_keys(self) -> tuple[str, ...]:
         return tuple(self.target_schema)

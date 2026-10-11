@@ -624,7 +624,13 @@ def build_eva_benchmark_rst() -> str:
             "empty targets skipped (MONAI ``DiceMetric(include_background=False)``)",
         ),
         ("varied axis", "``encoder``"),
-        ("primary metric", f"``{seg_head.primary_metric}`` (from ``summary.json``)"),
+        (
+            "primary metric",
+            f"``{seg_head.primary_metric}``. CoNSeP: from ``summary.json``. MoNuSAC: "
+            "re-scored from the run's saved ``predictions_test/`` label maps with EVA's "
+            "counting (``summary.json`` uses soma's standard counting, which drops "
+            "``Ambiguous`` pixels from the predicted area too)",
+        ),
         ("canonical seeds", f"``{seeds}`` (averaged)"),
     ]
     seg_raw_layout_rows = [
@@ -769,8 +775,9 @@ def build_eva_benchmark_rst() -> str:
         "resized 224 px crop from them, as EVA's online config does. CoNSeP\n"
         "merges HoVer-Net's seven nucleus types into background, other, inflammatory,\n"
         "epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is\n"
-        "excluded from the loss and the metric. Both datasets report on EVA's validation\n"
-        "split, which is soma's ``test`` split (``tune_is_test``).\n\n"
+        "excluded from the loss and from the metric's target area. As in EVA, the pixels\n"
+        "predicted there still count towards the predicted area. Both datasets report on\n"
+        "EVA's validation split, which is soma's ``test`` split (``tune_is_test``).\n\n"
         + _kv_table("Setting", "Value", seg_protocol_rows)
         + "\n\nThe decoder, loss and confusion counting exist only for this benchmark and are\n"
         "registered under ``eva_`` names; they are not general soma components. The dense\n"

@@ -848,3 +848,15 @@ class TestFitSugar:
         assert lines[1].startswith("fold 1/2 | epoch 01/02")
         assert "selected loss=" in lines[1]
         assert lines[-1].startswith("training complete | fold 1/2 | ran 2/2 epochs")
+
+
+class TestSegmentationAugment:
+    def test_no_enabled_transform_returns_the_inputs_unchanged(self):
+        from soma.learn import SegmentationAugment, augment_registry
+
+        pixels = torch.randint(0, 256, (3, 8, 6), dtype=torch.uint8)
+        mask = torch.randint(0, 3, (8, 6), dtype=torch.long)
+        for augment in (SegmentationAugment(), augment_registry.get("segmentation")()):
+            out_pixels, out_mask = augment(pixels, mask)
+            assert out_pixels.dtype == torch.uint8 and out_mask.dtype == torch.long
+            assert torch.equal(out_pixels, pixels) and torch.equal(out_mask, mask)

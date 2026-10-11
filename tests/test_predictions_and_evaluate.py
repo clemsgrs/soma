@@ -254,6 +254,25 @@ def test_a_multi_output_regression_baseline_predicts_each_output_mean():
     assert frame[["value_0", "value_1"]].iloc[0].tolist() == [4.0, 0.5]
 
 
+def test_a_scalar_regression_baseline_ignores_value_like_metadata_columns():
+    from soma.data import Cohort
+
+    records = pd.DataFrame(
+        {
+            "sample_id": IDS,
+            "value_0": [1.0, 2.0, 6.0, 7.0],
+            "value_1": [0.0, 0.0, 1.0, 1.0],  # an unused manifest column, kept as metadata
+            "split": ["train", "train", "tune", "test"],
+        }
+    )
+    cohort = Cohort.from_frames(records, targets={"value": "value_0"}, dtypes={"value": float})
+
+    baseline = Baseline.fit(cohort.targets("train"), task_family="regression")
+
+    assert baseline.prediction_columns == ("predicted_value",)
+    assert baseline.predict(["x"]).frame["predicted_value"].iloc[0] == 1.5
+
+
 # --- compare ----------------------------------------------------------------------- #
 
 

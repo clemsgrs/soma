@@ -23,8 +23,7 @@ from soma.spacing import resolve_effective_spacing_um
 from hs2p import PreviewConfig
 from hs2p.configs import TilingConfig
 
-from soma.evaluation.metrics import resolve_metrics
-from soma.tasks.registry import task_family_of
+from soma.tasks.registry import task_family_of, task_head_class
 
 #: ``preprocessing.feature_kind`` values; ``None`` is auto (cross-defaulted from the
 #: trainable component). The two ``patch_features*`` kinds are the ViT patch-token grid
@@ -1815,11 +1814,14 @@ class PipelineConfig:
                             "accumulation mode by setting task.params.cox_window >= 2.)"
                         )
         # Validate that requested metrics and the training monitor are valid for the task
-        # family.  ``last`` ignores the monitor for checkpoint selection, but the monitor is
-        # still part of the declared protocol and must name a diagnostic the run computes.
+        # head (its family's metrics, or the ones its params select).  ``last`` ignores the
+        # monitor for checkpoint selection, but the monitor is still part of the declared
+        # protocol and must name a diagnostic the run computes.
         # A configured ``training.learner`` owns its ``validation_summary`` keys, so its
         # monitor is checked by the Checkpoint callback against the real summary instead.
-        resolved_metrics = resolve_metrics(task_family_of(self.task.name), self.evaluation.metrics)
+        resolved_metrics = task_head_class(self.task.name).resolve_metrics(
+            self.task.params, self.evaluation.metrics
+        )
         if (
             self.training.learner is None
             and self.training.monitor != "loss"

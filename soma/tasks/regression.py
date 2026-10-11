@@ -10,11 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from soma.evaluation.metrics import (
-    MULTI_OUTPUT_REGRESSION_METRICS,
-    metric_registry,
-    resolve_metrics,
-)
+from soma.evaluation.metrics import MULTI_OUTPUT_REGRESSION_METRICS, metric_registry
 from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
@@ -60,17 +56,27 @@ class RegressionHead(TaskHead):
         self.fc = nn.Linear(input_dim, self.num_outputs)
         self.dropout = build_input_dropout(dropout)
         self.target_schema = self.resolve_target_schema({"num_outputs": self.num_outputs})
-        if self.num_outputs == 1:
-            self.metrics = resolve_metrics("regression", metrics or [])
-        else:
-            requested = list(metrics or _MULTI_OUTPUT_METRICS)
-            unsupported = sorted(set(requested) - set(_MULTI_OUTPUT_METRICS))
-            if unsupported:
-                raise ValueError(
-                    f"a {self.num_outputs}-output regression reports {list(_MULTI_OUTPUT_METRICS)}; "
-                    f"got {unsupported}"
-                )
-            self.metrics = requested
+        self.metrics = self.resolve_metrics({"num_outputs": self.num_outputs}, metrics)
+
+    @classmethod
+    def resolve_metrics(
+        cls,
+        params: "Mapping[str, Any] | None" = None,
+        metrics: "Sequence[str] | None" = None,
+    ) -> list[str]:
+        """The regression family's metrics for one output; for ``num_outputs=G > 1`` the
+        multi-output metrics (``mean_pearson`` by default), refusing any other."""
+        num_outputs = int((params or {}).get("num_outputs", 1))
+        if num_outputs == 1:
+            return super().resolve_metrics(params, metrics)
+        requested = list(metrics or _MULTI_OUTPUT_METRICS)
+        unsupported = sorted(set(requested) - set(_MULTI_OUTPUT_METRICS))
+        if unsupported:
+            raise ValueError(
+                f"a {num_outputs}-output regression reports {list(_MULTI_OUTPUT_METRICS)}; "
+                f"got {unsupported}"
+            )
+        return requested
 
     @classmethod
     def resolve_target_schema(cls, params: "Mapping[str, Any] | None" = None) -> dict[str, type]:

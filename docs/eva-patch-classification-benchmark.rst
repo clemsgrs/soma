@@ -258,8 +258,9 @@ MoNuSAC train images are kept whole, and each training step draws a new random
 resized 224 px crop from them, as EVA's online config does. CoNSeP
 merges HoVer-Net's seven nucleus types into background, other, inflammatory,
 epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is
-excluded from the loss and the metric. Both datasets report on EVA's validation
-split, which is soma's ``test`` split (``tune_is_test``).
+excluded from the loss and from the metric's target area. As in EVA, the pixels
+predicted there still count towards the predicted area. Both datasets report on
+EVA's validation split, which is soma's ``test`` split (``tune_is_test``).
 
 .. list-table::
    :header-rows: 1
@@ -288,7 +289,7 @@ split, which is soma's ``test`` split (``tune_is_test``).
    * - varied axis
      - ``encoder``
    * - primary metric
-     - ``test/foreground_mean_dice`` (from ``summary.json``)
+     - ``test/foreground_mean_dice``. CoNSeP: from ``summary.json``. MoNuSAC: re-scored from the run's saved ``predictions_test/`` label maps with EVA's counting (``summary.json`` uses soma's standard counting, which drops ``Ambiguous`` pixels from the predicted area too)
    * - canonical seeds
      - ``0, 1, 2, 3, 4`` (averaged)
 
