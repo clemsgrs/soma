@@ -150,8 +150,8 @@ class PointPredictions:
             names = {str(name): index for index, name in enumerate(self._classes)}
             values = np.full(self.num_classes, -np.inf)
             for key, value in threshold.items():
-                index = names.get(str(key), key)
-                if not isinstance(index, (int, np.integer)) or not 0 <= int(index) < self.num_classes:
+                index = key if isinstance(key, (int, np.integer)) else names.get(key)
+                if index is None or not 0 <= int(index) < self.num_classes:
                     raise ValueError(f"threshold names unknown class {key!r}; classes are {list(self._classes)}")
                 values[int(index)] = float(value)
             unset = [self._classes[i] for i in range(self.num_classes) if values[i] == -np.inf]
@@ -374,18 +374,31 @@ class LabelMapPredictions:
 
 def label_map_counts(prediction: np.ndarray, target: Any, *, num_classes: int, ignore_index: int) -> np.ndarray:
     """``(C, 3)`` ``(intersection, predicted, target)`` pixel counts of one label map,
-    ``ignore_index`` target pixels excluded."""
+    ``ignore_index`` target pixels excluded.
+
+    Raises ``ValueError`` when a predicted or target label on a supervised pixel lies
+    outside ``[0, num_classes)``: dropping it would score a wrong class mapping as perfect.
+    """
     target = target.detach().cpu().numpy() if torch.is_tensor(target) else np.asarray(target)
     prediction = np.asarray(prediction).astype(np.int64)
     target = target.astype(np.int64)
     valid = target != int(ignore_index)
     pred = prediction[valid]
     true = target[valid]
+    undeclared = [
+        f"{side} {sorted(np.unique(values[outside]).tolist())}"
+        for side, values in (("predicted", pred), ("target", true))
+        if (outside := (values < 0) | (values >= num_classes)).any()
+    ]
+    if undeclared:
+        raise ValueError(
+            f"{' and '.join(undeclared)} label value(s) on supervised pixels lie outside "
+            f"[0, num_classes={num_classes})"
+        )
     counts = np.zeros((int(num_classes), 3), dtype=np.int64)
-    counts[:, 1] = np.bincount(pred[(pred >= 0) & (pred < num_classes)], minlength=num_classes)[:num_classes]
-    counts[:, 2] = np.bincount(true[(true >= 0) & (true < num_classes)], minlength=num_classes)[:num_classes]
-    hit = pred[pred == true]
-    counts[:, 0] = np.bincount(hit[(hit >= 0) & (hit < num_classes)], minlength=num_classes)[:num_classes]
+    counts[:, 1] = np.bincount(pred, minlength=num_classes)
+    counts[:, 2] = np.bincount(true, minlength=num_classes)
+    counts[:, 0] = np.bincount(pred[pred == true], minlength=num_classes)
     return counts
 
 
@@ -582,12 +595,15 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
                     f"label map for '{sample_id}' is {tuple(prediction.shape)} but its target is "
                     f"{tuple(target.shape)}"
                 )
-            rows.append(
-                label_map_counts(
-                    prediction, target, num_classes=predictions.num_classes,
-                    ignore_index=predictions.ignore_index,
+            try:
+                rows.append(
+                    label_map_counts(
+                        prediction, target, num_classes=predictions.num_classes,
+                        ignore_index=predictions.ignore_index,
+                    )
                 )
-            )
+            except ValueError as error:
+                raise ValueError(f"label map for '{sample_id}': {error}") from error
         counts = (
             torch.from_numpy(np.stack(rows)).to(torch.long)
             if rows

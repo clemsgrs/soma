@@ -414,3 +414,64 @@ def test_soma_evaluate_scores_the_tune_split_of_a_cohort_without_a_test_split(tm
     payload = json.loads(out.read_text())
     assert payload["num_samples"] == 2
     assert payload["metrics"]["accuracy"] == 1.0
+
+
+# --- grid nouns -------------------------------------------------------------------- #
+
+
+def test_integer_threshold_keys_are_class_indices_even_with_decimal_class_names():
+    from soma.evaluation import PointPredictions
+
+    frame = pd.DataFrame(
+        {
+            "sample_id": ["s"] * 4,
+            "x": [1.0, 2.0, 3.0, 4.0],
+            "y": [1.0, 2.0, 3.0, 4.0],
+            "class": [0, 0, 1, 1],
+            "score": [0.2, 0.5, 0.6, 0.8],
+        }
+    )
+    predictions = PointPredictions(frame, classes=["1", "2"], sample_ids=["s"], match_distance_px=3.0)
+
+    # An int key is an index (the shape sweep_threshold(per_class=True) returns); a str is a name.
+    assert predictions.with_threshold({0: 0.3, 1: 0.7}).frame["score"].tolist() == [0.5, 0.8]
+    assert predictions.with_threshold({"1": 0.3, "2": 0.7}).frame["score"].tolist() == [0.5, 0.8]
+    with pytest.raises(ValueError, match="unknown class '3'"):
+        predictions.with_threshold({"1": 0.3, "3": 0.7})
+
+
+class _LabelMaps:
+    """A minimal label-map target source."""
+
+    def __init__(self, maps):
+        self._maps = maps
+
+    @property
+    def sample_ids(self):
+        return list(self._maps)
+
+    def load(self, sample_id):
+        return torch.as_tensor(self._maps[sample_id])
+
+
+@pytest.mark.parametrize("undeclared_on", ["both", "prediction", "target"])
+def test_label_map_scoring_refuses_labels_outside_the_classes(undeclared_on):
+    from soma.evaluation import LabelMapPredictions
+
+    declared = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+    undeclared = np.array([[0, 2], [1, 2]], dtype=np.uint8)
+    # Undeclared on both sides used to score Dice 1 by silently dropping label 2.
+    prediction = declared if undeclared_on == "target" else undeclared
+    target = declared if undeclared_on == "prediction" else undeclared
+    predictions = LabelMapPredictions({"s": prediction}, classes=["a", "b"])
+    with pytest.raises(ValueError, match=r"(?s)'s'.*\[2\]"):
+        evaluate(predictions, _LabelMaps({"s": target}))
+
+
+def test_label_map_scoring_skips_ignored_target_pixels_before_the_range_check():
+    from soma.evaluation import LabelMapPredictions
+
+    target = np.array([[0, 255], [1, 255]], dtype=np.uint8)
+    prediction = np.array([[0, 7], [1, 9]], dtype=np.uint8)
+    evaluation = evaluate(LabelMapPredictions({"s": prediction}, classes=["a", "b"]), _LabelMaps({"s": target}))
+    assert evaluation.metrics["mean_dice"] == 1.0

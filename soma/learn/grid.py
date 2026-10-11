@@ -20,6 +20,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 from soma.data import Points, require_coverage
+from soma.detection.encode import points_on_valid
 
 __all__ = ["GridBatch", "GridDataset", "grid_collate", "grid_loaders", "ignore_to_frame"]
 
@@ -166,6 +167,11 @@ class GridDataset(Dataset):
         )
         encoded = {"points": rows.reshape(-1, 3)}
         if target.ignore_mask is not None:
+            # Drop points on an ignored level-0 pixel (the rule ``evaluate`` applies): the
+            # framed map alone misses them once a frame pixel spans several level-0 pixels.
+            ignored = np.asarray(target.ignore_mask) == _IGNORED
+            on_ignored = points_on_valid(target.xy.detach().cpu().numpy(), ignored)
+            encoded["points"] = encoded["points"][torch.from_numpy(~on_ignored)]
             encoded["ignore"] = ignore_to_frame(target.ignore_mask, self._geometry)
         return encoded
 

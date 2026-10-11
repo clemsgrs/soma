@@ -676,6 +676,41 @@ def test_ignore_mask_follows_the_target_frame():
     assert not bool(ignored[:, :16].any()) and bool(ignored[:, 16:].all())
 
 
+def test_grid_dataset_drops_points_on_ignored_level0_pixels_before_framing():
+    from soma.data import GridGeometry, Points
+    from soma.learn.grid import GridDataset
+
+    # Two level-0 px per frame px: frame pixel (0, 0) reads level-0 (0, 0), which is
+    # supervised, so the framed ignore map alone would keep a point on the ignored
+    # level-0 pixel (1, 1). ``evaluate`` drops it against the level-0 raster; so must training.
+    mask = np.zeros((64, 64), dtype=np.uint8)
+    mask[1, 1] = 255
+    geometry = GridGeometry.from_sizes(target_size=32, patch_size=4, level0_px_per_token_px=2.0)
+
+    class _Grids:
+        def load(self, sample_id):
+            return torch.zeros(1, 8, 8)
+
+    class _Targets:
+        def load(self, sample_id):
+            return Points(
+                xy=torch.tensor([[1.0, 1.0], [20.0, 20.0]]),
+                classes=torch.tensor([0, 1]),
+                ignore_mask=mask,
+            )
+
+    dataset = GridDataset(
+        ["s"], _Grids(), _Targets(), inputs="features", geometry=geometry, target_kind="points"
+    )
+    _, _, encoded, _ = dataset[0]
+    assert encoded["points"].tolist() == [[20.0, 20.0, 1.0]]
+    assert not bool(encoded["ignore"][0, 0])
+    heatmap, _, _ = _make_head(scale=2.0).encode_targets(
+        {"points": encoded["points"][None], "ignore": encoded["ignore"][None]}
+    )
+    assert float(heatmap[0, 0].max()) == 0.0
+
+
 def test_head_drops_points_on_ignored_pixels_from_heatmap_and_ground_truth():
     head = _make_head()
     ignore = torch.zeros(1, 32, 32, dtype=torch.bool)

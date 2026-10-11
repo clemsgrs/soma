@@ -13,10 +13,13 @@ import json
 
 import numpy as np
 import pandas as pd
+import yaml
 from PIL import Image
 
 from soma.benchmarks import get_benchmark
+from soma.benchmarks.run import _from_run_dir_axes
 from soma.config import ExecutionConfig
+from soma.leaderboard import load_run_record
 from tests.e2e.harness import CPU_EXECUTION
 
 GENES = ["ERBB2", "ESR1", "MKI67"]
@@ -83,6 +86,14 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
         summary["test/mean_pearson"],
     )
     artifact.check_equal("predictions/written", (run / "predictions_test.parquet").is_file(), True)
+    # Managed run metadata, as a Pipeline run writes it: the leaderboard and
+    # ``reproduce --from-run-dir`` read the run's identity from these.
+    artifact.check_equal("metadata/experiment_json", (run.parent.parent / "experiment.json").is_file(), True)
+    run_yaml = run / "run.yaml"
+    status = yaml.safe_load(run_yaml.read_text())["status"] if run_yaml.is_file() else None
+    artifact.check_equal("metadata/run_status", status, "completed")
+    artifact.check_equal("metadata/run_record", load_run_record(run) is not None, True)
+    artifact.check_equal("metadata/encoder_axis", _from_run_dir_axes(benchmark, run), {"encoder": encoder_name})
     artifact.assert_passed()
 
 

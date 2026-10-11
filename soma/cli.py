@@ -773,14 +773,19 @@ def _build_prepare_croma_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _evaluation_targets(args: argparse.Namespace, task_family: str):
-    """The cohort targets ``soma evaluate`` scores against: one split, or every row."""
+def _evaluation_targets(args: argparse.Namespace, predictions):
+    """The cohort targets ``soma evaluate`` scores against: one split, or every row.
+
+    A multi-output regression's ``value_<k>`` predictions read the same-named cohort
+    columns; any other noun reads its family's target keys.
+    """
     import pandas as pd
 
     from soma.data import Cohort
     from soma.evaluation.predictions import family_target_keys
+    from soma.evaluation.scoring import _output_columns
 
-    keys = list(family_target_keys(task_family))
+    keys = _output_columns(predictions) or list(family_target_keys(predictions.task_family))
     if args.splits is not None:
         cohort = Cohort.from_csv(args.cohort, args.splits, targets=keys, allow_missing_test=True)
         return cohort.targets(args.split or "test", fold=args.fold or 0)
@@ -848,7 +853,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         if isinstance(predictions, (LabelMapPredictions, PointPredictions)):
             targets = _evaluation_grid_targets(args, predictions)
         else:
-            targets = _evaluation_targets(args, predictions.task_family)
+            targets = _evaluation_targets(args, predictions)
         evaluation = evaluate(
             predictions,
             targets,

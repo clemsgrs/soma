@@ -139,6 +139,48 @@ def test_external_predictions_are_scored_without_a_run_directory(tmp_path, new_a
     artifact.assert_passed()
 
 
+def test_cli_scores_a_multi_output_regression_parquet(tmp_path, new_artifact):
+    """A ``RegressionHead(num_outputs=G)`` writes ``value_0..value_{G-1}``; ``soma evaluate``
+    reads the same-named cohort columns and reports ``mean_pearson`` by default."""
+    artifact = new_artifact("evaluate_cli_multi_output_regression")
+    root = tmp_path / "cohort"
+    root.mkdir()
+    values_0 = [float(i) for i in range(12)]
+    values_1 = [float((i * 5) % 12) for i in range(12)]
+    pd.DataFrame({"sample_id": TRAIN + TEST, "value_0": values_0, "value_1": values_1}).to_csv(
+        root / "dataset.csv", index=False
+    )
+    pd.DataFrame({"sample_id": TRAIN + TEST, "split": ["train"] * 4 + ["test"] * 8}).to_csv(
+        root / "splits.csv", index=False
+    )
+    # Output 0 is an affine map of its target (Pearson 1), output 1 a negated one
+    # (Pearson -1): the mean over the two outputs is 0.
+    test_rows = slice(len(TRAIN), None)
+    predictions = tmp_path / "multi_output.parquet"
+    Predictions(
+        pd.DataFrame(
+            {
+                "sample_id": TEST,
+                "value_0": [2.0 * v + 1.0 for v in values_0[test_rows]],
+                "value_1": [-v for v in values_1[test_rows]],
+            }
+        ),
+        task_family="regression",
+    ).to_parquet(predictions)
+    out = tmp_path / "evaluation.json"
+    soma_main(
+        [
+            "evaluate", str(predictions), "--cohort", str(root / "dataset.csv"),
+            "--splits", str(root / "splits.csv"), "--out", str(out),
+        ]
+    )
+    result = json.loads(out.read_text())
+    artifact.check_equal("metrics", sorted(result["metrics"]), ["mean_pearson"])
+    artifact.check_equal("mean_pearson", round(result["metrics"]["mean_pearson"], 9), 0.0)
+    artifact.check_equal("num_samples", result["num_samples"], 8)
+    artifact.assert_passed()
+
+
 def test_fit_predict_evaluate_journey_over_user_arrays(tmp_path, new_artifact):
     """The library journey: arrays + a cohort → ``loaders`` → ``fit`` → ``predict`` →
     ``evaluate``, the same verbs ``Pipeline`` composes."""
