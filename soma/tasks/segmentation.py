@@ -254,9 +254,11 @@ class SegmentationHead(TaskHead):
         stray value would otherwise surface as a cryptic one_hot / cross-entropy index
         assert (device-side on CUDA) far from its cause.
         """
-        allowed = set(range(self.num_classes)) | {self.ignore_index}
-        invalid = sorted(v for v in torch.unique(mask).tolist() if v not in allowed)
-        if invalid:
+        # An elementwise bounds test, not ``torch.unique`` over the whole map: it runs on
+        # every sample of every epoch, and sorting a megapixel map dominated data loading.
+        bad = ((mask < 0) | (mask >= self.num_classes)) & (mask != self.ignore_index)
+        if bool(bad.any()):
+            invalid = sorted(torch.unique(mask[bad]).tolist())
             raise ValueError(
                 f"mask for '{sample_id}' has label value(s) {invalid} outside "
                 f"[0, num_classes={self.num_classes}) ∪ {{ignore_index={self.ignore_index}}}."
