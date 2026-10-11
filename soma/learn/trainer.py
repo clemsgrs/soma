@@ -37,7 +37,10 @@ class Trainer:
     One step is one completed accumulation window; a step budget may end partway
     through an epoch. ``val_every_n_epochs`` evaluates after epochs N, 2N, ... and
     always after the final epoch. ``precision="bf16"`` is autocast without a grad
-    scaler. Callbacks stop the run by setting ``trainer.should_stop``; when the loop
+    scaler. Callbacks stop the run by setting ``trainer.should_stop``: a stop raised
+    before ``on_epoch_end`` makes the current epoch the final one and it is evaluated;
+    a stop raised in ``on_epoch_end`` only prevents the next epoch, since the epoch
+    is already closed (history row written, selection consulted). When the loop
     raises, ``on_exception(trainer, learner, exc)`` fires before the error propagates.
     """
 

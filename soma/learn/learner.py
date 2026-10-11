@@ -200,11 +200,11 @@ class Learner(nn.Module):
         return _move(batch, device)
 
     def trainable_state_dict(self) -> dict[str, Tensor]:
-        """What a checkpoint snapshots and restores: the model's ``state_dict`` by default,
-        so ``best_model.pt`` loads into the bare model. A learner that owns trainable
-        modules of its own widens this pair to cover them (``self.state_dict()``);
-        :class:`~soma.learn.callbacks.Checkpoint` refuses an optimized parameter it
-        could not restore."""
+        """What a checkpoint snapshots and restores in memory: the model's ``state_dict``
+        by default. A learner that owns trainable modules of its own widens this pair to
+        cover them (``self.state_dict()``); :class:`~soma.learn.callbacks.Checkpoint`
+        refuses an optimized parameter it could not restore. ``best_model.pt`` always
+        holds the bare model's state, so it loads into the model alone."""
         return self.model.state_dict()
 
     def load_trainable_state_dict(self, state: Mapping[str, Tensor]) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,10 @@ def _check_mode(mode: str) -> str:
     if mode not in {"min", "max"}:
         raise ValueError(f"mode must be 'min' or 'max', got {mode!r}")
     return mode
+
+
+def _cpu_copy(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    return {k: v.detach().to("cpu", copy=True) for k, v in state.items()}
 
 
 def _monitor_value(summary: dict[str, float], monitor: str) -> float:
@@ -80,6 +85,10 @@ class Checkpoint:
     """Owns selection. Snapshots ``trainable_state_dict()`` to CPU memory on improvement
     (every evaluation under ``selection="last"``), writes ``best_model.pt`` only with a
     ``dirpath``, and restores the snapshot at ``on_fit_end``.
+
+    The file's ``model_state_dict`` is the bare model's state, so it loads into the model
+    alone whatever the learner adds to its trainable state; learner-owned state is
+    restored in memory only (the slice-5 bundle persists the learner).
 
     Without a tune loader nothing is evaluated and selection falls back to ``last``.
     """
@@ -140,13 +149,13 @@ class Checkpoint:
             return
         self.best_value, self.best_epoch = value, trainer.epoch
         self.best_metrics = dict(summary or {})
-        self._snapshot = {k: v.detach().to("cpu", copy=True) for k, v in learner.trainable_state_dict().items()}
+        self._snapshot = _cpu_copy(learner.trainable_state_dict())
         if self.dirpath is not None:
             self.dirpath.mkdir(parents=True, exist_ok=True)
             self.path = self.dirpath / "best_model.pt"
             atomic_torch_save(
                 {
-                    "model_state_dict": self._snapshot,
+                    "model_state_dict": _cpu_copy(learner.model.state_dict()),
                     "epoch": trainer.epoch,
                     "selection": self.selection_record(),
                     "metrics": {k: float(v) for k, v in self.best_metrics.items()},

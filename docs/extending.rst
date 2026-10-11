@@ -150,8 +150,9 @@ The methods worth overriding are ``training_step`` (the loss), ``validation_step
 and ``validation_summary`` (how a split is reduced; the summary must contain
 ``loss``), ``configure_optimizers(budget)`` (parameter groups, unfreezing),
 ``transfer_batch`` (device placement) and ``trainable_state_dict`` (what a
-checkpoint holds: the model's state by default, so a learner that owns trainable
-modules of its own must widen it to cover them). :func:`soma.testing.check_learner`
+checkpoint restores in memory: the model's state by default, so a learner that owns
+trainable modules of its own must widen it to cover them; ``best_model.pt`` holds
+the bare model's state either way). :func:`soma.testing.check_learner`
 checks a learner against the contract on one batch. From Python, :func:`soma.fit`
 trains a learner, or a bare model wrapped in its shape's learner, with
 ``Checkpoint``, ``EarlyStopping`` and ``Progress`` installed.

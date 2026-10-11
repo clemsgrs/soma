@@ -556,6 +556,34 @@ class TestCallbacks:
         assert torch.equal(learner.aux.weight, snapshots[1])
         assert not torch.equal(snapshots[1], snapshots[2])
 
+    def test_best_model_file_loads_into_the_bare_model_when_the_learner_widens_its_state(
+        self, tmp_path: Path
+    ):
+        class WithAux(MILLearner):
+            def __init__(self, model):
+                super().__init__(model)
+                self.aux = torch.nn.Linear(D, 1)
+
+            def training_step(self, batch):
+                return super().training_step(batch) + self.aux(batch.features).mean()
+
+            def trainable_state_dict(self):
+                return self.state_dict()
+
+            def load_trainable_state_dict(self, state):
+                self.load_state_dict(state)
+
+        learner = WithAux(_learner().model)
+        result = Trainer(max_epochs=1, callbacks=[Checkpoint(dirpath=tmp_path)], device="cpu").fit(
+            learner, _bag_loader(), _bag_loader()
+        )
+        state = torch.load(result.checkpoint_path, weights_only=True)["model_state_dict"]
+        assert set(state) == set(learner.model.state_dict())
+        fresh = _learner().model
+        fresh.load_state_dict(state)  # strict: the file is the bare model, not the learner
+        for k, v in fresh.state_dict().items():
+            assert torch.equal(v, learner.model.state_dict()[k])
+
     def test_checkpoint_writes_best_model_only_with_a_dirpath(self, tmp_path: Path):
         learner = _learner()
         result = Trainer(
