@@ -778,6 +778,92 @@ def _build_prepare_croma_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _evaluation_targets(args: argparse.Namespace, task_family: str):
+    """The cohort targets ``soma evaluate`` scores against: one split, or every row."""
+    import pandas as pd
+
+    from soma.data import Cohort
+    from soma.evaluation.predictions import family_target_keys
+
+    keys = list(family_target_keys(task_family))
+    if args.splits is not None:
+        cohort = Cohort.from_csv(args.cohort, args.splits, targets=keys, allow_missing_test=True)
+        return cohort.targets(args.split or "test", fold=args.fold or 0)
+    if args.split is not None or args.fold is not None:
+        raise ValueError("--split and --fold select from --splits; pass a splits CSV")
+    records = pd.read_csv(args.cohort)
+    unsplit = pd.DataFrame({"sample_id": records["sample_id"], "split": "test"})
+    cohort = Cohort.from_frames(
+        records, unsplit, targets=keys, sidecar_dir=Path(args.cohort).parent
+    )
+    return cohort.targets("test")
+
+
+def _cmd_evaluate(args: argparse.Namespace) -> int:
+    from rich.console import Console
+    from rich.table import Table
+
+    from soma.evaluation import Predictions, evaluate
+
+    try:
+        predictions = Predictions.from_parquet(args.predictions)
+        targets = _evaluation_targets(args, predictions.task_family)
+        evaluation = evaluate(
+            predictions,
+            targets,
+            metrics=args.metrics or "default",
+            subgroups=args.subgroups or (),
+        )
+    except (ValueError, KeyError, FileNotFoundError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+    table = Table(
+        title=f"{predictions.task_family} — {evaluation.num_samples} samples",
+        show_header=True,
+        header_style="bold",
+    )
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    for name, value in evaluation.metrics.items():
+        table.add_row(name, f"{value:.4f}" if isinstance(value, float) else str(value))
+    Console().print(table)
+    if args.out is not None:
+        evaluation.to_json(args.out)
+        print(f"Evaluation written to {args.out}")
+    return 0
+
+
+def _build_evaluate_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="soma evaluate",
+        description=(
+            "Score a predictions parquet against a cohort's targets, joined by sample_id. "
+            "Every predicted sample needs a target and every target a prediction."
+        ),
+    )
+    parser.add_argument("predictions", help="Predictions parquet (sample_id + the head's columns).")
+    parser.add_argument("--cohort", required=True, help="dataset.csv holding the targets.")
+    parser.add_argument(
+        "--splits",
+        default=None,
+        help="splits.csv; without it every row of --cohort is scored as one unsplit frame.",
+    )
+    parser.add_argument("--split", default=None, help="Split to score (default: test).")
+    parser.add_argument("--fold", type=int, default=None, help="Fold to score (default: 0).")
+    parser.add_argument(
+        "--metrics",
+        nargs="+",
+        default=None,
+        help="Metric registry keys or dotted paths (default: the family's defaults).",
+    )
+    parser.add_argument(
+        "--subgroups", nargs="+", default=None, help="Metadata columns to break metrics down by."
+    )
+    parser.add_argument("--out", default=None, help="Write the evaluation as JSON to this path.")
+    parser.set_defaults(func=_cmd_evaluate)
+    return parser
+
+
 def _cmd_compact_index(args: argparse.Namespace) -> int:
     from soma.output_layout import compact_run_index
 
@@ -812,6 +898,7 @@ def _print_top_level_help() -> None:
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
+        "       soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]\n"
         "       soma compact-index OUTPUT_ROOT\n"
         "\n"
         "commands:\n"
@@ -820,6 +907,7 @@ def _print_top_level_help() -> None:
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
+        "  evaluate     score a predictions parquet against a cohort's targets\n"
         "  compact-index  rewrite the append-only runs.csv with one row per run\n"
         "\n"
         "examples:\n"
@@ -885,6 +973,14 @@ def main(argv: list[str] | None = None) -> None:
         parser = _build_leaderboard_parser()
         parsed = parser.parse_args(args[1:])
         raise SystemExit(parsed.func(parsed))
+
+    if args[0] == "evaluate":
+        parser = _build_evaluate_parser()
+        parsed = parser.parse_args(args[1:])
+        code = parsed.func(parsed)
+        if code:
+            raise SystemExit(code)
+        return
 
     if args[0] == "compact-index":
         parser = _build_compact_index_parser()

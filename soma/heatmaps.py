@@ -6,7 +6,9 @@ Two-phase design:
   2. render_heatmaps()  — read attention .npz + coordinates + WSI thumbnail,
                           produce PNG overlays (no model/GPU needed).
 
-Use generate_heatmaps() to run both phases in sequence.
+Use generate_heatmaps() to run both phases in sequence. During a run, the
+:class:`SaveAttention` predict callback writes the same ``.npz`` files from the
+test-split ``soma.predict`` pass instead of phase 1.
 
 Supported aggregators: ABMIL, CLAM-SB, CLAM-MB, DSMIL.
 HIPT (hierarchical features), TransMIL, MeanPool, and MaxPool are skipped.
@@ -51,9 +53,8 @@ def save_attention(
     """Run inference on test samples and persist per-tile attention scores.
 
     For each fold directory in *run_dir*, loads ``best_model.pt`` and the
-    run's ``config.yaml``, then writes one ``.npz`` file per test sample to
-    ``fold_N/attention/<split>/<sample_id>.npz``. Legacy ``predictions.csv``
-    files still write directly under ``attention/``.
+    run's ``config.yaml``, then writes one ``.npz`` file per sample of each
+    ``predictions_<split>.parquet`` to ``fold_N/attention/<split>/<sample_id>.npz``.
 
     The stored array has key ``"attention"`` with shape:
 
@@ -149,9 +150,7 @@ def save_attention(
         with torch.inference_mode():
             for split_name, predictions_path in prediction_files:
                 test_sample_ids = _read_sample_ids_from_predictions(predictions_path)
-                attention_dir = fold_dir / "attention"
-                if split_name is not None:
-                    attention_dir = attention_dir / split_name
+                attention_dir = fold_dir / "attention" / split_name
                 attention_dir.mkdir(parents=True, exist_ok=True)
 
                 for sample_id in test_sample_ids:
@@ -173,23 +172,63 @@ def save_attention(
                     np.savez_compressed(attention_dir / f"{sample_id}.npz", attention=attention)
                     logger.debug("Saved attention for %s → %s", sample_id, attention_dir / f"{sample_id}.npz")
 
-        logger.info("Saved attention scores for %s/%s to %s", fold_dir.name, split_name or "legacy", attention_dir)
+        logger.info("Saved attention scores for %s to %s", fold_dir.name, fold_dir / "attention")
 
 
-def _prediction_files_for_fold(fold_dir: Path) -> list[tuple[str | None, Path]]:
-    """Return current and legacy prediction files for a fold.
-
-    Current pipeline runs write ``predictions_<split>.csv``. Older runs may
-    contain a single ``predictions.csv`` file.
-    """
-    split_files = [
+def _prediction_files_for_fold(fold_dir: Path) -> list[tuple[str, Path]]:
+    """Return the fold's ``predictions_<split>.parquet`` files keyed by split."""
+    return [
         (path.stem.removeprefix("predictions_"), path)
-        for path in sorted(fold_dir.glob("predictions_*.csv"))
+        for path in sorted(fold_dir.glob("predictions_*.parquet"))
     ]
-    legacy_path = fold_dir / "predictions.csv"
-    if legacy_path.is_file():
-        return [(None, legacy_path), *split_files]
-    return split_files
+
+
+def aggregator_name(aggregator: torch.nn.Module) -> str:
+    """The registry name of ``aggregator``'s class (its lowercased class name if unregistered)."""
+    from soma.aggregators.registry import aggregator_registry
+
+    entries = [(name, aggregator_registry.get(name)) for name in aggregator_registry.list()]
+    for name, cls in entries:
+        if type(aggregator) is cls:
+            return name
+    for name, cls in entries:
+        if isinstance(aggregator, cls):
+            return name
+    return type(aggregator).__name__.lower()
+
+
+class SaveAttention:
+    """Predict callback writing each sample's normalised tile attention to ``<dir>/<sample_id>.npz``.
+
+    Reads the aggregator's name when prediction starts (softmax unless it already emits
+    post-softmax scores), slices ``raw.tile_attention`` to each bag's valid tiles with
+    the batch mask, and stores the array under the key ``"attention"``. A batch whose
+    model output carries no attention is skipped.
+    """
+
+    def __init__(self, dir: str | Path) -> None:
+        self.dir = Path(dir)
+        self._aggregator = ""
+
+    def on_predict_start(self, learner) -> None:
+        self.dir.mkdir(parents=True, exist_ok=True)
+        aggregator = getattr(learner.model, "aggregator", None)
+        self._aggregator = "" if aggregator is None else aggregator_name(aggregator)
+
+    def on_predict_batch(self, batch, output) -> None:
+        attention = getattr(output.raw, "tile_attention", None)
+        if attention is None:
+            return
+        mask = getattr(batch, "mask", None)
+        for i, sample_id in enumerate(batch.sample_ids):
+            scores = attention[i : i + 1]
+            if mask is not None:
+                scores = scores[..., mask[i]]
+            normalized = normalize_attention(scores, self._aggregator)
+            np.savez_compressed(self.dir / f"{sample_id}.npz", attention=normalized)
+
+    def on_predict_end(self) -> None:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -445,13 +484,10 @@ def normalize_attention(tile_attention: torch.Tensor, agg_name: str) -> np.ndarr
 
 
 def _read_sample_ids_from_predictions(predictions_path: Path) -> list[str]:
-    """Return sample IDs from a predictions.csv file."""
-    sample_ids: list[str] = []
-    with open(predictions_path, newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            sample_ids.append(row["sample_id"])
-    return sample_ids
+    """Return sample IDs from a ``predictions_<split>.parquet`` file."""
+    from soma.evaluation import Predictions
+
+    return Predictions.from_parquet(predictions_path).sample_ids
 
 
 def _build_coordinate_map(

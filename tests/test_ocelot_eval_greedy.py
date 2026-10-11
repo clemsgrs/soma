@@ -185,14 +185,13 @@ def test_build_greedy_report_headline_matches_frozen_eval(tmp_path: Path):
     manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
     model, head, tune_loader, test_loaders = _build_model_and_loaders(manifest, splits, store)
 
-    from soma.pipeline import _evaluate_detection, _sweep_detection_thresholds
+    from soma.learn import DenseLearner
+    from soma.pipeline import _evaluate_grid, _sweep_detection_thresholds
 
     frozen = _sweep_detection_thresholds(model, tune_loader, torch.device("cpu"), head)
     head.score_threshold = frozen
     expected = {
-        name: _evaluate_detection(
-            model, loader, name, torch.device("cpu"), head=head, dataset=manifest
-        ).metrics
+        name: _evaluate_grid(DenseLearner(model), loader, torch.device("cpu")).metrics
         for name, loader in test_loaders.items()
     }
 

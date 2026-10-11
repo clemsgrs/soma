@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import json
-import csv
 import functools
 import math
 import os
@@ -61,6 +60,7 @@ from soma.config import (
     validate_feature_adaptor_compatibility,
 )
 from soma.data import AnnotationManifest, Cohort, FoldSplit, ImageManifest
+from soma.data.cohort import targets_frame
 from soma.data._legacy import (
     LegacyFolds,
     LegacyRecord,
@@ -72,10 +72,10 @@ from soma.data._legacy import (
 from soma.dense import DenseSampleSpacing
 from soma.dense.live import LiveSegmentationSource
 from soma.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
-from soma.evaluation.metrics import resolve_metrics
-from soma.evaluation.metrics import compute_metrics
+from soma import evaluation as _verbs
+from soma.evaluation import Evaluation
+from soma.evaluation.metrics import metric_registry, resolve_metrics
 from soma.evaluation.dense_artifacts import DenseArtifactWriter
-from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.evaluation.summary import summarize_values
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.data import CachedSetSource
@@ -126,17 +126,16 @@ from soma.training.segmentation_dataset import (
 from soma.training.seed import seed_everything
 from soma.learn import (
     Checkpoint,
+    DenseLearner,
     EarlyStopping,
     FitResult,
     Learner,
+    PredictOutput,
     Progress,
     Trainer,
-    accumulate_dense_stats,
     learner_registry,
     resolve_leaf,
 )
-from soma.reporting import generate_report_from_result
-from soma.reporting.subgroups import subgroup_data_for_predictions, subgroup_report_for_predictions
 
 
 logger = logging.getLogger(__name__)
@@ -177,8 +176,8 @@ class FoldResult:
     # None for the pixel-classifier segmentation path — it has no torch Trainer / epoch
     # history (the classifier owns its own fit loop internally).
     train_result: FitResult | None
-    tune_report: EvaluationReport
-    test_reports: dict[str, EvaluationReport]  # split_name → report
+    tune_evaluation: Evaluation
+    test_evaluations: dict[str, Evaluation]  # split_name → evaluation
 
 
 @dataclass(frozen=True)
@@ -207,18 +206,6 @@ class _FeatureSourceContext:
     feature_store: object
     dataset: object
     splits: LegacyFolds
-
-
-@dataclass(frozen=True)
-class _DeterministicBaseline:
-    """Deterministic fallback prediction derived from the training split."""
-
-    task_family: str
-    probabilities: list[float] | None = None
-    predicted_label: int | None = None
-    predicted_value: float | None = None
-    raw_score: float | None = None
-    risk_score: float | None = None
 
 
 def _representation_split_ids(
@@ -427,15 +414,6 @@ def _patient_ids_for_records(records: list[LegacyRecord]) -> list[str]:
             seen.add(record.patient_id)
             patient_ids.append(record.patient_id)
     return patient_ids
-
-
-def _patient_placeholder_records(records: list[LegacyRecord]) -> dict[str, LegacyRecord]:
-    placeholder_records: dict[str, LegacyRecord] = {}
-    for record in records:
-        if record.patient_id is None or record.patient_id in placeholder_records:
-            continue
-        placeholder_records[record.patient_id] = record
-    return placeholder_records
 
 
 def _write_dense_source_provenance(run_dir: Path, feature_store: object) -> None:
@@ -804,7 +782,7 @@ def train_one_fold(
             ``random`` projection so two encoders never share a matrix.
 
     Returns:
-        FoldResult with training result + tune/test evaluation reports.
+        FoldResult with the training result and the tune/test evaluations.
     """
     evaluation = evaluation or EvalConfig()
     fold_dir = Path(fold_dir)
@@ -831,7 +809,6 @@ def train_one_fold(
             for split_name, records in test_records_by_split.items()
         }
         raw_train_patient_ids = list(train_patient_ids)
-        raw_train_placeholder_records = _patient_placeholder_records(train_records)
         raw_tune_patient_ids = list(tune_patient_ids)
         raw_test_patient_ids_by_split = {
             split_name: list(patient_ids)
@@ -1280,11 +1257,10 @@ def train_one_fold(
             aggregator=agg, task_head=head, feature_adaptor=feature_adaptor
         )
 
-    deterministic_baseline = _build_deterministic_baseline(
-        train_records,
-        target_fn=target_fn,
-        task_family=task_family,
-        num_classes=int(getattr(head, "num_classes", 0)),
+    # Samples without features are scored with the training split's baseline (class
+    # prior / mean / constant risk), flagged as placeholders.
+    baseline = _verbs.Baseline.fit(
+        targets_frame(train_records), task_family=task_family, classes=head.classes
     )
 
     # Train; the learner comes back in its selected state (Checkpoint restores it).
@@ -1299,7 +1275,7 @@ def train_one_fold(
         fold=fold,
         num_folds=num_folds,
     )
-    model.eval()
+    learner = train_result.learner
 
     save_attention = (
         heatmaps is not None
@@ -1311,14 +1287,19 @@ def train_one_fold(
 
     empty_eval_sample_ids = empty_sample_ids_by_split or {}
     if dataset_type == "patient":
+        # Patient ids score against the patient's first slide in cohort order, as
+        # Cohort.collapse does.
         if fallback_to_train:
             tune_output_sample_ids = tuple(raw_train_patient_ids)
-            tune_placeholder_records = raw_train_placeholder_records
             tune_empty_sample_ids = empty_eval_sample_ids.get("train", [])
         else:
             tune_output_sample_ids = tuple(raw_tune_patient_ids)
-            tune_placeholder_records = _patient_placeholder_records(tune_records)
             tune_empty_sample_ids = empty_eval_sample_ids.get("tune", [])
+        tune_records_by_id = patient_record_map
+        test_plan = {
+            split_name: (tuple(raw_test_patient_ids_by_split[split_name]), patient_record_map)
+            for split_name in test_loaders
+        }
     else:
         if fallback_to_train:
             tune_output_sample_ids = fold_split.train
@@ -1329,83 +1310,58 @@ def train_one_fold(
         else:
             tune_output_sample_ids = fold_split.tune
             tune_empty_sample_ids = empty_eval_sample_ids.get("tune", [])
-        tune_placeholder_records = None
-    tune_report = _evaluate_split_with_placeholders(
-        model,
-        tune_loader,
-        "tune",
-        device,
-        output_sample_ids=tune_output_sample_ids,
-        empty_sample_ids=tune_empty_sample_ids,
-        dataset=dataset,
-        target_fn=target_fn,
-        baseline=deterministic_baseline,
-        metric_names=resolved_metric_names,
-        task_family=task_family,
-        placeholder_records_by_id=tune_placeholder_records,
-    )
+        tune_records_by_id = dataset.samples
+        test_plan = {
+            split_name: (fold_split.tests[split_name], dataset.samples) for split_name in test_loaders
+        }
 
-    test_reports: dict[str, EvaluationReport] = {}
-    for split_name, test_loader in test_loaders.items():
-        attention_dir: Path | None = None
-        if save_attention:
-            attention_dir = fold_dir / "attention" / split_name
-            attention_dir.mkdir(parents=True, exist_ok=True)
-        test_reports[split_name] = _evaluate_split_with_placeholders(
-            model,
-            test_loader,
-            split_name,
-            device,
-            output_sample_ids=(
-                tuple(raw_test_patient_ids_by_split[split_name])
-                if dataset_type == "patient"
-                else fold_split.tests[split_name]
-            ),
-            empty_sample_ids=empty_eval_sample_ids.get(split_name, []),
-            dataset=dataset,
-            target_fn=target_fn,
-            baseline=deterministic_baseline,
-            metric_names=resolved_metric_names,
-            task_family=task_family,
-            attention_dir=attention_dir,
-            aggregator_name=aggregator.name if aggregator is not None else None,
-            placeholder_records_by_id=(
-                _patient_placeholder_records(test_records_by_split[split_name])
-                if dataset_type == "patient"
-                else None
-            ),
+    # Score every split through the public verbs: predict → fill placeholders →
+    # evaluate against the split's targets. Test splits also write their predictions,
+    # subgroup breakdown and (with heatmaps on) attention maps.
+    splits = {"tune": (tune_loader, tune_output_sample_ids, tune_empty_sample_ids, tune_records_by_id)}
+    for split_name, (output_ids, records_by_id) in test_plan.items():
+        splits[split_name] = (
+            test_loaders[split_name],
+            output_ids,
+            empty_eval_sample_ids.get(split_name, []),
+            records_by_id,
         )
+    evaluations: dict[str, Evaluation] = {}
+    for split_name, (loader, output_ids, empty_ids, records_by_id) in splits.items():
+        is_test = split_name != "tune"
+        callbacks = []
+        if is_test and save_attention:
+            from soma.heatmaps import SaveAttention
 
-    # Save metrics, predictions, and training history
-    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+            callbacks.append(SaveAttention(fold_dir / "attention" / split_name))
+        predictions = _verbs.Predictions.concat(
+            [_verbs.predict(learner, loader, callbacks), baseline.predict(empty_ids)]
+        )
+        targets = targets_frame([records_by_id[sid] for sid in output_ids])
+        targets.index = pd.Index([str(sid) for sid in output_ids], name="sample_id", dtype=object)
+        evaluations[split_name] = _verbs.evaluate(
+            predictions,
+            targets,
+            metrics=resolved_metric_names,
+            subgroups=evaluation.subgroups.columns if is_test else (),
+        )
+        if is_test:
+            predictions.to_parquet(fold_dir / f"predictions_{split_name}.parquet")
+            if evaluation.subgroups.columns:
+                atomic_write_json(
+                    fold_dir / f"subgroup_metrics_{split_name}.json",
+                    evaluations[split_name].subgroups,
+                )
+
+    tune_evaluation = evaluations.pop("tune")
+    _save_metrics(tune_evaluation, evaluations, fold_dir / "metrics.json")
     _save_training_history(train_result.history, fold_dir / "training_history.json")
-
-    resolved_metrics = resolve_metrics(task_family, evaluation.metrics)
-    for split_name, test_report in test_reports.items():
-        predictions_path = fold_dir / f"predictions_{split_name}.csv"
-        subgroup_data = subgroup_data_for_predictions(
-            dataset,
-            test_report.predictions,
-            evaluation.subgroups.columns,
-        )
-        _save_predictions(test_report, predictions_path, subgroup_data=subgroup_data)
-
-        # Save subgroup metrics when subgroup columns are configured
-        if evaluation.subgroups.columns:
-            predictions_df = _build_predictions_df(test_report, subgroup_data)
-            sg_out = subgroup_report_for_predictions(
-                task_family=task_family,
-                metrics=resolved_metrics,
-                predictions_df=predictions_df,
-                subgroup_columns=evaluation.subgroups.columns,
-            )
-            (fold_dir / f"subgroup_metrics_{split_name}.json").write_text(json.dumps(sg_out, indent=2))
 
     return FoldResult(
         fold=fold,
         train_result=train_result,
-        tune_report=tune_report,
-        test_reports=test_reports,
+        tune_evaluation=tune_evaluation,
+        test_evaluations=evaluations,
     )
 
 
@@ -1580,9 +1536,9 @@ def train_one_segmentation_fold(
 ) -> FoldResult:
     """Train and evaluate a single dense-segmentation fold.
 
-    Separate from :func:`train_one_fold` because the scalar path's manifest-status
-    filtering, deterministic baseline, placeholder predictions, ``SamplePrediction``
-    and CSV machinery are all scalar-shaped and do not apply to dense rasters, and
+    Separate from :func:`train_one_fold` because the set path's manifest-status
+    filtering, baseline placeholders and ``Predictions`` are all scalar-shaped and do
+    not apply to dense rasters, and
     because the model is ``decoder + SegmentationHead`` (not aggregator/embedding +
     head). The split→records selection and ``tune_is_test``/``allow_missing_tune``
     semantics are reused.
@@ -1826,25 +1782,24 @@ def train_one_segmentation_fold(
         model.load_state_dict(checkpoint["model_state_dict"])
         model.to(device)
         model.eval()
-        tune_report = _evaluate_segmentation(
-            model,
+        tune_evaluation = _evaluate_grid(
+            DenseLearner(model),
             tune_loader,
-            "tune",
             device,
-            dataset=dataset,
-            output_dir=fold_dir,
-            save_segmentation_overlays=False,
-            save_segmentation_probabilities=False,
-            save_confusion_evidence=True,
-            write_dense_artifacts=False,
-            fold=fold,
-            class_vocabulary=class_vocabulary,
+            callbacks=[
+                _ConfusionEvidence(
+                    fold_dir / "confusion_evidence_tune.json",
+                    head=model.task_head,
+                    fold=fold,
+                    class_vocabulary=class_vocabulary,
+                )
+            ],
         )
         return FoldResult(
             fold=fold,
             train_result=None,
-            tune_report=tune_report,
-            test_reports={},
+            tune_evaluation=tune_evaluation,
+            test_evaluations={},
         )
 
     train_result = _fit_fold(
@@ -1864,31 +1819,51 @@ def train_one_segmentation_fold(
         )
     model.eval()
 
-    tune_report = _evaluate_segmentation(
-        model, tune_loader, "tune", device, dataset=dataset, output_dir=fold_dir,
-        save_segmentation_overlays=evaluation.save_segmentation_overlays,
-        save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
-        save_confusion_evidence=evaluation.save_segmentation_confusion_evidence,
-        fold=fold,
-        class_vocabulary=class_vocabulary,
-    )
-    test_reports = {
-        split_name: _evaluate_segmentation(
-            model, loader, split_name, device, dataset=dataset, output_dir=fold_dir,
-            save_segmentation_overlays=evaluation.save_segmentation_overlays,
-            save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
+    learner = train_result.learner
+
+    def _artifacts(split_name: str) -> list[object]:
+        return [
+            _SegmentationArtifacts(
+                DenseArtifactWriter(
+                    head=head,
+                    split=split_name,
+                    output_dir=fold_dir,
+                    dataset=dataset,
+                    save_segmentation_overlays=evaluation.save_segmentation_overlays,
+                    save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
+                    # Slide-manifest ROIs (record.region set) carry a whole-slide image_path;
+                    # the writer reads each ROI window at the run geometry.
+                    spacing_um=getattr(head, "_spacing_um", None),
+                    backend=getattr(head, "_backend", "auto"),
+                    tolerance=getattr(head, "_tolerance", 0.05),
+                )
+            )
+        ]
+
+    tune_callbacks = _artifacts("tune")
+    if evaluation.save_segmentation_confusion_evidence:
+        tune_callbacks.append(
+            _ConfusionEvidence(
+                fold_dir / "confusion_evidence_tune.json",
+                head=head,
+                fold=fold,
+                class_vocabulary=class_vocabulary,
+            )
         )
+    tune_evaluation = _evaluate_grid(learner, tune_loader, device, callbacks=tune_callbacks)
+    test_evaluations = {
+        split_name: _evaluate_grid(learner, loader, device, callbacks=_artifacts(split_name))
         for split_name, loader in test_loaders.items()
     }
 
-    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+    _save_metrics(tune_evaluation, test_evaluations, fold_dir / "metrics.json")
     _save_training_history(train_result.history, fold_dir / "training_history.json")
 
     return FoldResult(
         fold=fold,
         train_result=train_result,
-        tune_report=tune_report,
-        test_reports=test_reports,
+        tune_evaluation=tune_evaluation,
+        test_evaluations=test_evaluations,
     )
 
 
@@ -2166,29 +2141,35 @@ def train_one_detection_fold(
         encoding="utf-8",
     )
 
-    tune_report = _evaluate_detection(
-        model, tune_loader, "tune", device, head=head, dataset=dataset, output_dir=fold_dir,
-        save_detection_overlays=evaluation.save_detection_overlays,
-        save_detection_heatmaps=evaluation.save_detection_heatmaps,
-    )
-    test_reports = {
-        split_name: _evaluate_detection(
-            model, loader, split_name, device, head=head, dataset=dataset, output_dir=fold_dir,
-            save_detection_overlays=evaluation.save_detection_overlays,
-            save_detection_heatmaps=evaluation.save_detection_heatmaps,
-        )
+    learner = train_result.learner if train_result is not None else DenseLearner(model)
+
+    def _artifacts(split_name: str) -> list[object]:
+        return [
+            _DetectionArtifacts(
+                head,
+                split_name,
+                fold_dir,
+                dataset=dataset,
+                save_detection_overlays=evaluation.save_detection_overlays,
+                save_detection_heatmaps=evaluation.save_detection_heatmaps,
+            )
+        ]
+
+    tune_evaluation = _evaluate_grid(learner, tune_loader, device, callbacks=_artifacts("tune"))
+    test_evaluations = {
+        split_name: _evaluate_grid(learner, loader, device, callbacks=_artifacts(split_name))
         for split_name, loader in test_loaders.items()
     }
 
-    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+    _save_metrics(tune_evaluation, test_evaluations, fold_dir / "metrics.json")
     if train_result is not None:
         _save_training_history(train_result.history, fold_dir / "training_history.json")
 
     return FoldResult(
         fold=fold,
         train_result=train_result,
-        tune_report=tune_report,
-        test_reports=test_reports,
+        tune_evaluation=tune_evaluation,
+        test_evaluations=test_evaluations,
     )
 
 
@@ -2239,39 +2220,131 @@ def _sweep_detection_thresholds(
     )
 
 
+def _call_hook(callbacks, hook: str, *args) -> None:
+    for callback in callbacks:
+        method = getattr(callback, hook, None)
+        if method is not None:
+            method(*args)
+
+
 @torch.inference_mode()
-def _evaluate_detection(
-    model: torch.nn.Module,
+def _evaluate_grid(
+    learner: DenseLearner,
     loader: DataLoader,
-    split_name: str,
     device: torch.device,
     *,
-    head: DetectionHead,
-    dataset: LegacySamples,
-    output_dir: Path | None = None,
-    save_detection_overlays: bool = True,
-    save_detection_heatmaps: bool = False,
-) -> EvaluationReport:
-    """Consolidated detection eval: decode + match **once** per image, fan out to all.
+    callbacks: Sequence[object] = (),
+) -> Evaluation:
+    """Score one grid split (segmentation or detection) from the head's per-image stat rows.
 
-    Each image is decoded (NMS peaks at the frozen per-class ``head.score_threshold``)
-    and class-aware F1@δ matched exactly once; that single result feeds three consumers
-    so they cannot drift: the per-class ``(C, 3)`` TP/FP/FN counts → the headline metric
-    (``finalize_eval_metrics``); the decoded points → the level-0 ``predictions_<split>.csv``
-    (stitch-ready, design §4, byte-identical to the pre-consolidation output); and the
-    assignment + heatmap + GT points → the :class:`DetectionArtifactWriter` (plain pred/GT
-    overlays + per-image manifest + split-level metrics CSVs, plus opt-in raw heatmap
-    overlays + npz when ``save_detection_heatmaps``). ``head.dense_stats`` /
-    ``head.postprocess`` are left untouched (the Trainer's tune monitor still uses them).
+    Each batch goes through the learner's ``transfer_batch`` / ``forward_batch``, then
+    ``head.dense_stats`` gives its ``(B, C, k)`` rows. The rows are concatenated along
+    the image axis and reduced once by ``finalize_eval_metrics`` (the training
+    monitor's reduction, so the two cannot drift); the dense ``(N, C, H, W)`` logits are
+    never accumulated. Artefact writers are predict-style callbacks:
+    ``on_predict_batch(batch, output)`` receives
+    ``PredictOutput(columns={"dense_stats": rows}, raw=model_output)`` before the logits
+    are dropped, then ``on_predict_end()`` flushes.
     """
-    from soma.detection.encode import transform_points_to_level0
-    from soma.detection.matching import match_assignment
-    from soma.evaluation.detection_artifacts import DetectionArtifactWriter
+    learner.eval()
+    head = learner.head
+    stat_rows: list[torch.Tensor] = []
+    _call_hook(callbacks, "on_predict_start", learner)
+    for batch in loader:
+        batch = learner.transfer_batch(batch, device)
+        output = learner.forward_batch(batch)
+        rows = head.dense_stats(output.logits, batch.targets).detach().cpu()
+        stat_rows.append(rows)
+        _call_hook(
+            callbacks, "on_predict_batch", batch, PredictOutput(columns={"dense_stats": rows}, raw=output)
+        )
+    _call_hook(callbacks, "on_predict_end")
+    metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
+    return Evaluation(
+        metrics=dict(metrics),
+        task_family=head.task_family,
+        num_samples=sum(int(rows.shape[0]) for rows in stat_rows),
+    )
 
-    model.eval()
-    top, left, _, _ = head._crop_box
-    writer = (
-        DetectionArtifactWriter(
+
+class _SegmentationArtifacts:
+    """Streams a :class:`DenseArtifactWriter` (rasters, overlays, per-tile CSV) from
+    :func:`_evaluate_grid`'s batches."""
+
+    def __init__(self, writer: DenseArtifactWriter) -> None:
+        self._writer = writer
+
+    def on_predict_batch(self, batch, output: PredictOutput) -> None:
+        self._writer(batch, output.raw.logits, output.columns["dense_stats"])
+
+    def on_predict_end(self) -> None:
+        self._writer.finalize()
+
+
+class _ConfusionEvidence:
+    """Collects per-ROI segmentation confusion matrices and writes them at the end."""
+
+    def __init__(self, path: Path, *, head, fold: int, class_vocabulary: tuple[str, ...] | None) -> None:
+        self._path = Path(path)
+        self._head = head
+        self._fold = int(fold)
+        self._class_vocabulary = class_vocabulary or tuple(
+            f"class_{index}" for index in range(head.num_classes)
+        )
+        self._records: list[object] = []
+
+    def on_predict_batch(self, batch, output: PredictOutput) -> None:
+        from soma.evaluation.confusion_evidence import SegmentationConfusionRecord
+        from soma.tasks.dense_metrics import dense_confusion_matrices
+
+        logits = output.raw.logits
+        matrices = dense_confusion_matrices(
+            logits,
+            batch.targets["mask"].to(logits.device),
+            num_classes=self._head.num_classes,
+            ignore_index=self._head.ignore_index,
+        ).detach().cpu()
+        for sample_id, matrix in zip(batch.sample_ids, matrices, strict=True):
+            self._records.append(
+                SegmentationConfusionRecord(
+                    sample_id=sample_id,
+                    fold=self._fold,
+                    class_vocabulary=self._class_vocabulary,
+                    confusion_matrix=matrix.tolist(),
+                )
+            )
+
+    def on_predict_end(self) -> None:
+        from soma.evaluation.confusion_evidence import write_confusion_records
+
+        write_confusion_records(self._path, self._records)
+
+
+class _DetectionArtifacts:
+    """Decodes and matches each image once more for the detection outputs.
+
+    Writes the level-0 ``predictions_<split>.csv`` (stitch-ready: decoded NMS peaks at
+    the frozen per-class ``head.score_threshold``, mapped back to level 0) and feeds the
+    :class:`DetectionArtifactWriter` (pred/GT overlays, per-image manifest, split
+    metrics CSVs, opt-in raw heatmaps). The match is the one ``head.dense_stats`` counts.
+    """
+
+    def __init__(
+        self,
+        head: DetectionHead,
+        split_name: str,
+        output_dir: Path,
+        *,
+        dataset,
+        save_detection_overlays: bool = True,
+        save_detection_heatmaps: bool = False,
+    ) -> None:
+        from soma.evaluation.detection_artifacts import DetectionArtifactWriter
+
+        self._head = head
+        self._path = Path(output_dir) / f"predictions_{split_name}.csv"
+        self._rows: list[str] = ["sample_id,x,y,class,score"]
+        self._writer = DetectionArtifactWriter(
             head=head,
             split=split_name,
             output_dir=output_dir,
@@ -2279,32 +2352,26 @@ def _evaluate_detection(
             save_detection_overlays=save_detection_overlays,
             save_detection_heatmaps=save_detection_heatmaps,
         )
-        if output_dir is not None
-        else None
-    )
-    stat_rows: list[torch.Tensor] = []
-    pred_rows: list[str] = ["sample_id,x,y,class,score"]
-    for batch in loader:
-        out = model(batch.features.to(device))
+
+    def on_predict_batch(self, batch, output: PredictOutput) -> None:
+        from soma.detection.encode import transform_points_to_level0
+        from soma.detection.matching import match_assignment
+
+        head = self._head
+        top, left, _, _ = head._crop_box
         gt_points = batch.targets["gt_points"]
         valid = batch.targets.get("valid")
         for b, sid in enumerate(batch.sample_ids):
-            heatmap = out.logits[b]
-            # Peaks on ignore-mask pixels are dropped here, so no consumer sees them.
+            heatmap = output.raw.logits[b]
+            # Peaks on ignore-mask pixels are dropped here, as in dense_stats.
             pred_xy, pred_cls, pred_score = head._predict_points(
                 heatmap, None if valid is None else valid[b]
             )
             gt_xy, gt_cls = head._strip_padding(gt_points[b])
-            # The one match the headline counts, the per-point CSV, and the overlays
-            # all derive from (mirrors match_points' reduction, so counts are identical).
             assignment = match_assignment(
                 pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
                 num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
             )
-            counts = np.zeros((head.num_classes, 3), dtype=np.int64)
-            for c, m in enumerate(assignment):
-                counts[c] = m.counts
-            stat_rows.append(torch.from_numpy(counts).to(torch.long).unsqueeze(0))
             if pred_xy.shape[0]:
                 spacing = head.spacing_for_sample(sid)
                 xy_l0 = transform_points_to_level0(
@@ -2314,23 +2381,17 @@ def _evaluate_detection(
                     crop_top=top,
                     crop_left=left,
                 )
-                for (x, y), c, s in zip(xy_l0, pred_cls, pred_score):
-                    pred_rows.append(f"{sid},{x:.3f},{y:.3f},{int(c)},{float(s):.4f}")
-            if writer is not None:
-                writer.add_image(
-                    sample_id=sid, heatmap=heatmap,
-                    pred_xy=pred_xy, pred_class=pred_cls, pred_score=pred_score,
-                    assignment=assignment, gt_xy=gt_xy, gt_class=gt_cls,
-                )
+                for (x, y), c, score in zip(xy_l0, pred_cls, pred_score):
+                    self._rows.append(f"{sid},{x:.3f},{y:.3f},{int(c)},{float(score):.4f}")
+            self._writer.add_image(
+                sample_id=sid, heatmap=heatmap,
+                pred_xy=pred_xy, pred_class=pred_cls, pred_score=pred_score,
+                assignment=assignment, gt_xy=gt_xy, gt_class=gt_cls,
+            )
 
-    metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
-    if output_dir is not None:
-        (Path(output_dir) / f"predictions_{split_name}.csv").write_text(
-            "\n".join(pred_rows) + "\n", encoding="utf-8"
-        )
-    if writer is not None:
-        writer.finalize()
-    return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
+    def on_predict_end(self) -> None:
+        self._path.write_text("\n".join(self._rows) + "\n", encoding="utf-8")
+        self._writer.finalize()
 
 
 def train_one_pixel_classifier_fold(
@@ -2452,13 +2513,13 @@ def train_one_pixel_classifier_fold(
     clf.fit(X_train, y_train, X_val=X_val, y_val=y_val, sample_weight=sample_weight)
     clf.save(fold_dir / "pixel_classifier")
 
-    tune_report = evaluate_pixel_classifier(
+    tune_evaluation = evaluate_pixel_classifier(
         clf, tune_records, feature_store, head, "tune",
         dataset=dataset, output_dir=fold_dir,
         save_segmentation_overlays=evaluation.save_segmentation_overlays,
         save_segmentation_probabilities=evaluation.save_segmentation_probabilities,
     )
-    test_reports = {
+    test_evaluations = {
         split_name: evaluate_pixel_classifier(
             clf, records, feature_store, head, split_name,
             dataset=dataset, output_dir=fold_dir,
@@ -2467,14 +2528,18 @@ def train_one_pixel_classifier_fold(
         )
         for split_name, records in test_records_by_split.items()
     }
-    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+    _save_metrics(tune_evaluation, test_evaluations, fold_dir / "metrics.json")
 
     return FoldResult(
         fold=fold,
         train_result=None,
-        tune_report=tune_report,
-        test_reports=test_reports,
+        tune_evaluation=tune_evaluation,
+        test_evaluations=test_evaluations,
     )
+
+
+#: The closed-form probe regresses a gene vector per spot.
+_PROBE_FAMILY = "regression"
 
 
 def _probe_gene_metric_key(index: int, gene: str) -> str:
@@ -2566,11 +2631,11 @@ def train_one_probe_fold(
         _fp, len(train_ids), n_genes, pca_components, feature_dim,
     )
 
-    test_reports: dict[str, EvaluationReport] = {}
+    test_evaluations: dict[str, Evaluation] = {}
     for split_name, ids in test_ids_by_split.items():
         if not ids:
-            test_reports[split_name] = EvaluationReport(
-                split=split_name, metrics={}, predictions=[]
+            test_evaluations[split_name] = Evaluation(
+                metrics={}, task_family=_PROBE_FAMILY, num_samples=0
             )
             continue
         x_test = _stack_features(ids)
@@ -2584,8 +2649,8 @@ def train_one_probe_fold(
         metrics = {"mean_pearson": float(score.mean_pearson)}
         for index, gene in enumerate(genes):
             metrics[_probe_gene_metric_key(index, gene)] = float(score.per_gene_pearson[index])
-        test_reports[split_name] = EvaluationReport(
-            split=split_name, metrics=metrics, predictions=[]
+        test_evaluations[split_name] = Evaluation(
+            metrics=metrics, task_family=_PROBE_FAMILY, num_samples=len(ids)
         )
         _write_probe_predictions(
             fold_dir / f"predictions_{split_name}.csv", ids, score.predictions, genes
@@ -2596,14 +2661,14 @@ def train_one_probe_fold(
         )
 
     # The probe has no tune split; report an empty tune (ignored by the summary writer).
-    tune_report = EvaluationReport(split="tune", metrics={}, predictions=[])
-    _save_metrics(tune_report, test_reports, fold_dir / "metrics.json")
+    tune_evaluation = Evaluation(metrics={}, task_family=_PROBE_FAMILY, num_samples=0)
+    _save_metrics(tune_evaluation, test_evaluations, fold_dir / "metrics.json")
 
     return FoldResult(
         fold=fold,
         train_result=None,
-        tune_report=tune_report,
-        test_reports=test_reports,
+        tune_evaluation=tune_evaluation,
+        test_evaluations=test_evaluations,
     )
 
 
@@ -3698,7 +3763,7 @@ class Pipeline:
             )
 
             if result.pending_folds:
-                # Heatmaps, the report and the completed status describe a whole run.
+                # Heatmaps and the completed status describe a whole run.
                 recorder.partial(result.pending_folds)
                 return recorder.with_identity(result)
 
@@ -3712,14 +3777,6 @@ class Pipeline:
                     heatmap_config=self._config.heatmaps,
                     seg_downsample=self._config.preprocessing.seg_downsample,
                 )
-
-            try:
-                report_path = generate_report_from_result(
-                    result, self._config, dataset=training_dataset
-                )
-                logger.info("Report saved to %s", report_path)
-            except Exception:
-                logger.warning("Report generation failed", exc_info=True)
 
             Console().print(_build_completed_run_panel(summary_metrics=result.summary))
             recorder.complete(result.summary)
@@ -3843,214 +3900,6 @@ class Pipeline:
 # ---------------------------------------------------------------------------
 
 
-@torch.inference_mode()
-def _evaluate(
-    model: torch.nn.Module,
-    loader: DataLoader,
-    split_name: str,
-    device: torch.device,
-    *,
-    attention_dir: Path | None = None,
-    aggregator_name: str | None = None,
-) -> EvaluationReport:
-    """Evaluate model on a split and build a report.
-
-    Args:
-        attention_dir: When provided, per-tile attention scores are saved as
-            ``<sample_id>.npz`` files inside this directory during the forward
-            pass — no separate inference pass is needed for heatmap generation.
-        aggregator_name: Name of the aggregator (e.g. ``"abmil"``), used to
-            decide whether to apply softmax before saving attention scores.
-            Required when ``attention_dir`` is set.
-    """
-    all_logits = []
-    all_targets: dict[str, list[torch.Tensor]] = {}
-    all_sample_ids: list[str] = []
-
-    for batch in loader:
-        features = batch.features.to(device)
-        if hasattr(batch, "mask"):
-            out = model(features, mask=batch.mask.to(device))
-        else:
-            out = model(features)
-        all_logits.append(out.logits.cpu())
-        for key, value in batch.targets.items():
-            all_targets.setdefault(key, []).append(value.cpu())
-        all_sample_ids.extend(batch.sample_ids)
-
-        if attention_dir is not None and out.tile_attention is not None:
-            from soma.heatmaps import normalize_attention
-            for i, sid in enumerate(batch.sample_ids):
-                attn_i = out.tile_attention[i : i + 1]
-                if hasattr(batch, "mask"):
-                    attn_i = attn_i[..., batch.mask[i]]
-                normalized = normalize_attention(attn_i, aggregator_name or "")
-                np.savez_compressed(attention_dir / f"{sid}.npz", attention=normalized)
-
-    logits = torch.cat(all_logits, dim=0)
-    targets = {key: torch.cat(values, dim=0) for key, values in all_targets.items()}
-
-    task_head = model.task_head
-    metrics = task_head.compute_metrics(logits, targets)
-    processed = task_head.postprocess(logits)
-
-    predictions = []
-    if "risk_scores" in processed:
-        # Survival: true_label holds time, plus event and predicted risk.
-        time = targets["time"].numpy()
-        event = targets["event"].numpy()
-        for i, sid in enumerate(all_sample_ids):
-            predictions.append(
-                SamplePrediction(
-                    sample_id=sid,
-                    true_label=float(time[i]),
-                    event=float(event[i]),
-                    risk_score=float(processed["risk_scores"][i]),
-                )
-            )
-    elif "probabilities" in processed:
-        # Classification
-        y_true = targets["label"].numpy()
-        for i, sid in enumerate(all_sample_ids):
-            predictions.append(
-                SamplePrediction(
-                    sample_id=sid,
-                    true_label=int(y_true[i]),
-                    predicted_label=int(processed["predicted_labels"][i]),
-                    probabilities=processed["probabilities"][i].tolist(),
-                )
-            )
-    elif "raw_scores" in processed:
-        # Ordinal classification: integer prediction + raw continuous score
-        y_true = targets["label"].numpy()
-        for i, sid in enumerate(all_sample_ids):
-            predictions.append(
-                SamplePrediction(
-                    sample_id=sid,
-                    true_label=int(y_true[i]),
-                    predicted_label=int(processed["predicted_labels"][i]),
-                    raw_score=float(processed["raw_scores"][i]),
-                )
-            )
-    else:
-        # Regression
-        y_true = targets["value"].numpy()
-        for i, sid in enumerate(all_sample_ids):
-            predictions.append(
-                SamplePrediction(
-                    sample_id=sid,
-                    true_label=float(y_true[i]),
-                    predicted_value=float(processed["predictions"][i]),
-                )
-            )
-
-    return EvaluationReport(
-        split=split_name,
-        metrics=metrics,
-        predictions=predictions,
-    )
-
-
-@torch.inference_mode()
-def _evaluate_segmentation(
-    model: torch.nn.Module,
-    loader: DataLoader,
-    split_name: str,
-    device: torch.device,
-    *,
-    dataset: LegacySamples | None = None,
-    output_dir: Path | None = None,
-    save_segmentation_overlays: bool = True,
-    save_segmentation_probabilities: bool = False,
-    save_confusion_evidence: bool = False,
-    write_dense_artifacts: bool = True,
-    fold: int | None = None,
-    class_vocabulary: tuple[str, ...] | None = None,
-) -> EvaluationReport:
-    """Streaming dense evaluation: accumulate compact per-image confusion counts.
-
-    Shares ``accumulate_dense_stats`` with ``DenseLearner`` — never
-    concatenates the dense ``(N, C, H, W)`` logits (which would OOM). The per-image
-    ``dense_stats`` rows are concatenated along the image axis and reduced once via
-    ``finalize_eval_metrics`` (the same reduce+filter path as ``compute_metrics``), so
-    the report metric matches the training monitor exactly.
-
-    When ``output_dir`` is given, a :class:`DenseArtifactWriter` streams per-tile
-    prediction rasters, color overlays (fail-soft via ``dataset``'s source images),
-    and a ``predictions_<split>.csv`` to disk — written per batch *before* the logits
-    are discarded, so memory stays bounded. The returned ``EvaluationReport`` still
-    carries ``predictions=[]``: the dense artifacts live on disk, not in the report.
-    """
-    head = model.task_head
-    confusion_records = None
-    if save_confusion_evidence:
-        if output_dir is None:
-            raise ValueError("confusion evidence export requires output_dir")
-        if fold is None:
-            raise ValueError("confusion evidence export requires explicit fold metadata")
-        confusion_records = []
-        if class_vocabulary is None:
-            class_vocabulary = tuple(
-                f"class_{index}" for index in range(head.num_classes)
-            )
-    writer = (
-        DenseArtifactWriter(
-            head=head,
-            split=split_name,
-            output_dir=output_dir,
-            dataset=dataset,
-            save_segmentation_overlays=save_segmentation_overlays,
-            save_segmentation_probabilities=save_segmentation_probabilities,
-            # Slide-manifest ROIs (record.region set) carry a whole-slide image_path; the
-            # writer reads each ROI window at the run geometry rather than opening the slide.
-            spacing_um=getattr(head, "_spacing_um", None),
-            backend=getattr(head, "_backend", "auto"),
-            tolerance=getattr(head, "_tolerance", 0.05),
-        )
-        if output_dir is not None and write_dense_artifacts
-        else None
-    )
-    def _capture_batch(batch, logits, stat_row) -> None:
-        if writer is not None:
-            writer(batch, logits, stat_row)
-        if confusion_records is None:
-            return
-        from soma.evaluation.confusion_evidence import SegmentationConfusionRecord
-        from soma.tasks.dense_metrics import dense_confusion_matrices
-
-        matrices = dense_confusion_matrices(
-            logits,
-            batch.targets["mask"].to(logits.device),
-            num_classes=head.num_classes,
-            ignore_index=head.ignore_index,
-        ).detach().cpu()
-        for sample_id, matrix in zip(batch.sample_ids, matrices, strict=True):
-            confusion_records.append(
-                SegmentationConfusionRecord(
-                    sample_id=sample_id,
-                    fold=fold,
-                    class_vocabulary=class_vocabulary,
-                    confusion_matrix=matrix.tolist(),
-                )
-            )
-
-    callback = _capture_batch if writer is not None or confusion_records is not None else None
-    stat_rows, _, _ = accumulate_dense_stats(
-        model, loader, device, on_batch_output=callback
-    )
-    metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
-    if writer is not None:
-        writer.finalize()
-    if confusion_records is not None:
-        from soma.evaluation.confusion_evidence import write_confusion_records
-
-        write_confusion_records(
-            output_dir / f"confusion_evidence_{split_name}.json",
-            confusion_records,
-        )
-    return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
-
-
 def _records_for_sample_ids(
     dataset: LegacySamples,
     sample_ids: tuple[str, ...],
@@ -4063,195 +3912,14 @@ def _records_for_sample_ids(
     ]
 
 
-def _build_deterministic_baseline(
-    train_records: list[LegacyRecord],
-    *,
-    target_fn,
-    task_family: str,
-    num_classes: int,
-) -> _DeterministicBaseline:
-    if not train_records:
-        raise ValueError("Cannot build a deterministic baseline without training records")
-
-    if task_family in {"binary_classification", "multiclass_classification"}:
-        labels = np.asarray(
-            [int(target_fn(record)["label"]) for record in train_records], dtype=int
-        )
-        counts = np.bincount(labels, minlength=num_classes).astype(float)
-        probabilities = (counts / counts.sum()).tolist()
-        return _DeterministicBaseline(
-            task_family=task_family,
-            probabilities=probabilities,
-            predicted_label=int(np.argmax(probabilities)),
-        )
-
-    if task_family == "ordinal_classification":
-        raw_score = float(np.mean([int(target_fn(record)["label"]) for record in train_records]))
-        predicted_label = int(np.clip(np.rint(raw_score), 0, max(num_classes - 1, 0)))
-        return _DeterministicBaseline(
-            task_family=task_family,
-            predicted_label=predicted_label,
-            raw_score=raw_score,
-        )
-
-    if task_family == "survival":
-        # Empty-bag placeholders share a constant risk; they tie among themselves
-        # and contribute ~0.5 concordance against real samples.
-        return _DeterministicBaseline(task_family=task_family, risk_score=0.0)
-
-    predicted_value = float(
-        np.mean([float(target_fn(record)["value"]) for record in train_records])
-    )
-    return _DeterministicBaseline(
-        task_family=task_family,
-        predicted_value=predicted_value,
-    )
-
-
-def _make_placeholder_prediction(
-    record: LegacyRecord,
-    *,
-    target_fn,
-    baseline: _DeterministicBaseline,
-    sample_id: str | None = None,
-) -> SamplePrediction:
-    targets = target_fn(record)
-    if baseline.task_family == "survival":
-        return SamplePrediction(
-            sample_id=sample_id or record.sample_id,
-            true_label=float(targets["time"]),
-            event=float(targets["event"]),
-            risk_score=baseline.risk_score,
-            is_placeholder=True,
-            missing_reason="no_tiles",
-        )
-
-    true_value: int | float
-    if baseline.task_family == "regression":
-        true_value = float(targets["value"])
-    else:
-        true_value = int(targets["label"])
-
-    return SamplePrediction(
-        sample_id=sample_id or record.sample_id,
-        true_label=true_value,
-        predicted_label=baseline.predicted_label,
-        probabilities=list(baseline.probabilities) if baseline.probabilities is not None else None,
-        predicted_value=baseline.predicted_value,
-        raw_score=baseline.raw_score,
-        is_placeholder=True,
-        missing_reason="no_tiles",
-    )
-
-
-def _compute_metrics_from_predictions(
-    predictions: list[SamplePrediction],
-    *,
-    task_family: str,
-    metric_names: list[str],
-) -> dict[str, float]:
-    if not predictions:
-        return {
-            "coverage": 0.0,
-            "num_samples": 0,
-            "num_real_samples": 0,
-            "num_placeholder_samples": 0,
-        }
-
-    if task_family == "survival":
-        from soma.evaluation.metrics import compute_survival_metrics
-
-        event = np.asarray([float(pred.event) for pred in predictions], dtype=float)
-        time = np.asarray([float(pred.true_label) for pred in predictions], dtype=float)
-        risk = np.asarray([float(pred.risk_score) for pred in predictions], dtype=float)
-        metrics = compute_survival_metrics(metric_names, event, time, risk)
-    elif task_family in {"binary_classification", "multiclass_classification"}:
-        y_true = np.asarray([int(pred.true_label) for pred in predictions], dtype=int)
-        y_pred = np.asarray([int(pred.predicted_label) for pred in predictions], dtype=int)
-        y_prob = np.asarray([pred.probabilities for pred in predictions], dtype=float)
-        metrics = compute_metrics(task_family, metric_names, y_true, y_pred, y_prob=y_prob)
-    elif task_family == "ordinal_classification":
-        y_true = np.asarray([int(pred.true_label) for pred in predictions], dtype=int)
-        y_pred = np.asarray([int(pred.predicted_label) for pred in predictions], dtype=int)
-        metrics = compute_metrics(task_family, metric_names, y_true, y_pred)
-    else:
-        y_true = np.asarray([float(pred.true_label) for pred in predictions], dtype=float)
-        y_pred = np.asarray([float(pred.predicted_value) for pred in predictions], dtype=float)
-        metrics = compute_metrics(task_family, metric_names, y_true, y_pred)
-
-    num_placeholder = sum(1 for pred in predictions if pred.is_placeholder)
-    num_samples = len(predictions)
-    num_real = num_samples - num_placeholder
-    metrics["coverage"] = float(num_real / num_samples)
-    metrics["num_samples"] = num_samples
-    metrics["num_real_samples"] = num_real
-    metrics["num_placeholder_samples"] = num_placeholder
-    return metrics
-
-
-def _evaluate_split_with_placeholders(
-    model: torch.nn.Module,
-    loader: DataLoader,
-    split_name: str,
-    device: torch.device,
-    *,
-    output_sample_ids: tuple[str, ...],
-    empty_sample_ids: list[str],
-    dataset: LegacySamples,
-    target_fn,
-    baseline: _DeterministicBaseline,
-    metric_names: list[str],
-    task_family: str,
-    attention_dir: Path | None = None,
-    aggregator_name: str | None = None,
-    placeholder_records_by_id: dict[str, LegacyRecord] | None = None,
-) -> EvaluationReport:
-    real_report = (
-        _evaluate(
-            model,
-            loader,
-            split_name,
-            device,
-            attention_dir=attention_dir,
-            aggregator_name=aggregator_name,
-        )
-        if len(loader.dataset) > 0
-        else EvaluationReport(split=split_name, metrics={}, predictions=[])
-    )
-    placeholder_predictions = [
-        _make_placeholder_prediction(
-            (
-                placeholder_records_by_id[sample_id]
-                if placeholder_records_by_id is not None
-                else dataset.samples[sample_id]
-            ),
-            target_fn=target_fn,
-            baseline=baseline,
-            sample_id=sample_id,
-        )
-        for sample_id in empty_sample_ids
-    ]
-    predictions_by_id = {
-        pred.sample_id: pred
-        for pred in [*real_report.predictions, *placeholder_predictions]
-    }
-    full_predictions = [predictions_by_id[sample_id] for sample_id in output_sample_ids]
-    metrics = _compute_metrics_from_predictions(
-        full_predictions,
-        task_family=task_family,
-        metric_names=metric_names,
-    )
-    return EvaluationReport(split=split_name, metrics=metrics, predictions=full_predictions)
-
-
 def _save_metrics(
-    tune_report: EvaluationReport,
-    test_reports: dict[str, EvaluationReport],
+    tune_evaluation: Evaluation,
+    test_evaluations: dict[str, Evaluation],
     path: Path,
 ) -> None:
-    data: dict[str, dict[str, float]] = {"tune": tune_report.metrics}
-    for split_name, report in test_reports.items():
-        data[split_name] = report.metrics
+    data: dict[str, dict[str, float]] = {"tune": tune_evaluation.metrics}
+    for split_name, split_evaluation in test_evaluations.items():
+        data[split_name] = split_evaluation.metrics
     atomic_write_json(path, data)
 
 
@@ -4284,10 +3952,8 @@ def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
     checkpoint selection, ``summary.json`` fold aggregates, or any results table. It is
     recorded in ``training_history.json`` purely to judge whether the configured
     ``monitor`` is a good selection proxy. Direction follows
-    :func:`soma.evaluation.metrics.metric_higher_is_better`; ``loss`` is excluded.
+    :meth:`soma.evaluation.metric_registry.higher_is_better`; ``loss`` is excluded.
     """
-    from soma.evaluation.metrics import metric_higher_is_better
-
     peaks: dict[str, dict[str, float | int]] = {}
     for name in history.columns:
         if name in _HISTORY_LOOP_COLUMNS or name == "loss":
@@ -4298,7 +3964,9 @@ def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
                 continue
             current = peaks.get(name)
             better = current is None or (
-                value > current["value"] if metric_higher_is_better(name) else value < current["value"]
+                value > current["value"]
+                if metric_registry.higher_is_better(name)
+                else value < current["value"]
             )
             if better:
                 peaks[name] = {"epoch": int(epoch) + 1, "value": value}
@@ -4308,8 +3976,8 @@ def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
 def _save_training_history(history: pd.DataFrame, path: Path) -> None:
     data = {
         "epochs": history_rows(history),
-        # Diagnostic only (see peak_per_metric); the reporting layer drops this so it
-        # never reaches summaries or results tables.
+        # Diagnostic only (see peak_per_metric): it never reaches summaries or results
+        # tables.
         "peak_per_metric": peak_per_metric(history),
     }
     atomic_write_json(path, data)
@@ -4385,126 +4053,6 @@ def _fit_fold(
     return trainer.fit(learner, train_loader, tune_loader)
 
 
-def _build_subgroup_data(
-    dataset: LegacySamples,
-    report: EvaluationReport,
-    subgroup_columns: list[str],
-) -> dict[str, dict[str, object]]:
-    """Build a mapping of sample/patient ID to subgroup values for predictions."""
-    return subgroup_data_for_predictions(dataset, report.predictions, subgroup_columns)
-
-
-def _build_predictions_df(
-    report: EvaluationReport,
-    subgroup_data: dict[str, dict[str, object]] | None = None,
-) -> pd.DataFrame:
-    """Build an enriched predictions DataFrame in memory (no disk I/O)."""
-    rows = []
-    for pred in report.predictions:
-        row: dict = {"sample_id": pred.sample_id, "true_label": pred.true_label}
-        if pred.predicted_label is not None:
-            row["predicted_label"] = pred.predicted_label
-        if pred.probabilities is not None:
-            for i, p in enumerate(pred.probabilities):
-                row[f"prob_{i}"] = p
-        if pred.raw_score is not None:
-            row["raw_score"] = pred.raw_score
-        if pred.predicted_value is not None:
-            row["predicted_value"] = pred.predicted_value
-        if pred.is_placeholder:
-            row["is_placeholder"] = True
-        if pred.missing_reason is not None:
-            row["missing_reason"] = pred.missing_reason
-        if subgroup_data and pred.sample_id in subgroup_data:
-            row.update(subgroup_data[pred.sample_id])
-        rows.append(row)
-    return pd.DataFrame(rows)
-
-
-def _save_predictions(
-    report: EvaluationReport,
-    path: Path,
-    *,
-    subgroup_data: dict[str, dict[str, object]] | None = None,
-) -> None:
-    with open(path, "w", newline="") as f:
-        if not report.predictions:
-            return
-
-        first = report.predictions[0]
-        extra_cols = sorted(next(iter(subgroup_data.values()))) if subgroup_data else []
-        placeholder_cols: list[str] = []
-        if any(pred.is_placeholder for pred in report.predictions):
-            placeholder_cols.append("is_placeholder")
-        if any(pred.missing_reason is not None for pred in report.predictions):
-            placeholder_cols.append("missing_reason")
-
-        def _write_row(writer: csv.DictWriter, row: dict, pred: SamplePrediction) -> None:
-            if "is_placeholder" in placeholder_cols:
-                row["is_placeholder"] = pred.is_placeholder
-            if "missing_reason" in placeholder_cols:
-                row["missing_reason"] = pred.missing_reason or ""
-            if subgroup_data and pred.sample_id in subgroup_data:
-                row.update(subgroup_data[pred.sample_id])
-            writer.writerow(row)
-
-        if first.risk_score is not None:
-            # Survival: time (true_label), event indicator, predicted risk
-            fieldnames = ["sample_id", "true_label", "event", "risk_score"] + placeholder_cols + extra_cols
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for pred in report.predictions:
-                row = {
-                    "sample_id": pred.sample_id,
-                    "true_label": pred.true_label,
-                    "event": pred.event,
-                    "risk_score": f"{pred.risk_score:.6f}",
-                }
-                _write_row(writer, row, pred)
-        elif first.probabilities is not None:
-            # Classification: include class probabilities
-            num_classes = len(first.probabilities)
-            fieldnames = ["sample_id", "true_label", "predicted_label"] + [
-                f"prob_{i}" for i in range(num_classes)
-            ] + placeholder_cols + extra_cols
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for pred in report.predictions:
-                row: dict = {
-                    "sample_id": pred.sample_id,
-                    "true_label": pred.true_label,
-                    "predicted_label": pred.predicted_label,
-                }
-                for i, p in enumerate(pred.probabilities):  # type: ignore[arg-type]
-                    row[f"prob_{i}"] = f"{p:.6f}"
-                _write_row(writer, row, pred)
-        elif first.raw_score is not None:
-            # Ordinal classification: integer prediction + raw continuous score
-            fieldnames = ["sample_id", "true_label", "predicted_label", "raw_score"] + placeholder_cols + extra_cols
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for pred in report.predictions:
-                row = {
-                    "sample_id": pred.sample_id,
-                    "true_label": pred.true_label,
-                    "predicted_label": pred.predicted_label,
-                    "raw_score": f"{pred.raw_score:.6f}",
-                }
-                _write_row(writer, row, pred)
-        else:
-            # Regression: predicted continuous value
-            fieldnames = ["sample_id", "true_label", "predicted_value"] + placeholder_cols + extra_cols
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            for pred in report.predictions:
-                row = {
-                    "sample_id": pred.sample_id,
-                    "true_label": pred.true_label,
-                    "predicted_value": f"{pred.predicted_value:.6f}",
-                }
-                _write_row(writer, row, pred)
-
-
 def _summarize_fold_metric_dicts(
     per_fold: list[dict[str, dict[str, float]]], *, include_tune: bool
 ) -> dict[str, float]:
@@ -4556,9 +4104,9 @@ def _summarize_fold_metric_dicts(
 
 def _fold_result_to_metric_dict(fr: FoldResult) -> dict[str, dict[str, float]]:
     """Project a FoldResult onto the ``{split: metrics}`` shape ``metrics.json`` holds."""
-    out = {"tune": dict(fr.tune_report.metrics)}
-    for split_name, report in fr.test_reports.items():
-        out[split_name] = dict(report.metrics)
+    out = {"tune": dict(fr.tune_evaluation.metrics)}
+    for split_name, split_evaluation in fr.test_evaluations.items():
+        out[split_name] = dict(split_evaluation.metrics)
     return out
 
 

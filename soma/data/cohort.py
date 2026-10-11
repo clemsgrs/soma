@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Cohort",
     "FoldSplit",
+    "targets_frame",
     "EXPRESSION_MATRIX_FILENAME",
     "EXPRESSION_NAMES_FILENAME",
     "MANIFEST_COLUMNS",
@@ -229,6 +230,31 @@ def _folds_from_frame(splits_df: pd.DataFrame) -> list[FoldSplit]:
     return folds
 
 
+def targets_frame(
+    records: Sequence[SampleRecord], target_keys: Sequence[str] = ()
+) -> pd.DataFrame:
+    """One row per record, indexed by ``sample_id``: every target key, ``patient_id``,
+    then every metadata column (the frame :func:`soma.evaluate` joins predictions with).
+    A metadata column named like a target key or ``patient_id`` is dropped."""
+    records = list(records)
+    keys = list(dict.fromkeys([*target_keys, *(k for r in records for k in r.targets)]))
+    metadata = list(
+        dict.fromkeys(
+            k for r in records for k in r.metadata if k not in keys and k != "patient_id"
+        )
+    )
+    rows = [
+        {
+            **{key: record.targets.get(key) for key in keys},
+            "patient_id": record.patient_id,
+            **{key: record.metadata.get(key) for key in metadata},
+        }
+        for record in records
+    ]
+    index = pd.Index([record.sample_id for record in records], name="sample_id", dtype=object)
+    return pd.DataFrame(rows, index=index, columns=[*keys, "patient_id", *metadata])
+
+
 class Cohort:
     """Immutable records plus folds, validated once at construction.
 
@@ -417,6 +443,29 @@ class Cohort:
     @property
     def has_patient_ids(self) -> bool:
         return any(record.patient_id is not None for record in self._records)
+
+    def targets(self, split: str, fold: int = 0) -> pd.DataFrame:
+        """The targets of one split, indexed by ``sample_id``.
+
+        One row per sample in ``split`` (``"train"``, ``"tune"`` or a test split name) of
+        fold ``fold``, in split order: one column per target key, ``patient_id``, then
+        every metadata column. On a :meth:`collapse`-d cohort the rows are patients.
+        """
+        if not 0 <= fold < len(self._folds):
+            raise ValueError(f"fold {fold} out of range; the cohort has {len(self._folds)} fold(s)")
+        current = self._folds[fold]
+        if split == SPLIT_TRAIN:
+            ids = current.train
+        elif split == SPLIT_TUNE:
+            ids = current.tune
+        elif split in current.tests:
+            ids = current.tests[split]
+        else:
+            raise ValueError(
+                f"fold {fold} has no split {split!r}; available: "
+                f"{[SPLIT_TRAIN, SPLIT_TUNE, *current.test_split_names]}"
+            )
+        return targets_frame([self._by_id[sid] for sid in ids], self.target_keys)
 
     # --- transforms ----------------------------------------------------------------- #
 

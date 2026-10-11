@@ -105,21 +105,21 @@ def build_greedy_report(
     Pass an empty ``test_loaders`` for a tune-only report: the returned dict then carries
     just ``matching``, ``score_threshold_per_class``, and ``tune``.
     """
-    from soma.pipeline import _evaluate_detection, _sweep_detection_thresholds
+    from soma.learn import DenseLearner
+    from soma.pipeline import _evaluate_grid, _sweep_detection_thresholds
 
     headline_thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
     head.score_threshold = headline_thresholds
-    tune_report = _evaluate_detection(
-        model, tune_loader, "tune", device, head=head, dataset=dataset
-    )
+    learner = DenseLearner(model)
+    tune_evaluation = _evaluate_grid(learner, tune_loader, device)
     out: dict = {
         "matching": matching,
         "score_threshold_per_class": headline_thresholds,
-        "tune": tune_report.metrics,
+        "tune": tune_evaluation.metrics,
     }
     for name, loader in test_loaders.items():
         head.score_threshold = headline_thresholds
-        headline = _evaluate_detection(model, loader, name, device, head=head, dataset=dataset)
+        headline = _evaluate_grid(learner, loader, device)
         out[name] = {
             "headline": {
                 "note": "reported result — per-class thresholds frozen from the tune split (leakage-free)",

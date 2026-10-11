@@ -13,6 +13,7 @@ import torch
 from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
 from soma.data import SampleRecord
 from soma.data._legacy import legacy_samples_from_csv
+from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
 from soma.pipeline import Pipeline, PipelineResult
 from soma.tasks.registry import task_registry
@@ -326,12 +327,12 @@ class TestSurvivalEndToEnd:
             result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert isinstance(result, PipelineResult)
-        test_report = result.fold_results[0].test_reports["test"]
+        test_report = result.fold_results[0].test_evaluations["test"]
         assert "c_index" in test_report.metrics
-        # Predictions CSV carries survival columns.
-        preds_csv = next(result.run_dir.rglob("predictions_test.csv"))
-        cols = pd.read_csv(preds_csv).columns
-        assert {"sample_id", "true_label", "event", "risk_score"} <= set(cols)
+        # The predictions file carries the survival head's column, never the targets.
+        predictions = Predictions.from_parquet(next(result.run_dir.rglob("predictions_test.parquet")))
+        assert predictions.prediction_columns == ("risk_score",)
+        assert not {"time", "event"} & set(predictions.frame.columns)
 
     def test_patient_level_survival_run(self, tmp_path: Path):
         n = 8
@@ -380,7 +381,7 @@ class TestSurvivalEndToEnd:
             result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert isinstance(result, PipelineResult)
-        assert "c_index" in result.fold_results[0].test_reports["test"].metrics
+        assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
 
 
 @pytest.mark.parametrize("aggregation", [None, "mean_pool"])
@@ -413,7 +414,7 @@ def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, 
     )
     result = Pipeline(config, feature_dir=features).run()
     fold = result.fold_results[0]
-    assert 0 <= fold.test_reports["test"].metrics["c_index"] <= 1
+    assert 0 <= fold.test_evaluations["test"].metrics["c_index"] <= 1
     checkpoint = torch.load(fold.train_result.checkpoint_path, weights_only=False)
     assert tuple(checkpoint["model_state_dict"]["task_head.fc.weight"].shape) == (4, 4)
     assert pd.read_csv(dataset_csv)["bin"].tolist() == [0, 3, 0, 3]

@@ -22,6 +22,7 @@ from soma.registry import Registry
 __all__ = [
     "Budget",
     "Learner",
+    "PredictOutput",
     "SchedulerSpec",
     "StepOutput",
     "learner_registry",
@@ -45,6 +46,19 @@ class StepOutput:
     outputs: Tensor
     targets: dict[str, Tensor]
     size: int
+
+
+@dataclass(frozen=True)
+class PredictOutput:
+    """What one ``predict_step`` hands to :func:`soma.predict` and its callbacks.
+
+    ``columns`` maps each prediction column to one value per sample of the batch (the
+    frame is built from these only); ``raw`` is the full model output, for callbacks
+    that need more (attention, logits).
+    """
+
+    columns: dict[str, Any]
+    raw: Any = None
 
 
 @dataclass(frozen=True)
@@ -167,6 +181,10 @@ class Learner(nn.Module):
     def validation_summary(self, outputs: list[StepOutput]) -> dict[str, float]:
         """Reduce a split's outputs to scalars; must contain ``"loss"``."""
         raise NotImplementedError
+
+    def predict_step(self, batch: Any) -> PredictOutput:
+        """One batch to its prediction columns (see :func:`soma.predict`)."""
+        raise NotImplementedError(f"{type(self).__name__} does not implement predict_step")
 
     # -- optimisation --------------------------------------------------------
 

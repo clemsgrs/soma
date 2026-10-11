@@ -233,12 +233,12 @@ class TestReachesTheHeadThroughTheConfig:
 
     def test_single_embedding_path(self, tmp_path, built_probabilities):
         result = self._train(tmp_path, slide_level=True)
-        assert "auroc" in result.test_reports["test"].metrics
+        assert "auroc" in result.test_evaluations["test"].metrics
         assert built_probabilities == [0.2]
 
     def test_aggregated_path(self, tmp_path, built_probabilities):
         result = self._train(tmp_path, slide_level=False)
-        assert "auroc" in result.test_reports["test"].metrics
+        assert "auroc" in result.test_evaluations["test"].metrics
         assert built_probabilities == [0.2]
 
 

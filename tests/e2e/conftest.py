@@ -56,23 +56,26 @@ def encoded_images(monkeypatch) -> list[int]:
 
 
 @pytest.fixture
-def scored_models(monkeypatch) -> dict[str, SimpleNamespace]:
-    """The trained model, loader and report each split was scored with, keyed by split.
+def scored_models(monkeypatch) -> list[SimpleNamespace]:
+    """Every ``soma.evaluation.predict`` call of the run, in call order: the learner, its
+    model, the loader and the predictions it returned.
 
     Lets a scenario re-score the model the run selected under conditions the run never
     saw (other batch sizes, tile orders, padding) without rebuilding it by hand.
     """
-    import soma.pipeline as pipeline
+    import soma.evaluation
 
-    scored: dict[str, SimpleNamespace] = {}
-    original = pipeline._evaluate
+    scored: list[SimpleNamespace] = []
+    original = soma.evaluation.predict
 
-    def spying(model, loader, split_name, device, **kwargs):
-        report = original(model, loader, split_name, device, **kwargs)
-        scored[split_name] = SimpleNamespace(model=model, loader=loader, report=report)
-        return report
+    def spying(learner, loader, callbacks=()):
+        predictions = original(learner, loader, callbacks)
+        scored.append(
+            SimpleNamespace(learner=learner, model=learner.model, loader=loader, predictions=predictions)
+        )
+        return predictions
 
-    monkeypatch.setattr(pipeline, "_evaluate", spying)
+    monkeypatch.setattr(soma.evaluation, "predict", spying)
     return scored
 
 

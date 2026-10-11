@@ -129,7 +129,7 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
         evaluation=EvalConfig(metrics=["mean_f1"]),
         preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
     )
-    assert "mean_f1" in result.test_reports["test"].metrics
+    assert "mean_f1" in result.test_evaluations["test"].metrics
 
 
 # --------------------------------------------------------------------------- #

@@ -39,25 +39,49 @@ inputs as described in :doc:`caching`.
 Run directory layout
 --------------------
 
-The run directory holds the resolved ``config.yaml``, ``summary.json``, and
-``report.html``. When ``splits.csv`` has no ``fold`` column (or a single fold
-value), the per-fold artifacts are written directly inside it; with several
-folds, each ``fold_N/`` subdirectory holds its own set:
+The run directory holds the resolved ``config.yaml`` and ``summary.json``.
+When ``splits.csv`` has no ``fold`` column (or a single fold value), the
+per-fold artifacts are written directly inside it; with several folds, each
+``fold_N/`` subdirectory holds its own set:
 
 - ``best_model.pt``, ``metrics.json``, ``training_history.json``
 - ``feature_adapter.json`` when ``normalization`` or ``projection`` is active:
   the methods, ``eps`` floor and floored-channel count, dimensions, projection
   seed, PCA explained variance, and the number of samples and feature rows used
   to fit each stage
-- ``predictions_<split>.csv`` and ``subgroup_metrics_<split>.json``
-- ``attention/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when heatmaps
-  are enabled
+- ``predictions_<split>.parquet`` for each test split of a slide, patient or
+  tile run, and ``subgroup_metrics_<split>.json`` when subgroup columns are
+  configured
+- ``attention/<split>/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when
+  heatmaps are enabled
 
 Split-specific artifacts
 ------------------------
 
 When a dataset defines multiple test splits, each split gets its own set of
-artifacts, e.g. ``predictions_test.csv`` and ``predictions_test_external.csv``.
+artifacts, e.g. ``predictions_test.parquet`` and
+``predictions_test_external.parquet``.
+
+Prediction files
+----------------
+
+``predictions_<split>.parquet`` holds one row per sample of the split: a
+``sample_id`` column, the columns the task head declares (``prob_0`` …
+``prob_<k-1>`` and ``predicted_label`` for classification, ``predicted_label``
+and ``raw_score`` for ordinal classification, ``predicted_value`` for
+regression, ``risk_score`` for survival), any column a custom learner adds, and
+``is_placeholder``. A placeholder row is a baseline prediction for a sample
+without features (see :doc:`evaluation`). Targets are not stored here; they
+come from ``dataset.csv``. The parquet schema metadata records the task family,
+the soma version, the role of each column and the class label of each
+probability column. Read the file with
+:meth:`soma.evaluation.Predictions.from_parquet` and score it again with
+``soma evaluate`` (see :doc:`cli`).
+
+Segmentation and detection runs keep their CSV prediction files: a per-tile
+``predictions_<split>.csv`` with raster and overlay paths, and for detection
+the level-0 point list ``predictions_<split>.csv``
+(``sample_id,x,y,class,score``).
 
 Metric keys in ``summary.json`` are prefixed by split name:
 
@@ -80,7 +104,7 @@ Heatmap artifacts
 -----------------
 
 When ``HeatmapConfig.enabled`` is true, the pipeline stores raw attention
-scores in ``attention/<sample_id>.npz`` and rendered overlays in ``heatmaps/``
+scores in ``attention/<split>/<sample_id>.npz`` and rendered overlays in ``heatmaps/``
 (directly in the run directory for single-fold runs, inside each ``fold_N/``
 subdir for cross-validation). The rendered overlays can be regenerated with
 different visual settings without rerunning inference.
@@ -92,9 +116,6 @@ Aggregators that support attention extraction: ``abmil``, ``clam_sb``,
 Heatmap appearance is controlled by :class:`soma.config.HeatmapConfig`:
 ``cmap`` (colormap name, default ``jet``), ``alpha`` (overlay opacity),
 ``blur_sigma`` (Gaussian blur radius in pixels).
-
-See :doc:`reporting` for the contents of ``report.html``, its regeneration,
-and multi-run comparison.
 
 Recoverable shared-storage mirrors
 ----------------------------------
@@ -122,6 +143,6 @@ same ``run.run_id`` and give each its share with ``run.folds`` (for example
 pending folds alone; folds seed independently, so the result matches a single
 launch. While folds remain pending the run is recorded as ``partial`` and no
 ``summary.json`` is written. The launch that finds every fold complete writes
-the summary and the report, so finish with one launch without ``run.folds`` if
+the summary, so finish with one launch without ``run.folds`` if
 no fold launch ended last. Two launches given the same fold would both train
 it: the selection is not a lock.

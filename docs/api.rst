@@ -24,11 +24,9 @@ Main building blocks
    * - :doc:`Tasks <tasks>`
      - Prediction heads and metric contracts
    * - :doc:`Evaluation <evaluation>`
-     - Metric contracts, subgroup analysis, and evaluation results
+     - Metric contracts, subgroup analysis, predictions and evaluations
    * - :doc:`Training <training>`
      - Optimization behavior and training defaults
-   * - :doc:`Reporting <reporting>`
-     - Report contents, subgroup analysis, and comparison statistics
 
 Extract once, cache, and reuse features across experiments
 ----------------------------------------------------------
@@ -209,27 +207,28 @@ are projected explicitly:
 Slides with no sampled ROI are recorded in provenance rather than represented
 by empty samples.
 
-Generate and compare reports
-----------------------------
+Score and compare saved predictions
+-----------------------------------
 
-Reporting reads the saved configuration and artifacts from completed
-``Pipeline`` runs. Given two ``PipelineResult`` objects from pipeline runs:
+Each test split's ``predictions_<split>.parquet`` can be scored again, with
+other metrics or subgroups, and compared across runs. Given two single-fold
+runs over the same cohort:
 
 .. code-block:: python
 
-   from soma.reporting import compare_runs, generate_report
+   from soma import evaluate
+   from soma.evaluation import Predictions, compare
 
-   report_path = generate_report(first_result.run_dir)
-   comparison_path = compare_runs(
-       [first_result.run_dir, second_result.run_dir],
-       labels=["ABMIL", "TransMIL"],
-   )
+   targets = cohort.targets("test")
+   abmil = Predictions.from_parquet(abmil_result.run_dir / "predictions_test.parquet")
+   clam = Predictions.from_parquet(clam_result.run_dir / "predictions_test.parquet")
 
-A single-run report defaults to ``<run_dir>/report.html``; pass ``output_path``
-to change it. Comparisons default to
-``<shared output_root>/comparisons/<comparison-id>/index.html``; pass
-``output_dir`` to choose a bundle directory. See :doc:`reporting` for report
-contents and comparison statistics.
+   evaluation = evaluate(abmil, targets, metrics=["auroc", "f1"], subgroups=["center"])
+   p_values = compare([abmil, clam], targets, "auroc")
+
+``compare`` gives the best set ``1.0`` and every other set the p-value of a
+paired permutation test against it. See :doc:`evaluation` for the scoring
+rules and :doc:`benchmarking` for leaderboards across many runs.
 
 ``soma.list_models(level=...)``, ``list_aggregators()``, ``list_decoders()``,
 ``list_pixel_classifiers()``, and ``list_task_heads()`` list the registered

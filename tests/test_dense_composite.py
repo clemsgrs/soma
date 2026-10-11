@@ -243,8 +243,8 @@ def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
     )
-    assert "test" in result.test_reports
-    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert "test" in result.test_evaluations
+    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
 
 
 @pytest.mark.parametrize(
@@ -331,6 +331,6 @@ def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
         ),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
     )
-    assert "test" in result.test_reports
-    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert "test" in result.test_evaluations
+    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
     assert (tmp_path / "fold" / "preds" / "test" / "s3.png").is_file()

@@ -160,7 +160,7 @@ def test_from_disk_include_tune_surfaces_tune(tmp_path: Path):
 
 
 def test_from_disk_matches_in_memory_aggregation(tmp_path: Path):
-    from soma.evaluation import EvaluationReport
+    from soma.evaluation import Evaluation
     from soma.pipeline import FoldResult
 
     per_fold = [
@@ -173,8 +173,10 @@ def test_from_disk_matches_in_memory_aggregation(tmp_path: Path):
         FoldResult(
             fold=i,
             train_result=None,
-            tune_report=EvaluationReport(split="tune", metrics=m["tune"], predictions=[]),
-            test_reports={"test": EvaluationReport(split="test", metrics=m["test"], predictions=[])},
+            tune_evaluation=Evaluation(metrics=m["tune"], task_family="binary_classification", num_samples=0),
+            test_evaluations={
+                "test": Evaluation(metrics=m["test"], task_family="binary_classification", num_samples=0)
+            },
         )
         for i, m in enumerate(per_fold)
     ]

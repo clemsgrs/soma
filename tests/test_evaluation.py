@@ -1,8 +1,6 @@
-"""Tests for soma.evaluation — metrics dispatcher and reports."""
+"""Numerical oracles for the soma.evaluation metric catalogue and its registry."""
 
 from __future__ import annotations
-
-import json
 
 import numpy as np
 import pytest
@@ -12,9 +10,9 @@ from soma.evaluation.metrics import (
     VALID_METRICS,
     compute_metrics,
     probability_columns,
+    metric_registry,
     resolve_metrics,
 )
-from soma.evaluation.report import EvaluationReport, SamplePrediction
 
 
 # ---------------------------------------------------------------------------
@@ -304,41 +302,18 @@ def test_probability_columns_sort_by_numeric_suffix():
 
 
 # ---------------------------------------------------------------------------
-# Report
+# Registry: family membership and direction
 # ---------------------------------------------------------------------------
 
 
-class TestEvaluationReport:
-    def test_to_dict_round_trip(self):
-        pred = SamplePrediction(
-            sample_id="s1",
-            true_label=0,
-            predicted_label=1,
-            probabilities=[0.3, 0.7],
-        )
-        report = EvaluationReport(
-            split="test",
-            metrics={"accuracy": 0.85, "auroc": 0.92},
-            predictions=[pred],
-        )
-        d = report.to_dict()
-        assert d["split"] == "test"
-        assert d["metrics"]["accuracy"] == 0.85
-        assert len(d["predictions"]) == 1
-        assert d["predictions"][0]["sample_id"] == "s1"
+def test_registry_declares_every_catalogue_metric_under_its_families():
+    for family, names in VALID_METRICS.items():
+        assert set(names) <= set(metric_registry.names(family))
 
-    def test_json_serializable(self):
-        pred = SamplePrediction(
-            sample_id="s1",
-            true_label=0,
-            predicted_label=0,
-            probabilities=[0.9, 0.1],
-        )
-        report = EvaluationReport(
-            split="tune",
-            metrics={"accuracy": 1.0},
-            predictions=[pred],
-        )
-        json_str = json.dumps(report.to_dict())
-        loaded = json.loads(json_str)
-        assert loaded["split"] == "tune"
+
+@pytest.mark.parametrize(
+    ("metric", "higher"),
+    [("mae", False), ("test/rmse", False), ("croma_f0", False), ("auroc", True), ("f1_class_0", True)],
+)
+def test_registry_answers_metric_direction(metric, higher):
+    assert metric_registry.higher_is_better(metric) is higher

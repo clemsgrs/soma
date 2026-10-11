@@ -1,12 +1,10 @@
 """Dense (segmentation) evaluation artifacts: prediction rasters + overlays + CSV.
 
-Streaming side-effect, not a threaded report type. :class:`DenseArtifactWriter` is
-invoked once per batch by the shared dense-eval loop
-(:func:`soma.learn.accumulate_dense_stats`) *before* the logits are
-discarded, so it never holds a cohort of ``(N, C, H, W)`` logits in memory. The
-metrics flow is unchanged: segmentation still returns a plain ``EvaluationReport``
-(``predictions=[]``); these are disk artifacts the report concept (design's
-"DenseEvaluationReport") refers to, not a new dataclass woven through ``FoldResult``.
+Streaming side-effect, not a threaded result type. :class:`DenseArtifactWriter` is
+invoked once per batch by the pipeline's grid evaluation loop (``_evaluate_grid``, through
+a predict-style callback) *before* the logits are discarded, so it never holds a cohort
+of ``(N, C, H, W)`` logits in memory. Segmentation returns a plain
+:class:`~soma.evaluation.Evaluation`; these are disk artifacts beside it.
 
 Artifacts written under ``fold_dir``:
   - ``preds/<split>/<sample_id>.png``    argmax class-index raster (uint8, mode L) —
@@ -88,8 +86,8 @@ def class_palette(num_classes: int) -> np.ndarray:
 class DenseArtifactWriter:
     """Per-batch callback that writes dense prediction rasters, overlays + a CSV.
 
-    Construct one per split; pass it as ``on_batch_output`` to
-    ``accumulate_dense_stats``; call :meth:`finalize` after the loop to flush the CSV.
+    Construct one per split; call it with ``(batch, logits, stat_rows)`` per batch of
+    the grid evaluation loop, then :meth:`finalize` to flush the CSV.
 
     Args:
         head: the ``SegmentationHead`` (for ``num_classes``).

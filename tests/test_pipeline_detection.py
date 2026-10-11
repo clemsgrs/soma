@@ -4,7 +4,7 @@ Builds a pre-extracted dense feature store + point-annotation manifest + splits 
 disk, then runs ``train_one_detection_fold`` — exercising geometry-from-sidecar,
 decoder + DetectionHead construction, the DetectionDataset loaders, ``Trainer.fit``
 (streaming F1@δ tune metric), checkpoint reload, the tune-split threshold sweep, and
-``_evaluate_detection`` (metrics + level-0 predictions CSV). No encoder / GPU needed:
+``_evaluate_grid`` (metrics + level-0 predictions CSV). No encoder / GPU needed:
 the grids are written directly.
 """
 
@@ -168,9 +168,9 @@ def test_train_one_detection_fold_end_to_end(tmp_path: Path):
         preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
     )
 
-    assert "mean_f1" in result.tune_report.metrics
-    assert "test" in result.test_reports
-    assert "mean_f1" in result.test_reports["test"].metrics
+    assert "mean_f1" in result.tune_evaluation.metrics
+    assert "test" in result.test_evaluations
+    assert "mean_f1" in result.test_evaluations["test"].metrics
 
     # Frozen thresholds + per-split prediction CSVs are written.
     thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
@@ -286,8 +286,8 @@ def test_train_one_detection_fold_eval_only_from_checkpoint(tmp_path: Path):
     assert not (tmp_path / "eval_only" / "best_model.pt").exists()
     # The same weights + deterministic decode/match reproduce the headline metric exactly.
     assert (
-        eval_only.test_reports["test"].metrics["mean_f1"]
-        == trained.test_reports["test"].metrics["mean_f1"]
+        eval_only.test_evaluations["test"].metrics["mean_f1"]
+        == trained.test_evaluations["test"].metrics["mean_f1"]
     )
 
 
@@ -345,7 +345,7 @@ def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
         evaluation=EvalConfig(metrics=["mean_f1"]),
         preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
     )
-    assert "mean_f1" in result.test_reports["test"].metrics
+    assert "mean_f1" in result.test_evaluations["test"].metrics
 
 
 def test_train_one_detection_fold_requires_num_classes(tmp_path: Path):
@@ -523,8 +523,8 @@ def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
     )
 
     # Tune still evaluated; no test split touched.
-    assert "mean_f1" in result.tune_report.metrics
-    assert result.test_reports == {}
+    assert "mean_f1" in result.tune_evaluation.metrics
+    assert result.test_evaluations == {}
 
     # Threshold sweep (tune-only) still ran and was frozen.
     thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
@@ -589,12 +589,14 @@ def test_threshold_sweep_ignores_predictions_on_ignored_pixels():
     assert threshold < 0.5
 
 
-def test_evaluate_detection_ignores_predictions_on_ignored_pixels(tmp_path: Path):
-    from soma.pipeline import _evaluate_detection
+def test_evaluate_grid_ignores_detections_on_ignored_pixels(tmp_path: Path):
+    from soma.learn import DenseLearner
+    from soma.pipeline import _evaluate_grid
 
     model, head, loader = _ignore_right_half_batch()
     head.score_threshold = 0.2
+    model.task_head = head
 
-    report = _evaluate_detection(model, loader, "test", torch.device("cpu"), head=head, dataset=None)
+    report = _evaluate_grid(DenseLearner(model), loader, torch.device("cpu"))
 
     assert report.metrics["mean_f1"] == pytest.approx(1.0)

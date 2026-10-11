@@ -1760,7 +1760,7 @@ def test_detection_eval_only_rerun_reconstructs_the_projected_model(tmp_path: Pa
     )
 
     assert result.train_result is None  # eval-only: no epoch history
-    assert result.test_reports["test"].metrics  # a real forward pass happened
+    assert result.test_evaluations["test"].metrics  # a real forward pass happened
 
 
 def test_ocelot_greedy_rescoring_reconstructs_the_projected_model(tmp_path: Path):

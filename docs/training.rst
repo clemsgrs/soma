@@ -115,4 +115,26 @@ tune metrics, patience, trainable parameter count, timing, and the active fold
 for cross-validation. The same history is saved in ``training_history.json``,
 one row per epoch (``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds``, then
 ``loss`` and one column per tune metric, ``null`` on an epoch without a tune
-evaluation), and shown in the HTML report.
+evaluation).
+
+Predict and evaluate from Python
+--------------------------------
+
+:func:`soma.fit` trains a learner (or a bare model). :func:`soma.learn.loaders`
+builds one fold's loaders from a set source and a cohort. :func:`soma.predict`
+and :func:`soma.evaluate` then score the trained model (see :doc:`evaluation`):
+
+.. code-block:: python
+
+   import soma
+   from soma.learn import loaders
+
+   fold = loaders(source, cohort, head=model.task_head, fold=0, batch_size=4)
+   result = soma.fit(model, fold.train, fold.tune, max_epochs=50)
+   predictions = soma.predict(result.learner, fold.tests["test"])
+   evaluation = soma.evaluate(predictions, cohort.targets("test"))
+   predictions.to_parquet("predictions_test.parquet")
+
+``predict`` takes callbacks for side artefacts:
+``soma.heatmaps.SaveAttention(dir)`` writes each bag's normalised tile attention
+to ``<dir>/<sample_id>.npz``.

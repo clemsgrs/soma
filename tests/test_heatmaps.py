@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -72,11 +73,10 @@ def _write_process_list(path: Path, rows: list[dict]) -> None:
 
 
 def _write_predictions(path: Path, sample_ids: list[str]) -> None:
-    with open(path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=["sample_id", "true_label", "predicted_label"])
-        writer.writeheader()
-        for sid in sample_ids:
-            writer.writerow({"sample_id": sid, "true_label": 0, "predicted_label": 0})
+    from soma.evaluation import Predictions
+
+    frame = pd.DataFrame({"sample_id": sample_ids, "predicted_value": [0.0] * len(sample_ids)})
+    Predictions(frame, task_family="regression").to_parquet(path)
 
 
 def _write_coords(npz_path: Path, meta_path: Path, n: int = 4, tile_size: int = 200) -> None:
@@ -129,21 +129,21 @@ def testnormalize_attention_clam_mb_shape():
 
 
 def test_read_sample_ids_from_predictions(tmp_path):
-    path = tmp_path / "predictions.csv"
+    path = tmp_path / "predictions_test.parquet"
     _write_predictions(path, ["s1", "s2", "s3"])
     ids = _read_sample_ids_from_predictions(path)
     assert ids == ["s1", "s2", "s3"]
 
 
-def test_prediction_files_for_fold_prefers_current_split_files(tmp_path):
-    _write_predictions(tmp_path / "predictions_test.csv", ["s1"])
-    _write_predictions(tmp_path / "predictions_test_external.csv", ["s2"])
+def test_prediction_files_for_fold_lists_each_split_parquet(tmp_path):
+    _write_predictions(tmp_path / "predictions_test.parquet", ["s1"])
+    _write_predictions(tmp_path / "predictions_test_external.parquet", ["s2"])
 
     files = _prediction_files_for_fold(tmp_path)
 
     assert files == [
-        ("test", tmp_path / "predictions_test.csv"),
-        ("test_external", tmp_path / "predictions_test_external.csv"),
+        ("test", tmp_path / "predictions_test.parquet"),
+        ("test_external", tmp_path / "predictions_test_external.parquet"),
     ]
 
 

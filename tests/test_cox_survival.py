@@ -19,6 +19,7 @@ import torch
 from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
 from soma.data import SampleRecord
 from soma.data._legacy import legacy_samples_from_csv
+from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics
 from soma.pipeline import Pipeline, PipelineResult
 from soma.tasks.survival import (
@@ -446,11 +447,11 @@ class TestCoxEndToEnd:
             result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert isinstance(result, PipelineResult)
-        test_report = result.fold_results[0].test_reports["test"]
+        test_report = result.fold_results[0].test_evaluations["test"]
         assert "c_index" in test_report.metrics
-        preds_csv = next(result.run_dir.rglob("predictions_test.csv"))
-        cols = pd.read_csv(preds_csv).columns
-        assert {"sample_id", "true_label", "event", "risk_score"} <= set(cols)
+        predictions = Predictions.from_parquet(next(result.run_dir.rglob("predictions_test.parquet")))
+        assert predictions.task_family == "survival"
+        assert predictions.prediction_columns == ("risk_score",)
 
     def test_patient_level_cox_run(self, tmp_path: Path):
         n = 8
@@ -499,4 +500,4 @@ class TestCoxEndToEnd:
             result = Pipeline(config, feature_dir=feature_dir).run()
 
         assert isinstance(result, PipelineResult)
-        assert "c_index" in result.fold_results[0].test_reports["test"].metrics
+        assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics

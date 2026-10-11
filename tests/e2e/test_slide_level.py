@@ -116,8 +116,9 @@ def test_slide_classification_is_learned_cached_and_repeatable(
         {k: sha256(p) for k, p in warm.predictions().items()},
     )
     artifact.check_equal("warm/metrics_identical", warm.summary, cold.summary)
-    for name in ("config.yaml", "best_model.pt", "report.html", "predictions_test.csv"):
+    for name in ("config.yaml", "best_model.pt", "predictions_test.parquet"):
         artifact.check_equal(f"cold/bundle/{name}", (cold.run_dir / name).is_file(), True)
+    artifact.check_equal("cold/bundle/no_html_report", (cold.run_dir / "report.html").exists(), False)
     artifact.assert_passed()
 
 

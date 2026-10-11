@@ -1,262 +1,138 @@
-"""Tests for subgroup analysis: metrics computation, stats, pipeline integration, HTML."""
+"""Subgroup breakdowns through ``soma.evaluate``: the same metrics over each group of a
+target metadata column, plus a permutation p-value of each group against the rest."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
-import warnings
 
-import numpy as np
 import pandas as pd
 import pytest
-import yaml
 
-from soma.config import AggregatorConfig, EvalConfig, PipelineConfig, SubgroupConfig, TaskConfig, TrainingConfig
-from soma.evaluation.metrics import bh_correct, compare_run_predictions
-from soma.evaluation.metrics import (
-    _extract_arrays,
-    compute_subgroup_metrics,
-    compute_subgroup_stats,
-)
-from soma.evaluation.report import EvaluationReport, SamplePrediction
-from soma.reporting import generate_report, load_run_data
-from soma.reporting.data import FoldData, RunData, aggregate_fold_predictions, run_data_from_result
-from soma.reporting.html import render_report
+from soma.config import EvalConfig, SubgroupConfig, TaskConfig, TrainingConfig
+from soma.evaluation import Predictions, evaluate, metric_registry
+from soma.evaluation.subgroups import subgroup_stats
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_binary_preds_df(n: int = 16) -> pd.DataFrame:
-    """Create a deterministic binary-classification predictions DataFrame."""
-    true_labels = [i % 2 for i in range(n)]
-    return pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": true_labels,
-        "prob_0": [0.3 if t == 1 else 0.7 for t in true_labels],
-        "prob_1": [0.7 if t == 1 else 0.3 for t in true_labels],
-        "sex": (["M"] * (n // 2) + ["F"] * (n // 2)),
-        "grade": (["low", "high"] * (n // 2)),
-    })
-
-
-def _make_run_dir(
-    tmp_path: Path,
-    *,
-    subgroup_columns: list[str] | None = None,
-    subgroup_metrics_data: dict | None = None,
-) -> Path:
-    """Build a synthetic run directory for reporting tests."""
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-
-    config = {
-        "dataset_csv": "/data/dataset.csv",
-        "splits_csv": "/data/splits.csv",
-        "output_root": "/output",
-        "task": {"name": "binary_classification", "params": {}},
-        "evaluation": {
-            "metrics": ["auroc"],
-            "subgroups": {
-                "columns": subgroup_columns or [],
-            },
+def _binary(n: int = 16) -> tuple[Predictions, pd.DataFrame]:
+    """Perfect binary predictions over ``n`` samples; ``sex`` splits them in halves and
+    ``grade`` alternates."""
+    labels = [i % 2 for i in range(n)]
+    ids = [f"s{i:02d}" for i in range(n)]
+    predictions = Predictions(
+        pd.DataFrame(
+            {
+                "sample_id": ids,
+                "prob_0": [0.3 if t else 0.7 for t in labels],
+                "prob_1": [0.7 if t else 0.3 for t in labels],
+                "predicted_label": labels,
+            }
+        ),
+        task_family="binary_classification",
+    )
+    targets = pd.DataFrame(
+        {
+            "label": labels,
+            "sex": ["M"] * (n // 2) + ["F"] * (n // 2),
+            "grade": ["low", "high"] * (n // 2),
         },
-        "encoder": None,
-        "aggregator": {"name": "abmil", "params": {}},
-        "training": {"seed": 42, "epochs": 4, "learning_rate": 1e-4,
-                     "optimizer": "adam", "scheduler": "cosine", "patience": 10, "batch_size": 1},
-        "tags": [],
+        index=pd.Index(ids, name="sample_id"),
+    )
+    return predictions, targets
+
+
+def test_each_group_of_a_column_gets_the_metrics_and_its_size():
+    predictions, targets = _binary(16)
+
+    breakdown = evaluate(predictions, targets, metrics=["auroc"], subgroups=["sex"]).subgroups
+
+    assert set(breakdown) == {"metrics", "stats"}
+    assert breakdown["metrics"]["sex"] == {
+        "F": {"auroc": 1.0, "n": 8},
+        "M": {"auroc": 1.0, "n": 8},
     }
-    (run_dir / "config.yaml").write_text(yaml.dump(config))
-    (run_dir / "run.yaml").write_text(yaml.dump({"run_id": "test-run", "status": "completed"}))
-    (run_dir / "summary.json").write_text(json.dumps({"test/auroc": 0.85}))
-
-    # single-fold: flat layout, artifacts directly in run_dir
-    (run_dir / "training_history.json").write_text(
-        json.dumps({"epochs": [], "peak_per_metric": {}})
-    )
-    (run_dir / "metrics.json").write_text(json.dumps({
-        "tune": {"auroc": 0.82},
-        "test": {"auroc": 0.85},
-    }))
-
-    df = _make_binary_preds_df()
-    if subgroup_columns:
-        # Keep subgroup columns in the predictions CSV (as enriched by pipeline)
-        df.to_csv(run_dir / "predictions_test.csv", index=False)
-    else:
-        df[["sample_id", "true_label", "predicted_label", "prob_0", "prob_1"]].to_csv(
-            run_dir / "predictions_test.csv", index=False
-        )
-
-    if subgroup_metrics_data is not None:
-        (run_dir / "subgroup_metrics_test.json").write_text(json.dumps(subgroup_metrics_data))
-
-    return run_dir
 
 
-# ---------------------------------------------------------------------------
-# _extract_arrays
-# ---------------------------------------------------------------------------
+def test_every_requested_column_is_broken_down():
+    predictions, targets = _binary(16)
+
+    breakdown = evaluate(predictions, targets, metrics=["auroc"], subgroups=["sex", "grade"]).subgroups
+
+    assert set(breakdown["metrics"]) == {"sex", "grade"}
+    assert set(breakdown["metrics"]["grade"]) == {"low", "high"}
 
 
-def test_extract_arrays_classification() -> None:
-    """_extract_arrays returns correct y_true, y_pred, y_prob for classification."""
-    df = pd.DataFrame({
-        "true_label": [0, 1, 0, 1],
-        "predicted_label": [0, 1, 1, 1],
-        "prob_0": [0.8, 0.3, 0.4, 0.2],
-        "prob_1": [0.2, 0.7, 0.6, 0.8],
-    })
-    y_true, y_pred, y_prob = _extract_arrays(df, "binary_classification")
+def test_a_single_sample_group_is_skipped():
+    predictions, targets = _binary(4)
+    targets["site"] = ["A", "B", "A", "A"]
 
-    np.testing.assert_array_equal(y_true, [0, 1, 0, 1])
-    np.testing.assert_array_equal(y_pred, [0, 1, 1, 1])
-    assert y_prob is not None
-    assert y_prob.shape == (4, 2)
-    np.testing.assert_allclose(y_prob[:, 1], [0.2, 0.7, 0.6, 0.8])
+    breakdown = evaluate(predictions, targets, metrics=["balanced_accuracy"], subgroups=["site"]).subgroups
+
+    assert set(breakdown["metrics"]["site"]) == {"A"}
 
 
-def test_extract_arrays_regression() -> None:
-    """_extract_arrays returns y_pred from predicted_value for regression."""
-    df = pd.DataFrame({
-        "true_label": [1.0, 2.0, 3.0],
-        "predicted_value": [1.1, 1.9, 3.2],
-    })
-    y_true, y_pred, y_prob = _extract_arrays(df, "regression")
+def test_an_unknown_subgroup_column_is_refused():
+    predictions, targets = _binary(8)
 
-    np.testing.assert_allclose(y_true, [1.0, 2.0, 3.0])
-    np.testing.assert_allclose(y_pred, [1.1, 1.9, 3.2])
-    assert y_prob is None
+    with pytest.raises(ValueError, match="nonexistent"):
+        evaluate(predictions, targets, subgroups=["nonexistent"])
 
 
-# ---------------------------------------------------------------------------
-# compute_subgroup_metrics
-# ---------------------------------------------------------------------------
+def test_no_subgroup_columns_gives_an_empty_breakdown():
+    predictions, targets = _binary(8)
+
+    assert evaluate(predictions, targets).subgroups == {}
 
 
-def test_compute_subgroup_metrics_binary() -> None:
-    """compute_subgroup_metrics returns metrics for each group value."""
-    df = _make_binary_preds_df(n=16)
-    result = compute_subgroup_metrics("binary_classification", ["auroc"], df, ["sex"])
+def test_permutation_p_values_cover_groups_of_at_least_ten_samples():
+    predictions, targets = _binary(18)
+    targets["site"] = ["A"] * 10 + ["B"] * 8
 
-    assert "sex" in result
-    assert "M" in result["sex"]
-    assert "F" in result["sex"]
-    assert "auroc" in result["sex"]["M"]
-    assert result["sex"]["M"]["n"] == 8
-    assert result["sex"]["F"]["n"] == 8
+    stats = evaluate(predictions, targets, metrics=["auroc"], subgroups=["site"]).subgroups["stats"]
+
+    # Site B has 8 samples, below the 10-sample floor of the permutation test.
+    assert set(stats["site"]) == {"A"}
+    assert 0.0 <= stats["site"]["A"]["auroc"] <= 1.0
 
 
-def test_compute_subgroup_metrics_includes_n() -> None:
-    """Each group dict has an 'n' key with the sample count."""
-    df = _make_binary_preds_df(n=16)
-    result = compute_subgroup_metrics("binary_classification", ["auroc"], df, ["sex"])
+def test_the_permutation_test_is_seeded():
+    predictions, targets = _binary(32)
+    frame = predictions.frame.set_index("sample_id")
+    metrics = {"auroc": metric_registry.get("auroc").fn}
 
-    for group_data in result["sex"].values():
-        assert "n" in group_data
-        assert isinstance(group_data["n"], int)
-
-
-def test_compute_subgroup_metrics_skips_single_sample_group() -> None:
-    """Groups with n < 2 are skipped."""
-    df = pd.DataFrame({
-        "sample_id": ["s0", "s1", "s2"],
-        "true_label": [0, 1, 0],
-        "predicted_label": [0, 1, 0],
-        "prob_0": [0.8, 0.3, 0.7],
-        "prob_1": [0.2, 0.7, 0.3],
-        "group": ["A", "B", "A"],  # B has only 1 sample
-    })
-    result = compute_subgroup_metrics("binary_classification", ["auroc"], df, ["group"])
-
-    assert "A" in result["group"]
-    assert "B" not in result["group"]  # single sample — skipped
-
-
-def test_compute_subgroup_metrics_missing_column_skipped() -> None:
-    """Columns not present in the DataFrame are silently skipped."""
-    df = _make_binary_preds_df(n=8)
-    result = compute_subgroup_metrics("binary_classification", ["auroc"], df, ["nonexistent"])
-
-    assert result == {}
-
-
-def test_compute_subgroup_metrics_multiple_columns() -> None:
-    """Multiple subgroup columns each produce their own entry."""
-    df = _make_binary_preds_df(n=16)
-    result = compute_subgroup_metrics("binary_classification", ["auroc"], df, ["sex", "grade"])
-
-    assert "sex" in result
-    assert "grade" in result
-    assert set(result["grade"].keys()) == {"low", "high"}
-
-
-# ---------------------------------------------------------------------------
-# compute_subgroup_stats
-# ---------------------------------------------------------------------------
-
-
-def test_compute_subgroup_stats_structure() -> None:
-    """compute_subgroup_stats returns p-values in [0, 1] for qualifying groups."""
-    df = _make_binary_preds_df(n=32)
-    # Use a small number of permutations for speed in tests
-    result = compute_subgroup_stats(
-        "binary_classification", ["auroc"], df, ["sex"],
-        n_permutations=50, min_group_size=5,
+    first, second = (
+        subgroup_stats(frame, targets, metrics, ["sex"], n_permutations=50, min_group_size=5)
+        for _ in range(2)
     )
 
-    assert "sex" in result
-    for group, metric_pvals in result["sex"].items():
-        assert "auroc" in metric_pvals
-        assert 0.0 <= metric_pvals["auroc"] <= 1.0
+    assert first == second
+    assert set(first["sex"]) == {"F", "M"}
 
 
-def test_compute_subgroup_stats_skips_small_groups() -> None:
-    """Groups with n < min_group_size are not included in stats output."""
-    df = _make_binary_preds_df(n=16)
-    # Set min_group_size > group size (8 per group) → no groups qualify
-    result = compute_subgroup_stats(
-        "binary_classification", ["auroc"], df, ["sex"],
-        n_permutations=10, min_group_size=20,
+def test_survival_predictions_break_down_by_subgroup():
+    ids = [f"s{i}" for i in range(8)]
+    predictions = Predictions(
+        pd.DataFrame({"sample_id": ids, "risk_score": [8.0, 7, 6, 5, 4, 3, 2, 1]}),
+        task_family="survival",
+    )
+    targets = pd.DataFrame(
+        {"time": [1.0, 2, 3, 4, 5, 6, 7, 8], "event": [1] * 8, "site": ["A", "B"] * 4},
+        index=pd.Index(ids, name="sample_id"),
     )
 
-    # sex groups have n=8, below the threshold
-    assert result.get("sex", {}) == {}
+    breakdown = evaluate(predictions, targets, subgroups=["site"]).subgroups
+
+    assert breakdown["metrics"]["site"]["A"] == {"c_index": 1.0, "n": 4}
 
 
-def test_compute_subgroup_stats_seed_reproducible() -> None:
-    """Same seed produces identical p-values across two calls."""
-    df = _make_binary_preds_df(n=32)
-    kwargs = dict(n_permutations=100, seed=99, min_group_size=5)
-    r1 = compute_subgroup_stats("binary_classification", ["auroc"], df, ["sex"], **kwargs)
-    r2 = compute_subgroup_stats("binary_classification", ["auroc"], df, ["sex"], **kwargs)
-
-    assert r1["sex"]["M"]["auroc"] == r2["sex"]["M"]["auroc"]
-
-
-# ---------------------------------------------------------------------------
-# SubgroupConfig validation in pipeline
-# ---------------------------------------------------------------------------
-
-
-def test_subgroup_column_validation_raises_for_missing_column(tmp_path: Path) -> None:
-    """Configuring a subgroup column that is not in the dataset raises a clear error."""
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.data import CachedSetSource
-    from soma.pipeline import train_one_fold
+def test_a_subgroup_column_missing_from_the_dataset_is_refused_before_training(tmp_path: Path) -> None:
     from soma.data import FoldSplit
+    from soma.data._legacy import legacy_samples_from_csv
+    from soma.pipeline import train_one_fold
 
-    # Build a minimal dataset with no extra metadata columns
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text("sample_id,image_path,label\ns0,/img/s0.tif,0\ns1,/img/s1.tif,1\n")
     dataset = legacy_samples_from_csv(dataset_csv)
-
-    fold_split = FoldSplit(train=("s0",), tune=("s1",), tests={"test": ("s0",)})
     feature_store = MagicMock()
     feature_store.has_feature_manifest = False
     feature_store.rank = 1
@@ -267,509 +143,9 @@ def test_subgroup_column_validation_raises_for_missing_column(tmp_path: Path) ->
         train_one_fold(
             feature_store=feature_store,
             dataset=dataset,
-            fold_split=fold_split,
+            fold_split=FoldSplit(train=("s0",), tune=("s1",), tests={"test": ("s0",)}),
             task=TaskConfig(name="binary_classification"),
             evaluation=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
-
             training=TrainingConfig(seed=0, epochs=1),
             fold_dir=tmp_path / "fold_0",
         )
-
-
-# ---------------------------------------------------------------------------
-# Predictions CSV enrichment (pipeline integration)
-# ---------------------------------------------------------------------------
-
-
-def test_predictions_csv_enriched_with_subgroup_columns(tmp_path: Path) -> None:
-    """_save_predictions writes subgroup columns when subgroup_data is provided."""
-    from soma.evaluation.report import EvaluationReport, SamplePrediction
-    from soma.pipeline import _build_subgroup_data, _save_predictions
-    from soma.data._legacy import legacy_samples_from_csv
-
-    dataset_csv = tmp_path / "dataset.csv"
-    dataset_csv.write_text(
-        "sample_id,image_path,label,sex\n"
-        "s0,/img/s0.tif,0,M\n"
-        "s1,/img/s1.tif,1,F\n"
-    )
-    dataset = legacy_samples_from_csv(dataset_csv)
-
-    predictions = [
-        SamplePrediction(sample_id="s0", true_label=0, predicted_label=0, probabilities=[0.8, 0.2]),
-        SamplePrediction(sample_id="s1", true_label=1, predicted_label=1, probabilities=[0.3, 0.7]),
-    ]
-    report = EvaluationReport(split="test", metrics={"auroc": 0.9}, predictions=predictions)
-
-    subgroup_data = _build_subgroup_data(dataset, report, ["sex"])
-    path = tmp_path / "predictions.csv"
-    _save_predictions(report, path, subgroup_data=subgroup_data)
-
-    df = pd.read_csv(path)
-    assert "sex" in df.columns
-    assert df.loc[df["sample_id"] == "s0", "sex"].iloc[0] == "M"
-    assert df.loc[df["sample_id"] == "s1", "sex"].iloc[0] == "F"
-
-
-def test_predictions_csv_no_extra_cols_when_no_subgroups(tmp_path: Path) -> None:
-    """_save_predictions without subgroup_data produces only prediction columns."""
-    from soma.evaluation.report import EvaluationReport, SamplePrediction
-    from soma.pipeline import _save_predictions
-
-    predictions = [
-        SamplePrediction(sample_id="s0", true_label=0, predicted_label=0, probabilities=[0.8, 0.2]),
-    ]
-    report = EvaluationReport(split="test", metrics={}, predictions=predictions)
-    path = tmp_path / "predictions.csv"
-    _save_predictions(report, path)
-
-    df = pd.read_csv(path)
-    assert set(df.columns) == {"sample_id", "true_label", "predicted_label", "prob_0", "prob_1"}
-
-
-def test_predictions_csv_includes_placeholder_columns_when_present(tmp_path: Path) -> None:
-    """_save_predictions includes placeholder provenance for fallback rows."""
-    from soma.evaluation.report import EvaluationReport, SamplePrediction
-    from soma.pipeline import _save_predictions
-
-    predictions = [
-        SamplePrediction(
-            sample_id="s0",
-            true_label=0,
-            predicted_label=0,
-            probabilities=[0.5, 0.5],
-            is_placeholder=True,
-            missing_reason="no_tiles",
-        ),
-    ]
-    report = EvaluationReport(split="test", metrics={"coverage": 0.0}, predictions=predictions)
-    path = tmp_path / "predictions.csv"
-    _save_predictions(report, path)
-
-    df = pd.read_csv(path)
-    assert set(df.columns) == {
-        "sample_id",
-        "true_label",
-        "predicted_label",
-        "prob_0",
-        "prob_1",
-        "is_placeholder",
-        "missing_reason",
-    }
-    assert bool(df.loc[0, "is_placeholder"]) is True
-    assert df.loc[0, "missing_reason"] == "no_tiles"
-
-
-# ---------------------------------------------------------------------------
-# Subgroup metrics JSON saved to disk
-# ---------------------------------------------------------------------------
-
-
-def test_subgroup_metrics_json_saved_and_loaded(tmp_path: Path) -> None:
-    """load_run_data reads subgroup_metrics.json when present."""
-    sg_data = {
-        "metrics": {
-            "sex": {
-                "M": {"auroc": 0.82, "n": 8},
-                "F": {"auroc": 0.91, "n": 8},
-            }
-        },
-        "stats": {
-            "sex": {"M": {"auroc": 0.12}, "F": {"auroc": 0.12}},
-        },
-    }
-    run_dir = _make_run_dir(
-        tmp_path,
-        subgroup_columns=["sex"],
-        subgroup_metrics_data=sg_data,
-    )
-
-    run_data = load_run_data(run_dir)
-
-    assert run_data.subgroup_columns == ["sex"]
-    fd = run_data.folds[0]
-    assert fd.subgroup_metrics is not None
-    assert "test" in fd.subgroup_metrics
-    assert "metrics" in fd.subgroup_metrics["test"]
-    assert fd.subgroup_metrics["test"]["metrics"]["sex"]["M"]["auroc"] == 0.82
-
-
-def test_subgroup_metrics_json_absent_gives_none(tmp_path: Path) -> None:
-    """FoldData.subgroup_metrics is None when subgroup_metrics.json is absent."""
-    run_dir = _make_run_dir(tmp_path)  # no subgroup_metrics_data
-    run_data = load_run_data(run_dir)
-
-    assert run_data.folds[0].subgroup_metrics is None
-
-
-# ---------------------------------------------------------------------------
-# HTML report subgroup section
-# ---------------------------------------------------------------------------
-
-
-def test_report_contains_subgroup_section_when_configured(tmp_path: Path) -> None:
-    """render_report includes Subgroup Analysis when subgroup columns are configured."""
-    run_dir = _make_run_dir(tmp_path, subgroup_columns=["sex"])
-    html = generate_report(run_dir).read_text()
-
-    assert "Subgroup Analysis" in html
-    assert "sex" in html
-
-
-def test_report_no_subgroup_section_when_not_configured(tmp_path: Path) -> None:
-    """render_report omits Subgroup Analysis when no columns are configured."""
-    run_dir = _make_run_dir(tmp_path)
-    html = generate_report(run_dir).read_text()
-
-    assert "Subgroup Analysis" not in html
-
-
-def test_subgroup_section_contains_css_highlight_classes(tmp_path: Path) -> None:
-    """When subgroup data is present, the HTML report uses subgroup highlight CSS classes."""
-    run_dir = _make_run_dir(tmp_path, subgroup_columns=["sex"])
-    html = generate_report(run_dir).read_text()
-    # CSS classes for highlighting must be defined in the report
-    assert "subgroup-sig" in html or "subgroup-flag" in html or "subgroup-sig-small" in html
-
-
-# ---------------------------------------------------------------------------
-# aggregate_fold_predictions
-# ---------------------------------------------------------------------------
-
-
-def _fold(df: pd.DataFrame, split_name: str = "test") -> FoldData:
-    """Wrap a DataFrame as a minimal FoldData for testing."""
-    return FoldData(
-        fold=0,
-        training_history=[],
-        tune_metrics={},
-        test_metrics={split_name: {}},
-        predictions={split_name: df},
-    )
-
-
-def test_aggregate_fold_predictions_no_duplicates_unchanged() -> None:
-    """Two folds with disjoint sample_ids are simply concatenated."""
-    fold0 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-        "prob_0": [0.8], "prob_1": [0.2],
-    }))
-    fold1 = _fold(pd.DataFrame({
-        "sample_id": ["s1"], "true_label": [1], "predicted_label": [1],
-        "prob_0": [0.3], "prob_1": [0.7],
-    }))
-    result = aggregate_fold_predictions([fold0, fold1], "test")
-    assert len(result) == 2
-    assert set(result["sample_id"]) == {"s0", "s1"}
-
-
-def test_aggregate_fold_predictions_averages_probs() -> None:
-    """Same sample in two folds has its probs averaged."""
-    fold0 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-        "prob_0": [0.8], "prob_1": [0.2],
-    }))
-    fold1 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [1],
-        "prob_0": [0.6], "prob_1": [0.4],
-    }))
-    result = aggregate_fold_predictions([fold0, fold1], "test")
-    assert len(result) == 1
-    assert result["prob_0"].iloc[0] == pytest.approx(0.7)
-    assert result["prob_1"].iloc[0] == pytest.approx(0.3)
-
-
-def test_aggregate_fold_predictions_preserves_predicted_label_without_higher_signal() -> None:
-    """Label-only duplicates keep the stored predicted_label."""
-    fold0 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-    }))
-    fold1 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-    }))
-    result = aggregate_fold_predictions([fold0, fold1], "test")
-    assert len(result) == 1
-    assert result["predicted_label"].iloc[0] == 0
-
-
-def test_aggregate_fold_predictions_raises_on_conflicting_label_only_duplicates() -> None:
-    """Conflicting label-only duplicates must fail instead of picking one arbitrarily."""
-    fold0 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-    }))
-    fold1 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [1],
-    }))
-
-    with pytest.raises(ValueError, match="conflicting predicted_label values"):
-        aggregate_fold_predictions([fold0, fold1], "test")
-
-
-def test_aggregate_fold_predictions_recomputes_predicted_label() -> None:
-    """predicted_label is recomputed as argmax of averaged probs."""
-    fold0 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [1], "predicted_label": [0],
-        "prob_0": [0.6], "prob_1": [0.4],   # fold 0: class 0 wins
-    }))
-    fold1 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [1], "predicted_label": [1],
-        "prob_0": [0.3], "prob_1": [0.7],   # fold 1: class 1 wins
-    }))
-    result = aggregate_fold_predictions([fold0, fold1], "test")
-    # mean prob_0=0.45, mean prob_1=0.55 → argmax = 1
-    assert result["predicted_label"].iloc[0] == 1
-
-
-def test_aggregate_fold_predictions_regression() -> None:
-    """Regression predictions (predicted_value) are averaged across folds."""
-    fold0 = _fold(pd.DataFrame({"sample_id": ["s0"], "true_label": [3.0], "predicted_value": [2.8]}))
-    fold1 = _fold(pd.DataFrame({"sample_id": ["s0"], "true_label": [3.0], "predicted_value": [3.2]}))
-    result = aggregate_fold_predictions([fold0, fold1], "test")
-    assert len(result) == 1
-    assert result["predicted_value"].iloc[0] == pytest.approx(3.0)
-
-
-def test_aggregate_fold_predictions_preserves_subgroup_columns() -> None:
-    """Metadata columns (subgroup) are kept from the first fold."""
-    fold0 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-        "prob_0": [0.7], "prob_1": [0.3], "sex": ["M"],
-    }))
-    fold1 = _fold(pd.DataFrame({
-        "sample_id": ["s0"], "true_label": [0], "predicted_label": [0],
-        "prob_0": [0.7], "prob_1": [0.3], "sex": ["M"],
-    }))
-    result = aggregate_fold_predictions([fold0, fold1], "test")
-    assert result["sex"].iloc[0] == "M"
-
-
-# ---------------------------------------------------------------------------
-# bh_correct
-# ---------------------------------------------------------------------------
-
-
-def test_bh_correct_empty() -> None:
-    assert bh_correct([]) == []
-
-
-def test_bh_correct_single() -> None:
-    assert bh_correct([0.03]) == [0.03]
-
-
-def test_bh_correct_all_significant() -> None:
-    """Clearly small p-values remain below 0.05 after correction."""
-    adjusted = bh_correct([0.001, 0.002, 0.003])
-    assert all(p < 0.05 for p in adjusted)
-
-
-def test_bh_correct_none_significant() -> None:
-    """Large p-values remain above 0.05 after correction."""
-    adjusted = bh_correct([0.4, 0.5, 0.6])
-    assert all(p > 0.05 for p in adjusted)
-
-
-def test_bh_correct_preserves_order_relationship() -> None:
-    """Adjusted p-values maintain the same rank order as raw p-values."""
-    raw = [0.01, 0.04, 0.20, 0.50]
-    adjusted = bh_correct(raw)
-    assert adjusted[0] <= adjusted[1] <= adjusted[2] <= adjusted[3]
-
-
-def test_bh_correct_known_values() -> None:
-    """BH step-up on a known example matches hand-computed output.
-
-    Input: [0.01, 0.04, 0.10, 0.20], n=4
-    Ranks (ascending): p_(1)=0.01, p_(2)=0.04, p_(3)=0.10, p_(4)=0.20
-    Adjusted (step-up from largest):
-      rank 4: 0.20 * 4/4 = 0.20
-      rank 3: min(0.20, 0.10 * 4/3) = min(0.20, 0.133) = 0.133
-      rank 2: min(0.133, 0.04 * 4/2) = min(0.133, 0.08) = 0.08
-      rank 1: min(0.08, 0.01 * 4/1) = min(0.08, 0.04) = 0.04
-    """
-    raw = [0.01, 0.04, 0.10, 0.20]
-    adjusted = bh_correct(raw)
-    assert adjusted == pytest.approx([0.04, 0.08, 0.1333, 0.20], abs=1e-3)
-
-
-# ---------------------------------------------------------------------------
-# compare_run_predictions
-# ---------------------------------------------------------------------------
-
-
-def _make_binary_preds(n: int, prob_1: list[float], seed: int = 0) -> pd.DataFrame:
-    rng = np.random.default_rng(seed)
-    true_labels = rng.integers(0, 2, size=n)
-    predicted = (np.array(prob_1) >= 0.5).astype(int)
-    return pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": predicted,
-        "prob_0": [1 - p for p in prob_1],
-        "prob_1": prob_1,
-    })
-
-
-def test_compare_run_predictions_best_gets_1() -> None:
-    """Best run always receives p-value 1.0."""
-    rng = np.random.default_rng(0)
-    n = 60
-    true_labels = (rng.random(n) > 0.5).astype(int)
-    # Run 0: well-separated probabilities
-    prob_good = np.where(true_labels, rng.uniform(0.7, 1.0, n), rng.uniform(0.0, 0.3, n))
-    # Run 1: near-random probabilities
-    prob_bad = rng.uniform(0.3, 0.7, n)
-
-    def _df(prob: np.ndarray) -> pd.DataFrame:
-        return pd.DataFrame({
-            "sample_id": [f"s{i}" for i in range(n)],
-            "true_label": true_labels,
-            "predicted_label": (prob >= 0.5).astype(int),
-            "prob_0": 1 - prob,
-            "prob_1": prob,
-        })
-
-    p_values = compare_run_predictions([_df(prob_good), _df(prob_bad)], "binary_classification", "auroc", seed=0)
-
-    assert len(p_values) == 2
-    assert p_values[0] == 1.0
-    assert p_values[1] is not None
-    assert 0.0 <= p_values[1] <= 1.0
-
-
-def test_compare_run_predictions_significant_difference() -> None:
-    """Clearly better run yields a low p-value for the worse run."""
-    rng = np.random.default_rng(42)
-    n = 100
-    true_labels = (rng.random(n) > 0.5).astype(int)
-    prob_good = np.where(true_labels, rng.uniform(0.75, 1.0, n), rng.uniform(0.0, 0.25, n))
-    prob_bad = rng.uniform(0.4, 0.6, n)  # near-chance
-
-    def _df(prob: np.ndarray) -> pd.DataFrame:
-        return pd.DataFrame({
-            "sample_id": [f"s{i}" for i in range(n)],
-            "true_label": true_labels,
-            "predicted_label": (prob >= 0.5).astype(int),
-            "prob_0": 1 - prob,
-            "prob_1": prob,
-        })
-
-    p_values = compare_run_predictions([_df(prob_good), _df(prob_bad)], "binary_classification", "auroc", n_permutations=500, seed=42)
-
-    assert p_values[1] < 0.05
-
-
-def test_compare_run_predictions_identical_runs_high_p() -> None:
-    """Identical predictions produce a high p-value."""
-    rng = np.random.default_rng(7)
-    n = 60
-    true_labels = (rng.random(n) > 0.5).astype(int)
-    prob = rng.uniform(0.2, 0.8, n)
-
-    df = pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": (prob >= 0.5).astype(int),
-        "prob_0": 1 - prob,
-        "prob_1": prob,
-    })
-
-    p_values = compare_run_predictions([df, df.copy()], "binary_classification", "auroc", n_permutations=500, seed=0)
-
-    assert p_values[1] is not None
-    assert p_values[1] >= 0.05
-
-
-def test_compare_run_predictions_three_runs() -> None:
-    """With 3 runs best gets p=1.0; others get valid p-values."""
-    rng = np.random.default_rng(0)
-    n = 80
-    true_labels = (rng.random(n) > 0.5).astype(int)
-
-    def _df(prob: np.ndarray) -> pd.DataFrame:
-        return pd.DataFrame({
-            "sample_id": [f"s{i}" for i in range(n)],
-            "true_label": true_labels,
-            "predicted_label": (prob >= 0.5).astype(int),
-            "prob_0": 1 - prob,
-            "prob_1": prob,
-        })
-
-    prob_best = np.where(true_labels, rng.uniform(0.75, 1.0, n), rng.uniform(0.0, 0.25, n))
-    prob_mid  = np.where(true_labels, rng.uniform(0.55, 0.85, n), rng.uniform(0.15, 0.45, n))
-    prob_bad  = rng.uniform(0.4, 0.6, n)
-
-    p_values = compare_run_predictions([_df(prob_best), _df(prob_mid), _df(prob_bad)], "binary_classification", "auroc", n_permutations=200, seed=0)
-
-    assert len(p_values) == 3
-    assert p_values[0] == 1.0
-    assert all(p is None or 0.0 <= p <= 1.0 for p in p_values)
-
-def test_compare_run_predictions_handles_runs_without_probabilities() -> None:
-    """Label-based metrics should compare runs even if one lacks prob_* columns."""
-    n = 40
-    true_labels = np.array([0, 1] * (n // 2))
-    good_pred = true_labels.copy()
-    bad_pred = 1 - true_labels
-
-    good = pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": good_pred,
-        "prob_0": 1.0 - good_pred.astype(float),
-        "prob_1": good_pred.astype(float),
-    })
-    bad = pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": bad_pred,
-    })
-
-    p_values = compare_run_predictions([good, bad], "binary_classification", "accuracy", n_permutations=200, seed=0)
-
-    assert len(p_values) == 2
-    assert p_values[0] == 1.0
-    assert p_values[1] is not None
-    assert 0.0 <= p_values[1] <= 1.0
-
-
-def test_compare_run_predictions_requires_predicted_label() -> None:
-    """Comparison must fail loudly when a classification run omits predicted_label."""
-    n = 20
-    true_labels = np.array([0, 1] * (n // 2))
-    left = pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": true_labels,
-        "prob_0": 1.0 - true_labels.astype(float),
-        "prob_1": true_labels.astype(float),
-    })
-    right = pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "prob_0": 1.0 - true_labels.astype(float),
-        "prob_1": true_labels.astype(float),
-    })
-
-    with pytest.raises(ValueError, match="requires 'predicted_label'"):
-        compare_run_predictions([left, right], "binary_classification", "accuracy", seed=0)
-
-
-def test_compare_run_predictions_preserves_ordinal_predicted_label() -> None:
-    """Ordinal comparison should use the stored clipped label, not raw_score rounding."""
-    n = 24
-    true_labels = np.array([0, 1, 2, 3, 4, 5] * 4)
-    df = pd.DataFrame({
-        "sample_id": [f"s{i}" for i in range(n)],
-        "true_label": true_labels,
-        "predicted_label": true_labels,
-        "raw_score": np.array([5.6] * n),
-    })
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("error")
-        p_values = compare_run_predictions([df, df.copy()], "ordinal_classification", "balanced_accuracy", n_permutations=50, seed=0)
-
-    assert caught == []
-    assert p_values[0] == 1.0
-    assert p_values[1] is not None
-    assert 0.0 <= p_values[1] <= 1.0

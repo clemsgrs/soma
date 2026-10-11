@@ -1,13 +1,12 @@
 """Detection evaluation artifacts: plain point overlays + per-image manifest + metrics.
 
 The detection counterpart of :class:`~soma.evaluation.dense_artifacts.DenseArtifactWriter`.
-Where the segmentation writer is invoked per *batch* by the shared dense-eval loop, the
-detection writer is invoked per *image* by the consolidated ``_evaluate_detection`` loop,
-which decodes peaks and runs the class-aware F1@δ match **exactly once** and hands the
-single result to all consumers. The writer receives that per-image payload
-(``heatmap``, decoded ``pred`` points, the per-class match ``assignment``, ``gt`` points),
-so the manifest's per-image counts/F1 come from the *same* reduction the headline metric
-uses and cannot drift from it.
+Where the segmentation writer is invoked per *batch* by the grid evaluation loop, the
+detection writer is invoked per *image* by the pipeline's detection callback, which
+decodes peaks and runs the class-aware F1@δ match with the head's own decoder and
+matcher. The writer receives that per-image payload (``heatmap``, decoded ``pred``
+points, the per-class match ``assignment``, ``gt`` points), so the manifest's per-image
+counts/F1 come from the same match the headline metric counts.
 
 Artifacts written under ``fold_dir`` (the per-point ``predictions_<split>.csv`` is written
 by the pipeline, not here, and is unchanged):
