@@ -179,6 +179,72 @@ OCELOT's own train/val/test split is emitted verbatim as a single fold, with
 train → ``train``, val → ``tune`` (threshold sweep / monitor), and test →
 ``test``. soma never partitions the data itself.
 
+MIDOG 2022 mitosis detection
+----------------------------
+
+The MIDOG curator converts the `MIDOG 2022 <https://midog2022.grand-challenge.org/>`_
+training set into soma's detection manifests, cut into fixed tiles. Use the PNG
+release from `Zenodo record 6547151 <https://zenodo.org/records/6547151>`_: the
+images and ``MIDOG2022_training_png.json``.
+
+The public annotation file has no tumour type or scanner per image, and soma
+uses the tumour type to stratify the split. Recover both from MIDOG++, which
+republishes the same images with this metadata. Download the two MIDOG++ files
+at the pinned commits:
+
+* `MIDOG++.json <https://raw.githubusercontent.com/DeepMicroscopy/MIDOGpp/bd26c8197fc785b3e414ff2d41a63c1809dae1bc/databases/MIDOG%2B%2B.json>`__
+* `datasets_xvalidation.csv <https://raw.githubusercontent.com/DeepMicroscopy/MIDOGpp/c2726b1f40a1bfe4f0acce9c7f1d186eec12e914/datasets_xvalidation.csv>`__
+
+Then write the enriched annotation file next to the images::
+
+    python examples/detection_benchmark/prepare_midog_metadata.py \
+        --raw-json <raw_root>/MIDOG2022_training_png.json \
+        --midogpp-json <MIDOG++.json> \
+        --midogpp-xval-csv <datasets_xvalidation.csv> \
+        --out <raw_root>/MIDOG2022_training_enriched.json
+
+The script matches each image to its MIDOG++ copy by image size and annotation
+positions, and fails if the recovered counts differ from the published ones. It
+drops the 51 human melanoma images: the challenge ships them without mitosis
+labels, as an unlabeled domain for adaptation methods. Pass ``--keep-melanoma``
+to keep them as images without mitoses. The result has 354 images from 5 tumour
+types and 4 scanners, with 9,501 mitoses.
+
+The curator expects this layout under ``<raw_root>``::
+
+    images/<file_name>                   # 001.png ... as named in the JSON
+    MIDOG2022_training_enriched.json
+
+Curate from Python::
+
+    from soma.benchmarks import get_benchmark
+
+    get_benchmark("detection/midog").curate("<raw_root>", "<out>/curated")
+
+This runs two steps:
+
+1. **Per-image manifest** in ``<out>/curated/roi/``. Each image is one sample.
+   Each mitosis box is reduced to its centre and written as class 0. The
+   look-alike "not mitotic figure" annotations are left out. Every image is
+   declared at 0.25 µm/px and kept in its own pixel grid, although the scanners
+   differ slightly.
+2. **Tiles** in ``<out>/curated/``. Each image is cut into 1024 px tiles with
+   128 px overlap. Each tile keeps its image's split, tumour type and scanner,
+   and the benchmark stitches tile predictions back to the image before scoring.
+
+``python -m soma.curation.midog`` runs only the first step, without the nominal
+0.25 µm/px.
+
+Split policy
+~~~~~~~~~~~~
+
+The official MIDOG 2022 test set is hidden, so the curator writes a local split
+as a single fold. Within each tumour type, the images are put in a fixed order
+by a hash of their id. The first 20% go to ``test``, the next 20% to ``tune``
+and the rest to ``train``: 212, 71 and 71 images. Each image is its own
+patient, and re-curating gives the same split. These results are not
+comparable to the published leaderboard.
+
 MONKEY inflammatory-cell detection
 ----------------------------------
 
