@@ -63,6 +63,19 @@ def test_mil_learner_conforms_for_every_aggregator(name):
     check_learner(learner, batch, budget=BUDGET)
 
 
+@pytest.mark.parametrize("name", list_aggregators())
+def test_mil_learner_conforms_for_every_aggregator_under_bf16_autocast(name):
+    """``Trainer(precision="bf16")`` wraps the steps in autocast with fp32 bag features.
+
+    The padded batch above (a mask, as ``bag_collate_fn`` always emits) is what every
+    aggregator sees in training; an aggregator that scatters autocast outputs into an
+    fp32 buffer only fails there.
+    """
+    learner, batch = _mil_learner(name)
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        check_learner(learner, batch, budget=BUDGET)
+
+
 def _grid_batch(targets: dict[str, torch.Tensor]) -> SegmentationBatch:
     return SegmentationBatch(features=torch.randn(2, D, 8, 8), targets=targets, sample_ids=("a", "b"))
 

@@ -130,7 +130,7 @@ class TransMIL(Aggregator):
             valid = mask[index].bool()
             out = self._forward_bag(X[index, valid][None])
             representations.append(out.bag_representation)
-            tile_attention[index, valid] = out.tile_attention[0]
+            tile_attention[index, valid] = out.tile_attention[0].to(tile_attention.dtype)
         return AggregatorOutput(
             bag_representation=torch.cat(representations, dim=0),
             tile_attention=tile_attention,
