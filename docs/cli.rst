@@ -1,8 +1,8 @@
 CLI
 ===
 
-Use ``soma`` to run YAML experiments, discover components, reproduce
-benchmarks, and compare completed runs.
+Use ``soma`` to run YAML experiments, discover components, score
+predictions, reproduce benchmarks, and compare completed runs.
 
 .. figure:: /_static/figures/run-flow.svg
    :figclass: soma-figure
@@ -55,6 +55,17 @@ Available commands
 ``soma list benchmarks``
    List all registered foundation-model benchmarks — the names
    ``soma reproduce`` and ``soma leaderboard`` accept.
+
+``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
+   Score a predictions parquet against the targets in ``dataset.csv``,
+   joined by ``sample_id``; no run directory is needed. ``--splits``
+   selects one split (default ``test``) of one fold (default ``0``);
+   without it every row of the cohort is a target. Every prediction
+   needs a target and every target a prediction. ``--metrics`` takes
+   metric names or dotted import paths (default: the task family's
+   defaults); ``--subgroups`` names metadata columns to break the
+   metrics down by. The metrics table is printed; ``--out`` also writes
+   the evaluation as JSON. See :doc:`evaluation`.
 
 ``soma compact-index OUTPUT_ROOT``
    Compact ``indexes/runs.csv`` to the latest row per run. Readers

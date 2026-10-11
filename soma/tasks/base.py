@@ -5,8 +5,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 from torch import Tensor, nn
+
+from soma.evaluation.predictions import family_prediction_columns
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -33,6 +36,10 @@ def build_input_dropout(dropout: float) -> nn.Dropout | None:
     return nn.Dropout(dropout) if dropout > 0.0 else None
 
 
+_CLASSIFICATION_FAMILIES = frozenset({"binary_classification", "multiclass_classification"})
+_LABEL_FAMILIES = _CLASSIFICATION_FAMILIES | {"ordinal_classification"}
+
+
 class TaskHead(ABC, nn.Module):
     """Abstract base class for task heads.
 
@@ -40,7 +47,8 @@ class TaskHead(ABC, nn.Module):
 
     Subclasses must implement forward, compute_loss, postprocess,
     compute_metrics, and extract_targets, and should set target_dtypes and
-    auto_params appropriately.
+    auto_params appropriately. ``prediction_columns`` / ``to_columns`` declare what
+    :func:`soma.predict` writes; the base implementation covers soma's set families.
 
     The head owns its target contract: ``target_dtypes`` declares the keys it
     consumes (and their tensor dtypes), ``extract_targets`` maps a
@@ -137,6 +145,61 @@ class TaskHead(ABC, nn.Module):
     @property
     def target_keys(self) -> tuple[str, ...]:
         return tuple(self.target_schema)
+
+    # --- predictions ------------------------------------------------------ #
+
+    @property
+    def classes(self) -> tuple[Any, ...] | None:
+        """The raw label of each class index (``prob_<i>`` is ``classes[i]``), or ``None``.
+
+        A head built with a ``label_map`` reports its labels in index order; a label
+        head without one reads labels as class indices ``0..num_classes-1``.
+        """
+        label_map = getattr(self, "_label_map", None)
+        if label_map:
+            return tuple(sorted(label_map, key=label_map.__getitem__))
+        num_classes = getattr(self, "num_classes", None)
+        if self.task_family in _LABEL_FAMILIES and num_classes:
+            return tuple(range(int(num_classes)))
+        return None
+
+    @property
+    def prediction_columns(self) -> tuple[str, ...]:
+        """The columns :meth:`to_columns` emits, keyed on ``task_family``: ``prob_<i>`` +
+        ``predicted_label`` (classification), ``predicted_label`` + ``raw_score``
+        (ordinal), ``predicted_value`` (regression), ``risk_score`` (survival). A head
+        of another family overrides this and :meth:`to_columns`."""
+        return family_prediction_columns(self.task_family, getattr(self, "num_classes", None))
+
+    def to_columns(self, processed: dict[str, Any]) -> dict[str, np.ndarray]:
+        """Map :meth:`postprocess` output to the declared prediction columns, one value per sample."""
+        family = self.task_family
+        if family in _CLASSIFICATION_FAMILIES:
+            probabilities = np.asarray(processed["probabilities"])
+            columns = {f"prob_{i}": probabilities[:, i] for i in range(probabilities.shape[1])}
+            columns["predicted_label"] = np.asarray(processed["predicted_labels"]).astype(np.int64)
+            return columns
+        if family == "ordinal_classification":
+            return {
+                "predicted_label": np.asarray(processed["predicted_labels"]).astype(np.int64),
+                "raw_score": np.asarray(processed["raw_scores"]),
+            }
+        if family == "regression":
+            values = np.asarray(processed["predictions"])
+            if values.ndim == 2 and values.shape[1] == 1:
+                values = values[:, 0]
+            if values.ndim != 1:
+                raise ValueError(
+                    f"regression predictions of shape {values.shape} have no single "
+                    "predicted_value column; override prediction_columns and to_columns"
+                )
+            return {"predicted_value": values}
+        if family == "survival":
+            return {"risk_score": np.asarray(processed["risk_scores"])}
+        raise NotImplementedError(
+            f"{type(self).__name__} (task family {family!r}) declares no set-shape "
+            "prediction columns; override prediction_columns and to_columns"
+        )
 
     @classmethod
     def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:

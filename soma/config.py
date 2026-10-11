@@ -1165,7 +1165,7 @@ class EvalConfig:
     ``save_detection_overlays`` writes the detection point overlays;
     ``save_detection_heatmaps`` writes the colormap overlays and the npz sidecar.
     ``holdout_test`` skips *all* test-split work (no test inference, no
-    ``predictions_test.csv``, no ``test`` entries in ``metrics.json``/``summary.json``)
+    test predictions file, no ``test`` entries in ``metrics.json``/``summary.json``)
     and reports tune only — the model-selection protocol for benchmark sweeps: rank
     every candidate by tune score, then re-run only the winner with the test held out
     in. The test split may still be declared in ``splits.csv``; it is simply not

@@ -55,6 +55,7 @@ from soma.data import (
     require_coverage,
 )
 from soma.decoders import list_decoders
+from soma.evaluation import Baseline, Evaluation, Predictions, evaluate, predict
 from soma.dense import CachedGridSource, DenseSourceProvenance
 from soma.extraction import (
     ExtractionArtifacts,
@@ -182,6 +183,12 @@ __all__ = [
     "StepOutput",
     "Trainer",
     "fit",
+    # Evaluation
+    "Baseline",
+    "Evaluation",
+    "Predictions",
+    "evaluate",
+    "predict",
     "FoldResult",
     "Pipeline",
     "PipelineResult",

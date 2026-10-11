@@ -32,9 +32,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import yaml
 
-from soma.evaluation.metrics import metric_higher_is_better
+from soma.evaluation.metrics import metric_registry
 from soma.evaluation.summary import sample_std
-from soma.reporting.data import diff_configs
 
 if TYPE_CHECKING:
     from soma.benchmarks.registry import Benchmark
@@ -399,7 +398,7 @@ def project_leaderboard(
     else:
         metric_name = None
     metric_name = metric_name or ""
-    higher = metric_higher_is_better(metric_name)
+    higher = metric_registry.higher_is_better(metric_name)
     ranking_enabled = True
     if benchmark is not None:
         from soma.benchmarks import get_ranking_metrics
@@ -622,7 +621,7 @@ def _project_multi_metric(
                 std=stats["std"],
                 n=stats["n"],
                 seeds=stats["seeds"],
-                higher_is_better=metric_higher_is_better(metric_name),
+                higher_is_better=metric_registry.higher_is_better(metric_name),
                 ranking=is_ranking,
                 reference=reference,
             )
@@ -647,7 +646,7 @@ def _project_multi_metric(
     descriptions = tuple(
         LeaderboardMetricDescription(
             metric=metric_name,
-            higher_is_better=metric_higher_is_better(metric_name),
+            higher_is_better=metric_registry.higher_is_better(metric_name),
         )
         for metric_name in reported
     )
@@ -655,7 +654,7 @@ def _project_multi_metric(
     return LeaderboardTable(
         triple=triple,
         metric=benchmark.primary_metric,
-        higher_is_better=metric_higher_is_better(benchmark.primary_metric),
+        higher_is_better=metric_registry.higher_is_better(benchmark.primary_metric),
         vary=tuple(facet.vary),
         split=split,
         rows=rows,
@@ -719,7 +718,7 @@ def _competition_ranks(
     return _competition_ranks_for(
         entries,
         value=lambda entry: entry["metrics"][metric]["mean"],
-        higher_is_better=metric_higher_is_better(metric),
+        higher_is_better=metric_registry.higher_is_better(metric),
     )
 
 
@@ -786,7 +785,7 @@ def _pareto_membership(
         for metric_name in ranking:
             candidate_value = candidate["metrics"][metric_name]["mean"]
             target_value = target["metrics"][metric_name]["mean"]
-            if metric_higher_is_better(metric_name):
+            if metric_registry.higher_is_better(metric_name):
                 comparisons.append((candidate_value >= target_value, candidate_value > target_value))
             else:
                 comparisons.append((candidate_value <= target_value, candidate_value < target_value))
@@ -1216,8 +1215,7 @@ def _wide_table_grid(
 
 
 def render_html(table: LeaderboardTable) -> str:
-    """A self-contained HTML page for the leaderboard (reuses the report stylesheet)."""
-    from soma.reporting.html import _css
+    """A self-contained HTML page for the leaderboard."""
 
     def esc(value: Any) -> str:
         return (
@@ -1359,3 +1357,585 @@ def write_leaderboard(
     paths["json"].write_text(render_json(table), encoding="utf-8")
     paths["html"].write_text(render_html(table), encoding="utf-8")
     return paths
+
+
+def diff_configs(configs: list[dict]) -> tuple[dict, list[dict]]:
+    """Partition config fields into shared values and per-run diffs.
+
+    Recursively flattens nested dicts using dot notation (e.g.,
+    ``training.learning_rate``). Fields whose values are identical across
+    all configs go into ``shared``; fields that differ go into per-run
+    ``diffs`` dicts.
+
+    Args:
+        configs: List of config dicts (one per run).
+
+    Returns:
+        ``(shared, diffs)`` where ``shared`` maps flat key → common value and
+        ``diffs`` is a list of dicts (one per run) mapping flat key → value
+        for every key that varies.
+    """
+    if not configs:
+        return {}, []
+
+    flat_configs = [_flatten(c) for c in configs]
+    all_keys: list[str] = []
+    for fc in flat_configs:
+        for k in fc:
+            if k not in all_keys:
+                all_keys.append(k)
+
+    shared: dict = {}
+    diffs: list[dict] = [{} for _ in configs]
+
+    for key in all_keys:
+        values = [fc.get(key) for fc in flat_configs]
+        if all(v == values[0] for v in values[1:]):
+            shared[key] = values[0]
+        else:
+            for i, v in enumerate(values):
+                diffs[i][key] = v
+
+    return shared, diffs
+
+
+def _flatten(obj: object, prefix: str = "") -> dict:
+    """Recursively flatten a nested dict to dot-separated keys."""
+    result: dict = {}
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            full_key = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                result.update(_flatten(value, full_key))
+            else:
+                result[full_key] = value
+    else:
+        result[prefix] = obj
+    return result
+
+
+def _css() -> str:
+    return """
+:root {
+  --soma-bg:           #FFFFFF;
+  --soma-bg-subtle:    #FFF7FA;
+  --soma-bg-card:      #FFF0F5;
+  --soma-text:         #0F172A;
+  --soma-text-muted:   #64748B;
+  --soma-accent:       #E2558A;
+  --soma-accent-light: #FCE3ED;
+  --soma-accent-deep:  #B52B65;
+  --soma-border:       #E9D5DF;
+  --soma-header-bg:    #171018;
+  --soma-header-text:  #F8FAFC;
+  --soma-success:      #10B981;
+  --soma-danger:       #EF4444;
+  --soma-warning:      #F59E0B;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  background:
+    radial-gradient(circle at top left, rgba(226, 85, 138, 0.08), transparent 35%),
+    linear-gradient(180deg, #fff9fc 0%, #fff6f9 42%, #f8f5f8 100%);
+  color: var(--soma-text);
+  line-height: 1.5;
+}
+/* ---- Header ---- */
+.site-header {
+  background: var(--soma-header-bg);
+  color: var(--soma-header-text);
+  padding: 0 28px;
+  height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
+}
+.soma-wordmark {
+  font-weight: 800;
+  font-size: 15px;
+  letter-spacing: 0.08em;
+  color: var(--soma-accent);
+  flex-shrink: 0;
+}
+.header-run-id {
+  font-family: ui-monospace, 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: #94A3B8;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.header-meta-item {
+  font-size: 12px;
+  color: #94A3B8;
+}
+/* ---- Hero metrics ---- */
+.overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.hero-card {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.98), rgba(255,246,250,0.92));
+  border: 1px solid rgba(226,85,138,0.18);
+  border-left: 4px solid var(--soma-accent);
+  border-radius: 20px;
+  padding: 14px 16px;
+  min-width: 0;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.03);
+}
+.hero-value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  color: var(--soma-accent-deep);
+  line-height: 1.1;
+}
+.hero-std {
+  font-size: 1rem;
+  font-weight: 400;
+  color: var(--soma-text-muted);
+  margin-left: 4px;
+}
+.hero-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--soma-text-muted);
+  margin-top: 4px;
+}
+/* ---- Badges ---- */
+.badge {
+  padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+}
+.status-ok  { background: #10B981; color: #fff; }
+.status-err { background: #EF4444; color: #fff; }
+.status-run { background: #F59E0B; color: #000; }
+.run-badge {
+  display: inline-block;
+  padding: 2px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; color: #fff;
+}
+/* ---- Sections ---- */
+.section {
+  background: var(--soma-bg);
+  border-radius: 18px;
+  margin: 18px 28px;
+  padding: 22px 24px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 14px 40px rgba(15, 23, 42, 0.04);
+  border: 1px solid var(--soma-border);
+}
+.section-compact {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.section h2 {
+  font-size: 15px; font-weight: 700; margin-bottom: 16px;
+  border-bottom: 1px solid var(--soma-border); padding-bottom: 10px;
+  color: var(--soma-text);
+}
+.section h3 {
+  font-size: 13px; font-weight: 600; margin: 16px 0 8px;
+  color: var(--soma-text-muted);
+}
+.tab-stack {
+  display: flex;
+  flex-direction: column;
+}
+.overview-layout {
+  display: grid;
+  gap: 16px;
+}
+.overview-banner {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: end;
+  padding: 22px 24px;
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at top left, rgba(226, 85, 138, 0.16), transparent 38%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.99), rgba(252, 227, 237, 0.92));
+  border: 1px solid rgba(226, 85, 138, 0.18);
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.06);
+}
+.overview-banner-copy {
+  max-width: 52ch;
+}
+.overview-banner-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--soma-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.overview-banner-meta span {
+  background: rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(226, 85, 138, 0.14);
+  padding: 6px 10px;
+  border-radius: 999px;
+}
+.overview-kicker {
+  color: var(--soma-accent);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 10px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.overview-banner h2 {
+  font-size: 22px;
+  line-height: 1.12;
+  margin-bottom: 8px;
+  border: 0;
+  padding: 0;
+}
+.overview-banner p {
+  max-width: 54ch;
+  color: var(--soma-text-muted);
+  font-size: 13px;
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+.overview-panel {
+  background: linear-gradient(180deg, #ffffff, #fffafc);
+  border: 1px solid var(--soma-border);
+  border-radius: 22px;
+  padding: 20px 22px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 12px 28px rgba(15, 23, 42, 0.03);
+}
+.overview-panel-wide {
+  width: 100%;
+}
+.overview-panel-head {
+  margin-bottom: 16px;
+}
+.overview-inline-head {
+  margin-bottom: 12px;
+}
+.overview-panel-head h3 {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--soma-text);
+  margin-bottom: 4px;
+}
+.overview-panel-head p {
+  color: var(--soma-text-muted);
+  font-size: 12px;
+}
+.overview-panel-foot {
+  margin-top: 16px;
+}
+.overview-spec-grid,
+.training-spec-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.overview-spec,
+.training-spec {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(226, 85, 138, 0.05);
+  border: 1px solid rgba(226, 85, 138, 0.12);
+}
+.overview-spec-label,
+.training-spec-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--soma-text-muted);
+  margin-bottom: 6px;
+}
+.overview-spec-value,
+.training-spec-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--soma-text);
+  word-break: break-word;
+}
+.overview-spec-grid > .overview-spec:last-child:nth-child(odd),
+.training-spec-grid > .training-spec:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+.muted { color: var(--soma-text-muted); font-style: italic; }
+/* ---- Config collapsible ---- */
+.cfg-details summary {
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--soma-text);
+  padding-bottom: 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cfg-details summary::before {
+  content: "▶";
+  font-size: 10px;
+  color: var(--soma-text-muted);
+  transition: transform 0.15s;
+}
+.cfg-details[open] summary::before { transform: rotate(90deg); }
+.cfg-details[open] summary { margin-bottom: 16px; border-bottom: 1px solid var(--soma-border); padding-bottom: 10px; }
+.cfg-table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: none;
+  margin-top: 4px;
+  table-layout: fixed;
+}
+.cfg-table tr:nth-child(even) td { background: var(--soma-bg-subtle); }
+.cfg-key {
+  padding: 6px 12px 6px 0; font-weight: 600; color: var(--soma-text-muted);
+  white-space: nowrap; width: 32%; vertical-align: top; font-size: 12px;
+}
+.cfg-val { padding: 6px 0; color: var(--soma-text); word-break: break-all; font-size: 12px; }
+.section-note {
+  margin: -6px 0 14px;
+  color: var(--soma-text-muted);
+  font-size: 12px;
+}
+/* ---- Results table ---- */
+.results-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.results-table th {
+  background: var(--soma-bg-subtle); padding: 8px 14px;
+  text-align: right; font-weight: 600; border-bottom: 2px solid var(--soma-border);
+  color: var(--soma-text-muted); font-size: 12px;
+}
+.results-table th:first-child { text-align: left; }
+.results-table td { padding: 7px 14px; text-align: right; border-bottom: 1px solid var(--soma-bg-subtle); }
+.results-table td.metric-name { text-align: left; font-weight: 500; }
+.results-table tr:hover td { background: var(--soma-bg-subtle); }
+.ranking-table .rank-cell { width: 44px; }
+.ranking-table .rank-name { text-align: left; font-weight: 700; }
+.ranking-table .rank-metric { font-variant-numeric: tabular-nums; }
+.rank-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--soma-text);
+  text-decoration: none;
+}
+.rank-link-label {
+  transition: transform 0.16s ease;
+}
+.rank-link-arrow {
+  color: var(--soma-accent);
+  font-size: 11px;
+  line-height: 1;
+  opacity: 1;
+  transform: translate(0, 0);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+.rank-link:hover .rank-link-label,
+.rank-link:focus-visible .rank-link-label {
+  transform: translateX(1px);
+}
+.rank-link:hover .rank-link-arrow,
+.rank-link:focus-visible .rank-link-arrow {
+  transform: translate(1px, -1px);
+}
+.rank-link:focus-visible {
+  outline: 2px solid rgba(226, 85, 138, 0.35);
+  outline-offset: 3px;
+  border-radius: 999px;
+}
+.ranking-table .rank-row:hover td {
+  background: rgba(226, 85, 138, 0.07);
+}
+.rank-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+.podium-gold { background: linear-gradient(180deg, #F6E08A, #D6A81F); color: #3B2E06; }
+.podium-silver { background: linear-gradient(180deg, #E5E7EB, #A8B0BD); color: #1F2937; }
+.podium-bronze { background: linear-gradient(180deg, #F1C08B, #B86A24); color: #40220B; }
+.soma-brand-rank { background: linear-gradient(180deg, #F7BDD1, var(--soma-accent)); }
+.section-overview .results-table tr.rank-row td {
+  background: transparent;
+}
+.section-overview .results-table tr.rank-row.podium-gold td,
+.section-overview .results-table tr.rank-row.podium-silver td,
+.section-overview .results-table tr.rank-row.podium-bronze td,
+.section-overview .results-table tr.rank-row.soma-brand-rank td {
+  background: rgba(226, 85, 138, 0.05);
+}
+/* ---- Chart grid ---- */
+.chart-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+.chart-full { flex: 1 1 100%; min-width: 0; }
+.chart-full svg { width: 100%; height: auto; display: block; }
+.chart-half {
+  flex: 1 1 calc(50% - 6px);
+  max-width: calc(50% - 6px);
+  min-width: 280px;
+  aspect-ratio: 7 / 4.5;
+  overflow: hidden;
+}
+.chart-half svg { width: 100%; height: 100%; display: block; }
+/* ---- Comparison ---- */
+.best-val { background: rgba(16, 185, 129, 0.14); }
+.sig-worse { background: rgba(239, 68, 68, 0.12); }
+/* ---- Subgroup analysis ---- */
+.subgroup-sig { background: #FEE2E2; font-weight: 600; }
+.subgroup-flag { background: #FEF3C7; font-weight: 600; }
+.subgroup-sig-small { background: #EDE9FE; }
+.subgroup-legend { font-size: 12px; color: var(--soma-text-muted); margin-top: 6px; }
+.legend-sig { color: #FEE2E2; text-shadow: 0 0 1px #666; }
+.legend-flag { color: #FEF3C7; text-shadow: 0 0 1px #666; }
+.legend-sig-small { color: #EDE9FE; text-shadow: 0 0 1px #666; }
+/* ---- Comparison hero ---- */
+.comp-hero-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.comp-hero-card {
+  background: var(--soma-bg-subtle);
+  border: 1px solid var(--soma-border);
+  border-radius: 16px;
+  padding: 14px 20px;
+  min-width: 180px;
+}
+.comp-hero-metric {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--soma-text-muted);
+  margin-bottom: 10px;
+}
+.comp-hero-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.comp-hero-row:last-child { margin-bottom: 0; }
+.comp-hero-val {
+  font-size: 1.4rem;
+  line-height: 1.1;
+}
+/* ---- Tabs ---- */
+.tab-group {
+  margin: 18px 28px 0;
+  border: 1px solid rgba(226, 85, 138, 0.18);
+  border-radius: 24px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.94), rgba(255,247,250,0.88));
+  backdrop-filter: blur(10px);
+  box-shadow:
+    0 12px 30px rgba(15, 23, 42, 0.04),
+    0 1px 0 rgba(255,255,255,0.8) inset;
+  overflow: hidden;
+}
+.tab-panels {
+  padding: 16px;
+}
+.tab-panel {
+  width: 100%;
+}
+.tab-bar {
+  display: flex;
+  gap: 8px;
+  border-bottom: 1px solid rgba(226, 85, 138, 0.12);
+  margin-bottom: 0;
+  padding: 10px 12px 0;
+  overflow-x: auto;
+  background: linear-gradient(180deg, rgba(255,255,255,0.5), rgba(255,247,250,0.28));
+}
+.tab-btn {
+  padding: 10px 16px 11px;
+  border: 1px solid transparent;
+  background: rgba(255,255,255,0.45);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--soma-text-muted);
+  border-bottom: 0;
+  margin-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    transform 0.15s ease;
+  white-space: nowrap;
+}
+.tab-btn:hover {
+  color: var(--soma-text);
+  background: rgba(255,255,255,0.92);
+  transform: translateY(-1px);
+}
+.tab-btn.active {
+  color: var(--soma-accent-deep);
+  background: linear-gradient(180deg, #ffffff, #fff5f9);
+  border-color: rgba(226, 85, 138, 0.22);
+  box-shadow:
+    0 -1px 0 rgba(255,255,255,0.85) inset,
+    0 8px 22px rgba(226, 85, 138, 0.08);
+  transform: translateY(-1px);
+}
+.tab-panels .section { margin: 0 0 16px; }
+.tab-panels .section:last-child { margin-bottom: 0; }
+.tab-panels .overview-layout { padding: 0; }
+.tab-panels .overview-panel { margin: 0; }
+.tab-panels .overview-grid { margin-top: 0; }
+.tab-panels .section-compact {
+  padding: 0;
+}
+.chart-square { max-width: 560px; }
+.chart-square svg { width: 100%; height: auto; display: block; }
+.chart-panel {
+  border: 1px solid rgba(226, 85, 138, 0.14);
+  border-radius: 20px;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.95), rgba(255,247,250,0.8));
+}
+code { font-family: ui-monospace, 'JetBrains Mono', monospace; font-size: 12px; }
+@media (max-width: 768px) {
+  .section { margin: 12px; padding: 16px; border-radius: 16px; }
+  .chart-half { flex: 1 1 100%; max-width: 100%; aspect-ratio: unset; }
+  .site-header { padding: 0 16px; }
+  .tab-bar { padding: 8px 8px 0; }
+  .tab-group { margin: 12px; border-radius: 18px; }
+  .tab-panels { padding: 12px; }
+  .overview-grid,
+  .overview-spec-grid,
+  .training-spec-grid { grid-template-columns: 1fr; }
+  .overview-banner { align-items: start; flex-direction: column; }
+}
+"""

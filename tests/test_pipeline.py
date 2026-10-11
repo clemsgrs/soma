@@ -28,7 +28,7 @@ from soma.config import (
 )
 from soma.data import FoldSplit
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_folds_from_csv
-from soma.evaluation.report import EvaluationReport, SamplePrediction
+from soma.evaluation import Evaluation, Predictions
 from soma.data import CachedSetSource
 from soma.output_layout import (
     build_experiment_spec,
@@ -40,9 +40,7 @@ from soma.pipeline import (
     Pipeline,
     PipelineResult,
     _aggregate_fold_metrics,
-    _build_subgroup_data,
     _build_completed_run_panel,
-    _evaluate,
     train,
     train_one_fold,
 )
@@ -53,6 +51,29 @@ from soma.learn import FitResult
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def evaluated(monkeypatch) -> list[SimpleNamespace]:
+    """Every ``soma.evaluate`` call of a fold, in call order: tune first, then each test
+    split. Each entry holds the predictions and targets the split was scored on."""
+    import soma.evaluation
+
+    calls: list[SimpleNamespace] = []
+    original = soma.evaluation.evaluate
+
+    def spying(predictions, targets, *args, **kwargs):
+        result = original(predictions, targets, *args, **kwargs)
+        calls.append(SimpleNamespace(predictions=predictions, targets=targets, evaluation=result))
+        return result
+
+    monkeypatch.setattr(soma.evaluation, "evaluate", spying)
+    return calls
+
+
+def _evaluation(metrics: dict[str, float]) -> Evaluation:
+    return Evaluation(metrics=metrics, task_family="binary_classification", num_samples=0)
+
 
 D = 16
 NUM_SAMPLES = 8
@@ -343,8 +364,8 @@ class TestTrainOneFold:
         assert isinstance(result, FoldResult)
         assert result.fold == 0
         assert result.train_result is not None
-        assert result.tune_report.split == "tune"
-        assert result.test_reports["test"].split == "test"
+        assert isinstance(result.tune_evaluation, Evaluation)
+        assert set(result.test_evaluations) == {"test"}
 
     def test_ignores_samples_without_features(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -443,7 +464,7 @@ class TestTrainOneFold:
             )
 
     def test_allow_missing_tune_uses_train_split_as_tune_with_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, evaluated
     ):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
         dataset = legacy_samples_from_csv(dataset_csv)
@@ -466,11 +487,8 @@ class TestTrainOneFold:
             fold_dir=tmp_path / "fold_allow_missing_tune",
         )
 
-        assert [pred.sample_id for pred in result.tune_report.predictions] == [
-            f"s{i}" for i in range(6)
-        ]
-        assert result.tune_report.split == "tune"
-        assert result.tune_report.metrics["num_samples"] == 6
+        assert evaluated[0].predictions.sample_ids == [f"s{i}" for i in range(6)]
+        assert result.tune_evaluation.metrics["num_samples"] == 6
         assert any(
             record.levelno == logging.WARNING
             and record.getMessage()
@@ -479,7 +497,7 @@ class TestTrainOneFold:
         )
 
     def test_tune_is_test_uses_single_test_split_as_tune(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, evaluated
     ):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
         dataset = legacy_samples_from_csv(dataset_csv)
@@ -502,10 +520,10 @@ class TestTrainOneFold:
             fold_dir=tmp_path / "fold_tune_is_test",
         )
 
-        assert [pred.sample_id for pred in result.tune_report.predictions] == ["s6", "s7"]
-        assert [pred.sample_id for pred in result.test_reports["test"].predictions] == ["s6", "s7"]
-        assert result.tune_report.split == "tune"
-        assert result.tune_report.metrics["num_samples"] == 2
+        tune, test = evaluated
+        assert tune.predictions.sample_ids == ["s6", "s7"]
+        assert test.predictions.sample_ids == ["s6", "s7"]
+        assert result.tune_evaluation.metrics["num_samples"] == 2
         assert any(
             record.levelno == logging.WARNING
             and record.getMessage()
@@ -515,7 +533,7 @@ class TestTrainOneFold:
         )
 
     def test_tune_is_test_synthesizes_test_from_tune_when_no_test_split(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, evaluated
     ):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         # Rewrite splits as train/tune only (no test split).
@@ -551,11 +569,11 @@ class TestTrainOneFold:
             fold_dir=tmp_path / "fold_tune_is_test_no_test_split",
         )
 
-        # The synthesized "test" report covers the same samples as tune.
-        tune_ids = [pred.sample_id for pred in result.tune_report.predictions]
-        test_ids = [pred.sample_id for pred in result.test_reports["test"].predictions]
-        assert tune_ids == ["s6", "s7"]
-        assert test_ids == ["s6", "s7"]
+        # The synthesized "test" split covers the same samples as tune.
+        tune, test = evaluated
+        assert set(result.test_evaluations) == {"test"}
+        assert tune.predictions.sample_ids == ["s6", "s7"]
+        assert test.predictions.sample_ids == ["s6", "s7"]
 
     def test_tune_is_test_requires_single_test_split(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
@@ -625,7 +643,7 @@ class TestTrainOneFold:
         assert "test" in metrics
         assert "auroc" in metrics["test"]
 
-    def test_saves_predictions_csv(self, tmp_path: Path):
+    def test_saves_test_predictions_parquet(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         dataset = legacy_samples_from_csv(dataset_csv)
         splits = legacy_folds_from_csv(splits_csv, dataset)
@@ -642,15 +660,21 @@ class TestTrainOneFold:
             fold_dir=fold_dir,
         )
 
-        preds_path = fold_dir / "predictions_test.csv"
-        assert preds_path.exists()
-        preds_df = pd.read_csv(preds_path)
-        assert "sample_id" in preds_df.columns
-        assert "true_label" in preds_df.columns
-        assert "predicted_label" in preds_df.columns
+        predictions = Predictions.from_parquet(fold_dir / "predictions_test.parquet")
+        assert predictions.task_family == "binary_classification"
+        assert predictions.sample_ids == list(splits.folds[0].tests["test"])
+        # Targets come from the cohort, never from the predictions file.
+        assert list(predictions.frame.columns) == [
+            "sample_id",
+            "prob_0",
+            "prob_1",
+            "predicted_label",
+            "is_placeholder",
+        ]
+        assert not (fold_dir / "predictions_test.csv").exists()
 
     def test_empty_tune_and_test_samples_use_deterministic_baselines(
-        self, tmp_path: Path
+        self, tmp_path: Path, evaluated
     ):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         for sample_id in ("s6", "s7"):
@@ -683,21 +707,15 @@ class TestTrainOneFold:
             fold_dir=fold_dir,
         )
 
-        tune_predictions = result.tune_report.predictions
-        assert [pred.sample_id for pred in tune_predictions] == ["s6"]
-        assert tune_predictions[0].probabilities == [0.5, 0.5]
-        assert tune_predictions[0].predicted_label == 0
-        assert tune_predictions[0].is_placeholder is True
-        assert tune_predictions[0].missing_reason == "no_tiles"
-        assert result.tune_report.metrics["coverage"] == 0.0
-
-        test_predictions = result.test_reports["test"].predictions
-        assert [pred.sample_id for pred in test_predictions] == ["s7"]
-        assert test_predictions[0].probabilities == [0.5, 0.5]
-        assert test_predictions[0].predicted_label == 0
-        assert test_predictions[0].is_placeholder is True
-        assert test_predictions[0].missing_reason == "no_tiles"
-        assert result.test_reports["test"].metrics["coverage"] == 0.0
+        # The train split is balanced, so the baseline is the 50/50 class prior.
+        for call, sample_id in zip(evaluated, ("s6", "s7"), strict=True):
+            frame = call.predictions.frame
+            assert frame["sample_id"].tolist() == [sample_id]
+            assert frame[["prob_0", "prob_1"]].values.tolist() == [[0.5, 0.5]]
+            assert frame["predicted_label"].tolist() == [0]
+            assert frame["is_placeholder"].tolist() == [True]
+        assert result.tune_evaluation.metrics["coverage"] == 0.0
+        assert result.test_evaluations["test"].metrics["coverage"] == 0.0
 
         metrics = json.loads((fold_dir / "metrics.json").read_text())
         assert metrics["tune"]["coverage"] == 0.0
@@ -709,10 +727,9 @@ class TestTrainOneFold:
         assert metrics["test"]["num_real_samples"] == 0
         assert metrics["test"]["num_placeholder_samples"] == 1
 
-        preds_df = pd.read_csv(fold_dir / "predictions_test.csv")
+        preds_df = Predictions.from_parquet(fold_dir / "predictions_test.parquet").frame
         assert preds_df["sample_id"].tolist() == ["s7"]
         assert preds_df["is_placeholder"].tolist() == [True]
-        assert preds_df["missing_reason"].tolist() == ["no_tiles"]
 
     def test_saves_attention_npz_when_heatmaps_enabled(self, tmp_path: Path):
         """With heatmaps.enabled, attention .npz files should be written during the test pass."""
@@ -744,11 +761,10 @@ class TestTrainOneFold:
         assert "attention" in data
         assert data["attention"].ndim == 1
 
-    def test_evaluate_trims_attention_to_valid_tiles(self, tmp_path: Path):
-        """Padded batch positions should not leak into saved attention arrays."""
-
-        attention_dir = tmp_path / "attention"
-        attention_dir.mkdir()
+    def test_saved_attention_is_trimmed_to_valid_tiles(self, tmp_path: Path):
+        """Padded batch positions must not leak into saved attention arrays."""
+        from soma.heatmaps import SaveAttention
+        from soma.learn import PredictOutput
 
         batch = BagBatch(
             features=torch.zeros(2, 4, D),
@@ -756,44 +772,18 @@ class TestTrainOneFold:
             targets={"label": torch.tensor([0, 1], dtype=torch.long)},
             sample_ids=("s0", "s1"),
         )
-
-        class _DummyTaskHead:
-            def compute_metrics(self, logits, targets):
-                return {"accuracy": 1.0}
-
-            def postprocess(self, logits):
-                probabilities = torch.softmax(logits, dim=-1).cpu().numpy()
-                predicted_labels = logits.argmax(dim=-1).cpu().numpy()
-                return {"probabilities": probabilities, "predicted_labels": predicted_labels}
-
-        class _DummyModel:
-            task_head = _DummyTaskHead()
-
-            def __call__(self, features, mask=None):
-                return SimpleNamespace(
-                    logits=torch.tensor([[0.2, 0.8], [0.7, 0.3]], dtype=torch.float32),
-                    tile_attention=torch.tensor(
-                        [
-                            [0.1, 0.2, 0.3, 0.4],
-                            [0.4, 0.3, 0.2, 0.1],
-                        ],
-                        dtype=torch.float32,
-                    ),
-                )
-
-        _evaluate(
-            _DummyModel(),
-            [batch],
-            "test",
-            torch.device("cpu"),
-            attention_dir=attention_dir,
-            aggregator_name="abmil",
+        output = PredictOutput(
+            columns={},
+            raw=SimpleNamespace(
+                tile_attention=torch.tensor([[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]])
+            ),
         )
+        callback = SaveAttention(tmp_path / "attention")
+        callback.on_predict_start(SimpleNamespace(model=SimpleNamespace(aggregator=None)))
+        callback.on_predict_batch(batch, output)
 
-        attn_s0 = np.load(attention_dir / "s0.npz")["attention"]
-        attn_s1 = np.load(attention_dir / "s1.npz")["attention"]
-        assert attn_s0.shape == (3,)
-        assert attn_s1.shape == (4,)
+        assert np.load(tmp_path / "attention" / "s0.npz")["attention"].shape == (3,)
+        assert np.load(tmp_path / "attention" / "s1.npz")["attention"].shape == (4,)
 
     def test_no_attention_dir_when_heatmaps_disabled(self, tmp_path: Path):
         """Without heatmaps enabled, no attention/ directory should be written."""
@@ -825,7 +815,7 @@ class TestTrainOneFold:
         splits = legacy_folds_from_csv(splits_csv, dataset)
         store = CachedSetSource(feature_dir)
 
-        result = train_one_fold(
+        train_one_fold(
             feature_store=store,
             dataset=dataset,
             fold_split=splits.folds[0],
@@ -836,7 +826,8 @@ class TestTrainOneFold:
         )
 
         # Should have 2-class probabilities (tumor/normal)
-        assert len(result.test_reports["test"].predictions[0].probabilities) == 2
+        predictions = Predictions.from_parquet(tmp_path / "fold_0" / "predictions_test.parquet")
+        assert predictions.probability_columns == ["prob_0", "prob_1"]
 
 
     def test_slide_level_features_no_aggregator(self, tmp_path: Path):
@@ -863,8 +854,8 @@ class TestTrainOneFold:
         )
 
         assert isinstance(result, FoldResult)
-        assert result.test_reports["test"] is not None
-        assert "auroc" in result.test_reports["test"].metrics
+        assert result.test_evaluations["test"] is not None
+        assert "auroc" in result.test_evaluations["test"].metrics
 
     def test_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -887,7 +878,7 @@ class TestTrainOneFold:
         )
 
         assert isinstance(result, FoldResult)
-        assert "auroc" in result.test_reports["test"].metrics
+        assert "auroc" in result.test_evaluations["test"].metrics
 
     def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -1068,18 +1059,18 @@ class TestTrain:
         )
 
         # No test split evaluated anywhere; tune still reported.
-        assert result.fold_results[0].test_reports == {}
-        assert result.fold_results[0].tune_report.split == "tune"
+        assert result.fold_results[0].test_evaluations == {}
+        assert result.fold_results[0].tune_evaluation.metrics
 
         # summary.json carries tune only — rankable, no test leakage.
         summary = json.loads((run_dir / "summary.json").read_text())
         assert any(key.startswith("tune/") for key in summary)
         assert not any(key.startswith("test") for key in summary)
 
-        # Per-fold (== run_dir for a single fold) metrics.json is tune-only; no test CSV.
+        # Per-fold (== run_dir for a single fold) metrics.json is tune-only; no test file.
         metrics = json.loads((run_dir / "metrics.json").read_text())
         assert list(metrics.keys()) == ["tune"]
-        assert not (run_dir / "predictions_test.csv").exists()
+        assert not (run_dir / "predictions_test.parquet").exists()
 
     def test_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1132,26 +1123,14 @@ class TestTrain:
             FoldResult(
                 fold=0,
                 train_result=train_result,
-                tune_report=EvaluationReport(split="tune", metrics={}, predictions=[]),
-                test_reports={
-                    "test": EvaluationReport(
-                        split="test",
-                        metrics={"auroc": 0.8},
-                        predictions=[],
-                    )
-                },
+                tune_evaluation=_evaluation({}),
+                test_evaluations={"test": _evaluation({"auroc": 0.8})},
             ),
             FoldResult(
                 fold=1,
                 train_result=train_result,
-                tune_report=EvaluationReport(split="tune", metrics={}, predictions=[]),
-                test_reports={
-                    "test_external": EvaluationReport(
-                        split="test_external",
-                        metrics={"auroc": 0.7},
-                        predictions=[],
-                    )
-                },
+                tune_evaluation=_evaluation({}),
+                test_evaluations={"test_external": _evaluation({"auroc": 0.7})},
             ),
         ]
 
@@ -1167,10 +1146,8 @@ class TestTrain:
             FoldResult(
                 fold=0,
                 train_result=None,
-                tune_report=EvaluationReport(
-                    split="tune", metrics={"auroc": 0.9}, predictions=[]
-                ),
-                test_reports={},
+                tune_evaluation=_evaluation({"auroc": 0.9}),
+                test_evaluations={},
             )
         ]
 
@@ -1182,18 +1159,14 @@ class TestTrain:
             FoldResult(
                 fold=0,
                 train_result=None,
-                tune_report=EvaluationReport(
-                    split="tune", metrics={"auroc": 0.8}, predictions=[]
-                ),
-                test_reports={},
+                tune_evaluation=_evaluation({"auroc": 0.8}),
+                test_evaluations={},
             ),
             FoldResult(
                 fold=1,
                 train_result=None,
-                tune_report=EvaluationReport(
-                    split="tune", metrics={"auroc": 1.0}, predictions=[]
-                ),
-                test_reports={},
+                tune_evaluation=_evaluation({"auroc": 1.0}),
+                test_evaluations={},
             ),
         ]
 
@@ -1483,20 +1456,20 @@ class TestPipeline:
         assert list(reg_a) == [compute_test_digest(config_a)]
         assert list(reg_b) == [compute_test_digest(config_b)]
         assert set(reg_a) != set(reg_b)  # distinct test sets coexist
-        assert "test" in result_a.fold_results[0].test_reports
+        assert "test" in result_a.fold_results[0].test_evaluations
 
         # Re-scoring the SAME test set into the SAME run dir is refused (loud skip) — the
         # test splits are held out so the prior result is not clobbered.
         with patch("soma.output_layout.make_run_id", return_value=run_a):
             result_a_again = Pipeline(config_a, feature_dir=feature_dir).run()
-        assert result_a_again.fold_results[0].test_reports == {}
+        assert result_a_again.fold_results[0].test_evaluations == {}
 
         # overwrite_test re-scores it.
         with patch("soma.output_layout.make_run_id", return_value=run_a):
             result_a_over = Pipeline(
                 _config("sA", overwrite_test=True), feature_dir=feature_dir
             ).run()
-        assert "test" in result_a_over.fold_results[0].test_reports
+        assert "test" in result_a_over.fold_results[0].test_evaluations
 
     def test_run_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1585,8 +1558,8 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert result.fold_results[0].test_reports["test"] is not None
-        assert "auroc" in result.fold_results[0].test_reports["test"].metrics
+        assert result.fold_results[0].test_evaluations["test"] is not None
+        assert "auroc" in result.fold_results[0].test_evaluations["test"].metrics
 
     def test_run_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
@@ -1612,7 +1585,7 @@ class TestPipeline:
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert "auroc" in result.fold_results[0].test_reports["test"].metrics
+        assert "auroc" in result.fold_results[0].test_evaluations["test"].metrics
 
     def test_run_hierarchical_features_with_hipt(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
@@ -1648,7 +1621,7 @@ class TestPipeline:
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
         assert (_expected_run_dir(config) / "best_model.pt").exists()
-        assert "auroc" in result.fold_results[0].test_reports["test"].metrics
+        assert "auroc" in result.fold_results[0].test_evaluations["test"].metrics
 
     def test_resolve_preprocessing_populates_hipt_geometry(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -2117,11 +2090,10 @@ class TestPatientPipeline:
 
         assert isinstance(result, FoldResult)
         assert result.fold == 0
-        assert result.tune_report.split == "tune"
-        assert result.test_reports["test"].split == "test"
+        assert set(result.test_evaluations) == {"test"}
         assert (fold_dir / "best_model.pt").exists()
 
-    def test_tune_is_test_reports_tune_as_test_patient_level(self, tmp_path: Path):
+    def test_tune_is_test_reports_tune_as_test_patient_level(self, tmp_path: Path, evaluated):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
         # Rewrite the test split as tune: train/tune only, no held-out test.
         splits_df = pd.read_csv(splits_csv)
@@ -2136,7 +2108,7 @@ class TestPatientPipeline:
         assert fold_split.test_from_tune is True
         # No leakage flagged even though test patients == tune patients (checked at construction).
 
-        result = train_one_fold(
+        train_one_fold(
             feature_store=store,
             dataset=dataset,
             fold_split=fold_split,
@@ -2151,10 +2123,9 @@ class TestPatientPipeline:
             fold_dir=tmp_path / "fold_tune_is_test_patient",
         )
 
-        tune_ids = {pred.sample_id for pred in result.tune_report.predictions}
-        test_ids = {pred.sample_id for pred in result.test_reports["test"].predictions}
-        assert tune_ids == {"p2", "p3"}
-        assert test_ids == {"p2", "p3"}
+        tune, test = evaluated
+        assert set(tune.predictions.sample_ids) == {"p2", "p3"}
+        assert set(test.predictions.sample_ids) == {"p2", "p3"}
 
     def test_train_one_fold_predictions_keyed_by_patient_id(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
@@ -2162,7 +2133,7 @@ class TestPatientPipeline:
         splits = legacy_folds_from_csv(splits_csv, dataset)
         store = CachedSetSource(feature_dir)
 
-        result = train_one_fold(
+        train_one_fold(
             feature_store=store,
             dataset=dataset,
             fold_split=splits.folds[0],
@@ -2172,8 +2143,8 @@ class TestPatientPipeline:
             fold_dir=tmp_path / "fold_0",
         )
 
-        test_ids = {pred.sample_id for pred in result.test_reports["test"].predictions}
-        assert test_ids == {"p3"}
+        predictions = Predictions.from_parquet(tmp_path / "fold_0" / "predictions_test.parquet")
+        assert predictions.sample_ids == ["p3"]
 
     def test_train_one_fold_patient_features_fail_fast_when_missing(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
@@ -2193,7 +2164,9 @@ class TestPatientPipeline:
                 fold_dir=tmp_path / "fold_0",
             )
 
-    def test_train_one_fold_patient_empty_tune_uses_placeholder_fallback(self, tmp_path: Path):
+    def test_train_one_fold_patient_empty_tune_uses_placeholder_fallback(
+        self, tmp_path: Path, evaluated
+    ):
         dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
         (feature_dir / "p2.pt").unlink()
         _write_patient_feature_manifest(
@@ -2219,12 +2192,15 @@ class TestPatientPipeline:
             fold_dir=tmp_path / "fold_0",
         )
 
-        assert [pred.sample_id for pred in result.tune_report.predictions] == ["p2"]
-        assert result.tune_report.predictions[0].is_placeholder is True
-        assert result.tune_report.metrics["coverage"] == pytest.approx(0.0)
+        tune = evaluated[0].predictions.frame
+        assert tune["sample_id"].tolist() == ["p2"]
+        assert tune["is_placeholder"].tolist() == [True]
+        assert result.tune_evaluation.metrics["coverage"] == pytest.approx(0.0)
 
-    def test_build_subgroup_data_uses_patient_metadata_for_patient_predictions(self, tmp_path: Path):
-        dataset_csv, _, _ = _setup_patient_data(tmp_path)
+    def test_patient_predictions_break_down_by_patient_metadata(self, tmp_path: Path):
+        from soma.config import SubgroupConfig
+
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
         dataset_df = pd.read_csv(dataset_csv)
         dataset_df["site"] = [
             "site_a" if patient_id in {"p0", "p2"} else "site_b"
@@ -2232,21 +2208,24 @@ class TestPatientPipeline:
         ]
         dataset_df.to_csv(dataset_csv, index=False)
         dataset = legacy_samples_from_csv(dataset_csv)
-        report = EvaluationReport(
-            split="test",
-            metrics={},
-            predictions=[
-                SamplePrediction(sample_id="p2", true_label=1, predicted_label=1),
-                SamplePrediction(sample_id="p3", true_label=0, predicted_label=0),
-            ],
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        fold_dir = tmp_path / "fold_0"
+
+        result = train_one_fold(
+            feature_store=CachedSetSource(feature_dir),
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            evaluation=EvalConfig(metrics=["accuracy"], subgroups=SubgroupConfig(columns=["site"])),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=fold_dir,
         )
 
-        subgroup_data = _build_subgroup_data(dataset, report, ["site"])
-
-        assert subgroup_data == {
-            "p2": {"site": "site_a"},
-            "p3": {"site": "site_b"},
-        }
+        written = json.loads((fold_dir / "subgroup_metrics_test.json").read_text())
+        assert written == result.test_evaluations["test"].subgroups
+        # The only test patient (p3) is a site_b patient: one group, too small to score.
+        assert written == {"metrics": {"site": {}}, "stats": {"site": {}}}
 
     def test_train_detects_patient_leakage(self, tmp_path: Path):
         dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)

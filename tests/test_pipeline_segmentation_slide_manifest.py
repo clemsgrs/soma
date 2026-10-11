@@ -297,7 +297,7 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     )
 
     assert "test/mean_dice" in result.summary
-    assert result.fold_results[0].test_reports["test"].metrics["mean_dice"] >= 0.0
+    assert result.fold_results[0].test_evaluations["test"].metrics["mean_dice"] >= 0.0
     assert pipeline.dataset.sample_ids == ["s0", "s1", "s2", "s3"]
     assert pipeline.splits.folds[0].train == ("s0", "s1")
     assert pipeline.splits.folds[0].tune == ("s2",)

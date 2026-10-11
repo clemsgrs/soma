@@ -9,7 +9,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from soma.learn.learner import Learner, StepOutput, learner_registry
+from soma.learn.learner import Learner, PredictOutput, StepOutput, learner_registry
 from soma.training.collate import CoxWindowBatch
 from soma.training.model import MILModelOutput
 
@@ -100,6 +100,13 @@ class MILLearner(Learner):
             targets={k: v.detach().cpu() for k, v in batch.targets.items()},
             size=int(logits.shape[0]),
         )
+
+    def predict_step(self, batch: Any) -> PredictOutput:
+        """The head's declared columns for the batch; ``raw`` keeps the full model output
+        (``tile_attention`` for attention callbacks)."""
+        output = self.forward_batch(batch)
+        columns = self.head.to_columns(self.head.postprocess(output.logits.float()))
+        return PredictOutput(columns=columns, raw=output)
 
     def validation_summary(self, outputs: list[StepOutput]) -> dict[str, float]:
         if not outputs:

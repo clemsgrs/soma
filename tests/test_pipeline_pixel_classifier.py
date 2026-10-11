@@ -97,9 +97,9 @@ def test_train_one_pixel_classifier_fold_end_to_end(tmp_path: Path):
     )
 
     assert result.train_result is None  # no Trainer on this path
-    assert set(result.tune_report.metrics) >= {"mean_dice", "mean_iou"}
-    assert "test" in result.test_reports
-    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert set(result.tune_evaluation.metrics) >= {"mean_dice", "mean_iou"}
+    assert "test" in result.test_evaluations
+    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
 
     fold = tmp_path / "fold"
     assert (fold / "metrics.json").is_file()

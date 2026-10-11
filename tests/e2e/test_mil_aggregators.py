@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import torch
 
@@ -157,7 +158,8 @@ def test_aggregator_solves_rigged_task_and_scores_bags_independently(
     auroc = f"test/{_auroc(aggregator)}"
     artifact.check_equal(auroc, run.summary[auroc], 1.0)
 
-    scored = scored_models["test"]
+    test_ids = set(pd.read_csv(cohort.splits_csv).query("split == 'test'")["sample_id"])
+    (scored,) = [s for s in scored_models if set(s.predictions.sample_ids) == test_ids]
     # Tiling must yield exactly the designed bags: one feature row per tissue tile.
     dataset = scored.loader.dataset
     designed = dict(zip(cohort.sample_ids, cohort.bag_size.tolist()))
@@ -170,7 +172,9 @@ def test_aggregator_solves_rigged_task_and_scores_bags_independently(
     reference = _logits(scored, batch_size=batch_size)
     # The re-scoring harness itself must reproduce the probabilities the run wrote.
     head = scored.model.task_head
-    reported = {p.sample_id: torch.tensor(p.probabilities) for p in scored.report.predictions}
+    frame = scored.predictions.frame.set_index("sample_id")
+    probabilities = frame[scored.predictions.probability_columns]
+    reported = {sid: torch.tensor(row.to_numpy()) for sid, row in probabilities.iterrows()}
     rescored = {
         k: torch.as_tensor(head.postprocess(v[None])["probabilities"][0])
         for k, v in reference.items()

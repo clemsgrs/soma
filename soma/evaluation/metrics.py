@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Callable
 
 logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
-from scipy.stats import false_discovery_control, pearsonr, spearmanr
+from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -92,8 +93,6 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "segmentation": ["mean_dice", "mean_iou"],
     "detection": ["mean_f1"],
 }
-
-LOWER_IS_BETTER_METRICS = {"mse", "rmse", "mae", "croma_f0"}
 
 # ---------------------------------------------------------------------------
 # Per-metric functions — signature: (y_true, y_pred, y_prob) -> float
@@ -357,11 +356,6 @@ def compute_survival_metrics(
     return results
 
 
-def metric_higher_is_better(metric: str) -> bool:
-    """Return whether larger values mean better performance for a metric."""
-    return metric.rsplit("/", 1)[-1] not in LOWER_IS_BETTER_METRICS
-
-
 def probability_columns(columns) -> list[str]:
     """Return ``prob_*`` columns sorted by numeric class index."""
     prob_cols = [c for c in columns if str(c).startswith("prob_")]
@@ -376,300 +370,118 @@ def probability_columns(columns) -> list[str]:
     return sorted(prob_cols, key=_key)
 
 
-def bh_correct(p_values: list[float]) -> list[float]:
-    """Benjamini-Hochberg FDR correction via scipy.stats.false_discovery_control.
+# ---------------------------------------------------------------------------
+# Metric registry — frame metrics ``(predictions, targets) -> float``
+# ---------------------------------------------------------------------------
 
-    Returns adjusted p-values in the same order as the input.
-    An empty list returns an empty list; a single p-value is returned unchanged.
+FrameMetric = Callable[[pd.DataFrame, pd.DataFrame], float]
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    """One registered metric.
+
+    ``fn`` scores the aligned frames :func:`soma.evaluate` builds: the predictions and
+    the targets, indexed by ``sample_id`` in the same order, with ``label`` already
+    mapped to class indices. It is ``None`` for metrics a head reduces itself (the dense
+    families) or that another path computes; those entries only declare a direction.
     """
-    if len(p_values) == 0:
-        return []
-    return list(false_discovery_control(p_values, method="bh"))
+
+    name: str
+    fn: FrameMetric | None
+    families: frozenset[str]
+    higher_is_better: bool = True
 
 
-def compare_run_predictions(
-    runs_predictions: list[pd.DataFrame],
-    task_family: str,
-    metric: str,
-    *,
-    n_permutations: int = 1000,
-    seed: int = 42,
-) -> list[float | None]:
-    """Sample-level paired permutation test comparing each run against the best.
+class MetricRegistry:
+    """Name → :class:`MetricSpec`; the single source of a metric's family and direction."""
 
-    Aligns runs by sample_id, then for each permutation randomly swaps
-    prediction columns between the best run and one other run for a random
-    subset of samples, recomputes the metric, and builds a null distribution.
-    Works for any number of folds (including single-fold) as long as
-    predictions exist and share sample IDs.
+    def __init__(self) -> None:
+        self._entries: dict[str, MetricSpec] = {}
 
-    Args:
-        runs_predictions: Pooled prediction DataFrames, one per run.
-            Each must contain sample_id, true_label, and prediction columns.
-        task_family: Task family string (e.g. 'binary_classification').
-        metric: Metric name to use as the test statistic.
-        n_permutations: Number of permutation iterations.
-        seed: Random seed for reproducibility.
+    def register(
+        self,
+        name: str,
+        fn: FrameMetric | None = None,
+        *,
+        families,
+        higher_is_better: bool = True,
+    ) -> MetricSpec:
+        if name in self._entries:
+            raise ValueError(f"metric '{name}' is already registered")
+        spec = MetricSpec(name, fn, frozenset(families), bool(higher_is_better))
+        self._entries[name] = spec
+        return spec
 
-    Returns:
-        List of p-values, one per run. The best run gets p-value 1.0.
-        Returns None for a run when comparison is not possible.
-    """
-    n_runs = len(runs_predictions)
-    if n_runs < 2:
-        return [None] * n_runs
-
-    funs = _METRIC_FUNS.get(task_family, {})
-    if metric not in funs:
-        return [None] * n_runs
-
-    required_pred_col = "predicted_value" if task_family == "regression" else "predicted_label"
-    missing_required = [i for i, df in enumerate(runs_predictions) if required_pred_col not in df.columns]
-    if missing_required:
-        raise ValueError(
-            f"compare_run_predictions requires '{required_pred_col}' for task_family='{task_family}'. "
-            f"Missing in runs: {missing_required}."
-        )
-
-    def _score(df: pd.DataFrame) -> float | None:
-        if df.empty or len(df) < 2:
-            return None
+    def get(self, name: str) -> MetricSpec:
         try:
-            y_true, y_pred, y_prob = _extract_arrays(df, task_family)
-            return float(funs[metric](y_true, y_pred, y_prob))
-        except Exception:
-            logger.debug("Metric %s could not be computed for a run", metric, exc_info=True)
-            return None
+            return self._entries[name]
+        except KeyError:
+            raise KeyError(
+                f"metric '{name}' is not registered; available: {sorted(self._entries)}"
+            ) from None
 
-    scores = [_score(df) for df in runs_predictions]
-    valid = [(i, s) for i, s in enumerate(scores) if s is not None]
-    if not valid:
-        return [None] * n_runs
+    def __contains__(self, name: object) -> bool:
+        return name in self._entries
 
-    if metric_higher_is_better(metric):
-        best_idx, best_score = max(valid, key=lambda x: x[1])
-    else:
-        best_idx, best_score = min(valid, key=lambda x: x[1])
-    rng = np.random.default_rng(seed)
-
-    def _prediction_cols(df: pd.DataFrame) -> list[str]:
+    def names(self, task_family: str | None = None) -> list[str]:
+        """Registered names, optionally only those declaring ``task_family``."""
         return [
-            c for c in df.columns
-            if c in {required_pred_col, "raw_score"} or c.startswith("prob_")
+            name
+            for name, spec in self._entries.items()
+            if task_family is None or task_family in spec.families
         ]
 
-    metric_needs_probabilities = task_family in {"binary_classification", "multiclass_classification"} and metric in {
-        "auroc",
-        "auprc",
-        "auroc_macro",
-    }
-
-    pred_cols = _prediction_cols(runs_predictions[best_idx])
-    prob_cols = [c for c in pred_cols if c.startswith("prob_")]
-
-    best_df = runs_predictions[best_idx]
-    best_ids = set(best_df["sample_id"])
-
-    p_values: list[float | None] = []
-    for i, df in enumerate(runs_predictions):
-        if i == best_idx:
-            p_values.append(1.0)
-            continue
-        if scores[i] is None:
-            p_values.append(None)
-            continue
-
-        # Align both runs to a common sorted sample order
-        common_ids = sorted(best_ids.intersection(df["sample_id"]))
-        if len(common_ids) < 2:
-            p_values.append(None)
-            continue
-
-        df_a = best_df[best_df["sample_id"].isin(common_ids)].sort_values("sample_id")
-        df_b = df[df["sample_id"].isin(common_ids)].sort_values("sample_id")
-
-        y_true = df_a["true_label"].to_numpy()
-        shared_pred_cols = [c for c in pred_cols if c in df_b.columns]
-        if not shared_pred_cols:
-            p_values.append(None)
-            continue
-        shared_prob_cols = [c for c in prob_cols if c in shared_pred_cols]
-        if metric_needs_probabilities and len(shared_prob_cols) != len(prob_cols):
-            p_values.append(None)
-            continue
-        vals_a = df_a[shared_pred_cols].to_numpy()
-        vals_b = df_b[shared_pred_cols].to_numpy()
-
-        observed_delta = abs(best_score - scores[i])
-
-        def _df_from(vals: np.ndarray, cols: list[str] = shared_pred_cols, yt: np.ndarray = y_true) -> pd.DataFrame:
-            out = pd.DataFrame(vals, columns=cols)
-            out["true_label"] = yt
-            return out
-
-        null_deltas = np.empty(n_permutations)
-        for p_idx in range(n_permutations):
-            swap = rng.random(len(common_ids)) < 0.5
-            perm_a = np.where(swap[:, None], vals_b, vals_a)
-            perm_b = np.where(swap[:, None], vals_a, vals_b)
-            ya, ypa, yproba = _extract_arrays(_df_from(perm_a), task_family)
-            yb, ypb, yprobab = _extract_arrays(_df_from(perm_b), task_family)
-            null_deltas[p_idx] = abs(
-                float(funs[metric](ya, ypa, yproba)) - float(funs[metric](yb, ypb, yprobab))
-            )
-
-        p_values.append(float(np.mean(null_deltas >= observed_delta)))
-
-    return p_values
+    def higher_is_better(self, metric: str) -> bool:
+        """Direction of ``metric`` (a ``split/`` prefix is ignored); unregistered names,
+        such as per-class keys or a benchmark's own scores, count as higher-is-better."""
+        name = metric.rsplit("/", 1)[-1]
+        spec = self._entries.get(name)
+        return True if spec is None else spec.higher_is_better
 
 
-def _extract_arrays(
-    df: pd.DataFrame,
-    task_family: str,
+def _label_arrays(
+    predictions: pd.DataFrame, targets: pd.DataFrame
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-    """Extract y_true, y_pred, y_prob from a predictions DataFrame.
-
-    Supports the column formats written by pipeline._save_predictions:
-    - Classification: true_label, predicted_label, prob_0, prob_1, ...
-    - Ordinal: true_label, predicted_label, raw_score
-    - Regression: true_label, predicted_value
-    """
-    y_true = df["true_label"].to_numpy()
-
-    prob_cols = probability_columns(df.columns)
-    if prob_cols:
-        y_pred = df["predicted_label"].to_numpy()
-        y_prob = df[prob_cols].to_numpy()
-    elif "predicted_label" in df.columns:
-        y_pred = df["predicted_label"].to_numpy()
-        y_prob = None
+    """``(y_true, y_pred, y_prob)`` for the array metrics above: ``label`` against
+    ``predicted_label`` for the label families, ``value`` against ``predicted_value``."""
+    if "predicted_value" in predictions.columns:
+        y_true = targets["value"].to_numpy(dtype=float)
+        y_pred = predictions["predicted_value"].to_numpy(dtype=float)
     else:
-        y_pred = df["predicted_value"].to_numpy()
-        y_prob = None
-
+        y_true = targets["label"].to_numpy(dtype=np.int64)
+        y_pred = predictions["predicted_label"].to_numpy(dtype=np.int64)
+    prob_cols = probability_columns(predictions.columns)
+    y_prob = predictions[prob_cols].to_numpy(dtype=float) if prob_cols else None
     return y_true, y_pred, y_prob
 
 
-def compute_subgroup_metrics(
-    task_family: str,
-    metrics: list[str],
-    predictions_df: pd.DataFrame,
-    subgroup_columns: list[str],
-) -> dict[str, dict[str, dict[str, float | int]]]:
-    """Compute metrics per subgroup for each categorical column.
-
-    For each column, groups predictions by unique values and computes all
-    requested metrics within each group. Groups with fewer than 2 samples
-    are skipped.
-
-    Args:
-        task_family: Task family (e.g. 'binary_classification').
-        metrics: Metric names to compute (must be valid for the family).
-        predictions_df: DataFrame with prediction columns + subgroup columns.
-        subgroup_columns: Column names to group by.
-
-    Returns:
-        {column → {group_value → {metric: value, "n": count}}}
-    """
-    result: dict[str, dict[str, dict[str, float | int]]] = {}
-    for col in subgroup_columns:
-        if col not in predictions_df.columns:
-            continue
-        groups: dict[str, dict[str, float | int]] = {}
-        for group_val, group_df in predictions_df.groupby(col, sort=True):
-            if len(group_df) < 2:
-                continue
-            y_true, y_pred, y_prob = _extract_arrays(group_df, task_family)
-            try:
-                group_metrics = compute_metrics(task_family, metrics, y_true, y_pred, y_prob)
-            except Exception:
-                logger.debug("Subgroup metrics failed for %s=%s", col, group_val, exc_info=True)
-                continue
-            group_metrics["n"] = int(len(group_df))
-            groups[str(group_val)] = group_metrics
-        result[col] = groups
-    return result
+def _c_index(predictions: pd.DataFrame, targets: pd.DataFrame) -> float:
+    return _concordance_index(
+        targets["event"].to_numpy(dtype=float),
+        targets["time"].to_numpy(dtype=float),
+        predictions["risk_score"].to_numpy(dtype=float),
+    )
 
 
-def compute_subgroup_stats(
-    task_family: str,
-    metrics: list[str],
-    predictions_df: pd.DataFrame,
-    subgroup_columns: list[str],
-    *,
-    n_permutations: int = 1000,
-    seed: int = 42,
-    min_group_size: int = 10,
-) -> dict[str, dict[str, dict[str, float]]]:
-    """Permutation test for each subgroup vs. the rest of the data.
+def _frame_metric(fn: _Fn) -> FrameMetric:
+    return lambda predictions, targets: fn(*_label_arrays(predictions, targets))
 
-    For each (column, group, metric): computes the observed metric delta
-    (group minus rest), then permutes group membership `n_permutations` times
-    to estimate a two-sided p-value. Groups with fewer than `min_group_size`
-    samples are skipped.
 
-    Args:
-        task_family: Task family (e.g. 'binary_classification').
-        metrics: Metric names to test.
-        predictions_df: DataFrame with prediction columns + subgroup columns.
-        subgroup_columns: Column names to test.
-        n_permutations: Number of permutation iterations.
-        seed: Random seed for reproducibility.
-        min_group_size: Minimum group size required to run the test.
-
-    Returns:
-        {column → {group_value → {metric: p_value}}}
-        Only groups with n >= min_group_size are included.
-    """
-    rng = np.random.default_rng(seed)
-    result: dict[str, dict[str, dict[str, float]]] = {}
-
-    for col in subgroup_columns:
-        if col not in predictions_df.columns:
-            continue
-        col_stats: dict[str, dict[str, float]] = {}
-        for group_val, group_df in predictions_df.groupby(col, sort=True):
-            if len(group_df) < min_group_size:
-                continue
-            group_mask = predictions_df[col] == group_val
-            rest_df = predictions_df[~group_mask]
-            if len(rest_df) < 2:
-                continue
-
-            metric_pvals: dict[str, float] = {}
-            for metric in metrics:
-                try:
-                    y_true_g, y_pred_g, y_prob_g = _extract_arrays(group_df, task_family)
-                    y_true_r, y_pred_r, y_prob_r = _extract_arrays(rest_df, task_family)
-                    val_group = compute_metrics(task_family, [metric], y_true_g, y_pred_g, y_prob_g)[metric]
-                    val_rest = compute_metrics(task_family, [metric], y_true_r, y_pred_r, y_prob_r)[metric]
-                    observed_delta = abs(val_group - val_rest)
-                except Exception:
-                    logger.debug("Permutation test: could not compute %s for group %s", metric, group_val, exc_info=True)
-                    continue
-
-                # Permutation test: shuffle group membership, recompute delta
-                n_group = int(group_mask.sum())
-                n_total = len(predictions_df)
-                null_deltas = []
-                for _ in range(n_permutations):
-                    perm_mask = np.zeros(n_total, dtype=bool)
-                    perm_mask[rng.choice(n_total, size=n_group, replace=False)] = True
-                    perm_group = predictions_df[perm_mask]
-                    perm_rest = predictions_df[~perm_mask]
-                    try:
-                        yg_t, yg_p, yg_pr = _extract_arrays(perm_group, task_family)
-                        yr_t, yr_p, yr_pr = _extract_arrays(perm_rest, task_family)
-                        v_g = compute_metrics(task_family, [metric], yg_t, yg_p, yg_pr)[metric]
-                        v_r = compute_metrics(task_family, [metric], yr_t, yr_p, yr_pr)[metric]
-                        null_deltas.append(abs(v_g - v_r))
-                    except Exception:
-                        continue
-
-                if null_deltas:
-                    metric_pvals[metric] = float(np.mean(np.array(null_deltas) >= observed_delta))
-
-            if metric_pvals:
-                col_stats[str(group_val)] = metric_pvals
-        result[col] = col_stats
-    return result
+metric_registry = MetricRegistry()
+_LOWER_IS_BETTER = {"mse", "rmse", "mae"}
+for _name in dict.fromkeys(name for names in VALID_METRICS.values() for name in sorted(names)):
+    _families = {family for family, names in VALID_METRICS.items() if _name in names}
+    _array_fn = next(
+        (_METRIC_FUNS[f][_name] for f in sorted(_families) if _name in _METRIC_FUNS.get(f, {})),
+        None,
+    )
+    if _array_fn is not None:
+        _fn = _frame_metric(_array_fn)
+    else:
+        _fn = _c_index if _name == "c_index" else None
+    metric_registry.register(
+        _name, _fn, families=_families, higher_is_better=_name not in _LOWER_IS_BETTER
+    )
+# The representation-quality path's CRoMa score (soma.robustness): direction only.
+metric_registry.register("croma_f0", families={"representation"}, higher_is_better=False)

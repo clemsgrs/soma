@@ -22,6 +22,7 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
+from soma.evaluation import Predictions
 from soma.tasks.survival import CoxSurvivalHead, cox_breslow_loss
 from soma.pipeline import Pipeline, PipelineResult
 from soma.training.collate import CoxWindowBatch, bag_collate_fn, cox_window_collate
@@ -364,11 +365,11 @@ class TestMILCoxEndToEnd:
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, feature_dir=feature_dir).run()
         assert isinstance(result, PipelineResult)
-        report = result.fold_results[0].test_reports["test"]
+        report = result.fold_results[0].test_evaluations["test"]
         assert "c_index" in report.metrics
-        preds_csv = next(result.run_dir.rglob("predictions_test.csv"))
-        cols = pd.read_csv(preds_csv).columns
-        assert {"sample_id", "true_label", "event", "risk_score"} <= set(cols)
+        predictions = Predictions.from_parquet(next(result.run_dir.rglob("predictions_test.parquet")))
+        assert predictions.task_family == "survival"
+        assert predictions.prediction_columns == ("risk_score",)
 
     def test_padded_mode_run(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
@@ -384,7 +385,7 @@ class TestMILCoxEndToEnd:
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, feature_dir=feature_dir).run()
         assert isinstance(result, PipelineResult)
-        assert "c_index" in result.fold_results[0].test_reports["test"].metrics
+        assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
 
     def test_hierarchical_accumulation_mode_run(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
@@ -414,4 +415,4 @@ class TestMILCoxEndToEnd:
         with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, feature_dir=feature_dir).run()
         assert isinstance(result, PipelineResult)
-        assert "c_index" in result.fold_results[0].test_reports["test"].metrics
+        assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics

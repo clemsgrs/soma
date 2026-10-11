@@ -13,7 +13,7 @@ import numpy as np
 import torch
 
 from soma.evaluation.dense_artifacts import DenseArtifactWriter
-from soma.evaluation.report import EvaluationReport
+from soma.evaluation import Evaluation
 from soma.training.segmentation_dataset import SegmentationBatch
 
 if TYPE_CHECKING:
@@ -145,10 +145,10 @@ def evaluate_pixel_classifier(
     output_dir: Path | None = None,
     save_segmentation_overlays: bool = True,
     save_segmentation_probabilities: bool = False,
-) -> EvaluationReport:
+) -> Evaluation:
     """Predict every pixel of every tile and reduce to dense metrics + artifacts.
 
-    Mirrors ``soma.pipeline._evaluate_segmentation`` but iterates records directly (no
+    Mirrors ``soma.pipeline._evaluate_grid`` but iterates records directly (no
     DataLoader / nn.Module): per tile it builds pseudo-logits, accumulates the per-image
     confusion row (``head.dense_stats``), and streams rasters/overlays/CSV through the
     shared ``DenseArtifactWriter``.
@@ -184,4 +184,4 @@ def evaluate_pixel_classifier(
     metrics = head.finalize_eval_metrics(torch.cat(stat_rows, dim=0)) if stat_rows else {}
     if writer is not None:
         writer.finalize()
-    return EvaluationReport(split=split_name, metrics=metrics, predictions=[])
+    return Evaluation(metrics=dict(metrics), task_family=head.task_family, num_samples=len(stat_rows))

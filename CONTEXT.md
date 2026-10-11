@@ -70,7 +70,7 @@ Re-running a Benchmark's canonical protocol and checking the resulting metric la
 
 **Leaderboard**:
 A persistent, per-(dataset + splits + task) ranked view over the run registry: every completed run contributes a row, ranked by the task's primary metric, with seeds collapsed to mean ± std. It is a *projection over runs*, keyed by data identity — not a one-off table owned by a single sweep. It holds two kinds of rows (below).
-_Avoid_: "results table", "comparison" (a comparison is the on-demand N-run `compare_runs` report, a different thing).
+_Avoid_: "results table", "comparison" (a comparison is `soma.evaluation.compare`, a paired permutation test between prediction sets, a different thing).
 
 **Measured row**:
 A Leaderboard row backed by an actual Run — its metric comes from that run's `summary.json`.
@@ -92,6 +92,19 @@ _Avoid_: treating a Leaderboard as a single fixed keying; "grouping" (a Facet al
 **Sweep**:
 A launcher that fires many configs at once (e.g. an encoder grid) over one dataset. Its runs land in that dataset's Leaderboard; a Sweep does not own its own ranking.
 _Avoid_: "campaign" (the OCELOT-specific name for the first hand-built sweep), "grid".
+
+### Scoring
+
+**Predictions**:
+What a model said about each sample: a frame keyed by `sample_id` whose other columns the task head declares (`prob_<i>` + `predicted_label`, `predicted_label` + `raw_score`, `predicted_value`, `risk_score`), plus an optional `is_placeholder` flag. Written as `predictions_<split>.parquet`. Targets never travel inside it.
+_Avoid_: "report" for the prediction file; adding target columns such as `true_label`.
+
+**Evaluation**:
+The scores of one set of Predictions against the cohort's targets (`Cohort.targets`), joined by `sample_id`: metrics, optional subgroup breakdowns and the sample count. `soma.evaluate` scores exactly the ids it is given and refuses a prediction without a target or a target without a prediction.
+
+**Baseline**:
+A predictor that ignores the features (class prior, mean value, constant risk) fitted on the training targets. It fills samples the model cannot score as placeholder rows, so a split is still scored whole.
+_Avoid_: "deterministic fallback" or "missing prediction" for these rows; they are predictions, flagged.
 
 ### Reproduction soundness
 

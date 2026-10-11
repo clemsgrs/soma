@@ -4,7 +4,7 @@ Uses a random-weights ``vit_tiny_patch16_224`` (no downloads, CPU) as the frozen
 encoder so the whole live path runs offline: ``LiveSegmentationSource`` →
 ``LiveSegmentationDataset`` (joint read + optional v2 augmentation + normalize + pad) →
 ``LiveSegmentationModel`` (no_grad+autocast encoder → decoder → head) → ``Trainer.fit``
-→ streaming ``_evaluate_segmentation``.
+→ streaming ``_evaluate_grid``.
 
 The anchor test is **live-no-aug ≈ cached**: with the same encoder weights the live
 re-encode produces byte-identical grids to the cached extractor, so a live-no-aug fold
@@ -427,8 +427,8 @@ def test_live_fold_with_a_class_scheme_matches_the_cached_fold(tmp_path: Path):
     )
 
     for metric in ("mean_dice", "mean_iou"):
-        assert live.tune_report.metrics[metric] == pytest.approx(
-            cached.tune_report.metrics[metric], abs=1e-2
+        assert live.tune_evaluation.metrics[metric] == pytest.approx(
+            cached.tune_evaluation.metrics[metric], abs=1e-2
         )
 
 
@@ -467,8 +467,8 @@ def test_live_no_aug_metrics_match_cached(tmp_path: Path):
     # composition ⇒ ~1e-6 encoder float noise, amplified over 2 epochs of a random-init
     # decoder). The exact invariant is the grid bit-parity test above; here we only
     # assert the two paths land in the same place.
-    c = cached_result.tune_report.metrics
-    live = live_result.tune_report.metrics
+    c = cached_result.tune_evaluation.metrics
+    live = live_result.tune_evaluation.metrics
     assert pytest.approx(c["mean_dice"], abs=1e-2) == live["mean_dice"]
     assert pytest.approx(c["mean_iou"], abs=1e-2) == live["mean_iou"]
 
@@ -492,8 +492,8 @@ def test_live_fold_with_augmentation_trains_and_evaluates(tmp_path: Path):
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
     )
-    assert set(result.tune_report.metrics) >= {"mean_dice", "mean_iou"}
-    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert set(result.tune_evaluation.metrics) >= {"mean_dice", "mean_iou"}
+    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
     # Dense artifacts still land for the live path.
     assert (tmp_path / "fold" / "predictions_test.csv").is_file()
     assert (tmp_path / "fold" / "preds" / "test" / "s3.png").is_file()
@@ -516,7 +516,7 @@ def test_live_fold_with_sliding_window_trains_and_evaluates(tmp_path: Path):
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
     )
-    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
 
 
 def test_live_checkpoint_excludes_encoder_and_reloads(tmp_path: Path):
@@ -770,4 +770,4 @@ def test_live_fold_random_resized_crops_whole_train_images(tmp_path: Path):
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(metrics=["mean_dice"]),
     )
-    assert 0.0 <= result.test_reports["test"].metrics["mean_dice"] <= 1.0
+    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0

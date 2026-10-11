@@ -3,7 +3,7 @@
 Builds a pre-extracted dense feature store + mask manifest + splits on disk, then
 runs ``train_one_segmentation_fold`` — exercising geometry-from-sidecar, decoder +
 head construction, the SegmentationDataset loaders, ``Trainer.fit`` (with the
-streaming ``_tune``), checkpoint reload, and ``_evaluate_segmentation``. No encoder
+streaming ``_tune``), checkpoint reload, and ``_evaluate_grid``. No encoder
 / GPU needed: the grids are written directly.
 """
 
@@ -287,11 +287,11 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     )
 
     # tune + test reports carry dense metrics (no scalar predictions in 1f-b).
-    assert set(result.tune_report.metrics) >= {"mean_dice", "mean_iou"}
-    assert "test" in result.test_reports
-    assert set(result.test_reports["test"].metrics) >= {"mean_dice", "mean_iou"}
-    assert result.tune_report.predictions == []
-    assert 0.0 <= result.tune_report.metrics["mean_dice"] <= 1.0
+    assert set(result.tune_evaluation.metrics) >= {"mean_dice", "mean_iou"}
+    assert "test" in result.test_evaluations
+    assert set(result.test_evaluations["test"].metrics) >= {"mean_dice", "mean_iou"}
+    assert result.tune_evaluation.task_family == "segmentation"
+    assert 0.0 <= result.tune_evaluation.metrics["mean_dice"] <= 1.0
     # metrics.json + checkpoint were written.
     assert (tmp_path / "fold" / "metrics.json").is_file()
     assert (tmp_path / "fold" / "best_model.pt").is_file()
@@ -686,7 +686,7 @@ def test_pipeline_run_end_to_end_segmentation(tmp_path: Path):
     pipeline = Pipeline(_seg_pipeline_config(tmp_path), feature_dir=tmp_path / "dense")
     result = pipeline.run()
     assert "test/mean_dice" in result.summary
-    assert result.fold_results[0].test_reports["test"].metrics["mean_dice"] >= 0.0
+    assert result.fold_results[0].test_evaluations["test"].metrics["mean_dice"] >= 0.0
     # Dense artifacts land via the real entry point too (run -> train -> eval).
     # run_dir is a structured layout path under output_root, so glob for them.
     out = tmp_path / "out"

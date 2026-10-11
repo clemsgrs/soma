@@ -40,7 +40,9 @@ class Run:
     config_path: Path
 
     def predictions(self) -> dict[str, Path]:
-        return {p.name: p for p in sorted(self.run_dir.glob("predictions_*.csv"))}
+        """Every prediction file of the run: set-shape parquet and grid CSVs."""
+        paths = [*self.run_dir.glob("predictions_*.parquet"), *self.run_dir.glob("predictions_*.csv")]
+        return {p.name: p for p in sorted(paths)}
 
     def histories(self) -> dict[str, list[dict[str, Any]]]:
         """Per-fold epoch records, keyed ``""`` (single fold) or ``"fold_N"``."""

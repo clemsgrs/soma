@@ -204,7 +204,7 @@ class LiveSegmentationModel(nn.Module):
     dense grids, it runs the **frozen** foundation-model encoder on the (augmented)
     image batch every forward, so the trainer's ``out = model(features)`` →
     ``out.logits`` → ``task_head.compute_loss`` contract is unchanged (the streaming
-    ``accumulate_dense_stats`` eval works as-is too).
+    grid evaluation works as-is too).
 
     The encoder is held privately by slide2vec's public ``DenseEncodeKit``. The kit is
     deliberately not an ``nn.Module``, so assigning it here cannot register the frozen

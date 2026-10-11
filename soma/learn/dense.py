@@ -6,7 +6,7 @@ Slice 4 extends this class with the live encoder stage; it must not grow a sibli
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -14,7 +14,7 @@ from torch import Tensor, nn
 
 from soma.learn.learner import Learner, StepOutput, learner_registry
 
-__all__ = ["DenseLearner", "accumulate_dense_stats"]
+__all__ = ["DenseLearner"]
 
 
 class DenseLearner(Learner):
@@ -76,40 +76,3 @@ class DenseLearner(Learner):
 
 
 learner_registry.register("dense", DenseLearner)
-
-
-@torch.inference_mode()
-def accumulate_dense_stats(
-    model: nn.Module,
-    loader,
-    device: torch.device,
-    *,
-    compute_loss: bool = False,
-    on_batch_output: Callable[[object, Tensor, Tensor], None] | None = None,
-) -> tuple[list[Tensor], float, int]:
-    """Stream a dense head's compact per-image stat rows over ``loader``.
-
-    The pipeline's split evaluation shares this with :class:`DenseLearner` so the two
-    cannot drift. Rows are returned un-concatenated with the **per-image axis
-    preserved**: the caller concatenates to ``(ΣB, C, 3)`` and reduces once via
-    ``finalize_eval_metrics``. Summing to ``(C, 3)`` would silently turn the
-    per-image-macro metric into a dataset-global one.
-
-    ``on_batch_output`` receives ``(batch, logits, stat_row)`` per batch before the
-    logits are discarded, to stream rasters or overlays to disk.
-    """
-    learner = DenseLearner(model)
-    learner.eval()
-    head = model.task_head
-    total_loss, num_batches, stat_rows = 0.0, 0, []
-    for batch in loader:
-        batch = learner.transfer_batch(batch, device)
-        output = learner.forward_batch(batch)
-        if compute_loss:
-            total_loss += float(head.compute_loss(output.logits, batch.targets).item())
-        num_batches += 1
-        stat_row = head.dense_stats(output.logits, batch.targets).detach().cpu()
-        stat_rows.append(stat_row)
-        if on_batch_output is not None:
-            on_batch_output(batch, output.logits, stat_row)
-    return stat_rows, total_loss, num_batches

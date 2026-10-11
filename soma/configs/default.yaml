@@ -88,7 +88,7 @@ evaluation:
   subgroups:
     columns: []
   # Skip ALL test-split evaluation and report tune only (no test inference, no
-  # predictions_test.csv, no `test` entries in metrics.json/summary.json). Use for
+  # test predictions file, no `test` entries in metrics.json/summary.json). Use for
   # model-selection sweeps: rank candidates by tune score, then re-run the winner
   # with this off. The test split may stay in splits.csv; it is simply not touched.
   holdout_test: false

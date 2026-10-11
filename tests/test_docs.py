@@ -351,7 +351,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "benchmark-in-house-encoder",
         ),
         "reference.rst": ("api", "cli"),
-        "system.rst": ("caching", "outputs", "reporting"),
+        "system.rst": ("caching", "outputs"),
     }
     for filename, children in expected_children.items():
         page = (docs_dir / filename).read_text(encoding="utf-8")

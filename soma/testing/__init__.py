@@ -1,5 +1,5 @@
-"""Conformance checks for soma's protocols: the :mod:`soma.data` sources and
-:class:`soma.learn.Learner`.
+"""Conformance checks for soma's protocols: the :mod:`soma.data` sources,
+:class:`soma.learn.Learner` and set-shape :class:`soma.tasks.TaskHead` implementations.
 
 Plain functions usable from pytest or a notebook. soma runs them on its own
 implementations; users run them on custom classes. Each raises
@@ -16,6 +16,7 @@ from soma.data.geometry import GridGeometry
 from soma.data.sources import Points
 from soma.testing._errors import ConformanceError
 from soma.testing._learner import check_learner
+from soma.testing._task_head import check_task_head
 
 __all__ = [
     "ConformanceError",
@@ -23,6 +24,7 @@ __all__ = [
     "check_learner",
     "check_set_source",
     "check_target_source",
+    "check_task_head",
 ]
 
 

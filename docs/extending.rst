@@ -58,6 +58,14 @@ The methods worth overriding are:
   inference also bypasses it: the predictor blends the folds' softmaxes across
   tiles and takes the argmax itself. Detection point decoding uses
   ``_predict_points(heatmap)``.
+* ``prediction_columns`` and ``to_columns(processed)`` for what
+  :func:`soma.predict` writes. The base implementation covers the
+  classification, ordinal, regression and survival families; a head of a new
+  family overrides both. :func:`soma.testing.check_task_head` checks a set-shape
+  head on one batch: the declared columns match ``to_columns``, every column is
+  numeric, the family :class:`~soma.evaluation.Baseline` yields the same
+  columns, and :func:`soma.evaluate` on a parquet round-trip agrees with
+  ``compute_metrics``.
 
 Every head family can be subclassed this way: classification, regression,
 survival, segmentation and detection.
@@ -149,10 +157,24 @@ constructor, and the config's ``optimizer`` / ``scheduler`` leaves still apply::
 The methods worth overriding are ``training_step`` (the loss), ``validation_step``
 and ``validation_summary`` (how a split is reduced; the summary must contain
 ``loss``), ``configure_optimizers(budget)`` (parameter groups, unfreezing),
-``transfer_batch`` (device placement) and ``trainable_state_dict`` (what a
+``transfer_batch`` (device placement), ``trainable_state_dict`` (what a
 checkpoint restores in memory: the model's state by default, so a learner that owns
 trainable modules of its own must widen it to cover them; ``best_model.pt`` holds
-the bare model's state either way). :func:`soma.testing.check_learner`
+the bare model's state either way) and ``predict_step`` (the prediction columns of
+a batch). A ``predict_step`` override can add a column; it lands in
+``predictions_<split>.parquet`` next to the head's columns::
+
+    from soma.learn import MILLearner, PredictOutput
+
+
+    class EntropyReportingLearner(MILLearner):
+        def predict_step(self, batch):
+            step = super().predict_step(batch)
+            attention = step.raw.tile_attention.softmax(-1)
+            entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1)
+            return PredictOutput(columns={**step.columns, "attention_entropy": entropy}, raw=step.raw)
+
+:func:`soma.testing.check_learner`
 checks a learner against the contract on one batch. From Python, :func:`soma.fit`
 trains a learner, or a bare model wrapped in its shape's learner, with
 ``Checkpoint``, ``EarlyStopping`` and ``Progress`` installed.
@@ -175,9 +197,9 @@ run soma from a small script that imports your module and then calls
 The names ``soma list tasks`` and ``soma list decoders`` print include every
 registered component, built-in or not.
 
-The same import is needed when reopening the run through the Python reporting
-API: the persisted config names the custom head, and soma resolves its family
-through the registry.
+The same import is needed when reopening the run from Python: the persisted
+config names the custom head, and soma resolves its family through the
+registry.
 
 Components that ship with soma's benchmarks (for example the EVA segmentation
 head ``eva_segmentation``, decoder ``eva_conv_ms`` and aggregator ``eva_abmil``)
