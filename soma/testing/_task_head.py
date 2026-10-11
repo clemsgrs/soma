@@ -19,15 +19,21 @@ __all__ = ["check_task_head"]
 
 
 def _targets_frame(head, targets: dict[str, torch.Tensor], sample_ids: list[str]) -> pd.DataFrame:
-    """The cohort-side targets of ``batch``: raw labels (decoded through ``classes``)."""
+    """The cohort-side targets of ``batch``: raw labels (decoded through ``classes``); a
+    ``(B, G)`` target spreads into ``<key>_0 .. <key>_{G-1}`` (a multi-output regression's
+    ``value_<k>``)."""
     try:
         keys = family_target_keys(head.task_family)
     except ValueError as error:
         raise ConformanceError("task_family", str(error)) from error
-    frame = pd.DataFrame(
-        {key: targets[key].detach().cpu().numpy() for key in keys},
-        index=pd.Index(sample_ids, name="sample_id", dtype=object),
-    )
+    columns: dict[str, np.ndarray] = {}
+    for key in keys:
+        values = targets[key].detach().cpu().numpy()
+        if values.ndim == 2:
+            columns.update({f"{key}_{k}": values[:, k] for k in range(values.shape[1])})
+        else:
+            columns[key] = values
+    frame = pd.DataFrame(columns, index=pd.Index(sample_ids, name="sample_id", dtype=object))
     classes = head.classes
     if "label" in frame.columns and classes is not None:
         frame["label"] = [classes[int(i)] for i in frame["label"]]

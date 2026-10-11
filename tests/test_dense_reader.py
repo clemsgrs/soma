@@ -26,8 +26,8 @@ def test_non_flat_image_reader_uses_hs2p_spacing_apis(tmp_path: Path, monkeypatc
 
     calls: list[tuple] = []
 
-    def fake_init(self, *, path, backend="auto"):
-        calls.append(("init", Path(path).name, backend))
+    def fake_init(self, *, path, backend="auto", spacing_at_level_0=None):
+        calls.append(("init", Path(path).name, backend, spacing_at_level_0))
 
     def fake_read_full_at_spacing(self, spacing_um, *, tolerance, interpolation):
         calls.append(("full", spacing_um, tolerance, interpolation))
@@ -58,14 +58,15 @@ def test_non_flat_image_reader_uses_hs2p_spacing_apis(tmp_path: Path, monkeypatc
         spacing_um=0.5,
         backend="openslide",
         tolerance=0.02,
+        spacing_at_level_0=0.25,
     )
 
     np.testing.assert_array_equal(image, np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8))
     np.testing.assert_array_equal(region, np.array([[[7, 8, 9]]], dtype=np.uint8))
     assert calls == [
-        ("init", "roi.tif", "openslide"),
+        ("init", "roi.tif", "openslide", None),
         ("full", 0.5, 0.02, "area"),
-        ("init", "roi.tif", "openslide"),
+        ("init", "roi.tif", "openslide", 0.25),
         ("region", (4, 2), 0.5, (1, 1), 0.02, "area"),
     ]
 

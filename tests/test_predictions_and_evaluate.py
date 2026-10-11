@@ -105,6 +105,24 @@ def test_default_metrics_are_the_family_catalogue_defaults():
     assert list(evaluation.metrics) == ["auroc", "balanced_accuracy", "auprc", "f1"]
 
 
+def _gene_panel(values=((0.1, 2.0), (0.4, 1.0), (0.3, 3.5), (0.9, 0.5))) -> Predictions:
+    frame = pd.DataFrame(values, columns=["value_0", "value_1"])
+    frame.insert(0, "sample_id", IDS)
+    return Predictions(frame, task_family="regression")
+
+
+def test_a_multi_output_regression_defaults_to_mean_pearson():
+    targets = pd.DataFrame(
+        {"value_0": [0.0, 0.5, 0.2, 1.0], "value_1": [2.5, 1.5, 3.0, 0.0]},
+        index=pd.Index(IDS, name="sample_id"),
+    )
+
+    evaluation = evaluate(_gene_panel(), targets)
+
+    assert list(evaluation.metrics) == ["mean_pearson"]
+    assert evaluation.metrics == evaluate(_gene_panel(), targets, metrics=["mean_pearson"]).metrics
+
+
 def test_a_prediction_without_a_target_is_refused():
     with pytest.raises(ValueError, match="1 prediction id"):
         evaluate(_binary(), _labels(ids=["a", "b", "c", "x"]))
@@ -224,6 +242,16 @@ def test_baseline_per_family(family, targets, expected):
     frame = Baseline.fit(pd.DataFrame(targets, index=IDS), task_family=family).predict(["x"]).frame
 
     assert {column: frame[column].iloc[0] for column in expected} == expected
+
+
+def test_a_multi_output_regression_baseline_predicts_each_output_mean():
+    targets = pd.DataFrame({"value_0": [1.0, 2.0, 6.0, 7.0], "value_1": [0.0, 0.0, 1.0, 1.0]}, index=IDS)
+
+    baseline = Baseline.fit(targets, task_family="regression")
+    frame = baseline.predict(["x"]).frame
+
+    assert baseline.prediction_columns == ("value_0", "value_1")
+    assert frame[["value_0", "value_1"]].iloc[0].tolist() == [4.0, 0.5]
 
 
 # --- compare ----------------------------------------------------------------------- #

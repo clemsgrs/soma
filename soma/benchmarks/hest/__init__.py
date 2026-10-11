@@ -237,7 +237,10 @@ class HestBenchmark:
         against a targets frame with one ``value_<k>`` column per gene (``mean_pearson``
         and one ``pearson_gene<k>_<symbol>`` per gene). Writes each fold's
         ``metrics.json`` and ``predictions_<split>.parquet`` and the run's
-        ``summary.json`` under ``config.output_root``; returns the summary.
+        ``summary.json`` into the managed run directory
+        (``output_root/experiments/<experiment>/runs/<run_id>``, as a ``Pipeline`` run), so
+        runs of different encoders under one ``output_root`` never overwrite each other;
+        returns the summary.
         """
         import numpy as np
         import pandas as pd
@@ -248,6 +251,7 @@ class HestBenchmark:
         from soma.cache import resolve_cache_root
         from soma.evaluation import Evaluation, evaluate
         from soma.extraction import FeatureExtractor
+        from soma.output_layout import resolve_managed_output_paths
         from soma.pipeline import (
             _aggregate_fold_metrics_from_disk,
             _save_metrics,
@@ -255,7 +259,7 @@ class HestBenchmark:
         )
         from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
-        run_dir = Path(config.output_root)
+        run_dir = resolve_managed_output_paths(config).run_dir
         run_dir.mkdir(parents=True, exist_ok=True)
         save_config(config, run_dir / "config.yaml")
         cohort = Cohort.from_csv(

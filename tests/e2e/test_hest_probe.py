@@ -64,7 +64,7 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
 
     summary = benchmark.run(config)
 
-    run = tmp_path / "run"
+    (run,) = (tmp_path / "run").glob("experiments/*/runs/*")
     metrics = json.loads((run / "metrics.json").read_text())["test"]
     artifact.check_equal("summary/keys", sorted(summary)[:1], ["test/mean_pearson"])
     artifact.check_equal(
@@ -77,6 +77,55 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
         round(float(np.mean([metrics[f"pearson_gene{k:02d}_{g}"] for k, g in enumerate(GENES)])), 9),
     )
     artifact.check_at_least("test/mean_pearson", summary["test/mean_pearson"], 0.8)
-    artifact.check_equal("score/reads_summary", benchmark.score(run)["test/mean_pearson"], summary["test/mean_pearson"])
+    artifact.check_equal(
+        "score/reads_summary",
+        benchmark.score(tmp_path / "run")["test/mean_pearson"],
+        summary["test/mean_pearson"],
+    )
     artifact.check_equal("predictions/written", (run / "predictions_test.parquet").is_file(), True)
     artifact.assert_passed()
+
+
+def _twin_encoder(name: str) -> str:
+    """Register a second name for the literal encoder: an encoder axis value of its own."""
+    from slide2vec.encoders.registry import encoder_registry
+
+    twin = f"{name}-twin"
+    metadata = {k: v for k, v in encoder_registry.info(name).items() if k != "name"}
+    encoder_registry.register(twin, encoder_registry.require(name), metadata=metadata)
+    return twin
+
+
+def test_hest_runs_of_two_encoders_under_one_root_keep_their_own_outputs(tmp_path, encoder_name):
+    """``soma reproduce`` hands every encoder the same ``seed_<n>`` root: each run lands in
+    its own managed run directory, so a second encoder never overwrites the first."""
+    from slide2vec.encoders.registry import encoder_registry
+
+    dataset_csv, splits_csv = _spots(tmp_path / "data")
+    benchmark = get_benchmark("hest/IDC")
+    twin = _twin_encoder(encoder_name)
+    try:
+        run_dirs = {}
+        for encoder in (encoder_name, twin):
+            config = benchmark.build_config(
+                encoder=encoder,
+                dataset_csv=dataset_csv,
+                splits_csv=splits_csv,
+                output_root=tmp_path / "seed_0",
+                overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
+                pca_components=2,
+                execution=ExecutionConfig(**CPU_EXECUTION),
+            )
+            benchmark.run(config)
+            (run_dir,) = {p.parent for p in (tmp_path / "seed_0").glob("experiments/*/runs/*/config.yaml")} - set(
+                run_dirs.values()
+            )
+            run_dirs[encoder] = run_dir
+    finally:
+        encoder_registry._entries.pop(twin, None)
+
+    assert run_dirs[encoder_name] != run_dirs[twin]
+    for encoder, run_dir in run_dirs.items():
+        assert (run_dir / "summary.json").is_file()
+        assert (run_dir / "predictions_test.parquet").is_file()
+        assert f"name: {encoder}\n" in (run_dir / "config.yaml").read_text()

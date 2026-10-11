@@ -10,17 +10,21 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from soma.evaluation.metrics import metric_registry, resolve_metrics
+from soma.evaluation.metrics import (
+    MULTI_OUTPUT_REGRESSION_METRICS,
+    metric_registry,
+    resolve_metrics,
+)
 from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from soma.data import SampleRecord
 
 #: The metrics a multi-output regression reports (one value per sample and output).
-_MULTI_OUTPUT_METRICS = ("mean_pearson",)
+_MULTI_OUTPUT_METRICS = tuple(MULTI_OUTPUT_REGRESSION_METRICS)
 
 
 class RegressionHead(TaskHead):
@@ -55,10 +59,10 @@ class RegressionHead(TaskHead):
         self.num_outputs = int(num_outputs)
         self.fc = nn.Linear(input_dim, self.num_outputs)
         self.dropout = build_input_dropout(dropout)
+        self.target_schema = self.resolve_target_schema({"num_outputs": self.num_outputs})
         if self.num_outputs == 1:
             self.metrics = resolve_metrics("regression", metrics or [])
         else:
-            self.target_schema = {f"value_{k}": float for k in range(self.num_outputs)}
             requested = list(metrics or _MULTI_OUTPUT_METRICS)
             unsupported = sorted(set(requested) - set(_MULTI_OUTPUT_METRICS))
             if unsupported:
@@ -67,6 +71,14 @@ class RegressionHead(TaskHead):
                     f"got {unsupported}"
                 )
             self.metrics = requested
+
+    @classmethod
+    def resolve_target_schema(cls, params: "Mapping[str, Any] | None" = None) -> dict[str, type]:
+        """``value`` for one output; ``value_0 .. value_{G-1}`` for ``num_outputs=G > 1``."""
+        num_outputs = int((params or {}).get("num_outputs", 1))
+        if num_outputs > 1:
+            return {f"value_{k}": float for k in range(num_outputs)}
+        return dict(cls.target_schema)
 
     @classmethod
     def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:

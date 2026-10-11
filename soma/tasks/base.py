@@ -12,7 +12,7 @@ from torch import Tensor, nn
 from soma.evaluation.predictions import family_prediction_columns
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from soma.data import SampleRecord
 
@@ -154,6 +154,16 @@ class TaskHead(ABC, nn.Module):
             Dict mapping metric name to scalar value.
         """
         ...
+
+    @classmethod
+    def resolve_target_schema(cls, params: "Mapping[str, Any] | None" = None) -> dict[str, type]:
+        """The ``target_schema`` of a head built from ``params`` (a config's ``task.params``).
+
+        What cohort loading validates before any head exists. The class's own
+        ``target_schema`` by default; a head whose target keys depend on its params (a
+        multi-output regression) overrides it.
+        """
+        return dict(cls.target_schema)
 
     @property
     def target_keys(self) -> tuple[str, ...]:

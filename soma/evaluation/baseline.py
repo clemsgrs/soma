@@ -6,7 +6,8 @@ The pipeline fills samples the model cannot score (no tiles, no embedding) with 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 import numpy as np
@@ -22,6 +23,13 @@ from soma.evaluation.predictions import (
 __all__ = ["Baseline"]
 
 _CLASSIFICATION = frozenset({"binary_classification", "multiclass_classification"})
+_OUTPUT = re.compile(r"value_(\d+)")
+
+
+def _output_columns(columns: Iterable[Any]) -> list[str]:
+    """The ``value_<k>`` columns of a multi-output regression, in output order."""
+    outputs = [str(c) for c in columns if _OUTPUT.fullmatch(str(c))]
+    return sorted(outputs, key=lambda c: int(_OUTPUT.fullmatch(c).group(1)))
 
 
 class Baseline:
@@ -29,7 +37,8 @@ class Baseline:
 
     Classification predicts the training class prior (and its argmax), ordinal the mean
     training label (rounded and clipped for the label), regression the mean training
-    value, survival a constant risk of ``0.0`` (placeholders tie among themselves).
+    value (each ``value_<k>`` column's mean for a multi-output regression), survival a
+    constant risk of ``0.0`` (placeholders tie among themselves).
     Build one with :meth:`fit`.
     """
 
@@ -80,8 +89,13 @@ class Baseline:
                 }
                 columns = family_prediction_columns(task_family)
         elif task_family == "regression":
-            values = {"predicted_value": float(np.mean(train_targets["value"].to_numpy(dtype=float)))}
-            columns = family_prediction_columns(task_family)
+            outputs = _output_columns(train_targets.columns)
+            if outputs:
+                values = {c: float(np.mean(train_targets[c].to_numpy(dtype=float))) for c in outputs}
+                columns = tuple(outputs)
+            else:
+                values = {"predicted_value": float(np.mean(train_targets["value"].to_numpy(dtype=float)))}
+                columns = family_prediction_columns(task_family)
         elif task_family == "survival":
             values = {"risk_score": 0.0}
             columns = family_prediction_columns(task_family)

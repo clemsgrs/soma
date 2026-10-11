@@ -128,6 +128,63 @@ def test_tile_image_source_conforms(tmp_path):
     assert source.geometry("t0").level0_px_per_token_px == 1.0
 
 
+def _pyramid(path: Path, *, level0_spacing_um: float, size: int = 128) -> Path:
+    """A two-level tiled TIFF (consecutive IFDs, as every hs2p backend reads them): level 1
+    is level 0 downsampled 2x."""
+    tifffile = pytest.importorskip("tifffile")
+    image = np.random.default_rng(0).integers(0, 256, (size, size, 3), dtype=np.uint8)
+    resolution = 1e4 / level0_spacing_um  # pixels per cm
+    with tifffile.TiffWriter(path) as writer:
+        for level in (0, 1):
+            factor = 2**level
+            writer.write(
+                np.ascontiguousarray(image[::factor, ::factor]),
+                photometric="rgb",
+                tile=(32, 32),
+                resolution=(resolution / factor, resolution / factor),
+                resolutionunit="CENTIMETER",
+                subfiletype=level,
+            )
+    return path
+
+
+def test_a_pyramidal_tile_reports_the_spacing_of_the_level_hs2p_serves(tmp_path):
+    # Level 1 (0.48 µm/px) is within 5% of the requested 0.5: hs2p serves it unresized,
+    # so the frame is 0.48 µm/px with 2 level-0 px per px, not the requested 0.5.
+    path = _pyramid(tmp_path / "slide.tif", level0_spacing_um=0.24)
+    source = TileImageSource([ImageEntry(sample_id="s", image_path=path)], size=64, spacing_um=0.5)
+
+    assert tuple(source.load("s").shape) == (3, 64, 64)
+    assert source.spacing("s") == pytest.approx(0.48, rel=1e-3)
+    assert source.geometry("s").level0_px_per_token_px == pytest.approx(2.0, rel=1e-3)
+
+
+def test_a_pyramidal_tile_is_read_through_the_declared_level0_spacing(tmp_path):
+    # The file says 0.5 µm/px at level 0; the manifest declares 0.25, making level 1 the
+    # 0.5 µm/px level the read must serve.
+    path = _pyramid(tmp_path / "slide.tif", level0_spacing_um=0.5)
+    entry = ImageEntry(sample_id="s", image_path=path, spacing_at_level_0=0.25)
+    source = TileImageSource([entry], size=64, spacing_um=0.5)
+
+    assert tuple(source.load("s").shape) == (3, 64, 64)
+    assert source.spacing("s") == pytest.approx(0.5)
+    assert source.geometry("s").level0_px_per_token_px == pytest.approx(2.0)
+
+
+def test_a_region_image_source_serves_each_roi_window_at_its_origin(tmp_path):
+    from soma.data.images import RegionImageSource
+
+    path = _pyramid(tmp_path / "slide.tif", level0_spacing_um=0.5)
+    entries = [ImageEntry(sample_id=sid, image_path=path) for sid in ("r0", "r1")]
+    source = RegionImageSource(entries, regions={"r0": (0, 0), "r1": (64, 32)}, size=32, spacing_um=0.5)
+
+    check_image_source(source)
+    whole = TileImageSource(entries[:1], size=128, spacing_um=0.5).load("r0")
+    assert torch.equal(source.load("r1"), whole[:, 32:64, 64:96])
+    assert source.geometry("r1").origin_level0 == (64.0, 32.0)
+    assert source.subset(["r1"]).geometry("r1").origin_level0 == (64.0, 32.0)
+
+
 def test_an_image_source_serving_floats_is_refused(tmp_path):
     class Floats(TileImageSource):
         def load(self, sample_id):

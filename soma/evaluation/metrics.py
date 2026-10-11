@@ -95,6 +95,10 @@ DEFAULT_METRICS: dict[str, list[str]] = {
     "detection": ["mean_f1"],
 }
 
+#: The defaults of a multi-output regression (``value_<k>`` prediction columns), whose
+#: predictions the single-``value`` regression defaults cannot read.
+MULTI_OUTPUT_REGRESSION_METRICS: list[str] = ["mean_pearson"]
+
 # ---------------------------------------------------------------------------
 # Per-metric functions — signature: (y_true, y_pred, y_prob) -> float
 # y_prob is None for ordinal/regression metrics

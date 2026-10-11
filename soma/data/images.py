@@ -4,7 +4,8 @@ The live grid path re-encodes pixels every step, so the pixels are a source of t
 own, under the same id / geometry / spacing contract as a cached
 :class:`~soma.data.GridSource`. Flat rasters (PNG/JPEG, or any file without a requested
 spacing) are read as stored; pyramidal, spacing-bearing images are read through hs2p at
-``spacing_um``.
+``spacing_um``. :class:`RegionImageSource` serves windows of whole slides
+(slide-manifest ROIs) under the same contract.
 """
 
 from __future__ import annotations
@@ -102,21 +103,29 @@ class TileImageSource:
 
         return _is_flat(entry.image_path, self._spacing_um)
 
+    @staticmethod
+    def _level0_override(entry: ImageEntry) -> float | None:
+        return None if entry.spacing_at_level_0 is None else float(entry.spacing_at_level_0)
+
     def _spacings(self, entry: ImageEntry) -> tuple[float | None, float | None]:
-        """``(level-0 µm/px, read µm/px)`` of one image; ``None`` where undeclared."""
+        """``(level-0 µm/px, served µm/px)`` of one image; ``None`` where undeclared.
+
+        The served spacing is the one hs2p's level selection reads at (a pyramid level
+        within tolerance is served unresized), so the geometry matches what ``load``
+        returns.
+        """
         if self._flat(entry):
             level0 = entry.spacing_at_level_0 if entry.spacing_at_level_0 is not None else self._spacing_um
             return level0, level0
-        from soma.dense.reader import _reference_geometry
+        from soma.dense.reader import _served_spacing
 
-        level0, _ = _reference_geometry(
+        return _served_spacing(
             str(entry.image_path),
             self._backend,
-            None if entry.spacing_at_level_0 is None else float(entry.spacing_at_level_0),
+            self._level0_override(entry),
+            float(self._spacing_um),
+            self._tolerance,
         )
-        requested = float(self._spacing_um)
-        within = abs(level0 - requested) <= requested * self._tolerance
-        return float(level0), float(level0) if within else requested
 
     def load(self, sample_id: str) -> Tensor:
         from soma.dense.reader import read_image_at_spacing
@@ -127,8 +136,13 @@ class TileImageSource:
             spacing_um=self._spacing_um,
             backend=self._backend,
             tolerance=self._tolerance,
+            spacing_at_level_0=self._level0_override(entry),
         )
         return torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).contiguous()
+
+    def _origin(self, sample_id: str) -> tuple[float, float]:
+        """The level-0 origin of the served pixels (a whole tile starts at 0, 0)."""
+        return (0.0, 0.0)
 
     def geometry(self, sample_id: str) -> GridGeometry:
         """The pixel frame: ``target_size`` = the declared size, one token per pixel,
@@ -139,7 +153,10 @@ class TileImageSource:
         if not math.isfinite(scale) or scale <= 0:
             scale = 1.0
         return GridGeometry.from_sizes(
-            target_size=self._size, patch_size=1, level0_px_per_token_px=scale
+            target_size=self._size,
+            patch_size=1,
+            origin_level0=self._origin(sample_id),
+            level0_px_per_token_px=scale,
         )
 
     def spacing(self, sample_id: str) -> float:
@@ -155,3 +172,67 @@ class TileImageSource:
 
     def __len__(self) -> int:
         return len(self._entries)
+
+
+class RegionImageSource(TileImageSource):
+    """Windows of whole-slide images, one ``(3, H, W)`` uint8 per id (slide-manifest ROIs).
+
+    Each id's pixels are the ``size`` window whose level-0 top-left is its ``regions``
+    entry, read at ``spacing_um`` without opening the whole slide, as the slide-manifest
+    extractor reads it, so the pixels register to the ROI's grid and supervision.
+
+    Args:
+        entries: The slides, keyed by sample (ROI) id.
+        regions: Level-0 ``(x, y)`` origin of each id's window.
+        size: The window ``(H, W)`` (or side) at ``spacing_um``.
+        spacing_um: µm/px to read the windows at.
+        backend: hs2p backend.
+        tolerance: hs2p spacing tolerance: a level within it is read without resampling.
+    """
+
+    def __init__(
+        self,
+        entries: Mapping[str, ImageEntry] | Sequence[ImageEntry],
+        *,
+        regions: Mapping[str, tuple[int, int]],
+        size: int | tuple[int, int],
+        spacing_um: float,
+        backend: str = "auto",
+        tolerance: float = 0.05,
+    ) -> None:
+        super().__init__(entries, size=size, spacing_um=spacing_um, backend=backend, tolerance=tolerance)
+        self._regions = {str(k): (int(v[0]), int(v[1])) for k, v in regions.items()}
+        missing = sorted(set(self._entries) - set(self._regions))
+        if missing:
+            raise ValueError(f"no region for {len(missing)} image(s): {missing[:10]}")
+
+    def subset(self, sample_ids: Sequence[str]) -> "RegionImageSource":
+        ids = [str(sid) for sid in sample_ids]
+        return RegionImageSource(
+            {sid: self._entry(sid) for sid in ids},
+            regions={sid: self._regions[sid] for sid in ids},
+            size=self._size,
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+        )
+
+    def _origin(self, sample_id: str) -> tuple[float, float]:
+        x, y = self._regions[str(sample_id)]
+        return (float(x), float(y))
+
+    def load(self, sample_id: str) -> Tensor:
+        from soma.dense.reader import read_image_region_at_spacing
+
+        entry = self._entry(sample_id)
+        height, width = self._size
+        array = read_image_region_at_spacing(
+            entry.image_path,
+            location=self._regions[str(sample_id)],
+            size=(width, height),  # hs2p sizes are (w, h)
+            spacing_um=self._spacing_um,
+            backend=self._backend,
+            tolerance=self._tolerance,
+            spacing_at_level_0=self._level0_override(entry),
+        )
+        return torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).contiguous()

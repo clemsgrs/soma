@@ -973,7 +973,6 @@ def train_one_fold(
     task_params.pop("loss", None)
 
     task_family = task_cls.task_family
-    resolved_metric_names = resolve_metrics(task_family, evaluation.metrics)
 
     # Feature adaptor (issues #283, #284, #285). The tile-encoder MIL path and the
     # slide-encoder embedding path both fit one; the patient, tile-dataset and
@@ -1247,6 +1246,9 @@ def train_one_fold(
             empty_eval_sample_ids.get(split_name, []),
             records_by_id,
         )
+    # The head resolved its metrics for its own outputs (a multi-output regression
+    # reports mean_pearson, not the family's single-value defaults).
+    metric_names = list(getattr(head, "metrics", None) or resolve_metrics(task_family, evaluation.metrics))
     evaluations: dict[str, Evaluation] = {}
     for split_name, (loader, output_ids, empty_ids, records_by_id) in splits.items():
         is_test = split_name != "tune"
@@ -1263,7 +1265,7 @@ def train_one_fold(
         evaluations[split_name] = _verbs.evaluate(
             predictions,
             targets,
-            metrics=resolved_metric_names,
+            metrics=metric_names,
             subgroups=evaluation.subgroups.columns if is_test else (),
         )
         if is_test:
@@ -1385,6 +1387,33 @@ def _flat_tile_images(records: "Sequence[LegacyRecord]", *, size, spacing_um: fl
             )
             for record in records
         ],
+        size=size,
+        spacing_um=spacing_um,
+        backend=backend,
+        tolerance=tolerance,
+    )
+
+
+def _overlay_images(records: "Sequence[LegacyRecord]", *, size, preprocessing):
+    """The pixels :class:`~soma.evaluation.SaveOverlays` blends over: the flat tiles, or
+    each slide-manifest ROI's window of its whole slide at the run spacing."""
+    spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    backend = preprocessing.backend if preprocessing is not None else "auto"
+    tolerance = float(preprocessing.tolerance) if preprocessing is not None else 0.05
+    if spacing_um is None or not any(record.region is not None for record in records):
+        return _flat_tile_images(records, size=size, spacing_um=spacing_um, backend=backend, tolerance=tolerance)
+    from soma.data.images import RegionImageSource
+
+    return RegionImageSource(
+        [
+            ImageEntry(
+                sample_id=record.sample_id,
+                image_path=record.image_path,
+                spacing_at_level_0=record.spacing_at_level_0,
+            )
+            for record in records
+        ],
+        regions={record.sample_id: record.region for record in records},
         size=size,
         spacing_um=spacing_um,
         backend=backend,
@@ -1642,13 +1671,7 @@ def train_one_grid_fold(
         )
     learner = train_result.learner
 
-    overlay_images = images or _flat_tile_images(
-        all_records,
-        size=geometry.target_size,
-        spacing_um=preprocessing.requested_spacing_um if preprocessing is not None else None,
-        backend=preprocessing.backend if preprocessing is not None else "auto",
-        tolerance=float(preprocessing.tolerance) if preprocessing is not None else 0.05,
-    )
+    overlay_images = images or _overlay_images(all_records, size=geometry.target_size, preprocessing=preprocessing)
 
     def callbacks(split_name: str) -> list[object]:
         out: list[object] = []
@@ -2620,19 +2643,16 @@ def load_pipeline_data(
 ) -> tuple[Cohort, ImageManifest, AnnotationManifest | None]:
     """Read the cohort and manifests a config names, validated against its task head.
 
-    The head's ``target_schema`` says which target keys the cohort must carry (``label``,
-    ``time``/``event``, ``value``, ``expression`` ...); ``task.targets`` maps a key to a
-    differently named CSV column. ``training.tune_is_test`` reuses each fold's tune split
-    for test reporting via :meth:`Cohort.with_test_from_tune`.
+    The head's ``resolve_target_schema(task.params)`` says which target keys the cohort
+    must carry (``label``, ``time``/``event``, ``value`` or ``value_<k>`` ...);
+    ``task.targets`` maps a key to a differently named CSV column.
+    ``training.tune_is_test`` reuses each fold's tune split for test reporting via
+    :meth:`Cohort.with_test_from_tune`.
     """
     task_cls = resolve_task_class(config)
-    schema = dict(getattr(task_cls, "target_schema", {}) or {}) if task_cls is not None else {}
+    schema = task_cls.resolve_target_schema(config.task.params) if task_cls is not None else {}
     if config.representation is not None and config.task is None:
         schema = {"label": object}
-    if config.dataset_type == "spatial_expression":
-        # The closed-form probe regresses the per-spot expression vector (served from the
-        # target_index column + sidecars), not the regression head's scalar ``value``.
-        schema = {"expression": np.ndarray}
     renames = dict(config.task.targets) if config.task is not None and config.task.targets else {}
     unknown = sorted(set(renames) - set(schema))
     if unknown:
