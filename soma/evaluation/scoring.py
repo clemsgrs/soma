@@ -234,7 +234,7 @@ def compare(
     """Paired permutation test of each prediction set against the best one.
 
     Every set is aligned to ``targets`` as in :func:`evaluate`; sets declaring different
-    ``classes`` are refused. For each permutation the prediction columns of the best set
+    ``classes`` (including a set without ``classes`` next to one with) are refused. For each permutation the prediction columns of the best set
     and another are swapped on a random half of the samples and the metric delta
     recomputed. The best set gets ``1.0``; a set whose metric cannot be computed, or that
     shares no prediction column with the best, gets ``None``.
@@ -245,9 +245,9 @@ def compare(
     families = {p.task_family for p in sets}
     if len(families) != 1:
         raise ValueError(f"compare needs predictions of one task family, got {sorted(families)}")
-    vocabularies = list(dict.fromkeys(p.classes for p in sets if p.classes is not None))
+    vocabularies = list(dict.fromkeys(p.classes for p in sets))
     if len(vocabularies) > 1:
-        listed = [list(v) for v in vocabularies]
+        listed = [None if v is None else list(v) for v in vocabularies]
         raise ValueError(f"compare needs prediction sets with the same classes, got {listed}")
     (name, fn), = resolve_frame_metrics([metric], sets[0].task_family).items()
     higher = metric_registry.higher_is_better(name)

@@ -416,15 +416,6 @@ def _patient_ids_for_records(records: list[LegacyRecord]) -> list[str]:
     return patient_ids
 
 
-def _patient_placeholder_records(records: list[LegacyRecord]) -> dict[str, LegacyRecord]:
-    placeholder_records: dict[str, LegacyRecord] = {}
-    for record in records:
-        if record.patient_id is None or record.patient_id in placeholder_records:
-            continue
-        placeholder_records[record.patient_id] = record
-    return placeholder_records
-
-
 def _write_dense_source_provenance(run_dir: Path, feature_store: object) -> None:
     provenance = getattr(feature_store, "provenance", None)
     if provenance is None:
@@ -818,7 +809,6 @@ def train_one_fold(
             for split_name, records in test_records_by_split.items()
         }
         raw_train_patient_ids = list(train_patient_ids)
-        raw_train_placeholder_records = _patient_placeholder_records(train_records)
         raw_tune_patient_ids = list(tune_patient_ids)
         raw_test_patient_ids_by_split = {
             split_name: list(patient_ids)
@@ -1297,20 +1287,17 @@ def train_one_fold(
 
     empty_eval_sample_ids = empty_sample_ids_by_split or {}
     if dataset_type == "patient":
-        # Patient ids score against one representative record per patient.
+        # Patient ids score against the patient's first slide in cohort order, as
+        # Cohort.collapse does.
         if fallback_to_train:
             tune_output_sample_ids = tuple(raw_train_patient_ids)
-            tune_records_by_id = raw_train_placeholder_records
             tune_empty_sample_ids = empty_eval_sample_ids.get("train", [])
         else:
             tune_output_sample_ids = tuple(raw_tune_patient_ids)
-            tune_records_by_id = _patient_placeholder_records(tune_records)
             tune_empty_sample_ids = empty_eval_sample_ids.get("tune", [])
+        tune_records_by_id = patient_record_map
         test_plan = {
-            split_name: (
-                tuple(raw_test_patient_ids_by_split[split_name]),
-                _patient_placeholder_records(test_records_by_split[split_name]),
-            )
+            split_name: (tuple(raw_test_patient_ids_by_split[split_name]), patient_record_map)
             for split_name in test_loaders
         }
     else:

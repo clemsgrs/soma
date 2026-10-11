@@ -2227,6 +2227,38 @@ class TestPatientPipeline:
         # The only test patient (p3) is a site_b patient: one group, too small to score.
         assert written == {"metrics": {"site": {}}, "stats": {"site": {}}}
 
+    def test_patient_subgroup_metadata_follows_the_collapsed_cohort(
+        self, tmp_path: Path, evaluated
+    ):
+        from soma.config import SubgroupConfig
+        from soma.data import Cohort
+
+        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+        dataset_df = pd.read_csv(dataset_csv)
+        # The test patient p3's slides disagree on site; the splits list them reversed.
+        dataset_df["site"] = ["site_a"] * 7 + ["site_b"]
+        dataset_df.to_csv(dataset_csv, index=False)
+        splits_df = pd.read_csv(splits_csv)
+        splits_df.iloc[[6, 7]] = splits_df.iloc[[7, 6]].to_numpy()
+        splits_df.to_csv(splits_csv, index=False)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+
+        train_one_fold(
+            feature_store=CachedSetSource(feature_dir),
+            dataset=dataset,
+            fold_split=splits.folds[0],
+            dataset_type="patient",
+            task=TaskConfig(name="binary_classification"),
+            evaluation=EvalConfig(metrics=["accuracy"], subgroups=SubgroupConfig(columns=["site"])),
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+            fold_dir=tmp_path / "fold_0",
+        )
+
+        collapsed = Cohort.from_csv(dataset_csv, splits_csv).collapse("patient_id")
+        expected = collapsed.targets("test")["site"]
+        assert evaluated[1].targets["site"].to_dict() == expected.to_dict() == {"p3": "site_a"}
+
     def test_train_detects_patient_leakage(self, tmp_path: Path):
         dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
         dataset = legacy_samples_from_csv(dataset_csv)

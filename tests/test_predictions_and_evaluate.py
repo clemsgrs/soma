@@ -251,6 +251,15 @@ def test_compare_refuses_sets_with_different_class_orders():
         compare([forward, reversed_order], _labels(labels=labels), "auroc", n_permutations=5)
 
 
+def test_compare_refuses_a_set_without_classes_next_to_one_with_classes():
+    # classes=(1, 0) encodes label 1 as index 0; no classes keeps 1 as index 1.
+    reversed_order = _binary(classes=(1, 0))
+    implicit = _binary()
+
+    with pytest.raises(ValueError, match="same classes"):
+        compare([reversed_order, implicit], _labels(), "auroc", n_permutations=5)
+
+
 # --- Cohort.targets ---------------------------------------------------------------- #
 
 
