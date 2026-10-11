@@ -33,6 +33,21 @@ def _categorical_auto_params(records: "Sequence[SampleRecord]") -> dict[str, Any
     return {"num_classes": len(label_map), "label_map": label_map}
 
 
+def _check_label_map_width(num_classes: int, label_map: dict[str | int, int] | None) -> None:
+    """Refuse a label map that names fewer (or more) classes than the head has outputs.
+
+    ``prob_<i>`` is ``classes[i]``, so every probability column needs a raw label. A
+    configured ``num_classes`` above the labels the cohort shows leaves columns unnamed.
+    """
+    if label_map is not None and len(label_map) != num_classes:
+        raise ValueError(
+            f"num_classes={num_classes} but the label map names {len(label_map)} class(es) "
+            f"({sorted(label_map, key=label_map.__getitem__)}). Each probability column "
+            "needs a label: set task.params.label_map to a {label: index} map naming every "
+            "class, or drop num_classes to infer it from the cohort's labels."
+        )
+
+
 def _extract_categorical_target(
     label_map: dict[str | int, int] | None, record: "SampleRecord"
 ) -> dict[str, int | float]:
@@ -70,6 +85,7 @@ class BinaryClassificationHead(TaskHead):
                 f"BinaryClassificationHead requires num_classes=2, got {num_classes}. "
                 "Use multiclass_classification for more than two classes."
             )
+        _check_label_map_width(num_classes, label_map)
         self.fc = nn.Linear(input_dim, num_classes)
         self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes
@@ -137,6 +153,7 @@ class MulticlassClassificationHead(TaskHead):
             raise ValueError(
                 f"MulticlassClassificationHead requires num_classes >= 2, got {num_classes}."
             )
+        _check_label_map_width(num_classes, label_map)
         self.fc = nn.Linear(input_dim, num_classes)
         self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes
@@ -206,6 +223,7 @@ class BranchAwareClassificationHead(TaskHead):
         dropout: float = 0.0,
     ) -> None:
         super().__init__()
+        _check_label_map_width(num_classes, label_map)
         self.branch_fcs = nn.ModuleList(nn.Linear(input_dim, 1) for _ in range(num_classes))
         self.dropout = build_input_dropout(dropout)
         self.num_classes = num_classes

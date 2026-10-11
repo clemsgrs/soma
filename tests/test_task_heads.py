@@ -203,6 +203,29 @@ class TestBranchAwareClassificationHead:
             BranchAwareClassificationHead(input_dim=8, num_classes=3, metrics=["auroc"])
 
 
+@pytest.mark.parametrize(
+    ("head_cls", "num_classes", "label_map"),
+    [
+        (BinaryClassificationHead, 2, {"tumor": 0}),
+        (MulticlassClassificationHead, 3, {"a": 0, "b": 1}),
+        (BranchAwareClassificationHead, 3, {"a": 0, "b": 1}),
+    ],
+)
+def test_classification_head_refuses_a_label_map_narrower_than_num_classes(
+    head_cls, num_classes, label_map
+):
+    # ``prob_<i>`` is ``classes[i]``: a configured ``num_classes`` above the label
+    # vocabulary would emit probability columns no class names.
+    with pytest.raises(ValueError, match="task.params.label_map"):
+        head_cls(input_dim=8, num_classes=num_classes, label_map=label_map)
+
+
+def test_ordinal_head_accepts_a_label_map_narrower_than_num_classes():
+    # Ordinal emits no probability columns; a cohort missing a rare grade is legitimate.
+    head = OrdinalClassificationHead(input_dim=8, num_classes=6, label_map={0: 0, 2: 2, 5: 5})
+    assert head.num_classes == 6
+
+
 # ---------------------------------------------------------------------------
 # RegressionHead
 # ---------------------------------------------------------------------------

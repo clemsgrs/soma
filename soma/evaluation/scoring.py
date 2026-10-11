@@ -237,7 +237,7 @@ def compare(
     ``classes`` (including a set without ``classes`` next to one with) are refused. For each permutation the prediction columns of the best set
     and another are swapped on a random half of the samples and the metric delta
     recomputed. The best set gets ``1.0``; a set whose metric cannot be computed, or that
-    shares no prediction column with the best, gets ``None``.
+    lacks one of the best set's prediction columns, gets ``None``.
     """
     sets = list(predictions_list)
     if len(sets) < 2:

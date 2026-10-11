@@ -829,6 +829,29 @@ class TestTrainOneFold:
         predictions = Predictions.from_parquet(tmp_path / "fold_0" / "predictions_test.parquet")
         assert predictions.probability_columns == ["prob_0", "prob_1"]
 
+    def test_num_classes_above_the_label_vocabulary_is_refused_before_training(
+        self, tmp_path: Path
+    ):
+        """A configured num_classes wider than the observed labels has no name for its
+        extra probability column; it is refused when the head is built, not after training."""
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        dataset = legacy_samples_from_csv(dataset_csv)
+        splits = legacy_folds_from_csv(splits_csv, dataset)
+        fold_dir = tmp_path / "fold_0"
+
+        with pytest.raises(ValueError, match="task.params.label_map"):
+            train_one_fold(
+                feature_store=CachedSetSource(feature_dir),
+                dataset=dataset,
+                fold_split=splits.folds[0],
+                aggregator=AggregatorConfig(name="mean_pool"),
+                task=TaskConfig(name="multiclass_classification", params={"num_classes": 3}),
+                training=TrainingConfig(epochs=1, patience=10, batch_size=2),
+                fold_dir=fold_dir,
+            )
+
+        assert not (fold_dir / "best_model.pt").exists()
+
 
     def test_slide_level_features_no_aggregator(self, tmp_path: Path):
         """train_one_fold with 1-D features and aggregator=None uses EmbeddingModel."""
