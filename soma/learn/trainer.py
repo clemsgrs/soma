@@ -37,7 +37,8 @@ class Trainer:
     One step is one completed accumulation window; a step budget may end partway
     through an epoch. ``val_every_n_epochs`` evaluates after epochs N, 2N, ... and
     always after the final epoch. ``precision="bf16"`` is autocast without a grad
-    scaler. Callbacks stop the run by setting ``trainer.should_stop``.
+    scaler. Callbacks stop the run by setting ``trainer.should_stop``; when the loop
+    raises, ``on_exception(trainer, learner, exc)`` fires before the error propagates.
     """
 
     def __init__(
@@ -100,7 +101,27 @@ class Trainer:
         self.started_at = time.perf_counter()
         self.should_stop, self.optimizer_steps, self.selection = False, 0, None
         self._call("on_fit_start", learner)
+        try:
+            self._run_epochs(learner, train_loader, tune_loader)
+        except BaseException as exc:
+            self._call("on_exception", learner, exc)
+            raise
+        self._call("on_fit_end", learner)
+        selected_epoch, monitor, path = self.selection or (
+            self.epoch,
+            ("loss", float((self.summary or {}).get("loss", float("nan")))),
+            None,
+        )
+        return FitResult(
+            learner=learner,
+            history=self.history.frame(),
+            selected_epoch=selected_epoch,
+            selection_monitor=monitor,
+            checkpoint_path=path,
+            optimizer_steps=self.optimizer_steps,
+        )
 
+    def _run_epochs(self, learner: Learner, train_loader, tune_loader) -> None:
         for self.epoch in range(self.total_epochs):
             set_epoch = getattr(getattr(train_loader, "batch_sampler", None), "set_epoch", None)
             if callable(set_epoch):
@@ -118,21 +139,6 @@ class Trainer:
                     spec.scheduler.step()
             if self.should_stop:
                 break
-
-        self._call("on_fit_end", learner)
-        selected_epoch, monitor, path = self.selection or (
-            self.epoch,
-            ("loss", float((self.summary or {}).get("loss", float("nan")))),
-            None,
-        )
-        return FitResult(
-            learner=learner,
-            history=self.history.frame(),
-            selected_epoch=selected_epoch,
-            selection_monitor=monitor,
-            checkpoint_path=path,
-            optimizer_steps=self.optimizer_steps,
-        )
 
     @property
     def lr(self) -> float:

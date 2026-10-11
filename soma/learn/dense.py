@@ -5,6 +5,7 @@ Slice 4 extends this class with the live encoder stage; it must not grow a sibli
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -43,11 +44,11 @@ class DenseLearner(Learner):
         The live segmentation model consumes CPU pixels (slide2vec's kit owns the
         encoder's device), which it declares through ``input_device``.
         """
-        moved = super().transfer_batch(batch, device)
         input_device = getattr(self.model, "input_device", None)
-        if input_device is not None and hasattr(moved, "features"):
-            object.__setattr__(moved, "features", batch.features.to(torch.device(input_device)))
-        return moved
+        if input_device is None or not dataclasses.is_dataclass(batch) or not hasattr(batch, "features"):
+            return super().transfer_batch(batch, device)
+        rest = super().transfer_batch(dataclasses.replace(batch, features=None), device)
+        return dataclasses.replace(rest, features=batch.features.to(torch.device(input_device)))
 
     def forward_batch(self, batch: Any):
         # An image-prior decoder reads the batch pixels that ride in ``targets["image"]``.

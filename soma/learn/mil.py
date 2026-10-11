@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -46,12 +47,20 @@ class MILLearner(Learner):
     def head(self):
         return self.model.task_head
 
+    def transfer_batch(self, batch: Any, device: torch.device) -> Any:
+        if isinstance(batch, CoxWindowBatch):
+            # The window's bags stay on the host; ``forward_batch`` moves each one right
+            # before its forward, so only one bag at a time occupies the accelerator.
+            return dataclasses.replace(batch, targets=super().transfer_batch(batch.targets, device))
+        return super().transfer_batch(batch, device)
+
     def forward_batch(self, batch: Any):
         if isinstance(batch, CoxWindowBatch):
+            device = next(self.model.parameters()).device
             risks = []
             for bag in batch.bags:
-                bag = bag.unsqueeze(0)  # (1, n_i, D), un-padded
-                mask = torch.ones(bag.shape[:2], dtype=torch.bool, device=bag.device)
+                bag = bag.to(device).unsqueeze(0)  # (1, n_i, D), un-padded
+                mask = torch.ones(bag.shape[:2], dtype=torch.bool, device=device)
                 risks.append(self.model(bag, mask=mask).logits.view(1))
             return MILModelOutput(logits=torch.cat(risks).unsqueeze(-1))
         mask = getattr(batch, "mask", None)

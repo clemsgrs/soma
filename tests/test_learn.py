@@ -162,6 +162,18 @@ class TestMILLearnerContract:
         assert torch.equal(moved.features, batch.features)
         assert moved.sample_ids == batch.sample_ids
 
+    def test_transfer_batch_moves_tensors_inside_named_tuples(self):
+        from typing import NamedTuple
+
+        class Pair(NamedTuple):
+            x: Tensor
+            y: dict[str, Tensor]
+
+        batch = Pair(torch.zeros(2), {"label": torch.zeros(2)})
+        moved = _learner().transfer_batch(batch, torch.device("meta"))
+        assert isinstance(moved, Pair)
+        assert moved.x.device.type == "meta" and moved.y["label"].device.type == "meta"
+
     def test_trainable_state_dict_round_trips(self):
         learner = _learner()
         state = {k: v.clone() for k, v in learner.trainable_state_dict().items()}
@@ -270,6 +282,21 @@ class TestCoxWindow:
         grads = [p.grad for p in learner.model.aggregator.parameters() if p.grad is not None]
         assert grads and any(g.abs().sum() > 0 for g in grads)
 
+    def test_transfer_batch_keeps_the_window_bags_on_the_host(self):
+        # A window of large bags must not sit on the accelerator in full: each bag is
+        # moved right before its own forward, the targets up front.
+        learner = self._learner(cox_window=3)
+        window = CoxWindowBatch(
+            bags=self._bags_of([5, 8, 3]),
+            targets={"time": torch.tensor([3.0, 2.0, 1.0]), "event": torch.tensor([1.0, 0.0, 1.0])},
+            sample_ids=("a", "b", "c"),
+        )
+        moved = learner.transfer_batch(window, torch.device("meta"))
+        assert isinstance(moved, CoxWindowBatch)
+        assert all(bag.device.type == "cpu" for bag in moved.bags)
+        assert all(t.device.type == "meta" for t in moved.targets.values())
+        assert learner.training_step(window).isfinite()
+
     def test_validation_loss_is_the_full_cohort_loss_whatever_the_batching(self):
         learner = self._learner(cox_window=2)
         learner.eval()
@@ -290,6 +317,32 @@ class TestCoxWindow:
         for loader in (whole, pairs):
             summary = learner.validation_summary([learner.validation_step(b) for b in loader])
             assert summary["loss"] == pytest.approx(reference, abs=1e-5)
+
+
+class TestDenseLearnerTransfer:
+    def test_features_go_to_the_model_input_device_in_one_copy(self, monkeypatch):
+        from soma.learn import DenseLearner
+        from soma.training.segmentation_dataset import SegmentationBatch
+
+        class SplitDeviceModel(torch.nn.Module):
+            task_head = None
+            input_device = torch.device("cpu")
+
+        batch = SegmentationBatch(
+            features=torch.zeros(1, 4, 2, 2), targets={"mask": torch.zeros(1, 2, 2)}, sample_ids=("a",)
+        )
+        receivers: list[Tensor] = []
+        original_to = torch.Tensor.to
+
+        def spy(self, *args, **kwargs):
+            receivers.append(self)
+            return original_to(self, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "to", spy)
+        moved = DenseLearner(SplitDeviceModel()).transfer_batch(batch, torch.device("meta"))
+        assert moved.features.device.type == "cpu"
+        assert moved.targets["mask"].device.type == "meta"
+        assert sum(r is batch.features for r in receivers) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +697,27 @@ class TestFitSugar:
         )
         result = soma.fit(learner, _bag_loader(), _bag_loader(), max_epochs=2, device="cpu", progress=False)
         assert len(calls) == 8 and len(result.history) == 2
+
+    def test_progress_stops_the_live_panel_when_fit_raises(self):
+        import io
+        import sys
+
+        from rich.console import Console
+
+        from soma.learn import Progress
+
+        class Boom(MILLearner):
+            def training_step(self, batch):
+                raise RuntimeError("boom")
+
+        stdout = sys.stdout
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        progress = Progress(style="rich", console=console)
+        learner = Boom(_learner().model)
+        with pytest.raises(RuntimeError, match="boom"):
+            Trainer(max_epochs=2, callbacks=[progress], device="cpu").fit(learner, _bag_loader())
+        assert progress._live is None
+        assert sys.stdout is stdout
 
     def test_progress_plain_style_writes_one_line_per_epoch(self):
         import io

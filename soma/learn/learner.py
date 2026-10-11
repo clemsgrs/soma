@@ -195,7 +195,7 @@ class Learner(nn.Module):
     # -- plumbing ------------------------------------------------------------
 
     def transfer_batch(self, batch: Any, device: torch.device) -> Any:
-        """Move a batch to ``device``, walking dataclasses, dicts, lists, tuples and tensors."""
+        """Move a batch to ``device``, walking dataclasses, dicts, lists, (named) tuples and tensors."""
         return _move(batch, device)
 
     def trainable_state_dict(self) -> dict[str, Tensor]:
@@ -213,8 +213,9 @@ def _move(value: Any, device: torch.device) -> Any:
         return dataclasses.replace(value, **moved)
     if isinstance(value, Mapping):
         return type(value)((k, _move(v, device)) for k, v in value.items())
-    if isinstance(value, tuple) and not hasattr(value, "_fields"):
-        return tuple(_move(v, device) for v in value)
+    if isinstance(value, tuple):
+        moved = [_move(v, device) for v in value]
+        return type(value)(*moved) if hasattr(value, "_fields") else tuple(moved)
     if isinstance(value, list):
         return [_move(v, device) for v in value]
     return value

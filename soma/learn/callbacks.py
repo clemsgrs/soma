@@ -358,6 +358,13 @@ class Progress:
             self._status,
         )
 
+    def on_exception(self, trainer, learner, exception: BaseException) -> None:
+        # The panel redirects stdout/stderr and runs a refresh thread; a failing fit
+        # must release both so the error (and whatever follows) prints normally.
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+
     def on_fit_end(self, trainer, learner) -> None:
         stopping = self._early_stopping(trainer)
         early = stopping is not None and stopping.stopped
