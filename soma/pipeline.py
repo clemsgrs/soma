@@ -124,12 +124,16 @@ from soma.training.segmentation_dataset import (
     segmentation_collate_fn,
 )
 from soma.training.seed import seed_everything
-from soma.training.trainer import (
+from soma.learn import (
+    Checkpoint,
+    EarlyStopping,
+    FitResult,
+    Learner,
+    Progress,
     Trainer,
-    TrainResult,
     accumulate_dense_stats,
-    epoch_log_to_dict,
-    peak_per_metric,
+    learner_registry,
+    resolve_leaf,
 )
 from soma.reporting import generate_report_from_result
 from soma.reporting.subgroups import subgroup_data_for_predictions, subgroup_report_for_predictions
@@ -172,7 +176,7 @@ class FoldResult:
     fold: int
     # None for the pixel-classifier segmentation path — it has no torch Trainer / epoch
     # history (the classifier owns its own fit loop internally).
-    train_result: TrainResult | None
+    train_result: FitResult | None
     tune_report: EvaluationReport
     test_reports: dict[str, EvaluationReport]  # split_name → report
 
@@ -1283,26 +1287,18 @@ def train_one_fold(
         num_classes=int(getattr(head, "num_classes", 0)),
     )
 
-    # Train
+    # Train; the learner comes back in its selected state (Checkpoint restores it).
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    trainer = Trainer(
-        model=model,
-        train_loader=train_loader,
-        tune_loader=tune_loader,
-        config=training,
+    train_result = _fit_fold(
+        _build_learner(model, training, shape="mil"),
+        train_loader,
+        tune_loader,
+        training=training,
         fold_dir=fold_dir,
         device=device,
         fold=fold,
         num_folds=num_folds,
     )
-    train_result = trainer.fit()
-
-    # Load selected checkpoint and evaluate
-    checkpoint = torch.load(
-        train_result.checkpoint_path, weights_only=True, map_location=device
-    )
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(device)
     model.eval()
 
     save_attention = (
@@ -1851,26 +1847,21 @@ def train_one_segmentation_fold(
             test_reports={},
         )
 
-    trainer = Trainer(
-        model=model,
-        train_loader=train_loader,
-        tune_loader=tune_loader,
-        config=training,
+    train_result = _fit_fold(
+        _build_learner(model, training, shape="dense"),
+        train_loader,
+        tune_loader,
+        training=training,
         fold_dir=fold_dir,
         device=device,
         fold=fold,
         num_folds=num_folds,
     )
-    train_result = trainer.fit()
     if roi_batch_sampler is not None:
         (fold_dir / "roi_batch_sampling.json").write_text(
             json.dumps(roi_batch_sampler.audit(), indent=2, sort_keys=True),
             encoding="utf-8",
         )
-
-    checkpoint = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(device)
     model.eval()
 
     tune_report = _evaluate_segmentation(
@@ -2147,15 +2138,19 @@ def train_one_detection_fold(
         # history exists → train_result stays None (the pixel-classifier path's precedent).
         train_result = None
         state = torch.load(checkpoint_path, weights_only=True, map_location=device)
+        model.load_state_dict(state["model_state_dict"])
+        model.to(device)
     else:
-        trainer = Trainer(
-            model=model, train_loader=train_loader, tune_loader=tune_loader,
-            config=training, fold_dir=fold_dir, device=device, fold=fold, num_folds=num_folds,
+        train_result = _fit_fold(
+            _build_learner(model, training, shape="dense"),
+            train_loader,
+            tune_loader,
+            training=training,
+            fold_dir=fold_dir,
+            device=device,
+            fold=fold,
+            num_folds=num_folds,
         )
-        train_result = trainer.fit()
-        state = torch.load(train_result.checkpoint_path, weights_only=True, map_location=device)
-    model.load_state_dict(state["model_state_dict"])
-    model.to(device)
     model.eval()
 
     # Freeze the per-class score threshold (design §7), then score. It is swept on a real
@@ -3970,7 +3965,7 @@ def _evaluate_segmentation(
 ) -> EvaluationReport:
     """Streaming dense evaluation: accumulate compact per-image confusion counts.
 
-    Shares ``accumulate_dense_stats`` with ``Trainer._tune_streaming_metrics`` — never
+    Shares ``accumulate_dense_stats`` with ``DenseLearner`` — never
     concatenates the dense ``(N, C, H, W)`` logits (which would OOM). The per-image
     ``dense_stats`` rows are concatenated along the image axis and reduced once via
     ``finalize_eval_metrics`` (the same reduce+filter path as ``compute_metrics``), so
@@ -4256,14 +4251,134 @@ def _save_metrics(
     atomic_write_json(path, data)
 
 
-def _save_training_history(history: list, path: Path) -> None:
+#: ``History`` columns that are not validation-summary keys.
+_HISTORY_LOOP_COLUMNS = ("epoch", "train_loss", "lr", "elapsed_seconds")
+
+
+def history_rows(history: pd.DataFrame) -> list[dict[str, object]]:
+    """The ``History`` frame as JSON-ready rows: ``epoch`` an int, every other column a
+    float, and ``None`` where an epoch was not evaluated."""
+    rows: list[dict[str, object]] = []
+    for record in history.to_dict("records"):
+        row: dict[str, object] = {}
+        for key, value in record.items():
+            if key == "epoch":
+                row[key] = int(value)
+            elif value is None or (isinstance(value, float) and math.isnan(value)):
+                row[key] = None
+            else:
+                row[key] = float(value)
+        rows.append(row)
+    return rows
+
+
+def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
+    """Per-metric best value across all epochs, with the (1-based) epoch it occurred at.
+
+    DIAGNOSTIC ONLY. This describes a model that never existed at any single epoch (each
+    metric peaks at its own epoch), so it is positively biased and must never feed
+    checkpoint selection, ``summary.json`` fold aggregates, or any results table. It is
+    recorded in ``training_history.json`` purely to judge whether the configured
+    ``monitor`` is a good selection proxy. Direction follows
+    :func:`soma.evaluation.metrics.metric_higher_is_better`; ``loss`` is excluded.
+    """
+    from soma.evaluation.metrics import metric_higher_is_better
+
+    peaks: dict[str, dict[str, float | int]] = {}
+    for name in history.columns:
+        if name in _HISTORY_LOOP_COLUMNS or name == "loss":
+            continue
+        for epoch, raw in zip(history["epoch"], history[name]):
+            value = float(raw)
+            if not np.isfinite(value):
+                continue
+            current = peaks.get(name)
+            better = current is None or (
+                value > current["value"] if metric_higher_is_better(name) else value < current["value"]
+            )
+            if better:
+                peaks[name] = {"epoch": int(epoch) + 1, "value": value}
+    return peaks
+
+
+def _save_training_history(history: pd.DataFrame, path: Path) -> None:
     data = {
-        "epochs": [epoch_log_to_dict(log) for log in history],
-        # Diagnostic only (see soma.training.trainer.peak_per_metric); the reporting
-        # layer drops this so it never reaches summaries or results tables.
+        "epochs": history_rows(history),
+        # Diagnostic only (see peak_per_metric); the reporting layer drops this so it
+        # never reaches summaries or results tables.
         "peak_per_metric": peak_per_metric(history),
     }
     atomic_write_json(path, data)
+
+
+def _optimizer_leaf(training: TrainingConfig) -> dict[str, object]:
+    """The config's optimizer leaf with ``learning_rate`` / ``weight_decay`` as its params."""
+    leaf = training.optimizer if isinstance(training.optimizer, dict) else {"name": training.optimizer}
+    params = {"lr": training.learning_rate, "weight_decay": training.weight_decay}
+    params.update(leaf.get("params") or {})
+    return {**leaf, "params": params}
+
+
+def _scheduler_leaves(training: TrainingConfig) -> tuple[object, ...]:
+    schedulers = training.scheduler if isinstance(training.scheduler, list) else [training.scheduler]
+    return tuple(leaf for leaf in schedulers if leaf is not None and leaf != "none")
+
+
+def _build_learner(model: torch.nn.Module, training: TrainingConfig, *, shape: str) -> Learner:
+    """Wrap ``model`` in the configured learner (``training.learner``) or the shape's."""
+    cls, params, _ = resolve_leaf(training.learner or {"name": shape}, learner_registry)
+    return cls(
+        model,
+        optimizer=_optimizer_leaf(training),
+        schedulers=_scheduler_leaves(training),
+        **params,
+    )
+
+
+def _fit_fold(
+    learner: Learner,
+    train_loader,
+    tune_loader,
+    *,
+    training: TrainingConfig,
+    fold_dir: Path,
+    device: torch.device,
+    fold: int,
+    num_folds: int,
+) -> FitResult:
+    """Run the generic Trainer with the callbacks the training config asks for.
+
+    ``Checkpoint`` writes ``best_model.pt`` into ``fold_dir`` and leaves the learner in
+    its selected state; ``patience=None`` (required by ``checkpoint_selection='last'``)
+    installs no ``EarlyStopping``.
+    """
+    callbacks: list[object] = [
+        Checkpoint(
+            monitor=training.monitor,
+            mode=training.monitor_mode,
+            selection=training.checkpoint_selection,
+            dirpath=fold_dir,
+        )
+    ]
+    if training.patience is not None:
+        callbacks.append(
+            EarlyStopping(
+                monitor=training.monitor,
+                mode=training.monitor_mode,
+                patience=training.patience,
+                hold_until_moves=training.hold_patience_until_monitor_moves,
+            )
+        )
+    callbacks.append(Progress(label=f"fold {fold + 1}/{num_folds}" if num_folds > 1 else None))
+    trainer = Trainer(
+        max_epochs=training.epochs,
+        max_steps=training.max_steps,
+        accumulate_grad_batches=training.gradient_accumulation,
+        val_every_n_epochs=training.tune_every_n_epochs,
+        device=device,
+        callbacks=callbacks,
+    )
+    return trainer.fit(learner, train_loader, tune_loader)
 
 
 def _build_subgroup_data(

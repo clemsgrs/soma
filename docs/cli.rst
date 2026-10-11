@@ -170,11 +170,13 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      weight_decay: 1.0e-5
      optimizer: adam
      scheduler: cosine
+     learner: null
      checkpoint_selection: best
      patience: 10
      # Hold the early stop while the monitor sits at its first value; false = plain patience.
      hold_patience_until_monitor_moves: true
-     monitor: tune_loss
+     # A validation_summary key: `loss` or one of the task's metrics.
+     monitor: loss
      monitor_mode: min
      batch_size: 1
      roi_batch_sampling: null

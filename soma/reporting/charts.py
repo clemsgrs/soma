@@ -95,7 +95,7 @@ def loss_curves(folds: list[FoldData]) -> str:
             continue
         epochs = [e["epoch"] for e in fd.training_history]
         train_loss = [e["train_loss"] for e in fd.training_history]
-        tune_loss = [e["tune_loss"] for e in fd.training_history]
+        tune_loss = [e["loss"] for e in fd.training_history]
         color = _fold_color(fd.fold)
         ax_train.plot(epochs, train_loss, color=color, linestyle="-", label=f"Fold {fd.fold}")
         ax_tune.plot(epochs, tune_loss, color=color, linestyle="-", label=f"Fold {fd.fold}")
@@ -118,7 +118,7 @@ def metric_curves(folds: list[FoldData], metric_name: str) -> str:
         if not fd.training_history:
             continue
         epochs = [e["epoch"] for e in fd.training_history]
-        values = [e["tune_metrics"].get(metric_name) for e in fd.training_history]
+        values = [e["metrics"].get(metric_name) for e in fd.training_history]
         if all(v is None for v in values):
             continue
         ax.plot(epochs, values, color=_fold_color(fd.fold), label=f"Fold {fd.fold}")
@@ -454,7 +454,7 @@ def comparison_loss_curves(runs: list[RunData], labels: list[str]) -> str:
     fig, (ax_train, ax_tune) = plt.subplots(1, 2, figsize=(9, 4), sharey=False)
     for run, label, color in zip(runs, labels, _run_colors(len(runs))):
         _add_mean_band(ax_train, run, label, color, key="train_loss")
-        _add_mean_band(ax_tune, run, label, color, key="tune_loss")
+        _add_mean_band(ax_tune, run, label, color, key="loss")
     ax_train.set_title("Train loss (cross-run)")
     ax_train.set_xlabel("Epoch")
     ax_train.set_ylabel("Loss")
@@ -506,7 +506,7 @@ def _add_mean_band(
             by_epoch = {e["epoch"]: e[key] for e in fd.training_history}
         else:
             by_epoch = {
-                e["epoch"]: e["tune_metrics"].get(metric_name) for e in fd.training_history
+                e["epoch"]: e["metrics"].get(metric_name) for e in fd.training_history
             }
             if all(v is None for v in by_epoch.values()):
                 continue

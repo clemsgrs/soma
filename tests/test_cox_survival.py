@@ -31,7 +31,7 @@ from soma.tasks.survival import (
 from soma.training.model import EmbeddingModel
 from soma.training.sample_dataset import SampleBatch
 from soma.training.survival_sampler import EventBalancedBatchSampler
-from soma.training.trainer import Trainer
+from soma.learn import MILLearner
 
 D = 16
 FIXED_RUN_ID = "20990101_000000"
@@ -295,19 +295,12 @@ class TestFullCohortTuneLoss:
             "uneven": _sample_batches(X, time, event, [1, 3, 2]),
         }
 
-        device = torch.device("cpu")
+        learner = MILLearner(model)
+        learner.eval()
         losses = {}
         for name, batches in loaders.items():
-            trainer = Trainer(
-                model=model,
-                train_loader=batches,
-                tune_loader=batches,
-                config=TrainingConfig(epochs=1, batch_size=2),
-                fold_dir=tmp_path / name,
-                device=device,
-            )
-            loss, _ = trainer._tune()
-            losses[name] = loss
+            summary = learner.validation_summary([learner.validation_step(b) for b in batches])
+            losses[name] = summary["loss"]
 
         # Direct full-cohort reference.
         with torch.no_grad():

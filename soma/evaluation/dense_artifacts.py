@@ -2,7 +2,7 @@
 
 Streaming side-effect, not a threaded report type. :class:`DenseArtifactWriter` is
 invoked once per batch by the shared dense-eval loop
-(:func:`soma.training.trainer.accumulate_dense_stats`) *before* the logits are
+(:func:`soma.learn.accumulate_dense_stats`) *before* the logits are
 discarded, so it never holds a cohort of ``(N, C, H, W)`` logits in memory. The
 metrics flow is unchanged: segmentation still returns a plain ``EvaluationReport``
 (``predictions=[]``); these are disk artifacts the report concept (design's

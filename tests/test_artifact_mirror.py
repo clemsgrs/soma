@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import os
 from pathlib import Path
@@ -9,7 +8,6 @@ import shutil
 import pytest
 
 from soma.artifact_mirror import ArtifactMirror, _resume_recipe
-from soma.training.trainer import Trainer
 
 
 def test_resume_recipe_ignores_operational_evidence_export_setting() -> None:
@@ -74,10 +72,6 @@ def test_completed_fold_is_published_directly_with_verified_manifest(
     }
     assert (bundle / "best_model.pt").read_bytes() == b"selected-checkpoint"
     assert not (run_dir / "recovery").exists()
-
-
-def test_trainer_has_no_per_improvement_publication_hook() -> None:
-    assert "on_checkpoint_improved" not in inspect.signature(Trainer).parameters
 
 
 def _completed_run(tmp_path: Path) -> tuple[Path, Path, ArtifactMirror]:

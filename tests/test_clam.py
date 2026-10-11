@@ -187,7 +187,7 @@ class TestCLAMSB:
         X = torch.randn(2, 7, 8)
         out = model(X)
         labels = torch.tensor([1, 4])
-        aux_loss = model.compute_auxiliary_loss(out.auxiliary, labels)
+        aux_loss = model.compute_auxiliary_loss(out.auxiliary, {"label": labels})
         assert aux_loss.dim() == 0
         assert aux_loss.item() >= 0
 
@@ -199,7 +199,7 @@ class TestCLAMSB:
         X = torch.randn(2, 7, 8)
         out = model(X)
         labels = torch.tensor([0.5, -1.25])
-        aux_loss = model.compute_auxiliary_loss(out.auxiliary, labels)
+        aux_loss = model.compute_auxiliary_loss(out.auxiliary, {"label": labels})
         assert aux_loss.dim() == 0
         assert aux_loss.item() >= 0
 
@@ -211,7 +211,7 @@ class TestCLAMSB:
         X = torch.randn(1, 6, 8)
         out = model(X)
         labels = torch.tensor([2.0])
-        aux_loss = model.compute_auxiliary_loss(out.auxiliary, labels)
+        aux_loss = model.compute_auxiliary_loss(out.auxiliary, {"label": labels})
         assert aux_loss.dim() == 0
         assert aux_loss.item() >= 0
 
@@ -221,7 +221,7 @@ class TestCLAMSB:
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, bag_weight=0.25)
         model.compute_auxiliary_loss = lambda auxiliary, labels, mask=None: torch.tensor(2.0)  # type: ignore[method-assign]
         task_loss = torch.tensor(6.0)
-        combined = model.combine_losses(task_loss, {"x": torch.tensor(0.0)}, torch.tensor([0]))
+        combined = model.combine_losses(task_loss, {"x": torch.tensor(0.0)}, {"label": torch.tensor([0])})
         assert torch.isclose(combined, torch.tensor(3.0))
 
     def test_combine_losses_skips_instance_loss_when_disabled(self):
@@ -229,7 +229,7 @@ class TestCLAMSB:
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, bag_weight=1.0)
         task_loss = torch.tensor(6.0)
-        combined = model.combine_losses(task_loss, {"x": torch.tensor(0.0)}, torch.tensor([0]))
+        combined = model.combine_losses(task_loss, {"x": torch.tensor(0.0)}, {"label": torch.tensor([0])})
         assert torch.isclose(combined, task_loss)
 
 

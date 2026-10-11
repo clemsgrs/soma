@@ -1,0 +1,70 @@
+"""``soma.fit``: sugar over :class:`Trainer` for a bare model or a ``Learner``."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+from torch import nn
+
+from soma.learn.callbacks import Checkpoint, EarlyStopping, Progress
+from soma.learn.dense import DenseLearner
+from soma.learn.learner import Learner
+from soma.learn.mil import MILLearner
+from soma.learn.trainer import FitResult, Trainer
+from soma.training.model import EmbeddingModel, LiveSegmentationModel, MILModel, SegmentationModel
+
+__all__ = ["fit", "learner_for"]
+
+
+def learner_for(model: nn.Module, *, loss=None, optimizer=None, schedulers: Sequence[Any] = ()) -> Learner:
+    """Wrap a bare model in the learner for its shape."""
+    if isinstance(model, (MILModel, EmbeddingModel)):
+        return MILLearner(model, loss=loss, optimizer=optimizer, schedulers=schedulers)
+    if isinstance(model, (SegmentationModel, LiveSegmentationModel)):
+        if loss is not None:
+            raise ValueError("loss= applies to the set shape; subclass DenseLearner for a custom dense loss")
+        return DenseLearner(model, optimizer=optimizer, schedulers=schedulers)
+    raise TypeError(
+        f"cannot pick a learner for {type(model).__name__}; pass a Learner or a MILModel / "
+        "EmbeddingModel / SegmentationModel"
+    )
+
+
+def fit(
+    learner_or_model: Learner | nn.Module,
+    train,
+    tune=None,
+    *,
+    loss=None,
+    optimizer=None,
+    schedulers: Sequence[Any] = (),
+    monitor: str = "loss",
+    mode: str = "min",
+    patience: int | None = 10,
+    callbacks: Sequence[Any] = (),
+    progress: bool = True,
+    **trainer_kwargs: Any,
+) -> FitResult:
+    """Fit a learner (or a bare model wrapped in its shape's learner).
+
+    Builds ``Checkpoint(monitor, mode)`` and ``EarlyStopping(monitor, mode, patience)``
+    (``patience=None`` installs no early stopping) and a ``Progress`` callback; the
+    remaining keyword arguments go to :class:`Trainer`.
+    """
+    if isinstance(learner_or_model, Learner):
+        if loss is not None or optimizer is not None or schedulers:
+            raise ValueError(
+                "loss=, optimizer= and schedulers= configure a bare model; a Learner already "
+                "owns them"
+            )
+        learner = learner_or_model
+    else:
+        learner = learner_for(learner_or_model, loss=loss, optimizer=optimizer, schedulers=schedulers)
+    installed: list[Any] = [Checkpoint(monitor=monitor, mode=mode)]
+    if patience is not None:
+        installed.append(EarlyStopping(monitor=monitor, mode=mode, patience=patience))
+    if progress:
+        installed.append(Progress())
+    installed.extend(callbacks)
+    return Trainer(callbacks=installed, **trainer_kwargs).fit(learner, train, tune)

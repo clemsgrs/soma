@@ -80,7 +80,8 @@ _EVALUATION_IDENTITY_EXCLUDED = (
 def _training_identity(config: PipelineConfig) -> dict[str, Any]:
     """Every ``TrainingConfig`` field except the explicit exclusions, emitted
     unconditionally (identity v2 dropped the "only when non-default" guards; v3 added
-    ``tune_every_n_epochs``; v4 added ``lr_warmup_epochs`` / ``lr_warmup_factor``)."""
+    ``tune_every_n_epochs``; v4 added the warm-up knobs, which v5 folded into the
+    ``scheduler`` leaf alongside the new ``learner`` leaf)."""
     training = asdict(config.training)
     for key in _TRAINING_IDENTITY_EXCLUDED:
         training.pop(key, None)

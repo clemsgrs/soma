@@ -23,7 +23,6 @@ from soma.evaluation.report import EvaluationReport, SamplePrediction
 from soma.reporting import generate_report, load_run_data
 from soma.reporting.data import FoldData, RunData, aggregate_fold_predictions, run_data_from_result
 from soma.reporting.html import render_report
-from soma.training.trainer import EpochLog, TrainResult
 
 
 # ---------------------------------------------------------------------------

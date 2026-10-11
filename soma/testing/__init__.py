@@ -1,8 +1,9 @@
-"""Conformance checks for the :mod:`soma.data` source protocols.
+"""Conformance checks for soma's protocols: the :mod:`soma.data` sources and
+:class:`soma.learn.Learner`.
 
-Plain functions usable from pytest or a notebook. soma runs them on its own stores and
-adapters; users run them on custom classes. Each raises :class:`ConformanceError`
-naming the method and the offending sample id.
+Plain functions usable from pytest or a notebook. soma runs them on its own
+implementations; users run them on custom classes. Each raises
+:class:`ConformanceError` naming the method (and, for sources, the offending sample id).
 """
 
 from __future__ import annotations
@@ -13,23 +14,16 @@ import torch
 
 from soma.data.geometry import GridGeometry
 from soma.data.sources import Points
+from soma.testing._errors import ConformanceError
+from soma.testing._learner import check_learner
 
 __all__ = [
     "ConformanceError",
     "check_grid_source",
+    "check_learner",
     "check_set_source",
     "check_target_source",
 ]
-
-
-class ConformanceError(AssertionError):
-    """A source violates its protocol; ``method`` and ``sample_id`` locate the breach."""
-
-    def __init__(self, method: str, message: str, *, sample_id: str | None = None) -> None:
-        self.method = method
-        self.sample_id = sample_id
-        where = f"{method}({sample_id!r})" if sample_id is not None else method
-        super().__init__(f"{where}: {message}")
 
 
 def _check_ids(source, method: str = "sample_ids") -> list[str]:

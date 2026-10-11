@@ -22,7 +22,6 @@ import yaml
 from soma.evaluation.metrics import probability_columns, resolve_metrics
 from soma.tasks.registry import task_family_of
 from soma.reporting.subgroups import enrich_predictions_with_subgroups, subgroup_report_for_predictions
-from soma.training.trainer import epoch_log_to_dict
 
 if TYPE_CHECKING:
     from soma.config import PipelineConfig
@@ -34,7 +33,7 @@ class FoldData:
     """All report data for one fold."""
 
     fold: int
-    training_history: list[dict]  # [{epoch, train_loss, tune_loss, tune_metrics, lr}, ...]
+    training_history: list[dict]  # [{epoch, train_loss, loss, metrics, lr, ...}, ...]
     tune_metrics: dict[str, float]
     test_metrics: dict[str, dict[str, float]]   # split_name → {metric: value}
     predictions: dict[str, pd.DataFrame]         # split_name → predictions df
@@ -260,6 +259,42 @@ def load_run_data(run_dir: str | Path) -> RunData:
     )
 
 
+#: ``History`` columns that are not validation-summary keys.
+_LOOP_COLUMNS = {"epoch", "train_loss", "lr", "elapsed_seconds"}
+
+
+def history_records(rows: list[dict]) -> list[dict]:
+    """Shape flat ``History`` rows for the report: evaluated epochs only, with the
+    validation-summary metrics gathered under ``metrics`` and the mean epoch time derived.
+
+    A row is ``{epoch, train_loss, lr, elapsed_seconds, loss, <metric>...}`` with
+    ``None`` on epochs that were not evaluated; those rows carry no selection signal and
+    are dropped, exactly as the old per-evaluation history never held them.
+    """
+    records = []
+    for row in rows:
+        if row.get("loss") is None:
+            continue
+        metrics = {
+            key: value
+            for key, value in row.items()
+            if key not in _LOOP_COLUMNS and key != "loss" and value is not None
+        }
+        elapsed = row.get("elapsed_seconds")
+        record = {
+            "epoch": int(row["epoch"]),
+            "train_loss": row["train_loss"],
+            "loss": row["loss"],
+            "metrics": metrics,
+            "lr": row["lr"],
+        }
+        if elapsed is not None:
+            record["elapsed_seconds"] = elapsed
+            record["avg_epoch_seconds"] = elapsed / (int(row["epoch"]) + 1)
+        records.append(record)
+    return records
+
+
 def _load_training_history(history_path: Path) -> list[dict]:
     """Read the per-epoch list from a ``training_history.json`` file.
 
@@ -269,7 +304,7 @@ def _load_training_history(history_path: Path) -> list[dict]:
     """
     if not history_path.exists():
         return []
-    return json.loads(history_path.read_text())["epochs"]
+    return history_records(json.loads(history_path.read_text())["epochs"])
 
 
 def run_data_from_result(
@@ -290,6 +325,7 @@ def run_data_from_result(
         RunData ready for report rendering.
     """
     from soma.config import _config_to_layout_dict
+    from soma.pipeline import history_rows
 
     task_family = task_family_of(config.task.name)
     metrics = resolve_metrics(task_family, config.evaluation.metrics)
@@ -303,7 +339,7 @@ def run_data_from_result(
     folds = []
     for fold_result in result.fold_results:
         training_history = (
-            [epoch_log_to_dict(log) for log in fold_result.train_result.history]
+            history_records(history_rows(fold_result.train_result.history))
             if fold_result.train_result is not None
             else []
         )

@@ -1,6 +1,6 @@
 """Tests for Cox prediction-accumulation (phase 2: large variable-size MIL bags).
 
-Covers the windowed training loop (graph connectivity, no-detach), padded-vs-
+Covers the window as a training batch (graph connectivity, no-detach), padded-vs-
 accumulation parity, the no-pad window collate, full-cohort MIL eval, the revised
 config guards, and MIL accumulation + padded end-to-end runs.
 """
@@ -26,7 +26,7 @@ from soma.tasks.survival import CoxSurvivalHead, cox_breslow_loss
 from soma.pipeline import Pipeline, PipelineResult
 from soma.training.collate import CoxWindowBatch, bag_collate_fn, cox_window_collate
 from soma.training.model import MILModel
-from soma.training.trainer import Trainer
+from soma.learn import MILLearner
 
 D = 16
 FIXED_RUN_ID = "20990101_000000"
@@ -102,23 +102,16 @@ class TestWindowedLoop:
         risk = torch.cat(risks)
         assert risk.requires_grad and risk.grad_fn is not None
 
-    def test_windowed_epoch_produces_gradients(self, tmp_path: Path):
+    def test_window_step_produces_gradients(self, tmp_path: Path):
         model = _mil_cox_model(cox_window=3)
         window = _window_batch(_bags([5, 8, 3]), [3.0, 2.0, 1.0], [1.0, 0.0, 1.0])
-        trainer = Trainer(
-            model=model,
-            train_loader=[window],
-            tune_loader=[window],
-            config=TrainingConfig(epochs=1, batch_size=1),
-            fold_dir=tmp_path,
-            device=torch.device("cpu"),
-        )
-        loss = trainer._train_epoch()
-        assert isinstance(loss, float)
+        loss = MILLearner(model).training_step(window)
+        assert loss.ndim == 0
+        loss.backward()
         agg_grads = [p.grad for p in model.aggregator.parameters() if p.grad is not None]
         assert agg_grads and any(g.abs().sum() > 0 for g in agg_grads)
 
-    def test_windowed_epoch_passes_all_true_masks(self, tmp_path: Path):
+    def test_window_step_passes_all_true_masks(self, tmp_path: Path):
         model = _transmil_cox_model(cox_window=3)
         seen_masks = []
         original_forward = model.forward
@@ -129,15 +122,7 @@ class TestWindowedLoop:
 
         model.forward = capture_forward
         window = _window_batch(_bags([5, 8, 3]), [3.0, 2.0, 1.0], [1.0, 0.0, 1.0])
-        trainer = Trainer(
-            model=model,
-            train_loader=[window],
-            tune_loader=[window],
-            config=TrainingConfig(epochs=1, batch_size=1),
-            fold_dir=tmp_path,
-            device=torch.device("cpu"),
-        )
-        trainer._train_epoch()
+        MILLearner(model).training_step(window)
 
         assert [mask.tolist() if mask is not None else None for mask in seen_masks] == [
             [[True] * 5],
@@ -220,17 +205,13 @@ class TestFullCohortMILEval:
             for i in range(0, 6, 2)
         ]
 
+        learner = MILLearner(model)
+        learner.eval()
         losses = {}
         for name, loader in {"whole": whole, "pairs": pairs}.items():
-            trainer = Trainer(
-                model=model,
-                train_loader=loader,
-                tune_loader=loader,
-                config=TrainingConfig(epochs=1, batch_size=1),
-                fold_dir=tmp_path / name,
-                device=torch.device("cpu"),
-            )
-            losses[name], _ = trainer._tune()
+            losses[name] = learner.validation_summary(
+                [learner.validation_step(batch) for batch in loader]
+            )["loss"]
 
         with torch.no_grad():
             risk = torch.cat([model(b.unsqueeze(0)).logits.view(1) for b in bags])

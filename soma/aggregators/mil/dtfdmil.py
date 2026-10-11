@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from soma.aggregators.base import Aggregator, AggregatorOutput
+from soma.aggregators.base import Aggregator, AggregatorOutput, require_label
 from soma.aggregators.mil.attention_pool import AttentionPool
 from soma.aggregators.registry import aggregator_registry
 from soma.tasks.base import TaskHead
@@ -270,7 +270,7 @@ class DTFDMIL(Aggregator):
     def compute_auxiliary_loss(
         self,
         auxiliary: dict[str, Tensor],
-        labels: Tensor,
+        targets: dict[str, Tensor],
         mask: Tensor | None = None,
     ) -> Tensor:
         """Pseudo-bag prediction loss (DTFD-MIL tier-1 auxiliary objective).
@@ -278,6 +278,7 @@ class DTFDMIL(Aggregator):
         Averaged over each bag's own pseudo-bags, then over bags, so a bag's weight
         does not depend on how many pseudo-bags it was split into.
         """
+        labels = require_label(targets, "dtfdmil")
         pseudo_pred = auxiliary["pseudo_predictions"]
         B, n_groups = pseudo_pred.shape[:2]
         pseudo_mask = auxiliary.get("pseudo_mask")

@@ -1191,6 +1191,19 @@ class EvalConfig:
     overwrite_test: bool = False
 
 
+def _validate_component_leaf(leaf: object, where: str, *, allow_str: bool) -> None:
+    """A component leaf is a name (when allowed) or a mapping with a non-empty ``name``."""
+    if allow_str and isinstance(leaf, str) and leaf:
+        return
+    if isinstance(leaf, dict) and isinstance(leaf.get("name"), str) and leaf["name"]:
+        params = leaf.get("params")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(f"{where}: 'params' must be a mapping, got {params!r}")
+        return
+    shape = "a name or a {name, params} mapping" if allow_str else "a {name, params} mapping"
+    raise ValueError(f"{where} must be {shape}, got {leaf!r}")
+
+
 @dataclass(frozen=True)
 class TrainingConfig:
     """Training-loop hyperparameters and optimizer settings.
@@ -1201,13 +1214,19 @@ class TrainingConfig:
     optimizer updates (one complete gradient-accumulation window). Step-budget
     runs set ``epochs`` to ``None`` and may finish partway through an epoch.
     ``learning_rate``, ``optimizer``, ``scheduler``, and ``patience`` define the
-    optimization schedule. Cosine scheduling advances once per epoch with
-    ``T_max=epochs`` in epoch mode and once per optimizer update with
-    ``T_max=max_steps`` in step mode. ``lr_warmup_epochs`` and ``lr_warmup_factor`` scale the
-    rate for the first epochs in either mode and compose multiplicatively with the
-    scheduler. ``monitor`` and
-    ``monitor_mode`` choose the tune loss or metric used for selected-checkpoint
-    selection and early stopping. ``tune_is_test`` ties the tune and test
+    optimization schedule. ``optimizer`` and ``scheduler`` are component leaves: a name
+    (``adam``, ``adamw``, ``sgd``; ``cosine``, ``constant``, ``none``) or a ``{name,
+    params}`` mapping whose name is a registry key or a dotted import path; ``scheduler``
+    may also be a list of leaves, each stepped at its own ``interval`` (``epoch`` by
+    default). ``learning_rate`` and ``weight_decay`` seed the optimizer leaf's params.
+    Cosine annealing derives ``T_max`` from the budget: once per epoch with
+    ``T_max=epochs`` in epoch mode and once per optimizer update with ``T_max=max_steps``
+    in step mode. A warm-up is an ordinary ``constant`` leaf (``factor``, ``total_iters``)
+    at interval ``epoch``. ``learner`` optionally names the :class:`soma.learn.Learner`
+    subclass (registry key or dotted path) that owns the step logic; the default is the
+    shape's learner (``mil`` for sets, ``dense`` for grids). ``monitor`` and
+    ``monitor_mode`` choose the ``validation_summary`` key (``loss`` or a metric) used for
+    selected-checkpoint selection and early stopping. ``tune_is_test`` ties the tune and test
     splits to the same samples for protocols with a single held-out set: a fold
     may provide either a tune split or a test split (not both), and that split
     is used for both checkpoint selection and test reporting. ``allow_missing_tune``
@@ -1246,14 +1265,11 @@ class TrainingConfig:
     max_steps: int | None = None
     learning_rate: float = 1e-4
     weight_decay: float = 1e-5
-    optimizer: str = "adam"
-    scheduler: str = "cosine"
-    # Linear-rate warm-up with torch ``ConstantLR`` semantics: the learning rate is
-    # multiplied by ``lr_warmup_factor`` for the first ``lr_warmup_epochs`` epochs (counted
-    # in epochs under both budgets, like Lightning's epoch-interval default), then the base
-    # rate and any ``scheduler`` take over. ``0`` disables the warm-up.
-    lr_warmup_epochs: int = 0
-    lr_warmup_factor: float = 1.0
+    # Component leaves (see the class docstring): a name or ``{name, params}``.
+    optimizer: str | dict[str, Any] = "adam"
+    scheduler: str | dict[str, Any] | list[str | dict[str, Any]] | None = "cosine"
+    # Optional ``{name, params}`` leaf for the Learner subclass; ``None`` = the shape's.
+    learner: dict[str, Any] | None = None
     # Early-stopping patience in tune evaluations (epochs, when ``tune_every_n_epochs`` is 1),
     # or ``None`` to disable early stopping and always train the full ``epochs`` budget.
     # ``checkpoint_selection='last'`` *requires* ``None``.
@@ -1275,7 +1291,7 @@ class TrainingConfig:
     # Ridge+PCA probe (the HEST spatial_expression trainer — no gradient descent, no tune
     # split). A method flag, not a fork of the entrypoint (design — HEST §6).
     method: str = "gradient"
-    monitor: str = "tune_loss"
+    monitor: str = "loss"
     monitor_mode: str = "min"
     batch_size: int = 1
     # Explicit cached-segmentation training-batch contract.  This is intentionally
@@ -1302,14 +1318,14 @@ class TrainingConfig:
             raise ValueError("TrainingConfig.epochs must be >= 1")
         if self.max_train_pixels < 1:
             raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
-        if not _is_exact_integer(self.lr_warmup_epochs) or self.lr_warmup_epochs < 0:
-            raise ValueError("TrainingConfig.lr_warmup_epochs must be an integer >= 0")
-        if not 0.0 < self.lr_warmup_factor <= 1.0:
-            raise ValueError("TrainingConfig.lr_warmup_factor must be in (0, 1]")
-        if self.lr_warmup_epochs == 0 and self.lr_warmup_factor != 1.0:
-            raise ValueError(
-                "TrainingConfig.lr_warmup_factor requires lr_warmup_epochs >= 1 to take effect"
-            )
+        _validate_component_leaf(self.optimizer, "TrainingConfig.optimizer", allow_str=True)
+        schedulers = self.scheduler if isinstance(self.scheduler, list) else [self.scheduler]
+        for leaf in schedulers:
+            if leaf is None or leaf == "none":
+                continue
+            _validate_component_leaf(leaf, "TrainingConfig.scheduler", allow_str=True)
+        if self.learner is not None:
+            _validate_component_leaf(self.learner, "TrainingConfig.learner", allow_str=False)
         if self.batch_size < 1:
             raise ValueError("TrainingConfig.batch_size must be >= 1")
         if (
@@ -1984,14 +2000,14 @@ class PipelineConfig:
         # still part of the declared protocol and must name a diagnostic the run computes.
         resolved_metrics = resolve_metrics(task_family_of(self.task.name), self.evaluation.metrics)
         if (
-            self.training.monitor != "tune_loss"
+            self.training.monitor != "loss"
             and self.training.monitor not in resolved_metrics
         ):
             available = ", ".join(resolved_metrics)
             raise ValueError(
                 f"Training monitor {self.training.monitor!r} is not an effective metric for "
-                f"task {self.task.name!r}. Available metrics: {available}; use 'tune_loss' "
-                "to monitor loss."
+                f"task {self.task.name!r}. Available metrics: {available}; use 'loss' "
+                "to monitor the tune loss."
             )
         # Fail fast on unknown encoder / aggregator names — catching these at
         # config construction avoids burning hours of preprocessing before the

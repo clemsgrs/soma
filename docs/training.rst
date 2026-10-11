@@ -13,8 +13,25 @@ Choose one budget: ``epochs`` counts passes through the training loader;
 budget, set ``epochs: null``. Cosine scheduling advances per epoch or per update
 to match the selected budget.
 
+``optimizer`` and ``scheduler`` are component leaves: a name (``adam``, ``adamw``,
+``sgd``; ``cosine``, ``constant``, ``none``) or a ``{name, params}`` mapping whose
+name is a registry key or a dotted import path. ``learning_rate`` and
+``weight_decay`` seed the optimizer's params. ``scheduler`` may be a list of
+leaves, each stepped at its own ``interval`` (``epoch`` unless set); a warm-up is
+a ``constant`` leaf::
+
+   training:
+     optimizer: adamw
+     scheduler:
+       - {name: constant, params: {factor: 0.333, total_iters: 5}}
+       - cosine
+
+``learner`` optionally names the :class:`soma.learn.Learner` subclass that owns
+the step logic (see :doc:`extending`); by default soma uses the shape's learner.
+
 ``checkpoint_selection: best`` selects weights using ``monitor`` and
-``monitor_mode`` (default: minimize tune loss). ``patience`` controls early
+``monitor_mode`` (default: minimize the tune ``loss``; a metric name selects
+that metric). ``patience`` controls early
 stopping; ``null`` disables it. ``tune_every_n_epochs: N`` evaluates the tune
 split after every N-th epoch and after the final epoch, for runs where tune
 evaluation dominates the epoch cost; selection and ``patience`` then count tune
@@ -95,5 +112,7 @@ writes ``feature_adapter.json``; see :doc:`outputs`.
 
 During training, the live summary panel reports epoch, loss, learning rate,
 tune metrics, patience, trainable parameter count, timing, and the active fold
-for cross-validation. The same history is saved in ``training_history.json``
-and shown in the HTML report.
+for cross-validation. The same history is saved in ``training_history.json``,
+one row per epoch (``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds``, then
+``loss`` and one column per tune metric, ``null`` on an epoch without a tune
+evaluation), and shown in the HTML report.

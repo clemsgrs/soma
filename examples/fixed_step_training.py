@@ -116,15 +116,14 @@ print()
 print(f"optimizer updates performed: {train_result.optimizer_steps} (== max_steps)")
 print(f"epochs trained:              {len(train_result.history)}")
 print("per-epoch log (the tune split is evaluated every epoch, partial ones too):")
-for log in train_result.history:
-    updates_this_epoch = min(
-        updates_per_epoch, MAX_STEPS - log.epoch * updates_per_epoch
-    )
+for row in train_result.history.to_dict("records"):
+    epoch = int(row["epoch"])
+    updates_this_epoch = min(updates_per_epoch, MAX_STEPS - epoch * updates_per_epoch)
     partial = " (partial epoch)" if updates_this_epoch < updates_per_epoch else ""
     print(
-        f"  epoch {log.epoch + 1}: {updates_this_epoch} update(s){partial} | "
-        f"train_loss={log.train_loss:.3f} tune_loss={log.tune_loss:.3f} "
-        f"tune_metrics={ {k: round(v, 3) for k, v in log.tune_metrics.items()} }"
+        f"  epoch {epoch + 1}: {updates_this_epoch} update(s){partial} | "
+        f"train_loss={row['train_loss']:.3f} loss={row['loss']:.3f} "
+        f"balanced_accuracy={row['balanced_accuracy']:.3f}"
     )
 
 assert train_result.optimizer_steps == MAX_STEPS

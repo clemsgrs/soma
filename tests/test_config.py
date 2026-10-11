@@ -163,7 +163,7 @@ def test_training_config_defaults():
     assert cfg.optimizer == "adam"
     assert cfg.scheduler == "cosine"
     assert cfg.patience == 10
-    assert cfg.monitor == "tune_loss"
+    assert cfg.monitor == "loss"
     assert cfg.monitor_mode == "min"
     assert cfg.batch_size == 1
     assert cfg.gradient_accumulation == 1
@@ -1848,32 +1848,40 @@ def test_composite_prenorm_member_norm_defaults_like_patch_features():
     assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
 
 
-def test_training_config_defaults_to_no_lr_warmup():
+def test_training_config_optimizer_and_scheduler_are_component_leaves():
+    """A string is the leaf's name; a ``{name, params}`` mapping is the full leaf; a
+    scheduler may be a list of leaves (warm-up is an ordinary ``constant`` leaf)."""
     cfg = TrainingConfig()
-    assert cfg.lr_warmup_epochs == 0
-    assert cfg.lr_warmup_factor == 1.0
+    assert (cfg.optimizer, cfg.scheduler, cfg.learner) == ("adam", "cosine", None)
+    cfg = TrainingConfig(
+        optimizer={"name": "sgd", "params": {"momentum": 0.9}},
+        scheduler=[{"name": "constant", "params": {"factor": 0.25, "total_iters": 3}}, "cosine"],
+        learner={"name": "my_pkg.learners.EntropyLearner", "params": {"weight": 0.1}},
+    )
+    assert cfg.optimizer["name"] == "sgd" and cfg.scheduler[1] == "cosine"
+    assert cfg.learner["params"] == {"weight": 0.1}
+    assert TrainingConfig(scheduler=None).scheduler is None
 
 
 @pytest.mark.parametrize(
-    "kwargs",
+    "kwargs, match",
     [
-        {"lr_warmup_epochs": -1},
-        {"lr_warmup_epochs": 0.5},
-        {"lr_warmup_epochs": 5.0},
-        {"lr_warmup_epochs": float("nan")},
-        {"lr_warmup_epochs": float("inf")},
-        {"lr_warmup_epochs": True},
-        {"lr_warmup_epochs": False},
-        {"lr_warmup_epochs": "5"},
-        {"lr_warmup_epochs": None},
-        {"lr_warmup_epochs": 5, "lr_warmup_factor": 0.0},
-        {"lr_warmup_epochs": 5, "lr_warmup_factor": 1.5},
-        {"lr_warmup_epochs": 0, "lr_warmup_factor": 0.5},
+        ({"optimizer": {"params": {"lr": 1.0}}}, "optimizer"),
+        ({"optimizer": 3}, "optimizer"),
+        ({"scheduler": {"factor": 0.5}}, "scheduler"),
+        ({"scheduler": [None, 7]}, "scheduler"),
+        ({"learner": "mil"}, "learner"),
+        ({"learner": {"params": {}}}, "learner"),
     ],
 )
-def test_training_config_rejects_malformed_lr_warmup(kwargs):
-    with pytest.raises(ValueError, match="lr_warmup"):
+def test_training_config_rejects_malformed_component_leaves(kwargs, match):
+    with pytest.raises(ValueError, match=match):
         TrainingConfig(**kwargs)
+
+
+def test_training_config_has_no_dedicated_warmup_knobs():
+    with pytest.raises(TypeError):
+        TrainingConfig(lr_warmup_epochs=5)
 
 
 @pytest.mark.parametrize(

@@ -169,7 +169,7 @@ class TestDTFDMIL:
         pseudo_pred = out.auxiliary["pseudo_predictions"]
         assert pseudo_pred.shape == (2, 2, 3)
 
-        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        loss = agg.compute_auxiliary_loss(out.auxiliary, {"label": labels})
         targets = labels.unsqueeze(1).expand(-1, 2).reshape(-1)
         expected = F.cross_entropy(pseudo_pred.reshape(-1, 3), targets)
         assert torch.isclose(loss, expected)
@@ -188,7 +188,7 @@ class TestDTFDMIL:
         pseudo_pred = out.auxiliary["pseudo_predictions"]
         assert pseudo_pred.shape == (2, 2)
 
-        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        loss = agg.compute_auxiliary_loss(out.auxiliary, {"label": labels})
         expected = F.mse_loss(
             pseudo_pred,
             labels.float().unsqueeze(1).expand_as(pseudo_pred),
@@ -209,7 +209,7 @@ class TestDTFDMIL:
         pseudo_pred = out.auxiliary["pseudo_predictions"]
         assert pseudo_pred.shape == (2, 2)
 
-        loss = agg.compute_auxiliary_loss(out.auxiliary, labels)
+        loss = agg.compute_auxiliary_loss(out.auxiliary, {"label": labels})
         expected = F.mse_loss(
             pseudo_pred,
             labels.float().unsqueeze(1).expand_as(pseudo_pred),
