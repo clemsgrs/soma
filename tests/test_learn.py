@@ -112,6 +112,20 @@ class TestMILLearnerContract:
         )
         assert spec.scheduler.T_max == 12 and spec.interval == "step"
 
+    def test_cosine_step_interval_under_an_epoch_budget_spans_every_update(self):
+        learner = _learner(schedulers=[{"name": "cosine", "interval": "step"}])
+        _, (spec,) = learner.configure_optimizers(
+            Budget(max_epochs=4, max_steps=None, updates_per_epoch=10)
+        )
+        assert spec.scheduler.T_max == 40 and spec.interval == "step"
+
+    def test_cosine_with_an_explicit_t_max_keeps_the_step_cadence_of_a_step_budget(self):
+        learner = _learner(schedulers=[{"name": "cosine", "params": {"T_max": 40}}])
+        _, (spec,) = learner.configure_optimizers(
+            Budget(max_epochs=None, max_steps=40, updates_per_epoch=10)
+        )
+        assert spec.scheduler.T_max == 40 and spec.interval == "step"
+
     def test_optimizer_and_scheduler_leaves_resolve_through_the_registry(self):
         learner = _learner(
             optimizer={"name": "sgd", "params": {"lr": 0.5, "momentum": 0.9}},
@@ -168,6 +182,27 @@ class TestMILLearnerContract:
         learner = _learner(loss=hinge)
         loss = learner.training_step(next(iter(_bag_loader())))
         assert calls and loss.item() == pytest.approx(3.0)
+
+    def test_loss_callable_is_also_the_validation_loss(self):
+        def constant(predictions, targets):
+            return predictions.sum() * 0.0 + 3.0
+
+        learner = _learner(loss=constant)
+        learner.eval()
+        batches = list(_bag_loader())
+        summary = learner.validation_summary([learner.validation_step(b) for b in batches])
+        assert summary["loss"] == pytest.approx(3.0)
+        # The full-cohort reduction (Cox-style heads) goes through the same callable.
+        learner.head.full_cohort_eval_loss = True
+        summary = learner.validation_summary([learner.validation_step(b) for b in batches])
+        assert summary["loss"] == pytest.approx(3.0)
+
+    def test_bf16_validation_hands_float_logits_to_the_head_metrics(self):
+        result = Trainer(max_epochs=1, device="cpu", precision="bf16").fit(
+            _learner(), _bag_loader(), _bag_loader()
+        )
+        row = result.history.iloc[0]
+        assert math.isfinite(row["loss"]) and math.isfinite(row["auroc"])
 
     def test_embedding_model_is_the_set_shape_with_one_row(self):
         torch.manual_seed(0)
@@ -461,6 +496,20 @@ class TestCallbacks:
             Trainer(
                 max_epochs=3, callbacks=[Nan(), Checkpoint(monitor="score")], device="cpu"
             ).fit(_learner(), _bag_loader(), _bag_loader())
+
+    def test_checkpoint_last_tolerates_a_non_finite_diagnostic_monitor(self):
+        class Nan:
+            def on_validation_end(self, trainer, learner, summary):
+                summary["score"] = float("nan")
+
+        # Under ``last`` the monitor is a logged diagnostic, not a selection signal (#282):
+        # an undefined AUROC on a one-class tune split must not abort the run.
+        result = Trainer(
+            max_epochs=2,
+            callbacks=[Nan(), Checkpoint(monitor="score", selection="last")],
+            device="cpu",
+        ).fit(_learner(), _bag_loader(), _bag_loader())
+        assert result.selected_epoch == 1
 
     def test_checkpoint_refuses_an_unknown_monitor(self):
         with pytest.raises(ValueError, match="nope"):

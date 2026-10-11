@@ -2928,6 +2928,10 @@ def train(
                 projection=projection,
                 encoder_identity=encoder_identity,
             )
+        if result.train_result is not None:
+            # The FitResult keeps the fold's learner alive; move it off the accelerator so
+            # completed folds do not hold GPU memory while the next one trains.
+            result.train_result.learner.cpu()
         fold_results.append(result)
         if artifact_mirror is not None and not fold_was_complete:
             artifact_mirror.fold_completed(fold=fold_idx, fold_dir=fold_dir)

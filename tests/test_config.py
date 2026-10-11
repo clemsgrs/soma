@@ -264,6 +264,19 @@ def test_pipeline_rejects_monitor_outside_effective_task_metrics():
         )
 
 
+def test_pipeline_defers_monitor_validation_to_a_custom_learner():
+    """A configured learner owns its ``validation_summary`` keys; the Checkpoint callback
+    validates the monitor against the real summary at the first evaluation."""
+    cfg = _make_pipeline_config(
+        training=TrainingConfig(
+            learner={"name": "my_pkg.learners.EntropyLearner"},
+            monitor="entropy",
+            monitor_mode="min",
+        )
+    )
+    assert cfg.training.monitor == "entropy"
+
+
 def test_checkpoint_selection_survives_config_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
         training=TrainingConfig(checkpoint_selection="last", patience=None)

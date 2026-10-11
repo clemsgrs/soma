@@ -117,7 +117,9 @@ class Checkpoint:
         value = float("nan")
         if summary is not None:
             value = _monitor_value(summary, self.monitor)
-            if not math.isfinite(value):
+            # Under ``last`` the monitor is a logged diagnostic, not a selection signal, so
+            # an undefined metric (AUROC on a one-class tune split) does not abort the run.
+            if not self._last and not math.isfinite(value):
                 raise RuntimeError(
                     f"monitor '{self.monitor}' is {value} at epoch {trainer.epoch + 1}, so no "
                     "checkpoint could ever be selected. Threshold-free metrics (AUROC, AUPRC, "

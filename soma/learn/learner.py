@@ -70,6 +70,12 @@ class Budget:
             raise ValueError("a Budget needs max_epochs or max_steps")
         return -(-int(self.max_steps) // max(int(self.updates_per_epoch), 1))
 
+    @property
+    def total_steps(self) -> int:
+        if self.max_steps is not None:
+            return int(self.max_steps)
+        return self.total_epochs * max(int(self.updates_per_epoch), 1)
+
 
 # ---------------------------------------------------------------------------
 # {name, params} leaves
@@ -166,8 +172,9 @@ class Learner(nn.Module):
     def configure_optimizers(
         self, budget: Budget
     ) -> torch.optim.Optimizer | tuple[torch.optim.Optimizer, list[SchedulerSpec]]:
-        """Default: the leaves over every ``requires_grad`` parameter; cosine ``T_max``
-        is the budget (epochs, or steps under a step budget, stepped at that cadence)."""
+        """Default: the leaves over every ``requires_grad`` parameter. Cosine follows the
+        budget's cadence (``step`` under a step budget, else ``epoch``) unless the leaf
+        sets ``interval``; an omitted ``T_max`` is the budget in that cadence's units."""
         cls, params, _ = resolve_leaf(self.optimizer_leaf, optimizer_registry)
         trainable = [p for p in self.parameters() if p.requires_grad]
         optimizer = cls(trainable, **params)
@@ -176,16 +183,12 @@ class Learner(nn.Module):
             if leaf is None or leaf == "none":
                 continue
             scls, sparams, extra = resolve_leaf(leaf, scheduler_registry)
-            interval = extra.get("interval", "epoch")
-            if scls is torch.optim.lr_scheduler.CosineAnnealingLR and "T_max" not in sparams:
-                if budget.max_steps is not None:
-                    sparams["T_max"], interval = budget.max_steps, extra.get("interval", "step")
-                elif budget.max_epochs is not None:
-                    sparams["T_max"] = budget.max_epochs
-                else:
-                    raise ValueError("Cosine scheduling requires an epoch or step budget.")
+            cosine = scls is torch.optim.lr_scheduler.CosineAnnealingLR
+            interval = extra.get("interval", "step" if cosine and budget.max_steps is not None else "epoch")
             if interval not in {"epoch", "step"}:
                 raise ValueError(f"scheduler interval must be 'epoch' or 'step', got {interval!r}")
+            if cosine and "T_max" not in sparams:
+                sparams["T_max"] = budget.total_steps if interval == "step" else budget.total_epochs
             specs.append(SchedulerSpec(scheduler=scls(optimizer, **sparams), interval=interval))
         return optimizer, specs
 

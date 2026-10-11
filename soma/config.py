@@ -1998,9 +1998,12 @@ class PipelineConfig:
         # Validate that requested metrics and the training monitor are valid for the task
         # family.  ``last`` ignores the monitor for checkpoint selection, but the monitor is
         # still part of the declared protocol and must name a diagnostic the run computes.
+        # A configured ``training.learner`` owns its ``validation_summary`` keys, so its
+        # monitor is checked by the Checkpoint callback against the real summary instead.
         resolved_metrics = resolve_metrics(task_family_of(self.task.name), self.evaluation.metrics)
         if (
-            self.training.monitor != "loss"
+            self.training.learner is None
+            and self.training.monitor != "loss"
             and self.training.monitor not in resolved_metrics
         ):
             available = ", ".join(resolved_metrics)

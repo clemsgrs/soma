@@ -59,11 +59,14 @@ class MILLearner(Learner):
             return self.model(batch.features, mask=mask)
         return self.model(batch.features)
 
-    def compute_loss(self, output, batch: Any) -> Tensor:
+    def task_loss(self, logits: Tensor, targets: dict[str, Tensor]) -> Tensor:
+        """The head's loss, or the ``loss=`` callable; training and validation share it."""
         if self.loss_fn is not None:
-            loss = self.loss_fn(output.logits, batch.targets)
-        else:
-            loss = self.head.compute_loss(output.logits, batch.targets)
+            return self.loss_fn(logits, targets)
+        return self.head.compute_loss(logits, targets)
+
+    def compute_loss(self, output, batch: Any) -> Tensor:
+        loss = self.task_loss(output.logits, batch.targets)
         aggregator = getattr(self.model, "aggregator", None)
         auxiliary = getattr(output, "auxiliary", None)
         if aggregator is not None and auxiliary is not None:
@@ -80,10 +83,11 @@ class MILLearner(Learner):
         logits = output.logits
         loss = None
         if not getattr(self.head, "full_cohort_eval_loss", False):
-            loss = self.head.compute_loss(logits, batch.targets).detach().cpu()
+            loss = self.task_loss(logits, batch.targets).detach().cpu()
         return StepOutput(
             loss=loss,
-            outputs=logits.detach().cpu(),
+            # ``.float()``: under bf16 autocast the heads' CPU metrics (numpy) need fp32.
+            outputs=logits.detach().float().cpu(),
             targets={k: v.detach().cpu() for k, v in batch.targets.items()},
             size=int(logits.shape[0]),
         )
@@ -98,7 +102,7 @@ class MILLearner(Learner):
         if getattr(self.head, "full_cohort_eval_loss", False):
             # Losses that couple samples (Cox partial likelihood) exist only over the
             # whole split; a mean of per-batch values would depend on the partition.
-            loss = float(self.head.compute_loss(logits, targets).item())
+            loss = float(self.task_loss(logits, targets).item())
         else:
             loss = float(torch.stack([o.loss for o in outputs]).mean().item())
         metrics = self.head.compute_metrics(logits, targets)
