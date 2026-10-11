@@ -172,7 +172,7 @@ class TestMILModel:
         try:
             MILModel(
                 aggregator=CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3),
-                task_head=RegressionHead(input_dim=4, num_targets=2),
+                task_head=RegressionHead(input_dim=4, num_outputs=2),
             )
         except ValueError as exc:
             assert "single-target regression" in str(exc)

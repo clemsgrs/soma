@@ -231,8 +231,61 @@ paired permutation test against it. See :doc:`evaluation` for the scoring
 rules and :doc:`benchmarking` for leaderboards across many runs.
 
 ``soma.list_models(level=...)``, ``list_aggregators()``, ``list_decoders()``,
-``list_pixel_classifiers()``, and ``list_task_heads()`` list the registered
-presets from code.
+and ``list_task_heads()`` list the registered presets from code.
+
+Segmentation and detection building blocks
+------------------------------------------
+
+The verbs ``soma.learn.loaders``, ``soma.fit``, ``soma.predict`` and
+``soma.evaluate`` also cover feature grids. :ref:`grid-verbs` walks through a
+complete run; these are the parts:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 60
+
+   * - Object
+     - Role
+   * - :class:`soma.data.GridSource`
+     - Cached feature grids, one ``(D, h, w)`` grid per sample
+   * - :class:`soma.data.TileImageSource`
+     - Pixels of pre-cropped tiles for the live path;
+       ``TileImageSource.from_manifest(image_manifest, size=...)``
+   * - :class:`soma.data.LabelMapSource`, :class:`soma.data.CachedLabelMapSource`
+     - Segmentation targets: label masks, or the ROI mask crops stored by
+       annotation sampling
+   * - :class:`soma.data.PointSource`
+     - Detection targets; ``class_remap`` and ``drop`` fold in the class scheme
+   * - :func:`soma.extract.live_encoder`, :class:`soma.extract.FrozenEncoder`
+     - A parameter-free frozen encoder stage that re-encodes pixels at every
+       step
+   * - :class:`soma.training.model.DenseModel`
+     - ``encoder`` (optional) → ``adaptor`` (optional) → decoder → head
+   * - :class:`soma.learn.DenseLearner`, :class:`soma.learn.GridBatch`
+     - The grid learner and its batch (cached ``features`` or live ``pixels``,
+       plus raw ``targets``)
+   * - :class:`soma.learn.SegmentationAugment`
+     - Joint image and label-mask augmentation for the live path
+   * - :class:`soma.evaluation.LabelMapPredictions`,
+       :class:`soma.evaluation.PointPredictions`
+     - What ``soma.predict`` returns for a segmentation or detection head
+   * - :func:`soma.evaluation.sweep_threshold`
+     - Picks a detection score threshold on tune predictions
+   * - :class:`soma.evaluation.SaveOverlays`,
+       :class:`soma.evaluation.SaveProbabilities`,
+       :class:`soma.evaluation.SaveHeatmaps`
+     - ``predict`` callbacks that write overlays, softmax maps and heatmaps
+   * - :class:`soma.testing.FakeEncoder`
+     - A weight-free encoder stage for tests
+
+Every target source has ``subset(sample_ids)`` to restrict it to one split.
+
+For whole-image segmentation after a run, ``soma.pipeline.live_encoder_for(config)``
+builds the run's frozen encoder stage,
+``soma.dense.predict.build_dense_models(encoder, decoder_name=..., ...)`` loads
+the fold checkpoints over it, and
+``SlidingWindowSegmentationPredictor.from_encoder(encoder, models, spacing_um=...)``
+slides the ensemble over an image.
 
 Task-free representation evaluation
 -----------------------------------

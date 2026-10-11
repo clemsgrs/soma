@@ -61,12 +61,7 @@ dev = [
 croma = [
     "pyarrow>=17,<26",  # 26 needs NumPy 2; the torch stack still resolves NumPy 1.26
 ]
-# The decoder-free ``pixel_classifier: xgboost`` path; the other pixel classifiers
-# (logistic regression, random forest, MLP) run on the core scikit-learn / torch deps.
-pixel = [
-    "xgboost>=2.0",
-]
-# Curation-only dependencies for the HEST-Benchmark spatial_expression curator
+# Curation-only dependencies for the HEST-Benchmark curator
 # (soma.curation.hest). Lazy-imported inside curate_hest so `import soma` and core CI
 # never require them: anndata reads the per-slide gene-expression .h5ad, h5py the patch
 # HDF5. log1p targets are computed with numpy (already a core dep).

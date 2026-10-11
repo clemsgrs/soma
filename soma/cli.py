@@ -15,7 +15,6 @@ from soma.config import load_config
 from soma.decoders import list_decoders
 from soma.encoders import list_models
 from soma.pipeline import Pipeline
-from soma.pixel_classifiers import list_pixel_classifiers
 from soma.tasks import list_task_heads
 
 # The reproduce orchestration lives in soma.benchmarks.run (issue #370): the CLI is a
@@ -116,9 +115,6 @@ def _cmd_list(args: argparse.Namespace) -> None:
     elif kind == "decoders":
         values = list_decoders()
         title = "Decoders"
-    elif kind == "pixel-classifiers":
-        values = list_pixel_classifiers()
-        title = "Pixel Classifiers"
     elif kind == "benchmarks":
         from soma.benchmarks import list_benchmarks
 
@@ -141,7 +137,6 @@ def _build_list_parser() -> argparse.ArgumentParser:
             "encoders",
             "aggregators",
             "decoders",
-            "pixel-classifiers",
             "tasks",
             "benchmarks",
         ),
@@ -799,15 +794,61 @@ def _evaluation_targets(args: argparse.Namespace, task_family: str):
     return cohort.targets("test")
 
 
+def _read_predictions(path: str):
+    """A label-map directory, a points parquet, or a set-shape predictions parquet."""
+    import json as _json
+
+    import pyarrow.parquet as pq
+
+    from soma.evaluation import LabelMapPredictions, PointPredictions, Predictions
+
+    location = Path(path)
+    if location.is_dir():
+        return LabelMapPredictions.load(location)
+    raw = (pq.read_schema(location).metadata or {}).get(b"soma")
+    if raw is not None and _json.loads(raw).get("kind") == "points":
+        return PointPredictions.from_parquet(location)
+    return Predictions.from_parquet(location)
+
+
+def _evaluation_grid_targets(args: argparse.Namespace, predictions):
+    """The annotation source a grid noun scores against: the cohort CSV's
+    ``label_mask_path`` / ``points_path`` columns, restricted to one split (or every row)."""
+    import pandas as pd
+
+    from soma.data import AnnotationManifest, Cohort, LabelMapSource, PointSource
+    from soma.evaluation import LabelMapPredictions
+
+    annotations = AnnotationManifest.from_csv(args.cohort)
+    if isinstance(predictions, LabelMapPredictions):
+        first = predictions[predictions.sample_ids[0]] if predictions.sample_ids else None
+        size = (0, 0) if first is None else tuple(int(v) for v in first.shape)
+        source = LabelMapSource.from_manifests(annotations, size=size)
+    else:
+        source = PointSource.from_manifest(annotations)
+    if args.splits is not None:
+        cohort = Cohort.from_csv(args.cohort, args.splits, targets=[], allow_missing_test=True)
+        split = cohort.folds[args.fold or 0]
+        name = args.split or "test"
+        ids = split.tune if name == "tune" else split.train if name == "train" else split.tests[name]
+        return source.subset(list(ids))
+    if args.split is not None or args.fold is not None:
+        raise ValueError("--split and --fold select from --splits; pass a splits CSV")
+    return source.subset(list(pd.read_csv(args.cohort)["sample_id"].astype(str)))
+
+
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
 
-    from soma.evaluation import Predictions, evaluate
+    from soma.evaluation import LabelMapPredictions, PointPredictions, evaluate
 
     try:
-        predictions = Predictions.from_parquet(args.predictions)
-        targets = _evaluation_targets(args, predictions.task_family)
+        predictions = _read_predictions(args.predictions)
+        if isinstance(predictions, (LabelMapPredictions, PointPredictions)):
+            targets = _evaluation_grid_targets(args, predictions)
+        else:
+            targets = _evaluation_targets(args, predictions.task_family)
         evaluation = evaluate(
             predictions,
             targets,
@@ -837,11 +878,20 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soma evaluate",
         description=(
-            "Score a predictions parquet against a cohort's targets, joined by sample_id. "
-            "Every predicted sample needs a target and every target a prediction."
+            "Score predictions against a cohort's targets, joined by sample_id. Every "
+            "predicted sample needs a target and every target a prediction. Set-shape "
+            "predictions score against dataset.csv's target columns; label-map directories "
+            "against its label_mask_path rasters (class indices) and point predictions "
+            "against its points_path files."
         ),
     )
-    parser.add_argument("predictions", help="Predictions parquet (sample_id + the head's columns).")
+    parser.add_argument(
+        "predictions",
+        help=(
+            "Predictions parquet (sample_id + the head's columns), a points parquet, or a "
+            "label-map directory (PNGs + index.parquet)."
+        ),
+    )
     parser.add_argument("--cohort", required=True, help="dataset.csv holding the targets.")
     parser.add_argument(
         "--splits",
@@ -894,7 +944,7 @@ def _build_compact_index_parser() -> argparse.ArgumentParser:
 def _print_top_level_help() -> None:
     print(
         "usage: soma CONFIG\n"
-        "       soma list {encoders,aggregators,decoders,pixel-classifiers,tasks,benchmarks} [--level {tile,slide,patient}]\n"
+        "       soma list {encoders,aggregators,decoders,tasks,benchmarks} [--level {tile,slide,patient}]\n"
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
@@ -924,13 +974,12 @@ def _print_top_level_help() -> None:
 
 def _print_list_help() -> None:
     print(
-        "usage: soma list {encoders,aggregators,decoders,pixel-classifiers,tasks,benchmarks} [--level {tile,slide,patient}]\n"
+        "usage: soma list {encoders,aggregators,decoders,tasks,benchmarks} [--level {tile,slide,patient}]\n"
         "\n"
         "commands:\n"
         "  encoders     list registered encoder presets\n"
         "  aggregators  list registered aggregator presets\n"
         "  decoders     list registered dense decoder presets\n"
-        "  pixel-classifiers  list registered per-pixel classifier presets\n"
         "  tasks        list registered task-head presets\n"
         "  benchmarks   list registered benchmarks\n"
         "\n"

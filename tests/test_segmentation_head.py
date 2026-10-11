@@ -24,15 +24,17 @@ from soma.tasks.dense_metrics import (
 )
 from soma.tasks.segmentation import SegmentationHead, load_mask
 from soma.dense import compute_dense_geometry
-from soma.training.model import SegmentationModel, SegmentationModelOutput
+from soma.training.model import DenseModel, DenseModelOutput
 
 
 def _targets(head, record):
-    """Bind ``record``'s label map to ``head`` (as the pipeline does) and extract targets."""
-    from soma.data._legacy import bind_segmentation_targets
+    """Read ``record``'s label map as the grid fold does (its label-map source) and run
+    the head's target check."""
+    from soma.pipeline import _segmentation_label_maps
 
-    bind_segmentation_targets(head, [record])
-    return head.extract_targets(record)
+    mask = _segmentation_label_maps(head, [record]).load(record.sample_id)
+    head.check_target(record.sample_id, mask)
+    return {"mask": mask}
 
 
 
@@ -267,19 +269,19 @@ def test_head_forward_padded_crops_back_to_target():
     assert tuple(out.shape) == (1, 3, 6, 6)  # cropped to target, not 8
 
 
-def test_segmentation_model_produces_target_res_logits():
+def test_dense_model_produces_target_res_logits():
     geom = compute_dense_geometry(target_size=8, patch_size=4)
-    model = SegmentationModel(
-        decoder=LinearDecoder(input_dim=16, num_classes=3),
-        task_head=SegmentationHead(num_classes=3, geometry=geom),
+    model = DenseModel(
+        LinearDecoder(input_dim=16, num_classes=3),
+        SegmentationHead(num_classes=3, geometry=geom),
     )
-    out = model(torch.randn(2, 16, 2, 2))  # (B, d, h, w)
-    assert isinstance(out, SegmentationModelOutput)
+    out = model(features=torch.randn(2, 16, 2, 2))  # (B, d, h, w)
+    assert isinstance(out, DenseModelOutput)
     assert tuple(out.logits.shape) == (2, 3, 8, 8)
     # the trainer's contract: compute_loss/compute_metrics consume out.logits
     mask = torch.zeros(2, 8, 8, dtype=torch.long)
-    assert torch.isfinite(model.task_head.compute_loss(out.logits, {"mask": mask}))
-    metrics = model.task_head.compute_metrics(out.logits, {"mask": mask})
+    assert torch.isfinite(model.head.compute_loss(out.logits, {"mask": mask}))
+    metrics = model.head.compute_metrics(out.logits, {"mask": mask})
     assert "mean_dice" in metrics and "mean_iou" in metrics
 
 

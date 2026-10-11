@@ -24,8 +24,10 @@ passes its ``native_spacing_um`` and :meth:`predict_image` resamples the image t
 training spacing before tiling, then maps the prediction back to the native pixel dims.
 
 Scope: bounded images that materialize as a single in-memory canvas (tiles/ROIs).
-WSI-scale streaming (level-0 windowed reads + slide-mask stitching) is out of scope —
-see ``design/segmentation-design.md`` §1.
+WSI-scale streaming (level-0 windowed reads + slide-mask stitching) is out of scope.
+
+The models are :class:`~soma.training.model.DenseModel` models with a frozen encoder stage
+(:func:`soma.extract.live_encoder`); fold models sharing one stage encode each tile once.
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ from soma.dense.sliding import cover_origins
 __all__ = [
     "PredictionResult",
     "SlidingWindowSegmentationPredictor",
-    "build_live_segmentation_models",
+    "build_dense_models",
 ]
 
 _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
@@ -81,16 +83,11 @@ class _ResamplePlan:
     native_mismatch_pct: float | None  # set only when predicting at native despite a mismatch
 
 
-def _consumes_image(model) -> bool:
-    """True when ``model``'s decoder is an image-prior decoder (``consumes_image``)."""
-    return bool(getattr(getattr(model, "decoder", None), "consumes_image", False))
-
-
-def _image_prior(crops: Sequence[np.ndarray]) -> torch.Tensor:
-    """``(H, W, 3)`` uint8 tile crops -> the ``(B, 3, H, W)`` ``[0, 1]`` batch an image-prior
-    decoder consumes, exactly as the segmentation datasets build ``targets["image"]``."""
+def _raw_pixels(crops: Sequence[np.ndarray]) -> torch.Tensor:
+    """``(H, W, 3)`` uint8 tile crops -> the ``(B, 3, H, W)`` uint8 batch a
+    :class:`~soma.training.model.DenseModel` hands an image-prior decoder."""
     pixels = torch.from_numpy(np.ascontiguousarray(np.stack(crops)))
-    return pixels.permute(0, 3, 1, 2).float() / 255.0
+    return pixels.permute(0, 3, 1, 2).contiguous()
 
 
 def _hann2d(height: int, width: int) -> np.ndarray:
@@ -114,19 +111,18 @@ def _hann2d(height: int, width: int) -> np.ndarray:
 class SlidingWindowSegmentationPredictor:
     """Assemble a full-image prediction by sliding the trained tile + blending softmaxes.
 
-    Holds one or more eval-mode segmentation models (ensembled by mean softmax — the
-    multi-fold convention) plus the geometry/transform/reader settings that pin each tile
-    to the training regime. Build it from a :class:`~soma.dense.live.LiveSegmentationSource`
-    via :meth:`from_source`, which copies those settings off the source so inference matches
-    training by construction.
+    Holds one or more eval-mode :class:`~soma.training.model.DenseModel` models with an
+    encoder stage (ensembled by mean softmax — the multi-fold convention) plus the
+    geometry/transform/reader settings that pin each tile to the training regime. Build it
+    with :meth:`from_encoder`, which takes those settings off the frozen encoder stage so
+    inference matches training by construction.
 
     Attributes:
-        models: Eval-mode models whose ``forward(X) -> .logits`` is the training forward
-            (e.g. :class:`~soma.training.model.LiveSegmentationModel`). Each consumes a
-            padded ``(B, 3, Henc, Wenc)`` batch and returns ``(B, C, target_h, target_w)``.
+        models: Eval-mode ``DenseModel`` models; each encodes a padded ``(B, 3, Henc, Wenc)``
+            batch with its stage and returns ``(B, C, target_h, target_w)`` logits.
         geometry: The run's :class:`DenseGridGeometry` (tile ``target_size`` + pad/encoded).
-        preprocessor: The kit-owned item preprocessor used during training.
-        device: Device on which the trainable models and kit outputs live.
+        preprocessor: The stage's itemwise preprocessor used during training.
+        device: Device on which the trainable models live.
         spacing_um: The training read-spacing (used by :meth:`predict_image`).
         backend / tolerance: hs2p reader settings for pyramidal inputs.
     """
@@ -140,23 +136,32 @@ class SlidingWindowSegmentationPredictor:
     tolerance: float = 0.05
 
     @classmethod
-    def from_source(cls, source, models: Sequence) -> "SlidingWindowSegmentationPredictor":
-        """Build from a :class:`LiveSegmentationSource` + the trained models.
+    def from_encoder(
+        cls,
+        encoder,
+        models: Sequence,
+        *,
+        spacing_um: float | None,
+        backend: str = "auto",
+        tolerance: float = 0.05,
+    ) -> "SlidingWindowSegmentationPredictor":
+        """Build from the frozen encoder stage the models share + the trained models.
 
-        The geometry, transform, pad contract, read-spacing, and reader backend all come
-        off the source (the same values training used), so the per-tile forward here is
-        identical to the trained one — inference cannot silently drift from training.
+        The geometry and the transform / pad contract come off the stage (the same values
+        training used), so the per-tile forward here is identical to the trained one;
+        ``spacing_um`` / ``backend`` / ``tolerance`` are the training read settings.
         """
         if not models:
             raise ValueError("SlidingWindowSegmentationPredictor needs at least one model")
+        parameter = next(models[0].parameters(), None)
         return cls(
             models=list(models),
-            geometry=source.geometry,
-            preprocessor=source.preprocessor,
-            device=torch.device(source.device),
-            spacing_um=source.spacing_um,
-            backend=source.backend,
-            tolerance=source.tolerance,
+            geometry=encoder.geometry,
+            preprocessor=encoder.preprocessor(),
+            device=parameter.device if parameter is not None else torch.device("cpu"),
+            spacing_um=spacing_um,
+            backend=backend,
+            tolerance=tolerance,
         )
 
     @torch.inference_mode()
@@ -205,9 +210,8 @@ class SlidingWindowSegmentationPredictor:
         for start in range(0, len(origins), max(1, int(batch_size))):
             batch = origins[start : start + max(1, int(batch_size))]
             crops = [arr[y : y + th, x : x + tw] for (y, x) in batch]
-            X = torch.stack([self._tile_to_encoded(c) for c in crops])  # kit owns transfer
-            image = _image_prior(crops) if self._wants_image() else None
-            soft = self._ensemble_softmax(X, image)  # (B, C, th, tw) on cpu, float32
+            X = torch.stack([self._tile_to_encoded(c) for c in crops])  # stage owns transfer
+            soft = self._ensemble_softmax(X, _raw_pixels(crops))  # (B, C, th, tw) cpu float32
             for k, (y, x) in enumerate(batch):
                 prob[:, y : y + th, x : x + tw] += soft[k] * window
                 wsum[y : y + th, x : x + tw] += window
@@ -281,10 +285,10 @@ class SlidingWindowSegmentationPredictor:
     # -- internals -------------------------------------------------------------------
 
     def _num_classes(self) -> int:
-        head = getattr(self.models[0], "task_head", None)
+        head = getattr(self.models[0], "head", None)
         n = getattr(head, "num_classes", None)
         if n is None:
-            raise ValueError("model.task_head.num_classes is required to size the prediction canvas")
+            raise ValueError("model.head.num_classes is required to size the prediction canvas")
         return int(n)
 
     def _tile_to_encoded(self, crop: np.ndarray) -> torch.Tensor:
@@ -292,62 +296,24 @@ class SlidingWindowSegmentationPredictor:
         pixels = torch.from_numpy(np.ascontiguousarray(crop)).permute(2, 0, 1)
         return self.preprocessor(pixels)
 
-    def _wants_image(self) -> bool:
-        """True when any fold's decoder is an image-prior decoder (``consumes_image``)."""
-        return any(_consumes_image(m) for m in self.models)
-
-    def _ensemble_softmax(self, X: torch.Tensor, image: torch.Tensor | None = None) -> np.ndarray:
+    def _ensemble_softmax(self, X: torch.Tensor, pixels: torch.Tensor) -> np.ndarray:
         """Mean softmax across folds for a padded batch -> ``(B, C, th, tw)`` cpu float32.
 
-        ``image`` is the batch's ``[0, 1]`` RGB tiles for an image-prior decoder (the
-        pixels training hands it in ``targets["image"]``), or ``None``. Only members whose
-        decoder consumes it receive it; the rest keep their one-argument forward.
-
-        When the fold models **share the frozen encoder** (the multi-fold case built by
-        :func:`build_live_segmentation_models` — the same public kit object), the
-        expensive encoder forward is run **once** and every fold's decoder+head runs on the
-        shared grid (``encode`` / ``forward_from_grid``). Otherwise (heterogeneous models, or
-        plain callables that don't expose the split) it falls back to a full ``model(X)`` per
-        fold — correct, just N× the encoder cost.
+        ``pixels`` are the batch's raw uint8 tiles, which a model with an image-prior
+        decoder reads as its side input. Fold models sharing one encoder stage (the
+        multi-fold case built by :func:`build_dense_models`) run the expensive encoder
+        forward **once** and every fold's adaptor + decoder + head on the shared grid;
+        otherwise each model encodes the batch itself.
         """
         models = list(self.models)
-        image = None if image is None else image.to(self.device)
-
-        def extra(model) -> tuple:
-            return (image,) if image is not None and _consumes_image(model) else ()
-
+        shared = all(m.encoder is models[0].encoder for m in models[1:])
+        grid = models[0].encode(X) if shared else None
         acc: torch.Tensor | None = None
-        if self._models_share_encoder(models):
-            grid = models[0].encode(X)  # one ViT forward, reused by every fold
-            for model in models:
-                s = torch.softmax(model.forward_from_grid(grid, *extra(model)).logits, dim=1)
-                acc = s if acc is None else acc + s
-        else:
-            for model in models:
-                # Kit-backed live models declare CPU input because their kit owns
-                # transfer. Plain fallback models keep the historical predictor device.
-                input_device = torch.device(
-                    getattr(model, "input_device", self.device)
-                )
-                s = torch.softmax(model(X.to(input_device), *extra(model)).logits, dim=1)
-                acc = s if acc is None else acc + s
+        for model in models:
+            encoded = grid if shared else model.encode(X)
+            s = torch.softmax(model.forward_from_grid(encoded, pixels).logits, dim=1)
+            acc = s if acc is None else acc + s
         return (acc / len(models)).float().cpu().numpy()
-
-    @staticmethod
-    def _models_share_encoder(models: list) -> bool:
-        """True iff every model exposes the encode/decode split and shares one kit.
-
-        Kit identity captures the frozen encoder and its resolved geometry, precision,
-        feature kind, and windowing recipe, so shared-kit grids are byte-identical.
-        ``from_source``/``build_live_segmentation_models`` guarantee this;
-        anything else (a future multi-encoder ensemble, a test stub) returns False → the
-        safe per-model fallback.
-        """
-        needed = ("encode", "forward_from_grid", "kit")
-        if not all(all(hasattr(m, attr) for attr in needed) for m in models):
-            return False
-        head = models[0]
-        return all(m.kit is head.kit for m in models[1:])
 
     def _plan_resample(
         self, is_flat: bool, native_spacing_um: float | None, allow_upsample: bool
@@ -402,8 +368,8 @@ def _resize_rgb(arr: np.ndarray, size: tuple[int, int], *, interpolation: str) -
     return np.ascontiguousarray(out.astype(np.uint8))
 
 
-def build_live_segmentation_models(
-    source,
+def build_dense_models(
+    encoder,
     *,
     decoder_name: str,
     decoder_params: dict | None,
@@ -414,28 +380,19 @@ def build_live_segmentation_models(
     encoder_identity: str = "",
     task_name: str = "segmentation",
     task_params: Mapping[str, object] | None = None,
+    device: str | torch.device | None = None,
 ):
-    """Reconstruct trained :class:`LiveSegmentationModel`\\ s from a source + checkpoints.
+    """Reconstruct trained :class:`~soma.training.model.DenseModel` models over one frozen
+    encoder stage (``soma.extract.live_encoder``), one per checkpoint (the fold ensemble).
 
-    One model per checkpoint (the fold ensemble): build the registered decoder (deriving
-    ``num_upsample_blocks`` from the geometry when the decoder takes it), pair it with a
-    parameter-free :class:`SegmentationHead`, load the checkpoint's ``decoder.*`` weights,
-    and put it in eval on the source's device. Mirrors the training-time construction so
-    the inference forward matches by construction. Returns the list of eval-mode models.
-
-    These checkpoints are trained on the **cached** dense path and replayed live at
-    whole-slide scale, so they may carry a fitted feature adaptor (issue #286). Pass the
-    run's ``normalization``/``projection`` to rebuild it: without them the strict load
-    below rejects the adaptor's buffer keys, *and* the decoder would be built against the
-    encoder's native dim while the checkpoint carries ``target_dim`` shapes. The adaptor is
-    rebuilt **unfitted** — the checkpoint's buffers are the fitted state.
-
-    ``task_name`` selects the registered head class (the run's ``task.name``) and
-    ``task_params`` forwards the run's ``task.params`` to its constructor (class-scheme
-    keys are resolved into ``num_classes`` and skipped), so a user subclass is rebuilt
-    exactly as it was trained. Note that the head's ``postprocess`` is **not** part of
-    sliding-window inference: :class:`SlidingWindowSegmentationPredictor` blends the
-    models' softmaxes across tiles and folds and takes the argmax itself.
+    Each model gets the registered decoder (``num_upsample_blocks`` derived from the
+    stage's geometry when the decoder takes it), the parameter-free head registered under
+    ``task_name`` (built with ``task_params``; class-scheme keys resolve into
+    ``num_classes``), and the run's feature adaptor rebuilt **unfitted** from
+    ``normalization`` / ``projection`` (the checkpoint's buffers are the fitted state; the
+    decoder is sized from the adaptor's output width). The checkpoint's ``decoder.*`` /
+    ``adaptor.*`` state loads strictly. Returns the eval-mode models; they share
+    ``encoder``, so :class:`SlidingWindowSegmentationPredictor` encodes each tile once.
     """
     from soma.decoders.registry import build_decoder_for_grid
     from soma.tasks.registry import task_registry
@@ -443,55 +400,37 @@ def build_live_segmentation_models(
         build_feature_adaptor,
         feature_adaptor_output_dim,
     )
-    from soma.training.model import LiveSegmentationModel
+    from soma.training.model import DenseModel
 
     ckpt_paths = [Path(p) for p in ckpt_paths]
     if not ckpt_paths:
-        raise ValueError("build_live_segmentation_models needs at least one checkpoint")
-
-    def _make_adaptor():
-        return build_feature_adaptor(
-            normalization,
-            projection,
-            num_features=source.feature_dim,
-            encoder_identity=encoder_identity,
-        )
-
-    def _make_decoder(adaptor):
-        return build_decoder_for_grid(
-            decoder_name,
-            decoder_params,
-            geometry=source.geometry,
-            input_dim=feature_adaptor_output_dim(
-                adaptor, num_features=source.feature_dim
-            ),
-            num_classes=num_classes,
-        )
-
-    models = []
+        raise ValueError("build_dense_models needs at least one checkpoint")
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
     head_cls = task_registry.get(task_name)
     head_params = {
         key: value
         for key, value in dict(task_params or {}).items()
         if key not in CLASS_SCHEME_KEYS
     }
+    models = []
     for ckpt in ckpt_paths:
-        head = head_cls(
+        adaptor = build_feature_adaptor(
+            normalization,
+            projection,
+            num_features=encoder.feature_dim,
+            encoder_identity=encoder_identity,
+        )
+        decoder = build_decoder_for_grid(
+            decoder_name,
+            decoder_params,
+            geometry=encoder.geometry,
+            input_dim=feature_adaptor_output_dim(adaptor, num_features=encoder.feature_dim),
             num_classes=num_classes,
-            geometry=source.geometry,
-            spacing_um=source.spacing_um,
-            backend=source.backend,
-            tolerance=source.tolerance,
-            **head_params,
         )
-        adaptor = _make_adaptor()
-        model = LiveSegmentationModel(
-            kit=source.kit,
-            decoder=_make_decoder(adaptor),
-            task_head=head,
-            feature_adaptor=adaptor,
-        )
-        state = torch.load(ckpt, weights_only=True, map_location=source.device)["model_state_dict"]
-        model.load_state_dict(state)  # decoder.* (+ adaptor buffers); head is parameter-free
-        models.append(model.to(source.device).eval())
+        head = head_cls(num_classes=num_classes, geometry=encoder.geometry, **head_params)
+        model = DenseModel(decoder, head, encoder=encoder, adaptor=adaptor)
+        state = torch.load(ckpt, weights_only=True, map_location=device)["model_state_dict"]
+        model.load_state_dict(state)  # decoder.* (+ adaptor buffers); stage and head are parameter-free
+        models.append(model.to(device).eval())
     return models

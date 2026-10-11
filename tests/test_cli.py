@@ -221,12 +221,6 @@ def test_list_tasks_prints_results(capsys):
     ("kind", "helper", "title", "values"),
     [
         ("decoders", "list_decoders", "Decoders", ["linear", "lightweight_conv"]),
-        (
-            "pixel-classifiers",
-            "list_pixel_classifiers",
-            "Pixel Classifiers",
-            ["logistic", "xgboost"],
-        ),
     ],
 )
 def test_list_dense_registries_prints_results(kind, helper, title, values, capsys):

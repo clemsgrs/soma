@@ -31,8 +31,7 @@ Tasks and training
 ------------------
 
 Patient-level pipelines use a frozen patient encoder and a task head, with no
-trainable aggregator. Segmentation also supports a decoder-free
-:doc:`pixel classifier <decoders/pixel-classifier>`.
+trainable aggregator.
 
 The :doc:`tasks` page defines the prediction target, loss, and compatible
 metrics. :doc:`training` controls optimization and checkpoint selection, then

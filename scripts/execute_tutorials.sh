@@ -32,8 +32,7 @@ for nb in docs/tutorials/walkthrough-tile-level.ipynb \
           docs/tutorials/walkthrough-slide-encoder.ipynb \
           docs/tutorials/walkthrough-segmentation.ipynb \
           docs/tutorials/walkthrough-detection.ipynb \
-          docs/tutorials/walkthrough-composite.ipynb \
-          docs/tutorials/walkthrough-attention-segmentation.ipynb; do
+          docs/tutorials/walkthrough-composite.ipynb; do
     echo ">>> executing $nb"
     # --output-dir sends the executed copy to a temp dir; the committed file is
     # never modified, so outputs stay out of version control.

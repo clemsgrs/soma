@@ -11,10 +11,13 @@ from soma.evaluation.confusion_evidence import (
     aggregate_confusion_matrices,
     aggregate_confusion_records,
     confusion_dice_from_matrices,
+    confusion_records,
     load_confusion_records,
     validate_confusion_records,
     write_confusion_records,
 )
+from soma.evaluation.grid import LabelMapPredictions, PointPredictions, sweep_threshold
+from soma.evaluation.grid_callbacks import SaveHeatmaps, SaveOverlays, SaveProbabilities
 from soma.evaluation.inference import predict
 from soma.evaluation.metrics import (
     DEFAULT_METRICS,
@@ -31,8 +34,13 @@ __all__ = [
     "Baseline",
     "DEFAULT_METRICS",
     "Evaluation",
+    "LabelMapPredictions",
     "MetricSpec",
+    "PointPredictions",
     "Predictions",
+    "SaveHeatmaps",
+    "SaveOverlays",
+    "SaveProbabilities",
     "VALID_METRICS",
     "compare",
     "compute_metrics",
@@ -40,11 +48,13 @@ __all__ = [
     "metric_registry",
     "predict",
     "resolve_metrics",
+    "sweep_threshold",
     "ConfusionMetrics",
     "SegmentationConfusionRecord",
     "aggregate_confusion_matrices",
     "aggregate_confusion_records",
     "confusion_dice_from_matrices",
+    "confusion_records",
     "load_confusion_records",
     "validate_confusion_records",
     "write_confusion_records",

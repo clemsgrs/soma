@@ -18,7 +18,7 @@ data:
   splits_csv: data/splits.csv
   dataset_type: slide
   # cached: read pre-extracted dense grids. live: re-encode (augmented) tiles through
-  # the frozen encoder every step (segmentation only — enables augmentation).
+  # the frozen encoder every step (segmentation and detection; enables augmentation).
   feature_mode: cached
 
 preprocessing:
@@ -108,9 +108,6 @@ evaluation:
   overwrite_test: false
 
 training:
-  # Per-fold trainer: 'gradient' (torch head/decoder loop) or 'ridge_pca_probe'
-  # (closed-form Ridge+PCA probe for dataset_type='spatial_expression').
-  method: gradient
   epochs: 50
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
@@ -146,20 +143,11 @@ training:
   pin_memory: true
   persistent_workers: true
 
-# Image/mask augmentation — only applied when data.feature_mode is 'live'
-# (segmentation). Geometric ops transform image + mask jointly (mask nearest); the
-# photometric ops transform the image only. All-zero = no augmentation (live-no-aug).
-augmentation:
-  horizontal_flip: 0.0
-  vertical_flip: 0.0
-  rotation_degrees: 0.0
-  translate: 0.0
-  scale: 0.0
-  brightness: 0.0
-  contrast: 0.0
-  saturation: 0.0
-  hue: 0.0
-  random_resized_crop_scale: null  # [min, max] area fraction, e.g. [0.08, 1.0]; crops to the tile size first
+# Augmentation of a live grid run's train split, as a {name, params} leaf (registry key
+# `segmentation` = soma.learn.SegmentationAugment, or a dotted import path), e.g.
+# {name: segmentation, params: {horizontal_flip: 0.5, crop_scale: [0.08, 1.0]}}.
+# Only with data.feature_mode: live; point (detection) targets cannot be augmented yet.
+augmentation: null
 
 # Per-feature normalization of frozen encoder features, applied by the feature adaptor
 # (a buffer-carrying front module) ahead of the aggregator/head. 'none' (default) means

@@ -17,7 +17,7 @@ from examples.beetle.launch import resolve_arm_configs
 from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES, PIXEL_MAPPING
 from examples.beetle.select_arm import main as select_main, select_development_arm
 from examples.beetle.smoke import run_offline_smoke
-from soma.config import AugmentationConfig, load_config
+from soma.config import load_config
 
 REPOSITORY = "paige-ai/Virchow2"
 REVISION = "3158645804b69e3f3bc4439d4116edddf0840a72"
@@ -158,17 +158,7 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
             "num_upsample_blocks": 2,
             "num_groups": 32,
         }
-        assert config.augmentation == AugmentationConfig(
-            horizontal_flip=0.0,
-            vertical_flip=0.0,
-            rotation_degrees=0.0,
-            translate=0.0,
-            scale=0.0,
-            brightness=0.0,
-            contrast=0.0,
-            saturation=0.0,
-            hue=0.0,
-        )
+        assert config.augmentation is None
         assert config.training.batch_size == 8
         assert config.training.epochs == 30
         assert config.training.learning_rate == 1e-4
@@ -181,7 +171,6 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
         assert config.training.patience == 8
         assert config.training.gradient_accumulation == 1
         assert config.training.seed == 0
-        assert config.evaluation.save_segmentation_confusion_evidence is True
         assert "dataset_global_mean_dice" in config.evaluation.metrics
         assert arm in config.tags
 

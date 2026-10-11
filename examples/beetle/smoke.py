@@ -18,9 +18,10 @@ from examples.beetle.launch import (
     resolve_arm_configs,
 )
 from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES, NUM_FOLDS
-from examples.beetle.report_oof import BeetleCohort, assemble_beetle_oof_report
+from examples.beetle.report_oof import BeetleCohort, assemble_beetle_oof_report, write_tune_evidence
 from examples.beetle.select_arm import select_development_arm
 from soma.config import load_config
+from soma.data import AnnotationManifest, LabelMapSource, build_label_remap
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
 from soma.pipeline import Pipeline
@@ -154,10 +155,14 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
             result = Pipeline(config, feature_dir=feature_dir).run()
         run_dir = result.run_dir
         mirrored_run = config.mirror_root / run_dir.relative_to(config.output_root)
-        evidence = [
-            run_dir / f"fold_{fold}" / "confusion_evidence_tune.json"
-            for fold in range(NUM_FOLDS)
-        ]
+        targets = LabelMapSource.from_manifests(
+            AnnotationManifest.from_csv(dataset_csv),
+            size=(TARGET_SIZE, TARGET_SIZE),
+            label_remap=build_label_remap(
+                production.task.params["classes"], ignore=production.task.params["ignore"]
+            ),
+        )
+        evidence = write_tune_evidence(run_dir, num_folds=NUM_FOLDS, targets=targets)
         audits = [
             run_dir / f"fold_{fold}" / "roi_batch_sampling.json"
             for fold in range(NUM_FOLDS)

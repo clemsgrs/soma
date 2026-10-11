@@ -64,6 +64,7 @@ VALID_METRICS: dict[str, set[str]] = {
         "r2",
         "pearson",
         "spearman",
+        "mean_pearson",
     },
     "survival": {
         "c_index",
@@ -248,6 +249,8 @@ _METRIC_FUNS: dict[str, dict[str, _Fn]] = {
         "r2": _r2,
         "pearson": _pearson,
         "spearman": _spearman,
+        # One output: the mean over outputs is that output's Pearson.
+        "mean_pearson": _pearson,
     },
 }
 
@@ -381,10 +384,14 @@ FrameMetric = Callable[[pd.DataFrame, pd.DataFrame], float]
 class MetricSpec:
     """One registered metric.
 
-    ``fn`` scores the aligned frames :func:`soma.evaluate` builds: the predictions and
-    the targets, indexed by ``sample_id`` in the same order, with ``label`` already
-    mapped to class indices. It is ``None`` for metrics a head reduces itself (the dense
-    families) or that another path computes; those entries only declare a direction.
+    For the set families ``fn`` scores the aligned frames :func:`soma.evaluate` builds:
+    the predictions and the targets, indexed by ``sample_id`` in the same order, with
+    ``label`` already mapped to class indices. For the grid families (``segmentation``,
+    ``detection``) ``fn`` reduces per-image ``(N, C, 3)`` counts — ``(intersection,
+    predicted, target)`` pixels or ``(tp, fp, fn)`` points — as
+    ``fn(counts, *, num_classes) -> float | dict[str, float]`` (a dict expands into one
+    key per class). It is ``None`` for metrics another path computes; those entries only
+    declare a direction.
     """
 
     name: str
@@ -468,6 +475,81 @@ def _frame_metric(fn: _Fn) -> FrameMetric:
     return lambda predictions, targets: fn(*_label_arrays(predictions, targets))
 
 
+def _output_columns(predictions: pd.DataFrame) -> list[str]:
+    """``value_<k>`` columns of a multi-output regression, in output order."""
+    columns = [c for c in predictions.columns if str(c).startswith("value_")]
+    return sorted(columns, key=lambda c: int(str(c).removeprefix("value_")))
+
+
+def _mean_pearson(predictions: pd.DataFrame, targets: pd.DataFrame) -> float:
+    """Mean over outputs of the Pearson correlation pooled over samples.
+
+    A multi-output regression (``value_<k>`` prediction columns, matching target
+    columns) averages one correlation per output; a single output is its Pearson. A
+    constant column contributes ``0.0``.
+    """
+    columns = _output_columns(predictions)
+    if not columns:
+        return _pearson(
+            targets["value"].to_numpy(dtype=float), predictions["predicted_value"].to_numpy(dtype=float), None
+        )
+    return float(
+        np.mean(
+            [
+                _pearson(targets[c].to_numpy(dtype=float), predictions[c].to_numpy(dtype=float), None)
+                for c in columns
+            ]
+        )
+    )
+
+
+# --- grid reducers: per-image (N, C, 3) counts -> scalar(s) ------------------------
+
+
+def _dice_iou(counts, num_classes: int, aggregation: str = "per_image_macro") -> dict[str, float]:
+    from soma.tasks.dense_metrics import reduce_dice_iou
+
+    return reduce_dice_iou(counts, num_classes=num_classes, aggregation=aggregation)
+
+
+def _f1(counts, num_classes: int, aggregation: str = "dataset_global") -> dict[str, float]:
+    from soma.detection.matching import reduce_f1
+
+    return reduce_f1(counts, num_classes=num_classes, aggregation=aggregation)
+
+
+def _foreground_dice(counts, *, num_classes: int) -> float:
+    from soma.tasks.dense_metrics import reduce_foreground_dice
+
+    return reduce_foreground_dice(counts, num_classes=num_classes)
+
+
+def _per_class(prefix: str, reduce):
+    def per_class(counts, *, num_classes: int) -> dict[str, float]:
+        values = reduce(counts, num_classes)
+        return {f"{prefix}_class_{c}": values[f"{prefix}_class_{c}"] for c in range(num_classes)}
+
+    return per_class
+
+
+_GRID_REDUCERS: dict[str, Callable] = {
+    "mean_dice": lambda counts, *, num_classes: _dice_iou(counts, num_classes)["mean_dice"],
+    "dataset_global_mean_dice": lambda counts, *, num_classes: _dice_iou(
+        counts, num_classes, "dataset_global"
+    )["mean_dice"],
+    "foreground_mean_dice": _foreground_dice,
+    "mean_iou": lambda counts, *, num_classes: _dice_iou(counts, num_classes)["mean_iou"],
+    "dice_per_class": _per_class("dice", _dice_iou),
+    "mean_f1": lambda counts, *, num_classes: _f1(counts, num_classes)["mean_f1"],
+    "f1_per_class": _per_class("f1", _f1),
+    "precision": _per_class("precision", _f1),
+    "recall": _per_class("recall", _f1),
+    "mean_f1_per_image": lambda counts, *, num_classes: _f1(
+        counts, num_classes, "per_image_macro"
+    )["mean_f1"],
+}
+
+
 metric_registry = MetricRegistry()
 _LOWER_IS_BETTER = {"mse", "rmse", "mae"}
 for _name in dict.fromkeys(name for names in VALID_METRICS.values() for name in sorted(names)):
@@ -476,10 +558,14 @@ for _name in dict.fromkeys(name for names in VALID_METRICS.values() for name in 
         (_METRIC_FUNS[f][_name] for f in sorted(_families) if _name in _METRIC_FUNS.get(f, {})),
         None,
     )
-    if _array_fn is not None:
+    if _name == "mean_pearson":
+        _fn = _mean_pearson
+    elif _array_fn is not None:
         _fn = _frame_metric(_array_fn)
+    elif _name == "c_index":
+        _fn = _c_index
     else:
-        _fn = _c_index if _name == "c_index" else None
+        _fn = _GRID_REDUCERS.get(_name)
     metric_registry.register(
         _name, _fn, families=_families, higher_is_better=_name not in _LOWER_IS_BETTER
     )

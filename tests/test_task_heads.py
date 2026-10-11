@@ -237,7 +237,7 @@ class TestRegressionHead:
         assert head(torch.randn(4, 16)).shape == (4, 1)
 
     def test_output_shape_multi_target(self):
-        head = RegressionHead(input_dim=16, num_targets=3)
+        head = RegressionHead(input_dim=16, num_outputs=3)
         assert head(torch.randn(4, 16)).shape == (4, 3)
 
     def test_loss_is_scalar(self):

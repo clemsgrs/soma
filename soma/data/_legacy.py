@@ -40,8 +40,6 @@ from soma.data.validation import (
 
 __all__ = [
     "legacy_folds_from_csv",
-    "bind_detection_targets",
-    "bind_segmentation_targets",
     "LegacyFolds",
     "LegacyRecord",
     "LegacySamples",
@@ -428,69 +426,3 @@ class LegacyFolds:
 
     def project(self, samples: LegacySamples) -> "LegacyFolds":
         return LegacyFolds(project_folds(self._folds, samples))
-
-
-def bind_segmentation_targets(head, records: Iterable[LegacyRecord]):
-    """Bind a label-map source built from legacy records to a ``SegmentationHead``.
-
-    Annotation-sampled ROIs (``region`` set) read their stored mask crops through a
-    :class:`~soma.data.CachedLabelMapSource`; pre-cropped tiles read their rasters
-    through a :class:`~soma.data.LabelMapSource`.
-    """
-    from soma.data.targets import CachedLabelMapSource, LabelMapEntry, LabelMapSource
-
-    records = list(records)
-    params = head.label_map_read_params
-    if records and any(record.region is not None for record in records):
-        crops: dict[str, Path] = {}
-        for record in records:
-            if record.region is None or record.label_mask_crop_path is None:
-                raise ValueError(
-                    f"segmentation sample '{record.sample_id}': a slide-manifest ROI needs its "
-                    "stored mask crop (label_mask_crop_path), which ROI sampling writes."
-                )
-            crops[record.sample_id] = record.label_mask_crop_path
-        source = CachedLabelMapSource(
-            crops,
-            size=params["size"],
-            label_remap=params["label_remap"],
-            ignore_index=head.ignore_index,
-        )
-    else:
-        entries = []
-        for record in records:
-            if record.label_mask_path is None:
-                raise ValueError(
-                    f"segmentation sample '{record.sample_id}' has no label_mask_path"
-                )
-            entries.append(
-                LabelMapEntry(
-                    sample_id=record.sample_id,
-                    label_mask_path=record.label_mask_path,
-                    reference_path=record.image_path,
-                    spacing_at_level_0=record.spacing_at_level_0,
-                )
-            )
-        source = LabelMapSource(entries, **params)
-    head.bind_targets(source)
-    return source
-
-
-def bind_detection_targets(head, records: Iterable[LegacyRecord]):
-    """Bind a :class:`~soma.data.PointSource` built from legacy records to a ``DetectionHead``."""
-    from soma.data.targets import PointEntry, PointSource
-
-    entries = []
-    for record in records:
-        if record.points_path is None:
-            raise ValueError(f"detection sample '{record.sample_id}' has no points_path")
-        entries.append(
-            PointEntry(
-                sample_id=record.sample_id,
-                points_path=record.points_path,
-                ignore_mask_path=record.ignore_mask_path,
-            )
-        )
-    source = PointSource(entries)
-    head.bind_targets(source)
-    return source

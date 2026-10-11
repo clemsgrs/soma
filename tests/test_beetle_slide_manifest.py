@@ -182,7 +182,6 @@ def test_beetle_config_encodes_recipe():
         "mean_iou",
         "dice_per_class",
     ]
-    assert cfg.evaluation.save_segmentation_confusion_evidence is True
     assert cfg.preprocessing.sampling.output_mode == "merged"
 
 

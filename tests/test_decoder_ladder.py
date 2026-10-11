@@ -89,7 +89,7 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     the ensemble rung end-to-end through the real pipeline path."""
     from soma.config import DecoderConfig, EvalConfig, PreprocessingConfig, TaskConfig, TrainingConfig
     from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.pipeline import train_one_detection_fold
+    from soma.pipeline import train_one_grid_fold
 
     ids = ["s0", "s1", "s2", "s3"]
     m1 = _write_member(tmp_path / "enc_a", ids, feature_dim=4, patch=4)
@@ -115,8 +115,9 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     manifest = legacy_samples_from_csv(tmp_path / "manifest.csv")
     splits = legacy_folds_from_csv(tmp_path / "splits.csv", manifest)
 
-    result = train_one_detection_fold(
+    result = train_one_grid_fold(
         feature_store=composite,
+        dataset_type="detection",
         dataset=manifest,
         fold_split=splits.folds[0],
         task=TaskConfig(
@@ -143,7 +144,7 @@ def test_attention_map_detection_heatmap_end_to_end():
     MIDOG-shaped: single class. A synthetic attention grid attends to exactly the token
     covering a mitosis; the decoder-free rung must recover that detection at F1 = 1.
     """
-    from soma.detection import attention_to_detection_heatmap
+    from soma.benchmarks.detection_attention import attention_to_detection_heatmap
     from soma.tasks.detection import DetectionHead
 
     patch = 4
@@ -165,21 +166,21 @@ def test_attention_map_detection_heatmap_end_to_end():
     head = DetectionHead(
         num_classes=1,
         geometry=geom,
-        delta_px=5.0,
-        sigma_px=2.0,
-        score_threshold=0.5,
-        sample_spacings={},
+        spacing_um=1.0,
+        match_distance=5.0,
+        sigma=2.0,
+        validation_threshold=0.5,
         metrics=["mean_f1"],
     )
-    gt = torch.tensor([[[gt_x, gt_y, 0.0]]])  # (1, K=1, 3)
-    metrics = head.compute_metrics(heatmap.unsqueeze(0), {"gt_points": gt})
+    gt = torch.tensor([[[gt_x, gt_y, 0.0]]])  # (1, K=1, 3) level-0 points
+    metrics = head.compute_metrics(heatmap.unsqueeze(0), {"points": gt})
     assert metrics["mean_f1"] == pytest.approx(1.0)
 
 
 def test_attention_map_is_class_agnostic_saliency():
     # The attention saliency is class-blind (design §2.4): broadcasting to C channels gives
     # identical maps — why the rung is MIDOG-scoped (strong single-class, weak multi-class).
-    from soma.detection import attention_to_detection_heatmap
+    from soma.benchmarks.detection_attention import attention_to_detection_heatmap
 
     geom = compute_dense_geometry(target_size=16, patch_size=4)
     attn = torch.rand(4, *geom.grid_shape)
@@ -192,7 +193,7 @@ def test_attention_map_is_class_agnostic_saliency():
 def test_attention_map_constant_grid_yields_no_peaks():
     # A flat attention map (nothing salient) normalises to all-zeros -> no detections, the
     # correct empty answer rather than a peak everywhere.
-    from soma.detection import attention_to_detection_heatmap
+    from soma.benchmarks.detection_attention import attention_to_detection_heatmap
     from soma.detection.peaks import extract_peaks
 
     geom = compute_dense_geometry(target_size=16, patch_size=4)

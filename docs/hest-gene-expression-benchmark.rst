@@ -6,7 +6,7 @@ reproducing `HEST-Benchmark <https://github.com/mahmoodlab/HEST>`_ (Jaume et al.
 NeurIPS 2024).
 
 HEST provides 9 registered datasets: CCRCC, COAD, IDC, LUNG, LYMPH_IDC, PAAD, PRAD, READ, and SKCM.
-All share the same closed-form :ref:`spatial-expression probe <regression-task>` protocol; see
+All share the same closed-form Ridge+PCA probe protocol; see
 :doc:`benchmarking` for the shared workflow.
 
 **Pipeline:** spot tiles → frozen encoder → Ridge+PCA probe → mean Pearson
@@ -36,6 +36,23 @@ dataset directory as ``--raw-root``; curated manifests are written under
 Or run HEST's 9 datasets in one go::
 
     soma reproduce hest --encoder virchow2 --raw-root /path/to/hest-bench
+
+How the benchmark runs
+----------------------
+
+The benchmark trains no model through the pipeline; it composes soma's
+verbs itself. It extracts each spot's tile features once into the feature
+cache, then, for each fold:
+
+1. fits :class:`~soma.benchmarks.hest.probe.RidgePCAProbe`
+   (``StandardScaler`` → ``PCA`` → ``Ridge``) on the train spots;
+2. predicts the test spots as :class:`~soma.evaluation.Predictions` with one
+   ``value_<k>`` column per gene;
+3. scores them with :func:`soma.evaluate`: ``mean_pearson`` plus one
+   ``pearson_geneNN_<symbol>`` metric per gene.
+
+Each fold writes ``metrics.json`` and ``predictions_<split>.parquet``; the run
+writes ``summary.json``.
 
 Results
 -------
@@ -98,8 +115,8 @@ Protocol details
 
    * - Setting
      - Value
-   * - head
-     - closed-form Ridge probe — no trained head, no gradient loop
+   * - predictor
+     - ``soma.benchmarks.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, no trained head, no gradient loop
    * - features
      - ``StandardScaler`` → ``PCA(n_components=256)`` fit on the fold's train spots (X only)
    * - estimator
@@ -107,7 +124,7 @@ Protocol details
    * - targets
      - 50-gene ``log1p(counts)`` vector per 112 µm spot (baked by the curator)
    * - metric
-     - ``pearson`` — per gene, pooled over test spots → mean over 50 genes → mean over folds
+     - ``mean_pearson`` — per gene, pooled over test spots → mean over 50 genes → mean over folds; each gene's own Pearson is reported as ``pearson_geneNN_<symbol>``
    * - task family
      - ``regression``
    * - varied axis

@@ -36,6 +36,19 @@ def build_input_dropout(dropout: float) -> nn.Dropout | None:
     return nn.Dropout(dropout) if dropout > 0.0 else None
 
 
+def as_grid_geometry(geometry):
+    """A grid head's bound geometry as a :class:`~soma.data.GridGeometry`.
+
+    A bare :class:`~soma.data.geometry.DenseGridGeometry` (a frame layout without a
+    level-0 anchor) anchors at the origin with level-0 pixels equal to frame pixels.
+    """
+    from soma.data.geometry import GridGeometry
+
+    if isinstance(geometry, GridGeometry):
+        return geometry
+    return GridGeometry.from_dense(geometry)
+
+
 _CLASSIFICATION_FAMILIES = frozenset({"binary_classification", "multiclass_classification"})
 _LABEL_FAMILIES = _CLASSIFICATION_FAMILIES | {"ordinal_classification"}
 

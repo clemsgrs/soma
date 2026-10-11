@@ -1,4 +1,4 @@
-"""Training models: EmbeddingModel (direct task head) and MILModel (aggregator + task head)."""
+"""Training models: EmbeddingModel and MILModel (set shape), DenseModel (grid shape)."""
 
 from __future__ import annotations
 
@@ -130,155 +130,98 @@ class MILModel(nn.Module):
 
 
 @dataclass
-class SegmentationModelOutput:
-    """Output of SegmentationModel.forward."""
+class DenseModelOutput:
+    """Output of :class:`DenseModel`: logits at the supervision frame ``(B, C, H, W)``."""
 
-    logits: Tensor  # (B, C, H, W) at the mask target resolution
+    logits: Tensor
 
 
-class SegmentationModel(nn.Module):
-    """Composes a decoder and a segmentation head into a dense prediction model.
+class DenseModel(nn.Module):
+    """The grid-shape model: ``pixels -> encoder -> adaptor -> decoder -> head``.
 
-    The decoder maps a dense feature grid ``(B, d, h, w)`` to logits at its own
-    (upsampled) grid, and the head resizes+crops those to the mask's target size
-    (``logits = task_head(decoder(X))`` — mirroring EmbeddingModel/MILModel, so
-    ``out.logits`` is exactly the target-res tensor the trainer feeds to
-    ``task_head.compute_loss``/``compute_metrics``). The encoder is frozen/absent at
-    train time, like the aggregator+head path.
+    Every stage but the decoder and the head is optional. Without an ``encoder`` the
+    model reads cached feature grids ``(B, d, h, w)``; with one (a parameter-free
+    :class:`~soma.extract.FrozenEncoder`, or any stage with the same contract) it
+    re-encodes ``pixels`` every forward, so augmentation reaches the features. The
+    ``adaptor`` (a fitted :class:`~soma.training.feature_adaptor.FeatureAdaptor`:
+    normalisation, projection) transforms the grid channel-axis before the decoder. The
+    head resizes and crops the decoder's logits to the supervision frame.
 
-    An optional :class:`~soma.training.feature_adaptor.FeatureAdaptor` sits in front of
-    the decoder and transforms the frozen grid **channel-axis** before anything trainable
-    sees it (issue #286 on the single-encoder dense path). It is ``None`` unless the run
-    asks for one, and ``None`` is not registered as a submodule, so a run without one has
-    exactly the ``state_dict``/``parameters`` of a model built before the adaptor existed.
-
-    When the adaptor projects it also *changes the channel count*: the frozen ``d ->
-    target_dim`` map composes **ahead of** the decoder's own learnable ``1x1`` projection
-    conv, so ``decoder`` must already have been constructed against the adaptor's
-    ``output_dim``. No decoder change is needed — and because the decoder's ``1x1``
-    projection is its only ``d``-dependent module, the whole decoder becomes
-    encoder-dim-independent under an active projection.
+    An image-prior decoder (``consumes_image``) also receives the batch's raw uint8
+    ``pixels`` at the mask size, as ``[0, 1]`` floats. On the live path those pixels must
+    reach the model unpreprocessed (the encoder stage then preprocesses them itself).
 
     Args:
-        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``, built against the
+        decoder: Maps ``(B, d, h, w)`` to ``(B, C, h', w')`` logits, built against the
             adaptor's output width.
-        task_head: SegmentationHead owning targets/loss/metric/postprocess and the
-            resize-to-encoded + crop-to-target geometry.
-        feature_adaptor: Optional front module applied channel-axis to ``X`` before the
-            decoder.
+        head: A grid head (segmentation or detection) bound to the run's geometry.
+        encoder: Optional frozen encoder stage over pixels.
+        adaptor: Optional channel-axis feature adaptor.
     """
 
     def __init__(
         self,
         decoder: Decoder,
-        task_head: TaskHead,
-        feature_adaptor: nn.Module | None = None,
-    ) -> None:
-        super().__init__()
-        self.decoder = decoder
-        self.task_head = task_head
-        self.feature_adaptor = feature_adaptor
-
-    def forward(self, X: Tensor, image: Tensor | None = None) -> SegmentationModelOutput:
-        if self.feature_adaptor is not None:
-            X = self.feature_adaptor.forward_grid(X)
-        return SegmentationModelOutput(logits=self.task_head(_decode(self.decoder, X, image)))
-
-
-def _decode(decoder: Decoder, grid: Tensor, image: Tensor | None) -> Tensor:
-    """Run the decoder, handing an image-prior decoder the batch pixels it declared."""
-    if not getattr(decoder, "consumes_image", False):
-        return decoder(grid)
-    if image is None:
-        raise ValueError(
-            f"decoder {type(decoder).__name__} sets consumes_image but the batch carries no "
-            "'image' target; the segmentation datasets attach it when the decoder asks."
-        )
-    return decoder(grid, image)
-
-
-class LiveSegmentationModel(nn.Module):
-    """Frozen encoder + decoder + segmentation head — re-encodes tiles each step.
-
-    The live counterpart of :class:`SegmentationModel`: instead of consuming cached
-    dense grids, it runs the **frozen** foundation-model encoder on the (augmented)
-    image batch every forward, so the trainer's ``out = model(features)`` →
-    ``out.logits`` → ``task_head.compute_loss`` contract is unchanged (the streaming
-    grid evaluation works as-is too).
-
-    The encoder is held privately by slide2vec's public ``DenseEncodeKit``. The kit is
-    deliberately not an ``nn.Module``, so assigning it here cannot register the frozen
-    foundation model in checkpoints or optimizers.
-
-    Gradient, precision, eval-locking, and device transfer belong to the public kit. Its
-    detached grid is cast to ``float()`` at the decoder boundary to mirror cached grids;
-    the decoder/head remain ordinary trainable fp32 modules.
-
-    A ``feature_adaptor`` may be present at **inference** time even though live *training*
-    refuses one (issue #286): whole-slide sliding-window prediction rebuilds these models
-    from checkpoints trained on the cached path, and such a checkpoint can carry a fitted
-    adaptor whose buffers must be loaded and re-applied. What live training refuses is
-    *fitting* one against an augmented stream — here the transform is already fit and
-    frozen, so applying it to the re-encoded grid is exactly right.
-
-    Args:
-        kit: Public slide2vec ``DenseEncodeKit`` shared by all folds.
-        decoder: Decoder mapping ``(B, d, h, w) -> (B, C, h', w')``, built against the
-            adaptor's output width.
-        task_head: SegmentationHead (geometry + targets/loss/metric/postprocess).
-        feature_adaptor: Optional front module applied channel-axis to the encoded grid.
-    """
-
-    def __init__(
-        self,
+        head: TaskHead,
         *,
-        kit: object,
-        decoder: Decoder,
-        task_head: TaskHead,
-        feature_adaptor: nn.Module | None = None,
+        encoder: nn.Module | None = None,
+        adaptor: nn.Module | None = None,
     ) -> None:
         super().__init__()
-        self.decoder = decoder
-        self.task_head = task_head
-        self.feature_adaptor = feature_adaptor
-        self.kit = kit
-        if "kit" in self._modules:
-            raise TypeError(
-                "LiveSegmentationModel.kit was registered as a submodule. DenseEncodeKit "
-                "must remain a plain object so the frozen backbone stays out of checkpoints "
-                "and optimizers."
+        if int(decoder.num_classes) != int(head.num_classes):
+            raise ValueError(
+                f"decoder num_classes ({decoder.num_classes}) != head num_classes "
+                f"({head.num_classes}); the logits would be misregistered"
             )
-
-    def train(self, mode: bool = True) -> "LiveSegmentationModel":
-        """Toggle trainable modules; the kit itself enforces frozen eval encoding."""
-        super().train(mode)
-        return self
+        self.decoder = decoder
+        self.head = head
+        self.encoder = encoder
+        self.adaptor = adaptor
 
     @property
-    def input_device(self) -> torch.device:
-        """Live pixel batches stay on CPU; the public kit owns device transfer."""
-        return torch.device("cpu")
+    def consumes_image(self) -> bool:
+        return bool(getattr(self.decoder, "consumes_image", False))
 
-    def encode(self, X: Tensor) -> Tensor:
-        """Frozen encoder forward ``(B, 3, Henc, Wenc) -> (B, d, grid_h, grid_w)``.
+    def _device(self, fallback: Tensor) -> torch.device:
+        parameter = next(self.decoder.parameters(), None)
+        return fallback.device if parameter is None else parameter.device
 
-        The expensive half of :meth:`forward`, split out so an *ensemble of models that
-        share this encoder* (the multi-fold inference case) can encode each tile **once**
-        and run every fold's :meth:`forward_from_grid` on the shared grid — see
-        :class:`soma.dense.predict.SlidingWindowSegmentationPredictor`. Runs under
-        ``no_grad`` + the extraction autocast and casts to ``float()`` to mirror the cached
-        extractor exactly (the cached-parity anchor), so splitting the forward changes no
-        numerics: ``forward`` is still ``forward_from_grid(encode(X))``.
-        """
-        return self.kit.encode(X).float()  # mirror persisted dense feature dtype at the decoder
+    def encode(self, pixels: Tensor) -> Tensor:
+        """The encoder stage alone: pixels to a ``(B, d, h, w)`` grid."""
+        if self.encoder is None:
+            raise ValueError("this DenseModel has no encoder stage; it reads cached features")
+        return self.encoder(pixels)
 
-    def forward_from_grid(
-        self, grid: Tensor, image: Tensor | None = None
-    ) -> SegmentationModelOutput:
-        """Decoder + head on a precomputed dense grid — the trainable half of the forward."""
-        if self.feature_adaptor is not None:
-            grid = self.feature_adaptor.forward_grid(grid)
-        return SegmentationModelOutput(logits=self.task_head(_decode(self.decoder, grid, image)))
+    def forward_from_grid(self, grid: Tensor, pixels: Tensor | None = None) -> DenseModelOutput:
+        """Adaptor, decoder and head over an already encoded grid (the trainable half)."""
+        grid = grid.to(self._device(grid)).float()
+        if self.adaptor is not None:
+            grid = self.adaptor.forward_grid(grid)
+        if self.consumes_image:
+            if pixels is None:
+                raise ValueError(
+                    f"decoder {type(self.decoder).__name__} consumes the image but the batch "
+                    "carries no pixels; pass images= (cached grids) or an ImageSource"
+                )
+            if pixels.dtype != torch.uint8:
+                raise ValueError(
+                    f"decoder {type(self.decoder).__name__} consumes the raw image, but the "
+                    f"batch pixels are {pixels.dtype}: build the loaders without preprocess= "
+                    "so the encoder stage preprocesses the pixels itself"
+                )
+            image = pixels.to(grid.device).float() / 255.0
+            decoded = self.decoder(grid, image)
+        else:
+            decoded = self.decoder(grid)
+        return DenseModelOutput(logits=self.head(decoded))
 
-    def forward(self, X: Tensor, image: Tensor | None = None) -> SegmentationModelOutput:
-        return self.forward_from_grid(self.encode(X), image)
+    def forward(self, features: Tensor | None = None, pixels: Tensor | None = None) -> DenseModelOutput:
+        if self.encoder is not None:
+            if pixels is None:
+                raise ValueError("a DenseModel with an encoder stage reads pixels")
+            grid = self.encoder(pixels)
+        else:
+            if features is None:
+                raise ValueError("a DenseModel without an encoder stage reads cached features")
+            grid = features
+        return self.forward_from_grid(grid, pixels)

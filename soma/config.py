@@ -84,7 +84,6 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "composite",
         "aggregation",
         "decoder",
-        "pixel_classifier",
         "task",
         "representation",
         "evaluation",
@@ -119,7 +118,6 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
         "encoder",
         "aggregation",
         "decoder",
-        "pixel_classifier",
         "task",
         "representation",
         "evaluation",
@@ -132,7 +130,7 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     ):
         if section in data:
             value = data[section]
-            if section in ("aggregation", "decoder", "pixel_classifier", "task", "representation"):
+            if section in ("aggregation", "decoder", "task", "representation", "augmentation"):
                 if value is not None and not isinstance(value, dict):
                     raise TypeError(f"Config section '{section}' must be a mapping or null")
             elif value is not None and not isinstance(value, dict):
@@ -288,11 +286,6 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         composite=_composite_from_dict(data["composite"]) if data.get("composite") else None,
         aggregator=AggregatorConfig(**data["aggregation"]) if data.get("aggregation") else None,
         decoder=DecoderConfig(**data["decoder"]) if data.get("decoder") else None,
-        pixel_classifier=(
-            PixelClassifierConfig(**data["pixel_classifier"])
-            if data.get("pixel_classifier")
-            else None
-        ),
         task=_load_task_config(data),
         representation=(
             RepresentationConfig(**data["representation"])
@@ -304,7 +297,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         normalization=NormalizationConfig(**data.get("normalization", {})),
         projection=ProjectionConfig(**data.get("projection", {})),
         heatmaps=HeatmapConfig(**heatmap_data) if heatmap_data is not None else HeatmapConfig(),
-        augmentation=AugmentationConfig(**data.get("augmentation", {})),
+        augmentation=_augmentation_leaf(data.get("augmentation")),
         tags=list(run_data.get("tags", [])),
         mirror_root=(
             Path(run_data["mirror_root"])
@@ -395,13 +388,9 @@ class PreprocessingConfig:
     # blends the token grids over ``dense_window_overlap``.
     dense_window_size: int | None = None
     dense_window_overlap: float = 0.0
-    # What the dense (segmentation) encoder emits per tile (design — attention-pixel
-    # segmentation §3/§7). ``patch_features`` = the ViT patch-token grid (the existing
-    # decoder path); ``cls_attention`` = per-head prefix-token self-attention as a
-    # ``(K, gh, gw)`` grid (the pixel-classifier path). ``None`` = auto: the pipeline
-    # cross-defaults it from the trainable component (decoder ⇒ patch_features,
-    # pixel_classifier ⇒ cls_attention) — both overridable by setting this explicitly.
-    # Orthogonal to the component (either grid feeds a decoder or a pixel-classifier).
+    # What the dense encoder emits per tile. ``patch_features`` = the ViT patch-token grid
+    # (the default for segmentation and detection when left ``None``); ``cls_attention`` =
+    # per-head prefix-token self-attention as a ``(K, gh, gw)`` grid.
     # ``patch_features_prenorm`` is the same patch grid tapped before the backbone's final
     # norm (timm's ``features_only`` tap; timm ViT encoders only) — what decoders trained
     # on timm feature backbones expect (the EVA segmentation benchmarks).
@@ -585,10 +574,8 @@ class EncoderMemberConfig:
     some embedding) needs no special-casing. Members are extracted into independent caches
     and concatenated at load time.
 
-    ``feature_kind`` is ``None`` (auto) by default and **cross-defaults from the
-    consumer** at config finalization — ``cls_attention`` when a ``pixel_classifier`` is
-    set (the decoder-free path), ``patch_features`` for the trained decoder / detection —
-    mirroring the single-encoder cross-default. An explicit value wins.
+    ``feature_kind`` is ``None`` (auto) by default and resolves to ``patch_features`` at
+    config finalization, mirroring the single-encoder default. An explicit value wins.
 
     ``member_norm`` (``{none, l2, layernorm}``) is the per-member normalization applied at
     load time **before concat** (after the resample), so one large-magnitude encoder does
@@ -641,8 +628,7 @@ class CompositeConfig:
     - ``concat_resolution`` (``{grid, target}``): ``grid`` resamples each member's native
       token grid to a common ``(h, w)`` and concatenates there (the trained decoder /
       detection consume token grids); ``target`` upsamples every member to the mask
-      ``target_size`` first (the decoder-free per-pixel classifier). ``None`` (auto)
-      resolves by consumer: ``target`` when a ``pixel_classifier`` is set, else ``grid``.
+      ``target_size`` first. ``None`` (auto) resolves to ``grid``.
     - ``concat_grid_size``: the common ``(h, w)`` for ``grid`` mode. ``None`` defaults to
       the largest member grid (finest available token resolution). Ignored in ``target``
       mode.
@@ -877,7 +863,6 @@ def validate_feature_adaptor_compatibility(
     feature_mode: str = "cached",
     dataset_type: str | None = None,
     has_composite: bool = False,
-    has_pixel_classifier: bool = False,
     is_hierarchical: bool = False,
 ) -> None:
     """Enforce which data planes own the top-level feature adaptor.
@@ -900,10 +885,6 @@ def validate_feature_adaptor_compatibility(
     unsupported = (
         "a composite (multi-encoder) dense stream"
         if has_composite
-        else "the decoder-free pixel_classifier path"
-        if has_pixel_classifier
-        else "dataset_type='spatial_expression'"
-        if dataset_type == "spatial_expression"
         else f"dataset_type={dataset_type!r}"
         if dataset_type in {"patient", "tile"}
         else "a hierarchical feature stream"
@@ -939,22 +920,6 @@ class DecoderConfig:
     ``name`` selects the registered decoder class. ``params`` are passed through to
     the decoder constructor after the pipeline injects the feature dimension and
     ``num_classes``. The decoder is the segmentation counterpart of ``aggregator``.
-    """
-
-    name: str
-    params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class PixelClassifierConfig:
-    """Per-pixel classifier selection and constructor parameters (segmentation).
-
-    The decoder-free analog of ``decoder`` (design — attention-pixel segmentation §6):
-    instead of a neural decoder + Trainer, a per-pixel ``(K,) → class`` classifier
-    (XGBoost / random forest / logistic / pointwise MLP) consumes the dense grid. ``name``
-    selects the registered classifier; ``params`` pass through to its constructor after the
-    pipeline injects ``num_classes``. Mutually exclusive with ``decoder`` under
-    ``dataset_type='segmentation'``.
     """
 
     name: str
@@ -1157,13 +1122,13 @@ class EvalConfig:
     metrics-only run), heavy raw outputs default off:
     ``save_segmentation_overlays`` writes the pred/GT color overlays;
     ``save_segmentation_probabilities`` additionally writes a per-tile float16
-    ``(C, H, W)`` softmax sidecar under ``probs/`` — opt-in because it is
+    ``(C, H, W)`` softmax sidecar under ``probabilities/<split>/`` — opt-in because it is
     ~C×/precision× larger than the always-written argmax raster, and unlocks
     post-hoc soft-Dice/calibration/entropy/ensembling without re-running inference;
-    ``save_segmentation_confusion_evidence`` writes arbitrary-class per-sample
-    confusion matrices from the selected checkpoint for downstream grouping;
     ``save_detection_overlays`` writes the detection point overlays;
-    ``save_detection_heatmaps`` writes the colormap overlays and the npz sidecar.
+    ``save_detection_heatmaps`` writes the raw float16 heatmap sidecar.
+    Predicted label maps (``predictions_<split>/``) are always written, so per-sample
+    confusion is recomputable from them.
     ``holdout_test`` skips *all* test-split work (no test inference, no
     test predictions file, no ``test`` entries in ``metrics.json``/``summary.json``)
     and reports tune only — the model-selection protocol for benchmark sweeps: rank
@@ -1184,7 +1149,6 @@ class EvalConfig:
     subgroups: SubgroupConfig = field(default_factory=SubgroupConfig)
     save_segmentation_overlays: bool = True
     save_segmentation_probabilities: bool = False
-    save_segmentation_confusion_evidence: bool = False
     save_detection_overlays: bool = True
     save_detection_heatmaps: bool = False
     holdout_test: bool = False
@@ -1286,11 +1250,6 @@ class TrainingConfig:
     # evaluated epochs, so ``patience`` spans ``patience * N`` epochs. Requires
     # ``checkpoint_selection='best'``.
     tune_every_n_epochs: int = 1
-    # Per-fold trainer selector within the shared training entry. ``"gradient"`` is the
-    # default torch-based head/decoder loop; ``"ridge_pca_probe"`` selects the closed-form
-    # Ridge+PCA probe (the HEST spatial_expression trainer — no gradient descent, no tune
-    # split). A method flag, not a fork of the entrypoint (design — HEST §6).
-    method: str = "gradient"
     monitor: str = "loss"
     monitor_mode: str = "min"
     batch_size: int = 1
@@ -1307,17 +1266,10 @@ class TrainingConfig:
     num_workers: int = 0
     pin_memory: bool = True
     persistent_workers: bool = True
-    # Class-stratified pixel-sampling budget for the pixel-classifier segmentation path
-    # (design §9): the total number of supervised pixels drawn across the train cohort to
-    # fit a per-pixel classifier (XGBoost/RF/logreg/MLP). Eval still predicts *every*
-    # pixel. Ignored by the neural decoder/Trainer path.
-    max_train_pixels: int = 2_000_000
 
     def __post_init__(self) -> None:
         if self.epochs is not None and self.epochs < 1:
             raise ValueError("TrainingConfig.epochs must be >= 1")
-        if self.max_train_pixels < 1:
-            raise ValueError("TrainingConfig.max_train_pixels must be >= 1")
         _validate_component_leaf(self.optimizer, "TrainingConfig.optimizer", allow_str=True)
         schedulers = self.scheduler if isinstance(self.scheduler, list) else [self.scheduler]
         for leaf in schedulers:
@@ -1397,11 +1349,6 @@ class TrainingConfig:
             )
         if self.num_workers < 0:
             raise ValueError("TrainingConfig.num_workers must be >= 0")
-        if self.method not in {"gradient", "ridge_pca_probe"}:
-            raise ValueError(
-                "TrainingConfig.method must be 'gradient' (torch head/decoder loop) or "
-                f"'ridge_pca_probe' (closed-form probe), got {self.method!r}."
-            )
         if self.tune_every_n_epochs < 1:
             raise ValueError("TrainingConfig.tune_every_n_epochs must be >= 1")
         if self.checkpoint_selection == "last" and self.tune_every_n_epochs != 1:
@@ -1418,77 +1365,29 @@ class TrainingConfig:
             )
 
 
-@dataclass(frozen=True)
-class AugmentationConfig:
-    """Image/mask augmentation for the live segmentation path (``feature_mode='live'``).
+def _augmentation_leaf(value: Any) -> dict[str, Any] | None:
+    """Normalise the ``augmentation`` section: ``null`` or a ``{name, params}`` leaf.
 
-    Augmentation is only possible when tiles are re-encoded each step (live), never
-    on cached grids (the encoder is frozen-but-applied per step — see design §4/§13.B).
-    Geometric ops (``horizontal_flip``/``vertical_flip``/``rotation_degrees``/
-    ``translate``/``scale``) apply jointly to the image **and** mask (mask resampled
-    nearest-neighbor automatically); photometric ops (``brightness``/``contrast``/
-    ``saturation``/``hue``) apply to the **image only**. ``rotation_degrees``,
-    ``translate``, and ``scale`` together drive a single ``RandomAffine``; affine
-    out-of-canvas pixels fill the image with 0 and the mask with ``ignore_index`` (so
-    they are excluded from loss/metrics). ``random_resized_crop_scale`` (``(min, max)``
-    area fraction, e.g. ``(0.08, 1.0)``) runs first: a ``RandomResizedCrop`` of the
-    whole image and mask to the run's ``target_size`` (aspect ratio in ``[3/4, 4/3]``),
-    so train images may be any size while the tune/test images stay at ``target_size``.
-    All-default = no-op (legal: the live-no-aug parity / future ``sliding_window`` case).
+    ``name`` is an augmentation registry key (``segmentation`` is
+    :class:`~soma.learn.SegmentationAugment`) or a dotted import path to a callable
+    ``(pixels, target) -> (pixels, target)`` class; ``params`` are its constructor
+    arguments (the run's ``ignore_index`` and ``target_size`` are injected where accepted).
     """
-
-    horizontal_flip: float = 0.0  # probability in [0, 1]
-    vertical_flip: float = 0.0  # probability in [0, 1]
-    rotation_degrees: float = 0.0  # RandomAffine symmetric degree range (±value)
-    translate: float = 0.0  # RandomAffine max translate fraction (both axes)
-    scale: float = 0.0  # RandomAffine scale jitter: scale ∈ (1-value, 1+value)
-    brightness: float = 0.0
-    contrast: float = 0.0
-    saturation: float = 0.0
-    hue: float = 0.0
-    random_resized_crop_scale: tuple[float, float] | None = None
-
-    def __post_init__(self) -> None:
-        if self.random_resized_crop_scale is not None:
-            scale = tuple(float(v) for v in self.random_resized_crop_scale)
-            if len(scale) != 2 or not 0.0 < scale[0] <= scale[1] <= 1.0:
-                raise ValueError(
-                    "AugmentationConfig.random_resized_crop_scale must be (min, max) with "
-                    f"0 < min <= max <= 1, got {self.random_resized_crop_scale}"
-                )
-            object.__setattr__(self, "random_resized_crop_scale", scale)
-        for name in ("horizontal_flip", "vertical_flip"):
-            value = getattr(self, name)
-            if not 0.0 <= float(value) <= 1.0:
-                raise ValueError(f"AugmentationConfig.{name} must be in [0, 1], got {value}")
-        for name in ("rotation_degrees", "translate", "scale", "brightness", "contrast", "saturation", "hue"):
-            if float(getattr(self, name)) < 0.0:
-                raise ValueError(f"AugmentationConfig.{name} must be >= 0, got {getattr(self, name)}")
-        if float(self.translate) > 1.0:
-            raise ValueError(f"AugmentationConfig.translate must be in [0, 1], got {self.translate}")
-        if float(self.scale) >= 1.0:
-            raise ValueError(f"AugmentationConfig.scale must be in [0, 1), got {self.scale}")
-        if float(self.hue) > 0.5:
-            raise ValueError(f"AugmentationConfig.hue must be in [0, 0.5], got {self.hue}")
-
-    def is_enabled(self) -> bool:
-        """True if any field departs from its no-op default."""
-        if self.random_resized_crop_scale is not None:
-            return True
-        return any(
-            float(v) != 0.0
-            for v in (
-                self.horizontal_flip,
-                self.vertical_flip,
-                self.rotation_degrees,
-                self.translate,
-                self.scale,
-                self.brightness,
-                self.contrast,
-                self.saturation,
-                self.hue,
-            )
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict) or not isinstance(value.get("name"), str) or not value["name"]:
+        raise ValueError(
+            "augmentation must be null or a {name, params} leaf, e.g. "
+            "{name: segmentation, params: {horizontal_flip: 0.5}}; the flat "
+            "horizontal_flip/... section was replaced by the leaf"
         )
+    unknown = sorted(set(value) - {"name", "params"})
+    if unknown:
+        raise ValueError(f"augmentation leaf has unknown key(s) {unknown}; use {{name, params}}")
+    params = value.get("params") or {}
+    if not isinstance(params, dict):
+        raise ValueError("augmentation.params must be a mapping")
+    return {"name": value["name"], "params": dict(params)}
 
 
 @dataclass(frozen=True)
@@ -1562,7 +1461,6 @@ class PipelineConfig:
     composite: CompositeConfig | None = None
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
-    pixel_classifier: PixelClassifierConfig | None = None
     task: TaskConfig | None = None
     representation: RepresentationConfig | None = None
     evaluation: EvalConfig = field(default_factory=EvalConfig)
@@ -1570,7 +1468,8 @@ class PipelineConfig:
     normalization: NormalizationConfig = field(default_factory=NormalizationConfig)
     projection: ProjectionConfig = field(default_factory=ProjectionConfig)
     heatmaps: HeatmapConfig = field(default_factory=HeatmapConfig)
-    augmentation: AugmentationConfig = field(default_factory=AugmentationConfig)
+    # ``{name, params}`` augmentation of a live grid run's train split, or ``None``.
+    augmentation: dict[str, Any] | None = None
     tags: list[str] = field(default_factory=list)
     mirror_root: Path | None = None
     # Run-lifecycle directives (issue #244) — not part of experiment identity.
@@ -1610,7 +1509,6 @@ class PipelineConfig:
             "patient",
             "segmentation",
             "detection",
-            "spatial_expression",
         }
         if self.dataset_type not in _valid_dataset_types:
             raise ValueError(
@@ -1621,7 +1519,6 @@ class PipelineConfig:
             self.dataset_type == "segmentation"
             and self.feature_mode == "cached"
             and self.decoder is not None
-            and self.pixel_classifier is None
         ):
             raise ValueError(
                 "training.roi_batch_sampling is only supported for cached neural "
@@ -1643,18 +1540,17 @@ class PipelineConfig:
                 for component in (
                     self.aggregator,
                     self.decoder,
-                    self.pixel_classifier,
                     self.composite,
                 )
             ):
                 raise ValueError(
-                    "representation v1 does not use aggregation, decoder, pixel_classifier, "
-                    "or composite task components."
+                    "representation v1 does not use aggregation, decoder or composite task "
+                    "components."
                 )
             if (
                 self.normalization.method != "none"
                 or self.projection.method != "none"
-                or self.augmentation.is_enabled()
+                or self.augmentation is not None
             ):
                 raise ValueError(
                     "representation v1 requires normalization.method='none', "
@@ -1671,72 +1567,6 @@ class PipelineConfig:
                         f"Unknown encoder name '{self.encoder.name}'. Available encoders: {available}"
                     ) from exc
             return
-        if (
-            self.training.checkpoint_selection == "last"
-            and self.pixel_classifier is not None
-        ):
-            raise ValueError(
-                "training.checkpoint_selection='last' is not supported with a "
-                "pixel_classifier: pixel classifiers own separate fit loops and do not "
-                "produce Trainer checkpoints. Use checkpoint_selection: best."
-            )
-        if self.training.max_steps is not None and self.pixel_classifier is not None:
-            raise ValueError(
-                "training.max_steps is not supported with a pixel_classifier: pixel "
-                "classifiers do not use Trainer optimizer updates. Use training.epochs."
-            )
-        if (
-            self.training.checkpoint_selection == "last"
-            and self.training.method == "ridge_pca_probe"
-        ):
-            raise ValueError(
-                "training.checkpoint_selection='last' is not supported with "
-                "training.method='ridge_pca_probe': the closed-form probe has no epoch "
-                "checkpoint to select. Use checkpoint_selection: best."
-            )
-        if (
-            self.training.max_steps is not None
-            and self.training.method == "ridge_pca_probe"
-        ):
-            raise ValueError(
-                "training.max_steps is not supported with "
-                "training.method='ridge_pca_probe': the closed-form probe does not use "
-                "Trainer optimizer updates. Use training.epochs."
-            )
-        # spatial_expression (HEST gene-expression-from-morphology): one spot = one tile
-        # with a vector target, trained by the closed-form Ridge+PCA probe. It reuses the
-        # tile extraction path but its supervision is a multi-target regression vector, so
-        # it is bound to task.name='regression' and the probe method (design — HEST §6).
-        if self.dataset_type == "spatial_expression":
-            if self.aggregator is not None:
-                raise ValueError(
-                    "aggregator must be None for dataset_type='spatial_expression' — the "
-                    "spatial-expression probe consumes per-spot tile features, not MIL bags."
-                )
-            if task_family_of(self.task.name) != "regression":
-                raise ValueError(
-                    "dataset_type='spatial_expression' requires a task head of the "
-                    "'regression' family (the multi-target gene-expression head), got "
-                    f"{self.task.name!r}."
-                )
-            if self.training.method != "ridge_pca_probe":
-                raise ValueError(
-                    "dataset_type='spatial_expression' requires "
-                    "training.method='ridge_pca_probe' (the closed-form probe); "
-                    f"got {self.training.method!r}."
-                )
-        # The closed-form probe only makes sense against a vector target, so bind it the
-        # other way too: a stray method flag on a scalar task is a config error, not a
-        # silent no-op.
-        if (
-            self.training.method == "ridge_pca_probe"
-            and self.dataset_type != "spatial_expression"
-        ):
-            raise ValueError(
-                "training.method='ridge_pca_probe' is the HEST closed-form probe and only "
-                "applies to dataset_type='spatial_expression'; "
-                f"got dataset_type={self.dataset_type!r}."
-            )
         if self.dataset_type == "tile" and self.aggregator is not None:
             raise ValueError(
                 "aggregator must be None for dataset_type='tile' — "
@@ -1748,25 +1578,15 @@ class PipelineConfig:
                 "patient-level pipelines use a pretrained patient encoder, not a trainable aggregator."
             )
         if self.dataset_type == "segmentation":
-            # Exactly one trainable component: a neural decoder (Trainer path) XOR a
-            # per-pixel classifier (decoder-free path). They are the two orthogonal
-            # "axis 2" options (design §7); never both, never neither.
-            if self.decoder is not None and self.pixel_classifier is not None:
+            if self.decoder is None:
                 raise ValueError(
-                    "dataset_type='segmentation' takes a decoder XOR a pixel_classifier, "
-                    "not both — a decoder is the neural (Trainer) path, a pixel_classifier "
-                    "is the decoder-free per-pixel path."
-                )
-            if self.decoder is None and self.pixel_classifier is None:
-                raise ValueError(
-                    "dataset_type='segmentation' requires either a decoder (neural path) "
-                    "or a pixel_classifier (decoder-free attention-map path)."
+                    "dataset_type='segmentation' requires a decoder (e.g. decoder: "
+                    "{name: lightweight_conv})."
                 )
             if self.aggregator is not None:
                 raise ValueError(
                     "aggregator must be None for dataset_type='segmentation' — "
-                    "segmentation uses a decoder or pixel-classifier (dense per-pixel), "
-                    "not MIL aggregation."
+                    "segmentation uses a decoder (dense per-pixel), not MIL aggregation."
                 )
             if task_family_of(self.task.name) != "segmentation":
                 raise ValueError(
@@ -1784,23 +1604,12 @@ class PipelineConfig:
                 resolve_class_scheme(task_params, annotation_rasters=annotation_rasters)
                 if annotation_rasters:
                     check_classes_declared(task_params, self.preprocessing.masks.pixel_mapping)
-            # Cross-default feature_kind from the component when the user left it auto
-            # (None): a pixel_classifier wants per-head CLS-attention, a decoder wants the
-            # patch-feature grid. Both remain overridable (an explicit feature_kind wins).
+            # A decoder consumes the patch-feature grid unless the user names another kind.
             if self.preprocessing.feature_kind is None:
-                resolved_kind = (
-                    "cls_attention" if self.pixel_classifier is not None else "patch_features"
-                )
                 object.__setattr__(
                     self,
                     "preprocessing",
-                    replace(self.preprocessing, feature_kind=resolved_kind),
-                )
-            if self.pixel_classifier is not None and self.feature_mode != "cached":
-                raise ValueError(
-                    "pixel_classifier requires feature_mode='cached' — the decoder-free "
-                    "path fits on cached dense grids (no live re-encode / augmentation; "
-                    "those belong to the neural-decoder path)."
+                    replace(self.preprocessing, feature_kind="patch_features"),
                 )
         elif self.dataset_type == "detection":
             # Detection-v1 reuses the segmentation dense front half: a decoder regresses a
@@ -1809,11 +1618,6 @@ class PipelineConfig:
                 raise ValueError(
                     "dataset_type='detection' requires a decoder (the heatmap regressor; "
                     "e.g. decoder: {name: lightweight_conv})."
-                )
-            if self.pixel_classifier is not None:
-                raise ValueError(
-                    "pixel_classifier must be None for dataset_type='detection' — detection "
-                    "uses a neural decoder + DetectionHead, not the decoder-free path."
                 )
             if self.aggregator is not None:
                 raise ValueError(
@@ -1838,21 +1642,26 @@ class PipelineConfig:
                     "preprocessing",
                     replace(self.preprocessing, feature_kind="patch_features"),
                 )
-            if self.feature_mode != "cached":
+            if "score_threshold" in self.task.params:
                 raise ValueError(
-                    "dataset_type='detection' v1 is cached-only — live re-encode + "
-                    "geometric point-target augmentation is a deferred increment."
+                    "task.params.score_threshold was removed: the head emits every peak "
+                    "above task.params.min_score, training-time validation thresholds at "
+                    "task.params.validation_threshold, and the test operating point is swept "
+                    "on the tune split."
                 )
+            for knob in ("min_score", "validation_threshold"):
+                value = self.task.params.get(knob)
+                if value is not None and (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not 0.0 <= float(value) <= 1.0
+                ):
+                    raise ValueError(f"task.params.{knob} must be a score in [0, 1], got {value!r}.")
         else:
             if self.decoder is not None:
                 raise ValueError(
                     f"decoder must be None for dataset_type={self.dataset_type!r} — "
                     "decoders are only used for dataset_type='segmentation' or 'detection'."
-                )
-            if self.pixel_classifier is not None:
-                raise ValueError(
-                    f"pixel_classifier must be None for dataset_type={self.dataset_type!r} — "
-                    "pixel-classifiers are only used for dataset_type='segmentation'."
                 )
         # preprocessing.masks/preprocessing.sampling are the segmentation slide-manifest
         # ingestion mode (design — segmentation ingestion §5/§8; relocated under
@@ -1896,10 +1705,10 @@ class PipelineConfig:
             raise ValueError(
                 f"Invalid feature_mode {self.feature_mode!r}; must be 'cached' or 'live'."
             )
-        if self.feature_mode == "live" and self.dataset_type != "segmentation":
+        if self.feature_mode == "live" and self.dataset_type not in {"segmentation", "detection"}:
             raise ValueError(
-                "feature_mode='live' is only supported for dataset_type='segmentation' "
-                f"(re-encoding augmented tiles), got dataset_type={self.dataset_type!r}."
+                "feature_mode='live' re-encodes tiles for the grid shape (dataset_type "
+                f"'segmentation' or 'detection'), got dataset_type={self.dataset_type!r}."
             )
         validate_feature_adaptor_compatibility(
             self.normalization,
@@ -1907,16 +1716,26 @@ class PipelineConfig:
             feature_mode=self.feature_mode,
             dataset_type=self.dataset_type,
             has_composite=self.composite is not None,
-            has_pixel_classifier=self.pixel_classifier is not None,
         )
-        if self.augmentation.is_enabled():
+        if self.augmentation is not None:
             if self.feature_mode != "live":
                 raise ValueError(
                     "augmentation requires feature_mode='live' — cached dense grids cannot "
                     "be augmented (the features are frozen). Set feature_mode='live' or clear "
                     "the augmentation section."
                 )
-            # dataset_type is already guaranteed 'segmentation' by the live check above.
+            if self.dataset_type == "detection":
+                raise ValueError(
+                    "point targets cannot be augmented yet: joint point augmentation waits "
+                    "for torchvision 0.23 tv_tensors.KeyPoints (soma#586). Clear the "
+                    "augmentation section for live detection."
+                )
+            from soma.learn.augment import augment_registry
+
+            try:
+                augment_registry.resolve(self.augmentation["name"])
+            except KeyError as error:
+                raise ValueError(f"Unknown augmentation {self.augmentation['name']!r}: {error}") from error
         if "dropout" in self.task.params:
             # Fail at config load, not at head construction after extraction: the head
             # re-validates, but a full pipeline run should not spend the extraction
@@ -2030,19 +1849,15 @@ class PipelineConfig:
                     "'composite:' is cached-only — live multi-encoder (N resident backbones, "
                     "for live augmentation) is a deferred increment; set feature_mode='cached'."
                 )
-            # Cross-default each member's feature_kind + member_norm from the consumer, and
-            # the concat_resolution, mirroring the single-encoder preprocessing.feature_kind
-            # cross-default above. composite only reaches here for segmentation/detection,
-            # where the consumer signal is the presence of a pixel_classifier.
-            consumer_kind = "cls_attention" if self.pixel_classifier is not None else "patch_features"
+            # Default each member's feature_kind + member_norm and the concat_resolution,
+            # mirroring the single-encoder preprocessing.feature_kind default above.
+            consumer_kind = "patch_features"
             resolved_members = []
             for member in self.composite.encoders:
                 fk = member.feature_kind or consumer_kind
                 norm = member.member_norm or ("none" if fk == "cls_attention" else "l2")
                 resolved_members.append(replace(member, feature_kind=fk, member_norm=norm))
-            concat_resolution = self.composite.concat_resolution or (
-                "target" if self.pixel_classifier is not None else "grid"
-            )
+            concat_resolution = self.composite.concat_resolution or "grid"
             object.__setattr__(
                 self,
                 "composite",
@@ -2093,15 +1908,6 @@ class PipelineConfig:
                     f"Unknown decoder name '{self.decoder.name}'. "
                     f"Available decoders: {available}"
                 )
-        if self.pixel_classifier is not None:
-            from soma.pixel_classifiers import pixel_classifier_registry
-
-            if self.pixel_classifier.name not in pixel_classifier_registry:
-                available = ", ".join(sorted(pixel_classifier_registry.list())) or "(none)"
-                raise ValueError(
-                    f"Unknown pixel_classifier name '{self.pixel_classifier.name}'. "
-                    f"Available pixel classifiers: {available}"
-                )
 
 
 # --- YAML serialization ---
@@ -2151,7 +1957,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
                 if key != "seed"
             }
         ),
-        "augmentation": _normalize_yaml_value(asdict(config.augmentation)),
+        "augmentation": _normalize_yaml_value(config.augmentation),
         "normalization": _normalize_yaml_value(asdict(config.normalization)),
         "projection": _normalize_yaml_value(asdict(config.projection)),
         "reports": {
@@ -2171,11 +1977,6 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     data["decoder"] = (
         _normalize_yaml_value(asdict(config.decoder))
         if config.decoder is not None
-        else None
-    )
-    data["pixel_classifier"] = (
-        _normalize_yaml_value(asdict(config.pixel_classifier))
-        if config.pixel_classifier is not None
         else None
     )
     data["composite"] = (
@@ -2246,6 +2047,12 @@ def _load_task_config(data: dict[str, Any]) -> TaskConfig | None:
 
 def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
     evaluation_data = data.get("evaluation", {})
+    if "save_segmentation_confusion_evidence" in (evaluation_data or {}):
+        raise ValueError(
+            "evaluation.save_segmentation_confusion_evidence was removed: every run writes "
+            "its predicted label maps (predictions_<split>/), from which per-sample "
+            "confusion is recomputable."
+        )
     subgroup_data = evaluation_data.get("subgroups", {})
     columns = subgroup_data.get("columns", []) if subgroup_data else []
     return EvalConfig(
@@ -2254,9 +2061,6 @@ def _load_evaluation_config(data: dict[str, Any]) -> EvalConfig:
         save_segmentation_overlays=bool(evaluation_data.get("save_segmentation_overlays", True)),
         save_segmentation_probabilities=bool(
             evaluation_data.get("save_segmentation_probabilities", False)
-        ),
-        save_segmentation_confusion_evidence=bool(
-            evaluation_data.get("save_segmentation_confusion_evidence", False)
         ),
         save_detection_overlays=bool(evaluation_data.get("save_detection_overlays", True)),
         save_detection_heatmaps=bool(evaluation_data.get("save_detection_heatmaps", False)),

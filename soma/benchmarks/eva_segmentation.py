@@ -29,7 +29,7 @@ Protocol points that matter for matching the leaderboard (online segmentation co
   cached grids), MoNuSAC test images resized on the short side to 224 and centre-cropped.
   MoNuSAC train images stay whole: EVA draws a ``RandomResizedCrop(224)`` from them every
   step, so that run re-encodes live (``feature_mode='live'``) with
-  ``augmentation.random_resized_crop_scale=(0.08, 1.0)``.
+  ``augmentation: {name: segmentation, params: {crop_scale: [0.08, 1.0]}}``.
 * Dense features are the last block's patch-token grid taken **before** the backbone's
   final LayerNorm (timm ``features_only`` with ``norm=False``): slide2vec's
   ``patch_features_prenorm`` feature kind.
@@ -72,7 +72,6 @@ from soma.benchmarks.registry import (
     score_from_summary,
 )
 from soma.config import (
-    AugmentationConfig,
     CacheConfig,
     DecoderConfig,
     EncoderConfig,
@@ -385,7 +384,11 @@ def _build_eva_segmentation_config(
         output_root=Path(output_root),
         dataset_type="segmentation",
         feature_mode="live" if live else "cached",
-        augmentation=AugmentationConfig(random_resized_crop_scale=spec.train_crop_scale),
+        augmentation=(
+            {"name": "segmentation", "params": {"crop_scale": list(spec.train_crop_scale)}}
+            if live
+            else None
+        ),
         execution=execution or ExecutionConfig(),
         cache=cache or CacheConfig(enabled=True),
         # The curated PNGs declare NOMINAL_SPACING_UM; requesting the same value reads

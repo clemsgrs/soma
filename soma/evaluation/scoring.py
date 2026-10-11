@@ -169,6 +169,10 @@ def _align(predictions: Predictions, targets: pd.DataFrame) -> tuple[pd.DataFram
         keys = family_target_keys(predictions.task_family)
     except ValueError:  # a family soma does not know: its metrics read what they need
         keys = ()
+    outputs = [c for c in predictions.prediction_columns if c.startswith("value_")]
+    if predictions.task_family == "regression" and outputs:
+        # A multi-output regression scores each value_<k> against the same-named target.
+        keys = tuple(outputs)
     if len(targets):
         required = [key for key in keys if key not in targets.columns]
         if required:
@@ -183,26 +187,40 @@ def _align(predictions: Predictions, targets: pd.DataFrame) -> tuple[pd.DataFram
 
 
 def evaluate(
-    predictions: Predictions,
-    targets: pd.DataFrame,
+    predictions,
+    targets,
     metrics: str | Sequence[MetricLike] | None = "default",
     subgroups: Sequence[str] = (),
 ) -> "Evaluation":
-    """Score ``predictions`` against ``targets`` (e.g. :meth:`soma.data.Cohort.targets`).
+    """Score ``predictions`` against ``targets``; the prediction noun picks the scoring.
 
-    The two are joined by ``sample_id`` and must cover the same ids: an unknown
-    prediction id, a target without a prediction, or a duplicate id is refused. Fill
-    samples the model could not score with :class:`~soma.evaluation.Baseline` first.
+    * :class:`~soma.evaluation.Predictions` (set shape) against a targets frame such as
+      :meth:`soma.data.Cohort.targets`, joined by ``sample_id``.
+    * :class:`~soma.evaluation.PointPredictions` against a
+      :class:`~soma.data.PointSource`: class-aware point matching within the
+      predictions' ``match_distance_px`` (Hungarian by default; a metric leaf with
+      params ``matching="greedy"`` / ``match_distance`` in level-0 px overrides).
+    * :class:`~soma.evaluation.LabelMapPredictions` against a
+      :class:`~soma.data.LabelMapSource`: per-image confusion counts reduced to Dice,
+      IoU and the per-class scores.
+
+    Both sides must cover the same ids: an unknown prediction id, a target without a
+    prediction, or a duplicate id is refused. Fill samples the model could not score with
+    :class:`~soma.evaluation.Baseline` first; restrict a target source with ``subset``.
 
     Args:
         predictions: What the model said.
         targets: One row per sample, indexed by ``sample_id`` (or with a ``sample_id``
             column), holding the target columns of the predictions' family and any
-            metadata columns ``subgroups`` names.
+            metadata columns ``subgroups`` names; a target source for grid nouns.
         metrics: ``"default"`` (the family's catalogue defaults) or a list of registry
-            keys, dotted paths and ``(predictions, targets) -> float`` callables.
-        subgroups: Target columns to break the metrics down by.
+            keys, ``{name, params}`` leaves (grid), dotted paths and callables.
+        subgroups: Target columns to break the metrics down by (set shape only).
     """
+    from soma.evaluation.grid import LabelMapPredictions, PointPredictions, evaluate_grid
+
+    if isinstance(predictions, (LabelMapPredictions, PointPredictions)):
+        return evaluate_grid(predictions, targets, metrics=metrics, subgroups=subgroups)
     family = predictions.task_family
     resolved = resolve_frame_metrics(metrics, family)
     missing = [column for column in subgroups if column not in _targets_by_id(targets).columns]

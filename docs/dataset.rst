@@ -36,8 +36,9 @@ replace the scalar ``label`` with a per-sample supervision file:
   source image's level-0 µm/px. It is required for flat PNG/JPEG dense extraction. See
   :doc:`detection` for the full column contract.
 
-For ``dataset_type="spatial_expression"``, use ``target_index`` instead of
-``label``. Each index selects a row in ``targets.npy`` (shape
+A gene-expression vector per sample, as in the
+:doc:`HEST benchmark <hest-gene-expression-benchmark>`, uses a ``target_index``
+column instead of ``label``. Each index selects a row in ``targets.npy`` (shape
 ``[n_rows, n_genes]``); ``genes.json`` lists the genes in column order. Both
 sidecars must sit beside ``dataset.csv``; ``Cohort.from_csv(..., targets=["expression"])``
 reads them into each record's ``expression`` target.

@@ -115,14 +115,25 @@ class TargetSource(Protocol):
 
 @runtime_checkable
 class ImageSource(Protocol):
-    """Live path: pixels plus geometry per sample. Declared here, implemented in slice 4."""
+    """Live path: the pixels a frozen encoder stage re-encodes, per sample.
+
+    ``geometry`` describes the pixel frame (``target_size`` and its level-0 anchor; a
+    pixel is one "token") and ``spacing`` its µm/px, under the same id contract as a
+    :class:`GridSource`. :class:`~soma.data.TileImageSource` implements it.
+    """
 
     @property
     def sample_ids(self) -> list[str]: ...
 
-    def load(self, sample_id: str) -> Tensor: ...
+    def load(self, sample_id: str) -> Tensor:
+        """``(3, H, W)`` uint8 pixels at the declared size."""
+        ...
 
     def geometry(self, sample_id: str) -> GridGeometry: ...
+
+    def spacing(self, sample_id: str) -> float:
+        """µm/px of the pixels ``load`` serves."""
+        ...
 
 
 def covers(source, sample_ids: Iterable[str]) -> bool:

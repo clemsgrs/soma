@@ -1,7 +1,7 @@
 """End-to-end (offline) routing smoke test for dataset_type='segmentation'.
 
 Builds a pre-extracted dense feature store + mask manifest + splits on disk, then
-runs ``train_one_segmentation_fold`` — exercising geometry-from-sidecar, decoder +
+runs ``train_one_grid_fold`` — exercising geometry-from-sidecar, decoder +
 head construction, the SegmentationDataset loaders, ``Trainer.fit`` (with the
 streaming ``_tune``), checkpoint reload, and ``_evaluate_grid``. No encoder
 / GPU needed: the grids are written directly.
@@ -30,7 +30,7 @@ from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_fol
 from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
-from soma.pipeline import train, train_one_segmentation_fold
+from soma.pipeline import train, train_one_grid_fold
 
 NUM_CLASSES = 2
 TARGET = 8
@@ -142,7 +142,8 @@ def test_cached_segmentation_fold_writes_exact_roi_batch_sampling_audit(
     )
     fold_dir = tmp_path / "fold"
 
-    train_one_segmentation_fold(
+    train_one_grid_fold(
+        dataset_type="segmentation",
         feature_store=store,
         dataset=manifest,
         fold_split=splits.folds[0],
@@ -202,7 +203,8 @@ def test_cached_segmentation_default_roi_budget_reaches_sampler_audit(
     )
     fold_dir = tmp_path / "fold"
 
-    train_one_segmentation_fold(
+    train_one_grid_fold(
+        dataset_type="segmentation",
         feature_store=store,
         dataset=manifest,
         fold_split=splits.folds[0],
@@ -247,7 +249,8 @@ def test_cached_sampler_counts_arbitrary_classes_and_forwards_request_ratios(
     )
     fold_dir = tmp_path / "fold"
 
-    train_one_segmentation_fold(
+    train_one_grid_fold(
+        dataset_type="segmentation",
         feature_store=store,
         dataset=manifest,
         fold_split=splits.folds[0],
@@ -275,7 +278,8 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     sample_ids = ["s0", "s1", "s2", "s3"]
     manifest, splits, store = _build_dense_run(tmp_path, sample_ids)
 
-    result = train_one_segmentation_fold(
+    result = train_one_grid_fold(
+        dataset_type="segmentation",
         feature_store=store,
         dataset=manifest,
         fold_split=splits.folds[0],
@@ -296,55 +300,19 @@ def test_train_one_segmentation_fold_end_to_end(tmp_path: Path):
     assert (tmp_path / "fold" / "metrics.json").is_file()
     assert (tmp_path / "fold" / "best_model.pt").is_file()
 
-    # 1g dense artifacts: per-tile rasters + predictions CSV land for each split.
+    # The predicted label maps land for tune and every test split.
+    from soma.evaluation import LabelMapPredictions
+
     fold = tmp_path / "fold"
-    assert (fold / "predictions_test.csv").is_file()
-    test_raster = fold / "preds" / "test" / "s3.png"
-    assert test_raster.is_file()
-    raster = np.asarray(Image.open(test_raster))
+    predictions = LabelMapPredictions.load(fold / "predictions_test")
+    assert predictions.sample_ids == ["s3"]
+    raster = np.asarray(Image.open(fold / "predictions_test" / "s3.png"))
     assert raster.shape == (TARGET, TARGET)  # head cropped logits to target_size
     assert raster.dtype == np.uint8
     assert raster.max() < NUM_CLASSES
+    assert LabelMapPredictions.load(fold / "predictions_tune").sample_ids == ["s2"]
     # Overlays are fail-soft: the cached-feature fixture has no real source tiles.
-    assert not (fold / "pred_overlays" / "test" / "s3.png").exists()
-
-
-def test_selected_checkpoint_exports_one_confusion_per_tune_sample(tmp_path: Path):
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_dense_run(
-        tmp_path,
-        sample_ids,
-        num_classes=3,
-    )
-    fold_dir = tmp_path / "fold"
-
-    train_one_segmentation_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=fold_dir,
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(
-            metrics=["mean_dice"],
-            save_segmentation_confusion_evidence=True,
-        ),
-        fold=0,
-    )
-
-    payload = __import__("json").loads(
-        (fold_dir / "confusion_evidence_tune.json").read_text()
-    )
-    assert payload["schema_version"] == 1
-    assert len(payload["records"]) == 1
-    record = payload["records"][0]
-    assert record["sample_id"] == "s2"
-    assert record["fold"] == 0
-    assert record["class_vocabulary"] == ["class_0", "class_1", "class_2"]
-    assert len(record["confusion_matrix"]) == 3
-    assert all(len(row) == 3 for row in record["confusion_matrix"])
-    assert sum(sum(row) for row in record["confusion_matrix"]) == TARGET * TARGET
+    assert not list((fold / "overlays").rglob("s3.png")) if (fold / "overlays").exists() else True
 
 
 def _run_confusion_evidence_cv(
@@ -384,7 +352,6 @@ def _run_confusion_evidence_cv(
     run_dir = tmp_path / "run"
     evaluation = EvalConfig(
         metrics=["mean_dice"],
-        save_segmentation_confusion_evidence=save_evidence,
         holdout_test=holdout_test,
     )
     train_kwargs = {
@@ -506,97 +473,11 @@ def test_tune_is_test_multifold_reuses_one_unique_roi_population(tmp_path: Path)
     assert [population["roi_count"] for population in populations] == [4, 4]
 
 
-def test_train_validates_complete_fold_confusion_evidence(tmp_path: Path) -> None:
-    _, run_dir, _ = _run_confusion_evidence_cv(tmp_path)
-
-    fold_0 = json.loads(
-        (run_dir / "fold_0" / "confusion_evidence_tune.json").read_text()
-    )
-    fold_1 = json.loads(
-        (run_dir / "fold_1" / "confusion_evidence_tune.json").read_text()
-    )
-    assert [record["sample_id"] for record in fold_0["records"]] == ["s0", "s1"]
-    assert [record["sample_id"] for record in fold_1["records"]] == ["s2", "s3"]
-    assert {record["fold"] for record in fold_0["records"]} == {0}
-    assert {record["fold"] for record in fold_1["records"]} == {1}
-
-
-def test_resume_regenerates_missing_evidence_from_selected_checkpoints_only(
-    tmp_path: Path,
-) -> None:
-    _, run_dir, train_kwargs = _run_confusion_evidence_cv(
-        tmp_path, save_evidence=False
-    )
-    histories = {
-        fold: (run_dir / f"fold_{fold}" / "training_history.json").read_bytes()
-        for fold in range(2)
-    }
-    checkpoints = {
-        fold: hashlib.sha256(
-            (run_dir / f"fold_{fold}" / "best_model.pt").read_bytes()
-        ).hexdigest()
-        for fold in range(2)
-    }
-    train_kwargs["evaluation"] = replace(
-        train_kwargs["evaluation"],
-        save_segmentation_confusion_evidence=True,
-    )
-    train_kwargs["resume_completed_folds"] = True
-
-    resumed = train(**train_kwargs)
-
-    assert resumed.fold_results == []
-    for fold in range(2):
-        fold_dir = run_dir / f"fold_{fold}"
-        assert (fold_dir / "confusion_evidence_tune.json").is_file()
-        assert (fold_dir / "training_history.json").read_bytes() == histories[fold]
-        assert hashlib.sha256((fold_dir / "best_model.pt").read_bytes()).hexdigest() == (
-            checkpoints[fold]
-        )
-
-
-def test_tune_is_test_validates_evidence_against_effective_held_out_split(
-    tmp_path: Path,
-) -> None:
-    sample_ids = ["train_a", "train_b", "held_a", "held_b"]
-    manifest, _, store = _build_dense_run(tmp_path, sample_ids, num_classes=3)
-    splits_path = tmp_path / "test_only_splits.csv"
-    splits_path.write_text(
-        "sample_id,split,fold\n"
-        "train_a,train,0\n"
-        "train_b,train,0\n"
-        "held_a,test,0\n"
-        "held_b,test,0\n"
-    )
-    splits = legacy_folds_from_csv(splits_path, manifest, tune_is_test=True)
-    run_dir = tmp_path / "run"
-
-    train(
-        feature_store=store,
-        dataset=manifest,
-        splits=splits,
-        dataset_type="segmentation",
-        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
-        training=TrainingConfig(epochs=1, batch_size=2, tune_is_test=True),
-        run_dir=run_dir,
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(
-            metrics=["mean_dice"],
-            save_segmentation_confusion_evidence=True,
-        ),
-    )
-
-    payload = json.loads((run_dir / "confusion_evidence_tune.json").read_text())
-    assert [record["sample_id"] for record in payload["records"]] == [
-        "held_a",
-        "held_b",
-    ]
-
-
 def test_segmentation_fold_requires_num_classes(tmp_path: Path):
     manifest, splits, store = _build_dense_run(tmp_path, ["s0", "s1", "s2", "s3"])
     with pytest.raises(ValueError, match="num_classes"):
-        train_one_segmentation_fold(
+        train_one_grid_fold(
+            dataset_type="segmentation",
             feature_store=store,
             dataset=manifest,
             fold_split=splits.folds[0],
@@ -616,7 +497,8 @@ def test_segmentation_fold_rejects_mask_grid_spacing_mismatch(tmp_path: Path):
         tmp_path, ["s0", "s1", "s2", "s3"], grid_spacing_um=0.5
     )
     with pytest.raises(ValueError, match="does not match"):
-        train_one_segmentation_fold(
+        train_one_grid_fold(
+            dataset_type="segmentation",
             feature_store=store,
             dataset=manifest,
             fold_split=splits.folds[0],
@@ -690,10 +572,8 @@ def test_pipeline_run_end_to_end_segmentation(tmp_path: Path):
     # Dense artifacts land via the real entry point too (run -> train -> eval).
     # run_dir is a structured layout path under output_root, so glob for them.
     out = tmp_path / "out"
-    assert list(out.rglob("preds/test/s3.png")), "pred raster missing under run dir"
-    assert list(
-        out.rglob("predictions_test.csv")
-    ), "predictions CSV missing under run dir"
+    assert list(out.rglob("predictions_test/s3.png")), "predicted label map missing under run dir"
+    assert list(out.rglob("predictions_test/index.parquet")), "label-map index missing under run dir"
 
 
 def test_pipeline_mirrors_only_a_verified_completed_fold(tmp_path: Path) -> None:
@@ -829,7 +709,7 @@ def test_pipeline_runs_an_image_prior_decoder_on_cached_grids(tmp_path: Path):
     result = Pipeline(config, feature_dir=tmp_path / "dense").run()
 
     assert "test/mean_dice" in result.summary
-    assert list((tmp_path / "out").rglob("preds/test/s3.png"))
+    assert list((tmp_path / "out").rglob("predictions_test/s3.png"))
 
 
 def test_pipeline_rejects_an_image_prior_decoder_whose_image_misses_the_mask_size(tmp_path: Path):

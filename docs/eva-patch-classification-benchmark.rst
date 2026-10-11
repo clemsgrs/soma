@@ -272,7 +272,7 @@ split, which is soma's ``test`` split (``tune_is_test``).
    * - features
      - CoNSeP: cached dense grids. MoNuSAC: re-encoded every step (``feature_mode: live``) because its train crops are random
    * - augmentation
-     - MoNuSAC train only: ``random_resized_crop_scale: [0.08, 1.0]`` (torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none
+     - MoNuSAC train only: ``crop_scale: [0.08, 1.0]`` (torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none
    * - decoder
      - ``eva_conv_with_image`` (EVA's online ``ConvDecoderWithImage``, the leaderboard decoder): nearest ×2 → 3x3 conv-BN-ReLU (64) → bilinear to the tile size → concat the ImageNet-normalised RGB tile → 2 × 3x3 conv-BN-ReLU (32) → 1x1 conv (classes). ``eva_conv_ms`` (the offline ``ConvDecoderMS``) stays registered for reference
    * - loss

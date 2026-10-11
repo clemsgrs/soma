@@ -328,16 +328,24 @@ class TestCoxWindow:
 
 
 class TestDenseLearnerTransfer:
-    def test_features_go_to_the_model_input_device_in_one_copy(self, monkeypatch):
-        from soma.learn import DenseLearner
-        from soma.training.segmentation_dataset import SegmentationBatch
+    def test_pixels_go_to_the_encoder_stage_input_device_in_one_copy(self, monkeypatch):
+        """Targets move to the training device; pixels stay where the frozen stage takes
+        them (its ``input_device``), moved once."""
+        from soma.learn import DenseLearner, GridBatch
+        from soma.testing import FakeEncoder
 
-        class SplitDeviceModel(torch.nn.Module):
-            task_head = None
-            input_device = torch.device("cpu")
+        class StagedModel(torch.nn.Module):
+            head = None
 
-        batch = SegmentationBatch(
-            features=torch.zeros(1, 4, 2, 2), targets={"mask": torch.zeros(1, 2, 2)}, sample_ids=("a",)
+            def __init__(self):
+                super().__init__()
+                self.encoder = FakeEncoder(target_size=2, patch_size=1)
+
+        batch = GridBatch(
+            features=None,
+            pixels=torch.zeros(1, 3, 2, 2, dtype=torch.uint8),
+            targets={"mask": torch.zeros(1, 2, 2)},
+            sample_ids=("a",),
         )
         receivers: list[Tensor] = []
         original_to = torch.Tensor.to
@@ -347,10 +355,10 @@ class TestDenseLearnerTransfer:
             return original_to(self, *args, **kwargs)
 
         monkeypatch.setattr(torch.Tensor, "to", spy)
-        moved = DenseLearner(SplitDeviceModel()).transfer_batch(batch, torch.device("meta"))
-        assert moved.features.device.type == "cpu"
+        moved = DenseLearner(StagedModel()).transfer_batch(batch, torch.device("meta"))
+        assert moved.pixels.device.type == "cpu"
         assert moved.targets["mask"].device.type == "meta"
-        assert sum(r is batch.features for r in receivers) == 1
+        assert sum(r is batch.pixels for r in receivers) == 1
 
 
 # ---------------------------------------------------------------------------

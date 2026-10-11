@@ -16,7 +16,7 @@ anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow2 @ 0.2 µm/px, greedy te
 
 The dataset itself lives outside the repo (`data/` is git-ignored). Only the curation
 code (`soma/curation/ocelot.py`), the packaged benchmark configs, this `ocelot.yaml`, and
-`eval_greedy.py` are tracked. OCELOT is also a first-class registered benchmark —
+`eval_greedy.py` (a thin CLI over the benchmark's greedy re-scorer) are tracked. OCELOT is also a first-class registered benchmark —
 `soma reproduce ocelot` (see §4) supersedes the old `reproduce.py`.
 
 ## 1. Download (one-time, gated)
@@ -120,8 +120,9 @@ soma reproduce ocelot --raw-root <data_root>/ocelot --seeds 1
 ```
 
 The former `reproduce.py` / `expected_metrics.json` are absorbed into this benchmark;
-`eval_greedy.py` remains only as the thin CLI that `campaign.py` drives per (cell, seed)
-and now re-uses the benchmark's greedy scorer.
+`eval_greedy.py` remains only as the thin CLI that `campaign.py` drives per (cell, seed);
+it re-sweeps and re-scores the run's persisted point predictions with the benchmark's greedy
+scorer, without reloading the model.
 
 The command prints `REFERENCE OK` within the ±0.02 mean_F1 band and `POTENTIAL DRIFT`
 outside it. Reference comparisons are diagnostic and do not change the command's exit

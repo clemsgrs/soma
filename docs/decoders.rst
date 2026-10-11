@@ -3,8 +3,7 @@ Decoders
 
 Decoders train on a frozen encoder's dense feature grids to produce spatial
 predictions. They are used for :doc:`segmentation` and :doc:`detection`; only
-the downstream model is trained. Segmentation also supports a decoder-free
-:doc:`pixel classifier <decoders/pixel-classifier>`.
+the downstream model is trained.
 
 To add your own decoder, subclass :class:`soma.decoders.base.Decoder` and
 register it; see :doc:`extending`.
@@ -44,8 +43,8 @@ Choose the input features
 
 ``preprocessing.feature_kind`` selects the dense grid:
 
-* ``patch_features`` (default with a decoder) supplies patch-token embeddings
-  after the backbone's final normalisation layer.
+* ``patch_features`` (the default) supplies patch-token embeddings after the
+  backbone's final normalisation layer.
 * ``patch_features_prenorm`` supplies the same grid tapped one step earlier,
   before the final normalisation (timm's ``features_only`` output). Use it when
   the decoder was designed against a timm feature backbone, as the EVA
@@ -61,8 +60,9 @@ head and loss unchanged. Attention extraction requires encoder support.
 cached grids. Decoder runs default to concatenation at a common token-grid
 resolution.
 
-.. toctree::
-   :maxdepth: 1
-   :hidden:
-
-   decoders/pixel-classifier
+A decoder-free method, such as a per-pixel classifier fitted on attention maps,
+can be built on the same grids with the Python verbs: a
+:class:`~soma.data.GridSource` and a :class:`~soma.data.LabelMapSource` supply
+the features and labels, a scikit-learn estimator fits them, and
+:class:`~soma.evaluation.LabelMapPredictions` with :func:`soma.evaluate` score
+the result.

@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from soma.detection import MIDOG_MATCH_DISTANCE_UM, MidogF1Score, midog_f1
+from soma.benchmarks.midog_f1 import MIDOG_MATCH_DISTANCE_UM, MidogF1Score, midog_f1
 
 
 def test_perfect_single_image():

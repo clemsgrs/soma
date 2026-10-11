@@ -89,10 +89,6 @@ Assign a class to each pixel using frozen encoder outputs; see the
        :class:`~soma.tasks.segmentation.SegmentationHead` trains it with cross-entropy +
        soft-Dice.
      - :doc:`Segmentation <walkthrough-segmentation>`
-   * - :doc:`Decoder-free pixel classifier </decoders/pixel-classifier>`
-     - Fit XGBoost, random forest, logistic regression, or an MLP to dense
-       features; the default input is per-head attention.
-     - :doc:`Attention-based segmentation <walkthrough-attention-segmentation>`
    * - :doc:`Multi-encoder composite </encoders/composite>`
      - Concatenate the dense outputs of several foundation models into one
        per-position vector.
@@ -107,5 +103,4 @@ Assign a class to each pixel using frozen encoder outputs; see the
    walkthrough-slide-encoder
    walkthrough-detection
    walkthrough-segmentation
-   walkthrough-attention-segmentation
    walkthrough-composite

@@ -50,7 +50,6 @@ _AXIS_ALIASES: dict[str, str] = {
     "encoder": "encoder.name",
     "aggregator": "aggregator.name",
     "decoder": "decoder.name",
-    "pixel_classifier": "pixel_classifier.name",
     "task": "task.name",
     "spacing": "preprocessing.requested_spacing_um",
     "dataset_type": "dataset_type",

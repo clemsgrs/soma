@@ -136,16 +136,16 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
             for sample_id in ids
         }
 
-    class FakeHead:
-        def __init__(self, **_kwargs):
-            pass
+    class FakeLabels:
+        def __init__(self, crops, **_kwargs):
+            self.crops = crops
 
-        def extract_targets(self, record):
-            return {"mask": torch.full((512, 512), 2, dtype=torch.long)}
+        def load(self, sample_id):
+            return torch.full((512, 512), 2, dtype=torch.long)
 
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
     monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
-    monkeypatch.setattr(module, "SegmentationHead", FakeHead)
+    monkeypatch.setattr(module, "CachedLabelMapSource", FakeLabels)
     monkeypatch.setattr(module, "write_roi_mask_crops", _record_mask_crops)
     _MASK_CROP_CALLS.clear()
     _FakeExtractor.calls = []
@@ -218,16 +218,16 @@ def test_representative_extraction_rejects_fp16_cache_below_cosine_contract(
     def fake_sample(dataset, *, sample_ids, **_kwargs):
         return {sample_id: [(0, 0)] for sample_id in sample_ids}
 
-    class FakeHead:
-        def __init__(self, **_kwargs):
-            pass
+    class FakeLabels:
+        def __init__(self, crops, **_kwargs):
+            self.crops = crops
 
-        def extract_targets(self, record):
-            return {"mask": torch.zeros((512, 512), dtype=torch.long)}
+        def load(self, sample_id):
+            return torch.zeros((512, 512), dtype=torch.long)
 
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
     monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
-    monkeypatch.setattr(module, "SegmentationHead", FakeHead)
+    monkeypatch.setattr(module, "CachedLabelMapSource", FakeLabels)
     monkeypatch.setattr(module, "write_roi_mask_crops", _record_mask_crops)
     _MASK_CROP_CALLS.clear()
     _FakeExtractor.calls = []

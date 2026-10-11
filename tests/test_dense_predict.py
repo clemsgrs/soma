@@ -1,9 +1,11 @@
 """Tests for the outer (pixel-space) sliding-window segmentation predictor.
 
 These exercise the inference-time *assembly* — tile cover, reflect-pad, Hann blend,
-spacing resample, native-dim mapping — with a tiny stand-in model (no real encoder), so
-they are fast and deterministic. The per-tile forward itself is the trained model's and
-is covered elsewhere; here we only verify the predictor stitches it correctly.
+spacing resample, native-dim mapping, encode-once ensembles — over real
+:class:`~soma.training.model.DenseModel`\\ s whose encoder stage is
+``soma.testing.FakeEncoder`` (mean colour per patch) and whose decoder turns that colour
+into class logits, so a painted region must land at the right place. Also covers the
+slide2vec boundary of :func:`soma.extract.live_encoder` with a stubbed kit.
 """
 
 from __future__ import annotations
@@ -12,203 +14,73 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 from PIL import Image
 
-torch = pytest.importorskip("torch")
 
-from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.predict import (  # noqa: E402
-    SlidingWindowSegmentationPredictor,
-    _hann2d,
-)
-from soma.dense.live import build_live_segmentation_source  # noqa: E402
-from soma.config import (  # noqa: E402
-    AugmentationConfig,
-    DecoderConfig,
-    EncoderConfig,
-    ExecutionConfig,
-    PipelineConfig,
-    PreprocessingConfig,
-    TaskConfig,
-)
+from soma.decoders.base import Decoder
+from soma.dense.predict import SlidingWindowSegmentationPredictor, _hann2d
+from soma.tasks.segmentation import SegmentationHead
+from soma.testing import FakeEncoder
+from soma.training.model import DenseModel
 
 PATCH = 16
 TILE = 64
 
 
-def _preprocessor(pixels):
-    """Kit-style uint8 CHW -> float CHW in [0, 1]."""
-    return pixels.to(torch.float32) / 255.0
+class _CountingEncoder(FakeEncoder):
+    """The fake stage, counting how often it encodes a batch."""
+
+    def __init__(self) -> None:
+        super().__init__(target_size=TILE, patch_size=PATCH)
+        self.calls = 0
+
+    def forward(self, pixels):
+        self.calls += 1
+        return super().forward(pixels)
 
 
-def _color_logits(geometry, grid):
-    """argmax over the 3 channels -> class = dominant RGB, cropped to target_size."""
-    top, left, h, w = geometry.crop_box
-    return grid[:, :3, top : top + h, left : left + w] * 10.0  # sharpen the argmax
+class _ColourDecoder(Decoder):
+    """Logits = the token's normalised RGB, so class = dominant colour (R, G, B)."""
+
+    def forward(self, X):
+        return X[:, :3] * 10.0
+
+    @property
+    def num_classes(self) -> int:
+        return 3
 
 
-class _ColorModel:
-    """Plain callable model (no encode/decode split) — exercises the per-model fallback.
+class _ImageColourDecoder(Decoder):
+    """Image-prior decoder whose logits are the tile's ``[0, 1]`` RGB pixels."""
 
-    Lets a test paint regions a known colour and assert they land at the right place after
-    tiling/blending. Crops the (padded) input back to ``target_size`` via the geometry, so
-    its output matches the real head's ``(B, C, target_h, target_w)`` contract.
-    """
+    consumes_image = True
 
-    def __init__(self, geometry):
-        self._g = geometry
-        self.task_head = SimpleNamespace(num_classes=3)
+    def forward(self, X, image):
+        return image * 10.0
 
-    def __call__(self, X):
-        return SimpleNamespace(logits=_color_logits(self._g, X))
+    @property
+    def num_classes(self) -> int:
+        return 3
 
 
-class _GridModel:
-    """Model exposing the encode/forward_from_grid split (mirrors LiveSegmentationModel).
-
-    Counts ``encode`` calls so a test can assert the ensemble encodes a shared tile **once**.
-    ``encode`` is a pass-through (the 'grid' is the padded input), so ``forward_from_grid``
-    decodes colour exactly like :class:`_ColorModel`.
-    """
-
-    def __init__(self, geometry, kit):
-        self._g = geometry
-        self.kit = kit
-        self.task_head = SimpleNamespace(num_classes=3)
-        self.encode_calls = 0
-
-    def encode(self, X):
-        self.encode_calls += 1
-        return X
-
-    def forward_from_grid(self, grid):
-        return SimpleNamespace(logits=_color_logits(self._g, grid))
-
-    def __call__(self, X):
-        return self.forward_from_grid(self.encode(X))
+def _model(encoder, decoder=None) -> DenseModel:
+    head = SegmentationHead(num_classes=3, geometry=encoder.geometry)
+    return DenseModel(decoder or _ColourDecoder(), head, encoder=encoder).eval()
 
 
 def _predictor(models, *, spacing_um=None):
-    geom = compute_dense_geometry(target_size=TILE, patch_size=PATCH)
-    return SlidingWindowSegmentationPredictor(
-        models=models,
-        geometry=geom,
-        preprocessor=_preprocessor,
-        device=torch.device("cpu"),
-        spacing_um=spacing_um,
+    return SlidingWindowSegmentationPredictor.from_encoder(
+        models[0].encoder, models, spacing_um=spacing_um
     )
 
 
-def _geom():
-    return compute_dense_geometry(target_size=TILE, patch_size=PATCH)
-
-
-def test_build_live_segmentation_source_prepares_public_dense_kit(monkeypatch):
-    """Inference can rebuild a live source from a saved config without loading a Dataset."""
-
-    class _Kit:
-        geometry = SimpleNamespace(
-            target_size=(8, 8),
-            patch_size=(4, 4),
-            encoded_size=(8, 8),
-            grid_shape=(2, 2),
-            pad=(0, 0, 0, 0),
-            crop_box=(0, 0, 8, 8),
-        )
-
-        @staticmethod
-        def preprocessor():
-            return _preprocessor
-
-        @staticmethod
-        def encode(batch):
-            return torch.zeros((batch.shape[0], 7, 2, 2), dtype=torch.float32)
-
-    prepared = {}
-
-    class _Model:
-        device = torch.device("cpu")
-
-        def prepare_dense_encoder(self, *, dense, execution):
-            prepared["dense"] = dense
-            prepared["execution"] = execution
-            return _Kit()
-
-    import slide2vec
-
-    monkeypatch.setattr(
-        slide2vec.Model,
-        "from_preset",
-        lambda *args, **kwargs: _Model(),
-    )
-    config = PipelineConfig(
-        dataset_csv="development.csv",
-        splits_csv="development_splits.csv",
-        output_root="runs",
-        dataset_type="segmentation",
-        encoder=EncoderConfig(name="virchow2", precision="fp32", output_variant="cls"),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=8,
-            requested_spacing_um=0.5,
-            dense_window_size=8,
-            feature_kind="patch_features",
-        ),
-        aggregator=None,
-        execution=ExecutionConfig(num_gpus=1, precision="fp32"),
-        augmentation=AugmentationConfig(),
-    )
-
-    source = build_live_segmentation_source(config)
-
-    assert source.feature_dim == 7
-    assert source.spacing_um == 0.5
-    assert source.geometry.target_size == (8, 8)
-    assert prepared["dense"].target_size == 8
-    assert prepared["dense"].spacing_um == 0.5
-
-
-def test_build_live_segmentation_source_requests_indexed_cuda_device(monkeypatch):
-    """Live encoding names the active CUDA device explicitly at the slide2vec boundary."""
-
-    class ProbeComplete(Exception):
-        pass
-
-    requested = {}
-
-    def from_preset(*args, **kwargs):
-        requested["device"] = kwargs.get("device")
-        raise ProbeComplete
-
-    import slide2vec
-
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "current_device", lambda: 2)
-    monkeypatch.setattr(slide2vec.Model, "from_preset", from_preset)
-    config = PipelineConfig(
-        dataset_csv="development.csv",
-        splits_csv="development_splits.csv",
-        output_root="runs",
-        dataset_type="segmentation",
-        encoder=EncoderConfig(name="virchow2", precision="fp32", output_variant="cls"),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=8,
-            requested_spacing_um=0.5,
-            dense_window_size=8,
-            feature_kind="patch_features",
-        ),
-        aggregator=None,
-        execution=ExecutionConfig(num_gpus=1, precision="fp32"),
-        augmentation=AugmentationConfig(),
-    )
-
-    with pytest.raises(ProbeComplete):
-        build_live_segmentation_source(config)
-
-    assert requested["device"] == "cuda:2"
+def _painted(h, w):
+    """Left half red, right half blue."""
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    img[:, : w // 2, 0] = 255
+    img[:, w // 2 :, 2] = 255
+    return img
 
 
 # --- pure window math ---------------------------------------------------------------
@@ -218,7 +90,6 @@ def test_hann2d_strictly_positive_and_shaped():
     w = _hann2d(TILE, TILE)
     assert w.shape == (TILE, TILE)
     assert (w > 0).all()  # no zero weights anywhere → wsum never zero where a tile covers
-    # a length-1 axis is uniform (weight 1) while the other axis keeps its Hann
     assert _hann2d(1, 5).shape == (1, 5) and (_hann2d(1, 5) > 0).all()
     assert np.allclose(_hann2d(1, 1), 1.0)  # fully degenerate → uniform
 
@@ -227,7 +98,7 @@ def test_hann2d_strictly_positive_and_shaped():
 
 
 def test_output_matches_input_dims_multi_tile():
-    pred = _predictor([_ColorModel(_geom())])
+    pred = _predictor([_model(_CountingEncoder())])
     img = np.zeros((150, 200, 3), dtype=np.uint8)
     img[..., 1] = 255  # all green → class 1 everywhere
     out = pred.predict_array(img, overlap=0.5)
@@ -237,7 +108,7 @@ def test_output_matches_input_dims_multi_tile():
 
 
 def test_sub_tile_image_reflect_padded_to_one_tile():
-    pred = _predictor([_ColorModel(_geom())])
+    pred = _predictor([_model(_CountingEncoder())])
     img = np.zeros((40, 50, 3), dtype=np.uint8)
     img[..., 2] = 255  # blue → class 2
     out = pred.predict_array(img, overlap=0.0)
@@ -246,8 +117,7 @@ def test_sub_tile_image_reflect_padded_to_one_tile():
 
 
 def test_spatial_regions_land_in_the_right_place():
-    # Left half red (class 0), right half green (class 1); the seam must split cleanly.
-    pred = _predictor([_ColorModel(_geom())])
+    pred = _predictor([_model(_CountingEncoder())])
     img = np.zeros((128, 256, 3), dtype=np.uint8)
     img[:, :128, 0] = 255  # left = red
     img[:, 128:, 1] = 255  # right = green
@@ -259,7 +129,7 @@ def test_spatial_regions_land_in_the_right_place():
 
 
 def test_return_probs_shape_and_normalization():
-    pred = _predictor([_ColorModel(_geom())])
+    pred = _predictor([_model(_CountingEncoder())])
     img = np.zeros((96, 96, 3), dtype=np.uint8)
     img[..., 0] = 200
     out = pred.predict_array(img, overlap=0.25, return_probs=True)
@@ -268,142 +138,68 @@ def test_return_probs_shape_and_normalization():
 
 
 def test_ensemble_averages_models():
-    # Two identical models → same result as one (mean of equal softmaxes).
-    geom = _geom()
+    encoder = _CountingEncoder()
     img = np.zeros((80, 80, 3), dtype=np.uint8)
     img[..., 1] = 255
-    one = _predictor([_ColorModel(geom)]).predict_array(img, overlap=0.0)
-    two = _predictor([_ColorModel(geom), _ColorModel(geom)]).predict_array(img, overlap=0.0)
+    one = _predictor([_model(encoder)]).predict_array(img, overlap=0.0)
+    two = _predictor([_model(encoder), _model(encoder)]).predict_array(img, overlap=0.0)
     assert np.array_equal(one.labels, two.labels)
 
 
 def test_overlap_validation():
-    pred = _predictor([_ColorModel(_geom())])
-    img = np.zeros((64, 64, 3), dtype=np.uint8)
+    pred = _predictor([_model(_CountingEncoder())])
     with pytest.raises(ValueError, match="overlap"):
-        pred.predict_array(img, overlap=1.0)
+        pred.predict_array(np.zeros((64, 64, 3), dtype=np.uint8), overlap=1.0)
 
 
-# --- encode-once-decode-per-fold ----------------------------------------------------
+# --- encode once, decode per fold -----------------------------------------------------
 
 
-def test_shared_encoder_ensemble_encodes_once():
-    # Two folds sharing one encoder object → the tile is encoded once, both decoders reused.
-    geom = _geom()
-    encoder = object()  # shared sentinel
-    a = _GridModel(geom, encoder)
-    b = _GridModel(geom, encoder)
+def test_folds_sharing_a_stage_encode_each_batch_once():
+    shared = _CountingEncoder()
     img = np.zeros((128, 128, 3), dtype=np.uint8)
     img[..., 1] = 255
-    out = _predictor([a, b]).predict_array(img, overlap=0.5)
+    out = _predictor([_model(shared), _model(shared)]).predict_array(img, overlap=0.0, batch_size=8)
     assert (out.labels == 1).all()
-    # Encoder ran on model a only; b's decoder reused a's grid (b never encodes).
-    assert a.encode_calls > 0 and b.encode_calls == 0
+    assert shared.calls == 1  # 4 tiles, one batch, one encode for both folds
 
 
-def test_heterogeneous_encoders_fall_back_to_per_model_encode():
-    # Different encoder objects → cannot share; each model encodes (fallback path).
-    geom = _geom()
-    a = _GridModel(geom, object())
-    b = _GridModel(geom, object())
+def test_folds_with_their_own_stages_each_encode():
+    a, b = _CountingEncoder(), _CountingEncoder()
     img = np.zeros((96, 96, 3), dtype=np.uint8)
     img[..., 2] = 255
-    out = _predictor([a, b]).predict_array(img, overlap=0.0)
+    out = _predictor([_model(a), _model(b)]).predict_array(img, overlap=0.0)
     assert (out.labels == 2).all()
-    assert a.encode_calls > 0 and b.encode_calls > 0  # both encoded
-
-
-def test_plain_callable_models_use_fallback():
-    # _ColorModel has no encode/forward_from_grid → fallback path still works.
-    pred = _predictor([_ColorModel(_geom()), _ColorModel(_geom())])
-    img = np.zeros((80, 80, 3), dtype=np.uint8)
-    img[..., 0] = 255
-    out = pred.predict_array(img, overlap=0.0)
-    assert (out.labels == 0).all()
+    assert a.calls > 0 and b.calls > 0
 
 
 # --- image-prior decoders ------------------------------------------------------------
 
 
-class _ZeroGridKit:
-    """Frozen-encoder stand-in: a zero ``(B, d, h, w)`` grid, so only the pixels carry signal."""
-
-    def encode(self, X):
-        gh, gw = (int(s) // PATCH for s in X.shape[-2:])
-        return torch.zeros(X.shape[0], 8, gh, gw)
-
-
-class _ImageColorDecoder(torch.nn.Module):
-    """Image-prior decoder whose logits are the RGB pixels (class = dominant colour)."""
-
-    consumes_image = True
-
-    def forward(self, X, image):
-        return image * 10.0
-
-
-class _Head(torch.nn.Module):
-    num_classes = 3
-
-    def forward(self, logits):
-        return logits
-
-
-def _live_model(kit, decoder):
-    from soma.training.model import LiveSegmentationModel
-
-    return LiveSegmentationModel(kit=kit, decoder=decoder, task_head=_Head()).eval()
-
-
-def _painted(h, w):
-    """Left half red, right half blue."""
-    img = np.zeros((h, w, 3), dtype=np.uint8)
-    img[:, : w // 2, 0] = 255
-    img[:, w // 2 :, 2] = 255
-    return img
-
-
-@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
-def test_image_prior_decoder_receives_each_tiles_pixels(shared_kit):
-    # Both predictor routes hand an image-prior decoder the tile's own [0, 1] RGB crop,
-    # so a pixel-driven prediction lands where the colours are painted.
-    kit = _ZeroGridKit()
+@pytest.mark.parametrize("shared", [True, False], ids=["shared-stage", "per-model"])
+def test_image_prior_decoder_receives_each_tiles_pixels(shared):
+    stage = _CountingEncoder()
     models = [
-        _live_model(kit if shared_kit else _ZeroGridKit(), _ImageColorDecoder())
-        for _ in range(2)
+        _model(stage if shared else _CountingEncoder(), _ImageColourDecoder()) for _ in range(2)
     ]
     out = _predictor(models).predict_array(_painted(96, 160), overlap=0.5)
     assert (out.labels[:, :70] == 0).all()
     assert (out.labels[:, 90:] == 2).all()
 
 
-@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
-def test_mixed_ensemble_passes_pixels_only_to_image_prior_members(shared_kit):
-    # A grid-only member (one-argument forward) ensembled with an image-prior member:
-    # only the latter gets the pixels. Both predict the painted colour.
-    geom = _geom()
-    if shared_kit:
-        kit = _ZeroGridKit()
-        models = [_GridModel(geom, kit), _live_model(kit, _ImageColorDecoder())]
-    else:
-        models = [_ColorModel(geom), _live_model(_ZeroGridKit(), _ImageColorDecoder())]
+def test_mixed_ensemble_hands_pixels_only_to_the_image_prior_member():
+    stage = _CountingEncoder()
+    models = [_model(stage), _model(stage, _ImageColourDecoder())]
     out = _predictor(models).predict_array(_painted(96, 160), overlap=0.5)
     assert (out.labels[:, :70] == 0).all()
     assert (out.labels[:, 90:] == 2).all()
 
 
-@pytest.mark.parametrize("shared_kit", [True, False], ids=["shared-encoder", "per-model"])
-def test_eva_image_decoder_predicts_through_both_routes(shared_kit):
+def test_eva_image_decoder_predicts_through_the_predictor():
     from soma.benchmarks.eva_segmentation import EvaConvWithImageDecoder
 
-    kit = _ZeroGridKit()
-    models = [
-        _live_model(
-            kit if shared_kit else _ZeroGridKit(),
-            EvaConvWithImageDecoder(input_dim=8, num_classes=3),
-        )
-        for _ in range(2)
-    ]
+    stage = FakeEncoder(target_size=TILE, patch_size=PATCH)
+    models = [_model(stage, EvaConvWithImageDecoder(input_dim=3, num_classes=3)) for _ in range(2)]
     out = _predictor(models).predict_array(_painted(80, 100), overlap=0.25)
     assert out.labels.shape == (80, 100)
 
@@ -420,47 +216,141 @@ def _write_png(tmp_path, h, w, channel):
 
 
 def test_predict_image_downscales_finer_roi_and_returns_native_dims(tmp_path):
-    # Finer than training (0.46 < 0.5) → area downscale, prediction mapped back to native dims.
     path = _write_png(tmp_path, 120, 160, channel=1)  # green → class 1
-    pred = _predictor([_ColorModel(_geom())], spacing_um=0.5)
+    pred = _predictor([_model(_CountingEncoder())], spacing_um=0.5)
     out = pred.predict_image(path, native_spacing_um=0.46, overlap=0.5)
     assert out.labels.shape == (120, 160)  # native PNG dims, not the resampled size
     assert (out.labels == 1).all()
     assert out.native_spacing_um == 0.46
-    assert out.applied_scale is not None and out.applied_scale < 1.0  # downscaled
+    assert out.applied_scale is not None and out.applied_scale < 1.0
 
 
 def test_predict_image_coarser_roi_predicts_at_native_and_warns(tmp_path):
-    # Coarser than training (0.53 > 0.5), beyond tolerance, default → no upsample + warn.
     path = _write_png(tmp_path, 90, 110, channel=2)  # blue → class 2
-    pred = _predictor([_ColorModel(_geom())], spacing_um=0.5)
+    pred = _predictor([_model(_CountingEncoder())], spacing_um=0.5)
     with pytest.warns(UserWarning, match="coarser"):
         out = pred.predict_image(path, native_spacing_um=0.53, overlap=0.0)
     assert out.labels.shape == (90, 110)
     assert (out.labels == 2).all()
-    assert out.native_spacing_um == 0.53
-    assert out.applied_scale is None  # predicted at native, no resample
+    assert out.applied_scale is None
 
 
 def test_predict_image_coarser_roi_upsamples_when_allowed(tmp_path):
-    # Same coarser ROI, but allow_upsample=True → linear upscale, no warning, native dims back.
     path = _write_png(tmp_path, 90, 110, channel=2)
-    pred = _predictor([_ColorModel(_geom())], spacing_um=0.5)
+    pred = _predictor([_model(_CountingEncoder())], spacing_um=0.5)
     import warnings as _w
 
     with _w.catch_warnings():
-        _w.simplefilter("error")  # any warning would fail the test
+        _w.simplefilter("error")
         out = pred.predict_image(path, native_spacing_um=0.53, allow_upsample=True, overlap=0.0)
     assert out.labels.shape == (90, 110)
     assert (out.labels == 2).all()
-    assert out.applied_scale is not None and out.applied_scale > 1.0  # upscaled
+    assert out.applied_scale is not None and out.applied_scale > 1.0
 
 
 def test_predict_image_no_resample_within_tolerance(tmp_path):
-    # native within tolerance of training spacing → no resize, exact native dims, no scale.
     path = _write_png(tmp_path, 70, 70, channel=2)
-    pred = _predictor([_ColorModel(_geom())], spacing_um=0.5)
+    pred = _predictor([_model(_CountingEncoder())], spacing_um=0.5)
     out = pred.predict_image(path, native_spacing_um=0.51, overlap=0.0)
     assert out.labels.shape == (70, 70)
     assert (out.labels == 2).all()
     assert out.applied_scale is None and out.native_spacing_um == 0.51
+
+
+# --- the slide2vec boundary: live_encoder + build_dense_models ------------------------
+
+
+class _Kit:
+    """A stub ``DenseEncodeKit``: crop box in slide2vec's (left, top, right, bottom)."""
+
+    geometry = SimpleNamespace(
+        target_size=(8, 8),
+        patch_size=(4, 4),
+        encoded_size=(8, 8),
+        grid_shape=(2, 2),
+        pad=(0, 0),
+        crop_box=(0, 0, 8, 8),
+    )
+
+    @staticmethod
+    def preprocessor():
+        return lambda pixels: pixels.to(torch.float32) / 255.0
+
+    @staticmethod
+    def encode(batch):
+        return torch.zeros((batch.shape[0], 7, 2, 2), dtype=torch.float32)
+
+
+def test_live_encoder_wraps_the_public_dense_kit(monkeypatch):
+    import slide2vec
+
+    from soma.extract import FrozenEncoder, live_encoder
+
+    prepared = {}
+
+    class _Model:
+        device = torch.device("cpu")
+
+        def prepare_dense_encoder(self, *, dense, execution):
+            prepared["dense"], prepared["execution"] = dense, execution
+            return _Kit()
+
+    monkeypatch.setattr(slide2vec.Model, "from_preset", lambda *a, **k: _Model())
+    stage = live_encoder("virchow2", target_size=8, spacing_um=0.5, window=8, precision="fp32")
+
+    assert isinstance(stage, FrozenEncoder)
+    assert stage.feature_dim == 7  # probed through the kit, not the preset's pooled width
+    assert tuple(stage.geometry.crop_box) == (0, 0, 8, 8)
+    assert sum(p.numel() for p in stage.parameters()) == 0
+    assert prepared["dense"].target_size == 8 and prepared["dense"].spacing_um == 0.5
+    assert prepared["dense"].window_size == 8
+    # Raw uint8 pixels are preprocessed by the stage itself.
+    assert tuple(stage(torch.zeros(2, 3, 8, 8, dtype=torch.uint8)).shape) == (2, 7, 2, 2)
+
+
+def test_live_encoder_requests_the_indexed_cuda_device(monkeypatch):
+    import slide2vec
+
+    from soma.extract import live_encoder
+
+    class ProbeComplete(Exception):
+        pass
+
+    requested = {}
+
+    def from_preset(*args, **kwargs):
+        requested["device"] = kwargs.get("device")
+        raise ProbeComplete
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 2)
+    monkeypatch.setattr(slide2vec.Model, "from_preset", from_preset)
+    with pytest.raises(ProbeComplete):
+        live_encoder("virchow2", target_size=8, spacing_um=0.5, precision="fp32")
+    assert requested["device"] == "cuda:2"
+
+
+def test_build_dense_models_loads_fold_checkpoints_over_one_stage(tmp_path):
+    from soma.decoders.registry import build_decoder_for_grid
+    from soma.dense.predict import build_dense_models
+
+    stage = FakeEncoder(target_size=TILE, patch_size=PATCH)
+    paths = []
+    for fold in range(2):
+        torch.manual_seed(fold)
+        decoder = build_decoder_for_grid(
+            "linear", {}, geometry=stage.geometry, input_dim=stage.feature_dim, num_classes=3
+        )
+        trained = DenseModel(decoder, SegmentationHead(num_classes=3, geometry=stage.geometry))
+        path = tmp_path / f"fold_{fold}.pt"
+        torch.save({"model_state_dict": trained.state_dict()}, path)
+        paths.append(path)
+
+    models = build_dense_models(
+        stage, decoder_name="linear", decoder_params={}, num_classes=3, ckpt_paths=paths, device="cpu"
+    )
+    assert len(models) == 2 and all(m.encoder is stage for m in models)
+    # Each fold's own weights were loaded.
+    assert not torch.equal(next(models[0].decoder.parameters()), next(models[1].decoder.parameters()))
+    out = _predictor(models).predict_array(_painted(64, 64), overlap=0.0)
+    assert out.labels.shape == (64, 64)

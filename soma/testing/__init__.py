@@ -1,5 +1,6 @@
-"""Conformance checks for soma's protocols: the :mod:`soma.data` sources,
-:class:`soma.learn.Learner` and set-shape :class:`soma.tasks.TaskHead` implementations.
+"""Conformance checks for soma's protocols: the :mod:`soma.data` sources, the live
+path's encoder stage, :class:`soma.learn.Learner` and :class:`soma.tasks.TaskHead`
+implementations, plus :class:`FakeEncoder`, a parameter-free stand-in encoder stage.
 
 Plain functions usable from pytest or a notebook. soma runs them on its own
 implementations; users run them on custom classes. Each raises
@@ -14,13 +15,17 @@ import torch
 
 from soma.data.geometry import GridGeometry
 from soma.data.sources import Points
+from soma.testing._encoder import FakeEncoder, check_encoder_stage, check_image_source
 from soma.testing._errors import ConformanceError
 from soma.testing._learner import check_learner
 from soma.testing._task_head import check_task_head
 
 __all__ = [
     "ConformanceError",
+    "FakeEncoder",
+    "check_encoder_stage",
     "check_grid_source",
+    "check_image_source",
     "check_learner",
     "check_set_source",
     "check_target_source",

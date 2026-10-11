@@ -3,7 +3,8 @@
 Each scenario writes synthetic images to disk, then runs them through the real
 `soma <config.yaml>` entry point: tiling, feature extraction, caching, training and
 evaluation. Nothing is mocked except the encoder, which is weight-free: it returns
-the mean RGB of each tile or 8x8 patch (`tests/dense_literal_encoder.py`). The
+the mean RGB of each tile or 8x8 patch (`tests/dense_literal_encoder.py`, or
+`soma.testing.FakeEncoder` as the frozen encoder stage of the live grid path). The
 synthetic labels are a function of tissue colour, so the model can only score well
 if the correct pixels, features and labels reach it.
 
@@ -17,12 +18,18 @@ if the correct pixels, features and labels reach it.
 | `mil_aggregator_<name>` | every registered aggregator on a rigged task (a slide is positive iff it has marker tiles): test accuracy and AUROC must be exactly 1, and re-scoring the trained model must give the same logits alone, in one padded batch, with garbage in the padding, and (for set-function aggregators) with tiles shuffled |
 | `mil_aggregator_control` | the same cohort with labels independent of the markers must stay near chance, so the perfect scores above cannot come from a label leak |
 | `tile_binary_classification` | `dataset_type: tile` (no bag, no aggregator) |
-| `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU |
-| `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance |
+| `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU; the label maps of tune and test land in `predictions_tune/` / `predictions_test/` |
+| `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance; the points land in `predictions_test.parquet` and no `detection_thresholds.json` is written |
+| `dense_live_segmentation` | `feature_mode: live` through the CLI, with the run's encoder stage replaced by `FakeEncoder`: one stage built, zero ROIs extracted to the cache, the train split augmented through an `augmentation: {name: segmentation, params}` leaf → Dice |
+| `dense_live_detection` | `feature_mode: live` detection through the CLI with `FakeEncoder` (no augmentation) → F1 at a matching distance |
+| `grid_live_segmentation` | the verbs over pixels: `TileImageSource` + `FakeEncoder` + `LabelMapSource` → `soma.learn.loaders` (with `SegmentationAugment`) → `soma.fit` → `soma.predict` (`LabelMapPredictions`) → `soma.evaluate`; a `save` / `load` round trip scores the same |
+| `grid_live_detection` | the verbs over pixels with a `PointSource`: `loaders` → `fit` → `predict` (`PointPredictions`, every score above `min_score`) → per-class `sweep_threshold` on tune → `evaluate` on test; a parquet round trip scores the same |
 | `reproduce_eva_consep` | `soma reproduce eva/consep --raw-root …` on a synthetic HoVer-Net layout: curation (16 tiles per image, 224 px) → dense run with the benchmark-private `eva_conv_with_image` decoder (fed the tile's pixels) and `eva_segmentation` head → `test/foreground_mean_dice` scored |
 | `reproduce_eva_{camelyon16_small,panda_small}` | `soma reproduce eva/<dataset> --raw-root …` on tiny pyramidal-TIFF raw roots: the curator samples EVA's tiles into one hs2p artifact per slide → soma skips tiling and embeds exactly those tiles → `eva_abmil` + the EVA head → `test/balanced_accuracy` scored |
 | `extension_custom_head_decoder` | a user-registered `SegmentationHead` subclass (pure Dice loss) and a user-registered `Decoder` train through the CLI; both overrides are proven to run |
+| `extension_custom_grid_learner` | a `DenseLearner` subclass adding a smoothness penalty (one `training_step` override) trains a cached segmentation run through the CLI, named by dotted import path in `training.learner` |
 | `extension_custom_learner` | a `MILLearner` subclass adding an attention-entropy term (one `training_step` override) trains a user-registered head (label-smoothed loss) through the CLI, named by dotted import path in `training.learner`; the history carries `loss` columns without a `tune_` prefix; its `predict_step` override adds an `attention_entropy` column to `predictions_test.parquet`, and the custom head passes `check_task_head` |
+| `evaluate_external_grid_predictions` | a hand-written label-map directory and points parquet are scored by `soma evaluate` against `dataset.csv` (`label_mask_path`, `points_path`) and `splits.csv`, with no run directory: hand-worked Dice, IoU and F1; then, through `soma.evaluate`, greedy matching as a metric-leaf param and a re-score after `with_threshold` |
 | `evaluate_external_predictions` | predictions soma did not produce (a hand-written parquet) are scored against `dataset.csv` / `splits.csv` through `soma.evaluate` and `soma evaluate`, with no run directory: hand-worked AUROC, balanced accuracy, subgroup sizes and an unsplit regression MAE |
 | `verbs_journey` | the library journey over user arrays: `Cohort` + `from_arrays` → `soma.learn.loaders` → `soma.fit` → `soma.predict` → `soma.evaluate`, with string labels mapped through the head's classes |
 

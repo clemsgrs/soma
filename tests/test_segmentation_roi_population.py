@@ -9,9 +9,9 @@ from pathlib import Path
 
 import torch
 
-import soma.training.segmentation_roi_population as population_module
+import soma.learn.roi_population as population_module
 from soma.data._legacy import LegacyRecord
-from soma.training.segmentation_roi_population import (
+from soma.learn.roi_population import (
     resolve_segmentation_roi_population,
 )
 

@@ -111,8 +111,23 @@ changes require a newly reviewed protocol.
 
 ## 4. Report and select from development evidence
 
-After all folds complete, pass the run-generated ROI sample-to-patient metadata and the
-ten generic evidence files to the project reporter:
+After all folds complete, recompute each fold's per-ROI confusion evidence from its saved
+tune label maps (`predictions_tune/`) against the run's ROI mask crops:
+
+```python
+from examples.beetle.report_oof import roi_crop_targets, write_tune_evidence
+from examples.beetle.protocol import CLASSES, IGNORE
+
+for run in ("<uniform-run>", "<class-conditioned-run>"):
+    write_tune_evidence(
+        run,
+        num_folds=5,
+        targets=roi_crop_targets(f"{run}/segmentation_rois/dataset.csv", classes=CLASSES, ignore=IGNORE),
+    )
+```
+
+Then pass the run-generated ROI sample-to-patient metadata and the ten generic evidence
+files to the project reporter:
 
 ```bash
 python -m examples.beetle.report_oof \
