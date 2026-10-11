@@ -117,3 +117,17 @@ def test_check_learner_catches_a_parameter_outside_every_param_group():
     learner, batch = _mil_learner("abmil")
     with pytest.raises(ConformanceError, match="configure_optimizers"):
         check_learner(Partial(learner.model), batch, budget=BUDGET)
+
+
+def test_check_learner_catches_an_optimized_parameter_outside_the_trainable_state():
+    class WithAux(MILLearner):
+        def __init__(self, model):
+            super().__init__(model)
+            self.aux = torch.nn.Linear(D, 1)
+
+        def training_step(self, batch):
+            return super().training_step(batch) + self.aux(batch.features).mean()
+
+    learner, batch = _mil_learner("mean_pool")
+    with pytest.raises(ConformanceError, match=r"trainable_state_dict.*aux\.weight"):
+        check_learner(WithAux(learner.model), batch, budget=BUDGET)

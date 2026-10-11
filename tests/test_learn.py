@@ -95,6 +95,14 @@ class TestMILLearnerContract:
         assert optimizer.param_groups[0]["weight_decay"] == pytest.approx(1e-5)
         assert schedulers == []
 
+    @pytest.mark.parametrize("leaf", [None, "none", {"name": "none"}])
+    def test_a_disabled_scheduler_leaf_installs_nothing_in_either_form(self, leaf):
+        _, schedulers = _learner(schedulers=[leaf, "cosine"]).configure_optimizers(
+            Budget(max_epochs=7, max_steps=None, updates_per_epoch=4)
+        )
+        assert len(schedulers) == 1
+        assert isinstance(schedulers[0].scheduler, torch.optim.lr_scheduler.CosineAnnealingLR)
+
     def test_cosine_derives_t_max_from_the_epoch_budget(self):
         learner = _learner(schedulers=["cosine"])
         _, schedulers = learner.configure_optimizers(
@@ -500,6 +508,54 @@ class TestCallbacks:
         for k, v in learner.trainable_state_dict().items():
             assert torch.equal(v, snapshots[1][k])
 
+    def test_checkpoint_refuses_an_optimized_parameter_outside_the_trainable_state(self):
+        class WithAux(MILLearner):
+            """Owns a trainable module but keeps the default (model-only) trainable state."""
+
+            def __init__(self, model):
+                super().__init__(model)
+                self.aux = torch.nn.Linear(D, 1)
+
+        with pytest.raises(ValueError, match=r"aux\.weight"):
+            Trainer(max_epochs=1, callbacks=[Checkpoint()], device="cpu").fit(
+                WithAux(_learner().model), _bag_loader(), _bag_loader()
+            )
+
+    def test_checkpoint_restores_learner_owned_state_the_learner_declares(self):
+        class WithAux(MILLearner):
+            def __init__(self, model):
+                super().__init__(model)
+                self.aux = torch.nn.Linear(D, 1)
+
+            def training_step(self, batch):
+                return super().training_step(batch) + self.aux(batch.features).mean()
+
+            def trainable_state_dict(self):
+                return self.state_dict()
+
+            def load_trainable_state_dict(self, state):
+                self.load_state_dict(state)
+
+        class Monotone:
+            values = iter([0.9, 0.2, 0.7])
+
+            def on_validation_end(self, trainer, learner, summary):
+                summary["score"] = next(self.values)
+
+        snapshots = {}
+
+        class Snap:
+            def on_epoch_end(self, trainer, learner):
+                snapshots[trainer.epoch] = learner.aux.weight.detach().clone()
+
+        learner = WithAux(_learner().model)
+        result = Trainer(
+            max_epochs=3, callbacks=[Monotone(), Snap(), Checkpoint(monitor="score")], device="cpu"
+        ).fit(learner, _bag_loader(), _bag_loader())
+        assert result.selected_epoch == 1
+        assert torch.equal(learner.aux.weight, snapshots[1])
+        assert not torch.equal(snapshots[1], snapshots[2])
+
     def test_checkpoint_writes_best_model_only_with_a_dirpath(self, tmp_path: Path):
         learner = _learner()
         result = Trainer(
@@ -716,6 +772,26 @@ class TestFitSugar:
         learner = Boom(_learner().model)
         with pytest.raises(RuntimeError, match="boom"):
             Trainer(max_epochs=2, callbacks=[progress], device="cpu").fit(learner, _bag_loader())
+        assert progress._live is None
+        assert sys.stdout is stdout
+
+    def test_progress_stops_the_live_panel_when_a_later_callback_fails_at_fit_start(self):
+        import io
+        import sys
+
+        from rich.console import Console
+
+        from soma.learn import Progress
+
+        class Boom:
+            def on_fit_start(self, trainer, learner):
+                raise RuntimeError("boom at fit start")
+
+        stdout = sys.stdout
+        console = Console(file=io.StringIO(), force_terminal=True, width=120)
+        progress = Progress(style="rich", console=console)
+        with pytest.raises(RuntimeError, match="boom at fit start"):
+            Trainer(max_epochs=1, callbacks=[progress, Boom()], device="cpu").fit(_learner(), _bag_loader())
         assert progress._live is None
         assert sys.stdout is stdout
 

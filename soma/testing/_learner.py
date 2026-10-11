@@ -7,7 +7,7 @@ from typing import Any
 
 import torch
 
-from soma.learn.learner import Budget, Learner, SchedulerSpec, StepOutput
+from soma.learn.learner import Budget, Learner, SchedulerSpec, StepOutput, uncovered_parameters
 from soma.testing._errors import ConformanceError
 
 __all__ = ["check_learner"]
@@ -19,7 +19,8 @@ def check_learner(learner: Learner, batch: Any, *, budget: Budget) -> None:
     Asserts: every trainable parameter sits in an optimizer param group; one
     ``training_step`` gives a finite scalar loss with gradients; ``validation_step``
     twice then ``validation_summary`` gives finite floats including ``"loss"``;
-    ``trainable_state_dict`` round-trips; ``transfer_batch`` preserves the batch type.
+    ``trainable_state_dict`` covers every optimized parameter and round-trips;
+    ``transfer_batch`` preserves the batch type.
     """
     device = torch.device("cpu")
     learner = learner.to(device)
@@ -97,10 +98,15 @@ def check_learner(learner: Learner, batch: Any, *, budget: Budget) -> None:
         if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
             raise ConformanceError("validation_summary", f"'{key}' must be a finite float, got {value!r}")
 
-    # trainable_state_dict round trip
+    # trainable_state_dict covers every optimized parameter and round-trips
     state = learner.trainable_state_dict()
     if not isinstance(state, dict) or not all(torch.is_tensor(v) for v in state.values()):
         raise ConformanceError("trainable_state_dict", "must return a dict of tensors")
+    uncovered = uncovered_parameters(learner, optimizer)
+    if uncovered:
+        raise ConformanceError(
+            "trainable_state_dict", f"optimized parameters a checkpoint would not restore: {uncovered[:5]}"
+        )
     reference = {k: v.detach().clone() for k, v in state.items()}
     with torch.no_grad():
         for p in learner.parameters():

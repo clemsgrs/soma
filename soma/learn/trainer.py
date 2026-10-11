@@ -100,13 +100,13 @@ class Trainer:
         self.schedulers: list[SchedulerSpec] = list(specs)
         self.started_at = time.perf_counter()
         self.should_stop, self.optimizer_steps, self.selection = False, 0, None
-        self._call("on_fit_start", learner)
         try:
+            self._call("on_fit_start", learner)
             self._run_epochs(learner, train_loader, tune_loader)
+            self._call("on_fit_end", learner)
         except BaseException as exc:
             self._call("on_exception", learner, exc)
             raise
-        self._call("on_fit_end", learner)
         selected_epoch, monitor, path = self.selection or (
             self.epoch,
             ("loss", float((self.summary or {}).get("loss", float("nan")))),

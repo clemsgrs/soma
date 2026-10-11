@@ -25,6 +25,7 @@ from rich.table import Table
 from rich.text import Text
 
 from soma.atomic_io import atomic_torch_save
+from soma.learn.learner import uncovered_parameters
 
 __all__ = ["Checkpoint", "EarlyStopping", "History", "Progress"]
 
@@ -106,6 +107,14 @@ class Checkpoint:
             raise ValueError(
                 "Checkpoint(selection='last') keeps the final epoch and never early-stops; "
                 "remove the EarlyStopping callback."
+            )
+        missing = uncovered_parameters(learner, trainer.optimizer)
+        if missing:
+            raise ValueError(
+                "Checkpoint restores trainable_state_dict(), but the optimizer updates "
+                f"parameters it does not hold: {missing[:5]}. Override trainable_state_dict / "
+                "load_trainable_state_dict to cover the learner-owned state, or leave it out "
+                "of the optimizer."
             )
         # Without a tune loader nothing is evaluated: selection falls back to the last epoch.
         self._last = self.selection == "last" or not trainer.validates

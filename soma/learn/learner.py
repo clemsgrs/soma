@@ -28,6 +28,7 @@ __all__ = [
     "optimizer_registry",
     "resolve_leaf",
     "scheduler_registry",
+    "uncovered_parameters",
 ]
 
 
@@ -180,7 +181,7 @@ class Learner(nn.Module):
         optimizer = cls(trainable, **params)
         specs: list[SchedulerSpec] = []
         for leaf in self.scheduler_leaves:
-            if leaf is None or leaf == "none":
+            if (leaf.get("name") if isinstance(leaf, Mapping) else leaf) in (None, "none"):
                 continue
             scls, sparams, extra = resolve_leaf(leaf, scheduler_registry)
             cosine = scls is torch.optim.lr_scheduler.CosineAnnealingLR
@@ -199,10 +200,31 @@ class Learner(nn.Module):
         return _move(batch, device)
 
     def trainable_state_dict(self) -> dict[str, Tensor]:
+        """What a checkpoint snapshots and restores: the model's ``state_dict`` by default,
+        so ``best_model.pt`` loads into the bare model. A learner that owns trainable
+        modules of its own widens this pair to cover them (``self.state_dict()``);
+        :class:`~soma.learn.callbacks.Checkpoint` refuses an optimized parameter it
+        could not restore."""
         return self.model.state_dict()
 
     def load_trainable_state_dict(self, state: Mapping[str, Tensor]) -> None:
         self.model.load_state_dict(state)
+
+
+def uncovered_parameters(learner: Learner, optimizer: torch.optim.Optimizer) -> list[str]:
+    """Names of the optimizer's parameters that ``learner.trainable_state_dict()`` omits.
+
+    Coverage is by storage: ``state_dict`` hands out views of the parameters, so a
+    parameter the optimizer updates but no checkpoint restores is one whose storage
+    is absent from the trainable state.
+    """
+    optimized = {p.data_ptr() for group in optimizer.param_groups for p in group["params"]}
+    covered = {t.data_ptr() for t in learner.trainable_state_dict().values() if torch.is_tensor(t)}
+    return [
+        name
+        for name, p in learner.named_parameters()
+        if p.data_ptr() in optimized and p.data_ptr() not in covered
+    ]
 
 
 def _move(value: Any, device: torch.device) -> Any:
