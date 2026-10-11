@@ -112,6 +112,51 @@ constructor accepts ``num_upsample_blocks``, soma derives it from the grid
 geometry unless the config pins it. The head resizes the decoder's logits to
 the mask size, so a decoder may output any spatial resolution.
 
+Custom learner
+--------------
+
+A learner owns the model and the step logic: how a batch is forwarded, how the
+loss is composed, how a validation split is reduced, and which optimizer and
+schedulers train it. soma ships one per shape: :class:`soma.learn.MILLearner`
+for bags and single embeddings, :class:`soma.learn.DenseLearner` for feature
+grids. The generic :class:`soma.learn.Trainer` knows nothing about tasks or
+heads, so an intermediate loss is one override of ``training_step``::
+
+    from soma.learn import MILLearner
+
+
+    class AttentionEntropyLearner(MILLearner):
+        def __init__(self, model, *, weight=0.01, **kwargs):
+            super().__init__(model, **kwargs)
+            self.weight = weight
+
+        def training_step(self, batch):
+            output = self.forward_batch(batch)
+            attention = output.tile_attention.softmax(-1)
+            entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1).mean()
+            return self.compute_loss(output, batch) + self.weight * entropy
+
+Select it in the config by dotted import path (no registration needed) or by a
+name registered in :data:`soma.learn.learner_registry`; ``params`` go to the
+constructor, and the config's ``optimizer`` / ``scheduler`` leaves still apply::
+
+    training:
+      learner:
+        name: my_package.learners.AttentionEntropyLearner
+        params:
+          weight: 0.01
+
+The methods worth overriding are ``training_step`` (the loss), ``validation_step``
+and ``validation_summary`` (how a split is reduced; the summary must contain
+``loss``), ``configure_optimizers(budget)`` (parameter groups, unfreezing),
+``transfer_batch`` (device placement) and ``trainable_state_dict`` (what a
+checkpoint restores in memory: the model's state by default, so a learner that owns
+trainable modules of its own must widen it to cover them; ``best_model.pt`` holds
+the bare model's state either way). :func:`soma.testing.check_learner`
+checks a learner against the contract on one batch. From Python, :func:`soma.fit`
+trains a learner, or a bare model wrapped in its shape's learner, with
+``Checkpoint``, ``EarlyStopping`` and ``Progress`` installed.
+
 Registering before the run
 --------------------------
 

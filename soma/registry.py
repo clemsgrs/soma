@@ -62,6 +62,29 @@ class Registry:
             raise KeyError(msg)
         return self._entries[name].cls
 
+    def resolve(self, name: str) -> type:
+        """Resolve a ``{name, params}`` leaf's ``name``: a registry key or a dotted import path.
+
+        A name containing a dot that is not registered is imported (``"pkg.module.Class"``),
+        so users reference their own classes from a config without registering them.
+        """
+        if name in self:
+            return self._entries[name].cls
+        if "." in name:
+            module_name, _, attr = name.rpartition(".")
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError as error:
+                raise KeyError(
+                    f"'{name}' is neither a {self._domain} registry key nor an importable "
+                    f"dotted path ({error})"
+                ) from error
+            try:
+                return getattr(module, attr)
+            except AttributeError as error:
+                raise KeyError(f"module '{module_name}' has no attribute '{attr}'") from error
+        return self.get(name)
+
     def __contains__(self, name: str) -> bool:
         if name not in self._entries:
             self._load_bundled()

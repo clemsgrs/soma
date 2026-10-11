@@ -116,6 +116,7 @@ training:
   weight_decay: 1.0e-5
   optimizer: adam
   scheduler: cosine
+  learner: null
   # Which epoch's weights are evaluated: 'best' selects by the monitored tune metric
   # (with early stopping); 'last' evaluates the final-epoch weights, takes model
   # selection off the tune metric, and requires `patience: null`.
@@ -125,7 +126,7 @@ training:
   patience: 10
   # Hold the early stop while the monitor sits at its first value; false = plain patience.
   hold_patience_until_monitor_moves: true
-  monitor: tune_loss
+  monitor: loss
   monitor_mode: min
   batch_size: 1
   # Cached segmentation only. null keeps ordinary shuffled loading; explicit

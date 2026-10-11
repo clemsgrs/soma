@@ -1,9 +1,10 @@
-"""Extension seam: a user-registered task head and decoder train through the real CLI.
+"""Extension seam: a user-registered task head, decoder and learner train through the real CLI.
 
 The customisation API is subclass-and-override: subclass the family's built-in head (or
-``Decoder``), override the methods that should differ, register the subclass under a new
-name, and reference that name from the config. Validation keys on the registered class's
-``task_family``, so the custom head passes everywhere the built-in one does.
+``Decoder``, or the shape's ``Learner``), override the methods that should differ, and
+reference the subclass from the config, either under a registered name or by its dotted
+import path. Validation keys on the registered class's ``task_family``, so the custom head
+passes everywhere the built-in one does.
 """
 
 from __future__ import annotations
@@ -14,17 +15,37 @@ from torch import Tensor, nn
 
 from soma.decoders.base import Decoder
 from soma.decoders.registry import decoder_registry
+from soma.learn import MILLearner
 from soma.tasks.dense_metrics import soft_dice_loss
 from soma.tasks.registry import task_registry
 from soma.tasks.segmentation import SegmentationHead
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
-from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
+from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_slide_cohort
 
 CUSTOM_HEAD = "e2e_dice_only_segmentation"
 CUSTOM_DECODER = "e2e_two_stage_conv"
 
 # Call counters: the scenario proves the overrides actually ran, not just registered.
-CALLS = {"loss": 0, "decoder": 0}
+CALLS = {"loss": 0, "decoder": 0, "entropy": 0}
+
+
+class AttentionEntropyLearner(MILLearner):
+    """``MILLearner`` plus an attention-entropy regulariser: one ``training_step`` override.
+
+    Referenced from the config by dotted path (``training.learner``), so nothing is
+    registered; ``weight`` arrives through the leaf's ``params``.
+    """
+
+    def __init__(self, model, *, weight: float, **kwargs) -> None:
+        super().__init__(model, **kwargs)
+        self.weight = float(weight)
+
+    def training_step(self, batch) -> Tensor:
+        output = self.forward_batch(batch)
+        attention = output.tile_attention.masked_fill(~batch.mask, float("-inf")).softmax(-1)
+        entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1).mean()
+        CALLS["entropy"] += 1
+        return self.compute_loss(output, batch) + self.weight * entropy
 
 
 class DiceOnlySegmentationHead(SegmentationHead):
@@ -118,4 +139,60 @@ def test_custom_head_and_decoder_train_through_cli(
     artifact.check_at_least("custom_loss_calls", CALLS["loss"], 1)
     artifact.check_at_least("custom_decoder_calls", CALLS["decoder"], 1)
     artifact.check_at_least("test/mean_dice", run.summary["test/mean_dice"], 0.8)
+    artifact.assert_passed()
+
+
+def test_custom_learner_by_dotted_path_trains_through_cli(
+    tmp_path, encoder_name, new_artifact
+):
+    """A ``MILLearner`` subclass adding an intermediate loss trains through the CLI via
+    the ``training.learner`` leaf, named by dotted import path and given its params."""
+    CALLS["entropy"] = 0
+    artifact = new_artifact("extension_custom_learner")
+    cohort = make_slide_cohort(tmp_path / "cohort")
+    epochs = 25
+    config = {
+        "run": {"output_root": str(tmp_path / "runs"), "seed": 0},
+        "data": {
+            "dataset_csv": str(cohort.manifest("binary_classification")),
+            "splits_csv": str(cohort.splits_csv),
+            "dataset_type": "slide",
+        },
+        "preprocessing": {
+            "backend": "openslide",
+            "requested_tile_size_px": 32,
+            "requested_spacing_um": SPACING_UM,
+            "tissue_method": "otsu",
+            "seg_downsample": 16,
+            "a_t": 1,
+            "min_coverage": {"tissue": 0.5},
+        },
+        "execution": CPU_EXECUTION,
+        "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
+        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 256},
+        "aggregation": {"name": "abmil"},
+        "task": {"name": "binary_classification"},
+        "evaluation": {"metrics": ["auroc", "balanced_accuracy"]},
+        "normalization": {"method": "zscore"},
+        "training": {
+            "epochs": epochs,
+            "learning_rate": 5e-3,
+            "batch_size": 1,
+            "patience": epochs,
+            "learner": {
+                "name": "tests.e2e.test_extension.AttentionEntropyLearner",
+                "params": {"weight": 0.01},
+            },
+            **CPU_LOADER,
+        },
+    }
+    run = run_soma(config, tmp_path / "config.yaml")
+
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("custom_training_steps", CALLS["entropy"], epochs)
+    artifact.check_at_least("test/auroc", run.summary["test/auroc"], 0.95)
+    history = run.histories()[""]
+    artifact.check_equal("history/columns_without_tune_prefix", "tune_loss" in history[0], False)
+    artifact.check_equal("history/loss_present", "loss" in history[0], True)
     artifact.assert_passed()

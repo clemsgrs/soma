@@ -100,9 +100,11 @@ def test_config_transcribes_the_eva_offline_protocol(dataset, target_mpp, head, 
     assert (training.epochs, training.max_steps) == (100, None)
     assert training.learning_rate == pytest.approx(1e-3)
     assert training.weight_decay == pytest.approx(0.01)
-    assert (training.optimizer, training.scheduler) == ("adamw", "none")
-    assert training.lr_warmup_epochs == 5
-    assert training.lr_warmup_factor == pytest.approx(1 / 3)
+    assert training.optimizer == "adamw"
+    # EVA's warm-up (ConstantLR, factor 1/3 for 5 epochs) is the only scheduler leaf.
+    assert training.scheduler["name"] == "constant"
+    assert training.scheduler["params"]["total_iters"] == 5
+    assert training.scheduler["params"]["factor"] == pytest.approx(1 / 3)
     assert training.patience == 20
     # EVA's Lightning EarlyStopping: plain patience, no hold on an initial plateau.
     assert training.hold_patience_until_monitor_moves is False

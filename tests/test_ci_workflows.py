@@ -228,7 +228,7 @@ def test_prism_regression_runs_when_a_pr_touches_the_extraction_path(tmp_path, c
     "changed",
     [
         ("docs/index.md",),
-        ("soma/training/trainer.py", "soma/aggregators/mil/abmil.py"),
+        ("soma/learn/trainer.py", "soma/aggregators/mil/abmil.py"),
         ("soma/tasks/segmentation.py", "tests/test_pipeline.py"),
         ("soma/dense_extraction.py", "soma/decoders/heavy_conv.py"),
         # Look-alike names must not match by prefix.

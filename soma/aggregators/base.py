@@ -29,6 +29,17 @@ class AggregatorOutput:
     auxiliary: dict[str, Tensor] | None = None
 
 
+def require_label(targets: dict[str, Tensor], aggregator: str) -> Tensor:
+    """The ``"label"`` target a label-aware auxiliary loss needs, or a clear refusal."""
+    if "label" not in targets:
+        raise ValueError(
+            f"{aggregator}'s auxiliary loss needs a 'label' target, but the task head provides "
+            f"{sorted(targets) or 'none'}; use an aggregator without a label-aware auxiliary "
+            "loss for this task."
+        )
+    return targets["label"]
+
+
 class Aggregator(ABC, nn.Module):
     """Abstract base class for MIL aggregators.
 
@@ -58,7 +69,7 @@ class Aggregator(ABC, nn.Module):
     def compute_auxiliary_loss(
         self,
         auxiliary: dict[str, Tensor],
-        labels: Tensor,
+        targets: dict[str, Tensor],
         mask: Tensor | None = None,
     ) -> Tensor | None:
         """Compute auxiliary training loss from auxiliary output.
@@ -68,7 +79,9 @@ class Aggregator(ABC, nn.Module):
 
         Args:
             auxiliary: Dict of auxiliary tensors from forward().
-            labels: Bag labels, shape (B,).
+            targets: The batch's whole target dict, keyed by the head's
+                ``target_dtypes``. Label-aware losses read ``targets["label"]`` via
+                :func:`require_label` and raise when the head provides none.
             mask: Boolean mask, shape (B, N). True = valid tile.
 
         Returns:
@@ -80,7 +93,7 @@ class Aggregator(ABC, nn.Module):
         self,
         task_loss: Tensor,
         auxiliary: dict[str, Tensor] | None,
-        labels: Tensor,
+        targets: dict[str, Tensor],
         mask: Tensor | None = None,
     ) -> Tensor:
         """Combine task loss with any aggregator-specific auxiliary loss.
@@ -91,7 +104,7 @@ class Aggregator(ABC, nn.Module):
         """
         if auxiliary is None:
             return task_loss
-        auxiliary_loss = self.compute_auxiliary_loss(auxiliary, labels, mask=mask)
+        auxiliary_loss = self.compute_auxiliary_loss(auxiliary, targets, mask=mask)
         if auxiliary_loss is None:
             return task_loss
         return task_loss + auxiliary_loss

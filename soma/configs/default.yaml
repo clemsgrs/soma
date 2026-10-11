@@ -106,8 +106,14 @@ training:
   epochs: 50
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
+  # Component leaves: a name, or {name, params} with a registry key or a dotted import
+  # path. A warm-up is a `constant` scheduler leaf (factor, total_iters); `scheduler`
+  # may be a list of leaves.
   optimizer: adam
   scheduler: cosine
+  # Optional {name, params} leaf naming the Learner subclass that owns the step logic
+  # (registry key `mil` / `dense`, or a dotted import path); null picks the shape's.
+  learner: null
   # Which epoch's weights are evaluated: 'best' selects by the monitored tune metric
   # (with early stopping); 'last' evaluates the final-epoch weights, takes model
   # selection off the tune metric, and requires `patience: null`.
@@ -117,7 +123,8 @@ training:
   patience: 10
   # Hold the early stop while the monitor sits at its first value; false = plain patience.
   hold_patience_until_monitor_moves: true
-  monitor: tune_loss
+  # A validation_summary key: `loss` or one of the task's metrics.
+  monitor: loss
   monitor_mode: min
   batch_size: 1
   # Cached segmentation only. null keeps ordinary shuffled loading; explicit

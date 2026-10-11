@@ -91,11 +91,12 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert config.preprocessing.feature_kind == "patch_features_prenorm"  # EVA's timm tap
     assert config.evaluation.metrics[0] == "foreground_mean_dice"
     training = config.training
-    assert (training.optimizer, training.scheduler) == ("adamw", "none")
+    assert training.optimizer == "adamw"
     # EVA's SemanticSegmentationModule defaults ``lr_scheduler`` to torch ConstantLR
     # (factor 1/3 for 5 epochs), which its YAML configs never override.
-    assert training.lr_warmup_epochs == 5
-    assert training.lr_warmup_factor == pytest.approx(1 / 3)
+    assert training.scheduler["name"] == "constant"
+    assert training.scheduler["params"]["total_iters"] == 5
+    assert training.scheduler["params"]["factor"] == pytest.approx(1 / 3)
     assert training.learning_rate == pytest.approx(2e-3)
     assert training.weight_decay == pytest.approx(0.01)
     assert training.batch_size == 64

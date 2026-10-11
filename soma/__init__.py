@@ -64,6 +64,21 @@ from soma.extraction import (
     FeatureSource,
     PooledFeatureSource,
 )
+from soma.learn import (
+    Budget,
+    Checkpoint,
+    DenseLearner,
+    EarlyStopping,
+    FitResult,
+    History,
+    Learner,
+    MILLearner,
+    Progress,
+    SchedulerSpec,
+    StepOutput,
+    Trainer,
+    fit,
+)
 from soma.pixel_classifiers import list_pixel_classifiers
 from soma.pipeline import (
     FoldResult,
@@ -153,6 +168,20 @@ __all__ = [
     "GridSource",
     "CachedGridSource",
     "DenseSourceProvenance",
+    # Learning
+    "Budget",
+    "Checkpoint",
+    "DenseLearner",
+    "EarlyStopping",
+    "FitResult",
+    "History",
+    "Learner",
+    "MILLearner",
+    "Progress",
+    "SchedulerSpec",
+    "StepOutput",
+    "Trainer",
+    "fit",
     "FoldResult",
     "Pipeline",
     "PipelineResult",

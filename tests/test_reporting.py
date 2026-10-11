@@ -19,7 +19,7 @@ from soma.tasks.registry import task_family_of
 from soma.reporting.data import FoldData, FoldSlice, RunData, aggregate_slice_predictions, run_data_from_result
 from soma.reporting.subgroups import subgroup_data_for_predictions
 from soma.reporting.html import render_report
-from soma.training.trainer import EpochLog, TrainResult
+from soma.learn import FitResult
 from dataclasses import replace
 
 
@@ -29,15 +29,16 @@ from dataclasses import replace
 
 
 def _make_training_history(n_epochs: int = 5) -> list[dict]:
+    """Rows as ``training_history.json`` holds them: the flat ``History`` frame."""
     return [
         {
             "epoch": i,
             "train_loss": 0.8 - i * 0.05,
-            "tune_loss": 0.75 - i * 0.04,
-            "tune_metrics": {"auroc": 0.5 + i * 0.05, "balanced_accuracy": 0.5 + i * 0.03},
             "lr": 1e-4,
             "elapsed_seconds": 12.5 * (i + 1),
-            "avg_epoch_seconds": 12.5,
+            "loss": 0.75 - i * 0.04,
+            "auroc": 0.5 + i * 0.05,
+            "balanced_accuracy": 0.5 + i * 0.03,
         }
         for i in range(n_epochs)
     ]
@@ -163,28 +164,16 @@ def _to_yaml(data: dict) -> str:
 
 
 def test_save_training_history(tmp_path: Path) -> None:
-    """_save_training_history writes epoch dicts under the history payload."""
-    from soma.training.trainer import EpochLog
+    """_save_training_history writes the History frame's rows; an epoch without an
+    evaluation carries ``null`` validation columns."""
     from soma.pipeline import _save_training_history
 
-    history = [
-        EpochLog(
-            epoch=0,
-            train_loss=0.8,
-            tune_loss=0.75,
-            tune_metrics={"auroc": 0.55},
-            lr=1e-4,
-            elapsed_seconds=12.5,
-            avg_epoch_seconds=12.5,
-        ),
-        EpochLog(
-            epoch=1,
-            train_loss=0.6,
-            tune_loss=0.60,
-            tune_metrics={"auroc": 0.70},
-            lr=9e-5,
-        ),
-    ]
+    history = pd.DataFrame(
+        [
+            {"epoch": 0, "train_loss": 0.8, "lr": 1e-4, "elapsed_seconds": 12.5},
+            {"epoch": 1, "train_loss": 0.6, "lr": 9e-5, "elapsed_seconds": 25.0, "loss": 0.60, "auroc": 0.70},
+        ]
+    )
     path = tmp_path / "training_history.json"
     _save_training_history(history, path)
 
@@ -193,43 +182,29 @@ def test_save_training_history(tmp_path: Path) -> None:
     assert data["epochs"][0] == {
         "epoch": 0,
         "train_loss": 0.8,
-        "tune_loss": 0.75,
-        "tune_metrics": {"auroc": 0.55},
         "lr": 1e-4,
         "elapsed_seconds": 12.5,
-        "avg_epoch_seconds": 12.5,
+        "loss": None,
+        "auroc": None,
     }
     assert data["epochs"][1]["epoch"] == 1
-    assert data["epochs"][1]["tune_metrics"] == {"auroc": 0.70}
+    assert data["epochs"][1]["auroc"] == 0.70
 
 
 def test_save_training_history_records_peak_per_metric_diagnostic(tmp_path: Path) -> None:
-    from soma.training.trainer import EpochLog
     from soma.pipeline import _save_training_history
 
-    history = [
-        EpochLog(
-            epoch=0,
-            train_loss=0.8,
-            tune_loss=0.75,
-            tune_metrics={"auroc": 0.55, "rare_dice": 0.40},
-            lr=1e-4,
-        ),
-        EpochLog(
-            epoch=1,
-            train_loss=0.7,
-            tune_loss=0.70,
-            tune_metrics={"auroc": 0.70, "rare_dice": 0.35},
-            lr=9e-5,
-        ),
-        EpochLog(
-            epoch=2,
-            train_loss=0.6,
-            tune_loss=0.65,
-            tune_metrics={"auroc": 0.65, "rare_dice": 0.50},
-            lr=8e-5,
-        ),
-    ]
+    history = pd.DataFrame(
+        {
+            "epoch": [0, 1, 2],
+            "train_loss": [0.8, 0.7, 0.6],
+            "lr": [1e-4, 9e-5, 8e-5],
+            "elapsed_seconds": [1.0, 2.0, 3.0],
+            "loss": [0.75, 0.70, 0.65],
+            "auroc": [0.55, 0.70, 0.65],
+            "rare_dice": [0.40, 0.35, 0.50],
+        }
+    )
     path = tmp_path / "training_history.json"
     _save_training_history(history, path)
 
@@ -296,7 +271,11 @@ def test_load_run_data_ignores_peak_per_metric_diagnostic(tmp_path: Path) -> Non
 
     run_data = load_run_data(run_dir)
 
-    assert run_data.folds[0].training_history == epochs
+    assert [row["epoch"] for row in run_data.folds[0].training_history] == [0, 1]
+    assert run_data.folds[0].training_history[0]["metrics"] == {
+        "auroc": epochs[0]["auroc"],
+        "balanced_accuracy": epochs[0]["balanced_accuracy"],
+    }
     assert "peak_per_metric" not in run_data.summary
 
 
@@ -364,23 +343,25 @@ def test_load_run_data_uses_user_metrics(tmp_path: Path) -> None:
 
 def _make_mock_pipeline_result(tmp_path: Path) -> tuple:
     """Build a minimal mock PipelineResult and PipelineConfig."""
-    history = [
-        EpochLog(
-            epoch=0,
-            train_loss=0.7,
-            tune_loss=0.65,
-            tune_metrics={"auroc": 0.6},
-            lr=1e-4,
-            elapsed_seconds=12.5,
-            avg_epoch_seconds=12.5,
-        )
-    ]
-    train_result = TrainResult(
-        selected_epoch=0,
-        selected_tune_loss=0.65,
-        selected_tune_metrics={"auroc": 0.6},
+    history = pd.DataFrame(
+        [
+            {
+                "epoch": 0,
+                "train_loss": 0.7,
+                "lr": 1e-4,
+                "elapsed_seconds": 12.5,
+                "loss": 0.65,
+                "auroc": 0.6,
+            }
+        ]
+    )
+    train_result = FitResult(
+        learner=None,
         history=history,
+        selected_epoch=0,
+        selection_monitor=("loss", 0.65),
         checkpoint_path=tmp_path / "best_model.pt",
+        optimizer_steps=1,
     )
 
     predictions = [
@@ -738,10 +719,12 @@ def test_cross_run_band_plots_sparse_history_at_true_epochs() -> None:
 
     from soma.reporting.charts import _add_mean_band
 
-    history = [dict(row, epoch=epoch) for row, epoch in zip(_make_training_history(3), [2, 5, 8])]
-    run = SimpleNamespace(folds=[SimpleNamespace(training_history=history)])
+    from soma.reporting.data import history_records
+
+    rows = [dict(row, epoch=epoch) for row, epoch in zip(_make_training_history(3), [2, 5, 8])]
+    run = SimpleNamespace(folds=[SimpleNamespace(training_history=history_records(rows))])
     fig, ax = plt.subplots()
-    _add_mean_band(ax, run, "run", "#336699", key="tune_loss")
+    _add_mean_band(ax, run, "run", "#336699", key="loss")
 
     assert list(ax.lines[0].get_xdata()) == [2, 5, 8]
     plt.close(fig)

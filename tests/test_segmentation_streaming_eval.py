@@ -1,5 +1,5 @@
-"""Streaming dense evaluation: Trainer._tune accumulates compact per-image
-confusion counts for segmentation instead of concatenating full logits.
+"""Streaming dense evaluation: ``DenseLearner`` validation accumulates compact
+per-image confusion counts for segmentation instead of concatenating full logits.
 
 The load-bearing assertion is that the streamed metric is the **per-image-macro**
 value (the §9 monitor default), which differs from dataset-global on an uneven
@@ -17,12 +17,11 @@ import torch.nn.functional as F
 from torch import nn
 from torch.utils.data import DataLoader
 
-from soma.config import TrainingConfig
 from soma.dense import compute_dense_geometry
+from soma.learn import Checkpoint, DenseLearner, EarlyStopping, Trainer
 from soma.tasks.segmentation import SegmentationHead
 from soma.training.model import SegmentationModelOutput
 from soma.training.segmentation_dataset import segmentation_collate_fn
-from soma.training.trainer import Trainer
 
 
 def _logits_from_pred(pred: torch.Tensor, num_classes: int) -> torch.Tensor:
@@ -33,8 +32,7 @@ class _FixedLogitsModel(nn.Module):
     """Stub seg model: returns preset target-res logits per forward (loader order).
 
     Lets the test pin predictions exactly without depending on decoder init. Carries
-    a dummy parameter so the Trainer's optimizer has something to bind to (``_tune``
-    runs under inference_mode and never steps).
+    a dummy parameter so an optimizer has something to bind to.
     """
 
     def __init__(self, task_head: SegmentationHead, logits_in_order: list[torch.Tensor]) -> None:
@@ -75,22 +73,16 @@ class _FlippingSegmentationModel(nn.Module):
         return SegmentationModelOutput(logits=torch.stack([class_0, class_1], dim=1))
 
 
-def _make_trainer(head, items, logits_in_order, tmp_path) -> Trainer:
+def _validate(head, items, logits_in_order) -> dict[str, float]:
     loader = DataLoader(
         items,
         batch_size=1,  # two single-image batches -> exercises cross-batch cat
         shuffle=False,
         collate_fn=partial(segmentation_collate_fn, target_dtypes=head.target_dtypes),
     )
-    model = _FixedLogitsModel(head, logits_in_order)
-    return Trainer(
-        model=model,
-        train_loader=loader,
-        tune_loader=loader,
-        config=TrainingConfig(epochs=1),
-        fold_dir=tmp_path,
-        device=torch.device("cpu"),
-    )
+    learner = DenseLearner(_FixedLogitsModel(head, logits_in_order))
+    learner.eval()
+    return learner.validation_summary([learner.validation_step(batch) for batch in loader])
 
 
 def test_tune_streams_per_image_macro_not_dataset_global(tmp_path):
@@ -107,13 +99,12 @@ def test_tune_streams_per_image_macro_not_dataset_global(tmp_path):
     logits_a = _logits_from_pred(torch.zeros(1, 2, 2, dtype=torch.long), 2)
     logits_b = _logits_from_pred(torch.ones(1, 2, 2, dtype=torch.long), 2)
 
-    trainer = _make_trainer(head, items, [logits_a, logits_b], tmp_path)
-    avg_loss, metrics = trainer._tune()
+    metrics = _validate(head, items, [logits_a, logits_b])
 
     assert metrics["mean_dice"] == pytest.approx(0.5)  # per-image macro
     assert metrics["mean_dice"] != pytest.approx(1 / 3)  # NOT dataset-global
     assert "mean_iou" in metrics
-    assert torch.isfinite(torch.tensor(avg_loss))
+    assert torch.isfinite(torch.tensor(metrics["loss"]))
 
 
 def test_dataset_global_mean_dice_sums_counts_before_class_macro():
@@ -158,41 +149,30 @@ def _fit_with_dataset_global_monitor(tmp_path):
         batch_size=1,
         collate_fn=partial(segmentation_collate_fn, target_dtypes=head.target_dtypes),
     )
-    trainer = Trainer(
-        model=_FlippingSegmentationModel(head),
-        train_loader=loader,
-        tune_loader=loader,
-        config=TrainingConfig(
-            epochs=5,
-            learning_rate=1.0,
-            optimizer="sgd",
-            scheduler="none",
-            patience=1,
-            monitor="dataset_global_mean_dice",
-            monitor_mode="max",
-        ),
-        fold_dir=tmp_path,
-        device=torch.device("cpu"),
+    learner = DenseLearner(
+        _FlippingSegmentationModel(head), optimizer={"name": "sgd", "params": {"lr": 1.0}}
     )
-
-    return trainer.fit()
+    checkpoint = Checkpoint(monitor="dataset_global_mean_dice", mode="max", dirpath=tmp_path)
+    stopping = EarlyStopping(monitor="dataset_global_mean_dice", mode="max", patience=1)
+    trainer = Trainer(max_epochs=5, callbacks=[checkpoint, stopping], device="cpu")
+    return trainer.fit(learner, loader, loader)
 
 
 def test_dataset_global_mean_dice_is_recorded_in_training_history(tmp_path):
     result = _fit_with_dataset_global_monitor(tmp_path)
 
-    assert [log.tune_metrics for log in result.history] == [
-        {"dataset_global_mean_dice": pytest.approx(1.0)},
-        {"dataset_global_mean_dice": pytest.approx(0.0)},
+    assert result.history["dataset_global_mean_dice"].tolist() == [
+        pytest.approx(1.0),
+        pytest.approx(0.0),
     ]
 
 
 def test_dataset_global_mean_dice_selects_checkpoint(tmp_path):
     result = _fit_with_dataset_global_monitor(tmp_path)
 
-    assert (result.selected_epoch, result.selected_tune_metrics) == (
+    assert (result.selected_epoch, result.selection_monitor) == (
         0,
-        {"dataset_global_mean_dice": pytest.approx(1.0)},
+        ("dataset_global_mean_dice", pytest.approx(1.0)),
     )
 
 
@@ -212,12 +192,10 @@ def test_dataset_global_monitor_is_named_in_checkpoint_metadata(tmp_path):
         "mode": "max",
         "value": pytest.approx(1.0),
     }
-    assert checkpoint["tune_metrics"] == {
-        "dataset_global_mean_dice": pytest.approx(1.0)
-    }
+    assert checkpoint["metrics"]["dataset_global_mean_dice"] == pytest.approx(1.0)
 
 
-def test_tune_selects_streaming_path_for_segmentation_head():
+def test_segmentation_head_declares_streaming_eval():
     geom = compute_dense_geometry(target_size=2, patch_size=1)
     head = SegmentationHead(num_classes=2, geometry=geom)
     assert head.accumulates_eval_metrics is True

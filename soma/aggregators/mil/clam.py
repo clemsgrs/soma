@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from soma.aggregators.base import Aggregator, AggregatorOutput
+from soma.aggregators.base import Aggregator, AggregatorOutput, require_label
 from soma.aggregators.mil.losses import SmoothTop1SVM
 from soma.aggregators.registry import aggregator_registry
 
@@ -219,9 +219,10 @@ class _CLAMBase(Aggregator):
     def compute_auxiliary_loss(
         self,
         auxiliary: dict[str, Tensor],
-        labels: Tensor,
+        targets: dict[str, Tensor],
         mask: Tensor | None = None,
     ) -> Tensor:
+        labels = require_label(targets, type(self).__name__)
         return self.compute_instance_loss(
             auxiliary["attention"], auxiliary["embeddings"], labels, mask=mask
         )
@@ -230,12 +231,12 @@ class _CLAMBase(Aggregator):
         self,
         task_loss: Tensor,
         auxiliary: dict[str, Tensor] | None,
-        labels: Tensor,
+        targets: dict[str, Tensor],
         mask: Tensor | None = None,
     ) -> Tensor:
         if auxiliary is None or self.bag_weight >= 1.0:
             return task_loss
-        inst_loss = self.compute_auxiliary_loss(auxiliary, labels, mask=mask)
+        inst_loss = self.compute_auxiliary_loss(auxiliary, targets, mask=mask)
         return self.bag_weight * task_loss + (1.0 - self.bag_weight) * inst_loss
 
     def compute_instance_loss(

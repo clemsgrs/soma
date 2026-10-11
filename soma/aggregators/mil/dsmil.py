@@ -12,7 +12,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
-from soma.aggregators.base import Aggregator, AggregatorOutput
+from soma.aggregators.base import Aggregator, AggregatorOutput, require_label
 from soma.aggregators.mil.attention_pool import masked_softmax
 from soma.aggregators.registry import aggregator_registry
 from soma.tasks.base import TaskHead
@@ -115,10 +115,11 @@ class DSMIL(Aggregator):
     def compute_auxiliary_loss(
         self,
         auxiliary: dict[str, Tensor],
-        labels: Tensor,
+        targets: dict[str, Tensor],
         mask: Tensor | None = None,
     ) -> Tensor:
         """Max-instance prediction loss (DSMIL auxiliary objective)."""
+        labels = require_label(targets, "dsmil")
         instance_logits = auxiliary["instance_logits"]  # (B, N)
         if mask is not None:
             instance_logits = instance_logits.masked_fill(~mask, float("-inf"))

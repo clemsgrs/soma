@@ -729,7 +729,7 @@ def test_unpinned_resume_restores_completed_fold_after_local_node_loss(
     def forbid_retraining(*args, **kwargs):
         raise AssertionError("a completed mirrored fold must be restored")
 
-    monkeypatch.setattr("soma.training.trainer.Trainer.fit", forbid_retraining)
+    monkeypatch.setattr("soma.learn.trainer.Trainer.fit", forbid_retraining)
     resumed = Pipeline(
         replace(config, run_id=None, resume=True), feature_dir=tmp_path / "dense"
     ).run()

@@ -416,9 +416,11 @@ def _build_eva_segmentation_config(
             learning_rate=LEARNING_RATE,
             weight_decay=WEIGHT_DECAY,
             optimizer="adamw",
-            scheduler="none",
-            lr_warmup_epochs=WARMUP_EPOCHS,
-            lr_warmup_factor=WARMUP_FACTOR,
+            # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
+            scheduler={
+                "name": "constant",
+                "params": {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS},
+            },
             patience=patience,
             monitor="foreground_mean_dice",
             monitor_mode="max",

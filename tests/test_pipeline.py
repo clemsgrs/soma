@@ -47,7 +47,7 @@ from soma.pipeline import (
     train_one_fold,
 )
 from soma.training.collate import BagBatch
-from soma.training.trainer import TrainResult
+from soma.learn import FitResult
 
 
 # ---------------------------------------------------------------------------
@@ -1120,12 +1120,13 @@ class TestTrain:
         assert "test/num_placeholder_samples" in summary
 
     def test_aggregate_fold_metrics_handles_inconsistent_test_split_names(self):
-        train_result = TrainResult(
+        train_result = FitResult(
+            learner=None,
+            history=pd.DataFrame(),
             selected_epoch=0,
-            selected_tune_loss=0.1,
-            selected_tune_metrics={},
-            history=[],
+            selection_monitor=("loss", 0.1),
             checkpoint_path=Path("best_model.pt"),
+            optimizer_steps=0,
         )
         fold_results = [
             FoldResult(

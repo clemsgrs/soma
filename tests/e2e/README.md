@@ -22,6 +22,7 @@ if the correct pixels, features and labels reach it.
 | `reproduce_eva_consep` | `soma reproduce eva/consep --raw-root …` on a synthetic HoVer-Net layout: curation (16 tiles per image, 224 px) → dense run with the benchmark-private `eva_conv_with_image` decoder (fed the tile's pixels) and `eva_segmentation` head → `test/foreground_mean_dice` scored |
 | `reproduce_eva_{camelyon16_small,panda_small}` | `soma reproduce eva/<dataset> --raw-root …` on tiny pyramidal-TIFF raw roots: the curator samples EVA's tiles into one hs2p artifact per slide → soma skips tiling and embeds exactly those tiles → `eva_abmil` + the EVA head → `test/balanced_accuracy` scored |
 | `extension_custom_head_decoder` | a user-registered `SegmentationHead` subclass (pure Dice loss) and a user-registered `Decoder` train through the CLI; both overrides are proven to run |
+| `extension_custom_learner` | a `MILLearner` subclass adding an attention-entropy term (one `training_step` override) trains through the CLI, named by dotted import path in `training.learner`; the history carries `loss` columns without a `tune_` prefix |
 
 Every scenario checks that training loss fell (last epoch ≤ 0.9 × first epoch), as
 well as checking its metric thresholds.

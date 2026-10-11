@@ -24,9 +24,9 @@ def _make_training_history(n_epochs: int = 4) -> list[dict]:
         {
             "epoch": i,
             "train_loss": 0.8 - i * 0.05,
-            "tune_loss": 0.75 - i * 0.04,
-            "tune_metrics": {"auroc": 0.5 + i * 0.05},
             "lr": 1e-4,
+            "loss": 0.75 - i * 0.04,
+            "auroc": 0.5 + i * 0.05,
         }
         for i in range(n_epochs)
     ]
