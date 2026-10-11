@@ -83,7 +83,7 @@ The study reuses the outputs of the detection benchmark sweep: its cached dense
 features and its scored full-data runs. You need a GPU and a Hugging Face token
 for the gated encoders. The curated manifests must be in
 ``<data-root>/<dataset>/curated/`` (``dataset.csv`` and ``splits.csv``). See
-:doc:`curation` for OCELOT; MIDOG 2022 is curated with ``soma.curation.midog``.
+:doc:`curation` for how to prepare OCELOT and MIDOG 2022.
 
 1. From the repository root, run the benchmark sweep if you have not already. The
    ``extract`` phase caches the dense features, and the ``rank`` phase trains and
