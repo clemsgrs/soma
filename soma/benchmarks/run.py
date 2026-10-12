@@ -849,6 +849,10 @@ def run_benchmark_spec(
         )
         run = pipeline_cls(config).run()
         identities.add((run.dataset_checksum, run.splits_checksum, run.test_checksum))
+        # Drop the result before the next seed: through its fold results it owns the
+        # trained learner and, for live segmentation, the frozen encoder, which would
+        # otherwise stay alive while the next seed trains.
+        del run
         scores = spec.score(seed_root)
         error = _missing_reported_score_message(
             spec, scores, reported_metrics=reported_metrics

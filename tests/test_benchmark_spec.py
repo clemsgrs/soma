@@ -236,10 +236,14 @@ def test_run_benchmark_spec_frees_each_seeds_pipeline_before_the_next_seed_start
     tmp_path, monkeypatch
 ):
     # A live segmentation seed holds the frozen encoder (GBs of GPU memory) inside a
-    # reference cycle; if the loop leaves it to the cyclic GC, seeds pile up encoders
-    # until one runs out of GPU memory. Each seed must start with the last one freed.
+    # reference cycle, and its PipelineResult owns it through
+    # fold_results -> train_result -> learner. If the loop keeps the result or leaves the
+    # cycle to the cyclic GC, seeds pile up encoders until one runs out of GPU memory.
+    # Each seed must start with the last one freed.
+    import dataclasses
     import gc
     import weakref
+    from types import SimpleNamespace
 
     spec = BenchmarkSpec(
         name="fmtf/example",
@@ -259,7 +263,10 @@ def test_run_benchmark_spec_frees_each_seeds_pipeline_before_the_next_seed_start
 
         def run(self):
             previous.append(weakref.ref(self))
-            return _pipeline_result(self.config["output_root"])
+            fold = SimpleNamespace(train_result=SimpleNamespace(learner=self))
+            return dataclasses.replace(
+                _pipeline_result(self.config["output_root"]), fold_results=[fold]
+            )
 
     monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: CyclicPipeline)
     gc.disable()
