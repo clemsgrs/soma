@@ -51,6 +51,7 @@ from soma.data import (
     Cohort,
     FoldSplit,
     GridGeometry,
+    GridSource,
     ImageManifest,
     TileImageSource,
     require_coverage,
@@ -1573,10 +1574,11 @@ def attach_source(
 ) -> SourceContext:
     """Attach the supplied ``source``, or extract one from the config.
 
-    A supplied source on the live grid path is the pixels' image source and gets the
-    run's frozen encoder stage. Without a source: the live grid path builds its frozen encoder stage and an image
-    source; a composite extracts every member; otherwise the configured encoder
-    extracts (or reuses from the feature cache) set or grid features.
+    A supplied image source on the live grid path gets the run's frozen encoder stage; a
+    supplied :class:`~soma.data.GridSource` (cached grids) takes the cached path, so it
+    cannot be augmented. Without a source: the live grid path builds its frozen encoder
+    stage and an image source; a composite extracts every member; otherwise the
+    configured encoder extracts (or reuses from the feature cache) set or grid features.
     """
     is_dense = extraction_shape(config.dataset_type) == "grid"
     annotation_sampled = config.dataset_type == "segmentation" and config.preprocessing.masks is not None
@@ -1597,8 +1599,15 @@ def attach_source(
     live = is_dense and config.feature_mode == "live"
     if source is not None:
         # A supplied image source under ``feature_mode: live`` is re-encoded by the
-        # run's frozen encoder stage, like the one built below.
-        stage = live_encoder_for(config) if live else None
+        # run's frozen encoder stage, like the one built below; supplied grids are cached.
+        cached_grids = isinstance(source, GridSource)
+        if live and cached_grids and config.augmentation is not None:
+            raise ValueError(
+                "augmentation needs pixels re-encoded by an encoder stage, but the supplied "
+                "source is cached grids (frozen features); supply an ImageSource or clear "
+                "the augmentation section."
+            )
+        stage = live_encoder_for(config) if live and not cached_grids else None
         return SourceContext(source=source, dataset=dataset, splits=splits, encoder_stage=stage)
     if live:
         preprocessing = resolve_pipeline_preprocessing(config)
