@@ -50,7 +50,10 @@ def fit(
 
     Builds ``Checkpoint(monitor, mode)`` and ``EarlyStopping(monitor, mode, patience)``
     (``patience=None`` installs no early stopping) and a ``Progress`` callback; the
-    remaining keyword arguments go to :class:`Trainer`.
+    remaining keyword arguments go to :class:`Trainer`. A ``Checkpoint``,
+    ``EarlyStopping`` or ``Progress`` passed in ``callbacks`` replaces the one ``fit``
+    would build, so a run states its whole selection policy (``selection="last"``,
+    ``hold_until_moves``, a progress label) with plain constructors.
     """
     if isinstance(learner_or_model, Learner):
         if loss is not None or optimizer is not None or schedulers:
@@ -61,10 +64,18 @@ def fit(
         learner = learner_or_model
     else:
         learner = learner_for(learner_or_model, loss=loss, optimizer=optimizer, schedulers=schedulers)
-    installed: list[Any] = [Checkpoint(monitor=monitor, mode=mode)]
-    if patience is not None:
-        installed.append(EarlyStopping(monitor=monitor, mode=mode, patience=patience))
-    if progress:
-        installed.append(Progress())
-    installed.extend(callbacks)
+    supplied = list(callbacks)
+    defaults = (
+        (Checkpoint, lambda: Checkpoint(monitor=monitor, mode=mode)),
+        (
+            EarlyStopping,
+            lambda: None if patience is None else EarlyStopping(monitor=monitor, mode=mode, patience=patience),
+        ),
+        (Progress, lambda: Progress() if progress else None),
+    )
+    installed: list[Any] = []
+    for kind, build in defaults:
+        given = [callback for callback in supplied if isinstance(callback, kind)]
+        installed.extend(given or [callback for callback in (build(),) if callback is not None])
+    installed.extend(c for c in supplied if not isinstance(c, (Checkpoint, EarlyStopping, Progress)))
     return Trainer(callbacks=installed, **trainer_kwargs).fit(learner, train, tune)

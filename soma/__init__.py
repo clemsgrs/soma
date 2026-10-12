@@ -81,20 +81,17 @@ from soma.learn import (
     History,
     Learner,
     MILLearner,
+    ModelBundle,
     Progress,
     SchedulerSpec,
     StepOutput,
     Trainer,
     fit,
+    load,
+    save,
 )
-from soma.pipeline import (
-    FoldResult,
-    Pipeline,
-    PipelineResult,
-    evaluate_representation,
-    train,
-    train_one_fold,
-)
+from soma.pipeline import FoldResult, Pipeline, PipelineResult
+from soma.pipeline.representation import evaluate_representation
 from soma.preprocessing import (
     overlay_mask_on_slide,
     save_overlay_preview,
@@ -107,6 +104,7 @@ from soma.training.model import (
     EmbeddingModelOutput,
 )
 from soma.training.sample_dataset import SampleBatch, SampleDataset, sample_collate_fn
+from soma.training.seed import seed_everything
 from soma.tasks import list_task_heads
 
 __all__ = [
@@ -174,11 +172,15 @@ __all__ = [
     "History",
     "Learner",
     "MILLearner",
+    "ModelBundle",
     "Progress",
     "SchedulerSpec",
     "StepOutput",
     "Trainer",
     "fit",
+    "load",
+    "save",
+    "seed_everything",
     # Evaluation
     "Baseline",
     "Evaluation",
@@ -191,8 +193,6 @@ __all__ = [
     "Pipeline",
     "PipelineResult",
     "evaluate_representation",
-    "train",
-    "train_one_fold",
     "overlay_mask_on_slide",
     "save_overlay_preview",
     "write_coordinate_preview",

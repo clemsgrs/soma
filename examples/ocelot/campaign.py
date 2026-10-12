@@ -220,22 +220,23 @@ def output_root_for(cell: Cell) -> Path:
 
 
 def find_seed_runs(output_root: Path) -> dict[int, Path]:
-    """Map seed → newest run subdir (holding best_model.pt) under an output_root.
+    """Map seed → newest finished run subdir (holding ``bundle/model.json``) under an output_root.
 
-    Reads each run's saved config.yaml for its seed; when a seed has several runs (re-runs)
-    the most-recently-written checkpoint wins, matching eval_greedy's newest-checkpoint rule.
+    The model bundle is the last thing a fold writes, so its ``model.json`` marks a finished
+    run. Reads each run's saved config.yaml for its seed; when a seed has several runs
+    (re-runs) the most-recently-written bundle wins, matching eval_greedy's newest-run rule.
     """
     import yaml
 
     by_seed: dict[int, tuple[float, Path]] = {}
-    for ckpt in output_root.glob("experiments/*/runs/*/best_model.pt"):
-        run_dir = ckpt.parent
+    for model_json in output_root.glob("experiments/*/runs/*/bundle/model.json"):
+        run_dir = model_json.parent.parent
         cfg_file = run_dir / "config.yaml"
         if not cfg_file.exists():
             continue
         cfg = yaml.safe_load(cfg_file.read_text())
         seed = int(((cfg or {}).get("run") or {}).get("seed", -1))
-        mtime = ckpt.stat().st_mtime
+        mtime = model_json.stat().st_mtime
         if seed not in by_seed or mtime > by_seed[seed][0]:
             by_seed[seed] = (mtime, run_dir)
     return {seed: run_dir for seed, (_, run_dir) in by_seed.items()}

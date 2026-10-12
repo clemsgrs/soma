@@ -1,6 +1,6 @@
-"""Legacy bridge: fat records for ``pipeline.py`` and the extraction stack.
+"""Legacy bridge: fat records for ``soma.pipeline`` and the extraction stack.
 
-**Delete in slice 7 (#581).** Until ``pipeline.py`` is rewritten over the verbs and
+**Delete in slice 7 (#581).** Until the pipeline builders stop reading paths and
 ``soma.extract`` reads :class:`~soma.data.ImageManifest` directly, the pipeline, the
 cache layer, the extractors and the curators still consume one record per sample that
 carries file paths next to targets. This module rebuilds that record
@@ -53,7 +53,7 @@ _ANNOTATION_COLUMNS = ("label_mask_path", "points_path", "ignore_mask_path")
 
 @dataclass(frozen=True, eq=False)
 class LegacyRecord(SampleRecord):
-    """A :class:`SampleRecord` plus the file paths ``pipeline.py`` still reads.
+    """A :class:`SampleRecord` plus the file paths ``soma.pipeline`` still reads.
 
     ``image_path`` / ``mask_path`` / ``spacing_at_level_0`` / ``coordinates_path`` come
     from the image manifest; ``label_mask_path`` / ``points_path`` / ``ignore_mask_path``
@@ -238,7 +238,7 @@ def records_for_pipeline(
     *,
     path: str | Path | None = None,
 ) -> LegacySamples:
-    """Join a cohort with its manifests into the fat records ``pipeline.py`` consumes.
+    """Join a cohort with its manifests into the fat records ``soma.pipeline`` consumes.
 
     ``path`` is the dataset CSV the cohort and manifests were read from. When it is a
     persisted ROI manifest (an earlier extraction's effective dataset), its ROI columns
@@ -407,7 +407,7 @@ def legacy_folds_from_csv(
 
 
 class LegacyFolds:
-    """The ``folds`` / ``num_folds`` / ``project`` surface ``pipeline.py`` still expects."""
+    """The ``folds`` / ``num_folds`` / ``project`` surface ``soma.pipeline`` still expects."""
 
     def __init__(self, folds: Sequence[FoldSplit]) -> None:
         self._folds = list(folds)

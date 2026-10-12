@@ -41,6 +41,7 @@ __all__ = [
     "DenseSampleSpacing",
     "DenseSourceProvenance",
     "dense_sample_spacing_from_metadata",
+    "require_declared_spacing",
 ]
 
 DENSE_SIDECAR_SUFFIX = ".meta.json"
@@ -127,6 +128,37 @@ def dense_sample_spacing_from_metadata(
             )
         values[field] = spacing
     return DenseSampleSpacing(**values)
+
+
+def require_declared_spacing(source, expected_spacing_um, *, tol: float = 1e-9) -> None:
+    """Fail when a cached grid was extracted at another spacing than its masks are read at.
+
+    ``expected_spacing_um`` maps each sample id to the µm/px the run reads its
+    supervision at (``None`` for a flat read). Every grid records the spacing it was
+    extracted at (:meth:`CachedGridSource.spacing_um`); masks are read at that spacing,
+    so they register either way, but a mismatch means the grids come from another
+    configuration (features extracted elsewhere and supplied as a source), whose
+    supervision would silently shift against the features.
+
+    A source with only the :class:`~soma.data.GridSource` protocol (no declared
+    spacing) is checked through its effective :meth:`~soma.data.GridSource.spacing`
+    instead, skipping flat reads (nothing configured to compare against).
+    """
+    declares = hasattr(source, "spacing_um")
+    for sample_id, expected in expected_spacing_um.items():
+        if not declares and expected is None:
+            continue
+        declared = source.spacing_um(sample_id) if declares else source.spacing(sample_id)
+        if declared is None or expected is None:
+            matches = declared is None and expected is None
+        else:
+            matches = abs(float(declared) - float(expected)) <= tol
+        if not matches:
+            raise ValueError(
+                f"segmentation sample '{sample_id}' dense-grid spacing ({declared} µm/px) "
+                f"does not match the configured spacing ({expected} µm/px); re-extract the "
+                "features for this configuration."
+            )
 
 
 @dataclass(frozen=True)
@@ -430,7 +462,7 @@ class CachedGridSource:
         metadata = self.metadata(sample_id)
         if metadata.get("source_spacing_um") is None or metadata.get("effective_spacing_um") is None:
             # soma's feature cache re-encodes such grids (ROI_GRID_CONTRACT); this is
-            # reached with features pre-extracted elsewhere, e.g. Pipeline(feature_dir=).
+            # reached with features pre-extracted elsewhere, e.g. --feature-dir / Pipeline(source=).
             raise ValueError(
                 f"Dense feature '{sample_id}' is missing required source_spacing_um / "
                 "effective_spacing_um provenance: its grid predates slide2vec 5.7, which "

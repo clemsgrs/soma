@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 import torch
 
+from soma.data import CachedSetSource
 from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
 from soma.data import SampleRecord
 from soma.data._legacy import legacy_samples_from_csv
@@ -443,8 +444,8 @@ class TestCoxEndToEnd:
             task=TaskConfig(name="survival", params={"loss": "cox"}),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         test_report = result.fold_results[0].test_evaluations["test"]
@@ -496,8 +497,8 @@ class TestCoxEndToEnd:
             task=TaskConfig(name="survival", params={"loss": "cox"}),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics

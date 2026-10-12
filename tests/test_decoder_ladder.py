@@ -87,9 +87,16 @@ def test_ensemble_projection_param_matches_single_encoder(decoder_cls):
 def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     """A full detection fold trains the heavy decoder on the composite (Σdᵢ) grids —
     the ensemble rung end-to-end through the real pipeline path."""
-    from soma.config import DecoderConfig, EvalConfig, PreprocessingConfig, TaskConfig, TrainingConfig
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.pipeline import train_one_grid_fold
+    from soma.config import (
+        CacheConfig,
+        DecoderConfig,
+        EvalConfig,
+        PipelineConfig,
+        PreprocessingConfig,
+        TaskConfig,
+        TrainingConfig,
+    )
+    from soma.pipeline import Pipeline
 
     ids = ["s0", "s1", "s2", "s3"]
     m1 = _write_member(tmp_path / "enc_a", ids, feature_dim=4, patch=4)
@@ -112,24 +119,22 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     (tmp_path / "splits.csv").write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    manifest = legacy_samples_from_csv(tmp_path / "manifest.csv")
-    splits = legacy_folds_from_csv(tmp_path / "splits.csv", manifest)
-
-    result = train_one_grid_fold(
-        feature_store=composite,
+    config = PipelineConfig(
+        dataset_csv=tmp_path / "manifest.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "out",
         dataset_type="detection",
-        dataset=manifest,
-        fold_split=splits.folds[0],
         task=TaskConfig(
             name="detection",
             params={"num_classes": 2, "match_distance": 0.6, "sigma": 0.3},
         ),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
+        training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="heavy_conv", params={"hidden_dim": 32}),
         evaluation=EvalConfig(metrics=["mean_f1"]),
         preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+        cache=CacheConfig(enabled=False),
     )
+    result = Pipeline(config, source=composite).run().fold_results[0]
     assert "mean_f1" in result.test_evaluations["test"].metrics
 
 

@@ -37,6 +37,8 @@ requirements.
 
 .. code-block:: python
 
+   from dataclasses import replace
+
    from soma import (
        AggregatorConfig,
        CacheConfig,
@@ -44,19 +46,18 @@ requirements.
        EncoderConfig,
        FeatureExtractor,
        ImageManifest,
+       Pipeline,
+       PipelineConfig,
        TaskConfig,
        TrainingConfig,
-       train,
    )
-   from soma.data._legacy import LegacyFolds, records_for_pipeline
+   from soma.data._legacy import records_for_pipeline
 
    # The cohort holds identity, targets and folds; the image manifest holds the paths.
    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
    images = ImageManifest.from_csv("dataset.csv")
-   # Until the pipeline rewrite lands, extraction and ``train`` read one joined record
-   # per sample (see ``soma.data._legacy``).
+   # Extraction still reads one joined record per sample (see ``soma.data._legacy``).
    dataset = records_for_pipeline(cohort, images)
-   splits = LegacyFolds.from_cohort(cohort)
    encoder = EncoderConfig(name="uni2")
    cache = CacheConfig(enabled=True, root_dir="shared/feature_cache")
 
@@ -67,31 +68,22 @@ requirements.
        output_root="output",
    )
    features = extractor.extract()
-   effective_splits = splits.project(features.dataset)
-   task = TaskConfig(name="binary_classification")
-   training = TrainingConfig(epochs=50, learning_rate=1e-4)
-   abmil_aggregator = AggregatorConfig(name="abmil", params={"hidden_dim": 256})
-   clam_aggregator = AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128})
-
-   abmil_result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=effective_splits,
-       task=task,
-       training=training,
-       aggregator=abmil_aggregator,
-       run_dir="output/abmil/uni2",
+   abmil = PipelineConfig(
+       dataset_csv="dataset.csv",
+       splits_csv="splits.csv",
+       output_root="output",
+       dataset_type="slide",
+       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
+       task=TaskConfig(name="binary_classification"),
+       training=TrainingConfig(epochs=50, learning_rate=1e-4),
    )
+   clam = replace(abmil, aggregator=AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128}))
 
-   clam_result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=effective_splits,
-       task=task,
-       training=training,
-       aggregator=clam_aggregator,
-       run_dir="output/clam_sb/uni2",
-   )
+   abmil_result = Pipeline(abmil, source=features.source).run()
+   clam_result = Pipeline(clam, source=features.source).run()
+
+Each config trains in its own run directory under ``output_root``; the source is
+attached, never re-extracted.
 
 The source can be reused across experiments as long as the upstream dataset,
 preprocessing, and encoder settings do not change (see :doc:`getting-started`
@@ -100,7 +92,7 @@ for the result fields).
 Evaluation settings and attention heatmaps
 ------------------------------------------
 
-Pass ``evaluation`` and ``heatmaps`` to the same ``train()`` call. See
+Set ``evaluation`` and ``heatmaps`` on the same config. See
 :doc:`evaluation` for metric contracts and :doc:`outputs` for the saved
 attention scores and overlays:
 
@@ -114,17 +106,9 @@ attention scores and overlays:
    )
    heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
 
-   result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=effective_splits,
-       task=task,
-       training=training,
-       aggregator=abmil_aggregator,
-       evaluation=evaluation,
-       heatmaps=heatmaps,
-       run_dir="output/abmil/uni2",
-   )
+   result = Pipeline(
+       replace(abmil, evaluation=evaluation, heatmaps=heatmaps), source=features.source
+   ).run()
 
 Dense features over given images
 --------------------------------
@@ -280,12 +264,12 @@ complete run; these are the parts:
 
 Every target source has ``subset(sample_ids)`` to restrict it to one split.
 
-For whole-image segmentation after a run, ``soma.pipeline.live_encoder_for(config)``
-builds the run's frozen encoder stage,
-``soma.dense.predict.build_dense_models(encoder, decoder_name=..., ...)`` loads
-the fold checkpoints over it, and
-``SlidingWindowSegmentationPredictor.from_encoder(encoder, models, spacing_um=...)``
-slides the ensemble over an image.
+For whole-image segmentation after a run, load each fold's bundle with
+:func:`soma.load` and pass the list to
+``SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=...)``, which
+slides the fold ensemble over an image. A bundle trained live carries its frozen
+encoder stage; for a run trained on cached grids, pass the stage that extracted
+them, ``soma.pipeline.build.live_encoder_for(config)``.
 
 Task-free representation evaluation
 -----------------------------------

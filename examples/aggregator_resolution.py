@@ -35,7 +35,7 @@ from soma import (
     TrainingConfig,
 )
 from soma.encoders import resolve_aggregator
-from soma.output_layout import build_experiment_spec
+from soma.pipeline.layout import build_experiment_spec
 
 # --- Scaffolding (not soma API): manifest CSVs only -------------------------------
 # Config validation never opens the images, so the manifests are enough.

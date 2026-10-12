@@ -25,7 +25,7 @@ from soma.config import (
     TrainingConfig,
     config_yaml_dict,
 )
-from soma.output_layout import (
+from soma.pipeline.layout import (
     ExperimentSpec,
     build_experiment_spec,
     canonical_experiment_payload,
@@ -39,7 +39,7 @@ from soma.output_layout import (
     compact_run_index,
     write_run_metadata,
 )
-from soma.output_layout import test_identity_digest as compute_test_digest
+from soma.pipeline.layout import test_identity_digest as compute_test_digest
 
 
 def _write_csv(path: Path, text: str) -> Path:
@@ -648,7 +648,7 @@ def test_run_manifest_records_identity_version(tmp_path: Path):
 def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, monkeypatch):
     import subprocess
 
-    from soma import provenance
+    from soma.pipeline import layout as provenance
 
     repo = tmp_path / "repo"
     pkg = repo / "soma"
@@ -683,7 +683,7 @@ def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, mon
 
 
 def test_git_provenance_is_null_for_a_wheel_install(tmp_path: Path, monkeypatch):
-    from soma import provenance
+    from soma.pipeline import layout as provenance
 
     site = tmp_path / "site-packages" / "soma"
     site.mkdir(parents=True)
@@ -695,13 +695,13 @@ def test_git_provenance_is_null_for_a_wheel_install(tmp_path: Path, monkeypatch)
 
 def test_experiment_index_writer_is_removed():
     # ADR 0003 decision 3b: the racy unlocked read-modify-rewrite writer is gone for good.
-    import soma.output_layout as output_layout
+    import soma.pipeline.layout as output_layout
 
     assert not hasattr(output_layout, "update_experiment_index")
 
 
 def test_read_csv_rows_handles_large_fields(tmp_path: Path):
-    from soma.output_layout import _read_csv_rows
+    from soma.pipeline.layout import _read_csv_rows
 
     path = tmp_path / "rows.csv"
     path.write_text("name,notes\nrow1,\"" + ("x" * 200_000) + "\"\n", encoding="utf-8")

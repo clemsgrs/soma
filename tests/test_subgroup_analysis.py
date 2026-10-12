@@ -4,7 +4,6 @@ target metadata column, plus a permutation p-value of each group against the res
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -126,26 +125,34 @@ def test_survival_predictions_break_down_by_subgroup():
 
 
 def test_a_subgroup_column_missing_from_the_dataset_is_refused_before_training(tmp_path: Path) -> None:
-    from soma.data import FoldSplit
-    from soma.data._legacy import legacy_samples_from_csv
-    from soma.pipeline import train_one_fold
+    import torch
+
+    from soma.config import PipelineConfig
+    from soma.data import CachedSetSource
+    from soma.pipeline import Pipeline
 
     dataset_csv = tmp_path / "dataset.csv"
-    dataset_csv.write_text("sample_id,image_path,label\ns0,/img/s0.tif,0\ns1,/img/s1.tif,1\n")
-    dataset = legacy_samples_from_csv(dataset_csv)
-    feature_store = MagicMock()
-    feature_store.has_feature_manifest = False
-    feature_store.rank = 1
-    feature_store.feature_dim = 8
-    feature_store.sample_ids = {"s0", "s1"}
+    dataset_csv.write_text("sample_id,image_path,label\ns0,/img/s0.tif,0\ns1,/img/s1.tif,1\ns2,/img/s2.tif,0\n")
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text("sample_id,split\ns0,train\ns1,tune\ns2,test\n")
+    features = tmp_path / "features"
+    features.mkdir()
+    for sid in ("s0", "s1", "s2"):
+        torch.save(torch.randn(8), features / f"{sid}.pt")
+    config = PipelineConfig(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "out",
+        dataset_type="slide",
+        task=TaskConfig(name="binary_classification"),
+        evaluation=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
+        training=TrainingConfig(seed=0, epochs=1),
+    )
 
-    with pytest.raises(ValueError, match="nonexistent"):
-        train_one_fold(
-            feature_store=feature_store,
-            dataset=dataset,
-            fold_split=FoldSplit(train=("s0",), tune=("s1",), tests={"test": ("s0",)}),
-            task=TaskConfig(name="binary_classification"),
-            evaluation=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
-            training=TrainingConfig(seed=0, epochs=1),
-            fold_dir=tmp_path / "fold_0",
-        )
+    def no_training(*args, **kwargs):  # pragma: no cover - the refusal comes first
+        raise AssertionError("trained before refusing the subgroup column")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr("soma.learn.trainer.Trainer.fit", no_training)
+        with pytest.raises(ValueError, match="nonexistent"):
+            Pipeline(config, source=CachedSetSource(features)).run()

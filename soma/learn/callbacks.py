@@ -88,7 +88,8 @@ class Checkpoint:
 
     The file's ``model_state_dict`` is the bare model's state, so it loads into the model
     alone whatever the learner adds to its trainable state; learner-owned state is
-    restored in memory only (the slice-5 bundle persists the learner).
+    restored in memory only. A run's persisted model is the bundle :func:`soma.save`
+    writes after the fit (the pipeline passes no ``dirpath``).
 
     Without a tune loader nothing is evaluated and selection falls back to ``last``.
     """

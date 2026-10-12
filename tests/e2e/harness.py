@@ -57,12 +57,13 @@ class Run:
         }
 
 
-def run_soma(config: dict[str, Any], config_path: Path) -> Run:
-    """Write ``config`` as YAML and run it through the real CLI entry point."""
+def run_soma(config: dict[str, Any], config_path: Path, *cli_args: str) -> Run:
+    """Write ``config`` as YAML and run it through the real CLI entry point, with any
+    extra CLI arguments (``--feature-dir DIR``)."""
     output_root = Path(config["run"]["output_root"])
     before = set(output_root.glob("experiments/*/runs/*"))
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    soma_main([str(config_path)])
+    soma_main([str(config_path), *cli_args])
     created = sorted(set(output_root.glob("experiments/*/runs/*")) - before)
     assert len(created) == 1, f"expected one new run dir, found {created}"
     run_dir = created[0]

@@ -249,19 +249,23 @@ class HestBenchmark:
         if config.folds is not None:
             raise ValueError("the HEST runner fits every fold in one launch; run.folds is not supported")
         from soma.config import save_config
-        from soma.output_layout import resolve_managed_output_paths, write_experiment_metadata
-        from soma.pipeline import _RunRecorder, _guard_resume_config_drift
+        from soma.pipeline.layout import (
+            RunRecorder,
+            guard_resume_config_drift,
+            resolve_managed_output_paths,
+            write_experiment_metadata,
+        )
 
         layout = resolve_managed_output_paths(config)
         run_dir = layout.run_dir
         # Like Pipeline.train: a resume (resume/run_id) onto a run saved under another
         # config (e.g. a changed seed, outside experiment identity) is refused before any
         # write, instead of silently replacing that run's config and fold outputs.
-        _guard_resume_config_drift(run_dir, config)
+        guard_resume_config_drift(run_dir, config)
         run_dir.mkdir(parents=True, exist_ok=True)
         write_experiment_metadata(layout.experiment_dir, layout.experiment)
         save_config(config, run_dir / "config.yaml")
-        with _RunRecorder(layout, config) as recorder:
+        with RunRecorder(layout, config) as recorder:
             summary = self._run_folds(config, run_dir)
             recorder.complete(summary)
         return summary
@@ -276,7 +280,7 @@ class HestBenchmark:
         from soma.cache import resolve_cache_root
         from soma.evaluation import Evaluation, evaluate
         from soma.extraction import FeatureExtractor
-        from soma.pipeline import _aggregate_fold_metrics_from_disk, _save_metrics, _save_summary
+        from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_metrics, save_summary
         from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
         cohort = Cohort.from_csv(
@@ -329,15 +333,15 @@ class HestBenchmark:
                 predictions.to_parquet(fold_dir / f"predictions_{split}.parquet")
                 evaluations[split] = evaluate(predictions, targets(ids), metrics=metrics)
             # The probe has no tune split; an empty tune entry is ignored by the summary.
-            _save_metrics(
+            save_metrics(
                 Evaluation(metrics={}, task_family="regression", num_samples=0),
                 evaluations,
                 fold_dir / "metrics.json",
             )
-        summary = _aggregate_fold_metrics_from_disk(
+        summary = aggregate_fold_metrics_from_disk(
             run_dir, single_fold=single, include_tune=False, num_folds=cohort.num_folds
         )
-        _save_summary(summary, run_dir / "summary.json")
+        save_summary(summary, run_dir / "summary.json")
         return summary
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:

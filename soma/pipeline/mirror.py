@@ -192,12 +192,14 @@ def _publish_fold(
 
 
 def _completed_local_folds(run_dir: Path) -> dict[int, Path]:
+    from soma.pipeline.layout import fold_is_complete
+
     completed: dict[int, Path] = {}
-    if (run_dir / "metrics.json").is_file():
+    if fold_is_complete(run_dir):
         completed[0] = run_dir
     for fold_dir in sorted(run_dir.glob("fold_*")):
         match = re.fullmatch(r"fold_(\d+)", fold_dir.name)
-        if match is not None and (fold_dir / "metrics.json").is_file():
+        if match is not None and fold_is_complete(fold_dir):
             completed[int(match.group(1))] = fold_dir
     return completed
 
@@ -261,7 +263,7 @@ def restore_run_from_mirror(config: PipelineConfig, *, num_folds: int) -> str | 
     if config.mirror_root is None or not (config.resume or config.run_id):
         return None
 
-    from soma.output_layout import build_experiment_spec, latest_existing_run_id
+    from soma.pipeline.layout import build_experiment_spec, latest_existing_run_id
 
     experiment = build_experiment_spec(config)
     local_experiment_dir = (

@@ -159,8 +159,6 @@ def training_done(
     A folds-axis cell trains only its own fold (``run.folds``), under ``<run>/fold_<k>/``.
     Such a launch never writes the run-level ``summary.json`` (the other folds stay pending),
     so the fold's own ``metrics.json``, written once when the fold finishes, is the marker.
-
-    ``score_cell`` locates the weights with ``_locate_checkpoint``, which globs the same layout.
     """
     directory = cell_dir(out_root, dataset, encoder, replicate)
     if axis == "folds":
@@ -1094,7 +1092,7 @@ def main(argv: list[str] | None = None) -> int:
                     dry_run=args.dry_run, decoder=args.decoder, extra_sets=args.extra_sets,
                     config_path=args.config)
         return 0
-    from soma.provenance import soma_git_state
+    from soma.pipeline.layout import soma_git_state
 
     if args.phase in ("efficiency", "efficiency-report"):
         if args.config is not None or args.decoder is not None:

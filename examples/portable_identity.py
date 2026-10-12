@@ -34,7 +34,7 @@ from soma import (
     TaskConfig,
     TrainingConfig,
 )
-from soma.output_layout import build_experiment_spec
+from soma.pipeline.layout import build_experiment_spec
 
 WORK = Path(tempfile.mkdtemp(prefix="soma-portable-identity-"))
 

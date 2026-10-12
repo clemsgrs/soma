@@ -393,7 +393,9 @@ def test_getting_started_python_examples_are_syntactically_valid() -> None:
 
 def _without_pipeline_run(code: str) -> str:
     return "\n".join(
-        line for line in code.splitlines() if "Pipeline(config).run()" not in line
+        line
+        for line in code.splitlines()
+        if not ("Pipeline(config" in line and ".run()" in line)
     )
 
 

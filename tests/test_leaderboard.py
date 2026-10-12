@@ -45,7 +45,7 @@ from soma.leaderboard import (
     run_primary_metric,
     write_leaderboard,
 )
-from soma.output_layout import (
+from soma.pipeline.layout import (
     create_run_metadata,
     resolve_managed_output_paths,
     write_experiment_metadata,

@@ -21,12 +21,12 @@ from soma.config import (
 from soma.data._legacy import legacy_samples_from_csv
 from soma.data._legacy import legacy_folds_from_csv
 from soma.data import CachedSetSource
-from soma.output_layout import (
+from soma.pipeline.layout import (
     build_experiment_spec,
     canonical_experiment_payload,
     create_run_metadata,
 )
-from soma.pipeline import evaluate_representation
+from soma.pipeline.representation import evaluate_representation
 
 
 def _representation_yaml(tmp_path: Path, **representation_overrides: object) -> Path:
@@ -790,12 +790,15 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
         def isoformat(self) -> str:
             return "2026-08-11T12:34:56+00:00"
 
+        def __format__(self, spec: str) -> str:  # the run id's timestamp
+            return "2026-08-11_12-34-56"
+
     class FrozenDateTime:
         @classmethod
         def now(cls) -> FrozenTimestamp:
             return FrozenTimestamp()
 
-    monkeypatch.setattr("soma.pipeline.datetime", FrozenDateTime)
+    monkeypatch.setattr("soma.pipeline.layout.datetime", FrozenDateTime)
     monkeypatch.setattr("importlib.metadata.version", lambda name: "9.8.7")
     dataset, _splits, store = _representation_inputs(
         tmp_path,
@@ -825,7 +828,7 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
 
     from soma.pipeline import Pipeline
 
-    result = Pipeline(config, feature_dir=tmp_path / "features").run()
+    result = Pipeline(config, source=CachedSetSource(tmp_path / "features")).run()
 
     assert result.fold_results == []
     assert (result.run_dir / "config.yaml").is_file()

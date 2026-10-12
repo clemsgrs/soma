@@ -16,6 +16,7 @@ from soma.dense.store import (
     DenseSourceProvenance,
     dense_grid_metadata,
     dense_sample_spacing_from_metadata,
+    require_declared_spacing,
     resolve_dense_payload_dir,
     write_dense_grid,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "DENSE_PAYLOAD_SUBDIR",
     "DENSE_SIDECAR_SUFFIX",
     "dense_grid_metadata",
+    "require_declared_spacing",
     "resolve_dense_payload_dir",
     "write_dense_grid",
 ]

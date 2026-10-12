@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import torch
@@ -22,11 +21,31 @@ from soma.aggregators.pooling import MeanPool
 from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from soma.data import CachedSetSource
-from soma.pipeline import train, train_one_fold
 from soma.config import NormalizationConfig, ProjectionConfig
 from soma.tasks.classification import BinaryClassificationHead
 from soma.training.feature_adaptor import build_feature_adaptor
 from soma.training.model import EmbeddingModel, MILModel
+
+
+def _pipeline_run(data_dir: Path, source, **sections):
+    """One single-fold ``Pipeline`` run over ``source`` and the cohort in ``data_dir``;
+    returns the run dir (the fold dir) and the fold bundle's weights."""
+    from safetensors.torch import load_file
+
+    from soma.config import PipelineConfig
+    from soma.pipeline import Pipeline
+
+    dataset_csv = data_dir / "dataset.csv"
+    if not dataset_csv.exists():
+        dataset_csv = data_dir / "manifest.csv"
+    config = PipelineConfig(
+        dataset_csv=dataset_csv,
+        splits_csv=data_dir / "splits.csv",
+        output_root=data_dir / "out",
+        **sections,
+    )
+    run_dir = Pipeline(config, source=source).run().run_dir
+    return run_dir, load_file(run_dir / "bundle" / "weights.safetensors")
 
 
 def _train_features() -> torch.Tensor:
@@ -461,7 +480,7 @@ def test_adaptor_state_round_trips_through_the_checkpoint(tmp_path: Path):
         NormalizationConfig(method="zscore"), num_features=3
     ).fit([_train_features()])
     trained = _mil_model(adaptor=adaptor)
-    checkpoint_path = tmp_path / "best_model.pt"
+    checkpoint_path = tmp_path / "model.pt"
     torch.save({"model_state_dict": trained.state_dict()}, checkpoint_path)
 
     restored = _mil_model(
@@ -481,7 +500,7 @@ def test_adaptor_state_round_trips_through_the_checkpoint(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# MIL path — end to end through train_one_fold
+# MIL path — end to end through Pipeline
 # ---------------------------------------------------------------------------
 
 _TILE_DIM = 4
@@ -526,23 +545,18 @@ def _run_fold(
     feature_dim: int = _TILE_DIM,
     aggregator: str = "mean_pool",
 ):
-    dataset, splits, store = _synthetic_fold(tmp_path, feature_dim)
-    fold_dir = tmp_path / "fold_0"
-    result = train_one_fold(
-        feature_store=store,
-        dataset=dataset,
-        fold_split=splits.folds[0],
+    _, _, store = _synthetic_fold(tmp_path, feature_dim)
+    run_dir, state_dict = _pipeline_run(
+        tmp_path,
+        store,
+        dataset_type="slide",
         aggregator=AggregatorConfig(name=aggregator),
         task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1),
-        fold_dir=fold_dir,
-        normalization=normalization,
-        projection=projection,
+        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1, pin_memory=False),
+        normalization=normalization or NormalizationConfig(),
+        projection=projection or ProjectionConfig(),
     )
-    checkpoint = torch.load(
-        result.train_result.checkpoint_path, weights_only=True, map_location="cpu"
-    )
-    return fold_dir, checkpoint["model_state_dict"], store
+    return run_dir, state_dict, store
 
 
 def test_zscore_is_fit_from_the_support_split_only(tmp_path: Path):
@@ -571,7 +585,7 @@ def test_zscore_is_fit_from_the_support_split_only(tmp_path: Path):
 
 
 def test_evaluating_held_out_rows_never_moves_the_fitted_buffers(tmp_path: Path):
-    """train_one_fold evaluates tune and test after fitting; the buffers it saved must
+    """A run evaluates tune and test after fitting; the buffers it saved must
     be exactly the ones it fit — the transform is frozen, not running."""
     dataset, splits, store = _synthetic_fold(tmp_path)
     adaptor = build_feature_adaptor(
@@ -622,17 +636,15 @@ def test_normalization_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
 def test_unsupported_path_refuses_normalization_rather_than_ignoring_it(tmp_path: Path):
     """The adaptor fits on the tile-encoder MIL path today. A request another path
     cannot honor must fail loudly — a silently-ignored transform is a false result."""
-    dataset, splits, store = _synthetic_fold(tmp_path)
+    _, _, store = _synthetic_fold(tmp_path)
 
     with pytest.raises(ValueError, match="not yet supported"):
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
+        _pipeline_run(
+            tmp_path,
+            store,
             dataset_type="tile",
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=1, batch_size=1),
-            fold_dir=tmp_path / "fold_tile",
             normalization=NormalizationConfig(method="zscore"),
         )
 
@@ -795,49 +807,33 @@ def test_pca_preflight_fires_inside_a_fold(tmp_path: Path):
         )
 
 
-def test_attention_reconstructs_the_projected_model_from_the_checkpoint(tmp_path: Path):
-    """`save_attention` rebuilds MILModel from config + checkpoint and loads strictly.
+def test_attention_reconstructs_the_projected_model_from_the_bundle(tmp_path: Path):
+    """`save_attention` rebuilds the MILModel from the fold bundle and loads strictly.
 
     Under a projection that rebuild has to agree on *both* the extra buffers and the
     rewired aggregator width, or the strict load fails — the same class of breakage the
     normalize stage hit.
     """
-    from soma.config import PipelineConfig, save_config
     from soma.heatmaps import save_attention
 
-    dataset, splits, store = _synthetic_fold(tmp_path / "data")
-    projection = ProjectionConfig(method="pca", target_dim=3)
-    fold_dir = tmp_path / "run"
-    train_one_fold(
-        feature_store=store,
-        dataset=dataset,
-        fold_split=splits.folds[0],
+    _, _, store = _synthetic_fold(tmp_path / "data")
+    run_dir, _ = _pipeline_run(
+        tmp_path / "data",
+        store,
+        dataset_type="slide",
         aggregator=AggregatorConfig(name="abmil"),
         task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=1),
-        fold_dir=fold_dir,
-        projection=projection,
-    )
-    save_config(
-        PipelineConfig(
-            dataset_csv=tmp_path / "data" / "dataset.csv",
-            splits_csv=tmp_path / "data" / "splits.csv",
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
-            projection=projection,
-        ),
-        fold_dir / "config.yaml",
+        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=1, pin_memory=False),
+        projection=ProjectionConfig(method="pca", target_dim=3),
     )
 
-    save_attention(fold_dir, dataset, store)
+    save_attention(run_dir, store)
 
-    assert list((fold_dir / "attention").rglob("*.npz"))
+    assert list((run_dir / "attention").rglob("*.npz"))
 
 
 # ---------------------------------------------------------------------------
-# Slide-encoder embedding path — end to end through train_one_fold (issue #285)
+# Slide-encoder embedding path — end to end through Pipeline (issue #285)
 # ---------------------------------------------------------------------------
 
 _EMBEDDING_DIM = 4
@@ -886,22 +882,17 @@ def _run_embedding_fold(
     *,
     feature_dim: int = _EMBEDDING_DIM,
 ):
-    dataset, splits, store = _synthetic_embedding_fold(tmp_path, feature_dim)
-    fold_dir = tmp_path / "fold_0"
-    result = train_one_fold(
-        feature_store=store,
-        dataset=dataset,
-        fold_split=splits.folds[0],
+    _, _, store = _synthetic_embedding_fold(tmp_path, feature_dim)
+    run_dir, state_dict = _pipeline_run(
+        tmp_path,
+        store,
+        dataset_type="slide",
         task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1),
-        fold_dir=fold_dir,
-        normalization=normalization,
-        projection=projection,
+        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1, pin_memory=False),
+        normalization=normalization or NormalizationConfig(),
+        projection=projection or ProjectionConfig(),
     )
-    checkpoint = torch.load(
-        result.train_result.checkpoint_path, weights_only=True, map_location="cpu"
-    )
-    return fold_dir, checkpoint["model_state_dict"], store
+    return run_dir, state_dict, store
 
 
 def test_embedding_path_fits_zscore_on_the_support_embeddings_only(tmp_path: Path):
@@ -932,7 +923,7 @@ def test_embedding_path_fits_zscore_on_the_support_embeddings_only(tmp_path: Pat
 
 
 def test_embedding_path_evaluation_never_moves_the_fitted_buffers(tmp_path: Path):
-    """train_one_fold evaluates tune and test after fitting; the buffers it saved must be
+    """A run evaluates tune and test after fitting; the buffers it saved must be
     exactly the ones it fit — the transform is frozen, not running."""
     dataset, splits, store = _synthetic_embedding_fold(tmp_path)
     adaptor = build_feature_adaptor(
@@ -1103,17 +1094,15 @@ def test_embedding_path_with_both_blocks_off_leaves_no_adaptor_in_the_run(tmp_pa
 
 
 def test_unsupported_path_refuses_projection_rather_than_ignoring_it(tmp_path: Path):
-    dataset, splits, store = _synthetic_fold(tmp_path)
+    _, _, store = _synthetic_fold(tmp_path)
 
     with pytest.raises(ValueError, match="not yet supported"):
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
+        _pipeline_run(
+            tmp_path,
+            store,
             dataset_type="tile",
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=1, batch_size=1),
-            fold_dir=tmp_path / "fold_tile",
             projection=ProjectionConfig(method="pca", target_dim=2),
         )
 
@@ -1190,28 +1179,23 @@ def _run_dense_fold(
     *,
     feature_dim: int = _DENSE_DIM,
     decoder: str = "lightweight_conv",
+    source=None,
+    task: TaskConfig | None = None,
 ):
     from soma.config import DecoderConfig
-    from soma.pipeline import train_one_grid_fold
 
-    manifest, splits, store = _synthetic_dense_fold(tmp_path / "data", feature_dim)
-    fold_dir = tmp_path / "fold_0"
-    result = train_one_grid_fold(
+    _, _, store = _synthetic_dense_fold(tmp_path / "data", feature_dim)
+    run_dir, state_dict = _pipeline_run(
+        tmp_path / "data",
+        source if source is not None else store,
         dataset_type="segmentation",
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
-        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2),
-        fold_dir=fold_dir,
+        task=task or TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
+        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name=decoder),
-        normalization=normalization,
-        projection=projection,
+        normalization=normalization or NormalizationConfig(),
+        projection=projection or ProjectionConfig(),
     )
-    checkpoint = torch.load(
-        result.train_result.checkpoint_path, weights_only=True, map_location="cpu"
-    )
-    return fold_dir, checkpoint["model_state_dict"], store
+    return run_dir, state_dict, store
 
 
 def _support_positions(store, sample_ids=("s0", "s1")) -> torch.Tensor:
@@ -1354,30 +1338,6 @@ def test_dense_pca_preflight_fires_when_the_support_rois_have_too_few_positions(
         )
 
 
-def test_dense_fold_refuses_the_adaptor_on_the_live_feature_mode(tmp_path: Path):
-    """`feature_mode: live` re-encodes *augmented* tiles every step, so a transform fit on
-    the cached Support grids would not match what it transforms. Fail loud, not silently."""
-    from soma.config import DecoderConfig
-    from soma.pipeline import train_one_grid_fold
-    from soma.testing import FakeEncoder
-
-    manifest, splits, store = _synthetic_dense_fold(tmp_path / "data")
-
-    with pytest.raises(ValueError, match="requires feature_mode='cached'"):
-        train_one_grid_fold(
-            dataset_type="segmentation",
-            encoder_stage=FakeEncoder(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH),
-            feature_store=store,
-            dataset=manifest,
-            fold_split=splits.folds[0],
-            task=TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
-            training=TrainingConfig(epochs=1, batch_size=2),
-            fold_dir=tmp_path / "fold",
-            decoder=DecoderConfig(name="lightweight_conv"),
-            normalization=NormalizationConfig(method="zscore"),
-        )
-
-
 def test_config_rejects_the_adaptor_together_with_feature_mode_live(tmp_path: Path):
     """The same refusal at config-validation time, so the run never starts."""
     from soma.config import DecoderConfig, PipelineConfig
@@ -1465,33 +1425,27 @@ def _run_detection_fold(
     projection: ProjectionConfig | None = None,
     *,
     feature_dim: int = _DENSE_DIM,
-    fixtures=None,
-    fold_dir_name: str = "fold_0",
+    source=None,
 ):
     from soma.config import DecoderConfig, PreprocessingConfig
-    from soma.pipeline import train_one_grid_fold
 
-    manifest, splits, store = fixtures or _synthetic_detection_fold(
-        tmp_path / "data", feature_dim
-    )
-    fold_dir = tmp_path / fold_dir_name
-    result = train_one_grid_fold(
+    data = tmp_path / "data"
+    if not data.exists():
+        _synthetic_detection_fold(data, feature_dim)
+    from soma.dense import CachedGridSource
+
+    run_dir, state_dict = _pipeline_run(
+        data,
+        source if source is not None else CachedGridSource(data / "dense"),
         dataset_type="detection",
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
         task=_DETECTION_TASK,
-        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2),
-        fold_dir=fold_dir,
+        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="lightweight_conv"),
         preprocessing=PreprocessingConfig(requested_spacing_um=_DETECTION_SPACING),
-        normalization=normalization,
-        projection=projection,
+        normalization=normalization or NormalizationConfig(),
+        projection=projection or ProjectionConfig(),
     )
-    checkpoint = torch.load(
-        result.train_result.checkpoint_path, weights_only=True, map_location="cpu"
-    )
-    return fold_dir, checkpoint["model_state_dict"], store
+    return run_dir, state_dict, CachedGridSource(data / "dense")
 
 
 def test_detection_dense_path_fits_the_adaptor_over_the_support_rois(tmp_path: Path):
@@ -1515,17 +1469,13 @@ def test_detection_fold_refuses_adaptor_on_composite_dense_stream(tmp_path: Path
     """Detection's standalone fold API shares the single-encoder adaptor contract."""
     from soma.dense.composite import CompositeDenseFeatureStore
 
-    manifest, splits, store = _synthetic_detection_fold(tmp_path / "data")
+    _, _, store = _synthetic_detection_fold(tmp_path / "data")
     composite = CompositeDenseFeatureStore(
         [store, store], concat_resolution="grid", member_norms=["l2", "l2"]
     )
 
     with pytest.raises(ValueError, match="not yet supported.*composite"):
-        _run_detection_fold(
-            tmp_path,
-            NormalizationConfig(method="zscore"),
-            fixtures=(manifest, splits, composite),
-        )
+        _run_detection_fold(tmp_path, NormalizationConfig(method="zscore"), source=composite)
 
 
 def test_detection_dense_path_with_both_blocks_off_leaves_no_adaptor(tmp_path: Path):
@@ -1568,53 +1518,19 @@ def test_dense_path_with_both_blocks_off_is_byte_identical_to_a_legacy_run(tmp_p
 # The guard: what the single-encoder dense slice does *not* cover.
 
 
-def test_train_still_refuses_the_adaptor_on_a_composite_dense_stream(tmp_path: Path):
+def test_a_run_refuses_the_adaptor_on_a_composite_dense_stream(tmp_path: Path):
     """Composites keep their per-member `member_norm`; the top-level blocks are scoped to
     single-encoder streams, so asking for one over a composite must fail rather than
     silently normalize the concatenated grid as if it were one encoder."""
-    from soma.config import DecoderConfig
     from soma.dense.composite import CompositeDenseFeatureStore
 
-    manifest, splits, store = _synthetic_dense_fold(tmp_path / "data")
-    composite = CompositeDenseFeatureStore([store, store], member_norms=["l2", "l2"])
-
-    with pytest.raises(ValueError, match="not yet supported"):
-        train(
-            feature_store=composite,
-            dataset=manifest,
-            splits=splits,
-            dataset_type="segmentation",
-            decoder=DecoderConfig(name="lightweight_conv"),
-            task=TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
-            training=TrainingConfig(epochs=1),
-            run_dir=tmp_path / "run",
-            projection=ProjectionConfig(method="random", target_dim=2),
-        )
-
-
-def test_segmentation_fold_refuses_adaptor_on_composite_dense_stream(tmp_path: Path):
-    """The standalone fold API enforces the same single-encoder ownership rule."""
-    from soma.config import DecoderConfig
-    from soma.dense.composite import CompositeDenseFeatureStore
-    from soma.pipeline import train_one_grid_fold
-
-    manifest, splits, store = _synthetic_dense_fold(tmp_path / "data")
+    _, _, store = _synthetic_dense_fold(tmp_path / "grids")
     composite = CompositeDenseFeatureStore(
         [store, store], concat_resolution="grid", member_norms=["l2", "l2"]
     )
 
     with pytest.raises(ValueError, match="not yet supported.*composite"):
-        train_one_grid_fold(
-            dataset_type="segmentation",
-            feature_store=composite,
-            dataset=manifest,
-            fold_split=splits.folds[0],
-            task=TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
-            training=TrainingConfig(epochs=1, batch_size=2),
-            fold_dir=tmp_path / "fold",
-            decoder=DecoderConfig(name="lightweight_conv"),
-            normalization=NormalizationConfig(method="zscore"),
-        )
+        _run_dense_fold(tmp_path, None, ProjectionConfig(method="random", target_dim=2), source=composite)
 
 
 def test_composite_member_norm_is_unchanged_by_the_dense_adaptor(tmp_path: Path):
@@ -1634,68 +1550,31 @@ def test_composite_member_norm_is_unchanged_by_the_dense_adaptor(tmp_path: Path)
     assert torch.allclose(loaded[_DENSE_DIM:], raw)
 
 
-def test_train_dispatches_the_adaptor_into_the_dense_segmentation_fold(tmp_path: Path):
-    """The guard is relaxed for the single-encoder dense path: `train` now carries the
-    adaptor all the way into the fold rather than refusing it."""
-    from soma.config import DecoderConfig
-
-    manifest, splits, store = _synthetic_dense_fold(tmp_path / "data")
-
-    result = train(
-        feature_store=store,
-        dataset=manifest,
-        splits=splits,
-        dataset_type="segmentation",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        run_dir=tmp_path / "run",
-        normalization=NormalizationConfig(method="zscore"),
-        projection=ProjectionConfig(method="random", target_dim=3),
-        encoder_identity="phikon",
-    )
-
-    state = torch.load(
-        result.fold_results[0].train_result.checkpoint_path,
-        weights_only=True,
-        map_location="cpu",
-    )["model_state_dict"]
-    assert state["adaptor.projection_matrix"].shape == (3, _DENSE_DIM)
-    assert (tmp_path / "run" / "feature_adapter.json").is_file()
+# Reconstruction on the dense path. Rebuilding a trained model breaks two ways under an
+# adaptor: the strict load rejects the extra buffer keys, and the decoder gets built
+# against the *native* dim while the weights carry `target_dim` shapes. The second is
+# invisible to a wiring-level check, so each of these reloads a real bundle and runs a
+# forward pass.
 
 
-# Checkpoint reconstruction on the dense path. Rebuilding a trained model from config +
-# checkpoint breaks two ways under an adaptor: the strict load rejects the extra buffer
-# keys, and the decoder gets built against the *native* dim while the checkpoint carries
-# `target_dim` shapes. The second is invisible to a wiring-level check, so each of these
-# reconstructs from a real checkpoint and runs a forward pass.
-
-
-def test_dense_prediction_models_reconstruct_a_cached_trained_projected_checkpoint(
-    tmp_path: Path,
-):
-    """``build_dense_models`` rebuilds fold models for whole-slide sliding-window inference
-    from checkpoints trained on the **cached** path — so those checkpoints can carry an
-    adaptor even though live *training* refuses one. The rebuilt model loads the buffers,
-    is built against the rewired width, and produces logits."""
-    from soma.dense.predict import build_dense_models
+def test_sliding_window_prediction_reloads_a_cached_trained_projected_bundle(tmp_path: Path):
+    """Whole-image inference rebuilds fold models from bundles trained on the **cached**
+    path, so they can carry an adaptor even though live *training* refuses one. The
+    reloaded model has the fitted buffers, the rewired decoder width, and produces logits
+    behind the encoder stage it is given."""
+    import soma
+    from soma.dense.predict import SlidingWindowSegmentationPredictor
     from soma.testing import FakeEncoder
 
     normalization = NormalizationConfig(method="zscore")
     projection = ProjectionConfig(method="random", target_dim=3)
-    fold_dir, state_dict, _ = _run_dense_fold(tmp_path, normalization, projection, feature_dim=3)
+    run_dir, state_dict, _ = _run_dense_fold(tmp_path, normalization, projection, feature_dim=3)
     stage = FakeEncoder(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH)
 
-    (model,) = build_dense_models(
-        stage,
-        decoder_name="lightweight_conv",
-        decoder_params=None,
-        num_classes=_DENSE_CLASSES,
-        ckpt_paths=[fold_dir / "best_model.pt"],
-        normalization=normalization,
-        projection=projection,
-        device="cpu",
+    predictor = SlidingWindowSegmentationPredictor.from_bundles(
+        [soma.load(run_dir / "bundle")], encoder=stage, device="cpu"
     )
+    (model,) = predictor.models
 
     assert torch.equal(model.adaptor.projection_matrix, state_dict["adaptor.projection_matrix"])
     pixels = torch.randint(0, 256, (1, 3, _DENSE_TARGET, _DENSE_TARGET), dtype=torch.uint8)
@@ -1704,14 +1583,14 @@ def test_dense_prediction_models_reconstruct_a_cached_trained_projected_checkpoi
     assert logits.shape[:2] == (1, _DENSE_CLASSES)
 
 
-def test_dense_prediction_models_forward_task_params_to_a_registered_head(
+def test_a_bundle_rebuilds_a_registered_user_head_with_the_run_task_params(
     tmp_path: Path, monkeypatch
 ):
-    """Reconstruction rebuilds a user head with the run's ``task.params``."""
-    from soma.dense.predict import build_dense_models
+    """The bundle records the head by its registry name and its params, so a user head
+    comes back as itself, with the run's ``task.params``."""
+    import soma
     from soma.tasks.registry import task_registry
     from soma.tasks.segmentation import SegmentationHead
-    from soma.testing import FakeEncoder
 
     class SmoothedHead(SegmentationHead):
         def __init__(self, *, smoothing: float, **kwargs):
@@ -1721,29 +1600,13 @@ def test_dense_prediction_models_forward_task_params_to_a_registered_head(
     monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
     task_registry.register("_test_smoothed_segmentation", SmoothedHead)
 
-    normalization = NormalizationConfig(method="zscore")
-    projection = ProjectionConfig(method="random", target_dim=3)
-    fold_dir, _, _ = _run_dense_fold(tmp_path, normalization, projection, feature_dim=3)
-    build = dict(
-        decoder_name="lightweight_conv",
-        decoder_params=None,
-        num_classes=_DENSE_CLASSES,
-        ckpt_paths=[fold_dir / "best_model.pt"],
-        normalization=normalization,
-        projection=projection,
-        task_name="_test_smoothed_segmentation",
-        device="cpu",
+    task = TaskConfig(
+        name="_test_smoothed_segmentation", params={"num_classes": _DENSE_CLASSES, "smoothing": 0.25}
     )
-    stage = FakeEncoder(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH)
+    run_dir, _, _ = _run_dense_fold(tmp_path, NormalizationConfig(method="zscore"), task=task)
 
-    with pytest.raises(TypeError, match="smoothing"):
-        build_dense_models(stage, **build)
-
-    models = build_dense_models(
-        stage, **build, task_params={"num_classes": _DENSE_CLASSES, "smoothing": 0.25}
-    )
-    assert isinstance(models[0].head, SmoothedHead)
-    assert models[0].head.smoothing == 0.25
+    head = soma.load(run_dir / "bundle").model.head
+    assert isinstance(head, SmoothedHead) and head.smoothing == 0.25
 
 
 # Provenance on this path (reused seams — identity, cache key, saved config).
@@ -1773,7 +1636,7 @@ def _dense_pipeline_config(tmp_path: Path, **adaptor):
 
 
 def test_dense_run_identity_always_names_the_adaptor(tmp_path: Path):
-    from soma.output_layout import canonical_experiment_payload
+    from soma.pipeline.layout import canonical_experiment_payload
 
     default = canonical_experiment_payload(_dense_pipeline_config(tmp_path))
     assert default["normalization"]["method"] == "none"

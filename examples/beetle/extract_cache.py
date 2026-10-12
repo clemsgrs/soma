@@ -13,7 +13,7 @@ from soma.data import require_coverage
 from soma import FeatureExtractor
 from soma.config import load_config
 from soma.data._legacy import legacy_samples_from_csv
-from soma.pipeline import extraction_shape, extraction_unit
+from soma.pipeline.build import extraction_shape, extraction_unit
 from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
 

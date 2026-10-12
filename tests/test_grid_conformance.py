@@ -245,3 +245,46 @@ def test_composite_grid_source_conforms(tmp_path, resolution):
         concat_resolution=resolution,
     )
     check_grid_source(composite)
+
+
+# --- require_declared_spacing over a protocol-only grid source ------------------------------
+
+
+class _ProtocolGridSource:
+    """A ``GridSource`` with only the protocol's members: no cache-only ``spacing_um``."""
+
+    def __init__(self, spacings: dict[str, float]) -> None:
+        self._spacings = spacings
+
+    @property
+    def sample_ids(self) -> list[str]:
+        return list(self._spacings)
+
+    @property
+    def feature_dim(self) -> int:
+        return 4
+
+    def load(self, sample_id: str) -> torch.Tensor:
+        return torch.zeros(4, 2, 2)
+
+    def geometry(self, sample_id: str):
+        return compute_dense_geometry(target_size=16, patch_size=8)
+
+    def spacing(self, sample_id: str) -> float:
+        return self._spacings[sample_id]
+
+
+def test_a_protocol_grid_source_at_the_configured_spacing_passes_the_spacing_check():
+    from soma.dense import require_declared_spacing
+
+    source = _ProtocolGridSource({"a": 0.5, "b": 1.0})
+    # "b" is a flat read (no configured spacing): nothing to compare.
+    require_declared_spacing(source, {"a": 0.5, "b": None})
+
+
+def test_a_protocol_grid_source_at_another_spacing_fails_the_spacing_check():
+    from soma.dense import require_declared_spacing
+
+    source = _ProtocolGridSource({"a": 0.5, "b": 1.0})
+    with pytest.raises(ValueError, match="segmentation sample 'b'"):
+        require_declared_spacing(source, {"a": 0.5, "b": 0.5})

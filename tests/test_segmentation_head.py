@@ -30,9 +30,9 @@ from soma.training.model import DenseModel, DenseModelOutput
 def _targets(head, record):
     """Read ``record``'s label map as the grid fold does (its label-map source) and run
     the head's target check."""
-    from soma.pipeline import _segmentation_label_maps
+    from soma.pipeline._legacy import segmentation_label_maps
 
-    mask = _segmentation_label_maps(head, [record]).load(record.sample_id)
+    mask = segmentation_label_maps(head, [record]).load(record.sample_id)
     head.check_target(record.sample_id, mask)
     return {"mask": mask}
 

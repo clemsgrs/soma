@@ -203,10 +203,9 @@ def test_composite_target_mode_is_byte_identical_without_norm(tmp_path: Path):
     assert torch.allclose(comp.load("s0"), expected, atol=0.0)
 
 
-def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
-    from soma.config import DecoderConfig, EvalConfig, TaskConfig, TrainingConfig
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.pipeline import train_one_grid_fold
+def test_decoder_run_goes_through_composite_grid_mode(tmp_path: Path):
+    from soma.config import CacheConfig, DecoderConfig, EvalConfig, PipelineConfig, TaskConfig, TrainingConfig
+    from soma.pipeline import Pipeline
 
     ids = ["s0", "s1", "s2", "s3"]
     a = _write_member(tmp_path, "a", ids, patch=4, k=3)  # 2x2 grid
@@ -230,20 +229,18 @@ def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
     splits_csv.write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    manifest = legacy_samples_from_csv(manifest_csv)
-    splits = legacy_folds_from_csv(splits_csv, manifest)
-
-    result = train_one_grid_fold(
-        feature_store=comp,
+    config = PipelineConfig(
+        dataset_csv=manifest_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "out",
         dataset_type="segmentation",
-        dataset=manifest,
-        fold_split=splits.folds[0],
         task=TaskConfig(name="segmentation", params={"num_classes": 2}),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
+        training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+        cache=CacheConfig(enabled=False),
     )
+    result = Pipeline(config, source=comp).run().fold_results[0]
     assert "test" in result.test_evaluations
     assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
 

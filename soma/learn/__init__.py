@@ -1,6 +1,7 @@
 """Learning: ``Learner`` (subclass-first), the generic ``Trainer`` and its callbacks."""
 
 from soma.learn.augment import SegmentationAugment, augment_registry
+from soma.learn.bundle import ModelBundle, load, record_builder, save
 from soma.learn.callbacks import Checkpoint, EarlyStopping, History, Progress
 from soma.learn.dense import DenseLearner
 from soma.learn.fit import fit, learner_for
@@ -33,6 +34,7 @@ __all__ = [
     "Learner",
     "Loaders",
     "MILLearner",
+    "ModelBundle",
     "PredictOutput",
     "Progress",
     "SchedulerSpec",
@@ -45,9 +47,12 @@ __all__ = [
     "fit",
     "learner_for",
     "learner_registry",
+    "load",
     "loaders",
     "optimizer_registry",
+    "record_builder",
     "resolve_leaf",
     "resolve_segmentation_roi_population",
+    "save",
     "scheduler_registry",
 ]
