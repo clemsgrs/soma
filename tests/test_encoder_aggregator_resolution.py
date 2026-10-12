@@ -39,7 +39,7 @@ class _UnknownMetadataRegistry:
 
 
 def test_tile_encoder_returns_exact_recipe_without_loading_weights(monkeypatch):
-    monkeypatch.setattr("soma.encoders.encoder_registry", _TileMetadataRegistry())
+    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _TileMetadataRegistry())
     recipe = AggregatorConfig(name="abmil", params={"hidden_dim": 128})
 
     resolved = resolve_aggregator("tile-encoder", recipe)
@@ -48,7 +48,7 @@ def test_tile_encoder_returns_exact_recipe_without_loading_weights(monkeypatch):
 
 
 def test_slide_encoder_omits_aggregator_in_valid_slide_pipeline(monkeypatch):
-    monkeypatch.setattr("soma.encoders.encoder_registry", _SlideMetadataRegistry())
+    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _SlideMetadataRegistry())
     recipe = AggregatorConfig(name="abmil", params={"hidden_dim": 128})
 
     resolved = resolve_aggregator("prism", recipe)
@@ -66,7 +66,7 @@ def test_slide_encoder_omits_aggregator_in_valid_slide_pipeline(monkeypatch):
 
 
 def test_patient_encoder_rejected_for_slide_benchmark(monkeypatch):
-    monkeypatch.setattr("soma.encoders.encoder_registry", _PatientMetadataRegistry())
+    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _PatientMetadataRegistry())
     recipe = AggregatorConfig(name="abmil")
 
     with pytest.raises(ValueError) as error:
@@ -79,7 +79,7 @@ def test_patient_encoder_rejected_for_slide_benchmark(monkeypatch):
 
 
 def test_unknown_encoder_lists_available_names(monkeypatch):
-    monkeypatch.setattr("soma.encoders.encoder_registry", _UnknownMetadataRegistry())
+    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _UnknownMetadataRegistry())
     recipe = AggregatorConfig(name="abmil")
 
     with pytest.raises(ValueError) as error:

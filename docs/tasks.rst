@@ -89,7 +89,8 @@ Task-head interface
 .. autoclass:: soma.tasks.base.TaskHead
    :members:
 
-``soma.list_task_heads()`` returns the registered task-head names.
+``soma.components("heads")`` lists the registered task heads with their params
+and defaults.
 
 To bring a custom loss, metric reduction or post-processing, subclass a
 built-in head and register it; see :doc:`extending`.

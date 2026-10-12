@@ -2,14 +2,18 @@
 
 The customisation API is subclass-and-override: subclass the family's built-in head (or
 ``Decoder``, or the shape's ``Learner``), override the methods that should differ, and
-reference the subclass from the config, either under a registered name or by its dotted
-import path. Validation keys on the registered class's ``task_family``, so the custom head
-passes everywhere the built-in one does. A custom set head passes the
-``soma.testing.check_task_head`` conformance suite, and a learner's ``predict_step``
-override adds a column to the run's predictions.
+reference the subclass from the config, either under a name registered with its params
+dataclass (and, for a head whose class count the cohort decides, the family's ``infer``
+hook) or by its dotted import path, which resolves with a warning and passes its params
+through unvalidated (ADR 0018). Validation keys on the registered class's
+``task_family``, so the custom head passes everywhere the built-in one does. A custom set
+head passes the ``soma.testing.check_task_head`` conformance suite, and a learner's
+``predict_step`` override adds a column to the run's predictions.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import numpy as np
 import pytest
@@ -17,10 +21,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+import soma
 from soma.decoders.base import Decoder
 from soma.decoders.registry import decoder_registry
 from soma.evaluation import Predictions
-from soma.learn import DenseLearner, MILLearner, PredictOutput
+from soma.learn import DenseLearner, MILLearner, PredictOutput, learner_registry
+from soma.tasks import ClassificationParams, SegmentationParams, infer_label_map
 from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.dense_metrics import soft_dice_loss
 from soma.tasks.registry import task_registry
@@ -104,6 +110,17 @@ class DiceOnlySegmentationHead(SegmentationHead):
         )
 
 
+@dataclass
+class TwoStageConvParams:
+    """``TwoStageConvDecoder``'s params: registering them validates a config's values."""
+
+    hidden_dim: int = 16
+
+    def __post_init__(self) -> None:
+        if self.hidden_dim < 1:
+            raise ValueError(f"hidden_dim must be >= 1, got {self.hidden_dim}")
+
+
 class TwoStageConvDecoder(Decoder):
     """Upsample, 3x3 conv, upsample, 3x3 conv to class logits — no norm, no activation."""
 
@@ -128,16 +145,22 @@ class TwoStageConvDecoder(Decoder):
 
 @pytest.fixture
 def registered_extensions(monkeypatch):
-    """Register the custom head and decoder for one test, then restore both registries.
+    """Register the custom heads and decoder with their params for one test, then restore
+    the registries.
 
-    Without the restore, the names would leak into every later test that lists the
-    registries (CI runs the unit and E2E suites in a single pytest session).
+    The set head inherits nothing from its base's registration, so it names the
+    categorical heads' params and their ``infer`` hook (the cohort decides its class
+    count and label map). Without the restore, the names would leak into every later test
+    that lists the registries (CI runs the unit and E2E suites in a single pytest session).
     """
     monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
     monkeypatch.setattr(decoder_registry, "_entries", dict(decoder_registry._entries))
-    task_registry.register(CUSTOM_HEAD, DiceOnlySegmentationHead)
-    task_registry.register(CUSTOM_SET_HEAD, LabelSmoothingHead)
-    decoder_registry.register(CUSTOM_DECODER, TwoStageConvDecoder)
+    monkeypatch.setattr(learner_registry, "_warned", set())
+    soma.register("heads", CUSTOM_HEAD, DiceOnlySegmentationHead, params=SegmentationParams)
+    soma.register(
+        "heads", CUSTOM_SET_HEAD, LabelSmoothingHead, params=ClassificationParams, infer=infer_label_map
+    )
+    soma.register("decoders", CUSTOM_DECODER, TwoStageConvDecoder, params=TwoStageConvParams)
 
 
 def test_custom_head_and_decoder_train_through_cli(
@@ -232,7 +255,8 @@ def test_custom_learner_by_dotted_path_trains_through_cli(
             **CPU_LOADER,
         },
     }
-    run = run_soma(config, tmp_path / "config.yaml")
+    with pytest.warns(UserWarning, match=r"learners 'tests\.e2e\.test_extension\.AttentionEntropyLearner' is not registered"):
+        run = run_soma(config, tmp_path / "config.yaml")
 
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)

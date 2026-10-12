@@ -1,12 +1,81 @@
 Extending soma
 ==============
 
-soma's trainable components are registered classes. To change how one of them
-behaves, subclass the built-in class, override the methods that should differ,
-register the subclass under a new name, and reference that name from the
-config. soma validates a config by the component's *family*, not by its
-registered name. Subclasses inherit family validation and must also support
-the representations produced by the other components in the config.
+soma's trainable components are classes held in registries. To change how one
+of them behaves, subclass the built-in class, override the methods that should
+differ, and reference the subclass from the config, by its import path or by a
+name you register. soma validates a config by the component's *family*, not by
+its name. Subclasses inherit family validation and must also support the
+representations produced by the other components in the config.
+
+.. _registering-components:
+
+Registering components
+----------------------
+
+Every swappable component kind has a registry: aggregators, heads, decoders,
+learners, optimizers, schedulers, callbacks, samplers, augmentations and
+benchmarks. Encoders are listed too, but they belong to slide2vec and are
+registered there. :func:`soma.components` names the kinds, and
+``soma.components(kind)`` lists the components of one kind with their params
+and defaults; ``soma list [KIND]`` prints the same.
+
+A config can name a component in two ways:
+
+* **By import path**, such as ``mylab.models.FancyMIL``. There is nothing to
+  register: soma imports the class and passes the ``params`` to its
+  constructor as they are. soma does not validate them, does not list the
+  class, and emits a one-line warning the first time it resolves the path.
+* **By a registered name.** Register the class once, when your module is
+  imported, together with a *params dataclass*: one field for each constructor
+  keyword a user sets, with its default. soma then lists the component with its
+  defaults, accepts the short name, and checks the params when it builds the
+  component::
+
+      from dataclasses import dataclass
+
+      import soma
+
+
+      @dataclass
+      class FancyMILParams:
+          hidden_dim: int = 128
+          dropout: float = 0.25
+
+          def __post_init__(self):
+              if not 0.0 <= self.dropout <= 1.0:
+                  raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
+
+
+      soma.register("aggregators", "fancy_mil", FancyMIL, params=FancyMILParams)
+
+  Validation goes in ``__post_init__``: an unknown param, or a value it
+  rejects, fails the run before training starts. The params of aggregators,
+  decoders, learners, optimizers, schedulers, augmentations and samplers are
+  checked this way; ``task.params`` are not checked yet. Values the run supplies
+  are not fields: the feature width ``input_dim``, a head's ``metrics``, a
+  dense head's ``geometry``. soma reads only the dataclass passed to
+  ``register``; a ``Params`` attribute on the class is ignored.
+
+A head can also register an ``infer(cohort, params)`` hook. It returns the
+params the cohort decides, such as the class count and label map of a
+classification head or the bin count of a survival head; values set in the
+config take precedence. A registration does not inherit anything from the
+registration of its base class, so a subclass of a built-in head names the
+params and the hook it reuses. Both are public::
+
+    from soma.tasks import ClassificationParams, infer_label_map
+
+    soma.register(
+        "heads",
+        "label_smoothing_classification",
+        LabelSmoothingHead,
+        params=ClassificationParams,
+        infer=infer_label_map,
+    )
+
+A head named by import path gets no ``infer`` hook, so its config sets the
+values a hook would infer (``num_classes``, ``label_map``).
 
 Custom task head
 ----------------
@@ -18,8 +87,9 @@ inherits. Every head receives ``task.params`` as constructor keyword arguments.
 The example below trains a segmentation decoder with a pure Dice loss instead
 of the default cross-entropy plus Dice::
 
+    import soma
+    from soma.tasks import SegmentationParams
     from soma.tasks.dense_metrics import soft_dice_loss
-    from soma.tasks.registry import task_registry
     from soma.tasks.segmentation import SegmentationHead
 
 
@@ -33,7 +103,9 @@ of the default cross-entropy plus Dice::
             )
 
 
-    task_registry.register("dice_only_segmentation", DiceOnlySegmentationHead)
+    soma.register(
+        "heads", "dice_only_segmentation", DiceOnlySegmentationHead, params=SegmentationParams
+    )
 
 Then select it in the config::
 
@@ -91,10 +163,17 @@ A decoder maps a dense feature grid ``(B, d, h, w)`` to class logits. Subclass
 :class:`soma.decoders.base.Decoder`, implement ``forward`` and the
 ``num_classes`` property, and register it::
 
+    from dataclasses import dataclass
+
     from torch import nn
 
+    import soma
     from soma.decoders.base import Decoder
-    from soma.decoders.registry import decoder_registry
+
+
+    @dataclass
+    class TwoStageConvParams:
+        hidden_dim: int = 64
 
 
     class TwoStageConvDecoder(Decoder):
@@ -116,12 +195,12 @@ A decoder maps a dense feature grid ``(B, d, h, w)`` to class logits. Subclass
             return self._num_classes
 
 
-    decoder_registry.register("two_stage_conv", TwoStageConvDecoder)
+    soma.register("decoders", "two_stage_conv", TwoStageConvDecoder, params=TwoStageConvParams)
 
 The constructor always receives ``input_dim`` and ``num_classes``; everything
-under ``decoder.params`` is passed through as keyword arguments. If the
-constructor accepts ``num_upsample_blocks``, soma derives it from the grid
-geometry unless the config pins it. The head resizes the decoder's logits to
+under ``decoder.params`` is checked against the params dataclass and passed as
+keyword arguments. If the constructor accepts ``num_upsample_blocks``, soma
+derives it from the grid geometry unless the config pins it. The head resizes the decoder's logits to
 the mask size, so a decoder may output any spatial resolution.
 
 Custom learner
@@ -148,8 +227,8 @@ heads, so an intermediate loss is one override of ``training_step``::
             entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1).mean()
             return self.compute_loss(output, batch) + self.weight * entropy
 
-Select it in the config by dotted import path (no registration needed) or by a
-name registered in :data:`soma.learn.learner_registry`; ``params`` go to the
+Select it in the config by import path (no registration needed) or by a name
+registered with ``soma.register("learners", ...)``; ``params`` go to the
 constructor, and the config's ``optimizer`` / ``scheduler`` leaves still apply::
 
     training:
@@ -285,8 +364,8 @@ run soma from a small script that imports your module and then calls
 
     main(["config.yaml"])
 
-The names ``soma list tasks`` and ``soma list decoders`` print include every
-registered component, built-in or not.
+``soma list heads`` and ``soma list decoders`` print every registered
+component, built-in or not, with its params.
 
 The same import is needed when reopening the run from Python: the persisted
 config names the custom head, and soma resolves its family through the

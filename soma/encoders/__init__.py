@@ -1,24 +1,52 @@
 """Encoder validation and discovery helpers for soma."""
 
+from __future__ import annotations
+
+from typing import Any
+
 from soma.config import AggregatorConfig
 from soma.encoders.validation import resolve_preprocessing_config, validate_encoder_config
-from slide2vec.encoders.registry import encoder_registry, resolve_encoder_level
+from soma.registry import Registry
+from slide2vec.encoders.registry import encoder_registry as _slide2vec_encoders
+from slide2vec.encoders.registry import resolve_encoder_level
 
 
-def list_models(level: str | None = None) -> list[str]:
-    """Return available encoder presets in a stable order."""
-    if level is None:
-        return sorted(encoder_registry.names())
+class EncoderRegistry(Registry):
+    """soma's ``encoders`` domain: a read-only view of slide2vec's encoder registry.
 
-    normalized_level = str(level).strip().lower()
-    if normalized_level not in {"tile", "slide", "patient"}:
-        raise ValueError("list_models(level=...) must be one of: tile, slide, patient")
+    Encoders belong to slide2vec, so a new one is registered there (an encoder
+    provider), never here; their constructor params are slide2vec's, so an entry's
+    ``params`` is ``None``. Each entry carries slide2vec's metadata, ``level`` included.
+    """
 
-    return sorted(
-        name
-        for name in encoder_registry.names()
-        if encoder_registry.info(name)["level"] == normalized_level
-    )
+    def __init__(self) -> None:
+        super().__init__("encoders")
+
+    def register(self, name: str, cls: Any, **kwargs: Any) -> None:
+        raise TypeError(
+            f"encoder '{name}' cannot be registered with soma: encoders are slide2vec's; "
+            "register it with slide2vec as an encoder provider"
+        )
+
+    def get(self, name: str) -> type:
+        return _slide2vec_encoders.require(name)
+
+    def __contains__(self, name: str) -> bool:
+        return name in _slide2vec_encoders
+
+    def list(self) -> list[str]:
+        return list(_slide2vec_encoders.names())
+
+    def info(self, name: str) -> dict[str, Any]:
+        metadata = _slide2vec_encoders.info(name)
+        return self._describe(name, _slide2vec_encoders.require(name), None, metadata)
+
+    def _lookup(self, name: str) -> tuple[Any, None]:
+        return self.get(name), None
+
+
+#: The ``encoders`` domain of :func:`soma.components`.
+encoder_registry = EncoderRegistry()
 
 
 def resolve_aggregator(
@@ -27,9 +55,9 @@ def resolve_aggregator(
 ) -> AggregatorConfig | None:
     """Resolve a slide benchmark's aggregation mechanism from encoder metadata."""
     try:
-        metadata = encoder_registry.info(encoder_name)
+        metadata = _slide2vec_encoders.info(encoder_name)
     except KeyError as exc:
-        available = ", ".join(sorted(encoder_registry.names())) or "(none)"
+        available = ", ".join(sorted(_slide2vec_encoders.names())) or "(none)"
         raise ValueError(
             f"Unknown encoder name '{encoder_name}'. Available encoders: {available}"
         ) from exc
@@ -47,7 +75,8 @@ def resolve_aggregator(
 
 
 __all__ = [
-    "list_models",
+    "EncoderRegistry",
+    "encoder_registry",
     "resolve_aggregator",
     "resolve_preprocessing_config",
     "validate_encoder_config",

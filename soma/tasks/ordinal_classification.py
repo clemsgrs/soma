@@ -11,12 +11,10 @@ from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
 from soma.tasks.base import TaskHead, build_input_dropout
-from soma.tasks.classification import _categorical_auto_params, _extract_categorical_target
+from soma.tasks.classification import ClassificationParams, _extract_categorical_target, infer_label_map
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from soma.data import SampleRecord
 
 
@@ -55,10 +53,6 @@ class OrdinalClassificationHead(TaskHead):
         self._label_map = label_map
         self.metrics = resolve_metrics("ordinal_classification", metrics or [])
 
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        return _categorical_auto_params(records)
-
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)
 
@@ -85,4 +79,6 @@ class OrdinalClassificationHead(TaskHead):
         )
 
 
-task_registry.register("ordinal_classification", OrdinalClassificationHead)
+task_registry.register(
+    "ordinal_classification", OrdinalClassificationHead, params=ClassificationParams, infer=infer_label_map
+)

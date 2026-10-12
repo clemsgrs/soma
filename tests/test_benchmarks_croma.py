@@ -12,10 +12,10 @@ from soma.benchmarks import (
     Benchmark,
     MeasuredRow,
     ReferenceRow,
+    benchmark_registry,
     get_benchmark,
     get_ranking_metrics,
     get_reported_metrics,
-    list_benchmarks,
     load_results,
     reproduction_report,
 )
@@ -27,7 +27,7 @@ from soma.curation.manifest import CuratedManifest
 
 
 def test_croma_family_registers_all_three_cohorts():
-    names = [name for name in list_benchmarks() if name.startswith("croma/")]
+    names = [name for name in sorted(benchmark_registry.list()) if name.startswith("croma/")]
 
     assert names == [
         "croma/camelyon",

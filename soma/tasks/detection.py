@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -40,6 +41,7 @@ from soma.detection.encode import points_on_valid
 from soma.detection.matching import VALID_MATCHING, match_points, reduce_f1
 from soma.detection.peaks import extract_peaks
 from soma.evaluation.metrics import resolve_metrics
+from soma.params import check_choice, check_non_negative, check_positive, check_probability
 from soma.tasks.base import TaskHead, as_grid_geometry
 from soma.tasks.registry import task_registry
 
@@ -53,6 +55,32 @@ def _positive(name: str, value: float) -> float:
     if not math.isfinite(value) or value <= 0.0:
         raise ValueError(f"{name} must be > 0, got {value}")
     return value
+
+
+@dataclass
+class DetectionParams:
+    """:class:`DetectionHead`'s params. ``num_classes`` and the class names follow from
+    the task's class scheme; ``geometry`` and ``spacing_um`` from the grid source;
+    ``metrics`` from evaluation. ``match_distance`` (µm) must be set."""
+
+    num_classes: int | None = None
+    match_distance: float | None = None
+    sigma: float | None = None
+    nms_distance: float | None = None
+    min_score: float = 0.01
+    validation_threshold: float = 0.5
+    foreground_weight: float = 10.0
+    matching: str = "hungarian"
+    truncate: float = 3.0
+
+    def __post_init__(self) -> None:
+        check_positive("num_classes", self.num_classes, integer=True, optional=True)
+        for name in ("match_distance", "sigma", "nms_distance"):
+            check_positive(name, getattr(self, name), optional=True)
+        check_probability("min_score", self.min_score)
+        check_probability("validation_threshold", self.validation_threshold)
+        check_non_negative("foreground_weight", self.foreground_weight)
+        check_choice("matching", self.matching, VALID_MATCHING)
 
 
 class DetectionHead(TaskHead):
@@ -395,4 +423,4 @@ class DetectionHead(TaskHead):
         )
 
 
-task_registry.register("detection", DetectionHead)
+task_registry.register("detection", DetectionHead, params=DetectionParams)

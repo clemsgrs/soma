@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -123,13 +124,13 @@ class TestSurvivalHead:
         record = _record("s1", time=2.5, event=1, bin_=2)
         assert head.extract_targets(record) == {"bin": 2, "event": 1.0, "time": 2.5}
 
-    def test_auto_params_infers_num_bins(self):
+    def test_infer_reads_num_bins_from_the_cohort(self):
         records = [
             _record("s0", 0.5, 1, 0),
             _record("s1", 1.5, 0, 1),
             _record("s2", 3.5, 1, 3),
         ]
-        assert SurvivalHead.auto_params(records) == {"num_bins": 4}
+        assert task_registry.infer("survival", SimpleNamespace(records=records), {}) == {"num_bins": 4}
 
     def test_postprocess_returns_risk_scores(self):
         head = SurvivalHead(input_dim=8, num_bins=4)

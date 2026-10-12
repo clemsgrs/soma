@@ -13,6 +13,7 @@ import logging
 import math
 import time
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +28,63 @@ from rich.text import Text
 
 from soma.atomic_io import atomic_torch_save
 from soma.learn.learner import uncovered_parameters
+from soma.params import check_choice, check_positive
+from soma.registry import Registry
 
-__all__ = ["Checkpoint", "EarlyStopping", "History", "Progress"]
+__all__ = [
+    "Checkpoint",
+    "CheckpointParams",
+    "EarlyStopping",
+    "EarlyStoppingParams",
+    "History",
+    "Progress",
+    "ProgressParams",
+    "callback_registry",
+]
 
 logger = logging.getLogger(__name__)
+
+#: The Trainer callbacks a config can install (``History`` is always installed).
+callback_registry = Registry("callbacks")
+
+
+@dataclass
+class CheckpointParams:
+    """:class:`Checkpoint`'s params."""
+
+    monitor: str = "loss"
+    mode: str = "min"
+    selection: str = "best"
+    dirpath: str | None = None
+
+    def __post_init__(self) -> None:
+        check_choice("mode", self.mode, ("min", "max"))
+        check_choice("selection", self.selection, ("best", "last"))
+
+
+@dataclass
+class EarlyStoppingParams:
+    """:class:`EarlyStopping`'s params."""
+
+    monitor: str = "loss"
+    mode: str = "min"
+    patience: int = 10
+    hold_until_moves: bool = True
+
+    def __post_init__(self) -> None:
+        check_choice("mode", self.mode, ("min", "max"))
+        check_positive("patience", self.patience, integer=True)
+
+
+@dataclass
+class ProgressParams:
+    """:class:`Progress`'s params (the Rich ``console`` is a runtime object, not a param)."""
+
+    style: str = "auto"
+    label: str | None = None
+
+    def __post_init__(self) -> None:
+        check_choice("style", self.style, ("auto", "rich", "plain"))
 
 
 def _is_improvement(current: float, best: float, mode: str) -> bool:
@@ -452,3 +506,8 @@ def _format_metrics(metrics: dict[str, float]) -> str:
     items = [f"{k}={metrics[k]:.4f}" for k in preferred if k in metrics]
     items += [f"{k}={v:.4f}" for k, v in sorted(metrics.items()) if k not in preferred and k != "loss"]
     return " | ".join(items)
+
+
+callback_registry.register("checkpoint", Checkpoint, params=CheckpointParams)
+callback_registry.register("early_stopping", EarlyStopping, params=EarlyStoppingParams)
+callback_registry.register("progress", Progress, params=ProgressParams)

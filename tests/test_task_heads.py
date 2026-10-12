@@ -20,9 +20,9 @@ from soma.tasks.regression import RegressionHead
 from soma.tasks.registry import task_registry
 
 
-def _FakeDataset(num_classes):
-    """Minimal record stubs carrying a ``label`` target."""
-    return [SimpleNamespace(targets={"label": i}) for i in range(num_classes)]
+def _FakeCohort(num_classes):
+    """A cohort stand-in whose records carry ``label`` targets ``0 .. num_classes - 1``."""
+    return SimpleNamespace(records=[SimpleNamespace(targets={"label": i}) for i in range(num_classes)])
 
 
 def _labels(values) -> dict[str, torch.Tensor]:
@@ -100,8 +100,8 @@ class TestBinaryClassificationHead:
         m = head.compute_metrics(logits, _labels([0, 1, 0, 1, 0, 1]))
         assert set(m.keys()) == set(DEFAULT_METRICS["binary_classification"])
 
-    def test_auto_params(self):
-        params = BinaryClassificationHead.auto_params(_FakeDataset(2))
+    def test_infer_reads_the_label_map_from_the_cohort(self):
+        params = task_registry.infer("binary_classification", _FakeCohort(2), {})
         assert params["num_classes"] == 2
         assert params["label_map"] == {0: 0, 1: 1}
 
@@ -172,8 +172,8 @@ class TestMulticlassClassificationHead:
         m = head.compute_metrics(torch.randn(6, 3), _labels([0, 1, 2, 0, 1, 2]))
         assert set(m.keys()) == {"accuracy", "f1_macro"}
 
-    def test_auto_params(self):
-        params = MulticlassClassificationHead.auto_params(_FakeDataset(5))
+    def test_infer_reads_the_label_map_from_the_cohort(self):
+        params = task_registry.infer("multiclass_classification", _FakeCohort(5), {})
         assert params["num_classes"] == 5
         assert params["label_map"] == {i: i for i in range(5)}
 
@@ -285,8 +285,8 @@ class TestRegressionHead:
         m = head.compute_metrics(torch.randn(6, 1), _values(torch.randn(6)))
         assert set(m.keys()) == set(DEFAULT_METRICS["regression"])
 
-    def test_auto_params_is_empty(self):
-        assert RegressionHead.auto_params(_FakeDataset(5)) == {}
+    def test_infers_nothing(self):
+        assert task_registry.infer("regression", _FakeCohort(5), {}) == {}
 
     def test_extract_targets_casts_label_to_float(self):
         head = RegressionHead(input_dim=8)
@@ -320,8 +320,8 @@ class TestOrdinalClassificationHead:
     def test_target_dtypes(self):
         assert OrdinalClassificationHead.target_dtypes == {"label": torch.long}
 
-    def test_auto_params(self):
-        params = OrdinalClassificationHead.auto_params(_FakeDataset(6))
+    def test_infer_reads_the_label_map_from_the_cohort(self):
+        params = task_registry.infer("ordinal_classification", _FakeCohort(6), {})
         assert params["num_classes"] == 6
         assert params["label_map"] == {i: i for i in range(6)}
 

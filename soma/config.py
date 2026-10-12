@@ -1895,21 +1895,25 @@ class PipelineConfig:
         if self.aggregator is not None:
             from soma.aggregators.registry import aggregator_registry
 
-            if self.aggregator.name not in aggregator_registry:
+            try:
+                aggregator_registry.resolve(self.aggregator.name)
+            except KeyError as exc:
                 available = ", ".join(sorted(aggregator_registry.list())) or "(none)"
                 raise ValueError(
                     f"Unknown aggregator name '{self.aggregator.name}'. "
                     f"Available aggregators: {available}"
-                )
+                ) from exc
         if self.decoder is not None:
             from soma.decoders.registry import decoder_registry
 
-            if self.decoder.name not in decoder_registry:
+            try:
+                decoder_registry.resolve(self.decoder.name)
+            except KeyError as exc:
                 available = ", ".join(sorted(decoder_registry.list())) or "(none)"
                 raise ValueError(
                     f"Unknown decoder name '{self.decoder.name}'. "
                     f"Available decoders: {available}"
-                )
+                ) from exc
 
 
 # --- YAML serialization ---

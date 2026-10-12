@@ -10,6 +10,8 @@ in TaskHead, making HIPT composable with any task.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import math
 
 import torch
@@ -18,6 +20,7 @@ from torch import Tensor, nn
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.mil.attention_pool import AttentionPool
 from soma.aggregators.registry import aggregator_registry
+from soma.params import check_positive, check_probability
 
 
 # ---------------------------------------------------------------------------
@@ -413,4 +416,24 @@ class HIPT(Aggregator):
         return self._embed_dim_slide
 
 
-aggregator_registry.register("hipt", HIPT)
+@dataclass
+class HIPTParams:
+    """:class:`HIPT`'s params (``input_dim`` comes from the features). A run sets
+    ``region_size`` and ``patch_size`` from its hierarchical extraction."""
+
+    region_size: int | None = None
+    patch_size: int | None = None
+    embed_dim_region: int = 192
+    embed_dim_slide: int = 192
+    num_heads: int = 6
+    dropout: float = 0.25
+
+    def __post_init__(self) -> None:
+        for name in ("region_size", "patch_size"):
+            check_positive(name, getattr(self, name), integer=True, optional=True)
+        for name in ("embed_dim_region", "embed_dim_slide", "num_heads"):
+            check_positive(name, getattr(self, name), integer=True)
+        check_probability("dropout", self.dropout)
+
+
+aggregator_registry.register("hipt", HIPT, params=HIPTParams)

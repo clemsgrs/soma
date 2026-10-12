@@ -8,6 +8,8 @@ The dual-stream mechanism:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 from torch import Tensor, nn
@@ -15,6 +17,7 @@ from torch import Tensor, nn
 from soma.aggregators.base import Aggregator, AggregatorOutput, require_label
 from soma.aggregators.mil.attention_pool import masked_softmax
 from soma.aggregators.registry import aggregator_registry
+from soma.params import check_positive, check_probability
 from soma.tasks.base import TaskHead
 
 
@@ -129,4 +132,18 @@ class DSMIL(Aggregator):
         )
 
 
-aggregator_registry.register("dsmil", DSMIL)
+@dataclass
+class DSMILParams:
+    """:class:`DSMIL`'s params (``input_dim`` comes from the features)."""
+
+    att_dim: int = 128
+    nonlinear_q: bool = False
+    nonlinear_v: bool = False
+    dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        check_positive("att_dim", self.att_dim, integer=True)
+        check_probability("dropout", self.dropout)
+
+
+aggregator_registry.register("dsmil", DSMIL, params=DSMILParams)

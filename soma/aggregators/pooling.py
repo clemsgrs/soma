@@ -6,6 +6,7 @@ from torch import Tensor
 
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.registry import aggregator_registry
+from soma.params import NoParams
 
 
 class MeanPool(Aggregator):
@@ -52,5 +53,5 @@ class MaxPool(Aggregator):
         return self._input_dim
 
 
-aggregator_registry.register("mean_pool", MeanPool)
-aggregator_registry.register("max_pool", MaxPool)
+aggregator_registry.register("mean_pool", MeanPool, params=NoParams)
+aggregator_registry.register("max_pool", MaxPool, params=NoParams)

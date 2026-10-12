@@ -6,20 +6,21 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from soma import components  # noqa: E402
 from soma.decoders import (  # noqa: E402
     HeavyConvDecoder,
     LightweightConvDecoder,
     LinearDecoder,
     decoder_registry,
-    list_decoders,
 )
 
 
 def test_registry_lists_all_decoders():
     # Benchmark-private decoders (soma.benchmarks.eva_segmentation) register under an
-    # ``eva_`` prefix whenever the benchmarks package is imported in the same session.
-    builtin = [name for name in list_decoders() if not name.startswith("eva_")]
-    assert builtin == ["heavy_conv", "lightweight_conv", "linear"]
+    # ``eva_`` prefix and are listed with soma's own.
+    names = [entry["name"] for entry in components("decoders")]
+    assert [name for name in names if not name.startswith("eva_")] == ["heavy_conv", "lightweight_conv", "linear"]
+    assert {"eva_conv_ms", "eva_conv_with_image"} <= set(names)
 
 
 def test_linear_decoder_preserves_grid_resolution():

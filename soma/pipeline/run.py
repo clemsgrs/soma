@@ -188,6 +188,7 @@ class Pipeline:
             preprocessing=preprocessing,
             evaluation=self._guard_test_clobber(layout),
             source=context.source,
+            cohort=self._cohort,
             dataset=context.dataset,
             splits=context.splits,
             run_id=layout.run_id,

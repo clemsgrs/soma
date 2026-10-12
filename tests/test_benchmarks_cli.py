@@ -210,7 +210,7 @@ def multi_metric_benchmark():
     try:
         yield bench
     finally:
-        registry_mod._REGISTRY.pop(bench.name, None)
+        registry_mod.benchmark_registry._entries.pop(bench.name, None)
 
 
 @pytest.fixture()
@@ -220,7 +220,7 @@ def external_only_benchmark():
     try:
         yield bench
     finally:
-        registry_mod._REGISTRY.pop(bench.name, None)
+        registry_mod.benchmark_registry._entries.pop(bench.name, None)
 
 
 def test_reproduce_external_only_renders_measured_beside_reference(capsys, tmp_path, external_only_benchmark):
@@ -664,7 +664,7 @@ def panel_benchmark():
     try:
         yield benchmark, private_name
     finally:
-        registry_mod._REGISTRY.pop(benchmark.name, None)
+        registry_mod.benchmark_registry._entries.pop(benchmark.name, None)
         encoder_registry._entries.pop(private_name, None)
 
 
@@ -742,7 +742,7 @@ def test_reproduce_panel_reports_every_invalid_encoder_before_work(
             ]
         )
     finally:
-        registry_mod._REGISTRY.pop(benchmark.name, None)
+        registry_mod.benchmark_registry._entries.pop(benchmark.name, None)
 
     captured = capsys.readouterr()
     assert code == 2
@@ -811,7 +811,7 @@ def test_reproduce_panel_uses_slide2vec_public_geometry_validation(
             ]
         )
     finally:
-        registry_mod._REGISTRY.pop(benchmark.name, None)
+        registry_mod.benchmark_registry._entries.pop(benchmark.name, None)
 
     assert code == 2
     assert capsys.readouterr().err == (
@@ -857,7 +857,7 @@ def test_reproduce_family_preflights_every_concrete_cell_before_any_work(
         )
     finally:
         for benchmark in benchmarks:
-            registry_mod._REGISTRY.pop(benchmark.name, None)
+            registry_mod.benchmark_registry._entries.pop(benchmark.name, None)
 
     err = capsys.readouterr().err
     assert code == 2
@@ -953,7 +953,7 @@ def test_reproduce_family_continues_ordered_cells_and_writes_isolated_leaderboar
         )
     finally:
         for benchmark in benchmarks:
-            registry_mod._REGISTRY.pop(benchmark.name, None)
+            registry_mod.benchmark_registry._entries.pop(benchmark.name, None)
 
     assert code == 1
     assert audit == [

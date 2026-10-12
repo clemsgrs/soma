@@ -77,7 +77,7 @@ def ledger_benchmark():
     try:
         yield bench
     finally:
-        registry_mod._REGISTRY.pop(bench.name, None)
+        registry_mod.benchmark_registry._entries.pop(bench.name, None)
 
 
 @pytest.fixture()

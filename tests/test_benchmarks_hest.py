@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
+from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import hest
 
 
@@ -26,7 +26,7 @@ from soma.benchmarks import hest
 
 
 def test_hest_idc_is_registered_and_conforms_to_protocol():
-    names = list_benchmarks()
+    names = sorted(benchmark_registry.list())
     assert "hest/IDC" in names
     bench = get_benchmark("hest/IDC")
     assert bench.name == "hest/IDC"
@@ -37,12 +37,12 @@ def test_hest_idc_is_registered_and_conforms_to_protocol():
 
 def test_all_nine_hest_benchmark_tasks_are_registered():
     # HEST-Benchmark has 9 scored tasks; each is registered as hest/<task> (like eva/<dataset>).
-    hest_names = sorted(n for n in list_benchmarks() if n.split("/", 1)[0] == "hest")
+    hest_names = sorted(n for n in sorted(benchmark_registry.list()) if n.split("/", 1)[0] == "hest")
     assert hest_names == sorted(f"hest/{t}" for t in hest.HEST_TASKS)
     assert len(hest.HEST_TASKS) == 9
     # HCC ships data on the HF hub but is NOT a scored HEST-Benchmark task -> never registered.
     assert "HCC" not in hest.HEST_TASKS
-    assert "hest/HCC" not in list_benchmarks()
+    assert "hest/HCC" not in sorted(benchmark_registry.list())
 
 
 def test_hest_facet_fixes_task_and_varies_encoder():

@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 import torch
 
-from soma.aggregators import list_aggregators
+from soma import components
 
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
 from tests.e2e.synthetic import SPACING_UM, MarkerCohort, make_marker_cohort
@@ -144,7 +144,7 @@ def _max_abs_diff(a: dict[str, torch.Tensor], b: dict[str, torch.Tensor]) -> flo
     return max(float((a[k] - b[k]).abs().max()) for k in a)
 
 
-@pytest.mark.parametrize("aggregator", list_aggregators())
+@pytest.mark.parametrize("aggregator", [entry["name"] for entry in components("aggregators")])
 def test_aggregator_solves_rigged_task_and_scores_bags_independently(
     aggregator, cohort, shared_cache, tmp_path, encoder_name, scored_models, new_artifact
 ):

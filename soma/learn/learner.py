@@ -17,11 +17,12 @@ from typing import Any, Literal
 import torch
 from torch import Tensor, nn
 
-from soma.registry import Registry
+from soma.registry import Registry, signature_params
 
 __all__ = [
     "Budget",
     "Learner",
+    "LearnerParams",
     "PredictOutput",
     "SchedulerSpec",
     "StepOutput",
@@ -96,10 +97,11 @@ class Budget:
 # {name, params} leaves
 # ---------------------------------------------------------------------------
 
-optimizer_registry = Registry("optimizer")
-scheduler_registry = Registry("scheduler")
-learner_registry = Registry("learner")
+optimizer_registry = Registry("optimizers")
+scheduler_registry = Registry("schedulers")
+learner_registry = Registry("learners")
 
+# torch owns these signatures, so their params dataclasses are derived from them.
 for _name, _cls in {
     "adam": torch.optim.Adam,
     "adamw": torch.optim.AdamW,
@@ -107,7 +109,9 @@ for _name, _cls in {
     "rmsprop": torch.optim.RMSprop,
     "adagrad": torch.optim.Adagrad,
 }.items():
-    optimizer_registry.register(_name, _cls)
+    optimizer_registry.register(
+        _name, _cls, params=signature_params(_cls, name=f"{_cls.__name__}Params", skip=("params",))
+    )
 
 for _name, _cls in {
     "cosine": torch.optim.lr_scheduler.CosineAnnealingLR,
@@ -119,13 +123,26 @@ for _name, _cls in {
     "one_cycle": torch.optim.lr_scheduler.OneCycleLR,
     "cosine_warm_restarts": torch.optim.lr_scheduler.CosineAnnealingWarmRestarts,
 }.items():
-    scheduler_registry.register(_name, _cls)
+    scheduler_registry.register(
+        _name, _cls, params=signature_params(_cls, name=f"{_cls.__name__}Params", skip=("optimizer",))
+    )
+
+
+@dataclass
+class LearnerParams:
+    """A :class:`Learner`'s params: its optimizer leaf (``None`` = Adam at ``lr=1e-4,
+    weight_decay=1e-5``) and scheduler leaves. The model is built by the run."""
+
+    optimizer: Any = None
+    schedulers: Sequence[Any] = ()
 
 
 def resolve_leaf(leaf: Any, registry: Registry) -> tuple[type, dict[str, Any], dict[str, Any]]:
     """Normalise a ``{name, params}`` leaf (or its string shorthand) to ``(cls, params, extra)``.
 
-    ``extra`` holds the leaf's other keys (``interval`` on a scheduler leaf).
+    ``params`` are validated against the entry's params dataclass (a dotted-path class's
+    pass through unvalidated, with a warning); ``extra`` holds the leaf's other keys
+    (``interval`` on a scheduler leaf).
     """
     if isinstance(leaf, str):
         leaf = {"name": leaf}
@@ -133,9 +150,9 @@ def resolve_leaf(leaf: Any, registry: Registry) -> tuple[type, dict[str, Any], d
         raise ValueError(
             f"a component leaf is a name or a {{name, params}} mapping, got {leaf!r}"
         )
-    params = dict(leaf.get("params") or {})
+    name = str(leaf["name"])
     extra = {k: v for k, v in leaf.items() if k not in {"name", "params"}}
-    return registry.resolve(str(leaf["name"])), params, extra
+    return registry.resolve(name), registry.validate(name, leaf.get("params")), extra
 
 
 # ---------------------------------------------------------------------------

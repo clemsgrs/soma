@@ -43,22 +43,13 @@ Available commands
    Run a full pipeline from the given YAML config file, optionally on
    pre-extracted features.
 
-``soma list encoders [--level {tile,slide,patient}]``
-   List all registered encoder presets. ``--level`` narrows results to
-   ``tile``, ``slide``, or ``patient`` encoders.
-
-``soma list aggregators``
-   List all registered MIL aggregator presets.
-
-``soma list decoders``
-   List all registered dense decoder presets.
-
-``soma list tasks``
-   List all registered task-head presets.
-
-``soma list benchmarks``
-   List all registered foundation-model benchmarks — the names
-   ``soma reproduce`` and ``soma leaderboard`` accept.
+``soma list [KIND] [--level {tile,slide,patient}]``
+   Without ``KIND``, list the component kinds: ``aggregators``, ``augmentations``, ``benchmarks``, ``callbacks``, ``decoders``, ``encoders``, ``heads``, ``learners``, ``optimizers``, ``samplers``, ``schedulers``.
+   With a ``KIND``, list its registered components and the default of
+   each of their params; ``soma list benchmarks`` prints the names
+   ``soma reproduce`` and ``soma leaderboard`` accept. ``--level``
+   narrows the encoders to ``tile``, ``slide``, or ``patient``.
+   :func:`soma.components` returns the same listing in Python.
 
 ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
    Score saved predictions against the targets in ``dataset.csv``,

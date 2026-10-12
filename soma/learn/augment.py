@@ -9,6 +9,7 @@ augmented. ``augment_registry`` resolves the ``augmentation: {name, params}`` co
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -17,9 +18,80 @@ from torch import Tensor
 from soma.data import Points
 from soma.registry import Registry
 
-__all__ = ["SegmentationAugment", "augment_registry"]
+__all__ = ["SegmentationAugment", "SegmentationAugmentParams", "augment_registry"]
 
-augment_registry = Registry("augmentation")
+augment_registry = Registry("augmentations")
+
+
+def _check_strengths(
+    *,
+    crop_scale: Any,
+    horizontal_flip: float,
+    vertical_flip: float,
+    rotation_degrees: float,
+    translate: float,
+    scale: float,
+    brightness: float,
+    contrast: float,
+    saturation: float,
+    hue: float,
+) -> None:
+    for name, value in (("horizontal_flip", horizontal_flip), ("vertical_flip", vertical_flip)):
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError(f"{name} must be a probability in [0, 1], got {value}")
+    for name, value in (
+        ("rotation_degrees", rotation_degrees),
+        ("translate", translate),
+        ("scale", scale),
+        ("brightness", brightness),
+        ("contrast", contrast),
+        ("saturation", saturation),
+    ):
+        if float(value) < 0.0:
+            raise ValueError(f"{name} must be >= 0, got {value}")
+    if not 0.0 <= float(translate) <= 1.0:
+        raise ValueError(f"translate must be in [0, 1], got {translate}")
+    if not 0.0 <= float(scale) < 1.0:
+        raise ValueError(f"scale must be in [0, 1), got {scale}")
+    if not 0.0 <= float(hue) <= 0.5:
+        raise ValueError(f"hue must be in [0, 0.5], got {hue}")
+    if crop_scale is not None:
+        low, high = (float(v) for v in crop_scale)
+        if not 0.0 < low <= high <= 1.0:
+            raise ValueError(f"crop_scale must satisfy 0 < low <= high <= 1, got {crop_scale}")
+
+
+@dataclass
+class SegmentationAugmentParams:
+    """:class:`SegmentationAugment`'s params. A run fills ``ignore_index`` and
+    ``target_size`` from its head and geometry when they are not set."""
+
+    crop_scale: tuple[float, float] | None = None
+    horizontal_flip: float = 0.0
+    vertical_flip: float = 0.0
+    rotation_degrees: float = 0.0
+    translate: float = 0.0
+    scale: float = 0.0
+    brightness: float = 0.0
+    contrast: float = 0.0
+    saturation: float = 0.0
+    hue: float = 0.0
+    ignore_index: int = 255
+    target_size: int | tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        _check_strengths(
+            crop_scale=self.crop_scale,
+            horizontal_flip=self.horizontal_flip,
+            vertical_flip=self.vertical_flip,
+            rotation_degrees=self.rotation_degrees,
+            translate=self.translate,
+            scale=self.scale,
+            brightness=self.brightness,
+            contrast=self.contrast,
+            saturation=self.saturation,
+            hue=self.hue,
+        )
 
 
 class SegmentationAugment:
@@ -62,30 +134,20 @@ class SegmentationAugment:
         ignore_index: int = 255,
         target_size: int | tuple[int, int] | None = None,
     ) -> None:
-        for name, value in (("horizontal_flip", horizontal_flip), ("vertical_flip", vertical_flip)):
-            if not 0.0 <= float(value) <= 1.0:
-                raise ValueError(f"{name} must be a probability in [0, 1], got {value}")
-        for name, value in (
-            ("rotation_degrees", rotation_degrees),
-            ("translate", translate),
-            ("scale", scale),
-            ("brightness", brightness),
-            ("contrast", contrast),
-            ("saturation", saturation),
-        ):
-            if float(value) < 0.0:
-                raise ValueError(f"{name} must be >= 0, got {value}")
-        if not 0.0 <= float(translate) <= 1.0:
-            raise ValueError(f"translate must be in [0, 1], got {translate}")
-        if not 0.0 <= float(scale) < 1.0:
-            raise ValueError(f"scale must be in [0, 1), got {scale}")
-        if not 0.0 <= float(hue) <= 0.5:
-            raise ValueError(f"hue must be in [0, 0.5], got {hue}")
+        _check_strengths(
+            crop_scale=crop_scale,
+            horizontal_flip=horizontal_flip,
+            vertical_flip=vertical_flip,
+            rotation_degrees=rotation_degrees,
+            translate=translate,
+            scale=scale,
+            brightness=brightness,
+            contrast=contrast,
+            saturation=saturation,
+            hue=hue,
+        )
         if crop_scale is not None:
-            low, high = (float(v) for v in crop_scale)
-            if not 0.0 < low <= high <= 1.0:
-                raise ValueError(f"crop_scale must satisfy 0 < low <= high <= 1, got {crop_scale}")
-            crop_scale = (low, high)
+            crop_scale = (float(crop_scale[0]), float(crop_scale[1]))
             if target_size is None:
                 raise ValueError("crop_scale crops to target_size; pass target_size")
         self.crop_scale = crop_scale
@@ -155,4 +217,4 @@ class SegmentationAugment:
         return f"SegmentationAugment({self._transform})"
 
 
-augment_registry.register("segmentation", SegmentationAugment)
+augment_registry.register("segmentation", SegmentationAugment, params=SegmentationAugmentParams)

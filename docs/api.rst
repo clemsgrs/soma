@@ -214,8 +214,10 @@ runs over the same cohort:
 paired permutation test against it. See :doc:`evaluation` for the scoring
 rules and :doc:`benchmarking` for leaderboards across many runs.
 
-``soma.list_models(level=...)``, ``list_aggregators()``, ``list_decoders()``,
-and ``list_task_heads()`` list the registered presets from code.
+``soma.components()`` names the component kinds (aggregators, heads,
+decoders, encoders, optimizers, ...); ``soma.components("aggregators")`` lists
+one kind's registered components, each with its params and their defaults.
+See :ref:`registering-components` for adding your own.
 
 Segmentation and detection building blocks
 ------------------------------------------
@@ -321,10 +323,11 @@ comparable to the CLI's:
 
    import statistics
 
-   from soma.benchmarks import get_benchmark, list_benchmarks
+   import soma
+   from soma.benchmarks import get_benchmark
    from soma.pipeline import Pipeline
 
-   list_benchmarks()                       # ["ocelot", "eva/bach", "hest/IDC", ...]
+   [entry["name"] for entry in soma.components("benchmarks")]  # [..., "eva/bach", "hest/IDC", "ocelot"]
    benchmark = get_benchmark("eva/bach")
 
    manifest = benchmark.curate("/path/to/eva/bach", "runs/eva-bach/curated")

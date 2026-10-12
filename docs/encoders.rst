@@ -21,8 +21,9 @@ Model Zoo
 ---------
 
 Tile encoders are grouped by output dimension. Spacing is in µm/px; multiple
-dimensions indicate output variants. ``soma.list_models(level=...)`` lists the
-presets installed in the registry.
+dimensions indicate output variants. ``soma.components("encoders")`` lists the
+presets installed in slide2vec's registry, each with its ``level``; ``soma list
+encoders --level tile`` prints one level.
 
 Tile-level encoders
 ~~~~~~~~~~~~~~~~~~~

@@ -41,8 +41,8 @@ def build_decoder_for_grid(
     the single construction path; callers supply ``input_dim`` via
     :func:`~soma.training.feature_adaptor.feature_adaptor_output_dim`.
     """
-    decoder_cls = decoder_registry.get(decoder_name)
-    params = dict(decoder_params or {})
+    decoder_cls = decoder_registry.resolve(decoder_name)
+    params = decoder_registry.validate(decoder_name, decoder_params)
     ctor_params = inspect.signature(decoder_cls.__init__).parameters
     if "num_upsample_blocks" in ctor_params and "num_upsample_blocks" not in params:
         ratio = max(

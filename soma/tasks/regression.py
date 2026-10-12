@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -11,6 +12,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import MULTI_OUTPUT_REGRESSION_METRICS, metric_registry
+from soma.params import check_positive, check_probability
 from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
@@ -21,6 +23,19 @@ if TYPE_CHECKING:
 
 #: The metrics a multi-output regression reports (one value per sample and output).
 _MULTI_OUTPUT_METRICS = tuple(MULTI_OUTPUT_REGRESSION_METRICS)
+
+
+@dataclass
+class RegressionParams:
+    """:class:`RegressionHead`'s params (``input_dim`` comes from the model, ``metrics``
+    from the evaluation section)."""
+
+    num_outputs: int = 1
+    dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        check_positive("num_outputs", self.num_outputs, integer=True)
+        check_probability("dropout", self.dropout, below_one=True)
 
 
 class RegressionHead(TaskHead):
@@ -86,10 +101,6 @@ class RegressionHead(TaskHead):
             return {f"value_{k}": float for k in range(num_outputs)}
         return dict(cls.target_schema)
 
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        return {}
-
     def extract_targets(self, record: "SampleRecord") -> dict[str, Any]:
         if self.num_outputs == 1:
             return {"value": float(record.targets["value"])}
@@ -134,4 +145,4 @@ class RegressionHead(TaskHead):
         return {name: float(metric_registry.get(name).fn(predicted, truth)) for name in self.metrics}
 
 
-task_registry.register("regression", RegressionHead)
+task_registry.register("regression", RegressionHead, params=RegressionParams)

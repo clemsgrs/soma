@@ -10,12 +10,9 @@ from typing import Any
 import yaml
 
 from soma._logging import configure_cli_logging
-from soma.aggregators import list_aggregators
 from soma.config import load_config
-from soma.decoders import list_decoders
-from soma.encoders import list_models
+from soma.discovery import components
 from soma.pipeline import Pipeline
-from soma.tasks import list_task_heads
 
 # The reproduce orchestration lives in soma.benchmarks.run (issue #370): the CLI is a
 # thin caller of the same importable code (`soma.benchmarks.run_benchmark`). The aliases
@@ -106,63 +103,55 @@ def _run_config_path(
     Pipeline(config, source=source).run()
 
 
-def _print_table(title: str, values: list[str]) -> None:
+def _print_table(title: str, columns: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
     from rich.console import Console
     from rich.table import Table
 
-    console = Console()
-    table = Table(
-        title=title,
-        show_header=True,
-        header_style="bold",
-        min_width=max(len(title) + 4, 12),
-    )
-    table.add_column("Name")
-    if not values:
-        table.add_row("(none)")
-    else:
-        for value in values:
-            table.add_row(value)
-    console.print(table)
+    table = Table(title=title, show_header=True, header_style="bold", min_width=max(len(title) + 4, 12))
+    for index, column in enumerate(columns):
+        table.add_column(column, no_wrap=index == 0)
+    for row in rows or [("(none)",) + ("",) * (len(columns) - 1)]:
+        table.add_row(*row)
+    Console().print(table)
+
+
+def _format_params(params: dict[str, Any] | None) -> str:
+    if params is None:
+        return ""
+    return ", ".join(f"{name}={value!r}" for name, value in params.items())
 
 
 def _cmd_list(args: argparse.Namespace) -> None:
-    kind = args.kind
-    if kind == "encoders":
-        values = list_models(level=args.level)
-        title = "Encoders" if args.level is None else f"Encoders ({args.level})"
-    elif kind == "aggregators":
-        values = list_aggregators()
-        title = "Aggregators"
-    elif kind == "decoders":
-        values = list_decoders()
-        title = "Decoders"
-    elif kind == "benchmarks":
-        from soma.benchmarks import list_benchmarks
-
-        values = list_benchmarks()
-        title = "Benchmarks"
+    """A thin print over :func:`soma.components`."""
+    if args.kind is None:
+        _print_table("Components", ("Kind",), [(kind,) for kind in components()])
+        return
+    if args.level is not None and args.kind != "encoders":
+        print("Error: --level applies to encoders only", file=sys.stderr)
+        sys.exit(2)
+    entries = components(args.kind)
+    if args.level is not None:
+        entries = [entry for entry in entries if entry.get("level") == args.level]
+    title = args.kind.capitalize() if args.level is None else f"Encoders ({args.level})"
+    if args.kind == "encoders":
+        rows = [(entry["name"], str(entry.get("level", ""))) for entry in entries]
+        _print_table(title, ("Name", "Level"), rows)
     else:
-        values = list_task_heads()
-        title = "Task Heads"
-    _print_table(title, values)
+        rows = [(entry["name"], _format_params(entry["params"])) for entry in entries]
+        _print_table(title, ("Name", "Params"), rows)
 
 
 def _build_list_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soma list",
-        description="List encoders, aggregators, dense registries, or task heads.",
+        description="List the component kinds, or one kind's registered components and their params.",
     )
     parser.add_argument(
         "kind",
-        choices=(
-            "encoders",
-            "aggregators",
-            "decoders",
-            "tasks",
-            "benchmarks",
-        ),
-        help="Component family to list.",
+        nargs="?",
+        choices=components(),
+        default=None,
+        help="Component kind to list; omit it to list the kinds.",
     )
     parser.add_argument(
         "--level",
@@ -181,12 +170,12 @@ def _resolve_reproduce_targets(name: str) -> list[Any]:
     prefix (``eva``) that fans out over every registered ``NAME/<member>``. Returns an empty
     list when nothing matches (fail-fast handled by the caller).
     """
-    from soma.benchmarks import get_benchmark, list_benchmarks
+    from soma.benchmarks import benchmark_registry, get_benchmark
 
     try:
         return [get_benchmark(name)]
     except KeyError:
-        return [get_benchmark(n) for n in list_benchmarks() if n.startswith(f"{name}/")]
+        return [get_benchmark(n) for n in sorted(benchmark_registry.list()) if n.startswith(f"{name}/")]
 
 
 def _recorded_croma_version(
@@ -971,7 +960,7 @@ def _build_compact_index_parser() -> argparse.ArgumentParser:
 def _print_top_level_help() -> None:
     print(
         "usage: soma CONFIG [--set KEY=VALUE ...] [--feature-dir DIR]\n"
-        "       soma list {encoders,aggregators,decoders,tasks,benchmarks} [--level {tile,slide,patient}]\n"
+        "       soma list [KIND] [--level {tile,slide,patient}]\n"
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
@@ -980,7 +969,7 @@ def _print_top_level_help() -> None:
         "\n"
         "commands:\n"
         "  CONFIG       run a pipeline from a YAML config file (--feature-dir: on cached features)\n"
-        "  list         list public model/component/benchmark registries\n"
+        "  list         list the component kinds, or one kind's components and their params\n"
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
@@ -1001,22 +990,20 @@ def _print_top_level_help() -> None:
 
 def _print_list_help() -> None:
     print(
-        "usage: soma list {encoders,aggregators,decoders,tasks,benchmarks} [--level {tile,slide,patient}]\n"
+        "usage: soma list [KIND] [--level {tile,slide,patient}]\n"
         "\n"
         "commands:\n"
-        "  encoders     list registered encoder presets\n"
-        "  aggregators  list registered aggregator presets\n"
-        "  decoders     list registered dense decoder presets\n"
-        "  tasks        list registered task-head presets\n"
-        "  benchmarks   list registered benchmarks\n"
+        "  (no KIND)    list the component kinds\n"
+        "  KIND         list one kind's registered components with their params and defaults\n"
+        f"               ({', '.join(components())})\n"
         "\n"
         "options:\n"
-        "  --level      restrict encoder listing to one level\n"
+        "  --level      restrict the encoder listing to one level\n"
         "\n"
         "examples:\n"
-        "  soma list encoders\n"
-        "  soma list encoders --level tile\n"
-        "  soma list tasks"
+        "  soma list\n"
+        "  soma list aggregators\n"
+        "  soma list encoders --level tile"
     )
 
 
@@ -1032,7 +1019,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args[0] == "list":
-        if len(args) == 1 or args[1] in {"-h", "--help"}:
+        if len(args) > 1 and args[1] in {"-h", "--help"}:
             _print_list_help()
             return
         parser = _build_list_parser()

@@ -17,12 +17,15 @@ width ``Σdᵢ`` is just a wider ``d`` into the same projection.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.decoders.base import Decoder
 from soma.decoders.lightweight_conv import _group_norm
+from soma.params import check_non_negative, check_positive
 from soma.decoders.registry import decoder_registry
 
 
@@ -140,4 +143,24 @@ class HeavyConvDecoder(Decoder):
         return self._num_classes
 
 
-decoder_registry.register("heavy_conv", HeavyConvDecoder)
+@dataclass
+class HeavyConvParams:
+    """:class:`HeavyConvDecoder`'s params (``input_dim`` and ``num_classes`` come from the
+    run). A run derives ``num_upsample_blocks`` from the grid geometry unless it is set."""
+
+    hidden_dim: int = 256
+    pool_scales: tuple[int, ...] = (1, 2, 3, 6)
+    num_upsample_blocks: int = 2
+    num_groups: int = 32
+
+    def __post_init__(self) -> None:
+        check_positive("hidden_dim", self.hidden_dim, integer=True)
+        check_positive("num_groups", self.num_groups, integer=True)
+        check_non_negative("num_upsample_blocks", self.num_upsample_blocks, integer=True)
+        if not self.pool_scales:
+            raise ValueError(f"pool_scales must be non-empty positive ints, got {self.pool_scales}")
+        for scale in self.pool_scales:
+            check_positive("pool_scales", scale, integer=True)
+
+
+decoder_registry.register("heavy_conv", HeavyConvDecoder, params=HeavyConvParams)

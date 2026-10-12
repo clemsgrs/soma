@@ -23,11 +23,11 @@ from soma.benchmarks import (
     get_benchmark,
     get_ranking_metrics,
     get_reported_metrics,
-    list_benchmarks,
     load_reference,
     register_benchmark,
     score_from_summary,
 )
+from soma import components
 from soma.benchmarks import registry as registry_mod
 from soma.config import (
     AggregatorConfig,
@@ -79,14 +79,14 @@ def fixture_benchmark():
     try:
         yield bench
     finally:
-        registry_mod._REGISTRY.pop(bench.name, None)
+        registry_mod.benchmark_registry._entries.pop(bench.name, None)
 
 
 def test_register_lookup_and_list(fixture_benchmark):
     assert get_benchmark("fixture_bench") is fixture_benchmark
-    assert "fixture_bench" in list_benchmarks()
-    # list is sorted
-    assert list_benchmarks() == sorted(list_benchmarks())
+    names = [entry["name"] for entry in components("benchmarks")]
+    assert "fixture_bench" in names
+    assert names == sorted(names)
 
 
 def test_get_benchmark_unknown_is_keyerror():

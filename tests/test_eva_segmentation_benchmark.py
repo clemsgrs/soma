@@ -8,7 +8,7 @@ import pytest
 import torch
 import torch.nn.functional as F
 
-from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
+from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva_segmentation as seg
 from soma.benchmarks.eva import EvaTileClassificationBenchmark
 from soma.curation.manifest import CuratedManifest
@@ -26,7 +26,7 @@ def _logits_from_pred(pred: torch.Tensor, num_classes: int) -> torch.Tensor:
 
 
 def test_segmentation_subbenchmarks_join_the_eva_family():
-    names = list_benchmarks()
+    names = sorted(benchmark_registry.list())
     for dataset in ("consep", "monusac"):
         bench = get_benchmark(f"eva/{dataset}")
         assert f"eva/{dataset}" in names

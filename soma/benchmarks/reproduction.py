@@ -37,9 +37,9 @@ from itertools import combinations
 from soma.benchmarks.registry import (
     MeasuredRow,
     ReferenceRow,
+    benchmark_registry,
     get_benchmark,
     get_ranking_metrics,
-    list_benchmarks,
     load_reference,
     load_results,
 )
@@ -206,7 +206,7 @@ class ReproductionReport:
 
 def _primary_metric_for(name: str) -> str:
     """The primary metric of the family ``name`` (read off any registered member)."""
-    for registered in list_benchmarks():
+    for registered in sorted(benchmark_registry.list()):
         if registered == name or registered.startswith(f"{name}/"):
             return get_benchmark(registered).primary_metric
     raise KeyError(f"No registered benchmark for family {name!r}.")
@@ -219,7 +219,7 @@ def _resolvability_for(name: str) -> ResolvabilityPolicy:
     they were published under — adopting a different policy is a per-family decision with
     its own disclosure, never a global switch (soma#321).
     """
-    for registered in list_benchmarks():
+    for registered in sorted(benchmark_registry.list()):
         if registered == name or registered.startswith(f"{name}/"):
             policy = getattr(get_benchmark(registered), "resolvability", None)
             if isinstance(policy, ResolvabilityPolicy):
@@ -266,7 +266,7 @@ def _ranking_cells(
 ) -> list[Cell]:
     """Cells eligible for rank agreement; controls remain in the absolute table."""
     member_name = f"{name}/{dataset}"
-    registered = set(list_benchmarks())
+    registered = set(benchmark_registry.list())
     if member_name in registered:
         benchmark = get_benchmark(member_name)
     elif name in registered:
