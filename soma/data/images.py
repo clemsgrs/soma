@@ -6,8 +6,10 @@ own, under the same id / geometry / spacing contract as a cached
 spacing) are read as stored, unless the manifest declares a ``spacing_at_level_0``
 outside ``tolerance`` of ``spacing_um``: then they are area-resampled to ``spacing_um``,
 as slide2vec's cached extraction reads them. Pyramidal, spacing-bearing images are read
-through hs2p at ``spacing_um``. :class:`RegionImageSource` serves windows of whole slides
-(slide-manifest ROIs) under the same contract.
+through hs2p at ``spacing_um``. Under ``spacing_policy="native_if_coarser"`` an image
+whose declared spacing is coarser than ``spacing_um`` is read at its own spacing instead,
+as the label maps and cached extraction resolve it. :class:`RegionImageSource` serves
+windows of whole slides (slide-manifest ROIs) under the same contract.
 """
 
 from __future__ import annotations
@@ -36,6 +38,9 @@ class TileImageSource:
         spacing_um: µm/px to read pyramidal images at, and flat ones whose declared
             ``spacing_at_level_0`` lies outside ``tolerance`` of it; ``None`` reads every
             image as stored.
+        spacing_policy: ``"strict"`` reads every image at ``spacing_um``;
+            ``"native_if_coarser"`` reads one whose declared ``spacing_at_level_0`` is
+            coarser than it at that native spacing (no upsampling).
         backend: hs2p backend for spacing-aware reads.
         tolerance: hs2p spacing tolerance: a level within it is read without resampling.
     """
@@ -46,6 +51,7 @@ class TileImageSource:
         *,
         size: int | tuple[int, int],
         spacing_um: float | None = None,
+        spacing_policy: str = "strict",
         backend: str = "auto",
         tolerance: float = 0.05,
     ) -> None:
@@ -54,6 +60,7 @@ class TileImageSource:
         self._entries: dict[str, ImageEntry] = {str(k): v for k, v in entries.items()}
         self._size = normalize_hw(size, name="size")
         self._spacing_um = None if spacing_um is None else float(spacing_um)
+        self._spacing_policy = spacing_policy
         self._backend = backend
         self._tolerance = float(tolerance)
 
@@ -64,6 +71,7 @@ class TileImageSource:
         *,
         size: int | tuple[int, int],
         spacing_um: float | None = None,
+        spacing_policy: str = "strict",
         backend: str = "auto",
         tolerance: float = 0.05,
     ) -> "TileImageSource":
@@ -71,6 +79,7 @@ class TileImageSource:
             image_manifest.entries,
             size=size,
             spacing_um=spacing_um,
+            spacing_policy=spacing_policy,
             backend=backend,
             tolerance=tolerance,
         )
@@ -89,6 +98,7 @@ class TileImageSource:
             {sid: self._entry(sid) for sid in map(str, sample_ids)},
             size=self._size,
             spacing_um=self._spacing_um,
+            spacing_policy=self._spacing_policy,
             backend=self._backend,
             tolerance=self._tolerance,
         )
@@ -101,22 +111,37 @@ class TileImageSource:
                 f"Sample '{sample_id}' not found in image source. Available: {sorted(self._entries)}"
             ) from None
 
+    def _read_spacing(self, entry: ImageEntry) -> float | None:
+        """The µm/px ``entry`` is read at: ``spacing_um``, resolved per entry through
+        ``spacing_policy`` against its declared ``spacing_at_level_0``."""
+        if self._spacing_um is None:
+            return None
+        from soma.spacing import resolve_effective_spacing_um
+
+        return resolve_effective_spacing_um(
+            requested_spacing_um=self._spacing_um,
+            spacing_at_level_0=entry.spacing_at_level_0,
+            tolerance=self._tolerance,
+            policy=self._spacing_policy,
+        )
+
     def _flat(self, entry: ImageEntry) -> bool:
         from soma.dense.reader import _is_flat
 
         return _is_flat(entry.image_path, self._spacing_um)
 
     def _flat_resample(self, entry: ImageEntry) -> float | None:
-        """The declared level-0 µm/px of a flat raster ``load`` resamples to ``spacing_um``,
-        or ``None`` when it is served as stored (no declared or requested spacing, or the
-        two within ``tolerance``). hs2p's image policy refuses upsampling beyond it."""
-        if self._spacing_um is None or entry.spacing_at_level_0 is None:
+        """The declared level-0 µm/px of a flat raster ``load`` resamples to its read
+        spacing, or ``None`` when it is served as stored (no declared or requested spacing,
+        or the two within ``tolerance``). hs2p's image policy refuses upsampling beyond it."""
+        read = self._read_spacing(entry)
+        if read is None or entry.spacing_at_level_0 is None:
             return None
         from hs2p.wsi.geometry import select_level_for_spacing_read
 
         declared = float(entry.spacing_at_level_0)
         selection = select_level_for_spacing_read(
-            requested_spacing_um=self._spacing_um,
+            requested_spacing_um=read,
             level0_spacing_um=declared,
             level_downsamples=[(1.0, 1.0)],
             tolerance=self._tolerance,
@@ -138,7 +163,7 @@ class TileImageSource:
         if self._flat(entry):
             declared = self._flat_resample(entry)
             if declared is not None:
-                return declared, self._spacing_um
+                return declared, self._read_spacing(entry)
             level0 = entry.spacing_at_level_0 if entry.spacing_at_level_0 is not None else self._spacing_um
             return level0, level0
         from soma.dense.reader import _served_spacing
@@ -147,7 +172,7 @@ class TileImageSource:
             str(entry.image_path),
             self._backend,
             self._level0_override(entry),
-            float(self._spacing_um),
+            float(self._read_spacing(entry)),
             self._tolerance,
         )
 
@@ -157,7 +182,7 @@ class TileImageSource:
         entry = self._entry(sample_id)
         array = read_image_at_spacing(
             entry.image_path,
-            spacing_um=self._spacing_um,
+            spacing_um=self._read_spacing(entry),
             backend=self._backend,
             tolerance=self._tolerance,
             spacing_at_level_0=self._level0_override(entry),
@@ -166,7 +191,7 @@ class TileImageSource:
         if declared is not None:
             from hs2p.wsi.wsi import resize_array
 
-            scale = declared / float(self._spacing_um)
+            scale = declared / float(self._read_spacing(entry))
             height, width = array.shape[:2]
             output = (int(round(width * scale)), int(round(height * scale)))  # (w, h)
             array = resize_array(array, output, interpolation="area")
@@ -218,6 +243,7 @@ class RegionImageSource(TileImageSource):
         regions: Level-0 ``(x, y)`` origin of each id's window.
         size: The window ``(H, W)`` (or side) at ``spacing_um``.
         spacing_um: µm/px to read the windows at.
+        spacing_policy: As :class:`TileImageSource`'s, resolved per slide.
         backend: hs2p backend.
         tolerance: hs2p spacing tolerance: a level within it is read without resampling.
     """
@@ -229,10 +255,18 @@ class RegionImageSource(TileImageSource):
         regions: Mapping[str, tuple[int, int]],
         size: int | tuple[int, int],
         spacing_um: float,
+        spacing_policy: str = "strict",
         backend: str = "auto",
         tolerance: float = 0.05,
     ) -> None:
-        super().__init__(entries, size=size, spacing_um=spacing_um, backend=backend, tolerance=tolerance)
+        super().__init__(
+            entries,
+            size=size,
+            spacing_um=spacing_um,
+            spacing_policy=spacing_policy,
+            backend=backend,
+            tolerance=tolerance,
+        )
         self._regions = {str(k): (int(v[0]), int(v[1])) for k, v in regions.items()}
         missing = sorted(set(self._entries) - set(self._regions))
         if missing:
@@ -245,6 +279,7 @@ class RegionImageSource(TileImageSource):
             regions={sid: self._regions[sid] for sid in ids},
             size=self._size,
             spacing_um=self._spacing_um,
+            spacing_policy=self._spacing_policy,
             backend=self._backend,
             tolerance=self._tolerance,
         )
@@ -262,7 +297,7 @@ class RegionImageSource(TileImageSource):
             entry.image_path,
             location=self._regions[str(sample_id)],
             size=(width, height),  # hs2p sizes are (w, h)
-            spacing_um=self._spacing_um,
+            spacing_um=self._read_spacing(entry),
             backend=self._backend,
             tolerance=self._tolerance,
             spacing_at_level_0=self._level0_override(entry),

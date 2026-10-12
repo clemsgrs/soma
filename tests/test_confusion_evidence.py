@@ -107,3 +107,21 @@ def test_fold_validation_rejects_wrong_fold() -> None:
             expected_sample_ids=("sample_a",),
             fold=0,
         )
+
+
+def test_confusion_records_refuse_a_label_outside_the_classes() -> None:
+    # Encoded as target * C + prediction, a predicted 3 with two classes would land in
+    # cell (1, 1) and score a perfect Dice for a sample that is entirely wrong.
+    import torch
+
+    from soma.evaluation import LabelMapPredictions, confusion_records
+
+    class _Targets:
+        def load(self, sample_id):
+            return torch.zeros((1, 1), dtype=torch.long)
+
+    predictions = LabelMapPredictions(
+        {"slide_a": np.array([[3]], dtype=np.uint8)}, classes=["negative", "positive"]
+    )
+    with pytest.raises(ValueError, match=r"(?s)'slide_a'.*\[3\]"):
+        confusion_records(predictions, _Targets())

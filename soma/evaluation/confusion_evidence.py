@@ -238,8 +238,11 @@ def confusion_records(predictions, targets, *, fold: int = 0) -> list[Segmentati
     ``predictions`` is a :class:`~soma.evaluation.LabelMapPredictions` (e.g. a run's
     ``predictions_tune/``), ``targets`` the label-map source it was scored against.
     Pixels at the predictions' ``ignore_index`` in the target count nowhere. The class
-    vocabulary is the predictions' ``classes``.
+    vocabulary is the predictions' ``classes``; a label outside it on a supervised pixel
+    raises ``ValueError`` naming the sample.
     """
+    from soma.evaluation.grid import _check_label_range
+
     num_classes = predictions.num_classes
     records = []
     for sample_id in predictions.sample_ids:
@@ -252,6 +255,7 @@ def confusion_records(predictions, targets, *, fold: int = 0) -> list[Segmentati
                 f"label map for '{sample_id}' is {prediction.shape} but its target is {target.shape}"
             )
         valid = target != int(predictions.ignore_index)
+        _check_label_range(prediction[valid], target[valid], num_classes=num_classes, sample_id=sample_id)
         encoded = target[valid] * num_classes + prediction[valid]
         matrix = np.bincount(encoded, minlength=num_classes * num_classes).reshape(num_classes, num_classes)
         records.append(

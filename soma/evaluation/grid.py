@@ -372,6 +372,25 @@ class LabelMapPredictions:
 # --------------------------------------------------------------------------------------
 
 
+def _check_label_range(
+    pred: np.ndarray, true: np.ndarray, *, num_classes: int, sample_id: str | None = None
+) -> None:
+    """Refuse a predicted or target label on a supervised pixel outside
+    ``[0, num_classes)``: dropping or binning it would score a wrong class mapping as
+    perfect. ``sample_id``, when given, is named in the message."""
+    undeclared = [
+        f"{side} {sorted(np.unique(values[outside]).tolist())}"
+        for side, values in (("predicted", pred), ("target", true))
+        if (outside := (values < 0) | (values >= num_classes)).any()
+    ]
+    if undeclared:
+        where = "" if sample_id is None else f"label map for '{sample_id}': "
+        raise ValueError(
+            f"{where}{' and '.join(undeclared)} label value(s) on supervised pixels lie "
+            f"outside [0, num_classes={num_classes})"
+        )
+
+
 def label_map_counts(prediction: np.ndarray, target: Any, *, num_classes: int, ignore_index: int) -> np.ndarray:
     """``(C, 3)`` ``(intersection, predicted, target)`` pixel counts of one label map,
     ``ignore_index`` target pixels excluded.
@@ -385,16 +404,7 @@ def label_map_counts(prediction: np.ndarray, target: Any, *, num_classes: int, i
     valid = target != int(ignore_index)
     pred = prediction[valid]
     true = target[valid]
-    undeclared = [
-        f"{side} {sorted(np.unique(values[outside]).tolist())}"
-        for side, values in (("predicted", pred), ("target", true))
-        if (outside := (values < 0) | (values >= num_classes)).any()
-    ]
-    if undeclared:
-        raise ValueError(
-            f"{' and '.join(undeclared)} label value(s) on supervised pixels lie outside "
-            f"[0, num_classes={num_classes})"
-        )
+    _check_label_range(pred, true, num_classes=num_classes)
     counts = np.zeros((int(num_classes), 3), dtype=np.int64)
     counts[:, 1] = np.bincount(pred, minlength=num_classes)
     counts[:, 2] = np.bincount(true, minlength=num_classes)

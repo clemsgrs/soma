@@ -1373,7 +1373,7 @@ def _detection_points(task: TaskConfig, records: "Sequence[LegacyRecord]"):
     return num_classes, class_names, PointSource(entries, class_remap=class_remap, drop=dropped)
 
 
-def _flat_tile_images(records: "Sequence[LegacyRecord]", *, size, spacing_um: float | None = None, backend: str = "auto", tolerance: float = 0.05):
+def _flat_tile_images(records: "Sequence[LegacyRecord]", *, size, spacing_um: float | None = None, spacing_policy: str = "strict", backend: str = "auto", tolerance: float = 0.05):
     """A :class:`~soma.data.TileImageSource` over pre-cropped tiles, or ``None`` for
     slide-manifest ROIs (their pixels are windows of a whole slide)."""
     if any(record.region is not None for record in records):
@@ -1389,6 +1389,7 @@ def _flat_tile_images(records: "Sequence[LegacyRecord]", *, size, spacing_um: fl
         ],
         size=size,
         spacing_um=spacing_um,
+        spacing_policy=spacing_policy,
         backend=backend,
         tolerance=tolerance,
     )
@@ -1398,10 +1399,18 @@ def _overlay_images(records: "Sequence[LegacyRecord]", *, size, preprocessing):
     """The pixels :class:`~soma.evaluation.SaveOverlays` blends over: the flat tiles, or
     each slide-manifest ROI's window of its whole slide at the run spacing."""
     spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    spacing_policy = preprocessing.spacing_policy if preprocessing is not None else "strict"
     backend = preprocessing.backend if preprocessing is not None else "auto"
     tolerance = float(preprocessing.tolerance) if preprocessing is not None else 0.05
     if spacing_um is None or not any(record.region is not None for record in records):
-        return _flat_tile_images(records, size=size, spacing_um=spacing_um, backend=backend, tolerance=tolerance)
+        return _flat_tile_images(
+            records,
+            size=size,
+            spacing_um=spacing_um,
+            spacing_policy=spacing_policy,
+            backend=backend,
+            tolerance=tolerance,
+        )
     from soma.data.images import RegionImageSource
 
     return RegionImageSource(
@@ -1416,6 +1425,7 @@ def _overlay_images(records: "Sequence[LegacyRecord]", *, size, preprocessing):
         regions={record.sample_id: record.region for record in records},
         size=size,
         spacing_um=spacing_um,
+        spacing_policy=spacing_policy,
         backend=backend,
         tolerance=tolerance,
     )
@@ -2964,6 +2974,7 @@ class Pipeline:
             self._image_manifest,
             size=int(preprocessing.requested_tile_size_px),
             spacing_um=float(preprocessing.requested_spacing_um),
+            spacing_policy=preprocessing.spacing_policy,
             backend=preprocessing.backend,
             tolerance=float(preprocessing.tolerance),
         )

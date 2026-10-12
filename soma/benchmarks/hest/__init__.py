@@ -242,8 +242,11 @@ class HestBenchmark:
         runs of different encoders under one ``output_root`` never overwrite each other;
         returns the summary. Like a ``Pipeline`` run it writes ``experiment.json`` and a
         ``run.yaml`` that tracks the run's status, so ``soma leaderboard`` and
-        ``soma reproduce --from-run-dir`` can read the run.
+        ``soma reproduce --from-run-dir`` can read the run. ``run.folds`` is refused: the
+        closed-form probe fits every fold in one launch.
         """
+        if config.folds is not None:
+            raise ValueError("the HEST runner fits every fold in one launch; run.folds is not supported")
         from soma.config import save_config
         from soma.output_layout import resolve_managed_output_paths, write_experiment_metadata
         from soma.pipeline import _RunRecorder

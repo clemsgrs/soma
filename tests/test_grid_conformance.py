@@ -141,6 +141,23 @@ def test_a_flat_tile_declaring_a_finer_spacing_is_resampled_to_the_requested_one
     assert source.spacing("t") == pytest.approx(0.5)
 
 
+def test_a_flat_tile_coarser_than_requested_is_read_natively_under_native_if_coarser(tmp_path):
+    # A 0.6 µm/px tile cannot be read at 0.5 without upsampling: ``native_if_coarser``
+    # serves it as stored at its own spacing (as the label maps and cached extraction
+    # resolve it), while ``strict`` still refuses it.
+    path = tmp_path / "tile.png"
+    Image.fromarray(np.full((50, 50, 3), 128, dtype=np.uint8)).save(path)
+    entry = ImageEntry(sample_id="t", image_path=path, spacing_at_level_0=0.6)
+    source = TileImageSource([entry], size=50, spacing_um=0.5, spacing_policy="native_if_coarser")
+
+    assert tuple(source.load("t").shape) == (3, 50, 50)
+    assert source.spacing("t") == pytest.approx(0.6)
+    assert source.geometry("t").level0_px_per_token_px == pytest.approx(1.0)
+    assert source.subset(["t"]).spacing("t") == pytest.approx(0.6)
+    with pytest.raises(ValueError):
+        TileImageSource([entry], size=50, spacing_um=0.5).load("t")
+
+
 def _pyramid(path: Path, *, level0_spacing_um: float, size: int = 128) -> Path:
     """A two-level tiled TIFF (consecutive IFDs, as every hs2p backend reads them): level 1
     is level 0 downsampled 2x."""

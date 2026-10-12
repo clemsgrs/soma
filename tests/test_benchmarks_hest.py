@@ -72,6 +72,29 @@ def test_build_config_encodes_the_probe_recipe(tmp_path):
     assert config.training.seed == 3
 
 
+def test_run_refuses_a_fold_selection_before_extracting(tmp_path, monkeypatch):
+    # The closed-form probe fits every fold in one launch; silently ignoring run.folds
+    # would refit the folds another launch owns.
+    from dataclasses import replace
+
+    config = get_benchmark("hest/IDC").build_config(
+        encoder="uni2",
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "runs",
+        seed=0,
+    )
+    config = replace(config, run_id="pinned", folds=(1,))
+    benchmark = get_benchmark("hest/IDC")
+    monkeypatch.setattr(
+        type(benchmark), "_run_folds", lambda *args, **kwargs: pytest.fail("extraction ran")
+    )
+
+    with pytest.raises(ValueError, match=r"run\.folds"):
+        benchmark.run(config)
+    assert not (tmp_path / "runs").exists()
+
+
 def test_build_config_defaults_to_uni2(tmp_path):
     config = get_benchmark("hest/IDC").build_config(
         dataset_csv=tmp_path / "dataset.csv",
