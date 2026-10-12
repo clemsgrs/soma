@@ -298,6 +298,12 @@ def test_head_registered_and_ignore_index_validated():
     SegmentationHead(num_classes=3, geometry=geom, ignore_index=255)  # ok
 
 
+def test_head_refuses_more_classes_than_a_uint8_label_map_holds():
+    geom = compute_dense_geometry(target_size=8, patch_size=4)
+    with pytest.raises(ValueError, match="uint8"):
+        SegmentationHead(num_classes=257, geometry=geom)
+
+
 def test_load_mask_accepts_2d_integer(tmp_path: Path):
     arr = np.array([[0, 1], [2, 255]], dtype=np.uint8)
     path = tmp_path / "m.png"

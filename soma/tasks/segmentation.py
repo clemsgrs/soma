@@ -105,6 +105,10 @@ class SegmentationHead(TaskHead):
         super().__init__()
         if num_classes < 1:
             raise ValueError(f"num_classes must be >= 1, got {num_classes}")
+        if num_classes > 256:
+            raise ValueError(
+                f"label maps are uint8 rasters (max 256 classes); got num_classes={num_classes}"
+            )
         if 0 <= ignore_index < num_classes:
             raise ValueError(
                 f"ignore_index {ignore_index} must be outside [0, num_classes={num_classes})."

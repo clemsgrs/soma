@@ -3,8 +3,10 @@
 The live grid path re-encodes pixels every step, so the pixels are a source of their
 own, under the same id / geometry / spacing contract as a cached
 :class:`~soma.data.GridSource`. Flat rasters (PNG/JPEG, or any file without a requested
-spacing) are read as stored; pyramidal, spacing-bearing images are read through hs2p at
-``spacing_um``. :class:`RegionImageSource` serves windows of whole slides
+spacing) are read as stored, unless the manifest declares a ``spacing_at_level_0``
+outside ``tolerance`` of ``spacing_um``: then they are area-resampled to ``spacing_um``,
+as slide2vec's cached extraction reads them. Pyramidal, spacing-bearing images are read
+through hs2p at ``spacing_um``. :class:`RegionImageSource` serves windows of whole slides
 (slide-manifest ROIs) under the same contract.
 """
 
@@ -31,8 +33,9 @@ class TileImageSource:
             entries).
         size: The declared ``(H, W)`` (or side) the encoder stage expects; images larger
             than it reach that size only through an augmentation crop.
-        spacing_um: µm/px to read pyramidal images at; ``None`` reads every image as
-            stored.
+        spacing_um: µm/px to read pyramidal images at, and flat ones whose declared
+            ``spacing_at_level_0`` lies outside ``tolerance`` of it; ``None`` reads every
+            image as stored.
         backend: hs2p backend for spacing-aware reads.
         tolerance: hs2p spacing tolerance: a level within it is read without resampling.
     """
@@ -103,6 +106,24 @@ class TileImageSource:
 
         return _is_flat(entry.image_path, self._spacing_um)
 
+    def _flat_resample(self, entry: ImageEntry) -> float | None:
+        """The declared level-0 µm/px of a flat raster ``load`` resamples to ``spacing_um``,
+        or ``None`` when it is served as stored (no declared or requested spacing, or the
+        two within ``tolerance``). hs2p's image policy refuses upsampling beyond it."""
+        if self._spacing_um is None or entry.spacing_at_level_0 is None:
+            return None
+        from hs2p.wsi.geometry import select_level_for_spacing_read
+
+        declared = float(entry.spacing_at_level_0)
+        selection = select_level_for_spacing_read(
+            requested_spacing_um=self._spacing_um,
+            level0_spacing_um=declared,
+            level_downsamples=[(1.0, 1.0)],
+            tolerance=self._tolerance,
+            content_kind="image",
+        )
+        return None if selection.is_within_tolerance else declared
+
     @staticmethod
     def _level0_override(entry: ImageEntry) -> float | None:
         return None if entry.spacing_at_level_0 is None else float(entry.spacing_at_level_0)
@@ -115,6 +136,9 @@ class TileImageSource:
         returns.
         """
         if self._flat(entry):
+            declared = self._flat_resample(entry)
+            if declared is not None:
+                return declared, self._spacing_um
             level0 = entry.spacing_at_level_0 if entry.spacing_at_level_0 is not None else self._spacing_um
             return level0, level0
         from soma.dense.reader import _served_spacing
@@ -138,6 +162,14 @@ class TileImageSource:
             tolerance=self._tolerance,
             spacing_at_level_0=self._level0_override(entry),
         )
+        declared = self._flat_resample(entry) if self._flat(entry) else None
+        if declared is not None:
+            from hs2p.wsi.wsi import resize_array
+
+            scale = declared / float(self._spacing_um)
+            height, width = array.shape[:2]
+            output = (int(round(width * scale)), int(round(height * scale)))  # (w, h)
+            array = resize_array(array, output, interpolation="area")
         return torch.from_numpy(np.ascontiguousarray(array)).permute(2, 0, 1).contiguous()
 
     def _origin(self, sample_id: str) -> tuple[float, float]:
