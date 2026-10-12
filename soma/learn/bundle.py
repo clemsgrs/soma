@@ -71,8 +71,10 @@ def save(fit, path: str | Path, *, preprocessing: Mapping[str, Any] | None = Non
          provenance: Mapping[str, Any] | None = None) -> Path:
     """Write ``fit``'s selected model as a bundle at ``path``, atomically; returns ``path``.
 
-    The bundle is staged in a sibling directory and renamed into place, so a reader sees
-    the previous bundle or the new one, never a partial one. ``preprocessing`` and
+    The bundle is staged in a sibling directory and renamed into place, so a first write
+    is all-or-nothing; when an incomplete fold is re-run, the old bundle is retired and
+    the new one renamed in, with a brief gap only the fold's own writer can observe.
+    Readers never see a partial bundle. ``preprocessing`` and
     ``provenance`` are optional JSON-ready dicts; the soma / slide2vec / hs2p versions
     and the fit's selected epoch and monitor are always recorded.
     """

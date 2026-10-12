@@ -1388,8 +1388,11 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             metadata["match_distance"] = float(head.match_distance)
             metadata["matching"] = head.matching
             metadata["min_score"] = float(head.min_score)
+            # Keyed by class name so ``PointPredictions.with_threshold`` applies it as recorded.
             metadata["score_threshold"] = (
-                {str(k): float(v) for k, v in threshold.items()} if isinstance(threshold, dict) else threshold
+                {head.class_names[int(k)]: float(v) for k, v in threshold.items()}
+                if isinstance(threshold, dict)
+                else float(threshold)
             )
         return metadata
 

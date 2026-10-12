@@ -315,11 +315,17 @@ def test_grid_detection_pipeline_equals_hand_composition(tmp_path, new_artifact)
         predictions.to_parquet(hand / f"predictions_{name}.parquet")
     soma.save(result, hand / "bundle")  # 9
 
-    bundle = soma.load(run.run_dir / "bundle")
+    # The bundle records the swept cut keyed by class name, so it applies as recorded.
+    recorded = soma.load(run.run_dir / "bundle").preprocessing["score_threshold"]
     artifact.check_equal(
         "bundle/score_threshold",
-        bundle.preprocessing["score_threshold"],
-        {str(k): float(v) for k, v in threshold.items()},
+        recorded,
+        {head.class_names[k]: float(v) for k, v in threshold.items()},
+    )
+    artifact.check_equal(
+        "bundle/score_threshold_applies",
+        tune_predictions.with_threshold(recorded).threshold,
+        tune_predictions.with_threshold(threshold).threshold,
     )
     _check_parity(artifact, run, hand, metrics)
     artifact.assert_passed()
