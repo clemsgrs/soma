@@ -25,7 +25,7 @@ Three barrier-synchronised phases:
 Per-shard stdout+stderr stream to ``<out-root>/logs/<phase>.gpu<N>.log``; a failing shard
 aborts its phase (extract failure never proceeds to the expensive rank phase). Idempotent:
 re-invoking resumes via campaign.py's per-cell skip guards (``extracted.marker`` /
-``best_model.pt`` / ``metrics.json``), so a crashed shard just picks up where it stopped.
+``summary.json`` / ``metrics.json``), so a crashed shard just picks up where it stopped.
 
 Caveat: training is CPU-bound on dense-grid deserialisation, so G shards contend for CPU —
 GPU speedup is real but can be sublinear if the box is CPU-starved. Round-robin over the

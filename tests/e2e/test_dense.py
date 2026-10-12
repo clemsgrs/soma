@@ -168,3 +168,39 @@ def test_live_detection_is_learned(tmp_path, encoder_name, encoded_images, fake_
     artifact.check_equal("rois_extracted", sum(encoded_images), 0)
     artifact.check_at_least("test/mean_f1", run.summary["test/mean_f1"], 0.6)
     artifact.assert_passed()
+
+
+def test_live_run_re_encodes_a_supplied_image_source(tmp_path, encoder_name, encoded_images, fake_live_encoder):
+    """A caller-supplied ``ImageSource`` under ``feature_mode: live`` gets the run's frozen
+    encoder stage, exactly like the image source the run would build itself."""
+    import yaml
+
+    from soma.config import load_config
+    from soma.data import TileImageSource
+    from soma.pipeline import Pipeline
+    from tests.e2e.synthetic import SPACING_UM
+
+    raw = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        task={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=1,
+        live=True,
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    config = load_config(config_path)
+    pipeline = Pipeline(config)
+    images = TileImageSource.from_manifest(
+        pipeline.image_manifest, size=96, spacing_um=SPACING_UM, backend="openslide"
+    )
+
+    result = Pipeline(config, source=images).run()
+
+    assert len(fake_live_encoder) == 1
+    assert sum(encoded_images) == 0
+    assert "test/mean_dice" in result.summary
+    assert (result.run_dir / "bundle" / "model.json").is_file()

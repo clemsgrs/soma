@@ -139,9 +139,16 @@ def require_declared_spacing(source, expected_spacing_um, *, tol: float = 1e-9) 
     so they register either way, but a mismatch means the grids come from another
     configuration (features extracted elsewhere and supplied as a source), whose
     supervision would silently shift against the features.
+
+    A source with only the :class:`~soma.data.GridSource` protocol (no declared
+    spacing) is checked through its effective :meth:`~soma.data.GridSource.spacing`
+    instead, skipping flat reads (nothing configured to compare against).
     """
+    declares = hasattr(source, "spacing_um")
     for sample_id, expected in expected_spacing_um.items():
-        declared = source.spacing_um(sample_id)
+        if not declares and expected is None:
+            continue
+        declared = source.spacing_um(sample_id) if declares else source.spacing(sample_id)
         if declared is None or expected is None:
             matches = declared is None and expected is None
         else:

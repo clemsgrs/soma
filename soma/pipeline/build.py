@@ -680,6 +680,14 @@ class _SetFoldRecords:
     train_records: list[LegacyRecord]
 
 
+def _feature_statuses(source) -> dict[str, str] | None:
+    """The source's per-sample feature-manifest statuses, or ``None`` when it has no
+    manifest (an in-memory, directory or grouped source supplied by the caller)."""
+    if not getattr(source, "has_feature_manifest", False):
+        return None
+    return source.feature_statuses
+
+
 def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _SetFoldRecords:
     """Resolve the fold's train / tune / test membership against the features on disk.
 
@@ -692,6 +700,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
     dataset_type = config.dataset_type
     all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
     _fp = f"Fold {fold}" if inputs.num_folds > 1 else "Run"
+    statuses = _feature_statuses(feature_store)
     if dataset_type == "patient":
         # Patient-level: features are indexed by patient_id; splits are slide-based.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
@@ -707,8 +716,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         raw_train_ids, raw_tune_ids = list(train_ids), list(tune_ids)
         raw_test_ids = {name: list(ids) for name, ids in test_ids.items()}
         split_ids = set(train_ids) | set(tune_ids) | {pid for ids in test_ids.values() for pid in ids}
-        if feature_store.has_feature_manifest:
-            statuses = feature_store.feature_statuses
+        if statuses is not None:
             missing = sorted(split_ids - set(statuses))
             if missing:
                 raise ValueError(
@@ -738,8 +746,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
                     f"{fold}: {missing}"
                 )
             empty_by_split = None
-    elif feature_store.has_feature_manifest:
-        statuses = feature_store.feature_statuses
+    elif statuses is not None:
         split_ids = set(fold_split.train) | set(fold_split.tune) | all_test_ids
         missing = sorted(split_ids - set(statuses))
         if missing:
@@ -1566,7 +1573,8 @@ def attach_source(
 ) -> SourceContext:
     """Attach the supplied ``source``, or extract one from the config.
 
-    Without a source: the live grid path builds its frozen encoder stage and an image
+    A supplied source on the live grid path is the pixels' image source and gets the
+    run's frozen encoder stage. Without a source: the live grid path builds its frozen encoder stage and an image
     source; a composite extracts every member; otherwise the configured encoder
     extracts (or reuses from the feature cache) set or grid features.
     """
@@ -1586,9 +1594,13 @@ def attach_source(
         raise NotImplementedError(
             "Multi-encoder extraction over annotation-sampled segmentation ROIs is not implemented."
         )
+    live = is_dense and config.feature_mode == "live"
     if source is not None:
-        return SourceContext(source=source, dataset=dataset, splits=splits)
-    if is_dense and config.feature_mode == "live":
+        # A supplied image source under ``feature_mode: live`` is re-encoded by the
+        # run's frozen encoder stage, like the one built below.
+        stage = live_encoder_for(config) if live else None
+        return SourceContext(source=source, dataset=dataset, splits=splits, encoder_stage=stage)
+    if live:
         preprocessing = resolve_pipeline_preprocessing(config)
         images = TileImageSource.from_manifest(
             image_manifest,

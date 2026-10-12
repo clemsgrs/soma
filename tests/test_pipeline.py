@@ -275,6 +275,28 @@ class TestPipeline:
         assert len(result.fold_results) == 1
         assert result.run_dir == _expected_run_dir(config)
 
+    def test_run_trains_on_a_supplied_in_memory_source(self, tmp_path: Path):
+        """A supplied source without a feature manifest (``from_arrays``) trains and
+        scores like a cache: every listed sample must simply have features."""
+        from soma.data import from_arrays
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        features = {path.stem: torch.load(path) for path in sorted(feature_dir.glob("*.pt"))}
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "output",
+            dataset_type="slide",
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
+        )
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=from_arrays(features)).run()
+
+        assert "test/auroc" in result.summary
+        assert (result.run_dir / "bundle" / "model.json").is_file()
+
     def test_run_result_carries_the_checksums_its_metadata_files_record(
         self, tmp_path: Path
     ):
