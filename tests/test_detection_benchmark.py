@@ -69,7 +69,7 @@ def test_registered_per_dataset_not_as_the_harness():
     # dataset argument); the per-dataset views are, with encoder as the only varied axis.
     with pytest.raises(KeyError):
         get_benchmark("detection-benchmark")
-    for dataset, metric in (("midog", "f1"), ("monkey", "mean_froc")):
+    for dataset, metric in (("midog", "f1"), ("monkey", "froc_inflammatory")):
         bench = get_benchmark(f"detection/{dataset}")
         assert isinstance(bench, DetectionDatasetBenchmark)
         assert isinstance(bench, Benchmark)  # runtime protocol conformance
@@ -99,7 +99,7 @@ def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
 
 @pytest.mark.parametrize(
     "dataset,num_classes,metric",
-    [("ocelot", 2, "mean_f1"), ("midog", 1, "f1"), ("monkey", 2, "mean_froc")],
+    [("ocelot", 2, "mean_f1"), ("midog", 1, "f1"), ("monkey", 2, "froc_inflammatory")],
 )
 def test_build_config_resolves_encoder_dataset(dataset, num_classes, metric):
     bench = DETECTION_BENCHMARK
@@ -367,13 +367,29 @@ def test_score_dataset_points_midog():
     assert out["f1"] == pytest.approx(0.5)  # tp=1, fp=1, fn=1 → 2·1/(2·1+1+1)
 
 
-def test_score_dataset_points_monkey_returns_mean_froc():
+def test_score_dataset_points_monkey_returns_every_leaderboard_froc():
+    # Final-leaderboard columns: the merged inflammatory-cell FROC (the headline) and the
+    # two per-class FROCs, plus the class average kept for the Track-2 reference row.
     samples = [
         SamplePrediction("s0", [[10, 10], [30, 30]], [0.9, 0.8], [0, 1],
                          [[10, 11], [30, 31]], [0, 1], area_mm2=0.05),
     ]
     out = score_dataset_points("monkey", samples)
-    assert "mean_froc" in out and 0.0 <= out["mean_froc"] <= 1.0
+    assert set(out) == {"froc_inflammatory", "froc_lymphocytes", "froc_monocytes", "mean_froc"}
+    assert all(0.0 <= v <= 1.0 for v in out.values())
+    assert out["mean_froc"] == pytest.approx((out["froc_lymphocytes"] + out["froc_monocytes"]) / 2)
+    assert dataset_spec("monkey").metric_name == "froc_inflammatory"
+
+
+def test_score_dataset_points_monkey_headline_is_the_merged_class():
+    # One lymphocyte found as a monocyte: wrong class, so both per-class FROCs miss it, but
+    # the merged inflammatory-cell FROC (class-agnostic) counts it.
+    samples = [
+        SamplePrediction("s0", [[10, 10]], [0.9], [1], [[10, 11]], [0], area_mm2=0.05),
+    ]
+    out = score_dataset_points("monkey", samples)
+    assert out["froc_inflammatory"] == pytest.approx(1.0)
+    assert out["froc_lymphocytes"] == pytest.approx(0.0)
 
 
 def test_reaggregation_off_cache_with_no_training(tmp_path: Path):
@@ -466,7 +482,7 @@ def test_build_ranking_report_schema():
     assert report["robustness"] == {}
     # Every cell carries its OWN metric_name (no pooled cross-dataset scalar anywhere).
     metric_by_ds = {c["dataset"]: c["metric_name"] for c in report["cells"]}
-    assert metric_by_ds == {"ocelot": "mean_f1", "midog": "f1", "monkey": "mean_froc"}
+    assert metric_by_ds == {"ocelot": "mean_f1", "midog": "f1", "monkey": "froc_inflammatory"}
     # No pooled scalar leaked into the report.
     assert "overall" not in report and "pooled" not in report
 
@@ -519,9 +535,10 @@ def test_report_reference_bands_scaffolds():
 
 
 @pytest.mark.parametrize(
-    "dataset,metric,gated", [("midog", "f1", True), ("monkey", "mean_froc", False)]
+    "dataset,metrics,gated",
+    [("midog", ("f1",), True), ("monkey", ("froc_inflammatory", "froc_lymphocytes", "froc_monocytes", "mean_froc"), False)],
 )
-def test_reference_scaffold_shape(dataset, metric, gated):
+def test_reference_scaffold_shape(dataset, metrics, gated):
     with resources.files("soma.benchmarks.reference").joinpath(f"{dataset}.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
@@ -542,7 +559,9 @@ def test_reference_scaffold_shape(dataset, metric, gated):
         # a headline (load_reference rejects expected-0 / blank-key gate rows).
         assert not gate
     assert external
-    assert all(r["metric"] == metric for r in rows)
+    # Every row names a metric the native scorer emits, and the headline has a row.
+    assert {r["metric"] for r in rows} <= set(metrics)
+    assert any(r["metric"] == dataset_spec(dataset).metric_name for r in rows)
     for row in external:
         assert row["url"].strip().startswith("http")
         # Filled non-gating guidance: a real published number with a snapshot date.
@@ -986,7 +1005,7 @@ def test_driver_aggregate_from_disk_multifold(tmp_path: Path):
     report = m.aggregate_and_report(out, roster=roster, datasets=["monkey"], write=False)
     cell = next(c for c in report["cells"] if c["encoder"] == "virchow2")
     assert cell["replicate_axis"] == "folds" and cell["n_replicates"] == 3
-    assert cell["metric_name"] == "mean_froc"
+    assert cell["metric_name"] == "froc_inflammatory"
 
 
 def test_driver_aggregate_skips_unscored_pairs(tmp_path: Path):
