@@ -138,6 +138,72 @@ def test_a_dotted_path_class_resolves_with_a_warning_unvalidated_and_unlisted(ag
     assert dotted not in [entry["name"] for entry in soma.components("aggregators")]
 
 
+def _config(dataset_type: str = "slide", **components):
+    from soma.config import PipelineConfig
+
+    return PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type=dataset_type,
+        **components,
+    )
+
+
+def test_config_names_a_registered_class_by_its_key_so_clam_mb_gets_the_branch_aware_head():
+    from soma.config import AggregatorConfig, TaskConfig
+    from soma.pipeline.build import _bag_head_class
+    from soma.tasks import BranchAwareClassificationHead, MulticlassClassificationHead
+
+    config = _config(
+        aggregator=AggregatorConfig(name="soma.aggregators.mil.clam.CLAM_MB"),
+        task=TaskConfig(name="multiclass_classification"),
+    )
+
+    assert config.aggregator.name == "clam_mb"
+    head_cls = _bag_head_class(
+        MulticlassClassificationHead,
+        task_name=config.task.name,
+        aggregator_name=config.aggregator.name,
+    )
+    assert head_cls is BranchAwareClassificationHead
+
+
+def test_a_dotted_survival_head_honours_the_loss_selector():
+    from soma.config import TaskConfig, TrainingConfig
+    from soma.tasks.survival import CoxSurvivalHead, resolve_survival_task
+
+    config = _config(
+        task=TaskConfig(name="soma.tasks.survival.SurvivalHead", params={"loss": "cox"}),
+        training=TrainingConfig(batch_size=4),
+    )
+
+    assert config.task.name == "survival"
+    assert resolve_survival_task(config.task.name, config.task.params) == (CoxSurvivalHead, "cox")
+
+
+def test_config_names_a_registered_decoder_by_its_key():
+    from soma.config import DecoderConfig, TaskConfig
+
+    config = _config(
+        "segmentation",
+        decoder=DecoderConfig(name="soma.decoders.lightweight_conv.LightweightConvDecoder"),
+        task=TaskConfig(name="segmentation"),
+    )
+
+    assert config.decoder.name == "lightweight_conv"
+
+
+def test_config_keeps_an_unregistered_dotted_path_as_written(aggregators):
+    from soma.config import AggregatorConfig, TaskConfig
+
+    dotted = "tests.test_components.FancyMIL"
+    with pytest.warns(UserWarning, match="is not registered"):
+        config = _config(aggregator=AggregatorConfig(name=dotted), task=TaskConfig(name="binary_classification"))
+
+    assert config.aggregator.name == dotted
+
+
 def test_components_is_the_only_discovery_surface():
     import soma.aggregators
     import soma.benchmarks

@@ -112,6 +112,20 @@ class Registry:
         """
         return self._lookup(name)[0]
 
+    def key_of(self, name: str) -> str:
+        """The registry key ``name`` stands for.
+
+        A dotted path naming a registered class gives that entry's key. Any other name
+        (a key, an unregistered dotted path, an unknown name) comes back unchanged.
+        """
+        try:
+            _, entry = self._lookup(name)
+        except KeyError:
+            return name
+        if entry is None:
+            return name
+        return next(key for key, candidate in self._entries.items() if candidate is entry)
+
     def _lookup(self, name: str) -> tuple[Any, _Entry | None]:
         """``(object, entry)`` for a key or a dotted path; ``entry`` is ``None`` when unregistered."""
         if name in self:
