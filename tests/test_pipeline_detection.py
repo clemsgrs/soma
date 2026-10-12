@@ -19,6 +19,7 @@ from soma.config import (
     CacheConfig,
     DecoderConfig,
     EvalConfig,
+    HeatmapConfig,
     PipelineConfig,
     PreprocessingConfig,
     TaskConfig,
@@ -65,7 +66,9 @@ def _splits(root: Path, assign: dict[str, str]) -> Path:
     return path
 
 
-def _run(tmp_path, manifest_csv, store, splits_csv, *, params=PARAMS, training=None, evaluation=None):
+def _run(
+    tmp_path, manifest_csv, store, splits_csv, *, params=PARAMS, training=None, evaluation=None, heatmaps=None
+):
     """One detection ``Pipeline`` run; returns its fold result and the fold (run) dir."""
     config = PipelineConfig(
         dataset_csv=manifest_csv,
@@ -78,6 +81,7 @@ def _run(tmp_path, manifest_csv, store, splits_csv, *, params=PARAMS, training=N
         evaluation=evaluation or EvalConfig(metrics=["mean_f1", "f1_per_class"]),
         preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
         cache=CacheConfig(enabled=False),
+        heatmaps=heatmaps or HeatmapConfig(),
     )
     result = Pipeline(config, source=store).run()
     return result.fold_results[0], result.run_dir
@@ -175,3 +179,15 @@ def test_detection_run_writes_opt_in_heatmaps_and_point_overlays(tmp_path: Path)
     assert heatmap.shape == (NUM_CLASSES, TARGET, TARGET) and heatmap.dtype == np.float16
     assert (fold / "overlays" / "test" / "pred" / "s3.png").is_file()
     assert (fold / "overlays" / "test" / "gt" / "s3.png").is_file()
+
+
+def test_detection_run_with_attention_heatmaps_enabled_completes_without_attention(tmp_path: Path):
+    """A grid run has no tile attention: ``reporting.heatmaps`` is skipped, not fatal."""
+    manifest, store = _build(tmp_path / "data", IDS)
+    _, fold = _run(
+        tmp_path, manifest, store, _splits(tmp_path, ASSIGN),
+        training=TrainingConfig(epochs=1, batch_size=2),
+        heatmaps=HeatmapConfig(enabled=True),
+    )
+    assert (fold / "summary.json").is_file()
+    assert not (fold / "attention").exists()

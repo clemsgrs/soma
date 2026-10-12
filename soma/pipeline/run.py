@@ -21,7 +21,7 @@ from soma.config import PipelineConfig
 from soma.data import AnnotationManifest, Cohort, ImageManifest
 from soma.pipeline._legacy import LegacyFolds, LegacySamples, legacy_inputs
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
-from soma.pipeline.build import RunInputs, attach_source, build_fold, load_pipeline_data
+from soma.pipeline.build import RunInputs, attach_source, build_fold, extraction_shape, load_pipeline_data
 from soma.pipeline.console import build_completed_run_panel, build_run_summary_panel
 from soma.pipeline.folds import FoldResult, run_fold
 from soma.pipeline.layout import (
@@ -262,6 +262,9 @@ class Pipeline:
         """Attention heatmaps over the fold bundles (a fresh pass with the attention hook)."""
         from soma.heatmaps import generate_heatmaps
 
+        if extraction_shape(self._config.dataset_type) == "grid":
+            logger.info("reporting.heatmaps: a %s run has no tile attention; skipping.", self._config.dataset_type)
+            return
         logger.info("Rendering attention heatmaps...")
         generate_heatmaps(
             run_dir=run_dir,
